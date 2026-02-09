@@ -161,11 +161,13 @@ fn split_rule_parts(line: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut in_regex = false;
+    let mut brace_depth = 0;
+    let mut paren_depth = 0;
     let mut chars = line.chars().peekable();
 
     while let Some(c) = chars.next() {
         match c {
-            '/' if !in_regex && current.is_empty() => {
+            '/' if !in_regex && current.is_empty() && brace_depth == 0 && paren_depth == 0 => {
                 in_regex = true;
                 current.push(c);
             }
@@ -182,7 +184,23 @@ fn split_rule_parts(line: &str) -> Vec<String> {
                 }
                 in_regex = false;
             }
-            ' ' | '\t' if !in_regex => {
+            '{' if !in_regex => {
+                brace_depth += 1;
+                current.push(c);
+            }
+            '}' if !in_regex && brace_depth > 0 => {
+                brace_depth -= 1;
+                current.push(c);
+            }
+            '(' if !in_regex => {
+                paren_depth += 1;
+                current.push(c);
+            }
+            ')' if !in_regex && paren_depth > 0 => {
+                paren_depth -= 1;
+                current.push(c);
+            }
+            ' ' | '\t' if !in_regex && brace_depth == 0 && paren_depth == 0 => {
                 if !current.is_empty() {
                     parts.push(current.clone());
                     current.clear();

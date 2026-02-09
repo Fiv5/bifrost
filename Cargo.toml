@@ -8,6 +8,7 @@ members = [
   "crates/bifrost-storage",
   "crates/bifrost-cli",
   "crates/bifrost-tests",
+  "crates/bifrost-e2e",
 ]
 
 [workspace.package]
