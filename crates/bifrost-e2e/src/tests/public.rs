@@ -7,7 +7,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec![],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp, 200)?;
                 let body = resp.text().await.unwrap_or_default();
                 assert_body_contains(&body, "baidu")?;
@@ -19,7 +22,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec!["www.baidu.com reqHeaders://{X-Test-Header: bifrost-e2e}"],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp, 200)?;
                 let body = resp.text().await.unwrap_or_default();
                 assert_body_contains(&body, "baidu")?;
@@ -31,7 +37,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec![],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.qq.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.qq.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let status = resp.status().as_u16();
                 if status == 200 || status == 301 || status == 302 {
                     Ok(())
@@ -45,7 +54,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec![],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.sina.com.cn/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.sina.com.cn/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let status = resp.status().as_u16();
                 if status == 200 || status == 301 || status == 302 {
                     Ok(())
@@ -59,7 +71,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec![],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/ip").await.map_err(|e| e.to_string())?;
+                let json = client
+                    .get_json("http://httpbin.org/ip")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if json.get("origin").is_some() {
                     Ok(())
                 } else {
@@ -72,7 +87,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec!["my-test-domain.local host://httpbin.org"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://my-test-domain.local/get").await.map_err(|e| e.to_string())?;
+                let json = client
+                    .get_json("http://my-test-domain.local/get")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if json.get("url").is_some() {
                     Ok(())
                 } else {
@@ -85,7 +103,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec!["www.baidu.com resHeaders://{Access-Control-Allow-Origin: *}"],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp, 200)?;
                 assert_header_value(&resp, "access-control-allow-origin", "*")?;
                 Ok(())
@@ -96,7 +117,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec!["www.baidu.com resHeaders://{X-Proxy-By: bifrost, X-Test-Time: 2024}"],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp, 200)?;
                 assert_header_value(&resp, "x-proxy-by", "bifrost")?;
                 assert_header_value(&resp, "x-test-time", "2024")?;
@@ -108,7 +132,10 @@ pub fn tests() -> Vec<TestCase> {
             "public",
             vec!["*.baidu.com resHeaders://{X-Matched: wildcard}"],
             |client: ProxyClient| async move {
-                let resp = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp, 200)?;
                 assert_header_value(&resp, "x-matched", "wildcard")?;
                 Ok(())
@@ -122,11 +149,17 @@ pub fn tests() -> Vec<TestCase> {
                 "httpbin.org resHeaders://{X-Site: httpbin}",
             ],
             |client: ProxyClient| async move {
-                let resp1 = client.get("http://www.baidu.com/").await.map_err(|e| e.to_string())?;
+                let resp1 = client
+                    .get("http://www.baidu.com/")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp1, 200)?;
                 assert_header_value(&resp1, "x-site", "baidu")?;
 
-                let resp2 = client.get("http://httpbin.org/get").await.map_err(|e| e.to_string())?;
+                let resp2 = client
+                    .get("http://httpbin.org/get")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 assert_status(&resp2, 200)?;
                 assert_header_value(&resp2, "x-site", "httpbin")?;
                 Ok(())

@@ -5,6 +5,7 @@ members = [
   "crates/bifrost-proxy",
   "crates/bifrost-tls",
   "crates/bifrost-plugin",
+  "crates/bifrost-plugin-examples",
   "crates/bifrost-storage",
   "crates/bifrost-cli",
   "crates/bifrost-tests",

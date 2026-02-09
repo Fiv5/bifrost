@@ -6,7 +6,11 @@ use std::process::ExitCode;
 #[command(name = "bifrost-e2e")]
 #[command(about = "Bifrost E2E Test Runner", long_about = None)]
 struct Args {
-    #[arg(short, long, help = "Filter tests by category (routing, request, response, template, public)")]
+    #[arg(
+        short,
+        long,
+        help = "Filter tests by category (routing, request, response, template, public)"
+    )]
     category: Option<String>,
 
     #[arg(short, long, help = "Filter tests by name pattern")]
@@ -18,7 +22,12 @@ struct Args {
     #[arg(short, long, help = "Output JSON report to file")]
     output: Option<String>,
 
-    #[arg(short, long, default_value = "18080", help = "Base port for proxy instances")]
+    #[arg(
+        short,
+        long,
+        default_value = "18080",
+        help = "Base port for proxy instances"
+    )]
     port: u16,
 
     #[arg(short, long, help = "Verbose output")]
@@ -63,18 +72,39 @@ async fn main() -> ExitCode {
 
     let results = runner.run_all().await;
 
-    let passed = results.iter().filter(|r| r.status == TestStatus::Passed).count();
-    let failed = results.iter().filter(|r| r.status == TestStatus::Failed).count();
-    let skipped = results.iter().filter(|r| r.status == TestStatus::Skipped).count();
+    let passed = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Passed)
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Failed)
+        .count();
+    let skipped = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Skipped)
+        .count();
     let total = results.len();
 
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║                      Test Summary                            ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  Total:   {:4}                                               ║", total);
-    println!("║  Passed:  {:4}  ✓                                            ║", passed);
-    println!("║  Failed:  {:4}  ✗                                            ║", failed);
-    println!("║  Skipped: {:4}  ○                                            ║", skipped);
+    println!(
+        "║  Total:   {:4}                                               ║",
+        total
+    );
+    println!(
+        "║  Passed:  {:4}  ✓                                            ║",
+        passed
+    );
+    println!(
+        "║  Failed:  {:4}  ✗                                            ║",
+        failed
+    );
+    println!(
+        "║  Skipped: {:4}  ○                                            ║",
+        skipped
+    );
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     if let Some(output_path) = args.output {

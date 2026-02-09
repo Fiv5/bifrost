@@ -16,7 +16,10 @@ pub fn assert_status_ok(response: &Response) -> AssertResult {
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!("Expected success status, got {}", response.status()))
+        Err(format!(
+            "Expected success status, got {}",
+            response.status()
+        ))
     }
 }
 
@@ -205,10 +208,9 @@ pub fn assert_is_number(value: &str) -> AssertResult {
 }
 
 pub fn assert_is_uuid(value: &str) -> AssertResult {
-    let uuid_re = regex::Regex::new(
-        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-    )
-    .unwrap();
+    let uuid_re =
+        regex::Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+            .unwrap();
 
     if uuid_re.is_match(value) {
         Ok(())

@@ -1,5 +1,10 @@
-use bifrost_core::{parse_rules, Rule, RulesResolver as CoreRulesResolver, RequestContext, Protocol};
-use bifrost_proxy::{ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RulesResolver as ProxyRulesResolverTrait};
+use bifrost_core::{
+    parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
+};
+use bifrost_proxy::{
+    ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules,
+    RulesResolver as ProxyRulesResolverTrait,
+};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -97,7 +102,7 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     }
 
     let content = if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        &trimmed[1..trimmed.len()-1]
+        &trimmed[1..trimmed.len() - 1]
     } else {
         trimmed
     };
@@ -107,7 +112,7 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
         let part = part.trim();
         if let Some(pos) = part.find(':') {
             let key = part[..pos].trim().to_string();
-            let val = part[pos+1..].trim().to_string();
+            let val = part[pos + 1..].trim().to_string();
             if !key.is_empty() {
                 headers.push((key, val));
             }
@@ -127,7 +132,10 @@ pub struct ProxyInstance {
 }
 
 impl ProxyInstance {
-    pub async fn start(port: u16, rules: Vec<&str>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start(
+        port: u16,
+        rules: Vec<&str>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let parsed_rules: Vec<Rule> = rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())

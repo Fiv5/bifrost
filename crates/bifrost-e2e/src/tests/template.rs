@@ -9,12 +9,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Timestamp: ${now}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let timestamp = headers.get("X-Timestamp")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let timestamp = headers
+                    .get("X-Timestamp")
                     .or_else(|| headers.get("x-timestamp"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Timestamp header not found")?;
@@ -28,12 +30,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Random: ${random}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let random = headers.get("X-Random")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let random = headers
+                    .get("X-Random")
                     .or_else(|| headers.get("x-random"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Random header not found")?;
@@ -47,12 +51,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-UUID: ${randomUUID}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let uuid = headers.get("X-Uuid")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let uuid = headers
+                    .get("X-Uuid")
                     .or_else(|| headers.get("x-uuid"))
                     .or_else(|| headers.get("X-UUID"))
                     .and_then(|v| v.as_str())
@@ -67,12 +73,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Url: ${url}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let url = headers.get("X-Url")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let url = headers
+                    .get("X-Url")
                     .or_else(|| headers.get("x-url"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Url header not found")?;
@@ -88,12 +96,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Host: ${host}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let host = headers.get("X-Host")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let host = headers
+                    .get("X-Host")
                     .or_else(|| headers.get("x-host"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Host header not found")?;
@@ -109,12 +119,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Path: ${path}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let path = headers.get("X-Path")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let path = headers
+                    .get("X-Path")
                     .or_else(|| headers.get("x-path"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Path header not found")?;
@@ -130,12 +142,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Method: ${method}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let method = headers.get("X-Method")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let method = headers
+                    .get("X-Method")
                     .or_else(|| headers.get("x-method"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Method header not found")?;
@@ -151,12 +165,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Version: ${version}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let version = headers.get("X-Version")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let version = headers
+                    .get("X-Version")
                     .or_else(|| headers.get("x-version"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Version header not found")?;
@@ -172,12 +188,14 @@ pub fn tests() -> Vec<TestCase> {
             "template",
             vec!["httpbin.org reqHeaders://{X-Info: ${host}|${method}|${now}}"],
             |client: ProxyClient| async move {
-                let json = client.get_json("http://httpbin.org/headers").await
+                let json = client
+                    .get_json("http://httpbin.org/headers")
+                    .await
                     .map_err(|e| format!("Request failed: {}", e))?;
 
-                let headers = json.get("headers")
-                    .ok_or("No headers in response")?;
-                let info = headers.get("X-Info")
+                let headers = json.get("headers").ok_or("No headers in response")?;
+                let info = headers
+                    .get("X-Info")
                     .or_else(|| headers.get("x-info"))
                     .and_then(|v| v.as_str())
                     .ok_or("X-Info header not found")?;

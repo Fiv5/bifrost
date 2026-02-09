@@ -13,7 +13,7 @@ use crate::error::{PluginError, Result};
 use crate::hook::PluginHook;
 use crate::protocol::{PluginInfo, PluginRequest, PluginResponse};
 
-const PLUGIN_PREFIX: &str = "whistle.";
+const PLUGIN_PREFIX: &str = "bifrost.";
 const PACKAGE_JSON: &str = "package.json";
 
 #[derive(Debug)]

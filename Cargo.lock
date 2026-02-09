@@ -247,6 +247,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bifrost-plugin-examples"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bifrost-core",
+ "bifrost-plugin",
+ "bytes",
+ "chrono",
+ "parking_lot",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bifrost-proxy"
 version = "0.1.0"
 dependencies = [

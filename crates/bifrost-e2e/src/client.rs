@@ -52,13 +52,19 @@ impl ProxyClient {
             .await
     }
 
-    pub async fn get_json(&self, url: &str) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_json(
+        &self,
+        url: &str,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self.get(url).await?;
         let json: Value = resp.json().await?;
         Ok(json)
     }
 
-    pub async fn get_text(&self, url: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_text(
+        &self,
+        url: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self.get(url).await?;
         let text = resp.text().await?;
         Ok(text)
@@ -83,7 +89,10 @@ impl DirectClient {
         self.client.get(url).send().await
     }
 
-    pub async fn get_json(&self, url: &str) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_json(
+        &self,
+        url: &str,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self.get(url).await?;
         let json: Value = resp.json().await?;
         Ok(json)
