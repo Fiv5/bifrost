@@ -7,8 +7,9 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
+use crate::logging::{format_rules_summary, RequestContext};
 use crate::server::{empty_body, BoxBody, RulesResolver, TlsConfig};
 
 pub async fn handle_connect(
@@ -16,6 +17,8 @@ pub async fn handle_connect(
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     enable_tls_interception: bool,
+    verbose_logging: bool,
+    ctx: &RequestContext,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let authority = uri
@@ -25,10 +28,23 @@ pub async fn handle_connect(
     let host = authority.host().to_string();
     let port = authority.port_u16().unwrap_or(443);
 
-    debug!("CONNECT tunnel to {}:{}", host, port);
+    if verbose_logging {
+        debug!("[{}] CONNECT tunnel request to {}:{}", ctx.id_str(), host, port);
+    } else {
+        debug!("CONNECT tunnel to {}:{}", host, port);
+    }
 
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
+
+    let has_rules = resolved_rules.host.is_some() || !resolved_rules.rules.is_empty();
+    if verbose_logging && has_rules {
+        info!(
+            "[{}] CONNECT rules matched: {}",
+            ctx.id_str(),
+            format_rules_summary(&resolved_rules)
+        );
+    }
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
         let parts: Vec<&str> = host_rule.split(':').collect();
@@ -38,13 +54,35 @@ pub async fn handle_connect(
         } else {
             port
         };
+        if verbose_logging {
+            info!(
+                "[{}] CONNECT target redirected: {}:{} -> {}:{}",
+                ctx.id_str(),
+                host,
+                port,
+                h,
+                p
+            );
+        }
         (h, p)
     } else {
         (host.clone(), port)
     };
 
     if enable_tls_interception && tls_config.ca_cert.is_some() {
-        return handle_tls_interception(req, &target_host, target_port, rules, tls_config).await;
+        if verbose_logging {
+            debug!("[{}] TLS interception enabled", ctx.id_str());
+        }
+        return handle_tls_interception(
+            req,
+            &target_host,
+            target_port,
+            rules,
+            tls_config,
+            verbose_logging,
+            ctx,
+        )
+        .await;
     }
 
     let target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
@@ -56,15 +94,27 @@ pub async fn handle_connect(
             ))
         })?;
 
+    if verbose_logging {
+        info!(
+            "[{}] CONNECT tunnel established to {}:{}",
+            ctx.id_str(),
+            target_host,
+            target_port
+        );
+    }
+
+    let req_id = ctx.id_str();
+    let verbose = verbose_logging;
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = tunnel_bidirectional(upgraded, target_stream).await {
-                    error!("Tunnel error: {}", e);
+                if let Err(e) = tunnel_bidirectional(upgraded, target_stream, verbose, &req_id).await
+                {
+                    error!("[{}] Tunnel error: {}", req_id, e);
                 }
             }
             Err(e) => {
-                error!("Upgrade error: {}", e);
+                error!("[{}] Upgrade error: {}", req_id, e);
             }
         }
     });
@@ -78,11 +128,18 @@ async fn handle_tls_interception(
     _port: u16,
     _rules: Arc<dyn RulesResolver>,
     _tls_config: Arc<TlsConfig>,
+    _verbose_logging: bool,
+    _ctx: &RequestContext,
 ) -> Result<Response<BoxBody>> {
     Ok(Response::builder().status(200).body(empty_body()).unwrap())
 }
 
-pub async fn tunnel_bidirectional(upgraded: Upgraded, target: TcpStream) -> Result<()> {
+pub async fn tunnel_bidirectional(
+    upgraded: Upgraded,
+    target: TcpStream,
+    verbose_logging: bool,
+    req_id: &str,
+) -> Result<()> {
     let client = TokioIo::new(upgraded);
     let (mut target_read, mut target_write) = target.into_split();
 
@@ -119,14 +176,22 @@ pub async fn tunnel_bidirectional(upgraded: Upgraded, target: TcpStream) -> Resu
 
     match result {
         Ok(_) => {
-            debug!("Tunnel closed normally");
+            if verbose_logging {
+                debug!("[{}] Tunnel closed normally", req_id);
+            } else {
+                debug!("Tunnel closed normally");
+            }
             Ok(())
         }
         Err(e) => {
             if e.kind() == std::io::ErrorKind::ConnectionReset
                 || e.kind() == std::io::ErrorKind::BrokenPipe
             {
-                debug!("Tunnel closed: {}", e);
+                if verbose_logging {
+                    debug!("[{}] Tunnel closed: {}", req_id, e);
+                } else {
+                    debug!("Tunnel closed: {}", e);
+                }
                 Ok(())
             } else {
                 Err(BifrostError::Network(format!("Tunnel error: {}", e)))

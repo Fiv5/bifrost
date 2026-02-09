@@ -1,0 +1,62 @@
+use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+
+use super::{error_response, json_response, method_not_allowed, BoxBody};
+use crate::metrics::SystemInfo;
+use crate::state::SharedAdminState;
+
+pub async fn handle_system(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    path: &str,
+) -> Response<BoxBody> {
+    let method = req.method().clone();
+
+    match path {
+        "/api/system" | "/api/system/" => match method {
+            Method::GET => get_system_info(state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/system/overview" => match method {
+            Method::GET => get_overview(state).await,
+            _ => method_not_allowed(),
+        },
+        _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
+    }
+}
+
+async fn get_system_info(state: SharedAdminState) -> Response<BoxBody> {
+    let info = SystemInfo::new(state.start_time);
+    json_response(&info)
+}
+
+async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
+    let system_info = SystemInfo::new(state.start_time);
+    let metrics = state.metrics_collector.get_current();
+    let traffic_count = state.traffic_recorder.count();
+
+    let (rules_total, rules_enabled) = match state.rules_storage.load_all() {
+        Ok(rules) => {
+            let enabled = rules.iter().filter(|r| r.enabled).count();
+            (rules.len(), enabled)
+        }
+        Err(_) => (0, 0),
+    };
+
+    let overview = serde_json::json!({
+        "system": system_info,
+        "metrics": metrics,
+        "rules": {
+            "total": rules_total,
+            "enabled": rules_enabled
+        },
+        "traffic": {
+            "recorded": traffic_count
+        },
+        "server": {
+            "port": state.port,
+            "admin_url": format!("http://127.0.0.1:{}/_bifrost/", state.port)
+        }
+    });
+
+    json_response(&overview)
+}

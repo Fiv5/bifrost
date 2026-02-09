@@ -1,45 +1,89 @@
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::response::Parts;
 use hyper::StatusCode;
-use tracing::debug;
+use tracing::info;
 
+use crate::logging::RequestContext;
 use crate::server::ResolvedRules;
 
-pub fn apply_res_rules(parts: &mut Parts, rules: &ResolvedRules) {
-    apply_res_status(parts, rules);
-    apply_res_headers(parts, rules);
-    apply_res_cookies(parts, rules);
+pub fn apply_res_rules(parts: &mut Parts, rules: &ResolvedRules, verbose_logging: bool, ctx: &RequestContext) {
+    apply_res_status(parts, rules, verbose_logging, ctx);
+    apply_res_headers(parts, rules, verbose_logging, ctx);
+    apply_res_cookies(parts, rules, verbose_logging, ctx);
 
     if rules.enable_cors {
-        apply_res_cors(parts);
+        apply_res_cors(parts, verbose_logging, ctx);
     }
 }
 
-fn apply_res_status(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_res_status(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     if let Some(status_code) = rules.status_code {
         if let Ok(status) = StatusCode::from_u16(status_code) {
-            debug!("Setting response status: {}", status_code);
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_STATUS] {} -> {}",
+                    ctx.id_str(),
+                    parts.status.as_u16(),
+                    status_code
+                );
+            }
             parts.status = status;
         }
     }
 }
 
-fn apply_res_headers(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_res_headers(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     for (name, value) in &rules.res_headers {
         if let (Ok(header_name), Ok(header_value)) =
             (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
         {
-            debug!("Setting response header: {} = {}", name, value);
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(&header_name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "(none)".to_string());
+                info!(
+                    "[{}] [RES_HEADER] {} : {} -> \"{}\"",
+                    ctx.id_str(),
+                    name,
+                    old_value,
+                    value
+                );
+            }
             parts.headers.insert(header_name, header_value);
         }
     }
 }
 
-fn apply_res_cookies(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_res_cookies(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     for (name, value) in &rules.res_cookies {
         let cookie_value = format!("{}={}", name, value);
         if let Ok(header_value) = cookie_value.parse::<HeaderValue>() {
-            debug!("Setting Set-Cookie: {}", cookie_value);
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_COOKIE] {} = \"{}\"",
+                    ctx.id_str(),
+                    name,
+                    value
+                );
+            }
             parts
                 .headers
                 .append(hyper::header::SET_COOKIE, header_value);
@@ -47,7 +91,10 @@ fn apply_res_cookies(parts: &mut Parts, rules: &ResolvedRules) {
     }
 }
 
-fn apply_res_cors(parts: &mut Parts) {
+fn apply_res_cors(parts: &mut Parts, verbose_logging: bool, ctx: &RequestContext) {
+    if verbose_logging {
+        info!("[{}] [RES_CORS] enabled", ctx.id_str());
+    }
     parts.headers.insert(
         hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
@@ -172,9 +219,10 @@ mod tests {
     fn test_apply_res_status() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.status_code = Some(404);
 
-        apply_res_rules(&mut parts, &rules);
+        apply_res_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(parts.status, StatusCode::NOT_FOUND);
     }
@@ -183,6 +231,7 @@ mod tests {
     fn test_apply_res_headers() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules
             .res_headers
             .push(("X-Custom-Header".to_string(), "custom-value".to_string()));
@@ -190,7 +239,7 @@ mod tests {
             .res_headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
 
-        apply_res_rules(&mut parts, &rules);
+        apply_res_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(
             parts
@@ -211,6 +260,7 @@ mod tests {
     fn test_apply_res_cookies() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules
             .res_cookies
             .push(("session".to_string(), "abc123".to_string()));
@@ -218,7 +268,7 @@ mod tests {
             .res_cookies
             .push(("user".to_string(), "test".to_string()));
 
-        apply_res_rules(&mut parts, &rules);
+        apply_res_rules(&mut parts, &rules, false, &ctx);
 
         let cookies: Vec<_> = parts
             .headers
@@ -232,9 +282,10 @@ mod tests {
     fn test_apply_res_cors() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.enable_cors = true;
 
-        apply_res_rules(&mut parts, &rules);
+        apply_res_rules(&mut parts, &rules, false, &ctx);
 
         assert!(parts
             .headers

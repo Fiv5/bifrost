@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bifrost_admin::{AdminRouter, AdminSecurityConfig, AdminState, is_valid_admin_request, ADMIN_PATH_PREFIX};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
@@ -10,9 +11,10 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::http::handle_http_request;
+use crate::logging::RequestContext;
 use crate::tunnel::handle_connect;
 
 #[derive(Debug, Clone)]
@@ -25,6 +27,7 @@ pub struct ProxyConfig {
     pub socks5_auth_required: bool,
     pub socks5_username: Option<String>,
     pub socks5_password: Option<String>,
+    pub verbose_logging: bool,
 }
 
 impl Default for ProxyConfig {
@@ -38,6 +41,7 @@ impl Default for ProxyConfig {
             socks5_auth_required: false,
             socks5_username: None,
             socks5_password: None,
+            verbose_logging: false,
         }
     }
 }
@@ -92,14 +96,19 @@ pub struct ProxyServer {
     config: ProxyConfig,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
+    admin_state: Option<Arc<AdminState>>,
+    admin_security_config: AdminSecurityConfig,
 }
 
 impl ProxyServer {
     pub fn new(config: ProxyConfig) -> Self {
+        let admin_security_config = AdminSecurityConfig::new(config.port);
         Self {
             config,
             rules: Arc::new(NoOpRulesResolver),
             tls_config: Arc::new(TlsConfig::default()),
+            admin_state: None,
+            admin_security_config,
         }
     }
 
@@ -113,8 +122,17 @@ impl ProxyServer {
         self
     }
 
+    pub fn with_admin_state(mut self, admin_state: AdminState) -> Self {
+        self.admin_state = Some(Arc::new(admin_state));
+        self
+    }
+
     pub fn config(&self) -> &ProxyConfig {
         &self.config
+    }
+
+    pub fn admin_state(&self) -> Option<&Arc<AdminState>> {
+        self.admin_state.as_ref()
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
@@ -166,6 +184,9 @@ impl ProxyServer {
             let rules = Arc::clone(&self.rules);
             let tls_config = Arc::clone(&self.tls_config);
             let enable_tls_interception = self.config.enable_tls_interception;
+            let verbose_logging = self.config.verbose_logging;
+            let admin_state = self.admin_state.clone();
+            let admin_security_config = self.admin_security_config.clone();
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
@@ -173,7 +194,21 @@ impl ProxyServer {
                 let service = service_fn(move |req: Request<Incoming>| {
                     let rules = Arc::clone(&rules);
                     let tls_config = Arc::clone(&tls_config);
-                    async move { handle_request(req, rules, tls_config, enable_tls_interception).await }
+                    let admin_state = admin_state.clone();
+                    let admin_security_config = admin_security_config.clone();
+                    async move {
+                        handle_request(
+                            req,
+                            peer_addr,
+                            rules,
+                            tls_config,
+                            enable_tls_interception,
+                            verbose_logging,
+                            admin_state,
+                            admin_security_config,
+                        )
+                        .await
+                    }
                 });
 
                 if let Err(err) = http1::Builder::new()
@@ -190,30 +225,92 @@ impl ProxyServer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_request(
     req: Request<Incoming>,
+    peer_addr: SocketAddr,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     enable_tls_interception: bool,
+    verbose_logging: bool,
+    admin_state: Option<Arc<AdminState>>,
+    admin_security_config: AdminSecurityConfig,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    let ctx = RequestContext::new();
     let method = req.method().clone();
     let uri = req.uri().clone();
+    let path = uri.path();
 
-    debug!("Received request: {} {}", method, uri);
+    if verbose_logging {
+        info!(
+            "[{}] --> {} {} (from {})",
+            ctx.id_str(),
+            method,
+            uri,
+            peer_addr
+        );
+    } else {
+        debug!("Received request: {} {} from {}", method, uri, peer_addr);
+    }
+
+    if path.starts_with(ADMIN_PATH_PREFIX) {
+        if let Some(state) = admin_state {
+            if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
+                debug!("Valid admin request from {}: {} {}", peer_addr, method, path);
+                return Ok(convert_admin_response(AdminRouter::handle(req, state).await));
+            } else {
+                warn!(
+                    "Rejected invalid admin request from {}: {} {} (possible forgery attempt)",
+                    peer_addr, method, uri
+                );
+                return Ok(error_response(403, "Forbidden"));
+            }
+        } else {
+            return Ok(error_response(503, "Admin interface not enabled"));
+        }
+    }
 
     if method == Method::CONNECT {
-        match handle_connect(req, rules, tls_config, enable_tls_interception).await {
-            Ok(response) => Ok(response),
+        match handle_connect(
+            req,
+            rules,
+            tls_config,
+            enable_tls_interception,
+            verbose_logging,
+            &ctx,
+        )
+        .await
+        {
+            Ok(response) => {
+                if verbose_logging {
+                    info!(
+                        "[{}] <-- CONNECT established ({}ms)",
+                        ctx.id_str(),
+                        ctx.elapsed_ms()
+                    );
+                }
+                Ok(response)
+            }
             Err(e) => {
-                error!("CONNECT error: {}", e);
+                error!("[{}] CONNECT error: {}", ctx.id_str(), e);
                 Ok(error_response(502, "Bad Gateway"))
             }
         }
     } else {
-        match handle_http_request(req, rules).await {
-            Ok(response) => Ok(response),
+        match handle_http_request(req, rules, verbose_logging, &ctx).await {
+            Ok(response) => {
+                if verbose_logging {
+                    info!(
+                        "[{}] <-- {} ({}ms)",
+                        ctx.id_str(),
+                        response.status(),
+                        ctx.elapsed_ms()
+                    );
+                }
+                Ok(response)
+            }
             Err(e) => {
-                error!("HTTP proxy error: {}", e);
+                error!("[{}] HTTP proxy error: {}", ctx.id_str(), e);
                 Ok(error_response(502, "Bad Gateway"))
             }
         }
@@ -241,6 +338,13 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
         .status(status)
         .body(full_body(message.to_string()))
         .unwrap()
+}
+
+fn convert_admin_response(
+    response: Response<http_body_util::combinators::BoxBody<Bytes, hyper::Error>>,
+) -> Response<BoxBody> {
+    let (parts, body) = response.into_parts();
+    Response::from_parts(parts, body)
 }
 
 #[cfg(test)]
@@ -300,6 +404,7 @@ mod tests {
             socks5_auth_required: true,
             socks5_username: Some("user".to_string()),
             socks5_password: Some("pass".to_string()),
+            verbose_logging: true,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);
@@ -307,6 +412,7 @@ mod tests {
         assert!(server.config().enable_tls_interception);
         assert_eq!(server.config().socks5_port, Some(1080));
         assert!(server.config().socks5_auth_required);
+        assert!(server.config().verbose_logging);
     }
 
     #[test]

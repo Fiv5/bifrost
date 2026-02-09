@@ -1,33 +1,71 @@
 use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::request::Parts;
-use tracing::debug;
+use tracing::info;
 
+use crate::logging::RequestContext;
 use crate::server::ResolvedRules;
 
-pub fn apply_req_rules(parts: &mut Parts, rules: &ResolvedRules) {
-    apply_req_headers(parts, rules);
-    apply_req_cookies(parts, rules);
-    apply_req_method(parts, rules);
-    apply_req_ua(parts, rules);
-    apply_req_referer(parts, rules);
+pub fn apply_req_rules(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    apply_req_headers(parts, rules, verbose_logging, ctx);
+    apply_req_cookies(parts, rules, verbose_logging, ctx);
+    apply_req_method(parts, rules, verbose_logging, ctx);
+    apply_req_ua(parts, rules, verbose_logging, ctx);
+    apply_req_referer(parts, rules, verbose_logging, ctx);
 
     if rules.enable_cors {
-        apply_req_cors(parts);
+        apply_req_cors(parts, verbose_logging, ctx);
     }
 }
 
-fn apply_req_headers(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_req_headers(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     for (name, value) in &rules.req_headers {
         if let (Ok(header_name), Ok(header_value)) =
             (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
         {
-            debug!("Setting request header: {} = {}", name, value);
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(&header_name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                if let Some(old) = old_value {
+                    info!(
+                        "[{}] [REQ_HEADER] {} : \"{}\" -> \"{}\"",
+                        ctx.id_str(),
+                        name,
+                        old,
+                        value
+                    );
+                } else {
+                    info!(
+                        "[{}] [REQ_HEADER] {} : (none) -> \"{}\"",
+                        ctx.id_str(),
+                        name,
+                        value
+                    );
+                }
+            }
             parts.headers.insert(header_name, header_value);
         }
     }
 }
 
-fn apply_req_cookies(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_req_cookies(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     if rules.req_cookies.is_empty() {
         return;
     }
@@ -54,32 +92,74 @@ fn apply_req_cookies(parts: &mut Parts, rules: &ResolvedRules) {
             .iter()
             .position(|c| c.starts_with(&format!("{}=", name)));
         if let Some(idx) = found {
+            let old_cookie = &cookies[idx];
+            let old_value = old_cookie.split('=').nth(1).unwrap_or("").to_string();
+            if verbose_logging {
+                info!(
+                    "[{}] [REQ_COOKIE] {} : \"{}\" -> \"{}\"",
+                    ctx.id_str(),
+                    name,
+                    old_value,
+                    value
+                );
+            }
             cookies[idx] = cookie_str;
         } else {
+            if verbose_logging {
+                info!(
+                    "[{}] [REQ_COOKIE] {} : (none) -> \"{}\"",
+                    ctx.id_str(),
+                    name,
+                    value
+                );
+            }
             cookies.push(cookie_str);
         }
     }
 
     let cookie_header = cookies.join("; ");
     if let Ok(header_value) = cookie_header.parse::<HeaderValue>() {
-        debug!("Setting Cookie header: {}", cookie_header);
         parts.headers.insert(hyper::header::COOKIE, header_value);
     }
 }
 
-fn apply_req_method(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_req_method(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     if let Some(ref method) = rules.method {
         if let Ok(m) = method.parse() {
-            debug!("Changing request method to: {}", method);
+            if verbose_logging {
+                info!(
+                    "[{}] [REQ_METHOD] {} -> {}",
+                    ctx.id_str(),
+                    parts.method,
+                    method
+                );
+            }
             parts.method = m;
         }
     }
 }
 
-fn apply_req_ua(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_req_ua(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     if let Some(ref ua) = rules.ua {
         if let Ok(header_value) = ua.parse::<HeaderValue>() {
-            debug!("Setting User-Agent: {}", ua);
+            if verbose_logging {
+                let old_ua = parts
+                    .headers
+                    .get(hyper::header::USER_AGENT)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("(none)");
+                info!("[{}] [REQ_UA] \"{}\" -> \"{}\"", ctx.id_str(), old_ua, ua);
+            }
             parts
                 .headers
                 .insert(hyper::header::USER_AGENT, header_value);
@@ -87,16 +167,36 @@ fn apply_req_ua(parts: &mut Parts, rules: &ResolvedRules) {
     }
 }
 
-fn apply_req_referer(parts: &mut Parts, rules: &ResolvedRules) {
+fn apply_req_referer(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     if let Some(ref referer) = rules.referer {
         if let Ok(header_value) = referer.parse::<HeaderValue>() {
-            debug!("Setting Referer: {}", referer);
+            if verbose_logging {
+                let old_referer = parts
+                    .headers
+                    .get(hyper::header::REFERER)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("(none)");
+                info!(
+                    "[{}] [REQ_REFERER] \"{}\" -> \"{}\"",
+                    ctx.id_str(),
+                    old_referer,
+                    referer
+                );
+            }
             parts.headers.insert(hyper::header::REFERER, header_value);
         }
     }
 }
 
-fn apply_req_cors(parts: &mut Parts) {
+fn apply_req_cors(parts: &mut Parts, verbose_logging: bool, ctx: &RequestContext) {
+    if verbose_logging {
+        info!("[{}] [REQ_CORS] enabled", ctx.id_str());
+    }
     parts.headers.insert(
         hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
@@ -158,6 +258,7 @@ mod tests {
     fn test_apply_req_headers() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules
             .req_headers
             .push(("X-Custom-Header".to_string(), "custom-value".to_string()));
@@ -165,7 +266,7 @@ mod tests {
             .req_headers
             .push(("X-Another".to_string(), "another-value".to_string()));
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(
             parts
@@ -186,6 +287,7 @@ mod tests {
     fn test_apply_req_cookies_new() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules
             .req_cookies
             .push(("session".to_string(), "abc123".to_string()));
@@ -193,7 +295,7 @@ mod tests {
             .req_cookies
             .push(("user".to_string(), "test".to_string()));
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         let cookie = parts
             .headers
@@ -208,6 +310,7 @@ mod tests {
     #[test]
     fn test_apply_req_cookies_merge() {
         let mut parts = create_test_parts();
+        let ctx = RequestContext::new();
         parts.headers.insert(
             hyper::header::COOKIE,
             HeaderValue::from_static("existing=value; session=old"),
@@ -221,7 +324,7 @@ mod tests {
             .req_cookies
             .push(("added".to_string(), "cookie".to_string()));
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         let cookie = parts
             .headers
@@ -239,9 +342,10 @@ mod tests {
     fn test_apply_req_method() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.method = Some("POST".to_string());
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(parts.method, Method::POST);
     }
@@ -250,9 +354,10 @@ mod tests {
     fn test_apply_req_ua() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.ua = Some("Custom-Agent/1.0".to_string());
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(
             parts
@@ -269,9 +374,10 @@ mod tests {
     fn test_apply_req_referer() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.referer = Some("http://referrer.com".to_string());
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         assert_eq!(
             parts
@@ -288,9 +394,10 @@ mod tests {
     fn test_apply_req_cors() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
+        let ctx = RequestContext::new();
         rules.enable_cors = true;
 
-        apply_req_rules(&mut parts, &rules);
+        apply_req_rules(&mut parts, &rules, false, &ctx);
 
         assert!(parts
             .headers

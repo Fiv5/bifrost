@@ -1,0 +1,302 @@
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+use crate::server::ResolvedRules;
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug)]
+pub struct RequestContext {
+    pub id: u64,
+    pub start_time: Instant,
+}
+
+impl RequestContext {
+    pub fn new() -> Self {
+        Self {
+            id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
+            start_time: Instant::now(),
+        }
+    }
+
+    pub fn elapsed_ms(&self) -> u128 {
+        self.start_time.elapsed().as_millis()
+    }
+
+    pub fn id_str(&self) -> String {
+        format!("REQ-{:06}", self.id)
+    }
+}
+
+impl Default for RequestContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn format_rules_summary(rules: &ResolvedRules) -> String {
+    let mut parts = Vec::new();
+
+    if rules.host.is_some() {
+        parts.push("host");
+    }
+    if rules.proxy.is_some() {
+        parts.push("proxy");
+    }
+    if !rules.req_headers.is_empty() {
+        parts.push("req_headers");
+    }
+    if !rules.res_headers.is_empty() {
+        parts.push("res_headers");
+    }
+    if rules.req_body.is_some() {
+        parts.push("req_body");
+    }
+    if rules.res_body.is_some() {
+        parts.push("res_body");
+    }
+    if !rules.req_cookies.is_empty() {
+        parts.push("req_cookies");
+    }
+    if !rules.res_cookies.is_empty() {
+        parts.push("res_cookies");
+    }
+    if rules.req_delay.is_some() {
+        parts.push("req_delay");
+    }
+    if rules.res_delay.is_some() {
+        parts.push("res_delay");
+    }
+    if rules.status_code.is_some() {
+        parts.push("status_code");
+    }
+    if rules.method.is_some() {
+        parts.push("method");
+    }
+    if rules.ua.is_some() {
+        parts.push("ua");
+    }
+    if rules.referer.is_some() {
+        parts.push("referer");
+    }
+    if rules.enable_cors {
+        parts.push("cors");
+    }
+
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+pub fn format_rules_detail(rules: &ResolvedRules) -> String {
+    let mut lines = Vec::new();
+
+    if let Some(ref host) = rules.host {
+        lines.push(format!("  host -> {}", host));
+    }
+    if let Some(ref proxy) = rules.proxy {
+        lines.push(format!("  proxy -> {}", proxy));
+    }
+    if !rules.req_headers.is_empty() {
+        for (name, value) in &rules.req_headers {
+            lines.push(format!("  req_header: {} = {}", name, value));
+        }
+    }
+    if !rules.res_headers.is_empty() {
+        for (name, value) in &rules.res_headers {
+            lines.push(format!("  res_header: {} = {}", name, value));
+        }
+    }
+    if rules.req_body.is_some() {
+        lines.push("  req_body: <modified>".to_string());
+    }
+    if rules.res_body.is_some() {
+        lines.push("  res_body: <modified>".to_string());
+    }
+    if !rules.req_cookies.is_empty() {
+        for (name, value) in &rules.req_cookies {
+            lines.push(format!("  req_cookie: {} = {}", name, value));
+        }
+    }
+    if !rules.res_cookies.is_empty() {
+        for (name, value) in &rules.res_cookies {
+            lines.push(format!("  res_cookie: {} = {}", name, value));
+        }
+    }
+    if let Some(delay) = rules.req_delay {
+        lines.push(format!("  req_delay: {}ms", delay));
+    }
+    if let Some(delay) = rules.res_delay {
+        lines.push(format!("  res_delay: {}ms", delay));
+    }
+    if let Some(status) = rules.status_code {
+        lines.push(format!("  status_code -> {}", status));
+    }
+    if let Some(ref method) = rules.method {
+        lines.push(format!("  method -> {}", method));
+    }
+    if let Some(ref ua) = rules.ua {
+        lines.push(format!("  user-agent -> {}", ua));
+    }
+    if let Some(ref referer) = rules.referer {
+        lines.push(format!("  referer -> {}", referer));
+    }
+    if rules.enable_cors {
+        lines.push("  cors: enabled".to_string());
+    }
+
+    if !rules.rules.is_empty() {
+        lines.push(format!("  matched {} rule(s):", rules.rules.len()));
+        for rule in &rules.rules {
+            lines.push(format!("    - {:?}: {}", rule.protocol, rule.value));
+        }
+    }
+
+    if lines.is_empty() {
+        "  (no rules applied)".to_string()
+    } else {
+        lines.join("\n")
+    }
+}
+
+pub fn truncate_body(body: &[u8], max_len: usize) -> String {
+    if body.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let display_len = body.len().min(max_len);
+    match std::str::from_utf8(&body[..display_len]) {
+        Ok(s) => {
+            if body.len() > max_len {
+                format!("{}... ({} bytes total)", s, body.len())
+            } else {
+                s.to_string()
+            }
+        }
+        Err(_) => format!("<binary {} bytes>", body.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    #[test]
+    fn test_request_context_new() {
+        let ctx1 = RequestContext::new();
+        let ctx2 = RequestContext::new();
+        assert!(ctx2.id > ctx1.id);
+    }
+
+    #[test]
+    fn test_request_context_id_str() {
+        let ctx = RequestContext::new();
+        assert!(ctx.id_str().starts_with("REQ-"));
+    }
+
+    #[test]
+    fn test_format_rules_summary_empty() {
+        let rules = ResolvedRules::default();
+        assert_eq!(format_rules_summary(&rules), "none");
+    }
+
+    #[test]
+    fn test_format_rules_summary_with_rules() {
+        let rules = ResolvedRules {
+            host: Some("example.com".to_string()),
+            enable_cors: true,
+            ..Default::default()
+        };
+        let summary = format_rules_summary(&rules);
+        assert!(summary.contains("host"));
+        assert!(summary.contains("cors"));
+    }
+
+    #[test]
+    fn test_format_rules_detail_empty() {
+        let rules = ResolvedRules::default();
+        let detail = format_rules_detail(&rules);
+        assert!(detail.contains("no rules applied"));
+    }
+
+    #[test]
+    fn test_format_rules_detail_with_rules() {
+        let rules = ResolvedRules {
+            host: Some("example.com:8080".to_string()),
+            req_headers: vec![("X-Custom".to_string(), "value".to_string())],
+            status_code: Some(200),
+            ..Default::default()
+        };
+        let detail = format_rules_detail(&rules);
+        assert!(detail.contains("host -> example.com:8080"));
+        assert!(detail.contains("req_header: X-Custom = value"));
+        assert!(detail.contains("status_code -> 200"));
+    }
+
+    #[test]
+    fn test_truncate_body_empty() {
+        assert_eq!(truncate_body(&[], 100), "<empty>");
+    }
+
+    #[test]
+    fn test_truncate_body_short() {
+        let body = b"hello world";
+        assert_eq!(truncate_body(body, 100), "hello world");
+    }
+
+    #[test]
+    fn test_truncate_body_long() {
+        let body = b"hello world this is a long string";
+        let result = truncate_body(body, 10);
+        assert!(result.contains("hello worl"));
+        assert!(result.contains("33 bytes total"));
+    }
+
+    #[test]
+    fn test_truncate_body_binary() {
+        let body = vec![0xff, 0xfe, 0x00, 0x01];
+        let result = truncate_body(&body, 100);
+        assert!(result.contains("binary"));
+        assert!(result.contains("4 bytes"));
+    }
+
+    #[test]
+    fn test_format_rules_detail_with_cookies() {
+        let rules = ResolvedRules {
+            req_cookies: vec![("session".to_string(), "abc123".to_string())],
+            res_cookies: vec![("token".to_string(), "xyz789".to_string())],
+            ..Default::default()
+        };
+        let detail = format_rules_detail(&rules);
+        assert!(detail.contains("req_cookie: session = abc123"));
+        assert!(detail.contains("res_cookie: token = xyz789"));
+    }
+
+    #[test]
+    fn test_format_rules_detail_with_body() {
+        let rules = ResolvedRules {
+            req_body: Some(Bytes::from("request body")),
+            res_body: Some(Bytes::from("response body")),
+            ..Default::default()
+        };
+        let detail = format_rules_detail(&rules);
+        assert!(detail.contains("req_body: <modified>"));
+        assert!(detail.contains("res_body: <modified>"));
+    }
+
+    #[test]
+    fn test_format_rules_detail_with_delays() {
+        let rules = ResolvedRules {
+            req_delay: Some(100),
+            res_delay: Some(200),
+            ..Default::default()
+        };
+        let detail = format_rules_detail(&rules);
+        assert!(detail.contains("req_delay: 100ms"));
+        assert!(detail.contains("res_delay: 200ms"));
+    }
+}

@@ -1,0 +1,158 @@
+use std::net::SocketAddr;
+
+use hyper::Request;
+
+#[derive(Debug, Clone)]
+pub struct AdminSecurityConfig {
+    pub listen_port: u16,
+    pub allowed_hosts: Vec<String>,
+}
+
+impl AdminSecurityConfig {
+    pub fn new(listen_port: u16) -> Self {
+        let allowed_hosts = vec![
+            format!("127.0.0.1:{}", listen_port),
+            format!("localhost:{}", listen_port),
+            "127.0.0.1".to_string(),
+            "localhost".to_string(),
+        ];
+        Self {
+            listen_port,
+            allowed_hosts,
+        }
+    }
+}
+
+pub fn is_valid_admin_request<T>(
+    req: &Request<T>,
+    peer_addr: SocketAddr,
+    config: &AdminSecurityConfig,
+) -> bool {
+    if !peer_addr.ip().is_loopback() {
+        tracing::debug!(
+            "Admin request rejected: peer address {} is not loopback",
+            peer_addr
+        );
+        return false;
+    }
+
+    if req.uri().scheme().is_some() {
+        tracing::debug!(
+            "Admin request rejected: URI contains scheme (proxy request): {}",
+            req.uri()
+        );
+        return false;
+    }
+
+    let path = req.uri().path();
+    if !path.starts_with(crate::ADMIN_PATH_PREFIX) {
+        tracing::debug!(
+            "Admin request rejected: path {} does not start with {}",
+            path,
+            crate::ADMIN_PATH_PREFIX
+        );
+        return false;
+    }
+
+    if let Some(host) = req.headers().get(hyper::header::HOST) {
+        if let Ok(host_str) = host.to_str() {
+            if !config.allowed_hosts.iter().any(|h| host_str == h) {
+                tracing::debug!(
+                    "Admin request rejected: host {} not in allowed list {:?}",
+                    host_str,
+                    config.allowed_hosts
+                );
+                return false;
+            }
+        } else {
+            tracing::debug!("Admin request rejected: invalid host header encoding");
+            return false;
+        }
+    } else {
+        tracing::debug!("Admin request rejected: missing host header");
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::Request;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn create_request(uri: &str, host: Option<&str>) -> Request<()> {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(h) = host {
+            builder = builder.header("Host", h);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn test_valid_admin_request() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:8899"));
+
+        assert!(is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_reject_non_loopback() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
+        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:8899"));
+
+        assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_reject_proxy_request() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request(
+            "http://127.0.0.1:8899/_bifrost/api/rules",
+            Some("127.0.0.1:8899"),
+        );
+
+        assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_reject_wrong_host() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request("/_bifrost/api/rules", Some("evil.com:8899"));
+
+        assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_reject_missing_host() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request("/_bifrost/api/rules", None);
+
+        assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_accept_localhost_host() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request("/_bifrost/api/rules", Some("localhost:8899"));
+
+        assert!(is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_reject_wrong_path() {
+        let config = AdminSecurityConfig::new(8899);
+        let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
+        let req = create_request("/api/rules", Some("127.0.0.1:8899"));
+
+        assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+}

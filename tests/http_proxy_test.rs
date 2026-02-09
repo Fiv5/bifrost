@@ -290,6 +290,7 @@ fn test_proxy_config_custom() {
         socks5_auth_required: false,
         socks5_username: None,
         socks5_password: None,
+        verbose_logging: false,
     };
     assert_eq!(config.port, 9000);
     assert!(config.enable_tls_interception);

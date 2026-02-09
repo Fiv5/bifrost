@@ -1,0 +1,112 @@
+import ReactECharts from 'echarts-for-react';
+import type { MetricsSnapshot } from '../../types';
+
+interface MetricsChartProps {
+  data: MetricsSnapshot[];
+  type: 'cpu' | 'memory' | 'qps' | 'bandwidth' | 'connections';
+  height?: number;
+}
+
+export default function MetricsChart({ data, type, height = 200 }: MetricsChartProps) {
+  const timestamps = data.map(d => new Date(d.timestamp).toLocaleTimeString());
+
+  const getOption = () => {
+    switch (type) {
+      case 'cpu':
+        return {
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: timestamps },
+          yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+          series: [{
+            name: 'CPU',
+            type: 'line',
+            smooth: true,
+            data: data.map(d => d.cpu_usage.toFixed(1)),
+            areaStyle: { opacity: 0.3 },
+          }],
+          grid: { left: 50, right: 20, top: 20, bottom: 30 },
+        };
+      
+      case 'memory':
+        return {
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: timestamps },
+          yAxis: { type: 'value', axisLabel: { formatter: (v: number) => `${(v / 1024 / 1024).toFixed(0)}MB` } },
+          series: [{
+            name: 'Memory',
+            type: 'line',
+            smooth: true,
+            data: data.map(d => d.memory_used),
+            areaStyle: { opacity: 0.3 },
+          }],
+          grid: { left: 60, right: 20, top: 20, bottom: 30 },
+        };
+      
+      case 'qps':
+        return {
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: timestamps },
+          yAxis: { type: 'value' },
+          series: [{
+            name: 'QPS',
+            type: 'line',
+            smooth: true,
+            data: data.map(d => d.qps.toFixed(2)),
+            areaStyle: { opacity: 0.3 },
+          }],
+          grid: { left: 50, right: 20, top: 20, bottom: 30 },
+        };
+
+      case 'bandwidth':
+        return {
+          tooltip: { trigger: 'axis' },
+          legend: { data: ['Sent', 'Received'] },
+          xAxis: { type: 'category', data: timestamps },
+          yAxis: { type: 'value', axisLabel: { formatter: (v: number) => formatBytes(v) } },
+          series: [
+            {
+              name: 'Sent',
+              type: 'line',
+              smooth: true,
+              data: data.map(d => d.bytes_sent),
+            },
+            {
+              name: 'Received',
+              type: 'line',
+              smooth: true,
+              data: data.map(d => d.bytes_received),
+            },
+          ],
+          grid: { left: 70, right: 20, top: 30, bottom: 30 },
+        };
+
+      case 'connections':
+        return {
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: timestamps },
+          yAxis: { type: 'value' },
+          series: [{
+            name: 'Connections',
+            type: 'line',
+            smooth: true,
+            data: data.map(d => d.active_connections),
+            areaStyle: { opacity: 0.3 },
+          }],
+          grid: { left: 50, right: 20, top: 20, bottom: 30 },
+        };
+
+      default:
+        return {};
+    }
+  };
+
+  return <ReactECharts option={getOption()} style={{ height }} />;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)}${sizes[i]}`;
+}

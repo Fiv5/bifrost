@@ -8,6 +8,8 @@ description = "HTTP/HTTPS proxy server for Bifrost"
 
 [dependencies]
 bifrost-core = { path = "../bifrost-core" }
+bifrost-admin = { path = "../bifrost-admin" }
+bifrost-storage = { path = "../bifrost-storage" }
 tokio = { version = "1", features = ["full"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }

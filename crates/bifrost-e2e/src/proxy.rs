@@ -158,6 +158,7 @@ impl ProxyInstance {
             socks5_auth_required: false,
             socks5_username: None,
             socks5_password: None,
+            verbose_logging: true,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);

@@ -7,6 +7,7 @@ members = [
   "crates/bifrost-plugin",
   "crates/bifrost-plugin-examples",
   "crates/bifrost-storage",
+  "crates/bifrost-admin",
   "crates/bifrost-cli",
   "crates/bifrost-tests",
   "crates/bifrost-e2e",

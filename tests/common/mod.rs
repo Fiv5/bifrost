@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+#[allow(dead_code)]
 pub struct TestProxy {
     pub port: u16,
     pub host: String,
@@ -119,10 +120,12 @@ impl RulesResolver for TestRulesResolver {
 }
 
 impl TestProxy {
+    #[allow(dead_code)]
     pub fn port(&self) -> u16 {
         self.port
     }
 
+    #[allow(dead_code)]
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
@@ -164,6 +167,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     }
 }
 
+#[allow(dead_code)]
 pub async fn start_test_proxy_with_socks5(socks5_port: u16) -> TestProxy {
     let config = ProxyConfig {
         socks5_port: Some(socks5_port),
@@ -181,6 +185,7 @@ pub fn create_proxy_client(proxy: &TestProxy) -> reqwest::Client {
         .unwrap()
 }
 
+#[allow(dead_code)]
 pub fn create_socks5_client(host: &str, port: u16) -> reqwest::Client {
     let proxy_url = format!("socks5://{}:{}", host, port);
     reqwest::Client::builder()
@@ -190,6 +195,7 @@ pub fn create_socks5_client(host: &str, port: u16) -> reqwest::Client {
         .unwrap()
 }
 
+#[allow(dead_code)]
 pub fn create_socks5_client_with_auth(
     host: &str,
     port: u16,
@@ -212,6 +218,7 @@ pub fn clear_test_rules(proxy: &TestProxy) {
     proxy.rules.clear();
 }
 
+#[allow(dead_code)]
 pub struct MockHttpServer {
     pub port: u16,
     pub addr: SocketAddr,
@@ -278,11 +285,13 @@ impl MockHttpServer {
     }
 }
 
+#[allow(dead_code)]
 pub struct MockHttpsServer {
     pub port: u16,
     pub addr: SocketAddr,
 }
 
+#[allow(dead_code)]
 impl MockHttpsServer {
     pub async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

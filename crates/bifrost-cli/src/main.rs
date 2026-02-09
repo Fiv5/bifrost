@@ -3,8 +3,11 @@ use std::path::PathBuf;
 use bifrost_core::init_logging;
 use bifrost_proxy::{ProxyConfig, ProxyServer};
 use bifrost_storage::{RuleFile, RulesStorage, StateManager};
-use bifrost_tls::{generate_root_ca, load_root_ca, save_root_ca};
+use bifrost_tls::{
+    generate_root_ca, get_platform_name, load_root_ca, save_root_ca, CertInstaller, CertStatus,
+};
 use clap::{Parser, Subcommand};
+use dialoguer::{Confirm, Select};
 use tracing::info;
 
 #[derive(Parser)]
@@ -34,6 +37,8 @@ enum Commands {
     Start {
         #[arg(short, long, help = "Run as daemon")]
         daemon: bool,
+        #[arg(long, help = "Skip CA certificate installation check")]
+        skip_cert_check: bool,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
@@ -157,12 +162,15 @@ fn main() {
     }
 
     let result = match cli.command {
-        Some(Commands::Start { daemon }) => run_start(&cli, daemon),
+        Some(Commands::Start {
+            daemon,
+            skip_cert_check,
+        }) => run_start(&cli, daemon, skip_cert_check),
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
-        None => run_start(&cli, false),
+        None => run_start(&cli, false, false),
     };
 
     if let Err(e) = result {
@@ -171,7 +179,7 @@ fn main() {
     }
 }
 
-fn run_start(cli: &Cli, daemon: bool) -> bifrost_core::Result<()> {
+fn run_start(cli: &Cli, daemon: bool, skip_cert_check: bool) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
             return Err(bifrost_core::BifrostError::Config(format!(
@@ -180,6 +188,10 @@ fn run_start(cli: &Cli, daemon: bool) -> bifrost_core::Result<()> {
             )));
         }
         remove_pid()?;
+    }
+
+    if !daemon && !skip_cert_check {
+        check_and_install_certificate()?;
     }
 
     let proxy_config = ProxyConfig {
@@ -527,8 +539,126 @@ fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
                     println!("Created: {} days ago", days);
                 }
             }
+
+            let installer = CertInstaller::new(&ca_cert_path);
+            match installer.check_status() {
+                Ok(status) => {
+                    println!("System trust status: {}", status);
+                }
+                Err(e) => {
+                    println!("Could not check trust status: {}", e);
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+fn check_and_install_certificate() -> bifrost_core::Result<()> {
+    let cert_dir = get_bifrost_dir()?.join("certs");
+    let ca_key_path = cert_dir.join("ca.key");
+    let ca_cert_path = cert_dir.join("ca.crt");
+
+    if !ca_cert_path.exists() || !ca_key_path.exists() {
+        println!("CA certificate not found. Generating...");
+        std::fs::create_dir_all(&cert_dir)?;
+        let ca = generate_root_ca()?;
+        save_root_ca(&ca_cert_path, &ca_key_path, &ca)?;
+        println!("✓ CA certificate generated.");
+        println!("  Certificate: {}", ca_cert_path.display());
+        println!();
+    }
+
+    let installer = CertInstaller::new(&ca_cert_path);
+    let status = installer.check_status()?;
+
+    match status {
+        CertStatus::InstalledAndTrusted => {
+            println!("✓ CA certificate is installed and trusted.");
+            Ok(())
+        }
+        CertStatus::InstalledNotTrusted => {
+            println!("⚠ CA certificate is installed but not trusted.");
+            println!();
+            prompt_trust_certificate(&installer)
+        }
+        CertStatus::NotInstalled => {
+            println!("⚠ CA certificate is not installed in system trust store.");
+            println!();
+            prompt_install_certificate(&installer)
+        }
+    }
+}
+
+fn prompt_install_certificate(installer: &CertInstaller) -> bifrost_core::Result<()> {
+    println!("HTTPS interception requires the CA certificate to be trusted by the system.");
+    println!("Without it, browsers will show security warnings for HTTPS sites.");
+    println!();
+    println!("Platform: {}", get_platform_name());
+    println!();
+
+    let options = vec![
+        "Yes, install and trust (requires sudo/admin)",
+        "No, skip (HTTPS interception may not work properly)",
+        "Show manual installation instructions",
+    ];
+
+    let selection = Select::new()
+        .with_prompt("Would you like to install and trust the CA certificate?")
+        .items(&options)
+        .default(0)
+        .interact();
+
+    match selection {
+        Ok(0) => {
+            installer.install_and_trust()?;
+            Ok(())
+        }
+        Ok(1) => {
+            println!("Skipping certificate installation.");
+            println!("You can install it later using 'bifrost ca install' or manually.");
+            Ok(())
+        }
+        Ok(2) => {
+            println!();
+            println!("{}", installer.get_install_instructions());
+            println!();
+
+            let proceed = Confirm::new()
+                .with_prompt("Continue without installing?")
+                .default(true)
+                .interact();
+
+            match proceed {
+                Ok(true) => Ok(()),
+                Ok(false) => prompt_install_certificate(installer),
+                Err(_) => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn prompt_trust_certificate(installer: &CertInstaller) -> bifrost_core::Result<()> {
+    println!("The CA certificate is installed but not trusted by the system.");
+    println!("HTTPS interception may not work properly without trust.");
+    println!();
+
+    let proceed = Confirm::new()
+        .with_prompt("Would you like to trust the CA certificate now? (requires sudo/admin)")
+        .default(true)
+        .interact();
+
+    match proceed {
+        Ok(true) => {
+            installer.install_and_trust()?;
+            Ok(())
+        }
+        Ok(false) => {
+            println!("Skipping. You can trust it later manually.");
+            Ok(())
+        }
+        Err(_) => Ok(()),
+    }
 }

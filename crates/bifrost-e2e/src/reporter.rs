@@ -6,6 +6,7 @@ use std::io::Write;
 use std::time::Instant;
 
 pub struct Reporter {
+    #[allow(dead_code)]
     verbose: bool,
     start_time: Option<Instant>,
 }
