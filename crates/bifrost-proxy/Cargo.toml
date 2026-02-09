@@ -11,14 +11,22 @@ bifrost-core = { path = "../bifrost-core" }
 bifrost-admin = { path = "../bifrost-admin" }
 bifrost-storage = { path = "../bifrost-storage" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "codec", "compat"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 bytes = "1"
 tracing.workspace = true
-futures-util = "0.3"
+futures-util = { version = "0.3", features = ["io"] }
 pin-project-lite = "0.2"
+sha1 = "0.10"
+base64 = "0.22"
+h2 = "0.4"
+flate2 = "1"
+async-compression = { version = "0.4.18", features = ["tokio", "gzip", "deflate", "brotli", "zstd"] }
+thiserror = "2"
+rand = "0.8"
 
 [dev-dependencies]
 tokio-test = "0.4"

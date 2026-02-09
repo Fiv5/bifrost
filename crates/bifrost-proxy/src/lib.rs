@@ -1,5 +1,6 @@
 mod http;
 mod logging;
+pub mod protocol;
 mod request;
 mod response;
 mod server;
@@ -10,6 +11,10 @@ mod websocket;
 pub use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 pub use http::*;
 pub use logging::*;
+pub use protocol::{
+    ContentType, DetectionResult, Priority, ProtocolHandler, ProtocolRegistry, ProxyContext,
+    TransportProtocol,
+};
 pub use request::*;
 pub use response::*;
 pub use server::*;
