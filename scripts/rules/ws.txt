@@ -1,4 +1,4 @@
 # WebSocket 规则测试
 # 将 WebSocket 请求转发到指定的目标服务器
 
-bifrost-test-ws.local host://127.0.0.1:3020 ws://127.0.0.1:3020/ws
+bifrost-test-ws.local ws://127.0.0.1:3020/ws
