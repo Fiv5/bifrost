@@ -1,6 +1,6 @@
 mod common;
 
-use bifrost_admin::{AdminState, TrafficRecord, TrafficRecorder};
+use bifrost_admin::{AdminState, BodyRef, TrafficRecord, TrafficRecorder};
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::sync::Arc;
 
@@ -66,8 +66,12 @@ async fn test_traffic_record_fields_complete() {
         ("x-request-id".to_string(), "req-abc123".to_string()),
     ]);
 
-    record.request_body = Some(r#"{"name":"test","email":"test@example.com"}"#.to_string());
-    record.response_body = Some(r#"{"id":1,"name":"test","created":true}"#.to_string());
+    record.request_body_ref = Some(BodyRef::Inline {
+        data: r#"{"name":"test","email":"test@example.com"}"#.to_string(),
+    });
+    record.response_body_ref = Some(BodyRef::Inline {
+        data: r#"{"id":1,"name":"test","created":true}"#.to_string(),
+    });
 
     recorder.record(record);
 
@@ -96,11 +100,15 @@ async fn test_traffic_record_fields_complete() {
     let res_headers = r.response_headers.unwrap();
     assert_eq!(res_headers.len(), 2);
 
-    assert!(r.request_body.is_some());
-    assert!(r.request_body.unwrap().contains("test@example.com"));
+    assert!(r.request_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &r.request_body_ref {
+        assert!(data.contains("test@example.com"));
+    }
 
-    assert!(r.response_body.is_some());
-    assert!(r.response_body.unwrap().contains("created"));
+    assert!(r.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &r.response_body_ref {
+        assert!(data.contains("created"));
+    }
 }
 
 #[tokio::test]
@@ -144,8 +152,12 @@ async fn test_traffic_record_request_response_body() {
     );
 
     record.status = 200;
-    record.request_body = Some(request_body.to_string());
-    record.response_body = Some(response_body.to_string());
+    record.request_body_ref = Some(BodyRef::Inline {
+        data: request_body.to_string(),
+    });
+    record.response_body_ref = Some(BodyRef::Inline {
+        data: response_body.to_string(),
+    });
     record.request_size = request_body.len();
     record.response_size = response_body.len();
 
@@ -153,15 +165,17 @@ async fn test_traffic_record_request_response_body() {
 
     let retrieved = recorder.get_by_id("body-test-001").unwrap();
 
-    assert!(retrieved.request_body.is_some());
-    let req_body = retrieved.request_body.unwrap();
-    assert!(req_body.contains("username"));
-    assert!(req_body.contains("admin"));
+    assert!(retrieved.request_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &retrieved.request_body_ref {
+        assert!(data.contains("username"));
+        assert!(data.contains("admin"));
+    }
 
-    assert!(retrieved.response_body.is_some());
-    let res_body = retrieved.response_body.unwrap();
-    assert!(res_body.contains("token"));
-    assert!(res_body.contains("expires_in"));
+    assert!(retrieved.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &retrieved.response_body_ref {
+        assert!(data.contains("token"));
+        assert!(data.contains("expires_in"));
+    }
 }
 
 #[tokio::test]
@@ -235,8 +249,12 @@ async fn test_traffic_record_large_body() {
     );
 
     record.status = 200;
-    record.request_body = Some(large_request.clone());
-    record.response_body = Some(large_response.clone());
+    record.request_body_ref = Some(BodyRef::Inline {
+        data: large_request.clone(),
+    });
+    record.response_body_ref = Some(BodyRef::Inline {
+        data: large_response.clone(),
+    });
     record.request_size = large_request.len();
     record.response_size = large_response.len();
 
@@ -246,10 +264,14 @@ async fn test_traffic_record_large_body() {
 
     assert_eq!(retrieved.request_size, 10000);
     assert_eq!(retrieved.response_size, 50000);
-    assert!(retrieved.request_body.is_some());
-    assert!(retrieved.response_body.is_some());
-    assert_eq!(retrieved.request_body.unwrap().len(), 10000);
-    assert_eq!(retrieved.response_body.unwrap().len(), 50000);
+    assert!(retrieved.request_body_ref.is_some());
+    assert!(retrieved.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &retrieved.request_body_ref {
+        assert_eq!(data.len(), 10000);
+    }
+    if let Some(BodyRef::Inline { data }) = &retrieved.response_body_ref {
+        assert_eq!(data.len(), 50000);
+    }
 }
 
 #[tokio::test]
@@ -264,8 +286,8 @@ async fn test_traffic_record_binary_body_as_none() {
 
     record.status = 200;
     record.content_type = Some("image/png".to_string());
-    record.request_body = None;
-    record.response_body = None;
+    record.request_body_ref = None;
+    record.response_body_ref = None;
     record.request_size = 0;
     record.response_size = 1024000;
 
@@ -273,8 +295,8 @@ async fn test_traffic_record_binary_body_as_none() {
 
     let retrieved = recorder.get_by_id("binary-body-001").unwrap();
 
-    assert!(retrieved.request_body.is_none());
-    assert!(retrieved.response_body.is_none());
+    assert!(retrieved.request_body_ref.is_none());
+    assert!(retrieved.response_body_ref.is_none());
     assert_eq!(retrieved.response_size, 1024000);
 }
 
@@ -293,8 +315,9 @@ async fn test_admin_state_traffic_recorder_integration() {
         "content-type".to_string(),
         "application/json".to_string(),
     )]);
-    record1.response_body =
-        Some(r#"[{"id":1,"name":"user1"},{"id":2,"name":"user2"}]"#.to_string());
+    record1.response_body_ref = Some(BodyRef::Inline {
+        data: r#"[{"id":1,"name":"user1"},{"id":2,"name":"user2"}]"#.to_string(),
+    });
     admin_state.traffic_recorder.record(record1);
 
     let mut record2 = TrafficRecord::new(
@@ -307,8 +330,12 @@ async fn test_admin_state_traffic_recorder_integration() {
         "content-type".to_string(),
         "application/json".to_string(),
     )]);
-    record2.request_body = Some(r#"{"name":"newuser"}"#.to_string());
-    record2.response_body = Some(r#"{"id":3,"name":"newuser"}"#.to_string());
+    record2.request_body_ref = Some(BodyRef::Inline {
+        data: r#"{"name":"newuser"}"#.to_string(),
+    });
+    record2.response_body_ref = Some(BodyRef::Inline {
+        data: r#"{"id":3,"name":"newuser"}"#.to_string(),
+    });
     admin_state.traffic_recorder.record(record2);
 
     assert_eq!(admin_state.traffic_recorder.count(), 2);
@@ -318,14 +345,18 @@ async fn test_admin_state_traffic_recorder_integration() {
         .get_by_id("admin-test-001")
         .unwrap();
     assert_eq!(record1_retrieved.method, "GET");
-    assert!(record1_retrieved.response_body.unwrap().contains("user1"));
+    if let Some(BodyRef::Inline { data }) = &record1_retrieved.response_body_ref {
+        assert!(data.contains("user1"));
+    }
 
     let record2_retrieved = admin_state
         .traffic_recorder
         .get_by_id("admin-test-002")
         .unwrap();
     assert_eq!(record2_retrieved.method, "POST");
-    assert!(record2_retrieved.request_body.unwrap().contains("newuser"));
+    if let Some(BodyRef::Inline { data }) = &record2_retrieved.request_body_ref {
+        assert!(data.contains("newuser"));
+    }
 }
 
 #[tokio::test]

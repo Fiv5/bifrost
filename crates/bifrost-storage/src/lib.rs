@@ -3,7 +3,7 @@ mod rules;
 mod state;
 mod values;
 
-pub use config::{AccessConfig, BifrostConfig};
+pub use config::{AccessConfig, BifrostConfig, TrafficConfig};
 pub use rules::{RuleFile, RulesStorage};
 pub use state::{RuntimeState, StateManager};
 pub use values::ValuesStorage;

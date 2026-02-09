@@ -13,6 +13,26 @@ pub struct AccessConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct TrafficConfig {
+    pub max_records: usize,
+    pub max_body_memory_size: usize,
+    pub temp_dir: PathBuf,
+    pub file_retention_days: u64,
+}
+
+impl Default for TrafficConfig {
+    fn default() -> Self {
+        Self {
+            max_records: 5000,
+            max_body_memory_size: 2 * 1024 * 1024, // 2MB
+            temp_dir: PathBuf::from(".bifrost/traffic"),
+            file_retention_days: 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BifrostConfig {
     pub port: u16,
     pub host: String,
@@ -21,6 +41,7 @@ pub struct BifrostConfig {
     pub plugins_dir: PathBuf,
     pub cert_dir: PathBuf,
     pub access: AccessConfig,
+    pub traffic: TrafficConfig,
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
 }
@@ -35,6 +56,7 @@ impl Default for BifrostConfig {
             plugins_dir: PathBuf::from(".bifrost/plugins"),
             cert_dir: PathBuf::from(".bifrost/certs"),
             access: AccessConfig::default(),
+            traffic: TrafficConfig::default(),
             enable_tls_interception: true,
             intercept_exclude: Vec::new(),
         }

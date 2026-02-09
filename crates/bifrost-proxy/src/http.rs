@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::Instant;
 
-use bifrost_admin::{AdminState, TrafficRecord};
+use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -112,6 +113,12 @@ pub async fn handle_http_request(
 
     let (mut parts, body) = req.into_parts();
 
+    let req_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
 
     let body_bytes = body
@@ -132,7 +139,7 @@ pub async fn handle_http_request(
         new_body.clone()
     } else {
         apply_body_rules(
-            body_bytes,
+            body_bytes.clone(),
             &resolved_rules,
             Phase::Request,
             verbose_logging,
@@ -140,11 +147,13 @@ pub async fn handle_http_request(
         )
     };
 
+    let connect_start = Instant::now();
     let stream = TcpStream::connect(format!("{}:{}", host, port))
         .await
         .map_err(|e| {
             BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
         })?;
+    let connect_ms = connect_start.elapsed().as_millis() as u64;
 
     let io = TokioIo::new(stream);
 
@@ -185,20 +194,30 @@ pub async fn handle_http_request(
 
     let outgoing_req = Request::from_parts(parts, full_body(final_body.clone()));
 
+    let send_start = Instant::now();
     let res = sender
         .send_request(outgoing_req)
         .await
         .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+    let wait_ms = send_start.elapsed().as_millis() as u64;
 
     let (mut res_parts, res_body) = res.into_parts();
 
+    let res_headers: Vec<(String, String)> = res_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
 
+    let receive_start = Instant::now();
     let res_body_bytes = res_body
         .collect()
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
         .to_bytes();
+    let receive_ms = receive_start.elapsed().as_millis() as u64;
 
     let content_type = res_parts
         .headers
@@ -219,7 +238,7 @@ pub async fn handle_http_request(
         new_body.clone()
     } else {
         let body_processed = apply_body_rules(
-            res_body_bytes,
+            res_body_bytes.clone(),
             &resolved_rules,
             Phase::Response,
             verbose_logging,
@@ -234,6 +253,8 @@ pub async fn handle_http_request(
             ctx,
         )
     };
+
+    let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
         state
@@ -252,7 +273,25 @@ pub async fn handle_http_request(
             .map(|s| s.to_string());
         record.request_size = final_body.len();
         record.response_size = final_res_body.len();
-        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        record.duration_ms = total_ms;
+        record.timing = Some(RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(connect_ms),
+            tls_ms: None,
+            send_ms: None,
+            wait_ms: Some(wait_ms),
+            receive_ms: Some(receive_ms),
+            total_ms,
+        });
+        record.request_headers = Some(req_headers);
+        record.response_headers = Some(res_headers);
+
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            record.request_body_ref = store.store(&ctx.id_str(), "req", &body_bytes);
+            record.response_body_ref = store.store(&ctx.id_str(), "res", &res_body_bytes);
+        }
+
         state.traffic_recorder.record(record);
     }
 
@@ -263,7 +302,7 @@ async fn forward_without_rules(
     req: Request<Incoming>,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let method = req.method().to_string();
     let uri = req.uri().clone();
     let url = uri.to_string();
@@ -273,11 +312,13 @@ async fn forward_without_rules(
         .to_string();
     let port = uri.port_u16().unwrap_or(80);
 
+    let connect_start = Instant::now();
     let stream = TcpStream::connect(format!("{}:{}", host, port))
         .await
         .map_err(|e| {
             BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
         })?;
+    let connect_ms = connect_start.elapsed().as_millis() as u64;
 
     let io = TokioIo::new(stream);
 
@@ -295,6 +336,12 @@ async fn forward_without_rules(
     });
 
     let (mut parts, body) = req.into_parts();
+
+    let req_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     let path = parts
         .uri
@@ -327,18 +374,30 @@ async fn forward_without_rules(
 
     let outgoing_req = Request::from_parts(parts, full_body(body_bytes.clone()));
 
+    let send_start = Instant::now();
     let res = sender
         .send_request(outgoing_req)
         .await
         .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+    let wait_ms = send_start.elapsed().as_millis() as u64;
 
     let (res_parts, res_body) = res.into_parts();
 
+    let res_headers: Vec<(String, String)> = res_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let receive_start = Instant::now();
     let res_body_bytes = res_body
         .collect()
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
         .to_bytes();
+    let receive_ms = receive_start.elapsed().as_millis() as u64;
+
+    let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
         state
@@ -364,7 +423,25 @@ async fn forward_without_rules(
             .map(|s| s.to_string());
         record.request_size = body_bytes.len();
         record.response_size = res_body_bytes.len();
-        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        record.duration_ms = total_ms;
+        record.timing = Some(RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(connect_ms),
+            tls_ms: None,
+            send_ms: None,
+            wait_ms: Some(wait_ms),
+            receive_ms: Some(receive_ms),
+            total_ms,
+        });
+        record.request_headers = Some(req_headers);
+        record.response_headers = Some(res_headers);
+
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            record.request_body_ref = store.store(&record.id, "req", &body_bytes);
+            record.response_body_ref = store.store(&record.id, "res", &res_body_bytes);
+        }
+
         state.traffic_recorder.record(record);
     }
 

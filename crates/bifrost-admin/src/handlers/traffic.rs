@@ -1,6 +1,7 @@
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
+use crate::body_store::BodyRef;
 use crate::state::SharedAdminState;
 use crate::traffic::TrafficFilter;
 
@@ -17,10 +18,22 @@ pub async fn handle_traffic(
             Method::DELETE => clear_traffic(state).await,
             _ => method_not_allowed(),
         }
-    } else if let Some(id) = path.strip_prefix("/api/traffic/") {
-        match method {
-            Method::GET => get_traffic_detail(state, id).await,
-            _ => method_not_allowed(),
+    } else if let Some(rest) = path.strip_prefix("/api/traffic/") {
+        if let Some(id) = rest.strip_suffix("/request-body") {
+            match method {
+                Method::GET => get_request_body(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some(id) = rest.strip_suffix("/response-body") {
+            match method {
+                Method::GET => get_response_body(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else {
+            match method {
+                Method::GET => get_traffic_detail(state, rest).await,
+                _ => method_not_allowed(),
+            }
         }
     } else {
         error_response(StatusCode::NOT_FOUND, "Not Found")
@@ -61,6 +74,75 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
     state.traffic_recorder.clear();
     success_response("Traffic records cleared successfully")
+}
+
+async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+    match state.traffic_recorder.get_by_id(id) {
+        Some(record) => {
+            if let Some(body_ref) = &record.request_body_ref {
+                get_body_content(&state, body_ref)
+            } else {
+                json_response(&serde_json::json!({
+                    "success": true,
+                    "data": null
+                }))
+            }
+        }
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Traffic record '{}' not found", id),
+        ),
+    }
+}
+
+async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+    match state.traffic_recorder.get_by_id(id) {
+        Some(record) => {
+            if let Some(body_ref) = &record.response_body_ref {
+                get_body_content(&state, body_ref)
+            } else {
+                json_response(&serde_json::json!({
+                    "success": true,
+                    "data": null
+                }))
+            }
+        }
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Traffic record '{}' not found", id),
+        ),
+    }
+}
+
+fn get_body_content(state: &SharedAdminState, body_ref: &BodyRef) -> Response<BoxBody> {
+    match body_ref {
+        BodyRef::Inline { data } => json_response(&serde_json::json!({
+            "success": true,
+            "data": data
+        })),
+        BodyRef::File { path, size } => {
+            if let Some(ref body_store) = state.body_store {
+                let store = body_store.read();
+                match store.load(body_ref) {
+                    Some(data) => json_response(&serde_json::json!({
+                        "success": true,
+                        "data": data
+                    })),
+                    None => error_response(
+                        StatusCode::NOT_FOUND,
+                        &format!("Body file not found: {}", path),
+                    ),
+                }
+            } else {
+                json_response(&serde_json::json!({
+                    "success": false,
+                    "error": "Body store not configured",
+                    "path": path,
+                    "size": size
+                }))
+            }
+        }
+    }
 }
 
 fn parse_traffic_filter(query: &str) -> TrafficFilter {

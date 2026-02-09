@@ -5,6 +5,25 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::body_store::BodyRef;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RequestTiming {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receive_ms: Option<u64>,
+    pub total_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficRecord {
     pub id: String,
@@ -17,17 +36,21 @@ pub struct TrafficRecord {
     pub response_size: usize,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<RequestTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub request_headers: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_headers: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_body: Option<String>,
+    pub request_body_ref: Option<BodyRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_body: Option<String>,
+    pub response_body_ref: Option<BodyRef>,
     pub client_ip: String,
     pub host: String,
     pub path: String,
     pub protocol: String,
+    #[serde(default)]
+    pub is_tunnel: bool,
 }
 
 impl TrafficRecord {
@@ -57,14 +80,16 @@ impl TrafficRecord {
             request_size: 0,
             response_size: 0,
             duration_ms: 0,
+            timing: None,
             request_headers: None,
             response_headers: None,
-            request_body: None,
-            response_body: None,
+            request_body_ref: None,
+            response_body_ref: None,
             client_ip: String::new(),
             host,
             path,
             protocol,
+            is_tunnel: false,
         }
     }
 }

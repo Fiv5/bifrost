@@ -4,6 +4,7 @@ use bifrost_core::ClientAccessControl;
 use bifrost_storage::RulesStorage;
 use tokio::sync::RwLock;
 
+use crate::body_store::SharedBodyStore;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 
@@ -14,6 +15,7 @@ pub struct AdminState {
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
     pub access_control: Option<SharedAccessControl>,
+    pub body_store: Option<SharedBodyStore>,
     pub start_time: u64,
     pub port: u16,
 }
@@ -25,6 +27,7 @@ impl AdminState {
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
             access_control: None,
+            body_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
         }
@@ -47,6 +50,11 @@ impl AdminState {
 
     pub fn with_access_control(mut self, access_control: SharedAccessControl) -> Self {
         self.access_control = Some(access_control);
+        self
+    }
+
+    pub fn with_body_store(mut self, body_store: SharedBodyStore) -> Self {
+        self.body_store = Some(body_store);
         self
     }
 }

@@ -1,7 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
-use bifrost_admin::{AdminState, TrafficRecord};
+use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -313,7 +314,7 @@ async fn handle_intercepted_request(
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
     let method = req.method().to_string();
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
@@ -322,6 +323,13 @@ async fn handle_intercepted_request(
     debug!("[{}] Intercepted: {} {}", req_id, method, url);
 
     let (parts, body) = req.into_parts();
+
+    let req_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
@@ -333,6 +341,7 @@ async fn handle_intercepted_request(
         }
     };
 
+    let connect_start = Instant::now();
     let target_stream = match TcpStream::connect(format!("{}:{}", host, port)).await {
         Ok(s) => s,
         Err(e) => {
@@ -343,6 +352,7 @@ async fn handle_intercepted_request(
                 .unwrap());
         }
     };
+    let connect_ms = connect_start.elapsed().as_millis() as u64;
 
     let client_config = ClientConfig::builder()
         .with_root_certificates(build_root_cert_store())
@@ -359,6 +369,7 @@ async fn handle_intercepted_request(
         }
     };
 
+    let tls_start = Instant::now();
     let connector = TlsConnector::from(Arc::new(client_config));
     let tls_stream = match connector.connect(server_name, target_stream).await {
         Ok(s) => s,
@@ -370,6 +381,7 @@ async fn handle_intercepted_request(
                 .unwrap());
         }
     };
+    let tls_ms = tls_start.elapsed().as_millis() as u64;
 
     let io = TokioIo::new(tls_stream);
     let (mut sender, conn) = match ClientBuilder::new().handshake(io).await {
@@ -409,6 +421,7 @@ async fn handle_intercepted_request(
         }
     };
 
+    let send_start = Instant::now();
     let response = match sender.send_request(outgoing_req).await {
         Ok(r) => r,
         Err(e) => {
@@ -419,8 +432,17 @@ async fn handle_intercepted_request(
                 .unwrap());
         }
     };
+    let wait_ms = send_start.elapsed().as_millis() as u64;
 
     let (res_parts, res_body) = response.into_parts();
+
+    let res_headers: Vec<(String, String)> = res_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let receive_start = Instant::now();
     let res_body_bytes = match res_body.collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
@@ -431,6 +453,9 @@ async fn handle_intercepted_request(
                 .unwrap());
         }
     };
+    let receive_ms = receive_start.elapsed().as_millis() as u64;
+
+    let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
         state
@@ -450,28 +475,24 @@ async fn handle_intercepted_request(
             .map(|s| s.to_string());
         record.request_size = body_bytes.len();
         record.response_size = res_body_bytes.len();
-        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        record.duration_ms = total_ms;
         record.host = host.to_string();
-
-        let req_headers: Vec<(String, String)> = parts
-            .headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
+        record.timing = Some(RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(connect_ms),
+            tls_ms: Some(tls_ms),
+            send_ms: None,
+            wait_ms: Some(wait_ms),
+            receive_ms: Some(receive_ms),
+            total_ms,
+        });
         record.request_headers = Some(req_headers);
-
-        let res_headers: Vec<(String, String)> = res_parts
-            .headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
         record.response_headers = Some(res_headers);
 
-        if !body_bytes.is_empty() {
-            record.request_body = String::from_utf8(body_bytes.clone()).ok();
-        }
-        if !res_body_bytes.is_empty() {
-            record.response_body = String::from_utf8(res_body_bytes.clone()).ok();
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            record.request_body_ref = store.store(req_id, "req", &body_bytes);
+            record.response_body_ref = store.store(req_id, "res", &res_body_bytes);
         }
 
         state.traffic_recorder.record(record);
