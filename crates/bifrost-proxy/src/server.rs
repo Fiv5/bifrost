@@ -26,6 +26,7 @@ pub struct ProxyConfig {
     pub port: u16,
     pub host: String,
     pub enable_tls_interception: bool,
+    pub intercept_exclude: Vec<String>,
     pub timeout_secs: u64,
     pub socks5_port: Option<u16>,
     pub socks5_auth_required: bool,
@@ -42,7 +43,8 @@ impl Default for ProxyConfig {
         Self {
             port: 8899,
             host: "127.0.0.1".to_string(),
-            enable_tls_interception: false,
+            enable_tls_interception: true,
+            intercept_exclude: Vec::new(),
             timeout_secs: 30,
             socks5_port: None,
             socks5_auth_required: false,
@@ -81,6 +83,50 @@ pub struct ResolvedRules {
     pub referer: Option<String>,
     pub enable_cors: bool,
     pub rules: Vec<RuleValue>,
+
+    pub req_prepend: Option<Bytes>,
+    pub req_append: Option<Bytes>,
+    pub res_prepend: Option<Bytes>,
+    pub res_append: Option<Bytes>,
+    pub req_replace: Vec<(String, String)>,
+    pub res_replace: Vec<(String, String)>,
+    pub req_merge: Option<serde_json::Value>,
+    pub res_merge: Option<serde_json::Value>,
+
+    pub url_params: Vec<(String, String)>,
+    pub url_replace: Vec<(String, String)>,
+
+    pub forwarded_for: Option<String>,
+    pub req_type: Option<String>,
+    pub req_charset: Option<String>,
+
+    pub res_type: Option<String>,
+    pub res_charset: Option<String>,
+    pub replace_status: Option<u16>,
+    pub cache: Option<String>,
+    pub attachment: Option<String>,
+
+    pub ignored: bool,
+
+    pub mock_file: Option<String>,
+    pub mock_rawfile: Option<String>,
+    pub mock_template: Option<String>,
+
+    pub redirect: Option<String>,
+    pub location_href: Option<String>,
+
+    pub req_speed: Option<u64>,
+    pub res_speed: Option<u64>,
+
+    pub html_append: Option<String>,
+    pub html_prepend: Option<String>,
+    pub html_body: Option<String>,
+    pub js_append: Option<String>,
+    pub js_prepend: Option<String>,
+    pub js_body: Option<String>,
+    pub css_append: Option<String>,
+    pub css_prepend: Option<String>,
+    pub css_body: Option<String>,
 }
 
 pub trait RulesResolver: Send + Sync {
@@ -232,8 +278,7 @@ impl ProxyServer {
 
             let rules = Arc::clone(&self.rules);
             let tls_config = Arc::clone(&self.tls_config);
-            let enable_tls_interception = self.config.enable_tls_interception;
-            let verbose_logging = self.config.verbose_logging;
+            let proxy_config = self.config.clone();
             let admin_state = self.admin_state.clone();
             let admin_security_config = self.admin_security_config.clone();
 
@@ -243,6 +288,7 @@ impl ProxyServer {
                 let service = service_fn(move |req: Request<Incoming>| {
                     let rules = Arc::clone(&rules);
                     let tls_config = Arc::clone(&tls_config);
+                    let proxy_config = proxy_config.clone();
                     let admin_state = admin_state.clone();
                     let admin_security_config = admin_security_config.clone();
                     async move {
@@ -251,8 +297,7 @@ impl ProxyServer {
                             peer_addr,
                             rules,
                             tls_config,
-                            enable_tls_interception,
-                            verbose_logging,
+                            proxy_config,
                             admin_state,
                             admin_security_config,
                         )
@@ -280,8 +325,7 @@ async fn handle_request(
     peer_addr: SocketAddr,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
-    enable_tls_interception: bool,
-    verbose_logging: bool,
+    proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
     admin_security_config: AdminSecurityConfig,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
@@ -289,6 +333,7 @@ async fn handle_request(
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
+    let verbose_logging = proxy_config.verbose_logging;
 
     if verbose_logging {
         info!(
@@ -324,14 +369,19 @@ async fn handle_request(
         }
     }
 
+    if let Some(ref state) = admin_state {
+        state.metrics_collector.increment_requests();
+    }
+
     if method == Method::CONNECT {
         match handle_connect(
             req,
             rules,
             tls_config,
-            enable_tls_interception,
+            &proxy_config,
             verbose_logging,
             &ctx,
+            admin_state,
         )
         .await
         {
@@ -351,7 +401,7 @@ async fn handle_request(
             }
         }
     } else {
-        match handle_http_request(req, rules, verbose_logging, &ctx).await {
+        match handle_http_request(req, rules, verbose_logging, &ctx, admin_state.clone()).await {
             Ok(response) => {
                 if verbose_logging {
                     info!(
@@ -410,7 +460,8 @@ mod tests {
         let config = ProxyConfig::default();
         assert_eq!(config.port, 8899);
         assert_eq!(config.host, "127.0.0.1");
-        assert!(!config.enable_tls_interception);
+        assert!(config.enable_tls_interception);
+        assert!(config.intercept_exclude.is_empty());
         assert_eq!(config.timeout_secs, 30);
         assert!(config.socks5_port.is_none());
         assert!(!config.socks5_auth_required);
@@ -453,6 +504,7 @@ mod tests {
             port: 9000,
             host: "0.0.0.0".to_string(),
             enable_tls_interception: true,
+            intercept_exclude: vec!["*.example.com".to_string()],
             timeout_secs: 60,
             socks5_port: Some(1080),
             socks5_auth_required: true,

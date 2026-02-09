@@ -72,6 +72,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                         result.status_code = Some(code);
                     }
                 }
+                Protocol::ReplaceStatus => {
+                    if let Ok(code) = value.parse::<u16>() {
+                        result.replace_status = Some(code);
+                    }
+                }
                 Protocol::Method => {
                     result.method = Some(value.to_string());
                 }
@@ -86,6 +91,117 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 }
                 Protocol::Proxy => {
                     result.proxy = Some(value.to_string());
+                }
+                Protocol::Ignore => {
+                    result.ignored = true;
+                }
+                Protocol::ReqPrepend => {
+                    result.req_prepend = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ReqAppend => {
+                    result.req_append = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ResPrepend => {
+                    result.res_prepend = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ResAppend => {
+                    result.res_append = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ReqBody => {
+                    result.req_body = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ResBody => {
+                    result.res_body = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ReqReplace => {
+                    if let Some((from, to)) = parse_replace_value(value) {
+                        result.req_replace.push((from, to));
+                    }
+                }
+                Protocol::ResReplace => {
+                    if let Some((from, to)) = parse_replace_value(value) {
+                        result.res_replace.push((from, to));
+                    }
+                }
+                Protocol::Params => {
+                    if let Ok(json_value) = serde_json::from_str(value) {
+                        result.req_merge = Some(json_value);
+                    }
+                }
+                Protocol::ResMerge => {
+                    if let Ok(json_value) = serde_json::from_str(value) {
+                        result.res_merge = Some(json_value);
+                    }
+                }
+                Protocol::UrlParams => {
+                    if let Some(params) = parse_header_value(value) {
+                        for (k, v) in params {
+                            result.url_params.push((k, v));
+                        }
+                    }
+                }
+                Protocol::UrlReplace => {
+                    if let Some((from, to)) = parse_replace_value(value) {
+                        result.url_replace.push((from, to));
+                    }
+                }
+                Protocol::ForwardedFor => {
+                    result.forwarded_for = Some(value.to_string());
+                }
+                Protocol::ReqType => {
+                    result.req_type = Some(value.to_string());
+                }
+                Protocol::ReqCharset => {
+                    result.req_charset = Some(value.to_string());
+                }
+                Protocol::ResType => {
+                    result.res_type = Some(value.to_string());
+                }
+                Protocol::ResCharset => {
+                    result.res_charset = Some(value.to_string());
+                }
+                Protocol::Cache => {
+                    result.cache = Some(value.to_string());
+                }
+                Protocol::Attachment => {
+                    result.attachment = Some(value.to_string());
+                }
+                Protocol::HtmlAppend => {
+                    result.html_append = Some(value.to_string());
+                }
+                Protocol::HtmlPrepend => {
+                    result.html_prepend = Some(value.to_string());
+                }
+                Protocol::HtmlBody => {
+                    result.html_body = Some(value.to_string());
+                }
+                Protocol::JsAppend => {
+                    result.js_append = Some(value.to_string());
+                }
+                Protocol::JsPrepend => {
+                    result.js_prepend = Some(value.to_string());
+                }
+                Protocol::JsBody => {
+                    result.js_body = Some(value.to_string());
+                }
+                Protocol::CssAppend => {
+                    result.css_append = Some(value.to_string());
+                }
+                Protocol::CssPrepend => {
+                    result.css_prepend = Some(value.to_string());
+                }
+                Protocol::CssBody => {
+                    result.css_body = Some(value.to_string());
+                }
+                Protocol::ReqSpeed => {
+                    if let Ok(speed) = value.parse::<u64>() {
+                        result.req_speed = Some(speed);
+                    }
+                }
+                Protocol::ResSpeed => {
+                    if let Ok(speed) = value.parse::<u64>() {
+                        result.res_speed = Some(speed);
+                    }
                 }
                 _ => {}
             }
@@ -126,6 +242,17 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
+fn parse_replace_value(value: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = value.splitn(2, ' ').collect();
+    if parts.len() == 2 {
+        Some((parts[0].to_string(), parts[1].to_string()))
+    } else if parts.len() == 1 && !parts[0].is_empty() {
+        Some((parts[0].to_string(), String::new()))
+    } else {
+        None
+    }
+}
+
 pub struct ProxyInstance {
     addr: SocketAddr,
     shutdown_tx: Option<oneshot::Sender<()>>,
@@ -153,6 +280,7 @@ impl ProxyInstance {
             port,
             host: "127.0.0.1".to_string(),
             enable_tls_interception: false,
+            intercept_exclude: Vec::new(),
             timeout_secs: 30,
             socks5_port: None,
             socks5_auth_required: false,

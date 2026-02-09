@@ -21,6 +21,8 @@ pub struct BifrostConfig {
     pub plugins_dir: PathBuf,
     pub cert_dir: PathBuf,
     pub access: AccessConfig,
+    pub enable_tls_interception: bool,
+    pub intercept_exclude: Vec<String>,
 }
 
 impl Default for BifrostConfig {
@@ -33,6 +35,8 @@ impl Default for BifrostConfig {
             plugins_dir: PathBuf::from(".bifrost/plugins"),
             cert_dir: PathBuf::from(".bifrost/certs"),
             access: AccessConfig::default(),
+            enable_tls_interception: true,
+            intercept_exclude: Vec::new(),
         }
     }
 }

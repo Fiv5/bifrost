@@ -383,8 +383,11 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
+ "mime_guess",
  "pin-project-lite",
  "rand",
+ "regex",
+ "serde_json",
  "sha1",
  "thiserror 2.0.18",
  "tokio",
@@ -392,6 +395,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "url",
 ]
 
 [[package]]

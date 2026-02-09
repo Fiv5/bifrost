@@ -1,24 +1,29 @@
 use std::sync::Arc;
 
+use bifrost_admin::AdminState;
 use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
-use hyper::{Request, Response, Uri};
+use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tracing::{debug, error, info};
 
+use crate::body::{apply_body_rules, apply_content_injection, Phase};
 use crate::logging::{format_rules_detail, format_rules_summary, RequestContext};
+use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
+use crate::url::apply_url_rules;
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     ctx: &RequestContext,
+    admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let method = req.method().to_string();
@@ -31,7 +36,8 @@ pub async fn handle_http_request(
         || resolved_rules.proxy.is_some()
         || !resolved_rules.req_headers.is_empty()
         || !resolved_rules.res_headers.is_empty()
-        || resolved_rules.status_code.is_some();
+        || resolved_rules.status_code.is_some()
+        || should_intercept_response(&resolved_rules);
 
     if verbose_logging {
         if has_rules {
@@ -50,9 +56,41 @@ pub async fn handle_http_request(
         }
     }
 
+    if resolved_rules.ignored {
+        if verbose_logging {
+            info!("[{}] [IGNORED] request ignored by rule", ctx.id_str());
+        }
+        return forward_without_rules(req, admin_state).await;
+    }
+
+    if let Some(mock_response) =
+        generate_mock_response(&resolved_rules, &uri, verbose_logging, ctx).await
+    {
+        if verbose_logging {
+            info!("[{}] [MOCK] returning mock response", ctx.id_str());
+        }
+        return Ok(mock_response);
+    }
+
+    if let Some(ref redirect_url) = resolved_rules.redirect {
+        if verbose_logging {
+            info!("[{}] [REDIRECT] {} -> {}", ctx.id_str(), url, redirect_url);
+        }
+        return Ok(build_redirect_response(302, redirect_url));
+    }
+
+    if let Some(ref location) = resolved_rules.location_href {
+        if verbose_logging {
+            info!("[{}] [LOCATION] {} -> {}", ctx.id_str(), url, location);
+        }
+        return Ok(build_redirect_response(301, location));
+    }
+
+    let processed_uri = apply_url_rules(&uri, &resolved_rules, verbose_logging, ctx);
+
     let original_host = uri.host().unwrap_or("unknown").to_string();
     let original_port = uri.port_u16().unwrap_or(80);
-    let (host, port) = extract_host_port(&uri, &resolved_rules)?;
+    let (host, port) = extract_host_port(&processed_uri, &resolved_rules)?;
 
     if verbose_logging {
         if resolved_rules.host.is_some() {
@@ -92,7 +130,13 @@ pub async fn handle_http_request(
         }
         new_body.clone()
     } else {
-        body_bytes
+        apply_body_rules(
+            body_bytes,
+            &resolved_rules,
+            Phase::Request,
+            verbose_logging,
+            ctx,
+        )
     };
 
     let stream = TcpStream::connect(format!("{}:{}", host, port))
@@ -139,7 +183,7 @@ pub async fn handle_http_request(
             .insert(hyper::header::HOST, host_value.parse().unwrap());
     }
 
-    let outgoing_req = Request::from_parts(parts, full_body(final_body));
+    let outgoing_req = Request::from_parts(parts, full_body(final_body.clone()));
 
     let res = sender
         .send_request(outgoing_req)
@@ -156,6 +200,13 @@ pub async fn handle_http_request(
         .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
         .to_bytes();
 
+    let content_type = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
     let final_res_body = if let Some(ref new_body) = resolved_rules.res_body {
         if verbose_logging {
             info!(
@@ -167,10 +218,142 @@ pub async fn handle_http_request(
         }
         new_body.clone()
     } else {
-        res_body_bytes
+        let body_processed = apply_body_rules(
+            res_body_bytes,
+            &resolved_rules,
+            Phase::Response,
+            verbose_logging,
+            ctx,
+        );
+
+        apply_content_injection(
+            body_processed,
+            &content_type,
+            &resolved_rules,
+            verbose_logging,
+            ctx,
+        )
     };
 
+    if let Some(ref state) = admin_state {
+        state
+            .metrics_collector
+            .add_bytes_sent(final_body.len() as u64);
+        state
+            .metrics_collector
+            .add_bytes_received(final_res_body.len() as u64);
+    }
+
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
+}
+
+async fn forward_without_rules(
+    req: Request<Incoming>,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<Response<BoxBody>> {
+    let uri = req.uri().clone();
+    let host = uri
+        .host()
+        .ok_or_else(|| BifrostError::Network("Missing host in URI".to_string()))?
+        .to_string();
+    let port = uri.port_u16().unwrap_or(80);
+
+    let stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .map_err(|e| {
+            BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
+        })?;
+
+    let io = TokioIo::new(stream);
+
+    let (mut sender, conn) = ClientBuilder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .handshake(io)
+        .await
+        .map_err(|e| BifrostError::Network(format!("Handshake failed: {}", e)))?;
+
+    tokio::spawn(async move {
+        if let Err(err) = conn.await {
+            error!("Connection failed: {:?}", err);
+        }
+    });
+
+    let (mut parts, body) = req.into_parts();
+
+    let path = parts
+        .uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let new_uri: Uri = path
+        .parse()
+        .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
+
+    parts.uri = new_uri;
+
+    if !parts.headers.contains_key(hyper::header::HOST) {
+        let host_value = if port == 80 {
+            host.clone()
+        } else {
+            format!("{}:{}", host, port)
+        };
+        parts
+            .headers
+            .insert(hyper::header::HOST, host_value.parse().unwrap());
+    }
+
+    let body_bytes = body
+        .collect()
+        .await
+        .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
+        .to_bytes();
+
+    let outgoing_req = Request::from_parts(parts, full_body(body_bytes.clone()));
+
+    let res = sender
+        .send_request(outgoing_req)
+        .await
+        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+
+    let (res_parts, res_body) = res.into_parts();
+
+    let res_body_bytes = res_body
+        .collect()
+        .await
+        .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
+        .to_bytes();
+
+    if let Some(ref state) = admin_state {
+        state
+            .metrics_collector
+            .add_bytes_sent(body_bytes.len() as u64);
+        state
+            .metrics_collector
+            .add_bytes_received(res_body_bytes.len() as u64);
+    }
+
+    Ok(Response::from_parts(res_parts, full_body(res_body_bytes)))
+}
+
+fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::FOUND);
+    let body = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><title>Redirect</title></head>
+<body><a href="{}">Redirecting...</a></body>
+</html>"#,
+        location
+    );
+
+    Response::builder()
+        .status(status)
+        .header(hyper::header::LOCATION, location)
+        .header(hyper::header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(full_body(bytes::Bytes::from(body)))
+        .unwrap()
 }
 
 fn extract_host_port(uri: &Uri, rules: &ResolvedRules) -> Result<(String, u16)> {

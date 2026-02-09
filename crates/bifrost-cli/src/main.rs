@@ -53,6 +53,13 @@ enum Commands {
         whitelist: Option<String>,
         #[arg(long, help = "Allow LAN (private network) clients")]
         allow_lan: bool,
+        #[arg(long, help = "Disable TLS/HTTPS interception (default: enabled)")]
+        no_intercept: bool,
+        #[arg(
+            long,
+            help = "Domains to exclude from TLS interception (comma-separated, supports wildcards like *.example.com)"
+        )]
+        intercept_exclude: Option<String>,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
@@ -210,6 +217,8 @@ fn main() {
             ref access_mode,
             ref whitelist,
             allow_lan,
+            no_intercept,
+            ref intercept_exclude,
         }) => run_start(
             &cli,
             daemon,
@@ -217,13 +226,15 @@ fn main() {
             access_mode.clone(),
             whitelist.clone(),
             allow_lan,
+            no_intercept,
+            intercept_exclude.clone(),
         ),
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
         Some(Commands::Whitelist { action }) => handle_whitelist_command(action),
-        None => run_start(&cli, false, false, None, None, false),
+        None => run_start(&cli, false, false, None, None, false, false, None),
     };
 
     if let Err(e) = result {
@@ -232,6 +243,7 @@ fn main() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_start(
     cli: &Cli,
     daemon: bool,
@@ -239,6 +251,8 @@ fn run_start(
     access_mode: Option<String>,
     whitelist: Option<String>,
     allow_lan: bool,
+    no_intercept: bool,
+    intercept_exclude: Option<String>,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
@@ -253,6 +267,8 @@ fn run_start(
     if !daemon && !skip_cert_check {
         check_and_install_certificate()?;
     }
+
+    init_config_dir()?;
 
     let parsed_access_mode = match &access_mode {
         Some(mode) => mode
@@ -283,6 +299,20 @@ fn run_start(
         config.access.allow_lan
     };
 
+    let enable_tls_interception = !no_intercept;
+
+    let exclude_list: Vec<String> = match intercept_exclude {
+        Some(list) => list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => {
+            let config = load_config();
+            config.intercept_exclude.clone()
+        }
+    };
+
     let proxy_config = ProxyConfig {
         port: cli.port,
         host: cli.host.clone(),
@@ -290,6 +320,8 @@ fn run_start(
         access_mode: parsed_access_mode,
         client_whitelist,
         allow_lan: allow_lan_final,
+        enable_tls_interception,
+        intercept_exclude: exclude_list.clone(),
         ..Default::default()
     };
 
@@ -299,6 +331,14 @@ fn run_start(
     }
     if proxy_config.allow_lan {
         println!("LAN (private network) access: enabled");
+    }
+    if enable_tls_interception {
+        println!("TLS interception: enabled");
+        if !exclude_list.is_empty() {
+            println!("  Excluded domains: {:?}", exclude_list);
+        }
+    } else {
+        println!("TLS interception: disabled");
     }
 
     if daemon {
@@ -314,6 +354,35 @@ fn run_start(
         }
     } else {
         run_foreground(proxy_config)?;
+    }
+
+    Ok(())
+}
+
+fn init_config_dir() -> bifrost_core::Result<()> {
+    let bifrost_dir = get_bifrost_dir()?;
+
+    let config_path = bifrost_dir.join("config.toml");
+    if !config_path.exists() {
+        println!("Initializing configuration directory: {:?}", bifrost_dir);
+
+        std::fs::create_dir_all(&bifrost_dir)?;
+
+        let subdirs = ["rules", "values", "plugins", "certs"];
+        for subdir in &subdirs {
+            let path = bifrost_dir.join(subdir);
+            std::fs::create_dir_all(&path)?;
+        }
+
+        let default_config = BifrostConfig::default();
+        let config_content = toml::to_string_pretty(&default_config).map_err(|e| {
+            bifrost_core::BifrostError::Config(format!("Failed to serialize config: {}", e))
+        })?;
+        std::fs::write(&config_path, &config_content)?;
+
+        println!("  Created config file: {:?}", config_path);
+        println!("  Created subdirectories: {:?}", subdirs);
+        println!("Configuration initialized successfully.");
     }
 
     Ok(())

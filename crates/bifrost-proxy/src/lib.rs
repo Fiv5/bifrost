@@ -1,11 +1,14 @@
+mod body;
 mod http;
 mod logging;
+mod mock;
 pub mod protocol;
 mod request;
 mod response;
 mod server;
 mod socks;
 mod tunnel;
+mod url;
 mod websocket;
 
 pub use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
