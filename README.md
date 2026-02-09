@@ -171,17 +171,17 @@ manager.register_rust_plugin(MyPlugin)?;
 
 **支持的 Hook 类型：**
 
-| 类别 | Hook |
-|------|------|
-| 认证 | `Auth` |
-| TLS | `Sni` |
-| 界面 | `Ui` |
-| HTTP | `Http` |
-| 隧道 | `Tunnel`, `TunnelRules`, `TunnelReqRead/Write`, `TunnelResRead/Write` |
-| 规则 | `ReqRules`, `ResRules` |
-| 请求 | `ReqRead`, `ReqWrite`, `ReqStats` |
-| 响应 | `ResRead`, `ResWrite`, `ResStats` |
-| WebSocket | `WsReqRead/Write`, `WsResRead/Write` |
+| 类别      | Hook                                                                  |
+| --------- | --------------------------------------------------------------------- |
+| 认证      | `Auth`                                                                |
+| TLS       | `Sni`                                                                 |
+| 界面      | `Ui`                                                                  |
+| HTTP      | `Http`                                                                |
+| 隧道      | `Tunnel`, `TunnelRules`, `TunnelReqRead/Write`, `TunnelResRead/Write` |
+| 规则      | `ReqRules`, `ResRules`                                                |
+| 请求      | `ReqRead`, `ReqWrite`, `ReqStats`                                     |
+| 响应      | `ResRead`, `ResWrite`, `ResStats`                                     |
+| WebSocket | `WsReqRead/Write`, `WsResRead/Write`                                  |
 
 ### bifrost-storage
 
@@ -247,14 +247,14 @@ example.com filter://keyword
 
 ### 支持的协议（74 种）
 
-| 分类 | 协议 |
-|------|------|
-| 路由 | `host`, `proxy`, `pac`, `internal-proxy`, `https2http-proxy`, `http2https-proxy` |
-| 控制 | `filter`, `ignore`, `enable`, `disable`, `delete`, `G`, `style` |
+| 分类     | 协议                                                                                                                                                                                                 |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 路由     | `host`, `proxy`, `pac`, `internal-proxy`, `https2http-proxy`, `http2https-proxy`                                                                                                                     |
+| 控制     | `filter`, `ignore`, `enable`, `disable`, `delete`, `G`, `style`                                                                                                                                      |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
-| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment` |
-| 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody` |
-| 高级 | `plugin`, `rulesFile`, `resScript`, `sniCallback`, `cipher` |
+| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`                      |
+| 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                     |
+| 高级     | `plugin`, `rulesFile`, `resScript`, `sniCallback`, `cipher`                                                                                                                                          |
 
 ## 配置
 
@@ -289,6 +289,28 @@ cargo test --test socks5_test
 
 ## 开发
 
+### 本地验证
+
+提交代码前，请在本地运行以下验证命令确保代码质量：
+
+```bash
+# 完整验证（推荐在提交前运行）
+cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-features
+
+# 分步验证
+cargo fmt --all -- --check       # 代码格式检查
+cargo clippy -- -D warnings      # Lint 检查
+cargo test                       # 运行测试
+
+# 格式化代码（自动修复格式问题）
+cargo fmt --all
+
+# 多平台构建验证
+cargo build --release --target x86_64-apple-darwin      # macOS x64
+cargo build --release --target aarch64-apple-darwin     # macOS ARM64
+cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
+```
+
 ### 添加新协议
 
 1. 在 `bifrost-core/src/protocol.rs` 中添加新协议枚举值
@@ -309,20 +331,62 @@ cargo test --test socks5_test
 2. 实现 `Matcher` trait
 3. 在 `factory.rs` 中添加解析逻辑
 
+## CI/CD
+
+项目使用 GitHub Actions 进行持续集成和自动发布。
+
+### CI 工作流
+
+每次 Push 到 `main` 分支或创建 Pull Request 时自动运行：
+
+- **格式检查** - `cargo fmt --check`
+- **Lint 检查** - `cargo clippy -D warnings`
+- **单元测试** - 多平台测试 (Ubuntu/macOS/Windows)
+- **构建验证** - 多目标构建
+
+### 发布工作流
+
+推送 `v*` 格式的 tag 时自动触发：
+
+```bash
+# 发布新版本
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+**支持的构建目标：**
+
+| 平台        | Target                      | 产物格式  |
+| ----------- | --------------------------- | --------- |
+| Linux x64   | `x86_64-unknown-linux-gnu`  | `.tar.gz` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| macOS x64   | `x86_64-apple-darwin`       | `.tar.gz` |
+| macOS ARM64 | `aarch64-apple-darwin`      | `.tar.gz` |
+| Windows x64 | `x86_64-pc-windows-msvc`    | `.zip`    |
+
+**发布产物示例：**
+
+```
+bifrost-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+bifrost-v0.1.0-aarch64-apple-darwin.tar.gz
+bifrost-v0.1.0-x86_64-pc-windows-msvc.zip
+bifrost-v0.1.0-checksums.txt
+```
+
 ## 依赖
 
 主要依赖：
 
-| 依赖 | 用途 |
-|------|------|
-| `tokio` | 异步运行时 |
-| `hyper` | HTTP 库 |
-| `rustls` | TLS 实现 |
-| `rcgen` | 证书生成 |
-| `clap` | 命令行解析 |
-| `serde` | 序列化 |
-| `tracing` | 日志追踪 |
-| `regex` | 正则表达式 |
+| 依赖      | 用途       |
+| --------- | ---------- |
+| `tokio`   | 异步运行时 |
+| `hyper`   | HTTP 库    |
+| `rustls`  | TLS 实现   |
+| `rcgen`   | 证书生成   |
+| `clap`    | 命令行解析 |
+| `serde`   | 序列化     |
+| `tracing` | 日志追踪   |
+| `regex`   | 正则表达式 |
 
 ## License
 
