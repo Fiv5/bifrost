@@ -272,7 +272,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(&server.url("/test"))
+            .get(server.url("/test"))
             .header("X-Custom", "value123")
             .send()
             .await
@@ -292,7 +292,7 @@ mod tests {
         server.set_response(201, "created");
 
         let client = reqwest::Client::new();
-        let resp = client.post(&server.url("/create")).send().await.unwrap();
+        let resp = client.post(server.url("/create")).send().await.unwrap();
 
         assert_eq!(resp.status().as_u16(), 201);
     }
@@ -303,7 +303,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         client
-            .post(&server.url("/api/users"))
+            .post(server.url("/api/users"))
             .header("Authorization", "Bearer token123")
             .send()
             .await

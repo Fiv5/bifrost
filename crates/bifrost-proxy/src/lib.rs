@@ -7,6 +7,7 @@ mod socks;
 mod tunnel;
 mod websocket;
 
+pub use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 pub use http::*;
 pub use logging::*;
 pub use request::*;

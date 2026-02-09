@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use bifrost_admin::AdminState;
 use bifrost_core::init_logging;
-use bifrost_proxy::{ProxyConfig, ProxyServer};
-use bifrost_storage::{RuleFile, RulesStorage, StateManager};
+use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
+use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager};
 use bifrost_tls::{
-    generate_root_ca, get_platform_name, load_root_ca, save_root_ca, CertInstaller, CertStatus,
+    generate_root_ca, get_platform_name, load_root_ca, parse_cert_info, save_root_ca,
+    CertInstaller, CertStatus,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select};
@@ -40,6 +41,18 @@ enum Commands {
         daemon: bool,
         #[arg(long, help = "Skip CA certificate installation check")]
         skip_cert_check: bool,
+        #[arg(
+            long,
+            help = "Access control mode: local_only (default), whitelist, interactive, allow_all"
+        )]
+        access_mode: Option<String>,
+        #[arg(
+            long,
+            help = "Client IP whitelist (comma-separated, supports CIDR notation)"
+        )]
+        whitelist: Option<String>,
+        #[arg(long, help = "Allow LAN (private network) clients")]
+        allow_lan: bool,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
@@ -55,9 +68,14 @@ enum Commands {
         #[command(subcommand)]
         action: CaCommands,
     },
+    #[command(about = "Manage client IP whitelist")]
+    Whitelist {
+        #[command(subcommand)]
+        action: WhitelistCommands,
+    },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum RuleCommands {
     #[command(about = "List all rules")]
     List,
@@ -92,7 +110,7 @@ enum RuleCommands {
     },
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum CaCommands {
     #[command(about = "Generate CA certificate")]
     Generate {
@@ -106,6 +124,29 @@ enum CaCommands {
     },
     #[command(about = "Show CA certificate info")]
     Info,
+}
+
+#[derive(Subcommand, Clone)]
+enum WhitelistCommands {
+    #[command(about = "List current whitelist entries")]
+    List,
+    #[command(about = "Add IP or CIDR to whitelist")]
+    Add {
+        #[arg(help = "IP address or CIDR (e.g., 192.168.1.100 or 192.168.1.0/24)")]
+        ip_or_cidr: String,
+    },
+    #[command(about = "Remove IP or CIDR from whitelist")]
+    Remove {
+        #[arg(help = "IP address or CIDR to remove")]
+        ip_or_cidr: String,
+    },
+    #[command(about = "Enable or disable LAN (private network) access")]
+    AllowLan {
+        #[arg(help = "Enable (true) or disable (false) LAN access")]
+        enable: bool,
+    },
+    #[command(about = "Show current access control settings")]
+    Status,
 }
 
 fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
@@ -166,12 +207,23 @@ fn main() {
         Some(Commands::Start {
             daemon,
             skip_cert_check,
-        }) => run_start(&cli, daemon, skip_cert_check),
+            ref access_mode,
+            ref whitelist,
+            allow_lan,
+        }) => run_start(
+            &cli,
+            daemon,
+            skip_cert_check,
+            access_mode.clone(),
+            whitelist.clone(),
+            allow_lan,
+        ),
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
-        None => run_start(&cli, false, false),
+        Some(Commands::Whitelist { action }) => handle_whitelist_command(action),
+        None => run_start(&cli, false, false, None, None, false),
     };
 
     if let Err(e) = result {
@@ -180,7 +232,14 @@ fn main() {
     }
 }
 
-fn run_start(cli: &Cli, daemon: bool, skip_cert_check: bool) -> bifrost_core::Result<()> {
+fn run_start(
+    cli: &Cli,
+    daemon: bool,
+    skip_cert_check: bool,
+    access_mode: Option<String>,
+    whitelist: Option<String>,
+    allow_lan: bool,
+) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
             return Err(bifrost_core::BifrostError::Config(format!(
@@ -195,12 +254,52 @@ fn run_start(cli: &Cli, daemon: bool, skip_cert_check: bool) -> bifrost_core::Re
         check_and_install_certificate()?;
     }
 
+    let parsed_access_mode = match &access_mode {
+        Some(mode) => mode
+            .parse::<AccessMode>()
+            .map_err(bifrost_core::BifrostError::Config)?,
+        None => {
+            let config = load_config();
+            if config.access.mode.is_empty() {
+                AccessMode::LocalOnly
+            } else {
+                config.access.mode.parse().unwrap_or(AccessMode::LocalOnly)
+            }
+        }
+    };
+
+    let client_whitelist: Vec<String> = match whitelist {
+        Some(wl) => wl.split(',').map(|s| s.trim().to_string()).collect(),
+        None => {
+            let config = load_config();
+            config.access.whitelist
+        }
+    };
+
+    let allow_lan_final = if allow_lan {
+        true
+    } else {
+        let config = load_config();
+        config.access.allow_lan
+    };
+
     let proxy_config = ProxyConfig {
         port: cli.port,
         host: cli.host.clone(),
         socks5_port: cli.socks5_port,
+        access_mode: parsed_access_mode,
+        client_whitelist,
+        allow_lan: allow_lan_final,
         ..Default::default()
     };
+
+    println!("Access control mode: {}", proxy_config.access_mode);
+    if !proxy_config.client_whitelist.is_empty() {
+        println!("Client whitelist: {:?}", proxy_config.client_whitelist);
+    }
+    if proxy_config.allow_lan {
+        println!("LAN (private network) access: enabled");
+    }
 
     if daemon {
         #[cfg(unix)]
@@ -217,6 +316,31 @@ fn run_start(cli: &Cli, daemon: bool, skip_cert_check: bool) -> bifrost_core::Re
         run_foreground(proxy_config)?;
     }
 
+    Ok(())
+}
+
+fn load_config() -> BifrostConfig {
+    let config_path = get_bifrost_dir()
+        .map(|p| p.join("config.toml"))
+        .unwrap_or_default();
+    if config_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = toml::from_str(&content) {
+                return config;
+            }
+        }
+    }
+    BifrostConfig::default()
+}
+
+fn save_config(config: &BifrostConfig) -> bifrost_core::Result<()> {
+    let config_dir = get_bifrost_dir()?;
+    std::fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("config.toml");
+    let content = toml::to_string_pretty(config).map_err(|e| {
+        bifrost_core::BifrostError::Config(format!("Failed to serialize config: {}", e))
+    })?;
+    std::fs::write(&config_path, content)?;
     Ok(())
 }
 
@@ -530,26 +654,134 @@ fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
             }
 
             let _ca = load_root_ca(&ca_cert_path, &ca_key_path)?;
+
             println!("CA Certificate Information");
             println!("==========================");
-            println!("Certificate: {}", ca_cert_path.display());
-            println!("Private Key: {}", ca_key_path.display());
+            println!();
 
+            match parse_cert_info(&ca_cert_path) {
+                Ok(cert_info) => {
+                    println!("📜 Certificate Details");
+                    println!("  Subject:           {}", cert_info.subject);
+                    println!("  Issuer:            {}", cert_info.issuer);
+                    println!("  Serial Number:     {}", cert_info.serial_number);
+                    println!("  Signature Algo:    {}", cert_info.signature_algorithm);
+                    println!(
+                        "  Is CA:             {}",
+                        if cert_info.is_ca { "Yes" } else { "No" }
+                    );
+                    println!();
+
+                    println!("🔑 Key Information");
+                    print!("  Algorithm:         {}", cert_info.key_type);
+                    if let Some(size) = cert_info.key_size {
+                        print!(" ({} bits)", size);
+                    }
+                    println!();
+                    if !cert_info.key_usages.is_empty() {
+                        println!("  Key Usage:         {}", cert_info.key_usages.join(", "));
+                    }
+                    if !cert_info.extended_key_usages.is_empty() {
+                        println!(
+                            "  Extended Usage:    {}",
+                            cert_info.extended_key_usages.join(", ")
+                        );
+                    }
+                    println!();
+
+                    println!("📅 Validity Period");
+                    println!(
+                        "  Not Before:        {}",
+                        cert_info.not_before.format("%Y-%m-%d %H:%M:%S UTC")
+                    );
+                    println!(
+                        "  Not After:         {}",
+                        cert_info.not_after.format("%Y-%m-%d %H:%M:%S UTC")
+                    );
+
+                    let days = cert_info.days_remaining();
+                    if cert_info.is_expired() {
+                        println!("  Status:            ❌ EXPIRED ({} days ago)", -days);
+                    } else if cert_info.is_not_yet_valid() {
+                        println!("  Status:            ⏳ Not yet valid");
+                    } else {
+                        let years = days / 365;
+                        let remaining_days = days % 365;
+                        if years > 0 {
+                            println!(
+                                "  Remaining:         {} days ({} years, {} days)",
+                                days, years, remaining_days
+                            );
+                        } else {
+                            println!("  Remaining:         {} days", days);
+                        }
+                        if days < 30 {
+                            println!("  ⚠️  Certificate will expire soon!");
+                        }
+                    }
+                    println!();
+
+                    println!("🔐 Fingerprint");
+                    println!("  SHA-256:           {}", cert_info.fingerprint_sha256);
+                    println!();
+                }
+                Err(e) => {
+                    println!("⚠️  Could not parse certificate details: {}", e);
+                    println!();
+                }
+            }
+
+            println!("📂 File Paths");
+            println!("  Certificate:       {}", ca_cert_path.display());
+            println!("  Private Key:       {}", ca_key_path.display());
             let cert_meta = std::fs::metadata(&ca_cert_path)?;
             if let Ok(modified) = cert_meta.modified() {
                 if let Ok(duration) = modified.elapsed() {
                     let days = duration.as_secs() / 86400;
-                    println!("Created: {} days ago", days);
+                    if days == 0 {
+                        let hours = duration.as_secs() / 3600;
+                        if hours == 0 {
+                            let mins = duration.as_secs() / 60;
+                            println!("  File Modified:     {} minutes ago", mins);
+                        } else {
+                            println!("  File Modified:     {} hours ago", hours);
+                        }
+                    } else {
+                        println!("  File Modified:     {} days ago", days);
+                    }
                 }
             }
+            println!();
 
+            println!("💻 System Trust Status ({})", get_platform_name());
             let installer = CertInstaller::new(&ca_cert_path);
-            match installer.check_status() {
-                Ok(status) => {
-                    println!("System trust status: {}", status);
+            match installer.get_detailed_status() {
+                Ok(system_info) => {
+                    let status_icon = match system_info.status {
+                        CertStatus::InstalledAndTrusted => "✓",
+                        CertStatus::InstalledNotTrusted => "⚠",
+                        CertStatus::NotInstalled => "✗",
+                    };
+                    println!(
+                        "  Status:            {} {}",
+                        status_icon, system_info.status
+                    );
+                    if let Some(location) = system_info.keychain_location {
+                        println!("  Location:          {}", location);
+                    }
+                    if let Some(path) = system_info.system_cert_path {
+                        println!("  System Path:       {}", path.display());
+                    }
+
+                    if system_info.status != CertStatus::InstalledAndTrusted {
+                        println!();
+                        println!(
+                            "  💡 Run 'bifrost ca install' to install and trust the certificate."
+                        );
+                    }
                 }
                 Err(e) => {
-                    println!("Could not check trust status: {}", e);
+                    println!("  Could not check trust status: {}", e);
                 }
             }
         }
@@ -664,4 +896,115 @@ fn prompt_trust_certificate(installer: &CertInstaller) -> bifrost_core::Result<(
         }
         Err(_) => Ok(()),
     }
+}
+
+fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Result<()> {
+    let mut config = load_config();
+
+    match action {
+        WhitelistCommands::List => {
+            println!("Client IP Whitelist");
+            println!("===================");
+            if config.access.whitelist.is_empty() {
+                println!("No entries in whitelist.");
+            } else {
+                for entry in &config.access.whitelist {
+                    println!("  - {}", entry);
+                }
+            }
+            println!();
+            println!(
+                "LAN (private network) access: {}",
+                if config.access.allow_lan {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        WhitelistCommands::Add { ip_or_cidr } => {
+            if ip_or_cidr.contains('/') {
+                if ip_or_cidr.parse::<ipnet::IpNet>().is_err() {
+                    return Err(bifrost_core::BifrostError::Config(format!(
+                        "Invalid CIDR notation: {}",
+                        ip_or_cidr
+                    )));
+                }
+            } else if ip_or_cidr.parse::<std::net::IpAddr>().is_err() {
+                return Err(bifrost_core::BifrostError::Config(format!(
+                    "Invalid IP address: {}",
+                    ip_or_cidr
+                )));
+            }
+
+            if config.access.whitelist.contains(&ip_or_cidr) {
+                println!("'{}' is already in the whitelist.", ip_or_cidr);
+            } else {
+                config.access.whitelist.push(ip_or_cidr.clone());
+                save_config(&config)?;
+                println!("Added '{}' to whitelist.", ip_or_cidr);
+                println!("Note: Restart the proxy server for changes to take effect.");
+            }
+        }
+        WhitelistCommands::Remove { ip_or_cidr } => {
+            if let Some(pos) = config
+                .access
+                .whitelist
+                .iter()
+                .position(|x| x == &ip_or_cidr)
+            {
+                config.access.whitelist.remove(pos);
+                save_config(&config)?;
+                println!("Removed '{}' from whitelist.", ip_or_cidr);
+                println!("Note: Restart the proxy server for changes to take effect.");
+            } else {
+                println!("'{}' is not in the whitelist.", ip_or_cidr);
+            }
+        }
+        WhitelistCommands::AllowLan { enable } => {
+            config.access.allow_lan = enable;
+            save_config(&config)?;
+            if enable {
+                println!("LAN (private network) access enabled.");
+            } else {
+                println!("LAN (private network) access disabled.");
+            }
+            println!("Note: Restart the proxy server for changes to take effect.");
+        }
+        WhitelistCommands::Status => {
+            println!("Access Control Settings");
+            println!("=======================");
+            println!(
+                "Mode: {}",
+                if config.access.mode.is_empty() {
+                    "local_only (default)"
+                } else {
+                    &config.access.mode
+                }
+            );
+            println!(
+                "LAN access: {}",
+                if config.access.allow_lan {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            println!();
+            println!("Whitelist entries: {}", config.access.whitelist.len());
+            if !config.access.whitelist.is_empty() {
+                for entry in &config.access.whitelist {
+                    println!("  - {}", entry);
+                }
+            }
+            println!();
+            println!("Access mode options:");
+            println!("  local_only  - Only allow connections from localhost (default)");
+            println!("  whitelist   - Allow localhost + whitelisted IPs/CIDRs");
+            println!("  interactive - Prompt for confirmation on unknown IPs");
+            println!("  allow_all   - Allow all connections (not recommended)");
+        }
+    }
+
+    Ok(())
 }

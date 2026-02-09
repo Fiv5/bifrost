@@ -6,6 +6,7 @@ import {
   FileTextOutlined,
   SwapOutlined,
   SettingOutlined,
+  SafetyOutlined,
 } from '@ant-design/icons';
 
 const { Header, Sider, Content } = Layout;
@@ -15,6 +16,7 @@ const menuItems = [
   { key: '/', icon: <DashboardOutlined />, label: 'Dashboard' },
   { key: '/rules', icon: <FileTextOutlined />, label: 'Rules' },
   { key: '/traffic', icon: <SwapOutlined />, label: 'Traffic' },
+  { key: '/whitelist', icon: <SafetyOutlined />, label: 'Whitelist' },
   { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
 ];
 

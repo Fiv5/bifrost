@@ -4,9 +4,11 @@ use std::sync::Arc;
 use bifrost_core::{BifrostError, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 
 use crate::server::RulesResolver;
+use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 const SOCKS5_VERSION: u8 = 0x05;
 
@@ -130,6 +132,9 @@ pub struct SocksConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub timeout_secs: u64,
+    pub access_mode: AccessMode,
+    pub client_whitelist: Vec<String>,
+    pub allow_lan: bool,
 }
 
 impl Default for SocksConfig {
@@ -141,6 +146,9 @@ impl Default for SocksConfig {
             username: None,
             password: None,
             timeout_secs: 30,
+            access_mode: AccessMode::LocalOnly,
+            client_whitelist: Vec::new(),
+            allow_lan: false,
         }
     }
 }
@@ -148,13 +156,20 @@ impl Default for SocksConfig {
 pub struct SocksServer {
     config: SocksConfig,
     rules: Arc<dyn RulesResolver>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
 }
 
 impl SocksServer {
     pub fn new(config: SocksConfig) -> Self {
+        let access_config = AccessControlConfig {
+            mode: config.access_mode,
+            whitelist: config.client_whitelist.clone(),
+            allow_lan: config.allow_lan,
+        };
         Self {
             config,
             rules: Arc::new(crate::server::NoOpRulesResolver),
+            access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
         }
     }
 
@@ -163,8 +178,17 @@ impl SocksServer {
         self
     }
 
+    pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
+        self.access_control = access_control;
+        self
+    }
+
     pub fn config(&self) -> &SocksConfig {
         &self.config
+    }
+
+    pub fn access_control(&self) -> &Arc<RwLock<ClientAccessControl>> {
+        &self.access_control
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
@@ -191,6 +215,30 @@ impl SocksServer {
             })?;
 
             debug!("SOCKS5: Accepted connection from {}", peer_addr);
+
+            let decision = {
+                let access_control = self.access_control.read().await;
+                access_control.check_access(&peer_addr.ip())
+            };
+
+            match decision {
+                AccessDecision::Allow => {}
+                AccessDecision::Deny => {
+                    warn!(
+                        "SOCKS5: Access denied for client {} (not in whitelist)",
+                        peer_addr.ip()
+                    );
+                    continue;
+                }
+                AccessDecision::Prompt(ip) => {
+                    warn!(
+                        "SOCKS5: Non-whitelisted client {} requires confirmation. \
+                        Use `bifrost whitelist add {}` to allow, or set --access-mode=allow_all",
+                        ip, ip
+                    );
+                    continue;
+                }
+            }
 
             let config = self.config.clone();
             let rules = Arc::clone(&self.rules);
@@ -658,11 +706,16 @@ mod tests {
             username: Some("user".to_string()),
             password: Some("pass".to_string()),
             timeout_secs: 60,
+            access_mode: AccessMode::Whitelist,
+            client_whitelist: vec!["10.0.0.0/8".to_string()],
+            allow_lan: true,
         };
         let server = SocksServer::new(config);
         assert_eq!(server.config().port, 9050);
         assert_eq!(server.config().host, "0.0.0.0");
         assert!(server.config().auth_required);
+        assert_eq!(server.config().access_mode, AccessMode::Whitelist);
+        assert!(server.config().allow_lan);
     }
 
     #[tokio::test]
@@ -778,6 +831,9 @@ mod tests {
             username: Some("admin".to_string()),
             password: Some("secret".to_string()),
             timeout_secs: 30,
+            access_mode: AccessMode::LocalOnly,
+            client_whitelist: Vec::new(),
+            allow_lan: false,
         };
         assert!(config.auth_required);
         assert_eq!(config.username, Some("admin".to_string()));

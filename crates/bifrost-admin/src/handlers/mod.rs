@@ -2,6 +2,7 @@ pub mod metrics;
 pub mod rules;
 pub mod system;
 pub mod traffic;
+pub mod whitelist;
 
 use bytes::Bytes;
 use http_body_util::BodyExt;

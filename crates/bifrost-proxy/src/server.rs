@@ -13,11 +13,13 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::http::handle_http_request;
 use crate::logging::RequestContext;
 use crate::tunnel::handle_connect;
+use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -30,6 +32,9 @@ pub struct ProxyConfig {
     pub socks5_username: Option<String>,
     pub socks5_password: Option<String>,
     pub verbose_logging: bool,
+    pub access_mode: AccessMode,
+    pub client_whitelist: Vec<String>,
+    pub allow_lan: bool,
 }
 
 impl Default for ProxyConfig {
@@ -44,6 +49,9 @@ impl Default for ProxyConfig {
             socks5_username: None,
             socks5_password: None,
             verbose_logging: false,
+            access_mode: AccessMode::LocalOnly,
+            client_whitelist: Vec::new(),
+            allow_lan: false,
         }
     }
 }
@@ -100,17 +108,24 @@ pub struct ProxyServer {
     tls_config: Arc<TlsConfig>,
     admin_state: Option<Arc<AdminState>>,
     admin_security_config: AdminSecurityConfig,
+    access_control: Arc<RwLock<ClientAccessControl>>,
 }
 
 impl ProxyServer {
     pub fn new(config: ProxyConfig) -> Self {
         let admin_security_config = AdminSecurityConfig::new(config.port);
+        let access_config = AccessControlConfig {
+            mode: config.access_mode,
+            whitelist: config.client_whitelist.clone(),
+            allow_lan: config.allow_lan,
+        };
         Self {
             config,
             rules: Arc::new(NoOpRulesResolver),
             tls_config: Arc::new(TlsConfig::default()),
             admin_state: None,
             admin_security_config,
+            access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
         }
     }
 
@@ -137,6 +152,10 @@ impl ProxyServer {
         self.admin_state.as_ref()
     }
 
+    pub fn access_control(&self) -> &Arc<RwLock<ClientAccessControl>> {
+        &self.access_control
+    }
+
     pub async fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
         TcpListener::bind(addr)
             .await
@@ -159,9 +178,13 @@ impl ProxyServer {
                 username: self.config.socks5_username.clone(),
                 password: self.config.socks5_password.clone(),
                 timeout_secs: self.config.timeout_secs,
+                access_mode: self.config.access_mode,
+                client_whitelist: self.config.client_whitelist.clone(),
+                allow_lan: self.config.allow_lan,
             };
-            let socks_server =
-                crate::socks::SocksServer::new(socks_config).with_rules(Arc::clone(&self.rules));
+            let socks_server = crate::socks::SocksServer::new(socks_config)
+                .with_rules(Arc::clone(&self.rules))
+                .with_access_control(Arc::clone(&self.access_control));
 
             let http_future = self.serve(listener);
             let socks_future = socks_server.run();
@@ -182,6 +205,30 @@ impl ProxyServer {
             })?;
 
             debug!("Accepted connection from {}", peer_addr);
+
+            let decision = {
+                let access_control = self.access_control.read().await;
+                access_control.check_access(&peer_addr.ip())
+            };
+
+            match decision {
+                AccessDecision::Allow => {}
+                AccessDecision::Deny => {
+                    warn!(
+                        "Access denied for client {} (not in whitelist)",
+                        peer_addr.ip()
+                    );
+                    continue;
+                }
+                AccessDecision::Prompt(ip) => {
+                    warn!(
+                        "Non-whitelisted client {} requires confirmation. \
+                        Use `bifrost whitelist add {}` to allow, or set --access-mode=allow_all",
+                        ip, ip
+                    );
+                    continue;
+                }
+            }
 
             let rules = Arc::clone(&self.rules);
             let tls_config = Arc::clone(&self.tls_config);
@@ -412,6 +459,9 @@ mod tests {
             socks5_username: Some("user".to_string()),
             socks5_password: Some("pass".to_string()),
             verbose_logging: true,
+            access_mode: AccessMode::Whitelist,
+            client_whitelist: vec!["192.168.1.0/24".to_string()],
+            allow_lan: true,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);
@@ -420,6 +470,8 @@ mod tests {
         assert_eq!(server.config().socks5_port, Some(1080));
         assert!(server.config().socks5_auth_required);
         assert!(server.config().verbose_logging);
+        assert_eq!(server.config().access_mode, AccessMode::Whitelist);
+        assert!(server.config().allow_lan);
     }
 
     #[test]

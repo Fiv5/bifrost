@@ -159,6 +159,9 @@ impl ProxyInstance {
             socks5_username: None,
             socks5_password: None,
             verbose_logging: true,
+            access_mode: bifrost_proxy::AccessMode::AllowAll,
+            client_whitelist: Vec::new(),
+            allow_lan: true,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);

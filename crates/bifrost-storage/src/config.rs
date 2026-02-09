@@ -3,7 +3,16 @@ use std::path::PathBuf;
 use bifrost_core::{BifrostError, Result};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AccessConfig {
+    pub mode: String,
+    pub whitelist: Vec<String>,
+    pub allow_lan: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BifrostConfig {
     pub port: u16,
     pub host: String,
@@ -11,6 +20,7 @@ pub struct BifrostConfig {
     pub values_dir: PathBuf,
     pub plugins_dir: PathBuf,
     pub cert_dir: PathBuf,
+    pub access: AccessConfig,
 }
 
 impl Default for BifrostConfig {
@@ -22,6 +32,7 @@ impl Default for BifrostConfig {
             values_dir: PathBuf::from(".bifrost/values"),
             plugins_dir: PathBuf::from(".bifrost/plugins"),
             cert_dir: PathBuf::from(".bifrost/certs"),
+            access: AccessConfig::default(),
         }
     }
 }

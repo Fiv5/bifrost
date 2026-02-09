@@ -220,7 +220,11 @@ fn parse_response(response: &str) -> (Option<u16>, HashMap<String, String>, Stri
 
 impl CurlResult {
     pub fn is_success(&self) -> bool {
-        self.exit_code == 0 && self.http_code.map(|c| c >= 200 && c < 300).unwrap_or(false)
+        self.exit_code == 0
+            && self
+                .http_code
+                .map(|c| (200..300).contains(&c))
+                .unwrap_or(false)
     }
 
     pub fn assert_success(&self) -> Result<(), String> {
@@ -232,7 +236,7 @@ impl CurlResult {
         }
 
         if let Some(code) = self.http_code {
-            if code >= 200 && code < 300 {
+            if (200..300).contains(&code) {
                 return Ok(());
             }
             return Err(format!("HTTP status {} is not success", code));

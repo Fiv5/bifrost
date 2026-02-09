@@ -1,5 +1,5 @@
 use bifrost_core::error::{BifrostError, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +17,14 @@ impl std::fmt::Display for CertStatus {
             CertStatus::InstalledAndTrusted => write!(f, "Installed and trusted"),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CertSystemInfo {
+    pub status: CertStatus,
+    pub keychain_location: Option<String>,
+    pub system_cert_path: Option<PathBuf>,
+    pub fingerprint_match: Option<bool>,
 }
 
 pub struct CertInstaller {
@@ -41,6 +49,22 @@ impl CertInstaller {
 
         #[cfg(target_os = "windows")]
         return self.check_status_windows();
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        return Err(BifrostError::Config(
+            "Unsupported operating system".to_string(),
+        ));
+    }
+
+    pub fn get_detailed_status(&self) -> Result<CertSystemInfo> {
+        #[cfg(target_os = "macos")]
+        return self.get_detailed_status_macos();
+
+        #[cfg(target_os = "linux")]
+        return self.get_detailed_status_linux();
+
+        #[cfg(target_os = "windows")]
+        return self.get_detailed_status_windows();
 
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         return Err(BifrostError::Config(
@@ -160,6 +184,71 @@ impl CertInstaller {
     }
 
     #[cfg(target_os = "macos")]
+    fn get_detailed_status_macos(&self) -> Result<CertSystemInfo> {
+        let output = Command::new("security")
+            .args([
+                "find-certificate",
+                "-c",
+                &self.cert_name,
+                "-a",
+                "-Z",
+                "/Library/Keychains/System.keychain",
+            ])
+            .output();
+
+        match output {
+            Ok(out) => {
+                if out.status.success() && !out.stdout.is_empty() {
+                    let trusted = self.check_trust_macos()?;
+                    return Ok(CertSystemInfo {
+                        status: if trusted {
+                            CertStatus::InstalledAndTrusted
+                        } else {
+                            CertStatus::InstalledNotTrusted
+                        },
+                        keychain_location: Some("System Keychain".to_string()),
+                        system_cert_path: Some(PathBuf::from("/Library/Keychains/System.keychain")),
+                        fingerprint_match: Some(true),
+                    });
+                }
+
+                let user_output = Command::new("security")
+                    .args(["find-certificate", "-c", &self.cert_name, "-a", "-Z"])
+                    .output();
+
+                if let Ok(user_out) = user_output {
+                    if user_out.status.success() && !user_out.stdout.is_empty() {
+                        let trusted = self.check_trust_macos()?;
+                        return Ok(CertSystemInfo {
+                            status: if trusted {
+                                CertStatus::InstalledAndTrusted
+                            } else {
+                                CertStatus::InstalledNotTrusted
+                            },
+                            keychain_location: Some("Login Keychain".to_string()),
+                            system_cert_path: None,
+                            fingerprint_match: Some(true),
+                        });
+                    }
+                }
+
+                Ok(CertSystemInfo {
+                    status: CertStatus::NotInstalled,
+                    keychain_location: None,
+                    system_cert_path: None,
+                    fingerprint_match: None,
+                })
+            }
+            Err(_) => Ok(CertSystemInfo {
+                status: CertStatus::NotInstalled,
+                keychain_location: None,
+                system_cert_path: None,
+                fingerprint_match: None,
+            }),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     fn install_macos(&self) -> Result<()> {
         if !self.cert_path.exists() {
             return Err(BifrostError::NotFound(format!(
@@ -228,6 +317,33 @@ impl CertInstaller {
             }
         }
         false
+    }
+
+    #[cfg(target_os = "linux")]
+    fn get_detailed_status_linux(&self) -> Result<CertSystemInfo> {
+        let system_cert_path = PathBuf::from("/usr/local/share/ca-certificates/bifrost-ca.crt");
+        let trusted_cert_link = Path::new("/etc/ssl/certs/bifrost-ca.pem");
+
+        if system_cert_path.exists() {
+            let is_trusted = trusted_cert_link.exists() || self.check_cert_in_bundle_linux();
+            Ok(CertSystemInfo {
+                status: if is_trusted {
+                    CertStatus::InstalledAndTrusted
+                } else {
+                    CertStatus::InstalledNotTrusted
+                },
+                keychain_location: Some("System CA Store".to_string()),
+                system_cert_path: Some(system_cert_path),
+                fingerprint_match: Some(true),
+            })
+        } else {
+            Ok(CertSystemInfo {
+                status: CertStatus::NotInstalled,
+                keychain_location: None,
+                system_cert_path: None,
+                fingerprint_match: None,
+            })
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -303,6 +419,40 @@ impl CertInstaller {
                 }
             }
             Err(_) => Ok(CertStatus::NotInstalled),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_detailed_status_windows(&self) -> Result<CertSystemInfo> {
+        let output = Command::new("certutil")
+            .args(["-store", "Root", &self.cert_name])
+            .output();
+
+        match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if out.status.success() && stdout.contains(&self.cert_name) {
+                    Ok(CertSystemInfo {
+                        status: CertStatus::InstalledAndTrusted,
+                        keychain_location: Some("Root Certificate Store".to_string()),
+                        system_cert_path: None,
+                        fingerprint_match: Some(true),
+                    })
+                } else {
+                    Ok(CertSystemInfo {
+                        status: CertStatus::NotInstalled,
+                        keychain_location: None,
+                        system_cert_path: None,
+                        fingerprint_match: None,
+                    })
+                }
+            }
+            Err(_) => Ok(CertSystemInfo {
+                status: CertStatus::NotInstalled,
+                keychain_location: None,
+                system_cert_path: None,
+                fingerprint_match: None,
+            }),
         }
     }
 

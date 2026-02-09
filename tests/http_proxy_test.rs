@@ -291,6 +291,9 @@ fn test_proxy_config_custom() {
         socks5_username: None,
         socks5_password: None,
         verbose_logging: false,
+        access_mode: bifrost_core::AccessMode::AllowAll,
+        client_whitelist: vec![],
+        allow_lan: true,
     };
     assert_eq!(config.port, 9000);
     assert!(config.enable_tls_interception);

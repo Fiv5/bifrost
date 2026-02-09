@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
+use bifrost_core::ClientAccessControl;
 use bifrost_storage::RulesStorage;
+use tokio::sync::RwLock;
 
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
+
+pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
+    pub access_control: Option<SharedAccessControl>,
     pub start_time: u64,
     pub port: u16,
 }
@@ -19,6 +24,7 @@ impl AdminState {
             traffic_recorder: Arc::new(TrafficRecorder::default()),
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
+            access_control: None,
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
         }
@@ -36,6 +42,11 @@ impl AdminState {
 
     pub fn with_metrics_collector(mut self, collector: MetricsCollector) -> Self {
         self.metrics_collector = Arc::new(collector);
+        self
+    }
+
+    pub fn with_access_control(mut self, access_control: SharedAccessControl) -> Self {
+        self.access_control = Some(access_control);
         self
     }
 }

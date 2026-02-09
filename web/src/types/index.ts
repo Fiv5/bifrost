@@ -96,3 +96,12 @@ export interface ApiResponse<T = unknown> {
   status?: number;
   data?: T;
 }
+
+export type AccessMode = 'allow_all' | 'local_only' | 'whitelist' | 'interactive';
+
+export interface WhitelistStatus {
+  mode: AccessMode;
+  allow_lan: boolean;
+  whitelist: string[];
+  temporary_whitelist: string[];
+}

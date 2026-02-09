@@ -1,0 +1,319 @@
+use std::net::IpAddr;
+use std::sync::Arc;
+
+use http_body_util::BodyExt;
+use hyper::body::Incoming;
+use hyper::{Method, Request, Response, StatusCode};
+use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
+use tracing::info;
+
+use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
+use bifrost_core::{AccessMode, ClientAccessControl};
+
+#[derive(Serialize)]
+struct WhitelistResponse {
+    mode: String,
+    allow_lan: bool,
+    whitelist: Vec<String>,
+    temporary_whitelist: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct AddWhitelistRequest {
+    ip_or_cidr: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateModeRequest {
+    mode: String,
+}
+
+#[derive(Deserialize)]
+struct UpdateAllowLanRequest {
+    allow_lan: bool,
+}
+
+#[derive(Deserialize)]
+struct TemporaryWhitelistRequest {
+    ip: String,
+}
+
+pub async fn handle_whitelist_request(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+    path: &str,
+) -> Response<BoxBody> {
+    match (req.method(), path) {
+        (&Method::GET, "/api/whitelist") => handle_list(access_control).await,
+        (&Method::POST, "/api/whitelist") => handle_add(req, access_control).await,
+        (&Method::DELETE, "/api/whitelist") => handle_remove(req, access_control).await,
+        (&Method::GET, "/api/whitelist/mode") => handle_get_mode(access_control).await,
+        (&Method::PUT, "/api/whitelist/mode") => handle_set_mode(req, access_control).await,
+        (&Method::GET, "/api/whitelist/allow-lan") => handle_get_allow_lan(access_control).await,
+        (&Method::PUT, "/api/whitelist/allow-lan") => {
+            handle_set_allow_lan(req, access_control).await
+        }
+        (&Method::POST, "/api/whitelist/temporary") => {
+            handle_add_temporary(req, access_control).await
+        }
+        (&Method::DELETE, "/api/whitelist/temporary") => {
+            handle_remove_temporary(req, access_control).await
+        }
+        _ => method_not_allowed(),
+    }
+}
+
+async fn handle_list(access_control: Arc<RwLock<ClientAccessControl>>) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let response = WhitelistResponse {
+        mode: ac.mode().to_string(),
+        allow_lan: ac.allow_lan(),
+        whitelist: ac.whitelist_entries(),
+        temporary_whitelist: ac
+            .temporary_whitelist_entries()
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect(),
+    };
+    json_response(&response)
+}
+
+async fn handle_add(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: AddWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let mut ac = access_control.write().await;
+    match ac.add_to_whitelist(&request.ip_or_cidr) {
+        Ok(_) => {
+            info!("Added {} to whitelist via API", request.ip_or_cidr);
+            let response = serde_json::json!({
+                "success": true,
+                "message": format!("Added {} to whitelist", request.ip_or_cidr)
+            });
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(full_body(response.to_string()))
+                .unwrap()
+        }
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn handle_remove(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: AddWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let mut ac = access_control.write().await;
+    match ac.remove_from_whitelist(&request.ip_or_cidr) {
+        Ok(removed) => {
+            if removed {
+                info!("Removed {} from whitelist via API", request.ip_or_cidr);
+                let response = serde_json::json!({
+                    "success": true,
+                    "message": format!("Removed {} from whitelist", request.ip_or_cidr)
+                });
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(full_body(response.to_string()))
+                    .unwrap()
+            } else {
+                error_response(
+                    StatusCode::NOT_FOUND,
+                    &format!("{} not found in whitelist", request.ip_or_cidr),
+                )
+            }
+        }
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn handle_get_mode(access_control: Arc<RwLock<ClientAccessControl>>) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let response = serde_json::json!({
+        "mode": ac.mode().to_string()
+    });
+    json_response(&response)
+}
+
+async fn handle_set_mode(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: UpdateModeRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let mode: AccessMode = match request.mode.parse() {
+        Ok(m) => m,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+    };
+
+    let mut ac = access_control.write().await;
+    ac.set_mode(mode);
+
+    let response = serde_json::json!({
+        "success": true,
+        "mode": ac.mode().to_string()
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(full_body(response.to_string()))
+        .unwrap()
+}
+
+async fn handle_get_allow_lan(
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let response = serde_json::json!({
+        "allow_lan": ac.allow_lan()
+    });
+    json_response(&response)
+}
+
+async fn handle_set_allow_lan(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: UpdateAllowLanRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let mut ac = access_control.write().await;
+    ac.set_allow_lan(request.allow_lan);
+
+    let response = serde_json::json!({
+        "success": true,
+        "allow_lan": ac.allow_lan()
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(full_body(response.to_string()))
+        .unwrap()
+}
+
+async fn handle_add_temporary(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: TemporaryWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    let ac = access_control.read().await;
+    ac.add_temporary(ip);
+
+    let response = serde_json::json!({
+        "success": true,
+        "message": format!("Added {} to temporary whitelist", ip)
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(full_body(response.to_string()))
+        .unwrap()
+}
+
+async fn handle_remove_temporary(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: TemporaryWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    let ac = access_control.read().await;
+    let removed = ac.remove_temporary(&ip);
+
+    if removed {
+        let response = serde_json::json!({
+            "success": true,
+            "message": format!("Removed {} from temporary whitelist", ip)
+        });
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(full_body(response.to_string()))
+            .unwrap()
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("{} not found in temporary whitelist", ip),
+        )
+    }
+}

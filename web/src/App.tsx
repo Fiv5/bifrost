@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard';
 import Rules from './pages/Rules';
 import Traffic from './pages/Traffic';
 import Settings from './pages/Settings';
+import Whitelist from './pages/Whitelist';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
             <Route index element={<Dashboard />} />
             <Route path="rules" element={<Rules />} />
             <Route path="traffic" element={<Traffic />} />
+            <Route path="whitelist" element={<Whitelist />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

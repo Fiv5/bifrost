@@ -5,11 +5,13 @@ pub mod dynamic;
 pub mod install;
 pub mod sni;
 
-pub use ca::{generate_root_ca, load_root_ca, save_root_ca, CertificateAuthority};
+pub use ca::{
+    generate_root_ca, load_root_ca, parse_cert_info, save_root_ca, CertInfo, CertificateAuthority,
+};
 pub use cache::CertCache;
 pub use config::TlsConfig;
 pub use dynamic::DynamicCertGenerator;
-pub use install::{get_platform_name, CertInstaller, CertStatus};
+pub use install::{get_platform_name, CertInstaller, CertStatus, CertSystemInfo};
 pub use sni::{build_sni_server_config, SniResolver};
 
 pub use rustls;
