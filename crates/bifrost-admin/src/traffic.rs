@@ -7,6 +7,13 @@ use tokio::sync::broadcast;
 
 use crate::body_store::BodyRef;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchedRule {
+    pub pattern: String,
+    pub protocol: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RequestTiming {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,6 +58,8 @@ pub struct TrafficRecord {
     pub protocol: String,
     #[serde(default)]
     pub is_tunnel: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_rules: Option<Vec<MatchedRule>>,
 }
 
 impl TrafficRecord {
@@ -90,6 +99,7 @@ impl TrafficRecord {
             path,
             protocol,
             is_tunnel: false,
+            matched_rules: None,
         }
     }
 }
@@ -107,10 +117,26 @@ pub struct TrafficSummary {
     pub duration_ms: u64,
     pub host: String,
     pub path: String,
+    pub has_matched_rules: bool,
+    pub matched_rule_count: usize,
+    pub matched_protocols: Vec<String>,
 }
 
 impl From<&TrafficRecord> for TrafficSummary {
     fn from(record: &TrafficRecord) -> Self {
+        let (has_matched_rules, matched_rule_count, matched_protocols) =
+            if let Some(ref rules) = record.matched_rules {
+                let protocols: Vec<String> = rules
+                    .iter()
+                    .map(|r| r.protocol.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                (!rules.is_empty(), rules.len(), protocols)
+            } else {
+                (false, 0, Vec::new())
+            };
+
         Self {
             id: record.id.clone(),
             timestamp: record.timestamp,
@@ -123,6 +149,9 @@ impl From<&TrafficRecord> for TrafficSummary {
             duration_ms: record.duration_ms,
             host: record.host.clone(),
             path: record.path.clone(),
+            has_matched_rules,
+            matched_rule_count,
+            matched_protocols,
         }
     }
 }
@@ -214,6 +243,8 @@ pub struct TrafficFilter {
     pub content_type: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub has_rules: Option<bool>,
+    pub protocol: Option<String>,
 }
 
 impl TrafficFilter {
@@ -260,6 +291,24 @@ impl TrafficFilter {
                     return false;
                 }
             } else {
+                return false;
+            }
+        }
+
+        if let Some(has_rules) = self.has_rules {
+            let record_has_rules = record.matched_rules.as_ref().is_some_and(|r| !r.is_empty());
+            if has_rules != record_has_rules {
+                return false;
+            }
+        }
+
+        if let Some(ref protocol) = self.protocol {
+            let has_protocol = record.matched_rules.as_ref().is_some_and(|rules| {
+                rules
+                    .iter()
+                    .any(|r| r.protocol.eq_ignore_ascii_case(protocol))
+            });
+            if !has_protocol {
                 return false;
             }
         }

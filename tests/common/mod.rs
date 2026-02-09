@@ -106,6 +106,7 @@ impl RulesResolver for TestRulesResolver {
                     }
                     _ => {
                         resolved.rules.push(RuleValue {
+                            pattern: rule.pattern.clone(),
                             protocol: rule.protocol,
                             value: rule.value.clone(),
                             options: HashMap::new(),

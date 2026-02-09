@@ -60,6 +60,7 @@ impl Default for ProxyConfig {
 
 #[derive(Debug, Clone)]
 pub struct RuleValue {
+    pub pattern: String,
     pub protocol: Protocol,
     pub value: String,
     pub options: HashMap<String, String>,
@@ -546,6 +547,7 @@ mod tests {
     #[test]
     fn test_rule_value() {
         let rule = RuleValue {
+            pattern: "*.example.com".to_string(),
             protocol: Protocol::Host,
             value: "example.com".to_string(),
             options: HashMap::new(),

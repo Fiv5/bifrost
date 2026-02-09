@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
+use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -285,6 +285,21 @@ pub async fn handle_http_request(
         });
         record.request_headers = Some(req_headers);
         record.response_headers = Some(res_headers);
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                    })
+                    .collect(),
+            )
+        };
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();

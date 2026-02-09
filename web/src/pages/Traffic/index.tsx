@@ -18,10 +18,11 @@ import {
   ReloadOutlined,
   ClearOutlined,
   SearchOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { useTrafficStore } from "../../stores/useTrafficStore";
 import TrafficTable from "../../components/TrafficTable";
-import type { TrafficSummary } from "../../types";
+import type { TrafficSummary, MatchedRule } from "../../types";
 import dayjs from "dayjs";
 
 const { Text, Paragraph } = Typography;
@@ -42,6 +43,12 @@ const statusOptions = [
   { value: "3xx", label: "3xx Redirect" },
   { value: "4xx", label: "4xx Client Error" },
   { value: "5xx", label: "5xx Server Error" },
+];
+
+const rulesOptions = [
+  { value: "", label: "All Requests" },
+  { value: "true", label: "With Rules" },
+  { value: "false", label: "Without Rules" },
 ];
 
 export default function Traffic() {
@@ -99,6 +106,14 @@ export default function Traffic() {
       statusMax = 599;
     }
     setFilter({ status_min: statusMin, status_max: statusMax, offset: 0 });
+    fetchTraffic();
+  };
+
+  const handleRulesChange = (value: string) => {
+    setFilter({
+      has_rules: value === "" ? undefined : value === "true",
+      offset: 0,
+    });
     fetchTraffic();
   };
 
@@ -162,6 +177,42 @@ export default function Traffic() {
     );
   };
 
+  const formatMatchedRules = (rules: MatchedRule[] | null) => {
+    if (!rules || rules.length === 0)
+      return <Text type="secondary">No rules matched</Text>;
+    return (
+      <div style={{ fontFamily: "monospace", fontSize: 12 }}>
+        {rules.map((rule, i) => (
+          <div
+            key={i}
+            style={{
+              padding: "8px 12px",
+              marginBottom: 8,
+              background: "#f5f5f5",
+              borderRadius: 4,
+              border: "1px solid #e8e8e8",
+            }}
+          >
+            <div style={{ marginBottom: 4 }}>
+              <ThunderboltOutlined style={{ color: "#1890ff", marginRight: 8 }} />
+              <Text strong style={{ color: "#1890ff" }}>
+                {rule.protocol}
+              </Text>
+            </div>
+            <div style={{ marginBottom: 4 }}>
+              <Text type="secondary">Pattern: </Text>
+              <Text code>{rule.pattern}</Text>
+            </div>
+            <div>
+              <Text type="secondary">Value: </Text>
+              <Text>{rule.value || <Text type="secondary">(empty)</Text>}</Text>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -187,6 +238,13 @@ export default function Traffic() {
               placeholder="Status"
               options={statusOptions}
               onChange={handleStatusChange}
+              style={{ width: 140 }}
+              defaultValue=""
+            />
+            <Select
+              placeholder="Rules"
+              options={rulesOptions}
+              onChange={handleRulesChange}
               style={{ width: 140 }}
               defaultValue=""
             />
@@ -259,6 +317,31 @@ export default function Traffic() {
             <Tabs
               style={{ marginTop: 16 }}
               items={[
+                {
+                  key: "matchedRules",
+                  label: (
+                    <span>
+                      <ThunderboltOutlined style={{ marginRight: 4 }} />
+                      Matched Rules
+                      {currentRecord.matched_rules &&
+                        currentRecord.matched_rules.length > 0 && (
+                          <span
+                            style={{
+                              marginLeft: 4,
+                              padding: "0 6px",
+                              fontSize: 11,
+                              background: "#1890ff",
+                              color: "#fff",
+                              borderRadius: 10,
+                            }}
+                          >
+                            {currentRecord.matched_rules.length}
+                          </span>
+                        )}
+                    </span>
+                  ),
+                  children: formatMatchedRules(currentRecord.matched_rules),
+                },
                 {
                   key: "reqHeaders",
                   label: "Request Headers",

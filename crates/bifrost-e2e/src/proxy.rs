@@ -2,7 +2,7 @@ use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
 };
 use bifrost_proxy::{
-    ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules,
+    ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait,
 };
 use std::net::SocketAddr;
@@ -27,7 +27,15 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
         for resolved_rule in &core_result.rules {
             let protocol = resolved_rule.rule.protocol;
             let value = &resolved_rule.resolved_value;
+            let pattern = &resolved_rule.rule.pattern;
             tracing::debug!("Processing rule: {:?} = {}", protocol, value);
+
+            result.rules.push(RuleValue {
+                pattern: pattern.clone(),
+                protocol,
+                value: value.clone(),
+                options: std::collections::HashMap::new(),
+            });
 
             match protocol {
                 Protocol::Host => {

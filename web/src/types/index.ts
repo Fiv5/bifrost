@@ -10,6 +10,12 @@ export interface RuleFileDetail {
   enabled: boolean;
 }
 
+export interface MatchedRule {
+  pattern: string;
+  protocol: string;
+  value: string;
+}
+
 export interface TrafficSummary {
   id: string;
   timestamp: number;
@@ -22,6 +28,9 @@ export interface TrafficSummary {
   duration_ms: number;
   host: string;
   path: string;
+  has_matched_rules: boolean;
+  matched_rule_count: number;
+  matched_protocols: string[];
 }
 
 export interface TrafficRecord extends TrafficSummary {
@@ -31,6 +40,7 @@ export interface TrafficRecord extends TrafficSummary {
   response_body: string | null;
   client_ip: string;
   protocol: string;
+  matched_rules: MatchedRule[] | null;
 }
 
 export interface TrafficListResponse {
@@ -50,6 +60,8 @@ export interface TrafficFilter {
   content_type?: string;
   limit?: number;
   offset?: number;
+  has_rules?: boolean;
+  protocol?: string;
 }
 
 export interface MetricsSnapshot {
