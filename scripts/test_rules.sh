@@ -1014,6 +1014,10 @@ test_websocket_rule() {
     local ws_headers=$(cat "$headers_file" 2>/dev/null || echo "")
     rm -f "$tmpfile" "$headers_file"
     
+    if [[ "$ws_response_code" == "000" ]] && [[ "$ws_headers" == *"101"* ]]; then
+        ws_response_code="101"
+    fi
+    
     echo "    HTTP 响应码: $ws_response_code"
     echo "    响应头 (部分): ${ws_headers:0:200}..."
     

@@ -484,7 +484,8 @@ fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody
 
 fn extract_host_port(uri: &Uri, rules: &ResolvedRules) -> Result<(String, u16)> {
     if let Some(ref host_rule) = rules.host {
-        let parts: Vec<&str> = host_rule.split(':').collect();
+        let host_without_path = host_rule.split('/').next().unwrap_or(host_rule);
+        let parts: Vec<&str> = host_without_path.split(':').collect();
         let host = parts[0].to_string();
         let port = if parts.len() > 1 {
             parts[1].parse().unwrap_or(80)
@@ -583,5 +584,17 @@ mod tests {
         let (host, port) = extract_host_port(&uri, &rules).unwrap();
         assert_eq!(host, "override.com");
         assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn test_extract_host_port_rule_with_path() {
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let rules = ResolvedRules {
+            host: Some("127.0.0.1:3020/ws".to_string()),
+            ..Default::default()
+        };
+        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 3020);
     }
 }

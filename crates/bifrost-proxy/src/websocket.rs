@@ -163,7 +163,9 @@ fn extract_sec_websocket_accept(response: &str) -> Option<String> {
 }
 
 fn parse_host_port(host: &str) -> Result<(String, u16)> {
-    let parts: Vec<&str> = host.split(':').collect();
+    let host_without_path = host.split('/').next().unwrap_or(host);
+
+    let parts: Vec<&str> = host_without_path.split(':').collect();
     match parts.len() {
         1 => Ok((parts[0].to_string(), 80)),
         2 => {
@@ -330,6 +332,20 @@ mod tests {
     fn test_parse_host_port_invalid() {
         let result = parse_host_port("example.com:invalid");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_host_port_with_path() {
+        let (host, port) = parse_host_port("127.0.0.1:3020/ws").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 3020);
+    }
+
+    #[test]
+    fn test_parse_host_port_with_path_no_port() {
+        let (host, port) = parse_host_port("example.com/ws/path").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
     }
 
     #[test]
