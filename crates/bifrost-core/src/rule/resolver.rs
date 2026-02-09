@@ -2,22 +2,11 @@ use crate::protocol::Protocol;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use super::context::RequestContext;
 use super::rule::Rule;
 use super::template::TemplateEngine;
 
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
-
-pub struct Request {
-    pub url: String,
-    pub host: String,
-    pub path: String,
-}
-
-impl Request {
-    pub fn new(url: String, host: String, path: String) -> Self {
-        Self { url, host, path }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedRule {
@@ -27,18 +16,29 @@ pub struct ResolvedRule {
 }
 
 impl ResolvedRule {
-    pub fn new(rule: Rule, captures: Option<Vec<String>>, values: &HashMap<String, String>) -> Self {
-        let resolved_value = if captures.is_some() || !values.is_empty() {
-            TemplateEngine::expand(&rule.value, captures.as_deref(), values)
-        } else {
-            rule.value.clone()
-        };
+    pub fn new(
+        rule: Rule,
+        captures: Option<Vec<String>>,
+        ctx: &RequestContext,
+        values: &HashMap<String, String>,
+    ) -> Self {
+        let resolved_value = TemplateEngine::expand_with_context(
+            &rule.value,
+            ctx,
+            captures.as_deref(),
+            values,
+        );
 
         Self {
             rule,
             captures,
             resolved_value,
         }
+    }
+
+    pub fn new_simple(rule: Rule, captures: Option<Vec<String>>, values: &HashMap<String, String>) -> Self {
+        let ctx = RequestContext::new();
+        Self::new(rule, captures, &ctx, values)
     }
 }
 
@@ -189,8 +189,8 @@ impl RulesResolver {
         }
     }
 
-    pub fn resolve(&self, req: &Request) -> ResolvedRules {
-        let cache_key = format!("{}|{}|{}", req.url, req.host, req.path);
+    pub fn resolve(&self, ctx: &RequestContext) -> ResolvedRules {
+        let cache_key = format!("{}|{}|{}", ctx.url, ctx.host, ctx.path);
 
         if self.cache_enabled {
             if let Ok(mut cache) = self.cache.write() {
@@ -205,7 +205,7 @@ impl RulesResolver {
 
         for rule in &self.rules {
             if rule.is_negated() {
-                let match_result = rule.matcher.matches(&req.url, &req.host, &req.path);
+                let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
                 if match_result.matched {
                     matched_protocols.insert(rule.protocol, true);
                 }
@@ -218,9 +218,9 @@ impl RulesResolver {
                 }
             }
 
-            let match_result = rule.matcher.matches(&req.url, &req.host, &req.path);
+            let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
             if match_result.matched {
-                let resolved = ResolvedRule::new(rule.clone(), match_result.captures, &self.values);
+                let resolved = ResolvedRule::new(rule.clone(), match_result.captures, ctx, &self.values);
                 result.add(resolved);
 
                 if !rule.protocol.is_multi_match() {
@@ -264,16 +264,26 @@ mod tests {
         )
     }
 
+    fn create_test_context(url: &str, host: &str, path: &str) -> RequestContext {
+        RequestContext::builder()
+            .url(url)
+            .host(host)
+            .hostname(host)
+            .path(path)
+            .pathname(path)
+            .build()
+    }
+
     #[test]
-    fn test_request_new() {
-        let req = Request::new(
-            "http://example.com/path".to_string(),
-            "example.com".to_string(),
-            "/path".to_string(),
+    fn test_request_context_new() {
+        let ctx = create_test_context(
+            "http://example.com/path",
+            "example.com",
+            "/path",
         );
-        assert_eq!(req.url, "http://example.com/path");
-        assert_eq!(req.host, "example.com");
-        assert_eq!(req.path, "/path");
+        assert_eq!(ctx.url, "http://example.com/path");
+        assert_eq!(ctx.host, "example.com");
+        assert_eq!(ctx.path, "/path");
     }
 
     #[test]
@@ -287,7 +297,7 @@ mod tests {
     fn test_resolved_rules_add() {
         let mut result = ResolvedRules::new();
         let rule = create_test_rule("*.example.com", Protocol::Host, "127.0.0.1");
-        let resolved = ResolvedRule::new(rule, None, &HashMap::new());
+        let resolved = ResolvedRule::new_simple(rule, None, &HashMap::new());
         result.add(resolved);
 
         assert!(!result.is_empty());
@@ -301,8 +311,8 @@ mod tests {
         let rule1 = create_test_rule("*.example.com", Protocol::Host, "127.0.0.1");
         let rule2 = create_test_rule("*.api.com", Protocol::Proxy, "proxy:8080");
 
-        result.add(ResolvedRule::new(rule1, None, &HashMap::new()));
-        result.add(ResolvedRule::new(rule2, None, &HashMap::new()));
+        result.add(ResolvedRule::new_simple(rule1, None, &HashMap::new()));
+        result.add(ResolvedRule::new_simple(rule2, None, &HashMap::new()));
 
         let host_rules = result.get_by_protocol(Protocol::Host);
         assert_eq!(host_rules.len(), 1);
@@ -318,7 +328,7 @@ mod tests {
     fn test_resolved_rules_has_protocol() {
         let mut result = ResolvedRules::new();
         let rule = create_test_rule("*.example.com", Protocol::Host, "127.0.0.1");
-        result.add(ResolvedRule::new(rule, None, &HashMap::new()));
+        result.add(ResolvedRule::new_simple(rule, None, &HashMap::new()));
 
         assert!(result.has_protocol(Protocol::Host));
         assert!(!result.has_protocol(Protocol::Proxy));
@@ -353,13 +363,13 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
         assert!(result.has_protocol(Protocol::Host));
     }
@@ -373,13 +383,13 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.other.com/path".to_string(),
-            "www.other.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.other.com/path",
+            "www.other.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert!(result.is_empty());
     }
 
@@ -392,13 +402,13 @@ mod tests {
 
         let resolver = RulesResolver::new(rules).with_values(values);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
         assert_eq!(result.rules[0].resolved_value, "127.0.0.1");
     }
@@ -428,14 +438,14 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result1 = resolver.resolve(&req);
-        let result2 = resolver.resolve(&req);
+        let result1 = resolver.resolve(&ctx);
+        let result2 = resolver.resolve(&ctx);
 
         assert_eq!(result1.len(), result2.len());
     }
@@ -449,13 +459,13 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules).disable_cache();
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
     }
 
@@ -468,16 +478,16 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let _ = resolver.resolve(&req);
+        let _ = resolver.resolve(&ctx);
         resolver.clear_cache();
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
     }
 
@@ -502,13 +512,13 @@ mod tests {
         ];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 2);
     }
 
@@ -520,13 +530,171 @@ mod tests {
         ];
         let resolver = RulesResolver::new(rules);
 
-        let req = Request::new(
-            "http://www.example.com/path".to_string(),
-            "www.example.com".to_string(),
-            "/path".to_string(),
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
         );
 
-        let result = resolver.resolve(&req);
+        let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_builtin_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::Host,
+            "host-${hostname}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = create_test_context(
+            "http://www.example.com/path",
+            "www.example.com",
+            "/path",
+        );
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "host-www.example.com");
+    }
+
+    #[test]
+    fn test_url_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "${url}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = create_test_context(
+            "http://www.example.com/api/test",
+            "www.example.com",
+            "/api/test",
+        );
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "http://www.example.com/api/test");
+    }
+
+    #[test]
+    fn test_path_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "path=${path}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = create_test_context(
+            "http://www.example.com/api/test?foo=bar",
+            "www.example.com",
+            "/api/test?foo=bar",
+        );
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "path=/api/test?foo=bar");
+    }
+
+    #[test]
+    fn test_method_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "method=${method}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .method("POST")
+            .build();
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "method=POST");
+    }
+
+    #[test]
+    fn test_client_ip_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "client=${clientIp}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .client_ip("192.168.1.100")
+            .build();
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "client=192.168.1.100");
+    }
+
+    #[test]
+    fn test_header_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "auth=${reqHeaders.authorization}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), "Bearer token123".to_string());
+
+        let ctx = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .req_headers(headers)
+            .build();
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "auth=Bearer token123");
+    }
+
+    #[test]
+    fn test_cookie_variable_expansion() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ResBody,
+            "session=${reqCookies.session_id}",
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let mut cookies = HashMap::new();
+        cookies.insert("session_id".to_string(), "abc123".to_string());
+
+        let ctx = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .req_cookies(cookies)
+            .build();
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "session=abc123");
     }
 }

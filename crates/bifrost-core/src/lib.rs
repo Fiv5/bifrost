@@ -13,5 +13,5 @@ pub use matcher::{
 pub use protocol::*;
 pub use rule::{
     parse_line, parse_rules, ResolvedRule, ResolvedRules, Rule, RuleGroup, RuleGroupManager,
-    RuleParser, RulesResolver, TemplateEngine, TemplateValue,
+    RuleParser, RulesResolver, TemplateEngine, RequestContext, RequestContextBuilder,
 };
