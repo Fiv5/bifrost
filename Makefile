@@ -1,4 +1,4 @@
-.PHONY: all build build-release clean test lint fmt install-deps dev help
+.PHONY: all build build-release clean test lint fmt install-deps dev help setup
 
 # Default target
 all: build
@@ -65,6 +65,13 @@ fmt-check:
 install-deps:
 	cd web && npm install
 
+# Setup development environment (install git hooks)
+setup:
+	@echo "Setting up git hooks..."
+	@git config core.hooksPath .githooks
+	@echo "Git hooks configured successfully!"
+	@echo "Pre-commit hook will run 'cargo fmt --all -- --check' before each commit."
+
 # Create release artifacts
 release: build-release
 	@echo "Release build complete!"
@@ -100,6 +107,7 @@ help:
 	@echo "  fmt            Format all code"
 	@echo "  fmt-check      Check code formatting"
 	@echo "  install-deps   Install development dependencies"
+	@echo "  setup          Setup development environment (git hooks)"
 	@echo "  release        Create release build"
 	@echo "  package        Create distribution package"
 	@echo "  help           Show this help message"

@@ -56,6 +56,32 @@ cargo run --bin bifrost -- --socks5-port 1080
 cargo run --bin bifrost -- start --daemon
 ```
 
+### 管理端界面
+
+启动代理服务后，可以通过浏览器访问管理端界面：
+
+```
+http://127.0.0.1:<端口>/_bifrost/
+```
+
+例如，使用默认端口 8899 启动时，访问地址为：
+
+```
+http://127.0.0.1:8899/_bifrost/
+```
+
+管理端提供以下功能：
+
+| 路径                      | 功能         |
+| ------------------------- | ------------ |
+| `/_bifrost/`              | Web UI 界面  |
+| `/_bifrost/api/rules/*`   | 规则管理 API |
+| `/_bifrost/api/traffic/*` | 流量记录 API |
+| `/_bifrost/api/metrics/*` | 指标监控 API |
+| `/_bifrost/api/system/*`  | 系统信息 API |
+
+> **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
+
 ### 基本命令
 
 ```bash
@@ -288,6 +314,16 @@ cargo test --test socks5_test
 ```
 
 ## 开发
+
+### 开发环境初始化
+
+首次克隆仓库后，请运行以下命令初始化开发环境：
+
+```bash
+make setup
+```
+
+这将配置 git hooks，确保每次提交前自动进行代码格式检查。
 
 ### 本地验证
 

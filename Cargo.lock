@@ -200,6 +200,7 @@ dependencies = [
 name = "bifrost-cli"
 version = "0.1.0"
 dependencies = [
+ "bifrost-admin",
  "bifrost-core",
  "bifrost-plugin",
  "bifrost-proxy",
@@ -237,11 +238,14 @@ version = "0.1.0"
 dependencies = [
  "bifrost-core",
  "bifrost-proxy",
+ "bytes",
  "clap",
  "colored",
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
+ "parking_lot",
+ "portpicker",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -1543,6 +1547,15 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+
+[[package]]
+name = "portpicker"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
+dependencies = [
+ "rand",
+]
 
 [[package]]
 name = "powerfmt"

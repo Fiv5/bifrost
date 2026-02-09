@@ -6,7 +6,12 @@ use tracing::info;
 use crate::logging::RequestContext;
 use crate::server::ResolvedRules;
 
-pub fn apply_res_rules(parts: &mut Parts, rules: &ResolvedRules, verbose_logging: bool, ctx: &RequestContext) {
+pub fn apply_res_rules(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
     apply_res_status(parts, rules, verbose_logging, ctx);
     apply_res_headers(parts, rules, verbose_logging, ctx);
     apply_res_cookies(parts, rules, verbose_logging, ctx);
@@ -77,12 +82,7 @@ fn apply_res_cookies(
         let cookie_value = format!("{}={}", name, value);
         if let Ok(header_value) = cookie_value.parse::<HeaderValue>() {
             if verbose_logging {
-                info!(
-                    "[{}] [RES_COOKIE] {} = \"{}\"",
-                    ctx.id_str(),
-                    name,
-                    value
-                );
+                info!("[{}] [RES_COOKIE] {} = \"{}\"", ctx.id_str(), name, value);
             }
             parts
                 .headers

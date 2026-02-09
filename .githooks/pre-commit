@@ -1,0 +1,13 @@
+#!/bin/sh
+
+echo "Running cargo fmt check..."
+
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "ERROR: Code formatting check failed!"
+    echo "Please run 'cargo fmt --all' or 'make fmt' to fix formatting issues."
+    exit 1
+fi
+
+echo "Code formatting check passed."
+exit 0

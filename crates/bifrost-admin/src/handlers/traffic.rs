@@ -33,10 +33,7 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
 
     let records = state.traffic_recorder.filter(&filter);
 
-    let (offset, limit) = (
-        filter.offset.unwrap_or(0),
-        filter.limit.unwrap_or(100),
-    );
+    let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
 
     let total = records.len();
     let paginated: Vec<_> = records.into_iter().skip(offset).take(limit).collect();
@@ -54,7 +51,10 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
 async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBody> {
     match state.traffic_recorder.get_by_id(id) {
         Some(record) => json_response(&record),
-        None => error_response(StatusCode::NOT_FOUND, &format!("Traffic record '{}' not found", id)),
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Traffic record '{}' not found", id),
+        ),
     }
 }
 

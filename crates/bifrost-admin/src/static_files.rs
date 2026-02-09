@@ -27,19 +27,17 @@ pub fn serve_static_file(path: &str) -> Response<BoxBody> {
                 .body(full_body(content.data.to_vec()))
                 .unwrap()
         }
-        None => {
-            match <Asset as Embed>::get("index.html") {
-                Some(content) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "text/html")
-                    .body(full_body(content.data.to_vec()))
-                    .unwrap(),
-                None => Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header("Content-Type", "text/plain")
-                    .body(full_body("Not Found"))
-                    .unwrap(),
-            }
-        }
+        None => match <Asset as Embed>::get("index.html") {
+            Some(content) => Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/html")
+                .body(full_body(content.data.to_vec()))
+                .unwrap(),
+            None => Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header("Content-Type", "text/plain")
+                .body(full_body("Not Found"))
+                .unwrap(),
+        },
     }
 }

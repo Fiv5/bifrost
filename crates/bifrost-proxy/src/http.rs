@@ -65,12 +65,7 @@ pub async fn handle_http_request(
                 port
             );
         } else {
-            info!(
-                "[{}] [FORWARD] {}:{}",
-                ctx.id_str(),
-                host,
-                port
-            );
+            info!("[{}] [FORWARD] {}:{}", ctx.id_str(), host, port);
         }
     } else {
         debug!("Proxying HTTP request to {}:{}", host, port);

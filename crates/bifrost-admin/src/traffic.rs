@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn test_traffic_recorder() {
         let recorder = TrafficRecorder::new(100);
-        
+
         let record = TrafficRecord::new(
             "1".to_string(),
             "GET".to_string(),
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn test_traffic_recorder_max_records() {
         let recorder = TrafficRecorder::new(3);
-        
+
         for i in 0..5 {
             let record = TrafficRecord::new(
                 i.to_string(),

@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bifrost_admin::{AdminRouter, AdminSecurityConfig, AdminState, is_valid_admin_request, ADMIN_PATH_PREFIX};
+use bifrost_admin::{
+    is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState, ADMIN_PATH_PREFIX,
+};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
@@ -256,8 +258,13 @@ async fn handle_request(
     if path.starts_with(ADMIN_PATH_PREFIX) {
         if let Some(state) = admin_state {
             if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
-                debug!("Valid admin request from {}: {} {}", peer_addr, method, path);
-                return Ok(convert_admin_response(AdminRouter::handle(req, state).await));
+                debug!(
+                    "Valid admin request from {}: {} {}",
+                    peer_addr, method, path
+                );
+                return Ok(convert_admin_response(
+                    AdminRouter::handle(req, state).await,
+                ));
             } else {
                 warn!(
                     "Rejected invalid admin request from {}: {} {} (possible forgery attempt)",

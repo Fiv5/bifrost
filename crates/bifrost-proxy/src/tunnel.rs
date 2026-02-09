@@ -29,7 +29,12 @@ pub async fn handle_connect(
     let port = authority.port_u16().unwrap_or(443);
 
     if verbose_logging {
-        debug!("[{}] CONNECT tunnel request to {}:{}", ctx.id_str(), host, port);
+        debug!(
+            "[{}] CONNECT tunnel request to {}:{}",
+            ctx.id_str(),
+            host,
+            port
+        );
     } else {
         debug!("CONNECT tunnel to {}:{}", host, port);
     }
@@ -108,7 +113,8 @@ pub async fn handle_connect(
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = tunnel_bidirectional(upgraded, target_stream, verbose, &req_id).await
+                if let Err(e) =
+                    tunnel_bidirectional(upgraded, target_stream, verbose, &req_id).await
                 {
                     error!("[{}] Tunnel error: {}", req_id, e);
                 }

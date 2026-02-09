@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use bifrost_admin::AdminState;
 use bifrost_core::init_logging;
 use bifrost_proxy::{ProxyConfig, ProxyServer};
 use bifrost_storage::{RuleFile, RulesStorage, StateManager};
@@ -238,7 +239,8 @@ fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
     })?;
 
     rt.block_on(async {
-        let server = ProxyServer::new(config);
+        let admin_state = AdminState::new(config.port);
+        let server = ProxyServer::new(config).with_admin_state(admin_state);
 
         tokio::select! {
             result = server.run() => {
@@ -315,7 +317,8 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
             })?;
 
             rt.block_on(async {
-                let server = ProxyServer::new(config);
+                let admin_state = AdminState::new(config.port);
+                let server = ProxyServer::new(config).with_admin_state(admin_state);
                 if let Err(e) = server.run().await {
                     eprintln!("Server error: {}", e);
                 }
