@@ -44,14 +44,22 @@ fn main() {
 
     if !web_dir.join("node_modules").exists() {
         println!("cargo:warning=Installing frontend dependencies...");
-        let status = Command::new("npm")
+        let output = Command::new("npm")
             .arg("install")
             .current_dir(&web_dir)
-            .status()
+            .output()
             .expect("Failed to run npm install");
 
-        if !status.success() {
-            panic!("npm install failed");
+        if !output.status.success() {
+            eprintln!(
+                "npm install stdout: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            eprintln!(
+                "npm install stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            panic!("npm install failed with exit code: {:?}", output.status.code());
         }
     }
 
