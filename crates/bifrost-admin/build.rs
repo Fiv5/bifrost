@@ -44,32 +44,31 @@ fn main() {
 
     let node_modules = web_dir.join("node_modules");
     if !node_modules.exists() {
-        println!("cargo:warning=Installing frontend dependencies...");
-        let npm_cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
-        let output = Command::new(npm_cmd)
-            .arg("ci")
-            .args(["--prefer-offline", "--no-audit", "--no-fund"])
+        println!("cargo:warning=Installing frontend dependencies with pnpm...");
+        let pnpm_cmd = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+        let output = Command::new(pnpm_cmd)
+            .args(["install", "--frozen-lockfile"])
             .current_dir(&web_dir)
             .output()
             .or_else(|_| {
-                Command::new(npm_cmd)
+                Command::new(pnpm_cmd)
                     .arg("install")
                     .current_dir(&web_dir)
                     .output()
             })
-            .expect("Failed to run npm install");
+            .expect("Failed to run pnpm install. Make sure pnpm is installed.");
 
         if !output.status.success() {
             eprintln!(
-                "npm install stdout: {}",
+                "pnpm install stdout: {}",
                 String::from_utf8_lossy(&output.stdout)
             );
             eprintln!(
-                "npm install stderr: {}",
+                "pnpm install stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
             panic!(
-                "npm install failed with exit code: {:?}",
+                "pnpm install failed with exit code: {:?}",
                 output.status.code()
             );
         }
@@ -79,12 +78,12 @@ fn main() {
         "cargo:warning=Building frontend at {}...",
         web_dir.display()
     );
-    let npm_cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    let output = Command::new(npm_cmd)
+    let pnpm_cmd = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+    let output = Command::new(pnpm_cmd)
         .args(["run", "build"])
         .current_dir(&web_dir)
         .output()
-        .expect("Failed to run npm run build");
+        .expect("Failed to run pnpm run build");
 
     if !output.status.success() {
         eprintln!(
@@ -127,7 +126,7 @@ fn ensure_dist_exists(dist_dir: &Path) {
 <head><title>Bifrost Admin</title></head>
 <body>
 <h1>Frontend not built</h1>
-<p>Run <code>npm run build</code> in the web directory or rebuild with <code>cargo build</code></p>
+<p>Run <code>pnpm run build</code> in the web directory or rebuild with <code>cargo build</code></p>
 </body>
 </html>"#,
         )

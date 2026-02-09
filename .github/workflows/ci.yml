@@ -38,13 +38,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         working-directory: web
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,13 +66,16 @@ jobs:
       BIFROST_DATA_DIR: ${{ github.workspace }}/.bifrost
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         working-directory: web
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -92,13 +98,16 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: web/pnpm-lock.yaml
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         working-directory: web
       - uses: dtolnay/rust-toolchain@stable
         with:
