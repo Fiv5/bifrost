@@ -2,3 +2,4 @@ target
 .trae/documents
 node_modules
 .DS_Store
+.bifrost-test

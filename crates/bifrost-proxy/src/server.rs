@@ -69,6 +69,7 @@ pub struct RuleValue {
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedRules {
     pub host: Option<String>,
+    pub host_protocol: Option<Protocol>,
     pub proxy: Option<String>,
     pub req_headers: Vec<(String, String)>,
     pub res_headers: Vec<(String, String)>,

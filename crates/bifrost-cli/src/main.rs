@@ -1,9 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_admin::{start_metrics_collector_task, AdminState};
-use bifrost_core::init_logging;
-use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer, TlsConfig};
+use bifrost_core::{
+    init_logging, parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
+};
+use bifrost_proxy::{
+    AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
+    RulesResolver as ProxyRulesResolverTrait, TlsConfig,
+};
 use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager};
 use bifrost_tls::{
     generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca, parse_cert_info,
@@ -61,6 +67,13 @@ enum Commands {
             help = "Domains to exclude from TLS interception (comma-separated, supports wildcards like *.example.com)"
         )]
         intercept_exclude: Option<String>,
+        #[arg(
+            long,
+            help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000'). Can be specified multiple times."
+        )]
+        rules: Vec<String>,
+        #[arg(long, help = "Path to rules file (one rule per line)")]
+        rules_file: Option<PathBuf>,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
@@ -220,6 +233,8 @@ fn main() {
             allow_lan,
             no_intercept,
             ref intercept_exclude,
+            ref rules,
+            ref rules_file,
         }) => run_start(
             &cli,
             daemon,
@@ -229,13 +244,26 @@ fn main() {
             allow_lan,
             no_intercept,
             intercept_exclude.clone(),
+            rules.clone(),
+            rules_file.clone(),
         ),
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
         Some(Commands::Whitelist { action }) => handle_whitelist_command(action),
-        None => run_start(&cli, false, false, None, None, false, false, None),
+        None => run_start(
+            &cli,
+            false,
+            false,
+            None,
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            None,
+        ),
     };
 
     if let Err(e) = result {
@@ -254,6 +282,8 @@ fn run_start(
     allow_lan: bool,
     no_intercept: bool,
     intercept_exclude: Option<String>,
+    rules: Vec<String>,
+    rules_file: Option<PathBuf>,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
@@ -342,10 +372,23 @@ fn run_start(
         println!("TLS interception: disabled");
     }
 
+    let parsed_rules = parse_cli_rules(&rules, &rules_file)?;
+    if !parsed_rules.is_empty() {
+        println!("Loaded {} rules from command line", parsed_rules.len());
+        for rule in &parsed_rules {
+            println!(
+                "  {} {}://{}",
+                rule.pattern,
+                rule.protocol.to_str(),
+                rule.value
+            );
+        }
+    }
+
     if daemon {
         #[cfg(unix)]
         {
-            run_daemon(proxy_config)?;
+            run_daemon(proxy_config, parsed_rules)?;
         }
         #[cfg(not(unix))]
         {
@@ -354,7 +397,7 @@ fn run_start(
             ));
         }
     } else {
-        run_foreground(proxy_config)?;
+        run_foreground(proxy_config, parsed_rules)?;
     }
 
     Ok(())
@@ -414,7 +457,171 @@ fn save_config(config: &BifrostConfig) -> bifrost_core::Result<()> {
     Ok(())
 }
 
-fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
+fn parse_cli_rules(
+    rules: &[String],
+    rules_file: &Option<PathBuf>,
+) -> bifrost_core::Result<Vec<Rule>> {
+    let mut all_rules = Vec::new();
+
+    for rule_str in rules {
+        match parse_rules(rule_str) {
+            Ok(parsed) => all_rules.extend(parsed),
+            Err(e) => {
+                return Err(bifrost_core::BifrostError::Config(format!(
+                    "Failed to parse rule '{}': {}",
+                    rule_str, e
+                )));
+            }
+        }
+    }
+
+    if let Some(file_path) = rules_file {
+        let content = std::fs::read_to_string(file_path).map_err(|e| {
+            bifrost_core::BifrostError::Config(format!(
+                "Failed to read rules file '{}': {}",
+                file_path.display(),
+                e
+            ))
+        })?;
+        match parse_rules(&content) {
+            Ok(parsed) => all_rules.extend(parsed),
+            Err(e) => {
+                return Err(bifrost_core::BifrostError::Config(format!(
+                    "Failed to parse rules file '{}': {}",
+                    file_path.display(),
+                    e
+                )));
+            }
+        }
+    }
+
+    Ok(all_rules)
+}
+
+struct RulesResolverAdapter {
+    inner: CoreRulesResolver,
+}
+
+impl ProxyRulesResolverTrait for RulesResolverAdapter {
+    fn resolve(&self, url: &str, method: &str) -> ProxyResolvedRules {
+        let mut ctx = RequestContext::from_url(url);
+        ctx.method = method.to_string();
+
+        let core_result = self.inner.resolve(&ctx);
+        let mut result = ProxyResolvedRules::default();
+
+        for resolved_rule in &core_result.rules {
+            let protocol = resolved_rule.rule.protocol;
+            let value = &resolved_rule.resolved_value;
+            let pattern = &resolved_rule.rule.pattern;
+
+            result.rules.push(RuleValue {
+                pattern: pattern.clone(),
+                protocol,
+                value: value.clone(),
+                options: HashMap::new(),
+            });
+
+            match protocol {
+                Protocol::Host
+                | Protocol::XHost
+                | Protocol::Http
+                | Protocol::Https
+                | Protocol::Ws
+                | Protocol::Wss => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(protocol);
+                }
+                Protocol::Redirect => {
+                    result.redirect = Some(value.to_string());
+                }
+                Protocol::ReqHeaders => {
+                    if let Some(headers) = parse_header_value(value) {
+                        for (k, v) in headers {
+                            result.req_headers.push((k, v));
+                        }
+                    }
+                }
+                Protocol::ResHeaders => {
+                    if let Some(headers) = parse_header_value(value) {
+                        for (k, v) in headers {
+                            result.res_headers.push((k, v));
+                        }
+                    }
+                }
+                Protocol::StatusCode => {
+                    if let Ok(code) = value.parse::<u16>() {
+                        result.status_code = Some(code);
+                    }
+                }
+                Protocol::ResBody => {
+                    result.res_body = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::ReqBody => {
+                    result.req_body = Some(bytes::Bytes::from(value.to_string()));
+                }
+                Protocol::Proxy => {
+                    result.proxy = Some(value.to_string());
+                }
+                Protocol::Ignore => {
+                    result.ignored = true;
+                }
+                Protocol::ResCors => {
+                    result.enable_cors = true;
+                }
+                Protocol::File => {
+                    result.mock_file = Some(value.to_string());
+                }
+                Protocol::Ua => {
+                    result.ua = Some(value.to_string());
+                }
+                Protocol::Referer => {
+                    result.referer = Some(value.to_string());
+                }
+                Protocol::Method => {
+                    result.method = Some(value.to_string());
+                }
+                _ => {}
+            }
+        }
+
+        result
+    }
+}
+
+fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        (&trimmed[1..trimmed.len() - 1], true)
+    } else {
+        (trimmed, false)
+    };
+
+    let mut headers = Vec::new();
+    for part in content.split(',') {
+        let part = part.trim();
+        let separator = if use_colon { ':' } else { '=' };
+        if let Some(pos) = part.find(separator) {
+            let key = part[..pos].trim().to_string();
+            let val = part[pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                headers.push((key, val));
+            }
+        }
+    }
+
+    if headers.is_empty() {
+        None
+    } else {
+        Some(headers)
+    }
+}
+
+fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result<()> {
     let pid = std::process::id();
     write_pid(pid)?;
 
@@ -437,9 +644,16 @@ fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
     rt.block_on(async {
         let admin_state = AdminState::new(config.port);
         let metrics_collector = admin_state.metrics_collector.clone();
-        let server = ProxyServer::new(config)
+        let mut server = ProxyServer::new(config)
             .with_tls_config(tls_config)
             .with_admin_state(admin_state);
+
+        if !cli_rules.is_empty() {
+            let resolver = Arc::new(RulesResolverAdapter {
+                inner: CoreRulesResolver::new(cli_rules),
+            });
+            server = server.with_rules(resolver);
+        }
 
         let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
 
@@ -462,7 +676,7 @@ fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
 }
 
 #[cfg(unix)]
-fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
+fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
 
@@ -522,9 +736,17 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
             rt.block_on(async {
                 let admin_state = AdminState::new(config.port);
                 let metrics_collector = admin_state.metrics_collector.clone();
-                let server = ProxyServer::new(config)
+                let mut server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
                     .with_admin_state(admin_state);
+
+                if !cli_rules.is_empty() {
+                    let resolver = Arc::new(RulesResolverAdapter {
+                        inner: CoreRulesResolver::new(cli_rules),
+                    });
+                    server = server.with_rules(resolver);
+                }
+
                 let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
                 if let Err(e) = server.run().await {
                     eprintln!("Server error: {}", e);

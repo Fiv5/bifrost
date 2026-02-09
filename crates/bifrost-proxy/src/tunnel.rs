@@ -3,7 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
-use bifrost_core::{BifrostError, Result};
+use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -15,17 +15,14 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::server::ResolvesServerCert;
 use tokio_rustls::rustls::sign::CertifiedKey;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
-
-static SHARED_CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -51,17 +48,6 @@ fn get_https_pooled_client() -> &'static HttpsPooledClient {
             .pool_max_idle_per_host(10)
             .build(https_connector)
     })
-}
-
-fn get_shared_client_config() -> Arc<ClientConfig> {
-    SHARED_CLIENT_CONFIG
-        .get_or_init(|| {
-            let client_config = ClientConfig::builder()
-                .with_root_certificates(build_root_cert_store())
-                .with_no_client_auth();
-            Arc::new(client_config)
-        })
-        .clone()
 }
 
 pub async fn handle_connect(
@@ -144,6 +130,7 @@ pub async fn handle_connect(
             verbose_logging,
             ctx,
             admin_state,
+            resolved_rules.host_protocol,
         )
         .await;
     } else if proxy_config.enable_tls_interception
@@ -220,6 +207,7 @@ async fn handle_tls_interception(
     verbose_logging: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
+    host_protocol: Option<Protocol>,
 ) -> Result<Response<BoxBody>> {
     let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
         sni_resolver.resolve(host)?
@@ -264,6 +252,7 @@ async fn handle_tls_interception(
             verbose,
             &req_id,
             admin_state.clone(),
+            host_protocol,
         )
         .await;
 
@@ -293,6 +282,7 @@ async fn tls_intercept_tunnel(
     verbose_logging: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    host_protocol: Option<Protocol>,
 ) -> Result<()> {
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let client_tls = acceptor
@@ -304,35 +294,36 @@ async fn tls_intercept_tunnel(
         debug!("[{}] TLS handshake with client completed", req_id);
     }
 
-    let target_stream = TcpStream::connect(format!("{}:{}", host, port))
-        .await
-        .map_err(|e| BifrostError::Network(format!("Connect to target failed: {e}")))?;
+    let use_http = matches!(host_protocol, Some(Protocol::Http) | Some(Protocol::Ws));
 
-    let client_config = get_shared_client_config();
-
-    let server_name = ServerName::try_from(host.to_string())
-        .map_err(|e| BifrostError::Tls(format!("Invalid server name: {e}")))?;
-
-    let connector = TlsConnector::from(client_config);
-    let _server_tls = connector
-        .connect(server_name, target_stream)
-        .await
-        .map_err(|e| BifrostError::Tls(format!("TLS connect to target failed: {e}")))?;
-
-    if verbose_logging {
-        debug!("[{}] TLS handshake with target server completed", req_id);
+    if use_http && verbose_logging {
+        debug!(
+            "[{}] Using HTTP to connect to target (protocol downgrade)",
+            req_id
+        );
     }
 
     let host_for_requests = host.to_string();
+    let port_for_requests = port;
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
 
     let service = service_fn(move |req: Request<Incoming>| {
         let host = host_for_requests.clone();
-        let port = port;
+        let port = port_for_requests;
         let req_id = req_id_owned.clone();
         let admin_state = admin_state_clone.clone();
-        async move { handle_intercepted_request(req, &host, port, &req_id, admin_state).await }
+        async move {
+            handle_intercepted_request_with_protocol(
+                req,
+                &host,
+                port,
+                &req_id,
+                admin_state,
+                use_http,
+            )
+            .await
+        }
     });
 
     let (client_read, client_write) = tokio::io::split(client_tls);
@@ -349,12 +340,13 @@ async fn tls_intercept_tunnel(
     Ok(())
 }
 
-async fn handle_intercepted_request(
+async fn handle_intercepted_request_with_protocol(
     req: Request<Incoming>,
     host: &str,
     port: u16,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    use_http: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let start_time = Instant::now();
     let method = req.method().clone();
@@ -362,7 +354,13 @@ async fn handle_intercepted_request(
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
-    let target_uri = if port == 443 {
+    let target_uri = if use_http {
+        if port == 80 {
+            format!("http://{}{}", host, path)
+        } else {
+            format!("http://{}:{}{}", host, port, path)
+        }
+    } else if port == 443 {
         format!("https://{}{}", host, path)
     } else {
         format!("https://{}:{}{}", host, port, path)

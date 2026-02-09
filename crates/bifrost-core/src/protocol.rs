@@ -12,6 +12,10 @@ pub enum Protocol {
     // 基础路由
     Host,
     XHost,
+    Http,
+    Https,
+    Ws,
+    Wss,
     Proxy,
     Pac,
     InternalProxy,
@@ -223,6 +227,10 @@ impl Protocol {
             "style" => Some(Protocol::Style),
             "host" => Some(Protocol::Host),
             "xhost" => Some(Protocol::XHost),
+            "http" => Some(Protocol::Http),
+            "https" => Some(Protocol::Https),
+            "ws" => Some(Protocol::Ws),
+            "wss" => Some(Protocol::Wss),
             "rule" => Some(Protocol::Rule),
             "pipe" => Some(Protocol::Pipe),
             "weinre" => Some(Protocol::Weinre),
@@ -309,6 +317,10 @@ impl Protocol {
             Protocol::Style => "style",
             Protocol::Host => "host",
             Protocol::XHost => "xhost",
+            Protocol::Http => "http",
+            Protocol::Https => "https",
+            Protocol::Ws => "ws",
+            Protocol::Wss => "wss",
             Protocol::Rule => "rule",
             Protocol::Pipe => "pipe",
             Protocol::Weinre => "weinre",
@@ -456,6 +468,10 @@ impl Protocol {
 
             Protocol::Host
             | Protocol::XHost
+            | Protocol::Http
+            | Protocol::Https
+            | Protocol::Ws
+            | Protocol::Wss
             | Protocol::Proxy
             | Protocol::Pac
             | Protocol::InternalProxy
@@ -521,10 +537,14 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 74] = [
+pub const ALL_PROTOCOLS: [Protocol; 78] = [
     Protocol::G,
     Protocol::Style,
     Protocol::Host,
+    Protocol::Http,
+    Protocol::Https,
+    Protocol::Ws,
+    Protocol::Wss,
     Protocol::Rule,
     Protocol::Pipe,
     Protocol::Weinre,
@@ -604,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 74);
+        assert_eq!(ALL_PROTOCOLS.len(), 78);
     }
 
     #[test]
@@ -613,6 +633,10 @@ mod tests {
             "G",
             "style",
             "host",
+            "http",
+            "https",
+            "ws",
+            "wss",
             "rule",
             "pipe",
             "weinre",
@@ -691,7 +715,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 74);
+        assert_eq!(protocol_names.len(), 78);
     }
 
     #[test]
@@ -946,8 +970,12 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 74);
+        assert_eq!(all.len(), 78);
         assert!(all.contains(&Protocol::Host));
+        assert!(all.contains(&Protocol::Http));
+        assert!(all.contains(&Protocol::Https));
+        assert!(all.contains(&Protocol::Ws));
+        assert!(all.contains(&Protocol::Wss));
         assert!(all.contains(&Protocol::Proxy));
         assert!(all.contains(&Protocol::G));
     }

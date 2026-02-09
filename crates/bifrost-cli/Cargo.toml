@@ -24,6 +24,7 @@ dirs.workspace = true
 dialoguer = "0.11"
 toml.workspace = true
 ipnet.workspace = true
+bytes.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28", features = ["signal", "process", "fs"] }

@@ -282,6 +282,7 @@ dependencies = [
  "bifrost-proxy",
  "bifrost-storage",
  "bifrost-tls",
+ "bytes",
  "clap",
  "dialoguer",
  "dirs 5.0.1",
