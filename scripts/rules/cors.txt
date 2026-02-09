@@ -1,0 +1,4 @@
+# CORS 规则测试
+# 启用跨域资源共享
+
+bifrost-test-cors.local http://127.0.0.1:3010 resCors://*

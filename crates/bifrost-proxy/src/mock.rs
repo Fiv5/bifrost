@@ -56,10 +56,12 @@ pub async fn generate_mock_response(
     }
 
     if let Some(status) = rules.status_code {
-        if verbose_logging {
-            debug!("[{}] [MOCK] status code: {}", ctx.id_str(), status);
+        if rules.host.is_none() {
+            if verbose_logging {
+                debug!("[{}] [MOCK] status code: {}", ctx.id_str(), status);
+            }
+            return Some(build_status_response(status, rules));
         }
-        return Some(build_status_response(status, rules));
     }
 
     if let Some(redirect_target) = &rules.redirect {

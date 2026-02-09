@@ -1,0 +1,4 @@
+# Status Code 规则测试
+# 修改响应状态码
+
+bifrost-test-status.local http://127.0.0.1:3004 statusCode://201

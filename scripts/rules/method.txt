@@ -1,0 +1,4 @@
+# Method 规则测试
+# 修改请求方法
+
+bifrost-test-method.local http://127.0.0.1:3005 method://POST

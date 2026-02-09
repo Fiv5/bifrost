@@ -554,6 +554,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                         result.status_code = Some(code);
                     }
                 }
+                Protocol::ReplaceStatus => {
+                    if let Ok(code) = value.parse::<u16>() {
+                        result.replace_status = Some(code);
+                    }
+                }
                 Protocol::ResBody => {
                     result.res_body = Some(bytes::Bytes::from(value.to_string()));
                 }

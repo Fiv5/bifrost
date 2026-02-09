@@ -27,7 +27,8 @@ fn apply_res_status(
     verbose_logging: bool,
     ctx: &RequestContext,
 ) {
-    if let Some(status_code) = rules.status_code {
+    let target_status = rules.replace_status.or(rules.status_code);
+    if let Some(status_code) = target_status {
         if let Ok(status) = StatusCode::from_u16(status_code) {
             if verbose_logging {
                 info!(

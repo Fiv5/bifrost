@@ -123,6 +123,7 @@ pub async fn handle_connect(
         }
         return handle_tls_interception(
             req,
+            &host,
             &target_host,
             target_port,
             rules,
@@ -200,8 +201,9 @@ pub async fn handle_connect(
 #[allow(clippy::too_many_arguments)]
 async fn handle_tls_interception(
     req: Request<Incoming>,
-    host: &str,
-    port: u16,
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
@@ -210,9 +212,9 @@ async fn handle_tls_interception(
     host_protocol: Option<Protocol>,
 ) -> Result<Response<BoxBody>> {
     let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
-        sni_resolver.resolve(host)?
+        sni_resolver.resolve(original_host)?
     } else if let Some(ref cert_generator) = tls_config.cert_generator {
-        Arc::new(cert_generator.generate_for_domain(host)?)
+        Arc::new(cert_generator.generate_for_domain(original_host)?)
     } else {
         return Err(BifrostError::Tls(
             "TLS interception enabled but cert generator not configured".to_string(),
@@ -225,7 +227,8 @@ async fn handle_tls_interception(
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
-    let host = host.to_string();
+    let original_host = original_host.to_string();
+    let target_host = target_host.to_string();
 
     if let Some(ref state) = admin_state {
         state.metrics_collector.increment_connections();
@@ -246,8 +249,9 @@ async fn handle_tls_interception(
         let result = tls_intercept_tunnel(
             upgraded,
             server_config,
-            &host,
-            port,
+            &original_host,
+            &target_host,
+            target_port,
             rules,
             verbose,
             &req_id,
@@ -276,9 +280,10 @@ async fn handle_tls_interception(
 async fn tls_intercept_tunnel(
     upgraded: Upgraded,
     server_config: ServerConfig,
-    host: &str,
-    port: u16,
-    _rules: Arc<dyn RulesResolver>,
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
+    rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
@@ -303,24 +308,32 @@ async fn tls_intercept_tunnel(
         );
     }
 
-    let host_for_requests = host.to_string();
-    let port_for_requests = port;
+    let original_host_for_requests = original_host.to_string();
+    let target_host_for_requests = target_host.to_string();
+    let target_port_for_requests = target_port;
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
+    let rules_clone = rules.clone();
+    let verbose = verbose_logging;
 
     let service = service_fn(move |req: Request<Incoming>| {
-        let host = host_for_requests.clone();
-        let port = port_for_requests;
+        let original_host = original_host_for_requests.clone();
+        let target_host = target_host_for_requests.clone();
+        let target_port = target_port_for_requests;
         let req_id = req_id_owned.clone();
         let admin_state = admin_state_clone.clone();
+        let rules = rules_clone.clone();
         async move {
             handle_intercepted_request_with_protocol(
                 req,
-                &host,
-                port,
+                &original_host,
+                &target_host,
+                target_port,
                 &req_id,
                 admin_state,
                 use_http,
+                rules,
+                verbose,
             )
             .await
         }
@@ -340,13 +353,17 @@ async fn tls_intercept_tunnel(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_intercepted_request_with_protocol(
     req: Request<Incoming>,
-    host: &str,
-    port: u16,
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     use_http: bool,
+    rules: Arc<dyn RulesResolver>,
+    verbose_logging: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let start_time = Instant::now();
     let method = req.method().clone();
@@ -354,19 +371,23 @@ async fn handle_intercepted_request_with_protocol(
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
+    let original_uri = format!("https://{}{}", original_host, path);
+
     let target_uri = if use_http {
-        if port == 80 {
-            format!("http://{}{}", host, path)
+        if target_port == 80 {
+            format!("http://{}{}", target_host, path)
         } else {
-            format!("http://{}:{}{}", host, port, path)
+            format!("http://{}:{}{}", target_host, target_port, path)
         }
-    } else if port == 443 {
-        format!("https://{}{}", host, path)
+    } else if target_port == 443 {
+        format!("https://{}{}", target_host, path)
     } else {
-        format!("https://{}:{}{}", host, port, path)
+        format!("https://{}:{}{}", target_host, target_port, path)
     };
 
     debug!("[{}] Intercepted: {} {}", req_id, method_str, target_uri);
+
+    let resolved_rules = rules.resolve(&original_uri, &method_str);
 
     let (parts, body) = req.into_parts();
 
@@ -405,7 +426,7 @@ async fn handle_intercepted_request_with_protocol(
             new_req = new_req.header(name, value);
         }
     }
-    new_req = new_req.header(hyper::header::HOST, host);
+    new_req = new_req.header(hyper::header::HOST, target_host);
 
     let outgoing_req =
         match new_req.body(http_body_util::Full::new(Bytes::from(body_bytes.clone()))) {
@@ -433,7 +454,22 @@ async fn handle_intercepted_request_with_protocol(
     };
     let wait_ms = send_start.elapsed().as_millis() as u64;
 
-    let (res_parts, res_body) = response.into_parts();
+    let (mut res_parts, res_body) = response.into_parts();
+
+    let target_status = resolved_rules.replace_status.or(resolved_rules.status_code);
+    if let Some(status_code) = target_status {
+        if let Ok(status) = hyper::StatusCode::from_u16(status_code) {
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_STATUS] {} -> {}",
+                    req_id,
+                    res_parts.status.as_u16(),
+                    status_code
+                );
+            }
+            res_parts.status = status;
+        }
+    }
 
     let res_headers: Vec<(String, String)> = res_parts
         .headers
@@ -475,7 +511,7 @@ async fn handle_intercepted_request_with_protocol(
         record.request_size = body_bytes.len();
         record.response_size = res_body_bytes.len();
         record.duration_ms = total_ms;
-        record.host = host.to_string();
+        record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
             dns_ms: None,
             connect_ms: None,

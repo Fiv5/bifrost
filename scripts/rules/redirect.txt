@@ -1,0 +1,4 @@
+# Redirect 规则测试
+# 返回 302 重定向响应
+
+bifrost-test-redirect.local redirect://https://example.com/redirected

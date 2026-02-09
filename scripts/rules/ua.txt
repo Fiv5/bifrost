@@ -1,0 +1,4 @@
+# User-Agent 规则测试
+# 修改请求的 User-Agent
+
+bifrost-test-ua.local http://127.0.0.1:3006 ua://Bifrost-Test-Agent/1.0

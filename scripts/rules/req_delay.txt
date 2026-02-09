@@ -1,0 +1,4 @@
+# Request Delay 规则测试
+# 延迟请求发送
+
+bifrost-test-reqdelay.local http://127.0.0.1:3008 reqDelay://500

@@ -1,0 +1,4 @@
+# Host 规则测试
+# 将请求转发到指定的目标主机
+
+bifrost-test-host.local http://127.0.0.1:3001

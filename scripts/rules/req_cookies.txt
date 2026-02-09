@@ -1,0 +1,4 @@
+# Request Cookies 规则测试
+# 添加或修改请求 Cookie
+
+bifrost-test-reqcookies.local http://127.0.0.1:3011 reqCookies://bifrost_test=cookie_value&session_id=test123

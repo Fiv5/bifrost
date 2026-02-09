@@ -1,0 +1,4 @@
+# Response Cookies 规则测试
+# 设置响应 Cookie
+
+bifrost-test-rescookies.local http://127.0.0.1:3012 resCookies://bifrost_res=res_cookie_value

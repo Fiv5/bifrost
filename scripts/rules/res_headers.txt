@@ -1,0 +1,4 @@
+# Response Headers 规则测试
+# 添加或修改响应头
+
+bifrost-test-resheaders.local http://127.0.0.1:3003 resHeaders://X-Bifrost-Response=res-header-test&X-Custom-Response=custom-res-value

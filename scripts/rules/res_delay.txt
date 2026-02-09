@@ -1,0 +1,4 @@
+# Response Delay 规则测试
+# 延迟响应返回
+
+bifrost-test-resdelay.local http://127.0.0.1:3009 resDelay://500
