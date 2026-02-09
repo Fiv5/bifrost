@@ -206,7 +206,7 @@ let enabled_groups = state.enabled_groups();
 
 ## 规则语法
 
-Bifrost 支持类似 Whistle 的规则语法：
+Bifrost 支持类似其他代理工具的规则语法：
 
 ```
 # 基本格式：pattern protocol://value
@@ -262,9 +262,9 @@ example.com filter://keyword
 
 ```
 ~/.bifrost/
-├── whistle.pid      # 进程 PID 文件
-├── whistle.log      # 日志文件
-├── whistle.err      # 错误日志
+├── bifrost.pid      # 进程 PID 文件
+├── bifrost.log      # 日志文件
+├── bifrost.err      # 错误日志
 ├── rules/           # 规则文件目录
 └── certs/           # 证书目录
     ├── ca.crt       # CA 证书

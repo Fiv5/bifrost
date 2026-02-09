@@ -148,7 +148,7 @@ async fn test_multiple_rules_combined() {
     let proxy = start_test_proxy().await;
 
     add_test_rule(&proxy, "*", Protocol::ReqHeaders, "X-Test=1");
-    add_test_rule(&proxy, "*", Protocol::ResHeaders, "X-Proxy=whistle");
+    add_test_rule(&proxy, "*", Protocol::ResHeaders, "X-Proxy=bifrost");
     add_test_rule(&proxy, "*", Protocol::Ua, "TestBot/1.0");
 
     let client = create_proxy_client(&proxy);

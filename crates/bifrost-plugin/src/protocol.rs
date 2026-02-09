@@ -2,7 +2,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::context::{PluginContext, X_WHISTLE_HOOK, X_WHISTLE_PLUGIN, X_WHISTLE_POLICY};
+use crate::context::{PluginContext, X_BIFROST_HOOK, X_BIFROST_PLUGIN, X_BIFROST_POLICY};
 use crate::hook::PluginHook;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -47,8 +47,8 @@ pub struct PluginRequest {
 impl PluginRequest {
     pub fn new(plugin_name: &str, hook: PluginHook, context: &PluginContext) -> Self {
         let mut headers = context.to_headers();
-        headers.insert(X_WHISTLE_PLUGIN.to_string(), plugin_name.to_string());
-        headers.insert(X_WHISTLE_HOOK.to_string(), hook.to_string());
+        headers.insert(X_BIFROST_PLUGIN.to_string(), plugin_name.to_string());
+        headers.insert(X_BIFROST_HOOK.to_string(), hook.to_string());
 
         Self {
             plugin_name: plugin_name.to_string(),
@@ -67,12 +67,12 @@ impl PluginRequest {
 
     pub fn set_policy(&mut self, policy: TunnelPolicy) {
         self.headers
-            .insert(X_WHISTLE_POLICY.to_string(), policy.as_str().to_string());
+            .insert(X_BIFROST_POLICY.to_string(), policy.as_str().to_string());
     }
 
     pub fn get_policy(&self) -> TunnelPolicy {
         self.headers
-            .get(X_WHISTLE_POLICY)
+            .get(X_BIFROST_POLICY)
             .and_then(|s| TunnelPolicy::parse(s))
             .unwrap_or_default()
     }
@@ -127,7 +127,7 @@ impl PluginResponse {
 
     pub fn get_policy(&self) -> Option<TunnelPolicy> {
         self.headers
-            .get(X_WHISTLE_POLICY)
+            .get(X_BIFROST_POLICY)
             .and_then(|s| TunnelPolicy::parse(s))
     }
 }

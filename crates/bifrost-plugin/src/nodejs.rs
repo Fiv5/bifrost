@@ -162,8 +162,8 @@ impl NodePluginManager {
     fn parse_hooks(&self, package: &serde_json::Value) -> Vec<PluginHook> {
         let mut hooks = Vec::new();
 
-        if let Some(whistle) = package.get("bifrost") {
-            if let Some(hook_list) = whistle.get("hooks").and_then(|h| h.as_array()) {
+        if let Some(bifrost) = package.get("bifrost") {
+            if let Some(hook_list) = bifrost.get("hooks").and_then(|h| h.as_array()) {
                 for hook_val in hook_list {
                     if let Some(hook_str) = hook_val.as_str() {
                         if let Some(hook) = PluginHook::parse(hook_str) {
@@ -195,8 +195,8 @@ impl NodePluginManager {
         let mut cmd = Command::new("node");
         cmd.current_dir(&plugin_info.path)
             .arg(".")
-            .env("WHISTLE_PLUGIN_PORT", port.to_string())
-            .env("WHISTLE_PLUGIN_NAME", &plugin_info.name)
+            .env("BIFROST_PLUGIN_PORT", port.to_string())
+            .env("BIFROST_PLUGIN_NAME", &plugin_info.name)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -447,11 +447,11 @@ mod tests {
     #[tokio::test]
     async fn test_discover_with_plugin() {
         let temp_dir = TempDir::new().unwrap();
-        let plugin_dir = temp_dir.path().join("whistle.test");
+        let plugin_dir = temp_dir.path().join("bifrost.test");
         std::fs::create_dir(&plugin_dir).unwrap();
 
         let package_json = r#"{
-            "name": "whistle.test",
+            "name": "bifrost.test",
             "version": "1.0.0",
             "bifrost": {
                 "hooks": ["http", "auth"]
@@ -463,14 +463,14 @@ mod tests {
         let plugins = manager.discover().await.unwrap();
 
         assert_eq!(plugins.len(), 1);
-        assert_eq!(plugins[0].name, "whistle.test");
+        assert_eq!(plugins[0].name, "bifrost.test");
         assert_eq!(plugins[0].version, "1.0.0");
         assert!(plugins[0].hooks.contains(&PluginHook::Http));
         assert!(plugins[0].hooks.contains(&PluginHook::Auth));
     }
 
     #[tokio::test]
-    async fn test_discover_skips_non_whistle_dirs() {
+    async fn test_discover_skips_non_bifrost_dirs() {
         let temp_dir = TempDir::new().unwrap();
 
         let other_dir = temp_dir.path().join("other-plugin");
@@ -501,13 +501,13 @@ mod tests {
     #[test]
     fn test_discovered_plugin() {
         let plugin = DiscoveredPlugin {
-            name: "whistle.test".to_string(),
+            name: "bifrost.test".to_string(),
             path: PathBuf::from("/path/to/plugin"),
             version: "1.0.0".to_string(),
             hooks: vec![PluginHook::Http, PluginHook::Auth],
         };
 
-        assert_eq!(plugin.name, "whistle.test");
+        assert_eq!(plugin.name, "bifrost.test");
         assert_eq!(plugin.version, "1.0.0");
         assert_eq!(plugin.hooks.len(), 2);
     }

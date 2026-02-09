@@ -102,14 +102,14 @@ enum CaCommands {
     Info,
 }
 
-fn get_whistle_dir() -> bifrost_core::Result<PathBuf> {
+fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
     dirs::home_dir()
         .map(|p| p.join(".bifrost"))
         .ok_or_else(|| bifrost_core::BifrostError::Config("Cannot find home directory".to_string()))
 }
 
 fn get_pid_file() -> bifrost_core::Result<PathBuf> {
-    Ok(get_whistle_dir()?.join("whistle.pid"))
+    Ok(get_bifrost_dir()?.join("bifrost.pid"))
 }
 
 fn read_pid() -> Option<u32> {
@@ -251,8 +251,8 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
 
-    let whistle_dir = get_whistle_dir()?;
-    std::fs::create_dir_all(&whistle_dir)?;
+    let bifrost_dir = get_bifrost_dir()?;
+    std::fs::create_dir_all(&bifrost_dir)?;
 
     println!("Starting Bifrost proxy in daemon mode...");
     println!("HTTP proxy: {}:{}", config.host, config.port);
@@ -260,7 +260,7 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
         println!("SOCKS5 proxy: {}:{}", config.host, socks5_port);
     }
     println!("PID file: {}", get_pid_file()?.display());
-    println!("Log file: {}", whistle_dir.join("whistle.log").display());
+    println!("Log file: {}", bifrost_dir.join("bifrost.log").display());
 
     match unsafe { fork() } {
         Ok(ForkResult::Parent { child }) => {
@@ -272,19 +272,19 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
                 bifrost_core::BifrostError::Config(format!("Failed to create new session: {}", e))
             })?;
 
-            let _ = chdir(&whistle_dir);
+            let _ = chdir(&bifrost_dir);
 
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(whistle_dir.join("whistle.log"))
+                .open(bifrost_dir.join("bifrost.log"))
                 .map_err(|e| {
                     bifrost_core::BifrostError::Config(format!("Failed to open log file: {}", e))
                 })?;
             let err_file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(whistle_dir.join("whistle.err"))
+                .open(bifrost_dir.join("bifrost.err"))
                 .map_err(|e| {
                     bifrost_core::BifrostError::Config(format!(
                         "Failed to open error log file: {}",
@@ -367,7 +367,7 @@ fn run_stop() -> bifrost_core::Result<()> {
 }
 
 fn run_status() -> bifrost_core::Result<()> {
-    println!("Whistle Proxy Status");
+    println!("Bifrost Proxy Status");
     println!("====================");
 
     match read_pid() {
@@ -472,7 +472,7 @@ fn handle_rule_command(action: RuleCommands) -> bifrost_core::Result<()> {
 }
 
 fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
-    let cert_dir = get_whistle_dir()?.join("certs");
+    let cert_dir = get_bifrost_dir()?.join("certs");
     std::fs::create_dir_all(&cert_dir)?;
 
     let ca_key_path = cert_dir.join("ca.key");
@@ -499,18 +499,18 @@ fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
         CaCommands::Export { output } => {
             if !ca_cert_path.exists() {
                 return Err(bifrost_core::BifrostError::NotFound(
-                    "CA certificate not found. Run 'whistle ca generate' first.".to_string(),
+                    "CA certificate not found. Run 'bifrost ca generate' first.".to_string(),
                 ));
             }
 
-            let output_path = output.unwrap_or_else(|| PathBuf::from("whistle-ca.crt"));
+            let output_path = output.unwrap_or_else(|| PathBuf::from("bifrost-ca.crt"));
             std::fs::copy(&ca_cert_path, &output_path)?;
             println!("CA certificate exported to: {}", output_path.display());
         }
         CaCommands::Info => {
             if !ca_cert_path.exists() {
                 return Err(bifrost_core::BifrostError::NotFound(
-                    "CA certificate not found. Run 'whistle ca generate' first.".to_string(),
+                    "CA certificate not found. Run 'bifrost ca generate' first.".to_string(),
                 ));
             }
 

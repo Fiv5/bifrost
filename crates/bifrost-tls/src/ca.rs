@@ -50,7 +50,7 @@ pub fn generate_root_ca() -> Result<CertificateAuthority> {
         .push(DnType::CommonName, "Bifrost CA");
     params
         .distinguished_name
-        .push(DnType::OrganizationName, "Whistle Proxy");
+        .push(DnType::OrganizationName, "Bifrost Proxy");
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![
         KeyUsagePurpose::KeyCertSign,

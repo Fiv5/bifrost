@@ -2,23 +2,23 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const X_WHISTLE_SESSION_ID: &str = "x-bifrost-session-id";
-pub const X_WHISTLE_REQUEST_ID: &str = "x-bifrost-request-id";
-pub const X_WHISTLE_CLIENT_IP: &str = "x-bifrost-client-ip";
-pub const X_WHISTLE_CLIENT_PORT: &str = "x-bifrost-client-port";
-pub const X_WHISTLE_HOST: &str = "x-bifrost-host";
-pub const X_WHISTLE_URL: &str = "x-bifrost-url";
-pub const X_WHISTLE_METHOD: &str = "x-bifrost-method";
-pub const X_WHISTLE_PROTOCOL: &str = "x-bifrost-protocol";
-pub const X_WHISTLE_POLICY: &str = "x-bifrost-policy";
-pub const X_WHISTLE_RULE: &str = "x-bifrost-rule";
-pub const X_WHISTLE_RULES: &str = "x-bifrost-rules";
-pub const X_WHISTLE_STATUS_CODE: &str = "x-bifrost-status-code";
-pub const X_WHISTLE_HOOK: &str = "x-bifrost-hook";
-pub const X_WHISTLE_PLUGIN: &str = "x-bifrost-plugin";
-pub const X_WHISTLE_SNI: &str = "x-bifrost-sni";
-pub const X_WHISTLE_REAL_HOST: &str = "x-bifrost-real-host";
-pub const X_WHISTLE_REAL_PORT: &str = "x-bifrost-real-port";
+pub const X_BIFROST_SESSION_ID: &str = "x-bifrost-session-id";
+pub const X_BIFROST_REQUEST_ID: &str = "x-bifrost-request-id";
+pub const X_BIFROST_CLIENT_IP: &str = "x-bifrost-client-ip";
+pub const X_BIFROST_CLIENT_PORT: &str = "x-bifrost-client-port";
+pub const X_BIFROST_HOST: &str = "x-bifrost-host";
+pub const X_BIFROST_URL: &str = "x-bifrost-url";
+pub const X_BIFROST_METHOD: &str = "x-bifrost-method";
+pub const X_BIFROST_PROTOCOL: &str = "x-bifrost-protocol";
+pub const X_BIFROST_POLICY: &str = "x-bifrost-policy";
+pub const X_BIFROST_RULE: &str = "x-bifrost-rule";
+pub const X_BIFROST_RULES: &str = "x-bifrost-rules";
+pub const X_BIFROST_STATUS_CODE: &str = "x-bifrost-status-code";
+pub const X_BIFROST_HOOK: &str = "x-bifrost-hook";
+pub const X_BIFROST_PLUGIN: &str = "x-bifrost-plugin";
+pub const X_BIFROST_SNI: &str = "x-bifrost-sni";
+pub const X_BIFROST_REAL_HOST: &str = "x-bifrost-real-host";
+pub const X_BIFROST_REAL_PORT: &str = "x-bifrost-real-port";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginContext {
@@ -62,26 +62,26 @@ impl PluginContext {
 
     pub fn to_headers(&self) -> HashMap<String, String> {
         let mut headers = HashMap::new();
-        headers.insert(X_WHISTLE_SESSION_ID.to_string(), self.session_id.clone());
-        headers.insert(X_WHISTLE_REQUEST_ID.to_string(), self.request_id.clone());
-        headers.insert(X_WHISTLE_CLIENT_IP.to_string(), self.client_ip.clone());
+        headers.insert(X_BIFROST_SESSION_ID.to_string(), self.session_id.clone());
+        headers.insert(X_BIFROST_REQUEST_ID.to_string(), self.request_id.clone());
+        headers.insert(X_BIFROST_CLIENT_IP.to_string(), self.client_ip.clone());
         headers.insert(
-            X_WHISTLE_CLIENT_PORT.to_string(),
+            X_BIFROST_CLIENT_PORT.to_string(),
             self.client_port.to_string(),
         );
-        headers.insert(X_WHISTLE_HOST.to_string(), self.host.clone());
-        headers.insert(X_WHISTLE_URL.to_string(), self.url.clone());
-        headers.insert(X_WHISTLE_METHOD.to_string(), self.method.clone());
-        headers.insert(X_WHISTLE_PROTOCOL.to_string(), self.protocol.clone());
+        headers.insert(X_BIFROST_HOST.to_string(), self.host.clone());
+        headers.insert(X_BIFROST_URL.to_string(), self.url.clone());
+        headers.insert(X_BIFROST_METHOD.to_string(), self.method.clone());
+        headers.insert(X_BIFROST_PROTOCOL.to_string(), self.protocol.clone());
 
         if let Some(ref rule) = self.rule {
-            headers.insert(X_WHISTLE_RULE.to_string(), rule.clone());
+            headers.insert(X_BIFROST_RULE.to_string(), rule.clone());
         }
         if let Some(ref rules) = self.rules {
-            headers.insert(X_WHISTLE_RULES.to_string(), rules.join(","));
+            headers.insert(X_BIFROST_RULES.to_string(), rules.join(","));
         }
         if let Some(status_code) = self.status_code {
-            headers.insert(X_WHISTLE_STATUS_CODE.to_string(), status_code.to_string());
+            headers.insert(X_BIFROST_STATUS_CODE.to_string(), status_code.to_string());
         }
 
         headers
@@ -89,34 +89,34 @@ impl PluginContext {
 
     pub fn from_headers(headers: &HashMap<String, String>) -> Self {
         let session_id = headers
-            .get(X_WHISTLE_SESSION_ID)
+            .get(X_BIFROST_SESSION_ID)
             .cloned()
             .unwrap_or_default();
         let request_id = headers
-            .get(X_WHISTLE_REQUEST_ID)
+            .get(X_BIFROST_REQUEST_ID)
             .cloned()
             .unwrap_or_default();
         let client_ip = headers
-            .get(X_WHISTLE_CLIENT_IP)
+            .get(X_BIFROST_CLIENT_IP)
             .cloned()
             .unwrap_or_default();
         let client_port = headers
-            .get(X_WHISTLE_CLIENT_PORT)
+            .get(X_BIFROST_CLIENT_PORT)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let host = headers.get(X_WHISTLE_HOST).cloned().unwrap_or_default();
-        let url = headers.get(X_WHISTLE_URL).cloned().unwrap_or_default();
-        let method = headers.get(X_WHISTLE_METHOD).cloned().unwrap_or_default();
-        let protocol = headers.get(X_WHISTLE_PROTOCOL).cloned().unwrap_or_default();
-        let rule = headers.get(X_WHISTLE_RULE).cloned();
-        let rules = headers.get(X_WHISTLE_RULES).map(|s| {
+        let host = headers.get(X_BIFROST_HOST).cloned().unwrap_or_default();
+        let url = headers.get(X_BIFROST_URL).cloned().unwrap_or_default();
+        let method = headers.get(X_BIFROST_METHOD).cloned().unwrap_or_default();
+        let protocol = headers.get(X_BIFROST_PROTOCOL).cloned().unwrap_or_default();
+        let rule = headers.get(X_BIFROST_RULE).cloned();
+        let rules = headers.get(X_BIFROST_RULES).map(|s| {
             s.split(',')
                 .map(|r| r.trim().to_string())
                 .filter(|r| !r.is_empty())
                 .collect()
         });
         let status_code = headers
-            .get(X_WHISTLE_STATUS_CODE)
+            .get(X_BIFROST_STATUS_CODE)
             .and_then(|s| s.parse().ok());
 
         Self {
@@ -343,19 +343,19 @@ mod tests {
         ctx.protocol = "HTTP/1.1".to_string();
 
         let headers = ctx.to_headers();
-        assert_eq!(headers.get(X_WHISTLE_SESSION_ID).unwrap(), "s1");
-        assert_eq!(headers.get(X_WHISTLE_REQUEST_ID).unwrap(), "r1");
-        assert_eq!(headers.get(X_WHISTLE_CLIENT_IP).unwrap(), "127.0.0.1");
-        assert_eq!(headers.get(X_WHISTLE_CLIENT_PORT).unwrap(), "8080");
+        assert_eq!(headers.get(X_BIFROST_SESSION_ID).unwrap(), "s1");
+        assert_eq!(headers.get(X_BIFROST_REQUEST_ID).unwrap(), "r1");
+        assert_eq!(headers.get(X_BIFROST_CLIENT_IP).unwrap(), "127.0.0.1");
+        assert_eq!(headers.get(X_BIFROST_CLIENT_PORT).unwrap(), "8080");
     }
 
     #[test]
     fn test_plugin_context_from_headers() {
         let mut headers = HashMap::new();
-        headers.insert(X_WHISTLE_SESSION_ID.to_string(), "s2".to_string());
-        headers.insert(X_WHISTLE_REQUEST_ID.to_string(), "r2".to_string());
-        headers.insert(X_WHISTLE_CLIENT_IP.to_string(), "192.168.1.1".to_string());
-        headers.insert(X_WHISTLE_CLIENT_PORT.to_string(), "9090".to_string());
+        headers.insert(X_BIFROST_SESSION_ID.to_string(), "s2".to_string());
+        headers.insert(X_BIFROST_REQUEST_ID.to_string(), "r2".to_string());
+        headers.insert(X_BIFROST_CLIENT_IP.to_string(), "192.168.1.1".to_string());
+        headers.insert(X_BIFROST_CLIENT_PORT.to_string(), "9090".to_string());
 
         let ctx = PluginContext::from_headers(&headers);
         assert_eq!(ctx.session_id, "s2");

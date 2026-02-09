@@ -24,7 +24,7 @@ impl DynamicCertGenerator {
         params.distinguished_name.push(DnType::CommonName, domain);
         params
             .distinguished_name
-            .push(DnType::OrganizationName, "Whistle Proxy");
+            .push(DnType::OrganizationName, "Bifrost Proxy");
 
         if domain.parse::<std::net::IpAddr>().is_ok() {
             params.subject_alt_names =
