@@ -36,19 +36,19 @@ impl WildcardMatcher {
     }
 
     fn parse_negation(pattern: &str) -> (bool, &str) {
-        if pattern.starts_with('!') {
-            (true, &pattern[1..])
+        if let Some(stripped) = pattern.strip_prefix('!') {
+            (true, stripped)
         } else {
             (false, pattern)
         }
     }
 
     fn strip_protocol(pattern: &str) -> (bool, &str) {
-        if pattern.starts_with("http://") {
-            (true, &pattern[7..])
-        } else if pattern.starts_with("https://") {
-            (true, &pattern[8..])
-        } else if pattern.starts_with("$") {
+        if let Some(stripped) = pattern.strip_prefix("http://") {
+            (true, stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("https://") {
+            (true, stripped)
+        } else if pattern.starts_with('$') {
             (true, pattern)
         } else {
             (false, pattern)
@@ -157,8 +157,7 @@ impl WildcardMatcher {
 
 impl Matcher for WildcardMatcher {
     fn matches(&self, url: &str, _host: &str, _path: &str) -> MatchResult {
-        let is_match = self.pattern.is_match
-(url);
+        let is_match = self.pattern.is_match(url);
         let effective_match = if self.negated { !is_match } else { is_match };
 
         if effective_match {
@@ -192,13 +191,13 @@ mod tests {
     fn test_prefix_wildcard() {
         let matcher = WildcardMatcher::new("*.example.com").unwrap();
         assert_eq!(matcher.wildcard_type(), &WildcardType::Prefix);
-        
+
         let result = matcher.matches("http://www.example.com", "www.example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://api.example.com", "api.example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com", "example.com", "/");
         assert!(!result.matched);
     }
@@ -206,10 +205,10 @@ mod tests {
     #[test]
     fn test_prefix_wildcard_subdomain() {
         let matcher = WildcardMatcher::new("*.test.example.com").unwrap();
-        
+
         let result = matcher.matches("http://api.test.example.com", "api.test.example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://test.example.com", "test.example.com", "/");
         assert!(!result.matched);
     }
@@ -218,13 +217,13 @@ mod tests {
     fn test_suffix_wildcard() {
         let matcher = WildcardMatcher::new("example.*").unwrap();
         assert_eq!(matcher.wildcard_type(), &WildcardType::Suffix);
-        
+
         let result = matcher.matches("http://example.com", "example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.org", "example.org", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.co.uk", "example.co.uk", "/");
         assert!(result.matched);
     }
@@ -233,13 +232,13 @@ mod tests {
     fn test_contains_wildcard() {
         let matcher = WildcardMatcher::new("*example*").unwrap();
         assert_eq!(matcher.wildcard_type(), &WildcardType::Contains);
-        
+
         let result = matcher.matches("http://www.example.com/path", "www.example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://myexample.org", "myexample.org", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://test.com", "test.com", "/");
         assert!(!result.matched);
     }
@@ -248,13 +247,13 @@ mod tests {
     fn test_domain_wildcard() {
         let matcher = WildcardMatcher::new("$example.com").unwrap();
         assert_eq!(matcher.wildcard_type(), &WildcardType::DomainWildcard);
-        
+
         let result = matcher.matches("http://example.com", "example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://example.com", "example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com/api/test", "example.com", "/api/test");
         assert!(result.matched);
     }
@@ -262,10 +261,10 @@ mod tests {
     #[test]
     fn test_domain_wildcard_with_star() {
         let matcher = WildcardMatcher::new("$*.example.com").unwrap();
-        
+
         let result = matcher.matches("http://api.example.com/path", "api.example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://www.example.com", "www.example.com", "/");
         assert!(result.matched);
     }
@@ -274,13 +273,17 @@ mod tests {
     fn test_path_wildcard() {
         let matcher = WildcardMatcher::new("example.com/api/*").unwrap();
         assert_eq!(matcher.wildcard_type(), &WildcardType::PathWildcard);
-        
+
         let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com/api/products/123", "example.com", "/api/products/123");
+
+        let result = matcher.matches(
+            "http://example.com/api/products/123",
+            "example.com",
+            "/api/products/123",
+        );
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com/other", "example.com", "/other");
         assert!(!result.matched);
     }
@@ -288,11 +291,19 @@ mod tests {
     #[test]
     fn test_path_wildcard_nested() {
         let matcher = WildcardMatcher::new("example.com/api/*/details").unwrap();
-        
-        let result = matcher.matches("http://example.com/api/users/details", "example.com", "/api/users/details");
+
+        let result = matcher.matches(
+            "http://example.com/api/users/details",
+            "example.com",
+            "/api/users/details",
+        );
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com/api/products/details", "example.com", "/api/products/details");
+
+        let result = matcher.matches(
+            "http://example.com/api/products/details",
+            "example.com",
+            "/api/products/details",
+        );
         assert!(result.matched);
     }
 
@@ -300,10 +311,10 @@ mod tests {
     fn test_negated_wildcard() {
         let matcher = WildcardMatcher::new("!*.example.com").unwrap();
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://www.example.com", "www.example.com", "/");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://other.com", "other.com", "/");
         assert!(result.matched);
     }
@@ -312,10 +323,10 @@ mod tests {
     fn test_negated_contains() {
         let matcher = WildcardMatcher::new("!*internal*").unwrap();
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://internal.company.com", "internal.company.com", "/");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://public.company.com", "public.company.com", "/");
         assert!(result.matched);
     }
@@ -323,7 +334,7 @@ mod tests {
     #[test]
     fn test_with_protocol_http() {
         let matcher = WildcardMatcher::new("http://*.example.com").unwrap();
-        
+
         let result = matcher.matches("http://www.example.com", "www.example.com", "/");
         assert!(result.matched);
     }
@@ -331,7 +342,7 @@ mod tests {
     #[test]
     fn test_with_protocol_https() {
         let matcher = WildcardMatcher::new("https://*.example.com").unwrap();
-        
+
         let result = matcher.matches("https://api.example.com", "api.example.com", "/");
         assert!(result.matched);
     }
@@ -340,13 +351,13 @@ mod tests {
     fn test_priority_values() {
         let domain = WildcardMatcher::new("$example.com").unwrap();
         assert_eq!(domain.priority(), 50);
-        
+
         let contains = WildcardMatcher::new("*example*").unwrap();
         assert_eq!(contains.priority(), 40);
-        
+
         let path = WildcardMatcher::new("example.com/*").unwrap();
         assert_eq!(path.priority(), 60);
-        
+
         let prefix = WildcardMatcher::new("*.example.com").unwrap();
         assert_eq!(prefix.priority(), 55);
     }
@@ -368,10 +379,10 @@ mod tests {
     #[test]
     fn test_question_mark_wildcard() {
         let matcher = WildcardMatcher::new("example?.com").unwrap();
-        
+
         let result = matcher.matches("http://example1.com", "example1.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://exampleA.com", "exampleA.com", "/");
         assert!(result.matched);
     }
@@ -379,18 +390,26 @@ mod tests {
     #[test]
     fn test_complex_wildcard_pattern() {
         let matcher = WildcardMatcher::new("*.example.*/api/*").unwrap();
-        
-        let result = matcher.matches("http://www.example.com/api/users", "www.example.com", "/api/users");
+
+        let result = matcher.matches(
+            "http://www.example.com/api/users",
+            "www.example.com",
+            "/api/users",
+        );
         assert!(result.matched);
-        
-        let result = matcher.matches("https://api.example.org/api/products", "api.example.org", "/api/products");
+
+        let result = matcher.matches(
+            "https://api.example.org/api/products",
+            "api.example.org",
+            "/api/products",
+        );
         assert!(result.matched);
     }
 
     #[test]
     fn test_multiple_subdomain_levels() {
         let matcher = WildcardMatcher::new("*.*.example.com").unwrap();
-        
+
         let result = matcher.matches("http://a.b.example.com", "a.b.example.com", "/");
         assert!(result.matched);
     }
@@ -398,7 +417,7 @@ mod tests {
     #[test]
     fn test_empty_path() {
         let matcher = WildcardMatcher::new("*.example.com").unwrap();
-        
+
         let result = matcher.matches("http://www.example.com", "www.example.com", "");
         assert!(result.matched);
     }

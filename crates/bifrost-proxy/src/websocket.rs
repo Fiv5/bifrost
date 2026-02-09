@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bifrost_core::{BifrostError, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
@@ -8,9 +9,8 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
-use bifrost_core::{Result, BifrostError};
 
-use crate::server::{BoxBody, RulesResolver, empty_body};
+use crate::server::{empty_body, BoxBody, RulesResolver};
 
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
@@ -150,7 +150,13 @@ fn build_websocket_handshake(req: &Request<Incoming>) -> Result<String> {
 fn extract_sec_websocket_accept(response: &str) -> Option<String> {
     for line in response.lines() {
         if line.to_lowercase().starts_with("sec-websocket-accept:") {
-            return Some(line.split(':').skip(1).collect::<String>().trim().to_string());
+            return Some(
+                line.split(':')
+                    .skip(1)
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            );
         }
     }
     None
@@ -328,10 +334,19 @@ mod tests {
 
     #[test]
     fn test_websocket_opcode_from_byte() {
-        assert_eq!(WebSocketOpcode::from_byte(0x0), Some(WebSocketOpcode::Continuation));
+        assert_eq!(
+            WebSocketOpcode::from_byte(0x0),
+            Some(WebSocketOpcode::Continuation)
+        );
         assert_eq!(WebSocketOpcode::from_byte(0x1), Some(WebSocketOpcode::Text));
-        assert_eq!(WebSocketOpcode::from_byte(0x2), Some(WebSocketOpcode::Binary));
-        assert_eq!(WebSocketOpcode::from_byte(0x8), Some(WebSocketOpcode::Close));
+        assert_eq!(
+            WebSocketOpcode::from_byte(0x2),
+            Some(WebSocketOpcode::Binary)
+        );
+        assert_eq!(
+            WebSocketOpcode::from_byte(0x8),
+            Some(WebSocketOpcode::Close)
+        );
         assert_eq!(WebSocketOpcode::from_byte(0x9), Some(WebSocketOpcode::Ping));
         assert_eq!(WebSocketOpcode::from_byte(0xA), Some(WebSocketOpcode::Pong));
         assert_eq!(WebSocketOpcode::from_byte(0xF), None);

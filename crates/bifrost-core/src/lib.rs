@@ -4,14 +4,14 @@ pub mod matcher;
 pub mod protocol;
 pub mod rule;
 
-pub use error::{Result, BifrostError};
+pub use error::{BifrostError, Result};
 pub use logging::init_logging;
 pub use matcher::{
-    DomainMatcher, IpMatcher, MatchResult, Matcher, RegexMatcher, WildcardMatcher,
-    factory::parse_pattern,
+    factory::parse_pattern, DomainMatcher, IpMatcher, MatchResult, Matcher, RegexMatcher,
+    WildcardMatcher,
 };
 pub use protocol::*;
 pub use rule::{
-    parse_line, parse_rules, ResolvedRule, ResolvedRules, Rule, RuleGroup, RuleGroupManager,
-    RuleParser, RulesResolver, TemplateEngine, RequestContext, RequestContextBuilder,
+    parse_line, parse_rules, RequestContext, RequestContextBuilder, ResolvedRule, ResolvedRules,
+    Rule, RuleGroup, RuleGroupManager, RuleParser, RulesResolver, TemplateEngine,
 };

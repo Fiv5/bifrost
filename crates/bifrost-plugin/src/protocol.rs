@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use crate::context::{PluginContext, X_WHISTLE_HOOK, X_WHISTLE_PLUGIN, X_WHISTLE_POLICY};
 use crate::hook::PluginHook;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelPolicy {
+    #[default]
     Tunnel,
     Capture,
     Connect,
@@ -22,19 +23,13 @@ impl TunnelPolicy {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "tunnel" => Some(TunnelPolicy::Tunnel),
             "capture" => Some(TunnelPolicy::Capture),
             "connect" => Some(TunnelPolicy::Connect),
             _ => None,
         }
-    }
-}
-
-impl Default for TunnelPolicy {
-    fn default() -> Self {
-        TunnelPolicy::Tunnel
     }
 }
 
@@ -78,7 +73,7 @@ impl PluginRequest {
     pub fn get_policy(&self) -> TunnelPolicy {
         self.headers
             .get(X_WHISTLE_POLICY)
-            .and_then(|s| TunnelPolicy::from_str(s))
+            .and_then(|s| TunnelPolicy::parse(s))
             .unwrap_or_default()
     }
 
@@ -133,7 +128,7 @@ impl PluginResponse {
     pub fn get_policy(&self) -> Option<TunnelPolicy> {
         self.headers
             .get(X_WHISTLE_POLICY)
-            .and_then(|s| TunnelPolicy::from_str(s))
+            .and_then(|s| TunnelPolicy::parse(s))
     }
 }
 
@@ -217,17 +212,12 @@ pub struct PluginInfo {
     pub protocol: PluginProtocol,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PluginProtocol {
+    #[default]
     Http,
     WebSocket,
-}
-
-impl Default for PluginProtocol {
-    fn default() -> Self {
-        PluginProtocol::Http
-    }
 }
 
 impl PluginInfo {
@@ -259,12 +249,9 @@ mod tests {
 
     #[test]
     fn test_tunnel_policy_from_str() {
-        assert_eq!(TunnelPolicy::from_str("tunnel"), Some(TunnelPolicy::Tunnel));
-        assert_eq!(
-            TunnelPolicy::from_str("CAPTURE"),
-            Some(TunnelPolicy::Capture)
-        );
-        assert_eq!(TunnelPolicy::from_str("invalid"), None);
+        assert_eq!(TunnelPolicy::parse("tunnel"), Some(TunnelPolicy::Tunnel));
+        assert_eq!(TunnelPolicy::parse("CAPTURE"), Some(TunnelPolicy::Capture));
+        assert_eq!(TunnelPolicy::parse("invalid"), None);
     }
 
     #[test]
@@ -350,7 +337,12 @@ mod tests {
 
     #[test]
     fn test_plugin_info() {
-        let info = PluginInfo::new("my-plugin", "1.0.0", vec![PluginHook::Http, PluginHook::Auth], 8080);
+        let info = PluginInfo::new(
+            "my-plugin",
+            "1.0.0",
+            vec![PluginHook::Http, PluginHook::Auth],
+            8080,
+        );
 
         assert_eq!(info.name, "my-plugin");
         assert!(info.supports_hook(PluginHook::Http));

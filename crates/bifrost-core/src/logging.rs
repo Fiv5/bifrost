@@ -1,6 +1,6 @@
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-use crate::error::{Result, BifrostError};
+use crate::error::{BifrostError, Result};
 
 pub fn init_logging(level: &str) -> Result<()> {
     let filter = EnvFilter::try_new(level)

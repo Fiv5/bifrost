@@ -1,12 +1,12 @@
 mod common;
 
+use bifrost_core::Protocol;
+use bifrost_proxy::ProxyConfig;
+use bifrost_tls::{generate_root_ca, CertCache, DynamicCertGenerator};
 use common::{add_test_rule, start_test_proxy, start_test_proxy_with_config};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use bifrost_core::Protocol;
-use bifrost_proxy::ProxyConfig;
-use bifrost_tls::{CertCache, DynamicCertGenerator, generate_root_ca};
 
 #[tokio::test]
 async fn test_https_tunnel() {
@@ -52,11 +52,17 @@ async fn test_https_tunnel_with_port() {
 async fn test_https_tunnel_with_host_rule() {
     let proxy = start_test_proxy().await;
 
-    add_test_rule(&proxy, "secure.example.com", Protocol::Host, "127.0.0.1:8443");
+    add_test_rule(
+        &proxy,
+        "secure.example.com",
+        Protocol::Host,
+        "127.0.0.1:8443",
+    );
 
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
 
-    let connect_request = "CONNECT secure.example.com:443 HTTP/1.1\r\nHost: secure.example.com:443\r\n\r\n";
+    let connect_request =
+        "CONNECT secure.example.com:443 HTTP/1.1\r\nHost: secure.example.com:443\r\n\r\n";
     stream.write_all(connect_request.as_bytes()).await.unwrap();
 
     let mut response = vec![0u8; 1024];
@@ -82,7 +88,8 @@ async fn test_https_interception() {
 
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
 
-    let connect_request = "CONNECT intercepted.example.com:443 HTTP/1.1\r\nHost: intercepted.example.com:443\r\n\r\n";
+    let connect_request =
+        "CONNECT intercepted.example.com:443 HTTP/1.1\r\nHost: intercepted.example.com:443\r\n\r\n";
     stream.write_all(connect_request.as_bytes()).await.unwrap();
 
     let mut response = vec![0u8; 1024];
@@ -149,10 +156,7 @@ async fn test_multiple_https_tunnels() {
     for domain in domains {
         let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
 
-        let connect_request = format!(
-            "CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n",
-            domain, domain
-        );
+        let connect_request = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", domain, domain);
         stream.write_all(connect_request.as_bytes()).await.unwrap();
 
         let mut response = vec![0u8; 1024];
@@ -160,7 +164,9 @@ async fn test_multiple_https_tunnels() {
         let response_str = String::from_utf8_lossy(&response[..n]);
 
         assert!(
-            response_str.contains("200") || response_str.contains("OK") || response_str.contains("502"),
+            response_str.contains("200")
+                || response_str.contains("OK")
+                || response_str.contains("502"),
             "CONNECT to {} should respond",
             domain
         );
@@ -181,7 +187,9 @@ async fn test_https_tunnel_invalid_host() {
     let response_str = String::from_utf8_lossy(&response[..n]);
 
     assert!(
-        response_str.contains("400") || response_str.contains("502") || response_str.contains("Bad"),
+        response_str.contains("400")
+            || response_str.contains("502")
+            || response_str.contains("Bad"),
         "Invalid host should return error"
     );
 }

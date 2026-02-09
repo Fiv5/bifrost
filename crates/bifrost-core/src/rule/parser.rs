@@ -1,11 +1,11 @@
-use crate::error::{Result, BifrostError};
+use crate::error::{BifrostError, Result};
 use crate::matcher::factory::parse_pattern;
 use crate::protocol::Protocol;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::rule::Rule;
+use super::types::Rule;
 
 lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
@@ -105,11 +105,11 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
         let line_num = line_num + 1;
         let trimmed = line.trim();
 
-        if trimmed.ends_with('\\') {
+        if let Some(stripped) = trimmed.strip_suffix('\\') {
             if current_line.is_empty() {
                 start_line_num = line_num;
             }
-            current_line.push_str(&trimmed[..trimmed.len() - 1]);
+            current_line.push_str(stripped);
             current_line.push(' ');
             continue;
         }
@@ -214,11 +214,11 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<(String, Vec<(Proto
             let proto_name = caps.get(1).unwrap().as_str();
             let value = caps.get(2).unwrap().as_str();
 
-            if let Some(protocol) = Protocol::from_str(proto_name) {
+            if let Some(protocol) = Protocol::parse(proto_name) {
                 protocol_values.push((protocol, value.to_string()));
             } else {
                 let resolved = Protocol::resolve_alias(proto_name);
-                if let Some(protocol) = Protocol::from_str(resolved) {
+                if let Some(protocol) = Protocol::parse(resolved) {
                     protocol_values.push((protocol, value.to_string()));
                 } else if pattern_idx.is_none() {
                     pattern_idx = Some(idx);
@@ -231,11 +231,7 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<(String, Vec<(Proto
 
     let pattern = match pattern_idx {
         Some(idx) => parts[idx].clone(),
-        None => {
-            return Err(BifrostError::Parse(
-                "No pattern found in rule".to_string(),
-            ))
-        }
+        None => return Err(BifrostError::Parse("No pattern found in rule".to_string())),
     };
 
     Ok((pattern, protocol_values))
@@ -412,7 +408,8 @@ reqHeaders://{test=1}"#;
 
     #[test]
     fn test_parse_multiple_protocols() {
-        let rules = parse_line("example.com host://127.0.0.1 proxy://proxy:8080 reqDelay://1000").unwrap();
+        let rules =
+            parse_line("example.com host://127.0.0.1 proxy://proxy:8080 reqDelay://1000").unwrap();
         assert_eq!(rules.len(), 3);
         assert_eq!(rules[0].protocol, Protocol::Host);
         assert_eq!(rules[1].protocol, Protocol::Proxy);

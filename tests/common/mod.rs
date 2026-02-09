@@ -1,10 +1,10 @@
+use bifrost_core::Protocol;
+use bifrost_proxy::{ProxyConfig, ProxyServer, ResolvedRules, RuleValue, RulesResolver};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use bifrost_core::Protocol;
-use bifrost_proxy::{ProxyConfig, ProxyServer, ResolvedRules, RuleValue, RulesResolver};
 
 pub struct TestProxy {
     pub port: u16,
@@ -58,12 +58,16 @@ impl RulesResolver for TestRulesResolver {
                     }
                     Protocol::ReqHeaders => {
                         if let Some((key, value)) = rule.value.split_once('=') {
-                            resolved.req_headers.push((key.to_string(), value.to_string()));
+                            resolved
+                                .req_headers
+                                .push((key.to_string(), value.to_string()));
                         }
                     }
                     Protocol::ResHeaders => {
                         if let Some((key, value)) = rule.value.split_once('=') {
-                            resolved.res_headers.push((key.to_string(), value.to_string()));
+                            resolved
+                                .res_headers
+                                .push((key.to_string(), value.to_string()));
                         }
                     }
                     Protocol::ReqDelay => {
@@ -139,11 +143,13 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     config.host = "127.0.0.1".to_string();
 
     let rules = Arc::new(TestRulesResolver::new());
-    let server = ProxyServer::new(config.clone()).with_rules(Arc::clone(&rules) as Arc<dyn RulesResolver>);
+    let server =
+        ProxyServer::new(config.clone()).with_rules(Arc::clone(&rules) as Arc<dyn RulesResolver>);
 
     let serve_rules = Arc::clone(&rules);
-    let serve_server = ProxyServer::new(config.clone()).with_rules(serve_rules as Arc<dyn RulesResolver>);
-    
+    let serve_server =
+        ProxyServer::new(config.clone()).with_rules(serve_rules as Arc<dyn RulesResolver>);
+
     tokio::spawn(async move {
         let _ = serve_server.serve(listener).await;
     });
@@ -184,7 +190,12 @@ pub fn create_socks5_client(host: &str, port: u16) -> reqwest::Client {
         .unwrap()
 }
 
-pub fn create_socks5_client_with_auth(host: &str, port: u16, username: &str, password: &str) -> reqwest::Client {
+pub fn create_socks5_client_with_auth(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+) -> reqwest::Client {
     let proxy_url = format!("socks5://{}:{}@{}:{}", username, password, host, port);
     reqwest::Client::builder()
         .proxy(reqwest::Proxy::all(&proxy_url).unwrap())
@@ -208,11 +219,11 @@ pub struct MockHttpServer {
 
 impl MockHttpServer {
     pub async fn start() -> Self {
+        use http_body_util::Full;
         use hyper::server::conn::http1;
         use hyper::service::service_fn;
         use hyper::{Request, Response};
         use hyper_util::rt::TokioIo;
-        use http_body_util::Full;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -222,28 +233,33 @@ impl MockHttpServer {
                 if let Ok((stream, _)) = listener.accept().await {
                     let io = TokioIo::new(stream);
                     tokio::spawn(async move {
-                        let service = service_fn(|req: Request<hyper::body::Incoming>| async move {
-                            let path = req.uri().path().to_string();
-                            let method = req.method().to_string();
-                            let headers: Vec<String> = req
-                                .headers()
-                                .iter()
-                                .map(|(k, v)| format!("{}: {}", k, v.to_str().unwrap_or("")))
-                                .collect();
+                        let service =
+                            service_fn(|req: Request<hyper::body::Incoming>| async move {
+                                let path = req.uri().path().to_string();
+                                let method = req.method().to_string();
+                                let headers: Vec<String> = req
+                                    .headers()
+                                    .iter()
+                                    .map(|(k, v)| format!("{}: {}", k, v.to_str().unwrap_or("")))
+                                    .collect();
 
-                            let body = format!(
-                                "{{\"path\":\"{}\",\"method\":\"{}\",\"headers\":[{}]}}",
-                                path,
-                                method,
-                                headers.iter().map(|h| format!("\"{}\"", h)).collect::<Vec<_>>().join(",")
-                            );
+                                let body = format!(
+                                    "{{\"path\":\"{}\",\"method\":\"{}\",\"headers\":[{}]}}",
+                                    path,
+                                    method,
+                                    headers
+                                        .iter()
+                                        .map(|h| format!("\"{}\"", h))
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                );
 
-                            Ok::<_, hyper::Error>(Response::new(Full::new(bytes::Bytes::from(body))))
-                        });
+                                Ok::<_, hyper::Error>(Response::new(Full::new(bytes::Bytes::from(
+                                    body,
+                                ))))
+                            });
 
-                        let _ = http1::Builder::new()
-                            .serve_connection(io, service)
-                            .await;
+                        let _ = http1::Builder::new().serve_connection(io, service).await;
                     });
                 }
             }
@@ -251,7 +267,10 @@ impl MockHttpServer {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        Self { port: addr.port(), addr }
+        Self {
+            port: addr.port(),
+            addr,
+        }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -269,7 +288,10 @@ impl MockHttpsServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        Self { port: addr.port(), addr }
+        Self {
+            port: addr.port(),
+            addr,
+        }
     }
 
     pub fn url(&self, path: &str) -> String {
@@ -292,14 +314,18 @@ mod tests {
     async fn test_mock_http_server() {
         let server = MockHttpServer::start().await;
         assert!(server.port > 0);
-        assert_eq!(server.url("/test"), format!("http://127.0.0.1:{}/test", server.port));
+        assert_eq!(
+            server.url("/test"),
+            format!("http://127.0.0.1:{}/test", server.port)
+        );
     }
 
     #[test]
     fn test_create_proxy_client() {
         let config = ProxyConfig::default();
         let rules = Arc::new(TestRulesResolver::new());
-        let server = ProxyServer::new(config.clone()).with_rules(rules.clone() as Arc<dyn RulesResolver>);
+        let server =
+            ProxyServer::new(config.clone()).with_rules(rules.clone() as Arc<dyn RulesResolver>);
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),
@@ -313,7 +339,8 @@ mod tests {
     fn test_add_and_clear_rules() {
         let config = ProxyConfig::default();
         let rules = Arc::new(TestRulesResolver::new());
-        let server = ProxyServer::new(config.clone()).with_rules(rules.clone() as Arc<dyn RulesResolver>);
+        let server =
+            ProxyServer::new(config.clone()).with_rules(rules.clone() as Arc<dyn RulesResolver>);
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),

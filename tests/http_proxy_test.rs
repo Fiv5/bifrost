@@ -1,10 +1,10 @@
 mod common;
 
+use bifrost_core::Protocol;
+use bifrost_proxy::ProxyConfig;
 use common::{
     add_test_rule, clear_test_rules, create_proxy_client, start_test_proxy, MockHttpServer,
 };
-use bifrost_core::Protocol;
-use bifrost_proxy::ProxyConfig;
 
 #[tokio::test]
 async fn test_simple_http_request() {
@@ -47,7 +47,12 @@ async fn test_http_with_rules() {
     let mock_server = MockHttpServer::start().await;
     let proxy = start_test_proxy().await;
 
-    add_test_rule(&proxy, "*", Protocol::ReqHeaders, "X-Custom-Header=TestValue");
+    add_test_rule(
+        &proxy,
+        "*",
+        Protocol::ReqHeaders,
+        "X-Custom-Header=TestValue",
+    );
 
     let client = create_proxy_client(&proxy);
     let response = client
@@ -84,7 +89,12 @@ async fn test_req_headers_injection() {
     let mock_server = MockHttpServer::start().await;
     let proxy = start_test_proxy().await;
 
-    add_test_rule(&proxy, "*", Protocol::ReqHeaders, "Authorization=Bearer test-token");
+    add_test_rule(
+        &proxy,
+        "*",
+        Protocol::ReqHeaders,
+        "Authorization=Bearer test-token",
+    );
     add_test_rule(&proxy, "*", Protocol::ReqHeaders, "X-Request-ID=12345");
 
     let client = create_proxy_client(&proxy);
@@ -97,8 +107,7 @@ async fn test_req_headers_injection() {
     assert!(response.status().is_success());
     let body = response.text().await.unwrap();
     assert!(
-        body.to_lowercase().contains("authorization") || 
-        body.to_lowercase().contains("bearer")
+        body.to_lowercase().contains("authorization") || body.to_lowercase().contains("bearer")
     );
 }
 
@@ -107,7 +116,12 @@ async fn test_res_headers_injection() {
     let mock_server = MockHttpServer::start().await;
     let proxy = start_test_proxy().await;
 
-    add_test_rule(&proxy, "*", Protocol::ResHeaders, "X-Response-Header=InjectedValue");
+    add_test_rule(
+        &proxy,
+        "*",
+        Protocol::ResHeaders,
+        "X-Response-Header=InjectedValue",
+    );
     add_test_rule(&proxy, "*", Protocol::ResHeaders, "Cache-Control=no-cache");
 
     let client = create_proxy_client(&proxy);
@@ -118,10 +132,10 @@ async fn test_res_headers_injection() {
         .expect("Failed to send request");
 
     assert!(response.status().is_success());
-    
+
     let x_response_header = response.headers().get("X-Response-Header");
     let cache_control = response.headers().get("Cache-Control");
-    
+
     assert!(
         x_response_header.is_some() || cache_control.is_some(),
         "Response headers should be injected"
@@ -153,7 +167,7 @@ async fn test_clear_rules() {
     let proxy = start_test_proxy().await;
 
     add_test_rule(&proxy, "*", Protocol::ReqHeaders, "X-Should-Exist=yes");
-    
+
     let client = create_proxy_client(&proxy);
     let response1 = client
         .get(mock_server.url("/api/test"))

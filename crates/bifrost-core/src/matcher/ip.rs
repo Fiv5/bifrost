@@ -26,8 +26,8 @@ impl IpMatcher {
     }
 
     fn parse_negation(pattern: &str) -> (bool, &str) {
-        if pattern.starts_with('!') {
-            (true, &pattern[1..])
+        if let Some(stripped) = pattern.strip_prefix('!') {
+            (true, stripped)
         } else {
             (false, pattern)
         }

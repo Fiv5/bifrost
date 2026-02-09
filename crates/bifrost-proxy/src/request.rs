@@ -1,5 +1,5 @@
-use hyper::http::request::Parts;
 use hyper::header::{HeaderName, HeaderValue};
+use hyper::http::request::Parts;
 use tracing::debug;
 
 use crate::server::ResolvedRules;
@@ -18,10 +18,9 @@ pub fn apply_req_rules(parts: &mut Parts, rules: &ResolvedRules) {
 
 fn apply_req_headers(parts: &mut Parts, rules: &ResolvedRules) {
     for (name, value) in &rules.req_headers {
-        if let (Ok(header_name), Ok(header_value)) = (
-            name.parse::<HeaderName>(),
-            value.parse::<HeaderValue>(),
-        ) {
+        if let (Ok(header_name), Ok(header_value)) =
+            (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
+        {
             debug!("Setting request header: {} = {}", name, value);
             parts.headers.insert(header_name, header_value);
         }
@@ -51,7 +50,9 @@ fn apply_req_cookies(parts: &mut Parts, rules: &ResolvedRules) {
 
     for (name, value) in &rules.req_cookies {
         let cookie_str = format!("{}={}", name, value);
-        let found = cookies.iter().position(|c| c.starts_with(&format!("{}=", name)));
+        let found = cookies
+            .iter()
+            .position(|c| c.starts_with(&format!("{}=", name)));
         if let Some(idx) = found {
             cookies[idx] = cookie_str;
         } else {
@@ -79,7 +80,9 @@ fn apply_req_ua(parts: &mut Parts, rules: &ResolvedRules) {
     if let Some(ref ua) = rules.ua {
         if let Ok(header_value) = ua.parse::<HeaderValue>() {
             debug!("Setting User-Agent: {}", ua);
-            parts.headers.insert(hyper::header::USER_AGENT, header_value);
+            parts
+                .headers
+                .insert(hyper::header::USER_AGENT, header_value);
         }
     }
 }
@@ -155,13 +158,22 @@ mod tests {
     fn test_apply_req_headers() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
-        rules.req_headers.push(("X-Custom-Header".to_string(), "custom-value".to_string()));
-        rules.req_headers.push(("X-Another".to_string(), "another-value".to_string()));
+        rules
+            .req_headers
+            .push(("X-Custom-Header".to_string(), "custom-value".to_string()));
+        rules
+            .req_headers
+            .push(("X-Another".to_string(), "another-value".to_string()));
 
         apply_req_rules(&mut parts, &rules);
 
         assert_eq!(
-            parts.headers.get("X-Custom-Header").unwrap().to_str().unwrap(),
+            parts
+                .headers
+                .get("X-Custom-Header")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "custom-value"
         );
         assert_eq!(
@@ -174,12 +186,21 @@ mod tests {
     fn test_apply_req_cookies_new() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
-        rules.req_cookies.push(("session".to_string(), "abc123".to_string()));
-        rules.req_cookies.push(("user".to_string(), "test".to_string()));
+        rules
+            .req_cookies
+            .push(("session".to_string(), "abc123".to_string()));
+        rules
+            .req_cookies
+            .push(("user".to_string(), "test".to_string()));
 
         apply_req_rules(&mut parts, &rules);
 
-        let cookie = parts.headers.get(hyper::header::COOKIE).unwrap().to_str().unwrap();
+        let cookie = parts
+            .headers
+            .get(hyper::header::COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(cookie.contains("session=abc123"));
         assert!(cookie.contains("user=test"));
     }
@@ -193,12 +214,21 @@ mod tests {
         );
 
         let mut rules = ResolvedRules::default();
-        rules.req_cookies.push(("session".to_string(), "new".to_string()));
-        rules.req_cookies.push(("added".to_string(), "cookie".to_string()));
+        rules
+            .req_cookies
+            .push(("session".to_string(), "new".to_string()));
+        rules
+            .req_cookies
+            .push(("added".to_string(), "cookie".to_string()));
 
         apply_req_rules(&mut parts, &rules);
 
-        let cookie = parts.headers.get(hyper::header::COOKIE).unwrap().to_str().unwrap();
+        let cookie = parts
+            .headers
+            .get(hyper::header::COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(cookie.contains("existing=value"));
         assert!(cookie.contains("session=new"));
         assert!(cookie.contains("added=cookie"));
@@ -225,7 +255,12 @@ mod tests {
         apply_req_rules(&mut parts, &rules);
 
         assert_eq!(
-            parts.headers.get(hyper::header::USER_AGENT).unwrap().to_str().unwrap(),
+            parts
+                .headers
+                .get(hyper::header::USER_AGENT)
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "Custom-Agent/1.0"
         );
     }
@@ -239,7 +274,12 @@ mod tests {
         apply_req_rules(&mut parts, &rules);
 
         assert_eq!(
-            parts.headers.get(hyper::header::REFERER).unwrap().to_str().unwrap(),
+            parts
+                .headers
+                .get(hyper::header::REFERER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "http://referrer.com"
         );
     }
@@ -252,9 +292,15 @@ mod tests {
 
         apply_req_rules(&mut parts, &rules);
 
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN));
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_METHODS));
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_METHODS));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS));
     }
 
     #[test]

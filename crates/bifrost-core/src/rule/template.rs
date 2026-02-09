@@ -1,7 +1,7 @@
+use chrono::Utc;
+use rand::Rng;
 use regex::{Captures, Regex};
 use std::collections::HashMap;
-use rand::Rng;
-use chrono::Utc;
 
 use super::context::RequestContext;
 
@@ -76,51 +76,60 @@ impl TemplateEngine {
             return template.to_string();
         };
 
-        CAPTURE_VAR_RE.replace_all(template, |cap: &Captures| {
-            let index: usize = cap.get(1).unwrap().as_str().parse().unwrap_or(0);
-            if index > 0 && index <= caps.len() {
-                caps[index - 1].clone()
-            } else {
-                cap.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string()
+        CAPTURE_VAR_RE
+            .replace_all(template, |cap: &Captures| {
+                let index: usize = cap.get(1).unwrap().as_str().parse().unwrap_or(0);
+                if index > 0 && index <= caps.len() {
+                    caps[index - 1].clone()
+                } else {
+                    cap.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string()
     }
 
-    fn expand_builtin_vars(template: &str, ctx: &RequestContext, values: &HashMap<String, String>) -> String {
-        TPL_VAR_RE.replace_all(template, |cap: &Captures| {
-            let escape = cap.get(1).map(|m| m.as_str()) == Some("$");
-            if escape {
-                let rest = &cap.get(0).unwrap().as_str()[1..];
-                return rest.to_string();
-            }
+    fn expand_builtin_vars(
+        template: &str,
+        ctx: &RequestContext,
+        values: &HashMap<String, String>,
+    ) -> String {
+        TPL_VAR_RE
+            .replace_all(template, |cap: &Captures| {
+                let escape = cap.get(1).map(|m| m.as_str()) == Some("$");
+                if escape {
+                    let rest = &cap.get(0).unwrap().as_str()[1..];
+                    return rest.to_string();
+                }
 
-            let url_encode = cap.get(2).is_some();
-            let var_name = cap.get(3).map(|m| m.as_str()).unwrap_or("");
-            let property_key = cap.get(4).map(|m| m.as_str());
-            let url_encode_end = cap.get(5).is_some();
+                let url_encode = cap.get(2).is_some();
+                let var_name = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+                let property_key = cap.get(4).map(|m| m.as_str());
+                let url_encode_end = cap.get(5).is_some();
 
-            if url_encode && !url_encode_end {
-                return cap.get(0).unwrap().as_str().to_string();
-            }
+                if url_encode && !url_encode_end {
+                    return cap.get(0).unwrap().as_str().to_string();
+                }
 
-            let (actual_key, replace_pattern) = Self::parse_property_key(property_key);
+                let (actual_key, replace_pattern) = Self::parse_property_key(property_key);
 
-            let mut value = Self::resolve_builtin_var(ctx, var_name, actual_key.as_deref(), values);
+                let mut value =
+                    Self::resolve_builtin_var(ctx, var_name, actual_key.as_deref(), values);
 
-            if let Some((pattern, replacement)) = replace_pattern {
-                value = Self::apply_replace(&value, &pattern, &replacement);
-            }
+                if let Some((pattern, replacement)) = replace_pattern {
+                    value = Self::apply_replace(&value, &pattern, &replacement);
+                }
 
-            if url_encode && !value.is_empty() {
-                value = urlencoding::encode(&value).into_owned();
-            }
+                if url_encode && !value.is_empty() {
+                    value = urlencoding::encode(&value).into_owned();
+                }
 
-            if !url_encode && url_encode_end {
-                value.push('}');
-            }
+                if !url_encode && url_encode_end {
+                    value.push('}');
+                }
 
-            value
-        }).to_string()
+                value
+            })
+            .to_string()
     }
 
     fn parse_property_key(key: Option<&str>) -> (Option<String>, Option<(String, String)>) {
@@ -130,8 +139,14 @@ impl TemplateEngine {
 
         if let Some(caps) = REPLACE_PATTERN_RE.captures(key) {
             let prefix = caps.get(1).map(|m| m.as_str().to_string());
-            let pattern = caps.get(2).map(|m| m.as_str().to_string()).unwrap_or_default();
-            let replacement = caps.get(3).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let pattern = caps
+                .get(2)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            let replacement = caps
+                .get(3)
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
 
             let actual_key = if prefix.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
                 None
@@ -213,7 +228,10 @@ impl TemplateEngine {
             "remoteaddress" => ctx.remote_address.clone(),
             "remoteport" => ctx.remote_port.to_string(),
 
-            "serverip" => ctx.server_ip.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+            "serverip" => ctx
+                .server_ip
+                .clone()
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
             "serverport" => ctx.server_port.map(|p| p.to_string()).unwrap_or_default(),
             "status" | "statuscode" => ctx.status_code.map(|c| c.to_string()).unwrap_or_default(),
 
@@ -238,7 +256,11 @@ impl TemplateEngine {
 
         if let Some(second_match) = caps.get(2) {
             let second: i64 = second_match.as_str().parse().unwrap_or(0);
-            let (min, max) = if first < second { (first, second) } else { (second, first) };
+            let (min, max) = if first < second {
+                (first, second)
+            } else {
+                (second, first)
+            };
             let range = max - min + 1;
             let result = min + (rand::thread_rng().gen::<i64>().abs() % range);
             result.to_string()
@@ -248,7 +270,11 @@ impl TemplateEngine {
         }
     }
 
-    fn resolve_url_var(ctx: &RequestContext, key: Option<&str>, values: &HashMap<String, String>) -> String {
+    fn resolve_url_var(
+        ctx: &RequestContext,
+        key: Option<&str>,
+        values: &HashMap<String, String>,
+    ) -> String {
         if let Some(k) = key {
             values.get(k).cloned().unwrap_or_else(|| ctx.url.clone())
         } else {
@@ -337,17 +363,27 @@ impl TemplateEngine {
     }
 
     fn expand_named_vars(template: &str, values: &HashMap<String, String>) -> String {
-        NAMED_VAR_RE.replace_all(template, |cap: &Captures| {
-            let name = cap.get(1).unwrap().as_str();
-            values.get(name).cloned().unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
-        }).to_string()
+        NAMED_VAR_RE
+            .replace_all(template, |cap: &Captures| {
+                let name = cap.get(1).unwrap().as_str();
+                values
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
+            })
+            .to_string()
     }
 
     fn expand_inline_files(template: &str, values: &HashMap<String, String>) -> String {
-        INLINE_FILE_RE.replace_all(template, |cap: &Captures| {
-            let filename = cap.get(1).unwrap().as_str();
-            values.get(filename).cloned().unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
-        }).to_string()
+        INLINE_FILE_RE
+            .replace_all(template, |cap: &Captures| {
+                let filename = cap.get(1).unwrap().as_str();
+                values
+                    .get(filename)
+                    .cloned()
+                    .unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
+            })
+            .to_string()
     }
 }
 
@@ -413,7 +449,8 @@ mod tests {
     #[test]
     fn test_builtin_random_uuid() {
         let ctx = ctx_with_url("http://example.com/test");
-        let result = TemplateEngine::expand_with_context("${randomUUID}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${randomUUID}", &ctx, None, &HashMap::new());
         assert!(uuid::Uuid::parse_str(&result).is_ok());
     }
 
@@ -455,7 +492,8 @@ mod tests {
             .pathname("/test")
             .port(8080)
             .build();
-        let result = TemplateEngine::expand_with_context("${hostname}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${hostname}", &ctx, None, &HashMap::new());
         assert_eq!(result, "api.example.com");
     }
 
@@ -496,7 +534,8 @@ mod tests {
             .pathname("/api")
             .query("foo=bar")
             .build();
-        let result = TemplateEngine::expand_with_context("${pathname}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${pathname}", &ctx, None, &HashMap::new());
         assert_eq!(result, "/api");
     }
 
@@ -510,7 +549,8 @@ mod tests {
             .pathname("/api")
             .query("name=test&value=123")
             .build();
-        let result = TemplateEngine::expand_with_context("${query.name}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${query.name}", &ctx, None, &HashMap::new());
         assert_eq!(result, "test");
     }
 
@@ -538,7 +578,8 @@ mod tests {
             .pathname("/api")
             .client_ip("192.168.1.100")
             .build();
-        let result = TemplateEngine::expand_with_context("${clientIp}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${clientIp}", &ctx, None, &HashMap::new());
         assert_eq!(result, "192.168.1.100");
     }
 
@@ -557,10 +598,20 @@ mod tests {
             .req_headers(headers)
             .build();
 
-        let result = TemplateEngine::expand_with_context("${reqHeaders.content-type}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${reqHeaders.content-type}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "application/json");
 
-        let result = TemplateEngine::expand_with_context("${reqH.authorization}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${reqH.authorization}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "Bearer token");
     }
 
@@ -579,7 +630,12 @@ mod tests {
             .req_cookies(cookies)
             .build();
 
-        let result = TemplateEngine::expand_with_context("${reqCookies.session}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${reqCookies.session}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "abc123");
     }
 
@@ -587,7 +643,12 @@ mod tests {
     fn test_builtin_env() {
         std::env::set_var("TEST_VAR_FOR_TEMPLATE", "test_value");
         let ctx = ctx_with_url("http://example.com/test");
-        let result = TemplateEngine::expand_with_context("${env.TEST_VAR_FOR_TEMPLATE}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${env.TEST_VAR_FOR_TEMPLATE}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "test_value");
         std::env::remove_var("TEST_VAR_FOR_TEMPLATE");
     }
@@ -602,7 +663,8 @@ mod tests {
             .pathname("/test")
             .method("hello world")
             .build();
-        let result = TemplateEngine::expand_with_context("${{method}}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${{method}}", &ctx, None, &HashMap::new());
         assert_eq!(result, "hello%20world");
     }
 
@@ -622,7 +684,12 @@ mod tests {
             .path("/test")
             .pathname("/test")
             .build();
-        let result = TemplateEngine::expand_with_context("${hostname.replace(example,test)}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${hostname.replace(example,test)}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "test.com");
     }
 
@@ -635,7 +702,12 @@ mod tests {
             .path("/test")
             .pathname("/test")
             .build();
-        let result = TemplateEngine::expand_with_context("${hostname.replace(/\\./,-)}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${hostname.replace(/\\./,-)}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "example-com");
     }
 
@@ -648,7 +720,12 @@ mod tests {
             .path("/test")
             .pathname("/test")
             .build();
-        let result = TemplateEngine::expand_with_context("${hostname.replace(/\\./g,-)}", &ctx, None, &HashMap::new());
+        let result = TemplateEngine::expand_with_context(
+            "${hostname.replace(/\\./g,-)}",
+            &ctx,
+            None,
+            &HashMap::new(),
+        );
         assert_eq!(result, "a-b-c-d");
     }
 
@@ -669,7 +746,8 @@ mod tests {
             .pathname("/test")
             .status_code(200)
             .build();
-        let result = TemplateEngine::expand_with_context("${statusCode}", &ctx, None, &HashMap::new());
+        let result =
+            TemplateEngine::expand_with_context("${statusCode}", &ctx, None, &HashMap::new());
         assert_eq!(result, "200");
     }
 

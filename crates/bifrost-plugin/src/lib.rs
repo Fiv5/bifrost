@@ -7,8 +7,7 @@ pub mod protocol;
 pub mod rust_sdk;
 
 pub use context::{
-    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext,
-    TunnelContext,
+    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext, TunnelContext,
 };
 pub use error::{PluginError, Result};
 pub use hook::PluginHook;
@@ -18,7 +17,7 @@ pub use protocol::{
     ConnectRequest, DataDirection, DataMessage, PluginInfo, PluginProtocol, PluginRequest,
     PluginResponse, TunnelPolicy,
 };
-pub use rust_sdk::{PluginBuilder, PluginMetadata, BifrostPlugin};
+pub use rust_sdk::{BifrostPlugin, PluginBuilder, PluginMetadata};
 
 pub const HOOK_COUNT: usize = 22;
 

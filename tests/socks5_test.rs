@@ -1,8 +1,8 @@
 mod common;
 
+use bifrost_proxy::{AuthMethod, SocksCommand, SocksConfig, SocksServer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use bifrost_proxy::{AuthMethod, SocksCommand, SocksConfig, SocksServer};
 
 const SOCKS5_VERSION: u8 = 0x05;
 const SOCKS5_NO_AUTH: u8 = 0x00;
@@ -20,8 +20,16 @@ async fn start_socks5_server(auth_required: bool) -> (String, u16) {
         port: addr.port(),
         host: "127.0.0.1".to_string(),
         auth_required,
-        username: if auth_required { Some("testuser".to_string()) } else { None },
-        password: if auth_required { Some("testpass".to_string()) } else { None },
+        username: if auth_required {
+            Some("testuser".to_string())
+        } else {
+            None
+        },
+        password: if auth_required {
+            Some("testpass".to_string())
+        } else {
+            None
+        },
         timeout_secs: 30,
     };
 
@@ -39,9 +47,14 @@ async fn start_socks5_server(auth_required: bool) -> (String, u16) {
 async fn test_socks5_connect() {
     let (host, port) = start_socks5_server(false).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH])
+        .await
+        .unwrap();
 
     let mut response = [0u8; 2];
     stream.read_exact(&mut response).await.unwrap();
@@ -54,9 +67,14 @@ async fn test_socks5_connect() {
 async fn test_socks5_connect_with_domain() {
     let (host, port) = start_socks5_server(false).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH])
+        .await
+        .unwrap();
 
     let mut auth_response = [0u8; 2];
     stream.read_exact(&mut auth_response).await.unwrap();
@@ -80,8 +98,9 @@ async fn test_socks5_connect_with_domain() {
     let mut connect_response = [0u8; 10];
     let _ = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        stream.read(&mut connect_response)
-    ).await;
+        stream.read(&mut connect_response),
+    )
+    .await;
 
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
@@ -90,9 +109,14 @@ async fn test_socks5_connect_with_domain() {
 async fn test_socks5_auth() {
     let (host, port) = start_socks5_server(true).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_USERNAME_PASSWORD_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_USERNAME_PASSWORD_AUTH])
+        .await
+        .unwrap();
 
     let mut auth_method_response = [0u8; 2];
     stream.read_exact(&mut auth_method_response).await.unwrap();
@@ -120,9 +144,14 @@ async fn test_socks5_auth() {
 async fn test_socks5_auth_failure() {
     let (host, port) = start_socks5_server(true).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_USERNAME_PASSWORD_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_USERNAME_PASSWORD_AUTH])
+        .await
+        .unwrap();
 
     let mut auth_method_response = [0u8; 2];
     stream.read_exact(&mut auth_method_response).await.unwrap();
@@ -140,7 +169,10 @@ async fn test_socks5_auth_failure() {
     let result = stream.read_exact(&mut auth_result).await;
 
     if result.is_ok() {
-        assert_ne!(auth_result[1], 0x00, "Wrong credentials should fail authentication");
+        assert_ne!(
+            auth_result[1], 0x00,
+            "Wrong credentials should fail authentication"
+        );
     }
 }
 
@@ -148,9 +180,14 @@ async fn test_socks5_auth_failure() {
 async fn test_socks5_domain() {
     let (host, port) = start_socks5_server(false).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH])
+        .await
+        .unwrap();
 
     let mut response = [0u8; 2];
     stream.read_exact(&mut response).await.unwrap();
@@ -173,8 +210,9 @@ async fn test_socks5_domain() {
     let mut connect_response = vec![0u8; 256];
     let _ = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
-        stream.read(&mut connect_response)
-    ).await;
+        stream.read(&mut connect_response),
+    )
+    .await;
 
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
@@ -183,9 +221,14 @@ async fn test_socks5_domain() {
 async fn test_socks5_ipv4_connect() {
     let (host, port) = start_socks5_server(false).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
-    stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]).await.unwrap();
+    stream
+        .write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH])
+        .await
+        .unwrap();
 
     let mut response = [0u8; 2];
     stream.read_exact(&mut response).await.unwrap();
@@ -193,12 +236,7 @@ async fn test_socks5_ipv4_connect() {
     let ip_bytes: [u8; 4] = [127, 0, 0, 1];
     let target_port: u16 = 80;
 
-    let mut connect_req = vec![
-        SOCKS5_VERSION,
-        SOCKS5_CMD_CONNECT,
-        0x00,
-        SOCKS5_ATYP_IPV4,
-    ];
+    let mut connect_req = vec![SOCKS5_VERSION, SOCKS5_CMD_CONNECT, 0x00, SOCKS5_ATYP_IPV4];
     connect_req.extend_from_slice(&ip_bytes);
     connect_req.extend_from_slice(&target_port.to_be_bytes());
 
@@ -207,8 +245,9 @@ async fn test_socks5_ipv4_connect() {
     let mut connect_response = [0u8; 10];
     let _ = tokio::time::timeout(
         tokio::time::Duration::from_secs(2),
-        stream.read(&mut connect_response)
-    ).await;
+        stream.read(&mut connect_response),
+    )
+    .await;
 
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
@@ -217,7 +256,9 @@ async fn test_socks5_ipv4_connect() {
 async fn test_socks5_no_auth_method() {
     let (host, port) = start_socks5_server(true).await;
 
-    let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+    let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
     stream.write_all(&[SOCKS5_VERSION, 1, 0x03]).await.unwrap();
 
@@ -237,9 +278,14 @@ async fn test_socks5_multiple_connections() {
     let (host, port) = start_socks5_server(false).await;
 
     for _ in 0..5 {
-        let mut stream = TcpStream::connect(format!("{}:{}", host, port)).await.unwrap();
+        let mut stream = TcpStream::connect(format!("{}:{}", host, port))
+            .await
+            .unwrap();
 
-        stream.write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH]).await.unwrap();
+        stream
+            .write_all(&[SOCKS5_VERSION, 1, SOCKS5_NO_AUTH])
+            .await
+            .unwrap();
 
         let mut response = [0u8; 2];
         stream.read_exact(&mut response).await.unwrap();
@@ -282,7 +328,10 @@ fn test_auth_method_from_u8() {
 fn test_socks_command_try_from() {
     assert_eq!(SocksCommand::try_from(0x01).unwrap(), SocksCommand::Connect);
     assert_eq!(SocksCommand::try_from(0x02).unwrap(), SocksCommand::Bind);
-    assert_eq!(SocksCommand::try_from(0x03).unwrap(), SocksCommand::UdpAssociate);
+    assert_eq!(
+        SocksCommand::try_from(0x03).unwrap(),
+        SocksCommand::UdpAssociate
+    );
 }
 
 #[test]

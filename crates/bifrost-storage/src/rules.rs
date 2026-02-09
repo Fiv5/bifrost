@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use bifrost_core::{BifrostError, Result};
 use serde::{Deserialize, Serialize};
-use bifrost_core::{Result, BifrostError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleFile {
@@ -77,7 +77,6 @@ impl RulesStorage {
     pub fn list(&self) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in fs::read_dir(&self.base_dir)? {
-
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
@@ -104,7 +103,10 @@ impl RulesStorage {
             return Err(BifrostError::NotFound(format!("Rule '{}' not found", old)));
         }
         if self.exists(new) {
-            return Err(BifrostError::Config(format!("Rule '{}' already exists", new)));
+            return Err(BifrostError::Config(format!(
+                "Rule '{}' already exists",
+                new
+            )));
         }
 
         let mut rule = self.load(old)?;
@@ -234,8 +236,12 @@ mod tests {
     #[test]
     fn test_rename_target_exists() {
         let (_temp_dir, storage) = setup();
-        storage.save(&RuleFile::new("old_name", "content1")).unwrap();
-        storage.save(&RuleFile::new("new_name", "content2")).unwrap();
+        storage
+            .save(&RuleFile::new("old_name", "content1"))
+            .unwrap();
+        storage
+            .save(&RuleFile::new("new_name", "content2"))
+            .unwrap();
 
         let result = storage.rename("old_name", "new_name");
         assert!(result.is_err());

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
+use bifrost_core::{BifrostError, Result};
 use serde::{Deserialize, Serialize};
-use bifrost_core::{Result, BifrostError};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeState {

@@ -84,7 +84,7 @@ fn test_all_protocols() {
     ];
 
     for name in &protocol_names {
-        let protocol = Protocol::from_str(name);
+        let protocol = Protocol::parse(name);
         assert!(
             protocol.is_some(),
             "Protocol '{}' should be parseable",
@@ -415,7 +415,7 @@ fn test_protocol_to_str() {
 fn test_protocol_from_str_roundtrip() {
     for protocol in ALL_PROTOCOLS.iter() {
         let name = protocol.to_str();
-        let parsed = Protocol::from_str(name);
+        let parsed = Protocol::parse(name);
         assert_eq!(
             parsed,
             Some(*protocol),

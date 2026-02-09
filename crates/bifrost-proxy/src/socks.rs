@@ -1,10 +1,10 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 
+use bifrost_core::{BifrostError, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, error, info};
-use bifrost_core::{Result, BifrostError};
 
 use crate::server::RulesResolver;
 
@@ -186,10 +186,9 @@ impl SocksServer {
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
         loop {
-            let (stream, peer_addr) = listener
-                .accept()
-                .await
-                .map_err(|e| BifrostError::Network(format!("Failed to accept connection: {}", e)))?;
+            let (stream, peer_addr) = listener.accept().await.map_err(|e| {
+                BifrostError::Network(format!("Failed to accept connection: {}", e))
+            })?;
 
             debug!("SOCKS5: Accepted connection from {}", peer_addr);
 

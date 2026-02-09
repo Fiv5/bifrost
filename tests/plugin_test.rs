@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use bifrost_plugin::{
+    AuthContext, BifrostPlugin, DataContext, HttpContext, PluginContext, PluginHook, PluginManager,
+    Result as PluginResult, RulesContext, StatsContext, TunnelContext,
+};
 use bytes::Bytes;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use bifrost_plugin::{
-    AuthContext, DataContext, HttpContext, PluginContext, PluginHook, PluginManager,
-    RulesContext, TunnelContext, BifrostPlugin, Result as PluginResult, StatsContext,
-};
 
 struct TestPlugin {
     name: String,
@@ -58,7 +58,9 @@ impl BifrostPlugin for TestPlugin {
 
     async fn on_http(&self, ctx: &mut HttpContext) -> PluginResult<()> {
         self.http_called.store(true, Ordering::SeqCst);
-        ctx.base.headers.insert("X-Plugin".to_string(), self.name.clone());
+        ctx.base
+            .headers
+            .insert("X-Plugin".to_string(), self.name.clone());
         ctx.modified = true;
         Ok(())
     }
@@ -88,7 +90,10 @@ async fn test_rust_plugin_hook() {
 
     assert!(plugin.http_called.load(Ordering::SeqCst));
     assert!(http_ctx.modified);
-    assert_eq!(http_ctx.base.headers.get("X-Plugin"), Some(&"test-plugin".to_string()));
+    assert_eq!(
+        http_ctx.base.headers.get("X-Plugin"),
+        Some(&"test-plugin".to_string())
+    );
 }
 
 #[tokio::test]
@@ -122,12 +127,21 @@ async fn test_plugin_tunnel_hook() {
 async fn test_plugin_context_headers() {
     let mut base = PluginContext::new("s1".to_string(), "r1".to_string());
 
-    base.headers.insert("Content-Type".to_string(), "application/json".to_string());
-    base.headers.insert("Authorization".to_string(), "Bearer token123".to_string());
-    base.headers.insert("X-Custom-Header".to_string(), "custom-value".to_string());
+    base.headers
+        .insert("Content-Type".to_string(), "application/json".to_string());
+    base.headers
+        .insert("Authorization".to_string(), "Bearer token123".to_string());
+    base.headers
+        .insert("X-Custom-Header".to_string(), "custom-value".to_string());
 
-    assert_eq!(base.headers.get("Content-Type"), Some(&"application/json".to_string()));
-    assert_eq!(base.headers.get("Authorization"), Some(&"Bearer token123".to_string()));
+    assert_eq!(
+        base.headers.get("Content-Type"),
+        Some(&"application/json".to_string())
+    );
+    assert_eq!(
+        base.headers.get("Authorization"),
+        Some(&"Bearer token123".to_string())
+    );
     assert_eq!(base.headers.len(), 3);
 }
 
@@ -162,12 +176,13 @@ async fn test_plugin_manager_duplicate_registration() {
 async fn test_plugin_manager_hooks_registry() {
     let manager = PluginManager::new();
 
-    let http_plugin = TestPlugin::new("http-only")
-        .with_hooks(vec![PluginHook::Http]);
-    let auth_plugin = TestPlugin::new("auth-only")
-        .with_hooks(vec![PluginHook::Auth]);
-    let multi_plugin = TestPlugin::new("multi-hook")
-        .with_hooks(vec![PluginHook::Http, PluginHook::Auth, PluginHook::Tunnel]);
+    let http_plugin = TestPlugin::new("http-only").with_hooks(vec![PluginHook::Http]);
+    let auth_plugin = TestPlugin::new("auth-only").with_hooks(vec![PluginHook::Auth]);
+    let multi_plugin = TestPlugin::new("multi-hook").with_hooks(vec![
+        PluginHook::Http,
+        PluginHook::Auth,
+        PluginHook::Tunnel,
+    ]);
 
     manager.register_rust_plugin(http_plugin).unwrap();
     manager.register_rust_plugin(auth_plugin).unwrap();
@@ -225,7 +240,10 @@ async fn test_data_context() {
     data_ctx.modify(Bytes::from("modified data"));
 
     assert!(data_ctx.modified_data.is_some());
-    assert_eq!(data_ctx.modified_data.unwrap(), Bytes::from("modified data"));
+    assert_eq!(
+        data_ctx.modified_data.unwrap(),
+        Bytes::from("modified data")
+    );
 }
 
 #[tokio::test]
@@ -267,10 +285,10 @@ fn test_plugin_hook_as_str() {
 
 #[test]
 fn test_plugin_hook_from_str() {
-    assert_eq!(PluginHook::from_str("http"), Some(PluginHook::Http));
-    assert_eq!(PluginHook::from_str("auth"), Some(PluginHook::Auth));
-    assert_eq!(PluginHook::from_str("tunnel"), Some(PluginHook::Tunnel));
-    assert_eq!(PluginHook::from_str("invalid"), None);
+    assert_eq!(PluginHook::parse("http"), Some(PluginHook::Http));
+    assert_eq!(PluginHook::parse("auth"), Some(PluginHook::Auth));
+    assert_eq!(PluginHook::parse("tunnel"), Some(PluginHook::Tunnel));
+    assert_eq!(PluginHook::parse("invalid"), None);
 }
 
 #[test]
@@ -310,7 +328,7 @@ fn test_plugin_hook_is_websocket() {
 fn test_plugin_hook_roundtrip() {
     for hook in PluginHook::ALL {
         let s = hook.as_str();
-        let parsed = PluginHook::from_str(s);
+        let parsed = PluginHook::parse(s);
         assert_eq!(parsed, Some(hook), "Roundtrip failed for {:?}", hook);
     }
 }
@@ -421,6 +439,12 @@ async fn test_header_modification_plugin() {
     plugin.on_http(&mut ctx).await.unwrap();
 
     assert!(ctx.modified);
-    assert_eq!(ctx.base.headers.get("X-Modified"), Some(&"true".to_string()));
-    assert_eq!(ctx.base.headers.get("X-Timestamp"), Some(&"1234567890".to_string()));
+    assert_eq!(
+        ctx.base.headers.get("X-Modified"),
+        Some(&"true".to_string())
+    );
+    assert_eq!(
+        ctx.base.headers.get("X-Timestamp"),
+        Some(&"1234567890".to_string())
+    );
 }

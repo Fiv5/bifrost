@@ -17,7 +17,8 @@ impl CertCache {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(DEFAULT_CACHE_SIZE).unwrap());
+        let cap =
+            NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(DEFAULT_CACHE_SIZE).unwrap());
         Self {
             cache: Mutex::new(LruCache::new(cap)),
         }

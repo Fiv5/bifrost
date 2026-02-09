@@ -96,7 +96,10 @@ impl PluginContext {
             .get(X_WHISTLE_REQUEST_ID)
             .cloned()
             .unwrap_or_default();
-        let client_ip = headers.get(X_WHISTLE_CLIENT_IP).cloned().unwrap_or_default();
+        let client_ip = headers
+            .get(X_WHISTLE_CLIENT_IP)
+            .cloned()
+            .unwrap_or_default();
         let client_port = headers
             .get(X_WHISTLE_CLIENT_PORT)
             .and_then(|s| s.parse().ok())

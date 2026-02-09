@@ -81,7 +81,7 @@ impl PluginHook {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "auth" => Some(PluginHook::Auth),
             "sni" => Some(PluginHook::Sni),
@@ -184,19 +184,16 @@ mod tests {
 
     #[test]
     fn test_hook_from_str() {
-        assert_eq!(PluginHook::from_str("auth"), Some(PluginHook::Auth));
-        assert_eq!(
-            PluginHook::from_str("req_rules"),
-            Some(PluginHook::ReqRules)
-        );
-        assert_eq!(PluginHook::from_str("invalid"), None);
+        assert_eq!(PluginHook::parse("auth"), Some(PluginHook::Auth));
+        assert_eq!(PluginHook::parse("req_rules"), Some(PluginHook::ReqRules));
+        assert_eq!(PluginHook::parse("invalid"), None);
     }
 
     #[test]
     fn test_hook_roundtrip() {
         for hook in PluginHook::ALL {
             let s = hook.as_str();
-            assert_eq!(PluginHook::from_str(s), Some(hook));
+            assert_eq!(PluginHook::parse(s), Some(hook));
         }
     }
 

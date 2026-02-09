@@ -5,8 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::context::{
-    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext,
-    TunnelContext,
+    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext, TunnelContext,
 };
 use crate::error::{PluginError, Result};
 use crate::hook::PluginHook;
@@ -63,10 +62,7 @@ impl PluginManager {
         {
             let mut registry = self.hook_registry.write();
             for hook in &hooks {
-                registry
-                    .entry(*hook)
-                    .or_insert_with(Vec::new)
-                    .push(name.clone());
+                registry.entry(*hook).or_default().push(name.clone());
             }
         }
 
@@ -115,10 +111,7 @@ impl PluginManager {
         if let Some(info) = manager.get_plugin(name) {
             let mut registry = self.hook_registry.write();
             for hook in &info.hooks {
-                registry
-                    .entry(*hook)
-                    .or_insert_with(Vec::new)
-                    .push(name.to_string());
+                registry.entry(*hook).or_default().push(name.to_string());
             }
         }
 
@@ -134,7 +127,7 @@ impl PluginManager {
         if let Some(info) = manager.get_plugin(name) {
             let mut registry = self.hook_registry.write();
             for hook in &info.hooks {
-                if let Some(names) = registry.get_mut(&hook) {
+                if let Some(names) = registry.get_mut(hook) {
                     names.retain(|n| n != name);
                 }
             }

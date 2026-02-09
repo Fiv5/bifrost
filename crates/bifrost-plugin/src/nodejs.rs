@@ -145,10 +145,7 @@ impl NodePluginManager {
             .ok_or_else(|| PluginError::Config("Missing plugin name".into()))?
             .to_string();
 
-        let version = package["version"]
-            .as_str()
-            .unwrap_or("0.0.0")
-            .to_string();
+        let version = package["version"].as_str().unwrap_or("0.0.0").to_string();
 
         let hooks = self.parse_hooks(&package);
 
@@ -169,7 +166,7 @@ impl NodePluginManager {
             if let Some(hook_list) = whistle.get("hooks").and_then(|h| h.as_array()) {
                 for hook_val in hook_list {
                     if let Some(hook_str) = hook_val.as_str() {
-                        if let Some(hook) = PluginHook::from_str(hook_str) {
+                        if let Some(hook) = PluginHook::parse(hook_str) {
                             hooks.push(hook);
                         }
                     }
@@ -185,12 +182,13 @@ impl NodePluginManager {
     }
 
     pub async fn start_plugin(&self, name: &str) -> Result<u16> {
-        let discovered = self.discovered.read();
-        let plugin_info = discovered
-            .get(name)
-            .ok_or_else(|| PluginError::NotFound(name.to_string()))?
-            .clone();
-        drop(discovered);
+        let plugin_info = {
+            let discovered = self.discovered.read();
+            discovered
+                .get(name)
+                .ok_or_else(|| PluginError::NotFound(name.to_string()))?
+                .clone()
+        };
 
         let port = self.allocate_port();
 
@@ -232,8 +230,6 @@ impl NodePluginManager {
             });
         }
 
-        let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx.recv());
-
         let process = NodePluginProcess {
             name: plugin_info.name.clone(),
             port,
@@ -246,6 +242,8 @@ impl NodePluginManager {
             let mut plugins = self.plugins.write();
             plugins.insert(plugin_info.name.clone(), process);
         }
+
+        let timeout = tokio::time::timeout(std::time::Duration::from_secs(10), ready_rx.recv());
 
         match timeout.await {
             Ok(Some(true)) => {
@@ -266,8 +264,12 @@ impl NodePluginManager {
     }
 
     pub async fn stop_plugin(&self, name: &str) -> Result<()> {
-        let mut plugins = self.plugins.write();
-        if let Some(mut process) = plugins.remove(name) {
+        let process = {
+            let mut plugins = self.plugins.write();
+            plugins.remove(name)
+        };
+
+        if let Some(mut process) = process {
             if let Some(ref mut child) = process.child {
                 child.kill().await.ok();
             }
@@ -382,7 +384,9 @@ impl NodePluginManager {
             .headers()
             .iter()
             .filter_map(|(k, v)| {
-                v.to_str().ok().map(|v| (k.as_str().to_string(), v.to_string()))
+                v.to_str()
+                    .ok()
+                    .map(|v| (k.as_str().to_string(), v.to_string()))
             })
             .collect();
 

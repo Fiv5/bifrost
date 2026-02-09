@@ -1,3 +1,4 @@
+use bifrost_core::error::{BifrostError, Result};
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
     KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
@@ -5,7 +6,6 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::fs;
 use std::path::Path;
-use bifrost_core::error::{Result, BifrostError};
 
 pub struct CertificateAuthority {
     pub certificate: Certificate,
@@ -25,9 +25,10 @@ impl CertificateAuthority {
     }
 
     pub fn certificate_der(&self) -> Result<CertificateDer<'static>> {
-        let der = self.certificate.serialize_der().map_err(|e| {
-            BifrostError::Tls(format!("Failed to serialize certificate: {e}"))
-        })?;
+        let der = self
+            .certificate
+            .serialize_der()
+            .map_err(|e| BifrostError::Tls(format!("Failed to serialize certificate: {e}")))?;
         Ok(CertificateDer::from(der))
     }
 
@@ -62,9 +63,8 @@ pub fn generate_root_ca() -> Result<CertificateAuthority> {
     ];
     params.alg = &PKCS_ECDSA_P256_SHA256;
 
-    let cert = Certificate::from_params(params).map_err(|e| {
-        BifrostError::Tls(format!("Failed to generate root certificate: {e}"))
-    })?;
+    let cert = Certificate::from_params(params)
+        .map_err(|e| BifrostError::Tls(format!("Failed to generate root certificate: {e}")))?;
 
     Ok(CertificateAuthority::new(cert))
 }
@@ -79,17 +79,17 @@ pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuth
     let params = CertificateParams::from_ca_cert_pem(&cert_pem, key_pair)
         .map_err(|e| BifrostError::Tls(format!("Failed to parse CA certificate: {e}")))?;
 
-    let cert = Certificate::from_params(params).map_err(|e| {
-        BifrostError::Tls(format!("Failed to reconstruct CA certificate: {e}"))
-    })?;
+    let cert = Certificate::from_params(params)
+        .map_err(|e| BifrostError::Tls(format!("Failed to reconstruct CA certificate: {e}")))?;
 
     Ok(CertificateAuthority::new(cert))
 }
 
 pub fn save_root_ca(cert_path: &Path, key_path: &Path, ca: &CertificateAuthority) -> Result<()> {
-    let cert_pem = ca.certificate.serialize_pem().map_err(|e| {
-        BifrostError::Tls(format!("Failed to serialize certificate: {e}"))
-    })?;
+    let cert_pem = ca
+        .certificate
+        .serialize_pem()
+        .map_err(|e| BifrostError::Tls(format!("Failed to serialize certificate: {e}")))?;
     let key_pem = ca.certificate.serialize_private_key_pem();
 
     if let Some(parent) = cert_path.parent() {

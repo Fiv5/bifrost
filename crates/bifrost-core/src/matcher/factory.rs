@@ -53,10 +53,11 @@ pub fn detect_pattern_type(pattern: &str) -> PatternType {
 }
 
 fn is_regex_pattern(pattern: &str) -> bool {
-    if pattern.starts_with('/') && pattern.len() > 1 {
-        if pattern.ends_with('/') || pattern.ends_with("/i") {
-            return true;
-        }
+    if pattern.starts_with('/')
+        && pattern.len() > 1
+        && (pattern.ends_with('/') || pattern.ends_with("/i"))
+    {
+        return true;
     }
     false
 }

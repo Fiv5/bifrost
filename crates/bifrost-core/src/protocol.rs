@@ -211,7 +211,7 @@ const PURE_RES_PROTOCOLS: &[Protocol] = &[
 ];
 
 impl Protocol {
-    pub fn from_str(s: &str) -> Option<Protocol> {
+    pub fn parse(s: &str) -> Option<Protocol> {
         let resolved = Self::resolve_alias(s);
         match resolved {
             "G" => Some(Protocol::G),
@@ -488,7 +488,7 @@ impl FromStr for Protocol {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Protocol::from_str(s).ok_or(())
+        Protocol::parse(s).ok_or(())
     }
 }
 
@@ -664,7 +664,7 @@ mod tests {
         ];
 
         for name in &protocol_names {
-            let result = Protocol::from_str(name);
+            let result = Protocol::parse(name);
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
@@ -675,7 +675,7 @@ mod tests {
     fn test_protocol_roundtrip() {
         for protocol in ALL_PROTOCOLS.iter() {
             let name = protocol.to_str();
-            let parsed = Protocol::from_str(name);
+            let parsed = Protocol::parse(name);
             assert_eq!(parsed, Some(*protocol), "Roundtrip failed for: {}", name);
         }
     }
@@ -708,22 +708,22 @@ mod tests {
     #[test]
     fn test_alias_parse() {
         let resolved = Protocol::resolve_alias("hosts");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::Host));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::Host));
 
         let resolved = Protocol::resolve_alias("skip");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::Ignore));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::Ignore));
 
         let resolved = Protocol::resolve_alias("download");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::Attachment));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::Attachment));
 
         let resolved = Protocol::resolve_alias("html");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::HtmlAppend));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::HtmlAppend));
 
         let resolved = Protocol::resolve_alias("css");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::CssAppend));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::CssAppend));
 
         let resolved = Protocol::resolve_alias("js");
-        assert_eq!(Protocol::from_str(resolved), Some(Protocol::JsAppend));
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::JsAppend));
     }
 
     #[test]
@@ -914,9 +914,9 @@ mod tests {
 
     #[test]
     fn test_unknown_protocol_returns_none() {
-        assert!(Protocol::from_str("unknown").is_none());
-        assert!(Protocol::from_str("").is_none());
-        assert!(Protocol::from_str("HOST").is_none());
+        assert!(Protocol::parse("unknown").is_none());
+        assert!(Protocol::parse("").is_none());
+        assert!(Protocol::parse("HOST").is_none());
     }
 
     #[test]

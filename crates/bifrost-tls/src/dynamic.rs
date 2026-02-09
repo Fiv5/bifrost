@@ -1,10 +1,13 @@
 use crate::ca::CertificateAuthority;
-use rcgen::{Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyUsagePurpose, SanType, PKCS_ECDSA_P256_SHA256};
+use bifrost_core::error::{BifrostError, Result};
+use rcgen::{
+    Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyUsagePurpose, SanType,
+    PKCS_ECDSA_P256_SHA256,
+};
+use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
-use rustls::crypto::ring::sign::any_supported_type;
 use std::sync::Arc;
-use bifrost_core::error::{Result, BifrostError};
 
 #[derive(Debug)]
 pub struct DynamicCertGenerator {
@@ -24,11 +27,10 @@ impl DynamicCertGenerator {
             .push(DnType::OrganizationName, "Whistle Proxy");
 
         if domain.parse::<std::net::IpAddr>().is_ok() {
-            params.subject_alt_names = vec![SanType::IpAddress(
-                domain.parse().map_err(|e| {
+            params.subject_alt_names =
+                vec![SanType::IpAddress(domain.parse().map_err(|e| {
                     BifrostError::Tls(format!("Invalid IP address: {e}"))
-                })?
-            )];
+                })?)];
         } else {
             params.subject_alt_names = vec![SanType::DnsName(domain.to_string())];
         }
@@ -46,7 +48,8 @@ impl DynamicCertGenerator {
         let cert = Certificate::from_params(params)
             .map_err(|e| BifrostError::Tls(format!("Failed to create certificate: {e}")))?;
 
-        let cert_der_vec = cert.serialize_der_with_signer(&self.ca.certificate)
+        let cert_der_vec = cert
+            .serialize_der_with_signer(&self.ca.certificate)
             .map_err(|e| BifrostError::Tls(format!("Failed to sign certificate: {e}")))?;
 
         let cert_der = CertificateDer::from(cert_der_vec);

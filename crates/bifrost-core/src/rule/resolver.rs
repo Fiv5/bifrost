@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::context::RequestContext;
-use super::rule::Rule;
 use super::template::TemplateEngine;
+use super::types::Rule;
 
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
@@ -22,12 +22,8 @@ impl ResolvedRule {
         ctx: &RequestContext,
         values: &HashMap<String, String>,
     ) -> Self {
-        let resolved_value = TemplateEngine::expand_with_context(
-            &rule.value,
-            ctx,
-            captures.as_deref(),
-            values,
-        );
+        let resolved_value =
+            TemplateEngine::expand_with_context(&rule.value, ctx, captures.as_deref(), values);
 
         Self {
             rule,
@@ -36,7 +32,11 @@ impl ResolvedRule {
         }
     }
 
-    pub fn new_simple(rule: Rule, captures: Option<Vec<String>>, values: &HashMap<String, String>) -> Self {
+    pub fn new_simple(
+        rule: Rule,
+        captures: Option<Vec<String>>,
+        values: &HashMap<String, String>,
+    ) -> Self {
         let ctx = RequestContext::new();
         Self::new(rule, captures, &ctx, values)
     }
@@ -143,7 +143,7 @@ pub struct RulesResolver {
 impl RulesResolver {
     pub fn new(rules: Vec<Rule>) -> Self {
         let mut sorted_rules = rules;
-        sorted_rules.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        sorted_rules.sort_by_key(|b| std::cmp::Reverse(b.priority()));
 
         Self {
             rules: sorted_rules,
@@ -212,15 +212,14 @@ impl RulesResolver {
                 continue;
             }
 
-            if !rule.protocol.is_multi_match() {
-                if matched_protocols.contains_key(&rule.protocol) {
-                    continue;
-                }
+            if !rule.protocol.is_multi_match() && matched_protocols.contains_key(&rule.protocol) {
+                continue;
             }
 
             let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
             if match_result.matched {
-                let resolved = ResolvedRule::new(rule.clone(), match_result.captures, ctx, &self.values);
+                let resolved =
+                    ResolvedRule::new(rule.clone(), match_result.captures, ctx, &self.values);
                 result.add(resolved);
 
                 if !rule.protocol.is_multi_match() {
@@ -276,11 +275,7 @@ mod tests {
 
     #[test]
     fn test_request_context_new() {
-        let ctx = create_test_context(
-            "http://example.com/path",
-            "example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://example.com/path", "example.com", "/path");
         assert_eq!(ctx.url, "http://example.com/path");
         assert_eq!(ctx.host, "example.com");
         assert_eq!(ctx.path, "/path");
@@ -363,11 +358,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
@@ -383,11 +374,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.other.com/path",
-            "www.other.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.other.com/path", "www.other.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert!(result.is_empty());
@@ -395,18 +382,18 @@ mod tests {
 
     #[test]
     fn test_rules_resolver_with_values() {
-        let rules = vec![create_test_rule("*.example.com", Protocol::Host, "${target}")];
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::Host,
+            "${target}",
+        )];
 
         let mut values = HashMap::new();
         values.insert("target".to_string(), "127.0.0.1".to_string());
 
         let resolver = RulesResolver::new(rules).with_values(values);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
@@ -418,7 +405,11 @@ mod tests {
         let mut resolver = RulesResolver::new(vec![]);
         assert_eq!(resolver.rule_count(), 0);
 
-        resolver.add_rule(create_test_rule("*.example.com", Protocol::Host, "127.0.0.1"));
+        resolver.add_rule(create_test_rule(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+        ));
         assert_eq!(resolver.rule_count(), 1);
     }
 
@@ -438,11 +429,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result1 = resolver.resolve(&ctx);
         let result2 = resolver.resolve(&ctx);
@@ -459,11 +446,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules).disable_cache();
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
@@ -478,11 +461,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let _ = resolver.resolve(&ctx);
         resolver.clear_cache();
@@ -512,11 +491,7 @@ mod tests {
         ];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 2);
@@ -530,11 +505,7 @@ mod tests {
         ];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
@@ -549,11 +520,7 @@ mod tests {
         )];
         let resolver = RulesResolver::new(rules);
 
-        let ctx = create_test_context(
-            "http://www.example.com/path",
-            "www.example.com",
-            "/path",
-        );
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
@@ -577,7 +544,10 @@ mod tests {
 
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
-        assert_eq!(result.rules[0].resolved_value, "http://www.example.com/api/test");
+        assert_eq!(
+            result.rules[0].resolved_value,
+            "http://www.example.com/api/test"
+        );
     }
 
     #[test]

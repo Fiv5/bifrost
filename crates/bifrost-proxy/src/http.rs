@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
@@ -7,11 +8,10 @@ use hyper::{Request, Response, Uri};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tracing::{debug, error};
-use bifrost_core::{Result, BifrostError};
 
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
-use crate::server::{BoxBody, ResolvedRules, RulesResolver, full_body};
+use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
@@ -45,7 +45,9 @@ pub async fn handle_http_request(
 
     let stream = TcpStream::connect(format!("{}:{}", host, port))
         .await
-        .map_err(|e| BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e)))?;
+        .map_err(|e| {
+            BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
+        })?;
 
     let io = TokioIo::new(stream);
 
@@ -62,11 +64,14 @@ pub async fn handle_http_request(
         }
     });
 
-    let path = parts.uri.path_and_query()
+    let path = parts
+        .uri
+        .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
-    let new_uri: Uri = path.parse()
+    let new_uri: Uri = path
+        .parse()
         .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
 
     parts.uri = new_uri;
@@ -77,10 +82,9 @@ pub async fn handle_http_request(
         } else {
             format!("{}:{}", host, port)
         };
-        parts.headers.insert(
-            hyper::header::HOST,
-            host_value.parse().unwrap(),
-        );
+        parts
+            .headers
+            .insert(hyper::header::HOST, host_value.parse().unwrap());
     }
 
     let outgoing_req = Request::from_parts(parts, full_body(final_body));
@@ -132,12 +136,14 @@ fn extract_host_port(uri: &Uri, rules: &ResolvedRules) -> Result<(String, u16)> 
 }
 
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
-    let connection = req.headers()
+    let connection = req
+        .headers()
         .get(hyper::header::CONNECTION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let upgrade = req.headers()
+    let upgrade = req
+        .headers()
         .get(hyper::header::UPGRADE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
@@ -150,11 +156,16 @@ pub fn get_request_url(req: &Request<Incoming>) -> String {
     if uri.scheme().is_some() {
         uri.to_string()
     } else {
-        let host = req.headers()
+        let host = req
+            .headers()
             .get(hyper::header::HOST)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("localhost");
-        format!("http://{}{}", host, uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"))
+        format!(
+            "http://{}{}",
+            host,
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+        )
     }
 }
 

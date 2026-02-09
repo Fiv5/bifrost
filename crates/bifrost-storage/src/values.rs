@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use bifrost_core::{Result, BifrostError};
+use bifrost_core::{BifrostError, Result};
 
 pub struct ValuesStorage {
     base_dir: PathBuf,

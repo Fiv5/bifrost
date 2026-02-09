@@ -11,7 +11,7 @@ pub struct RegexMatcher {
 impl RegexMatcher {
     pub fn new(pattern: &str) -> Result<Self, regex::Error> {
         let (negated, actual_pattern, case_insensitive) = Self::parse_pattern(pattern);
-        
+
         let regex_pattern = if case_insensitive {
             format!("(?i){}", actual_pattern)
         } else {
@@ -126,10 +126,10 @@ mod tests {
     fn test_negated_regex() {
         let matcher = RegexMatcher::new("!/example\\.com/").unwrap();
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://other.com/path", "other.com", "/path");
         assert!(result.matched);
     }
@@ -138,7 +138,7 @@ mod tests {
     fn test_negated_case_insensitive() {
         let matcher = RegexMatcher::new("!/EXAMPLE\\.COM/i").unwrap();
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
     }
@@ -158,7 +158,11 @@ mod tests {
     #[test]
     fn test_capture_groups_variable_substitution() {
         let matcher = RegexMatcher::new("/api/v(\\d+)/users/(\\d+)/").unwrap();
-        let result = matcher.matches("http://example.com/api/v2/users/123/profile", "example.com", "/api/v2/users/123/profile");
+        let result = matcher.matches(
+            "http://example.com/api/v2/users/123/profile",
+            "example.com",
+            "/api/v2/users/123/profile",
+        );
         assert!(result.matched);
         assert!(result.captures.is_some());
         let captures = result.captures.unwrap();
@@ -169,13 +173,13 @@ mod tests {
     #[test]
     fn test_complex_url_pattern() {
         let matcher = RegexMatcher::new("/^https?://.*\\.google\\.com/").unwrap();
-        
+
         let result = matcher.matches("https://www.google.com/search", "www.google.com", "/search");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://mail.google.com/inbox", "mail.google.com", "/inbox");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://google.com/search", "google.com", "/search");
         assert!(!result.matched);
     }
@@ -217,7 +221,11 @@ mod tests {
     #[test]
     fn test_path_only_match() {
         let matcher = RegexMatcher::new("/\\/api\\/v\\d+\\//").unwrap();
-        let result = matcher.matches("http://example.com/api/v1/users", "example.com", "/api/v1/users");
+        let result = matcher.matches(
+            "http://example.com/api/v1/users",
+            "example.com",
+            "/api/v1/users",
+        );
         assert!(result.matched);
     }
 }

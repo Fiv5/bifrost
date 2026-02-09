@@ -1,11 +1,11 @@
-use crate::cache::CertCache;
 use crate::ca::CertificateAuthority;
+use crate::cache::CertCache;
 use crate::dynamic::DynamicCertGenerator;
+use bifrost_core::error::Result;
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
 use std::sync::Arc;
-use bifrost_core::error::Result;
 
 #[derive(Debug)]
 pub struct SniResolver {

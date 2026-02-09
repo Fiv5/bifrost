@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -10,7 +11,6 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
-use bifrost_core::{Protocol, Result, BifrostError};
 
 use crate::http::handle_http_request;
 use crate::tunnel::handle_connect;
@@ -82,18 +82,10 @@ impl RulesResolver for NoOpRulesResolver {
     }
 }
 
+#[derive(Default)]
 pub struct TlsConfig {
     pub ca_cert: Option<Vec<u8>>,
     pub ca_key: Option<Vec<u8>>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            ca_cert: None,
-            ca_key: None,
-        }
-    }
 }
 
 pub struct ProxyServer {
@@ -148,8 +140,8 @@ impl ProxyServer {
                 password: self.config.socks5_password.clone(),
                 timeout_secs: self.config.timeout_secs,
             };
-            let socks_server = crate::socks::SocksServer::new(socks_config)
-                .with_rules(Arc::clone(&self.rules));
+            let socks_server =
+                crate::socks::SocksServer::new(socks_config).with_rules(Arc::clone(&self.rules));
 
             let http_future = self.serve(listener);
             let socks_future = socks_server.run();
@@ -165,10 +157,9 @@ impl ProxyServer {
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
         loop {
-            let (stream, peer_addr) = listener
-                .accept()
-                .await
-                .map_err(|e| BifrostError::Network(format!("Failed to accept connection: {}", e)))?;
+            let (stream, peer_addr) = listener.accept().await.map_err(|e| {
+                BifrostError::Network(format!("Failed to accept connection: {}", e))
+            })?;
 
             debug!("Accepted connection from {}", peer_addr);
 
@@ -182,9 +173,7 @@ impl ProxyServer {
                 let service = service_fn(move |req: Request<Incoming>| {
                     let rules = Arc::clone(&rules);
                     let tls_config = Arc::clone(&tls_config);
-                    async move {
-                        handle_request(req, rules, tls_config, enable_tls_interception).await
-                    }
+                    async move { handle_request(req, rules, tls_config, enable_tls_interception).await }
                 });
 
                 if let Err(err) = http1::Builder::new()
@@ -234,14 +223,14 @@ async fn handle_request(
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 pub fn empty_body() -> BoxBody {
-    use http_body_util::{Empty, BodyExt};
+    use http_body_util::{BodyExt, Empty};
     Empty::<Bytes>::new()
         .map_err(|never| match never {})
         .boxed()
 }
 
 pub fn full_body(data: impl Into<Bytes>) -> BoxBody {
-    use http_body_util::{Full, BodyExt};
+    use http_body_util::{BodyExt, Full};
     Full::new(data.into())
         .map_err(|never| match never {})
         .boxed()

@@ -1,10 +1,7 @@
-
-
 use async_trait::async_trait;
 
 use crate::context::{
-    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext,
-    TunnelContext,
+    AuthContext, DataContext, HttpContext, PluginContext, RulesContext, StatsContext, TunnelContext,
 };
 use crate::error::Result;
 use crate::hook::PluginHook;

@@ -1,9 +1,9 @@
+use bifrost_core::error::{BifrostError, Result};
 use rustls::pki_types::CertificateDer;
 use rustls::server::WebPkiClientVerifier;
 use rustls::sign::CertifiedKey;
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use std::sync::Arc;
-use bifrost_core::error::{Result, BifrostError};
 
 pub struct TlsConfig;
 
@@ -24,9 +24,9 @@ impl TlsConfig {
     ) -> Result<Arc<ServerConfig>> {
         let mut root_store = RootCertStore::empty();
         for cert in client_ca_certs {
-            root_store.add(cert).map_err(|e| {
-                BifrostError::Tls(format!("Failed to add client CA cert: {e}"))
-            })?;
+            root_store
+                .add(cert)
+                .map_err(|e| BifrostError::Tls(format!("Failed to add client CA cert: {e}")))?;
         }
 
         let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
@@ -59,9 +59,9 @@ impl TlsConfig {
             RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         for cert in ca_certs {
-            root_store.add(cert).map_err(|e| {
-                BifrostError::Tls(format!("Failed to add custom CA cert: {e}"))
-            })?;
+            root_store
+                .add(cert)
+                .map_err(|e| BifrostError::Tls(format!("Failed to add custom CA cert: {e}")))?;
         }
 
         let config = ClientConfig::builder()
@@ -87,10 +87,7 @@ struct SingleCertResolver {
 }
 
 impl rustls::server::ResolvesServerCert for SingleCertResolver {
-    fn resolve(
-        &self,
-        _client_hello: rustls::server::ClientHello<'_>,
-    ) -> Option<Arc<CertifiedKey>> {
+    fn resolve(&self, _client_hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         Some(Arc::new(self.cert_key.clone()))
     }
 }

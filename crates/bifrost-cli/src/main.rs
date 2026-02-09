@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
-use tracing::info;
 use bifrost_core::init_logging;
 use bifrost_proxy::{ProxyConfig, ProxyServer};
 use bifrost_storage::{RuleFile, RulesStorage, StateManager};
 use bifrost_tls::{generate_root_ca, load_root_ca, save_root_ca};
+use clap::{Parser, Subcommand};
+use tracing::info;
 
 #[derive(Parser)]
 #[command(name = "bifrost")]
@@ -211,15 +211,19 @@ fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
     let pid = std::process::id();
     write_pid(pid)?;
 
-    println!("Bifrost proxy server starting on {}:{}", config.host, config.port);
+    println!(
+        "Bifrost proxy server starting on {}:{}",
+        config.host, config.port
+    );
     if let Some(socks5_port) = config.socks5_port {
         println!("SOCKS5 proxy enabled on port {}", socks5_port);
     }
     println!("Press Ctrl+C to stop");
     println!("PID: {}", pid);
 
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e)))?;
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
+    })?;
 
     rt.block_on(async {
         let server = ProxyServer::new(config);
@@ -282,7 +286,10 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
                 .append(true)
                 .open(whistle_dir.join("whistle.err"))
                 .map_err(|e| {
-                    bifrost_core::BifrostError::Config(format!("Failed to open error log file: {}", e))
+                    bifrost_core::BifrostError::Config(format!(
+                        "Failed to open error log file: {}",
+                        e
+                    ))
                 })?;
 
             let _ = dup2(log_file.as_raw_fd(), 1);
@@ -291,8 +298,9 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
             let pid = std::process::id();
             write_pid(pid)?;
 
-            let rt = tokio::runtime::Runtime::new()
-                .map_err(|e| bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e)))?;
+            let rt = tokio::runtime::Runtime::new().map_err(|e| {
+                bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
+            })?;
 
             rt.block_on(async {
                 let server = ProxyServer::new(config);
@@ -328,8 +336,9 @@ fn run_stop() -> bifrost_core::Result<()> {
         use nix::unistd::Pid;
 
         println!("Stopping Bifrost proxy (PID: {})...", pid);
-        kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
-            .map_err(|e| bifrost_core::BifrostError::Config(format!("Failed to send SIGTERM: {}", e)))?;
+        kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| {
+            bifrost_core::BifrostError::Config(format!("Failed to send SIGTERM: {}", e))
+        })?;
 
         for i in 0..50 {
             std::thread::sleep(std::time::Duration::from_millis(100));
@@ -416,7 +425,11 @@ fn handle_rule_command(action: RuleCommands) -> bifrost_core::Result<()> {
                 }
             }
         }
-        RuleCommands::Add { name, content, file } => {
+        RuleCommands::Add {
+            name,
+            content,
+            file,
+        } => {
             let rule_content = if let Some(c) = content {
                 c
             } else if let Some(path) = file {
@@ -446,7 +459,10 @@ fn handle_rule_command(action: RuleCommands) -> bifrost_core::Result<()> {
         RuleCommands::Show { name } => {
             let rule = storage.load(&name)?;
             println!("Rule: {}", rule.name);
-            println!("Status: {}", if rule.enabled { "enabled" } else { "disabled" });
+            println!(
+                "Status: {}",
+                if rule.enabled { "enabled" } else { "disabled" }
+            );
             println!("Content:");
             println!("{}", rule.content);
         }
@@ -476,7 +492,9 @@ fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
             println!("Certificate: {}", ca_cert_path.display());
             println!("Private key: {}", ca_key_path.display());
             println!();
-            println!("To use HTTPS interception, install the CA certificate in your browser or system.");
+            println!(
+                "To use HTTPS interception, install the CA certificate in your browser or system."
+            );
         }
         CaCommands::Export { output } => {
             if !ca_cert_path.exists() {

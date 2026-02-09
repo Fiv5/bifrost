@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bifrost_core::{BifrostError, Result};
 use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
@@ -7,9 +8,8 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
-use bifrost_core::{Result, BifrostError};
 
-use crate::server::{BoxBody, RulesResolver, TlsConfig, empty_body};
+use crate::server::{empty_body, BoxBody, RulesResolver, TlsConfig};
 
 pub async fn handle_connect(
     req: Request<Incoming>,
@@ -69,10 +69,7 @@ pub async fn handle_connect(
         }
     });
 
-    Ok(Response::builder()
-        .status(200)
-        .body(empty_body())
-        .unwrap())
+    Ok(Response::builder().status(200).body(empty_body()).unwrap())
 }
 
 async fn handle_tls_interception(
@@ -82,10 +79,7 @@ async fn handle_tls_interception(
     _rules: Arc<dyn RulesResolver>,
     _tls_config: Arc<TlsConfig>,
 ) -> Result<Response<BoxBody>> {
-    Ok(Response::builder()
-        .status(200)
-        .body(empty_body())
-        .unwrap())
+    Ok(Response::builder().status(200).body(empty_body()).unwrap())
 }
 
 pub async fn tunnel_bidirectional(upgraded: Upgraded, target: TcpStream) -> Result<()> {

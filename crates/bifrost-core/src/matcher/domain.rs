@@ -32,18 +32,18 @@ impl DomainMatcher {
     }
 
     fn parse_negation(pattern: &str) -> (bool, &str) {
-        if pattern.starts_with('!') {
-            (true, &pattern[1..])
+        if let Some(stripped) = pattern.strip_prefix('!') {
+            (true, stripped)
         } else {
             (false, pattern)
         }
     }
 
     fn parse_protocol(pattern: &str) -> (Option<String>, &str) {
-        if pattern.starts_with("http://") {
-            (Some("http".to_string()), &pattern[7..])
-        } else if pattern.starts_with("https://") {
-            (Some("https".to_string()), &pattern[8..])
+        if let Some(stripped) = pattern.strip_prefix("http://") {
+            (Some("http".to_string()), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("https://") {
+            (Some("https".to_string()), stripped)
         } else {
             (None, pattern)
         }
@@ -69,8 +69,8 @@ impl DomainMatcher {
         };
 
         let path_pattern = path.map(|p| {
-            if p.ends_with('*') {
-                PathPattern::Prefix(p[..p.len() - 1].to_string())
+            if let Some(stripped) = p.strip_suffix('*') {
+                PathPattern::Prefix(stripped.to_string())
             } else {
                 PathPattern::Exact(p.to_string())
             }
@@ -93,7 +93,7 @@ impl DomainMatcher {
 
     fn matches_domain(&self, host: &str) -> bool {
         let (check_host, check_port) = Self::split_host_port(host);
-        
+
         if !self.domain.eq_ignore_ascii_case(check_host) {
             return false;
         }
@@ -189,13 +189,13 @@ mod tests {
     #[test]
     fn test_exact_domain() {
         let matcher = DomainMatcher::new("example.com");
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://example.com", "example.com", "/");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://other.com", "other.com", "/");
         assert!(!result.matched);
     }
@@ -203,10 +203,10 @@ mod tests {
     #[test]
     fn test_domain_case_insensitive() {
         let matcher = DomainMatcher::new("Example.COM");
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://EXAMPLE.COM/path", "EXAMPLE.COM", "/path");
         assert!(result.matched);
     }
@@ -215,13 +215,13 @@ mod tests {
     fn test_domain_with_port() {
         let matcher = DomainMatcher::new("example.com:8080");
         assert_eq!(matcher.port(), Some(8080));
-        
+
         let result = matcher.matches("http://example.com:8080/path", "example.com:8080", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://example.com:9090/path", "example.com:9090", "/path");
         assert!(!result.matched);
     }
@@ -240,27 +240,39 @@ mod tests {
     #[test]
     fn test_domain_with_exact_path() {
         let matcher = DomainMatcher::new("example.com/api/users");
-        
+
         let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com/api/users?id=1", "example.com", "/api/users?id=1");
+
+        let result = matcher.matches(
+            "http://example.com/api/users?id=1",
+            "example.com",
+            "/api/users?id=1",
+        );
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com/api/products", "example.com", "/api/products");
+
+        let result = matcher.matches(
+            "http://example.com/api/products",
+            "example.com",
+            "/api/products",
+        );
         assert!(!result.matched);
     }
 
     #[test]
     fn test_domain_with_path_prefix() {
         let matcher = DomainMatcher::new("example.com/api/*");
-        
+
         let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com/api/products/123", "example.com", "/api/products/123");
+
+        let result = matcher.matches(
+            "http://example.com/api/products/123",
+            "example.com",
+            "/api/products/123",
+        );
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com/other", "example.com", "/other");
         assert!(!result.matched);
     }
@@ -268,10 +280,10 @@ mod tests {
     #[test]
     fn test_domain_with_protocol_http() {
         let matcher = DomainMatcher::new("http://example.com");
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("https://example.com/path", "example.com", "/path");
         assert!(!result.matched);
     }
@@ -279,10 +291,10 @@ mod tests {
     #[test]
     fn test_domain_with_protocol_https() {
         let matcher = DomainMatcher::new("https://example.com");
-        
+
         let result = matcher.matches("https://example.com/path", "example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
     }
@@ -291,10 +303,10 @@ mod tests {
     fn test_negated_domain() {
         let matcher = DomainMatcher::new("!example.com");
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://other.com/path", "other.com", "/path");
         assert!(result.matched);
     }
@@ -303,10 +315,10 @@ mod tests {
     fn test_negated_domain_with_path() {
         let matcher = DomainMatcher::new("!example.com/api/*");
         assert!(matcher.is_negated());
-        
+
         let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://example.com/other", "example.com", "/other");
         assert!(result.matched);
     }
@@ -314,11 +326,19 @@ mod tests {
     #[test]
     fn test_full_url_pattern() {
         let matcher = DomainMatcher::new("https://example.com:8443/api/*");
-        
-        let result = matcher.matches("https://example.com:8443/api/users", "example.com:8443", "/api/users");
+
+        let result = matcher.matches(
+            "https://example.com:8443/api/users",
+            "example.com:8443",
+            "/api/users",
+        );
         assert!(result.matched);
-        
-        let result = matcher.matches("http://example.com:8443/api/users", "example.com:8443", "/api/users");
+
+        let result = matcher.matches(
+            "http://example.com:8443/api/users",
+            "example.com:8443",
+            "/api/users",
+        );
         assert!(!result.matched);
     }
 
@@ -374,13 +394,13 @@ mod tests {
     #[test]
     fn test_subdomain() {
         let matcher = DomainMatcher::new("api.example.com");
-        
+
         let result = matcher.matches("http://api.example.com/path", "api.example.com", "/path");
         assert!(result.matched);
-        
+
         let result = matcher.matches("http://www.example.com/path", "www.example.com", "/path");
         assert!(!result.matched);
-        
+
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
         assert!(!result.matched);
     }
@@ -388,7 +408,7 @@ mod tests {
     #[test]
     fn test_root_path() {
         let matcher = DomainMatcher::new("example.com/");
-        
+
         let result = matcher.matches("http://example.com/", "example.com", "/");
         assert!(result.matched);
     }
@@ -396,8 +416,12 @@ mod tests {
     #[test]
     fn test_path_with_query() {
         let matcher = DomainMatcher::new("example.com/search");
-        
-        let result = matcher.matches("http://example.com/search?q=test", "example.com", "/search?q=test");
+
+        let result = matcher.matches(
+            "http://example.com/search?q=test",
+            "example.com",
+            "/search?q=test",
+        );
         assert!(result.matched);
     }
 }

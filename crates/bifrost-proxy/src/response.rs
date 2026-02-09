@@ -1,6 +1,5 @@
-
-use hyper::http::response::Parts;
 use hyper::header::{HeaderName, HeaderValue};
+use hyper::http::response::Parts;
 use hyper::StatusCode;
 use tracing::debug;
 
@@ -27,10 +26,9 @@ fn apply_res_status(parts: &mut Parts, rules: &ResolvedRules) {
 
 fn apply_res_headers(parts: &mut Parts, rules: &ResolvedRules) {
     for (name, value) in &rules.res_headers {
-        if let (Ok(header_name), Ok(header_value)) = (
-            name.parse::<HeaderName>(),
-            value.parse::<HeaderValue>(),
-        ) {
+        if let (Ok(header_name), Ok(header_value)) =
+            (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
+        {
             debug!("Setting response header: {} = {}", name, value);
             parts.headers.insert(header_name, header_value);
         }
@@ -42,7 +40,9 @@ fn apply_res_cookies(parts: &mut Parts, rules: &ResolvedRules) {
         let cookie_value = format!("{}={}", name, value);
         if let Ok(header_value) = cookie_value.parse::<HeaderValue>() {
             debug!("Setting Set-Cookie: {}", cookie_value);
-            parts.headers.append(hyper::header::SET_COOKIE, header_value);
+            parts
+                .headers
+                .append(hyper::header::SET_COOKIE, header_value);
         }
     }
 }
@@ -183,13 +183,22 @@ mod tests {
     fn test_apply_res_headers() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
-        rules.res_headers.push(("X-Custom-Header".to_string(), "custom-value".to_string()));
-        rules.res_headers.push(("Content-Type".to_string(), "application/json".to_string()));
+        rules
+            .res_headers
+            .push(("X-Custom-Header".to_string(), "custom-value".to_string()));
+        rules
+            .res_headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
 
         apply_res_rules(&mut parts, &rules);
 
         assert_eq!(
-            parts.headers.get("X-Custom-Header").unwrap().to_str().unwrap(),
+            parts
+                .headers
+                .get("X-Custom-Header")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "custom-value"
         );
         assert_eq!(
@@ -202,12 +211,20 @@ mod tests {
     fn test_apply_res_cookies() {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
-        rules.res_cookies.push(("session".to_string(), "abc123".to_string()));
-        rules.res_cookies.push(("user".to_string(), "test".to_string()));
+        rules
+            .res_cookies
+            .push(("session".to_string(), "abc123".to_string()));
+        rules
+            .res_cookies
+            .push(("user".to_string(), "test".to_string()));
 
         apply_res_rules(&mut parts, &rules);
 
-        let cookies: Vec<_> = parts.headers.get_all(hyper::header::SET_COOKIE).iter().collect();
+        let cookies: Vec<_> = parts
+            .headers
+            .get_all(hyper::header::SET_COOKIE)
+            .iter()
+            .collect();
         assert_eq!(cookies.len(), 2);
     }
 
@@ -219,10 +236,18 @@ mod tests {
 
         apply_res_rules(&mut parts, &rules);
 
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN));
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_METHODS));
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS));
-        assert!(parts.headers.contains_key(hyper::header::ACCESS_CONTROL_EXPOSE_HEADERS));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_METHODS));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS));
+        assert!(parts
+            .headers
+            .contains_key(hyper::header::ACCESS_CONTROL_EXPOSE_HEADERS));
     }
 
     #[test]
@@ -235,7 +260,8 @@ mod tests {
 
     #[test]
     fn test_parse_set_cookie_with_options() {
-        let cookie = "session=abc123; Path=/; Domain=example.com; Secure; HttpOnly; SameSite=Strict";
+        let cookie =
+            "session=abc123; Path=/; Domain=example.com; Secure; HttpOnly; SameSite=Strict";
         let (name, value, options) = parse_set_cookie(cookie).unwrap();
         assert_eq!(name, "session");
         assert_eq!(value, "abc123");
@@ -257,7 +283,10 @@ mod tests {
     fn test_parse_set_cookie_with_expires() {
         let cookie = "session=abc123; Expires=Wed, 09 Jun 2021 10:18:14 GMT";
         let (_, _, options) = parse_set_cookie(cookie).unwrap();
-        assert_eq!(options.expires, Some("Wed, 09 Jun 2021 10:18:14 GMT".to_string()));
+        assert_eq!(
+            options.expires,
+            Some("Wed, 09 Jun 2021 10:18:14 GMT".to_string())
+        );
     }
 
     #[test]

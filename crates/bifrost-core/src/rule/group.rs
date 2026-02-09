@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::rule::Rule;
+use super::types::Rule;
 
 #[derive(Debug, Clone)]
 pub struct RuleGroup {
@@ -137,20 +137,14 @@ impl RuleGroupManager {
         let mut groups: Vec<_> = self.groups.values().filter(|g| g.enabled).collect();
         groups.sort_by_key(|g| g.order);
 
-        groups
-            .into_iter()
-            .flat_map(|g| g.rules.clone())
-            .collect()
+        groups.into_iter().flat_map(|g| g.rules.clone()).collect()
     }
 
     pub fn get_all_rules(&self) -> Vec<Rule> {
         let mut groups: Vec<_> = self.groups.values().collect();
         groups.sort_by_key(|g| g.order);
 
-        groups
-            .into_iter()
-            .flat_map(|g| g.rules.clone())
-            .collect()
+        groups.into_iter().flat_map(|g| g.rules.clone()).collect()
     }
 
     pub fn group_names(&self) -> Vec<&str> {
