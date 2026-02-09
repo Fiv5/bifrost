@@ -39,6 +39,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: web
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -59,6 +74,8 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross
+        env:
+          SKIP_FRONTEND_BUILD: "1"
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Get version

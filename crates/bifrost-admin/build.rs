@@ -42,12 +42,21 @@ fn main() {
         return;
     }
 
-    if !web_dir.join("node_modules").exists() {
+    let node_modules = web_dir.join("node_modules");
+    if !node_modules.exists() {
         println!("cargo:warning=Installing frontend dependencies...");
-        let output = Command::new("npm")
-            .arg("install")
+        let npm_cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
+        let output = Command::new(npm_cmd)
+            .arg("ci")
+            .args(["--prefer-offline", "--no-audit", "--no-fund"])
             .current_dir(&web_dir)
             .output()
+            .or_else(|_| {
+                Command::new(npm_cmd)
+                    .arg("install")
+                    .current_dir(&web_dir)
+                    .output()
+            })
             .expect("Failed to run npm install");
 
         if !output.status.success() {
@@ -70,7 +79,8 @@ fn main() {
         "cargo:warning=Building frontend at {}...",
         web_dir.display()
     );
-    let output = Command::new("npm")
+    let npm_cmd = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    let output = Command::new(npm_cmd)
         .args(["run", "build"])
         .current_dir(&web_dir)
         .output()
