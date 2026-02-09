@@ -1,18 +1,25 @@
+pub mod body_manipulation;
 pub mod curl_mock;
+pub mod filters;
 pub mod https;
 pub mod matchers;
 pub mod protocols;
 pub mod public;
 pub mod request;
+pub mod request_modification;
 pub mod response;
+pub mod response_modification;
 pub mod routing;
+pub mod rule_priority;
+pub mod status_redirect;
 pub mod template;
+pub mod url_manipulation;
 
 use crate::runner::TestCase;
 
 pub fn all_tests() -> Vec<TestCase> {
     let mut tests = Vec::new();
-    tests.extend(routing::tests());
+    tests.extend(routing::get_all_tests());
     tests.extend(request::tests());
     tests.extend(response::tests());
     tests.extend(template::tests());
@@ -21,5 +28,12 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(https::get_all_tests());
     tests.extend(protocols::get_all_tests());
     tests.extend(matchers::get_all_tests());
+    tests.extend(request_modification::get_all_tests());
+    tests.extend(response_modification::get_all_tests());
+    tests.extend(rule_priority::get_all_tests());
+    tests.extend(body_manipulation::get_all_tests());
+    tests.extend(url_manipulation::get_all_tests());
+    tests.extend(status_redirect::get_all_tests());
+    tests.extend(filters::get_all_tests());
     tests
 }

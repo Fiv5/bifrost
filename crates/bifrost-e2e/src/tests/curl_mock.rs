@@ -120,7 +120,7 @@ async fn test_reqheaders_injection() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqHeaders://{X-Custom-Header: test-value-123}",
+            "test.local reqHeaders://X-Custom-Header=test-value-123",
         ],
     )
     .await
@@ -161,7 +161,7 @@ async fn test_resheaders_injection() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resHeaders://{X-Response-Custom: response-value}",
+            "test.local resHeaders://X-Response-Custom=response-value",
         ],
     )
     .await
@@ -251,7 +251,7 @@ async fn test_cookie_injection() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqCookies://{session_id: abc123, user_token: xyz789}",
+            "test.local reqCookies://session_id=abc123, user_token: xyz789",
         ],
     )
     .await
@@ -281,8 +281,8 @@ async fn test_host_plus_reqheaders() -> Result<(), String> {
         port,
         vec![
             &format!("baidu.com host://127.0.0.1:{}", mock.port),
-            "baidu.com reqHeaders://{X-Test: hello}",
-            "baidu.com reqHeaders://{X-Another: world}",
+            "baidu.com reqHeaders://X-Test=hello",
+            "baidu.com reqHeaders://X-Another=world",
         ],
     )
     .await
@@ -315,7 +315,7 @@ async fn test_host_plus_resheaders() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resHeaders://{X-Powered-By: BifrostProxy}",
+            "test.local resHeaders://X-Powered-By=BifrostProxy",
         ],
     )
     .await
@@ -347,7 +347,7 @@ async fn test_multi_headers() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqHeaders://{X-Header-One: value1, X-Header-Two: value2}",
+            "test.local reqHeaders://X-Header-One=value1, X-Header-Two: value2",
         ],
     )
     .await
@@ -379,7 +379,7 @@ async fn test_wildcard_match() -> Result<(), String> {
         port,
         vec![
             &format!("*.wildcard.test host://127.0.0.1:{}", mock.port),
-            "*.wildcard.test reqHeaders://{X-Wildcard-Match: true}",
+            "*.wildcard.test reqHeaders://X-Wildcard-Match=true",
         ],
     )
     .await

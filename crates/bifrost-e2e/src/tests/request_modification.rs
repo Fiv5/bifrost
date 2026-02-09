@@ -7,159 +7,81 @@ use std::time::Duration;
 pub fn get_all_tests() -> Vec<TestCase> {
     vec![
         TestCase::standalone(
-            "protocol_host_basic",
-            "Host protocol: basic redirect",
-            "protocols",
-            test_protocol_host_basic,
+            "req_headers_single",
+            "ReqHeaders protocol: add single header",
+            "request_modification",
+            test_req_headers_single,
         ),
         TestCase::standalone(
-            "protocol_host_with_port",
-            "Host protocol: redirect with port",
-            "protocols",
-            test_protocol_host_with_port,
+            "req_headers_multiple",
+            "ReqHeaders protocol: add multiple headers",
+            "request_modification",
+            test_req_headers_multiple,
         ),
         TestCase::standalone(
-            "protocol_reqheaders_single",
-            "ReqHeaders protocol: single header",
-            "protocols",
-            test_protocol_reqheaders_single,
+            "req_headers_override",
+            "ReqHeaders protocol: later rule overrides earlier",
+            "request_modification",
+            test_req_headers_override,
         ),
         TestCase::standalone(
-            "protocol_reqheaders_multiple",
-            "ReqHeaders protocol: multiple headers",
-            "protocols",
-            test_protocol_reqheaders_multiple,
+            "req_cookies_add",
+            "ReqCookies protocol: add request cookies",
+            "request_modification",
+            test_req_cookies_add,
         ),
         TestCase::standalone(
-            "protocol_resheaders_single",
-            "ResHeaders protocol: single header",
-            "protocols",
-            test_protocol_resheaders_single,
+            "req_cookies_merge",
+            "ReqCookies protocol: merge multiple cookies",
+            "request_modification",
+            test_req_cookies_merge,
         ),
         TestCase::standalone(
-            "protocol_resheaders_multiple",
-            "ResHeaders protocol: multiple headers",
-            "protocols",
-            test_protocol_resheaders_multiple,
-        ),
-        TestCase::standalone(
-            "protocol_statuscode",
-            "StatusCode protocol: modify response status",
-            "protocols",
-            test_protocol_statuscode,
-        ),
-        TestCase::standalone(
-            "protocol_ua",
+            "req_ua_modify",
             "UA protocol: modify User-Agent",
-            "protocols",
-            test_protocol_ua,
+            "request_modification",
+            test_req_ua_modify,
         ),
         TestCase::standalone(
-            "protocol_referer",
-            "Referer protocol: inject referer header",
-            "protocols",
-            test_protocol_referer,
+            "req_referer_set",
+            "Referer protocol: set referer header",
+            "request_modification",
+            test_req_referer_set,
         ),
         TestCase::standalone(
-            "protocol_method",
+            "req_auth_basic",
+            "Auth protocol: set basic authentication",
+            "request_modification",
+            test_req_auth_basic,
+        ),
+        TestCase::standalone(
+            "req_method_change",
             "Method protocol: change request method",
-            "protocols",
-            test_protocol_method,
+            "request_modification",
+            test_req_method_change,
         ),
         TestCase::standalone(
-            "protocol_reqcookies",
-            "ReqCookies protocol: inject request cookies",
-            "protocols",
-            test_protocol_reqcookies,
+            "req_type_json",
+            "ReqType protocol: set content-type to json",
+            "request_modification",
+            test_req_type_json,
         ),
         TestCase::standalone(
-            "protocol_rescookies",
-            "ResCookies protocol: inject response cookies",
-            "protocols",
-            test_protocol_rescookies,
+            "req_charset_modify",
+            "ReqCharset protocol: modify charset",
+            "request_modification",
+            test_req_charset_modify,
         ),
         TestCase::standalone(
-            "protocol_rescors",
-            "ResCors protocol: enable CORS",
-            "protocols",
-            test_protocol_rescors,
-        ),
-        TestCase::standalone(
-            "protocol_proxy_upstream",
-            "Proxy protocol: forward to upstream proxy",
-            "protocols",
-            test_protocol_proxy_upstream,
-        ),
-        TestCase::standalone(
-            "protocol_combined_pipeline",
-            "Combined: full request/response pipeline",
-            "protocols",
-            test_protocol_combined_pipeline,
+            "req_combined_modifications",
+            "Combined: multiple request modification rules",
+            "request_modification",
+            test_req_combined_modifications,
         ),
     ]
 }
 
-async fn test_protocol_host_basic() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-    mock.set_response(200, "host_redirected");
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![&format!("original.host host://127.0.0.1:{}", mock.port)],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://original.host/path",
-    )
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_success()?;
-    result.assert_body_contains("host_redirected")?;
-    mock.assert_path("/path")?;
-
-    Ok(())
-}
-
-async fn test_protocol_host_with_port() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-    mock.set_response(200, "port_redirected");
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![&format!(
-            "original.host:8080 host://127.0.0.1:{}",
-            mock.port
-        )],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://original.host:8080/api",
-    )
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_success()?;
-    result.assert_body_contains("port_redirected")?;
-
-    Ok(())
-}
-
-async fn test_protocol_reqheaders_single() -> Result<(), String> {
+async fn test_req_headers_single() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -167,7 +89,7 @@ async fn test_protocol_reqheaders_single() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqHeaders://X-Single-Header=single-value",
+            "test.local reqHeaders://X-Custom-Header=test-value",
         ],
     )
     .await
@@ -184,12 +106,12 @@ async fn test_protocol_reqheaders_single() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    mock.assert_header_received("x-single-header", "single-value")?;
+    mock.assert_header_received("x-custom-header", "test-value")?;
 
     Ok(())
 }
 
-async fn test_protocol_reqheaders_multiple() -> Result<(), String> {
+async fn test_req_headers_multiple() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -197,7 +119,8 @@ async fn test_protocol_reqheaders_multiple() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqHeaders://X-First=one, X-Second: two, X-Third: three",
+            "test.local reqHeaders://X-Header-A=value-a",
+            "test.local reqHeaders://X-Header-B=value-b",
         ],
     )
     .await
@@ -214,14 +137,13 @@ async fn test_protocol_reqheaders_multiple() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    mock.assert_header_received("x-first", "one")?;
-    mock.assert_header_received("x-second", "two")?;
-    mock.assert_header_received("x-third", "three")?;
+    mock.assert_header_received("x-header-a", "value-a")?;
+    mock.assert_header_received("x-header-b", "value-b")?;
 
     Ok(())
 }
 
-async fn test_protocol_resheaders_single() -> Result<(), String> {
+async fn test_req_headers_override() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -229,7 +151,8 @@ async fn test_protocol_resheaders_single() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resHeaders://X-Response-Header=response-value",
+            "test.local reqHeaders://X-Override=first",
+            "test.local reqHeaders://X-Override=second",
         ],
     )
     .await
@@ -246,12 +169,12 @@ async fn test_protocol_resheaders_single() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    result.assert_header("X-Response-Header", "response-value")?;
+    mock.assert_header_received("x-override", "second")?;
 
     Ok(())
 }
 
-async fn test_protocol_resheaders_multiple() -> Result<(), String> {
+async fn test_req_cookies_add() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -259,7 +182,7 @@ async fn test_protocol_resheaders_multiple() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resHeaders://X-Res-One=val1, X-Res-Two: val2",
+            "test.local reqCookies://session=abc123",
         ],
     )
     .await
@@ -276,43 +199,12 @@ async fn test_protocol_resheaders_multiple() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    result.assert_header("X-Res-One", "val1")?;
-    result.assert_header("X-Res-Two", "val2")?;
+    mock.assert_header_contains("cookie", "session")?;
 
     Ok(())
 }
 
-async fn test_protocol_statuscode() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-    mock.set_response(200, "original");
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![
-            &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local statusCode://201",
-        ],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://test.local/api",
-    )
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_status(201)?;
-
-    Ok(())
-}
-
-async fn test_protocol_ua() -> Result<(), String> {
+async fn test_req_cookies_merge() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -320,7 +212,8 @@ async fn test_protocol_ua() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local ua://BifrostProxy/1.0 (Test)",
+            "test.local reqCookies://cookie_a=value1",
+            "test.local reqCookies://cookie_b=value2",
         ],
     )
     .await
@@ -337,12 +230,13 @@ async fn test_protocol_ua() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    mock.assert_header_received("user-agent", "BifrostProxy/1.0 (Test)")?;
+    mock.assert_header_contains("cookie", "cookie_a")?;
+    mock.assert_header_contains("cookie", "cookie_b")?;
 
     Ok(())
 }
 
-async fn test_protocol_referer() -> Result<(), String> {
+async fn test_req_ua_modify() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -350,7 +244,7 @@ async fn test_protocol_referer() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local referer://https://example.com/referrer-page",
+            "test.local ua://BifrostTestAgent/2.0",
         ],
     )
     .await
@@ -367,12 +261,72 @@ async fn test_protocol_referer() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    mock.assert_header_received("referer", "https://example.com/referrer-page")?;
+    mock.assert_header_received("user-agent", "BifrostTestAgent/2.0")?;
 
     Ok(())
 }
 
-async fn test_protocol_method() -> Result<(), String> {
+async fn test_req_referer_set() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local referer://https://referrer.example.com/page",
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_received("referer", "https://referrer.example.com/page")?;
+
+    Ok(())
+}
+
+async fn test_req_auth_basic() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local auth://testuser:testpass",
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_contains("authorization", "Basic")?;
+
+    Ok(())
+}
+
+async fn test_req_method_change() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -402,7 +356,7 @@ async fn test_protocol_method() -> Result<(), String> {
     Ok(())
 }
 
-async fn test_protocol_reqcookies() -> Result<(), String> {
+async fn test_req_type_json() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
     let port = portpicker::pick_unused_port().unwrap();
@@ -410,7 +364,75 @@ async fn test_protocol_reqcookies() -> Result<(), String> {
         port,
         vec![
             &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local reqCookies://session=sess123, token: tok456",
+            "test.local reqType://json",
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .method("POST")
+    .data(r#"{"test":"data"}"#)
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_contains("content-type", "application/json")?;
+
+    Ok(())
+}
+
+async fn test_req_charset_modify() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local reqCharset://gbk",
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .method("POST")
+    .header("Content-Type", "text/plain")
+    .data("test data")
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_contains("content-type", "gbk")?;
+
+    Ok(())
+}
+
+async fn test_req_combined_modifications() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local reqHeaders://X-Custom=combined-test",
+            "test.local ua://CombinedAgent/1.0",
+            "test.local referer://https://combined.test.com",
+            "test.local method://POST",
         ],
     )
     .await
@@ -427,112 +449,10 @@ async fn test_protocol_reqcookies() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    mock.assert_header_contains("cookie", "session")?;
-
-    Ok(())
-}
-
-async fn test_protocol_rescookies() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![
-            &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resCookies://tracking_id=abc123",
-        ],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://test.local/api",
-    )
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_success()?;
-    result.assert_header_contains("Set-Cookie", "tracking_id")?;
-
-    Ok(())
-}
-
-async fn test_protocol_rescors() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![
-            &format!("test.local host://127.0.0.1:{}", mock.port),
-            "test.local resCors://*",
-        ],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://test.local/api",
-    )
-    .header("Origin", "http://other-domain.com")
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_success()?;
-    result.assert_header("Access-Control-Allow-Origin", "*")?;
-
-    Ok(())
-}
-
-async fn test_protocol_proxy_upstream() -> Result<(), String> {
-    Err("SKIPPED: Upstream proxy test requires external proxy setup".to_string())
-}
-
-async fn test_protocol_combined_pipeline() -> Result<(), String> {
-    let mock = EnhancedMockServer::start().await;
-
-    let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec![
-            &format!("pipeline.test host://127.0.0.1:{}", mock.port),
-            "pipeline.test reqHeaders://X-Request-Added=yes",
-            "pipeline.test resHeaders://X-Response-Added=yes",
-            "pipeline.test ua://Pipeline-UA/1.0",
-            "pipeline.test resCors://*",
-        ],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    let result = CurlCommand::with_proxy(
-        &format!("http://127.0.0.1:{}", port),
-        "http://pipeline.test/api/full",
-    )
-    .header("Origin", "http://client.com")
-    .execute()
-    .await
-    .map_err(|e| format!("curl failed: {}", e))?;
-
-    result.assert_success()?;
-
-    mock.assert_path("/api/full")?;
-    mock.assert_header_received("x-request-added", "yes")?;
-    mock.assert_header_received("user-agent", "Pipeline-UA/1.0")?;
-
-    result.assert_header("X-Response-Added", "yes")?;
-    result.assert_header("Access-Control-Allow-Origin", "*")?;
+    mock.assert_header_received("x-custom", "combined-test")?;
+    mock.assert_header_received("user-agent", "CombinedAgent/1.0")?;
+    mock.assert_header_received("referer", "https://combined.test.com")?;
+    mock.assert_method("POST")?;
 
     Ok(())
 }
@@ -542,14 +462,32 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_host_basic() {
-        let result = test_protocol_host_basic().await;
+    async fn test_headers_single() {
+        let result = test_req_headers_single().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_headers_override() {
+        let result = test_req_headers_override().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_ua() {
+        let result = test_req_ua_modify().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_method() {
+        let result = test_req_method_change().await;
         assert!(result.is_ok(), "Test failed: {:?}", result.err());
     }
 
     #[tokio::test]
     async fn test_combined() {
-        let result = test_protocol_combined_pipeline().await;
+        let result = test_req_combined_modifications().await;
         assert!(result.is_ok(), "Test failed: {:?}", result.err());
     }
 }

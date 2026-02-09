@@ -1,6 +1,9 @@
 use bytes::Bytes;
 use hyper::{header, Response, StatusCode};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioExecutor;
 use std::path::Path;
+use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::logging::RequestContext;
@@ -41,6 +44,32 @@ pub async fn generate_mock_response(
     }
 
     if let Some(file_path) = &rules.mock_file {
+        if file_path.starts_with("http://") || file_path.starts_with("https://") {
+            return load_remote_response(file_path, rules, verbose_logging, ctx).await;
+        }
+        if file_path.starts_with('(') && file_path.ends_with(')') {
+            let content = &file_path[1..file_path.len() - 1];
+            if verbose_logging {
+                debug!(
+                    "[{}] [FILE] inline content ({} bytes)",
+                    ctx.id_str(),
+                    content.len()
+                );
+            }
+            let status = rules.status_code.unwrap_or(200);
+            let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+            let mut builder = Response::builder()
+                .status(status_code)
+                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8");
+            for (key, value) in &rules.res_headers {
+                builder = builder.header(key.as_str(), value.as_str());
+            }
+            return Some(
+                builder
+                    .body(full_body(Bytes::from(content.to_string())))
+                    .unwrap(),
+            );
+        }
         return load_file_response(file_path, rules, verbose_logging, ctx).await;
     }
 
@@ -130,6 +159,133 @@ async fn load_file_response(
     }
 }
 
+async fn load_remote_response(
+    url: &str,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) -> Option<Response<BoxBody>> {
+    let uri: hyper::Uri = match url.parse() {
+        Ok(u) => u,
+        Err(e) => {
+            warn!("[{}] [REMOTE] invalid URL {}: {}", ctx.id_str(), url, e);
+            return Some(build_error_response(400, "Invalid URL"));
+        }
+    };
+
+    let is_https = uri.scheme_str() == Some("https");
+
+    let result = if is_https {
+        load_https_content(uri.clone(), verbose_logging, ctx).await
+    } else {
+        load_http_content(uri.clone(), verbose_logging, ctx).await
+    };
+
+    match result {
+        Ok(content) => {
+            if verbose_logging {
+                debug!(
+                    "[{}] [REMOTE] fetched {} ({} bytes)",
+                    ctx.id_str(),
+                    url,
+                    content.len()
+                );
+            }
+
+            let content_type = guess_content_type_from_url(url);
+            let status = rules.status_code.unwrap_or(200);
+            let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+
+            let mut builder = Response::builder()
+                .status(status_code)
+                .header(header::CONTENT_TYPE, content_type);
+
+            for (key, value) in &rules.res_headers {
+                builder = builder.header(key.as_str(), value.as_str());
+            }
+
+            Some(builder.body(full_body(content)).unwrap())
+        }
+        Err(e) => {
+            warn!("[{}] [REMOTE] failed to fetch {}: {}", ctx.id_str(), url, e);
+            Some(build_error_response(
+                502,
+                &format!("Failed to fetch remote URL: {}", e),
+            ))
+        }
+    }
+}
+
+async fn load_http_content(
+    uri: hyper::Uri,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    use http_body_util::BodyExt;
+
+    let client = Client::builder(TokioExecutor::new()).build_http();
+
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(&uri)
+        .header("User-Agent", "bifrost-proxy")
+        .body(http_body_util::Empty::<Bytes>::new())?;
+
+    if verbose_logging {
+        debug!("[{}] [REMOTE] fetching HTTP {}", ctx.id_str(), uri);
+    }
+
+    let response = tokio::time::timeout(Duration::from_secs(30), client.request(req))
+        .await
+        .map_err(|_| "Request timeout")??;
+
+    let body = response.into_body();
+    let collected = body.collect().await?;
+    Ok(collected.to_bytes().to_vec())
+}
+
+async fn load_https_content(
+    uri: hyper::Uri,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    use http_body_util::BodyExt;
+    use rustls::RootCertStore;
+
+    let mut root_store = RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    let config = rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(config)
+        .https_or_http()
+        .enable_http1()
+        .build();
+
+    let client = Client::builder(TokioExecutor::new()).build(https_connector);
+
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(&uri)
+        .header("User-Agent", "bifrost-proxy")
+        .body(http_body_util::Empty::<Bytes>::new())?;
+
+    if verbose_logging {
+        debug!("[{}] [REMOTE] fetching HTTPS {}", ctx.id_str(), uri);
+    }
+
+    let response = tokio::time::timeout(Duration::from_secs(30), client.request(req))
+        .await
+        .map_err(|_| "Request timeout")??;
+
+    let body = response.into_body();
+    let collected = body.collect().await?;
+    Ok(collected.to_bytes().to_vec())
+}
+
 async fn load_rawfile_response(
     file_path: &str,
     verbose_logging: bool,
@@ -217,6 +373,20 @@ fn guess_content_type(file_path: &str) -> &'static str {
         .and_then(|e| e.to_str())
         .unwrap_or("");
 
+    ext_to_content_type(ext)
+}
+
+fn guess_content_type_from_url(url: &str) -> &'static str {
+    let path = url.split('?').next().unwrap_or(url);
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    ext_to_content_type(ext)
+}
+
+fn ext_to_content_type(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",

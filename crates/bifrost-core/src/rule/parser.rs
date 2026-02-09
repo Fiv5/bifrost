@@ -9,7 +9,7 @@ use super::types::Rule;
 
 lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
-    static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([^}]+\.json)\}").unwrap();
+    static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_.\-]*)\}").unwrap();
 }
 
 pub struct RuleParser {
@@ -144,13 +144,30 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
 
 fn expand_inline_values(line: &str, values: &HashMap<String, String>) -> String {
     let mut result = line.to_string();
+    let max_iterations = 10;
 
-    for caps in INLINE_VALUES_REGEX.captures_iter(line) {
-        let full_match = caps.get(0).unwrap().as_str();
-        let key = caps.get(1).unwrap().as_str();
+    for _ in 0..max_iterations {
+        let mut changed = false;
+        let current = result.clone();
 
-        if let Some(value) = values.get(key) {
-            result = result.replace(full_match, value);
+        for caps in INLINE_VALUES_REGEX.captures_iter(&current) {
+            let full_match = caps.get(0).unwrap().as_str();
+            let match_start = caps.get(0).unwrap().start();
+
+            if match_start > 0 && current.as_bytes()[match_start - 1] == b'$' {
+                continue;
+            }
+
+            let key = caps.get(1).unwrap().as_str();
+
+            if let Some(value) = values.get(key) {
+                result = result.replacen(full_match, value, 1);
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
         }
     }
 
@@ -447,5 +464,90 @@ reqHeaders://{test=1}"#;
     fn test_rule_parser_default() {
         let parser = RuleParser::default();
         assert!(parser.values.is_empty());
+    }
+
+    #[test]
+    fn test_expand_inline_values_varname() {
+        let mut values = HashMap::new();
+        values.insert("myResponse".to_string(), r#"{"ok":true}"#.to_string());
+
+        let result = expand_inline_values("test {myResponse} end", &values);
+        assert_eq!(result, r#"test {"ok":true} end"#);
+    }
+
+    #[test]
+    fn test_expand_inline_values_nested() {
+        let mut values = HashMap::new();
+        values.insert("inner".to_string(), "resolved_inner".to_string());
+        values.insert("outer".to_string(), "prefix_{inner}_suffix".to_string());
+
+        let result = expand_inline_values("{outer}", &values);
+        assert_eq!(result, "prefix_resolved_inner_suffix");
+    }
+
+    #[test]
+    fn test_expand_inline_values_preserve_template_vars() {
+        let mut values = HashMap::new();
+        values.insert(
+            "response".to_string(),
+            r#"{"url":"${url}","time":${now}}"#.to_string(),
+        );
+
+        let result = expand_inline_values("{response}", &values);
+        assert_eq!(result, r#"{"url":"${url}","time":${now}}"#);
+    }
+
+    #[test]
+    fn test_expand_inline_values_skip_template_syntax() {
+        let values = HashMap::new();
+        let result = expand_inline_values("${host} and {varName}", &values);
+        assert_eq!(result, "${host} and {varName}");
+    }
+
+    #[test]
+    fn test_expand_inline_values_multiple_same_var() {
+        let mut values = HashMap::new();
+        values.insert("val".to_string(), "X".to_string());
+
+        let result = expand_inline_values("{val}-{val}-{val}", &values);
+        assert_eq!(result, "X-X-X");
+    }
+
+    #[test]
+    fn test_expand_inline_values_deep_nested() {
+        let mut values = HashMap::new();
+        values.insert("a".to_string(), "{b}".to_string());
+        values.insert("b".to_string(), "{c}".to_string());
+        values.insert("c".to_string(), "final".to_string());
+
+        let result = expand_inline_values("{a}", &values);
+        assert_eq!(result, "final");
+    }
+
+    #[test]
+    fn test_parse_with_varname_values() {
+        let mut values = HashMap::new();
+        values.insert("myHost".to_string(), "127.0.0.1:8080".to_string());
+
+        let parser = RuleParser::with_values(values);
+        let rules = parser.parse_line("example.com host://{myHost}").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].value, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_parse_with_nested_template() {
+        let mut values = HashMap::new();
+        values.insert(
+            "mockBody".to_string(),
+            r#"{"host":"${hostname}","path":"${path}"}"#.to_string(),
+        );
+
+        let parser = RuleParser::with_values(values);
+        let rules = parser
+            .parse_line("example.com resBody://{mockBody}")
+            .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].value, r#"{"host":"${hostname}","path":"${path}"}"#);
     }
 }

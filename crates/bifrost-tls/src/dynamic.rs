@@ -71,9 +71,11 @@ impl DynamicCertGenerator {
 mod tests {
     use super::*;
     use crate::ca::generate_root_ca;
+    use crate::init_crypto_provider;
 
     #[test]
     fn test_generate_for_domain() {
+        init_crypto_provider();
         let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
         let generator = DynamicCertGenerator::new(ca);
 
@@ -85,6 +87,7 @@ mod tests {
 
     #[test]
     fn test_generate_for_wildcard_domain() {
+        init_crypto_provider();
         let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
         let generator = DynamicCertGenerator::new(ca);
 
@@ -96,6 +99,7 @@ mod tests {
 
     #[test]
     fn test_generate_for_ip() {
+        init_crypto_provider();
         let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
         let generator = DynamicCertGenerator::new(ca);
 
@@ -107,6 +111,7 @@ mod tests {
 
     #[test]
     fn test_generate_for_subdomain() {
+        init_crypto_provider();
         let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
         let generator = DynamicCertGenerator::new(ca);
 

@@ -11,11 +11,17 @@ pub enum Protocol {
 
     // 基础路由
     Host,
+    XHost,
     Proxy,
     Pac,
     InternalProxy,
     Https2HttpProxy,
     Http2HttpsProxy,
+    Redirect,
+    LocationHref,
+    File,
+    Tpl,
+    RawFile,
 
     // 过滤控制
     Filter,
@@ -162,7 +168,6 @@ pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
     map.insert("xhttp-proxy", "xproxy");
     map.insert("status", "statusCode");
     map.insert("hosts", "host");
-    map.insert("xhost", "host");
     map.insert("html", "htmlAppend");
     map.insert("js", "jsAppend");
     map.insert("reqMerge", "params");
@@ -217,6 +222,7 @@ impl Protocol {
             "G" => Some(Protocol::G),
             "style" => Some(Protocol::Style),
             "host" => Some(Protocol::Host),
+            "xhost" => Some(Protocol::XHost),
             "rule" => Some(Protocol::Rule),
             "pipe" => Some(Protocol::Pipe),
             "weinre" => Some(Protocol::Weinre),
@@ -225,6 +231,11 @@ impl Protocol {
             "http2https-proxy" => Some(Protocol::Http2HttpsProxy),
             "internal-proxy" => Some(Protocol::InternalProxy),
             "pac" => Some(Protocol::Pac),
+            "redirect" => Some(Protocol::Redirect),
+            "locationHref" => Some(Protocol::LocationHref),
+            "file" => Some(Protocol::File),
+            "tpl" => Some(Protocol::Tpl),
+            "rawfile" => Some(Protocol::RawFile),
             "filter" => Some(Protocol::Filter),
             "ignore" => Some(Protocol::Ignore),
             "enable" => Some(Protocol::Enable),
@@ -297,6 +308,7 @@ impl Protocol {
             Protocol::G => "G",
             Protocol::Style => "style",
             Protocol::Host => "host",
+            Protocol::XHost => "xhost",
             Protocol::Rule => "rule",
             Protocol::Pipe => "pipe",
             Protocol::Weinre => "weinre",
@@ -305,6 +317,11 @@ impl Protocol {
             Protocol::Http2HttpsProxy => "http2https-proxy",
             Protocol::InternalProxy => "internal-proxy",
             Protocol::Pac => "pac",
+            Protocol::Redirect => "redirect",
+            Protocol::LocationHref => "locationHref",
+            Protocol::File => "file",
+            Protocol::Tpl => "tpl",
+            Protocol::RawFile => "rawfile",
             Protocol::Filter => "filter",
             Protocol::Ignore => "ignore",
             Protocol::Enable => "enable",
@@ -438,11 +455,17 @@ impl Protocol {
             | Protocol::RulesFile => ProtocolCategory::Request,
 
             Protocol::Host
+            | Protocol::XHost
             | Protocol::Proxy
             | Protocol::Pac
             | Protocol::InternalProxy
             | Protocol::Https2HttpProxy
             | Protocol::Http2HttpsProxy
+            | Protocol::Redirect
+            | Protocol::LocationHref
+            | Protocol::File
+            | Protocol::Tpl
+            | Protocol::RawFile
             | Protocol::Rule
             | Protocol::Pipe
             | Protocol::HeaderReplace
@@ -692,9 +715,10 @@ mod tests {
         assert_eq!(Protocol::resolve_alias("download"), "attachment");
         assert_eq!(Protocol::resolve_alias("skip"), "ignore");
         assert_eq!(Protocol::resolve_alias("http-proxy"), "proxy");
+        assert_eq!(Protocol::resolve_alias("xhttp-proxy"), "xproxy");
         assert_eq!(Protocol::resolve_alias("status"), "statusCode");
         assert_eq!(Protocol::resolve_alias("hosts"), "host");
-        assert_eq!(Protocol::resolve_alias("xhost"), "host");
+        assert_eq!(Protocol::resolve_alias("xhost"), "xhost");
         assert_eq!(Protocol::resolve_alias("html"), "htmlAppend");
         assert_eq!(Protocol::resolve_alias("js"), "jsAppend");
         assert_eq!(Protocol::resolve_alias("reqMerge"), "params");
@@ -930,7 +954,7 @@ mod tests {
 
     #[test]
     fn test_protocol_aliases_count() {
-        assert_eq!(PROTOCOL_ALIASES.len(), 22);
+        assert_eq!(PROTOCOL_ALIASES.len(), 21);
     }
 
     #[test]

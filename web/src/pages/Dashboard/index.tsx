@@ -6,6 +6,7 @@ import {
   ApiOutlined,
   SwapOutlined,
   FileTextOutlined,
+  CloudUploadOutlined,
 } from '@ant-design/icons';
 import { useMetricsStore } from '../../stores/useMetricsStore';
 import MetricsChart from '../../components/MetricsChart';
@@ -21,7 +22,7 @@ export default function Dashboard() {
     const interval = setInterval(() => {
       fetchOverview();
       fetchHistory(60);
-    }, 5000);
+    }, 1000);
     return () => clearInterval(interval);
   }, [fetchOverview, fetchHistory]);
 
@@ -53,7 +54,7 @@ export default function Dashboard() {
   return (
     <div>
       <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={4}>
           <Card>
             <Statistic
               title="Status"
@@ -68,7 +69,7 @@ export default function Dashboard() {
             )}
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={4}>
           <Card>
             <Statistic
               title="Uptime"
@@ -80,7 +81,7 @@ export default function Dashboard() {
             </Text>
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={4}>
           <Card>
             <Statistic
               title="Total Requests"
@@ -92,7 +93,19 @@ export default function Dashboard() {
             </Text>
           </Card>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={4}>
+          <Card>
+            <Statistic
+              title="Total Traffic"
+              value={formatBytes((overview?.metrics.bytes_sent || 0) + (overview?.metrics.bytes_received || 0))}
+              prefix={<CloudUploadOutlined />}
+            />
+            <Text type="secondary">
+              ↑{formatBytes(overview?.metrics.bytes_sent_rate || 0)}/s ↓{formatBytes(overview?.metrics.bytes_received_rate || 0)}/s
+            </Text>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={4}>
           <Card>
             <Statistic
               title="Active Connections"
@@ -100,8 +113,19 @@ export default function Dashboard() {
               prefix={<SwapOutlined />}
             />
             <Text type="secondary">
-              Traffic: {overview?.traffic.recorded || 0} recorded
+              {overview?.traffic.recorded || 0} recorded
             </Text>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={4}>
+          <Card>
+            <Statistic
+              title="Rules"
+              value={overview?.rules.enabled || 0}
+              suffix={`/ ${overview?.rules.total || 0}`}
+              prefix={<FileTextOutlined />}
+            />
+            <Text type="secondary">enabled / total</Text>
           </Card>
         </Col>
       </Row>
@@ -156,46 +180,7 @@ export default function Dashboard() {
         </Col>
       </Row>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Rules"
-              value={overview?.rules.enabled || 0}
-              suffix={`/ ${overview?.rules.total || 0}`}
-              prefix={<FileTextOutlined />}
-            />
-            <Text type="secondary">enabled / total</Text>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Memory"
-              value={formatBytes(overview?.metrics.memory_used || 0)}
-            />
-            <Text type="secondary">
-              Total: {formatBytes(overview?.metrics.memory_total || 0)}
-            </Text>
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Bytes Sent"
-              value={formatBytes(overview?.metrics.bytes_sent || 0)}
-            />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card>
-            <Statistic
-              title="Bytes Received"
-              value={formatBytes(overview?.metrics.bytes_received || 0)}
-            />
-          </Card>
-        </Col>
-      </Row>
+
     </div>
   );
 }

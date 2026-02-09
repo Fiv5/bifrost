@@ -12,7 +12,9 @@ bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
 bifrost-tls = { path = "../bifrost-tls" }
 bifrost-plugin = { path = "../bifrost-plugin" }
+bifrost-admin = { path = "../bifrost-admin" }
 tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-rustls = "0.26"
 async-trait.workspace = true
 bytes.workspace = true
 hyper.workspace = true
@@ -43,3 +45,7 @@ path = "../../tests/rules_test.rs"
 [[test]]
 name = "plugin_test"
 path = "../../tests/plugin_test.rs"
+
+[[test]]
+name = "tls_interception_test"
+path = "../../tests/tls_interception_test.rs"

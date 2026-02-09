@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{AdminState, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -28,6 +28,7 @@ pub async fn handle_http_request(
     let uri = req.uri().clone();
     let method = req.method().to_string();
     let url = uri.to_string();
+    let start_time = std::time::Instant::now();
 
     let resolved_rules = rules.resolve(&url, &method);
 
@@ -160,8 +161,7 @@ pub async fn handle_http_request(
         }
     });
 
-    let path = parts
-        .uri
+    let path = processed_uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
@@ -242,6 +242,18 @@ pub async fn handle_http_request(
         state
             .metrics_collector
             .add_bytes_received(final_res_body.len() as u64);
+
+        let mut record = TrafficRecord::new(ctx.id_str(), method, url);
+        record.status = res_parts.status.as_u16();
+        record.content_type = res_parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        record.request_size = final_body.len();
+        record.response_size = final_res_body.len();
+        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        state.traffic_recorder.record(record);
     }
 
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
@@ -251,7 +263,10 @@ async fn forward_without_rules(
     req: Request<Incoming>,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
+    let start_time = std::time::Instant::now();
+    let method = req.method().to_string();
     let uri = req.uri().clone();
+    let url = uri.to_string();
     let host = uri
         .host()
         .ok_or_else(|| BifrostError::Network("Missing host in URI".to_string()))?
@@ -332,6 +347,25 @@ async fn forward_without_rules(
         state
             .metrics_collector
             .add_bytes_received(res_body_bytes.len() as u64);
+
+        let record_id = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let mut record = TrafficRecord::new(record_id, method, url);
+        record.status = res_parts.status.as_u16();
+        record.content_type = res_parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        record.request_size = body_bytes.len();
+        record.response_size = res_body_bytes.len();
+        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        state.traffic_recorder.record(record);
     }
 
     Ok(Response::from_parts(res_parts, full_body(res_body_bytes)))

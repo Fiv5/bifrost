@@ -62,7 +62,7 @@ export default function Traffic() {
 
   useEffect(() => {
     fetchTraffic();
-    const interval = setInterval(fetchTraffic, 3000);
+    const interval = setInterval(fetchTraffic, 1000);
     return () => clearInterval(interval);
   }, [fetchTraffic]);
 

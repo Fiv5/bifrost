@@ -61,6 +61,8 @@ export interface MetricsSnapshot {
   active_connections: number;
   bytes_sent: number;
   bytes_received: number;
+  bytes_sent_rate: number;
+  bytes_received_rate: number;
   qps: number;
 }
 

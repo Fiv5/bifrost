@@ -203,6 +203,15 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                         result.res_speed = Some(speed);
                     }
                 }
+                Protocol::Redirect => {
+                    result.redirect = Some(value.to_string());
+                }
+                Protocol::File => {
+                    result.mock_file = Some(value.to_string());
+                }
+                Protocol::XHost => {
+                    result.host = Some(value.to_string());
+                }
                 _ => {}
             }
         }
@@ -217,16 +226,17 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
         return None;
     }
 
-    let content = if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        &trimmed[1..trimmed.len() - 1]
+    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        (&trimmed[1..trimmed.len() - 1], true)
     } else {
-        trimmed
+        (trimmed, false)
     };
 
     let mut headers = Vec::new();
     for part in content.split(',') {
         let part = part.trim();
-        if let Some(pos) = part.find(':') {
+        let separator = if use_colon { ':' } else { '=' };
+        if let Some(pos) = part.find(separator) {
             let key = part[..pos].trim().to_string();
             let val = part[pos + 1..].trim().to_string();
             if !key.is_empty() {

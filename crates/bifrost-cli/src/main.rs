@@ -1,12 +1,13 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{start_metrics_collector_task, AdminState};
 use bifrost_core::init_logging;
-use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
+use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer, TlsConfig};
 use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager};
 use bifrost_tls::{
-    generate_root_ca, get_platform_name, load_root_ca, parse_cert_info, save_root_ca,
-    CertInstaller, CertStatus,
+    generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca, parse_cert_info,
+    save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select};
@@ -203,6 +204,8 @@ fn is_process_running(_pid: u32) -> bool {
 }
 
 fn main() {
+    init_crypto_provider();
+
     let cli = Cli::parse();
 
     if let Err(e) = init_logging(&cli.log_level) {
@@ -427,13 +430,20 @@ fn run_foreground(config: ProxyConfig) -> bifrost_core::Result<()> {
     println!("Press Ctrl+C to stop");
     println!("PID: {}", pid);
 
+    let tls_config = load_tls_config(&config)?;
+
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
         bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
     })?;
 
     rt.block_on(async {
         let admin_state = AdminState::new(config.port);
-        let server = ProxyServer::new(config).with_admin_state(admin_state);
+        let metrics_collector = admin_state.metrics_collector.clone();
+        let server = ProxyServer::new(config)
+            .with_tls_config(tls_config)
+            .with_admin_state(admin_state);
+
+        let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
 
         tokio::select! {
             result = server.run() => {
@@ -505,13 +515,19 @@ fn run_daemon(config: ProxyConfig) -> bifrost_core::Result<()> {
             let pid = std::process::id();
             write_pid(pid)?;
 
+            let tls_config = load_tls_config(&config)?;
+
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
             })?;
 
             rt.block_on(async {
                 let admin_state = AdminState::new(config.port);
-                let server = ProxyServer::new(config).with_admin_state(admin_state);
+                let metrics_collector = admin_state.metrics_collector.clone();
+                let server = ProxyServer::new(config)
+                    .with_tls_config(tls_config)
+                    .with_admin_state(admin_state);
+                let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
                 if let Err(e) = server.run().await {
                     eprintln!("Server error: {}", e);
                 }
@@ -857,6 +873,38 @@ fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConfig>> {
+    if !config.enable_tls_interception {
+        return Ok(Arc::new(TlsConfig::default()));
+    }
+
+    let cert_dir = get_bifrost_dir()?.join("certs");
+    let ca_key_path = cert_dir.join("ca.key");
+    let ca_cert_path = cert_dir.join("ca.crt");
+
+    if !ca_cert_path.exists() || !ca_key_path.exists() {
+        println!("TLS interception enabled but CA certificate not found.");
+        println!("Generating CA certificate...");
+        std::fs::create_dir_all(&cert_dir)?;
+        let ca = generate_root_ca()?;
+        save_root_ca(&ca_cert_path, &ca_key_path, &ca)?;
+        println!("✓ CA certificate generated: {}", ca_cert_path.display());
+    }
+
+    let ca = load_root_ca(&ca_cert_path, &ca_key_path)?;
+    let ca_cert_bytes = std::fs::read(&ca_cert_path)?;
+    let ca_key_bytes = std::fs::read(&ca_key_path)?;
+    let cert_generator = DynamicCertGenerator::new(Arc::new(ca));
+
+    println!("✓ TLS interception enabled");
+
+    Ok(Arc::new(TlsConfig {
+        ca_cert: Some(ca_cert_bytes),
+        ca_key: Some(ca_key_bytes),
+        cert_generator: Some(Arc::new(cert_generator)),
+    }))
 }
 
 fn check_and_install_certificate() -> bifrost_core::Result<()> {

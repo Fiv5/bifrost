@@ -20,7 +20,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "public_baidu_with_header",
             "public",
-            vec!["www.baidu.com reqHeaders://{X-Test-Header: bifrost-e2e}"],
+            vec!["www.baidu.com reqHeaders://X-Test-Header=bifrost-e2e"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://www.baidu.com/")
@@ -101,7 +101,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "public_cors_injection",
             "public",
-            vec!["www.baidu.com resHeaders://{Access-Control-Allow-Origin: *}"],
+            vec!["www.baidu.com resHeaders://Access-Control-Allow-Origin=*"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://www.baidu.com/")
@@ -115,7 +115,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "public_custom_header_injection",
             "public",
-            vec!["www.baidu.com resHeaders://{X-Proxy-By: bifrost, X-Test-Time: 2024}"],
+            vec!["www.baidu.com resHeaders://X-Proxy-By=bifrost, X-Test-Time: 2024"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://www.baidu.com/")
@@ -130,7 +130,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "public_wildcard_pattern",
             "public",
-            vec!["*.baidu.com resHeaders://{X-Matched: wildcard}"],
+            vec!["*.baidu.com resHeaders://X-Matched=wildcard"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://www.baidu.com/")
@@ -145,8 +145,8 @@ pub fn tests() -> Vec<TestCase> {
             "public_multi_site_rule",
             "public",
             vec![
-                "www.baidu.com resHeaders://{X-Site: baidu}",
-                "httpbin.org resHeaders://{X-Site: httpbin}",
+                "www.baidu.com resHeaders://X-Site=baidu",
+                "httpbin.org resHeaders://X-Site=httpbin",
             ],
             |client: ProxyClient| async move {
                 let resp1 = client

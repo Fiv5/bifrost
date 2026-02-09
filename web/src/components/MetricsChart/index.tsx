@@ -59,22 +59,24 @@ export default function MetricsChart({ data, type, height = 200 }: MetricsChartP
 
       case 'bandwidth':
         return {
-          tooltip: { trigger: 'axis' },
+          tooltip: { trigger: 'axis', formatter: (params: { seriesName: string; value: number }[]) => {
+            return params.map(p => `${p.seriesName}: ${formatBytes(p.value)}/s`).join('<br/>');
+          }},
           legend: { data: ['Sent', 'Received'] },
           xAxis: { type: 'category', data: timestamps },
-          yAxis: { type: 'value', axisLabel: { formatter: (v: number) => formatBytes(v) } },
+          yAxis: { type: 'value', axisLabel: { formatter: (v: number) => `${formatBytes(v)}/s` } },
           series: [
             {
               name: 'Sent',
               type: 'line',
               smooth: true,
-              data: data.map(d => d.bytes_sent),
+              data: data.map(d => d.bytes_sent_rate),
             },
             {
               name: 'Received',
               type: 'line',
               smooth: true,
-              data: data.map(d => d.bytes_received),
+              data: data.map(d => d.bytes_received_rate),
             },
           ],
           grid: { left: 70, right: 20, top: 30, bottom: 30 },

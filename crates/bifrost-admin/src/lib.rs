@@ -6,7 +6,7 @@ mod state;
 mod static_files;
 mod traffic;
 
-pub use metrics::{MetricsCollector, MetricsSnapshot};
+pub use metrics::{start_metrics_collector_task, MetricsCollector, MetricsSnapshot};
 pub use router::AdminRouter;
 pub use security::{is_valid_admin_request, AdminSecurityConfig};
 pub use state::{AdminState, SharedAccessControl};

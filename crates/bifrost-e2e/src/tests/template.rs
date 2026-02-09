@@ -7,7 +7,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_now",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Timestamp: ${now}}"],
+            vec!["httpbin.org reqHeaders://X-Timestamp=${now}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -28,7 +28,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_random",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Random: ${random}}"],
+            vec!["httpbin.org reqHeaders://X-Random=${random}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -49,7 +49,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_uuid",
             "template",
-            vec!["httpbin.org reqHeaders://{X-UUID: ${randomUUID}}"],
+            vec!["httpbin.org reqHeaders://X-UUID=${randomUUID}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -71,7 +71,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_url",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Url: ${url}}"],
+            vec!["httpbin.org reqHeaders://X-Url=${url}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -94,7 +94,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_host",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Host: ${host}}"],
+            vec!["httpbin.org reqHeaders://X-Host=${host}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -117,7 +117,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_path",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Path: ${path}}"],
+            vec!["httpbin.org reqHeaders://X-Path=${path}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -140,7 +140,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_method",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Method: ${method}}"],
+            vec!["httpbin.org reqHeaders://X-Method=${method}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -163,7 +163,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_var_version",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Version: ${version}}"],
+            vec!["httpbin.org reqHeaders://X-Version=${version}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -186,7 +186,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "template_combined_vars",
             "template",
-            vec!["httpbin.org reqHeaders://{X-Info: ${host}|${method}|${now}}"],
+            vec!["httpbin.org reqHeaders://X-Info=${host|${method}|${now}}"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")

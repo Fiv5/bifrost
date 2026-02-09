@@ -1,18 +1,27 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{AdminState, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
+use hyper::client::conn::http1::Builder as ClientBuilder;
+use hyper::server::conn::http1::Builder as ServerBuilder;
+use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info};
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::server::ResolvesServerCert;
+use tokio_rustls::rustls::sign::CertifiedKey;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tracing::{debug, error, info, warn};
 
 use crate::logging::{format_rules_summary, RequestContext};
-use crate::server::{empty_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
+use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
 
 pub async fn handle_connect(
     req: Request<Incoming>,
@@ -93,6 +102,7 @@ pub async fn handle_connect(
             tls_config,
             verbose_logging,
             ctx,
+            admin_state,
         )
         .await;
     } else if proxy_config.enable_tls_interception
@@ -159,16 +169,383 @@ pub async fn handle_connect(
     Ok(Response::builder().status(200).body(empty_body()).unwrap())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tls_interception(
-    _req: Request<Incoming>,
-    _host: &str,
-    _port: u16,
-    _rules: Arc<dyn RulesResolver>,
-    _tls_config: Arc<TlsConfig>,
-    _verbose_logging: bool,
-    _ctx: &RequestContext,
+    req: Request<Incoming>,
+    host: &str,
+    port: u16,
+    rules: Arc<dyn RulesResolver>,
+    tls_config: Arc<TlsConfig>,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+    admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
+    let cert_generator = tls_config.cert_generator.as_ref().ok_or_else(|| {
+        BifrostError::Tls("TLS interception enabled but cert generator not configured".to_string())
+    })?;
+
+    let certified_key = Arc::new(cert_generator.generate_for_domain(host)?);
+
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+
+    let req_id = ctx.id_str();
+    let verbose = verbose_logging;
+    let host = host.to_string();
+
+    if let Some(ref state) = admin_state {
+        state.metrics_collector.increment_connections();
+    }
+
+    tokio::spawn(async move {
+        let upgraded = match hyper::upgrade::on(req).await {
+            Ok(u) => u,
+            Err(e) => {
+                if let Some(ref state) = admin_state {
+                    state.metrics_collector.decrement_connections();
+                }
+                error!("[{}] TLS interception upgrade error: {}", req_id, e);
+                return;
+            }
+        };
+
+        let result = tls_intercept_tunnel(
+            upgraded,
+            server_config,
+            &host,
+            port,
+            rules,
+            verbose,
+            &req_id,
+            admin_state.clone(),
+        )
+        .await;
+
+        if let Some(ref state) = admin_state {
+            state.metrics_collector.decrement_connections();
+        }
+
+        if let Err(e) = result {
+            if verbose {
+                warn!("[{}] TLS interception error: {}", req_id, e);
+            } else {
+                debug!("TLS interception error: {}", e);
+            }
+        }
+    });
+
     Ok(Response::builder().status(200).body(empty_body()).unwrap())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn tls_intercept_tunnel(
+    upgraded: Upgraded,
+    server_config: ServerConfig,
+    host: &str,
+    port: u16,
+    _rules: Arc<dyn RulesResolver>,
+    verbose_logging: bool,
+    req_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<()> {
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let client_tls = acceptor
+        .accept(TokioIo::new(upgraded))
+        .await
+        .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+
+    if verbose_logging {
+        debug!("[{}] TLS handshake with client completed", req_id);
+    }
+
+    let target_stream = TcpStream::connect(format!("{}:{}", host, port))
+        .await
+        .map_err(|e| BifrostError::Network(format!("Connect to target failed: {e}")))?;
+
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(build_root_cert_store())
+        .with_no_client_auth();
+
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| BifrostError::Tls(format!("Invalid server name: {e}")))?;
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let _server_tls = connector
+        .connect(server_name, target_stream)
+        .await
+        .map_err(|e| BifrostError::Tls(format!("TLS connect to target failed: {e}")))?;
+
+    if verbose_logging {
+        debug!("[{}] TLS handshake with target server completed", req_id);
+    }
+
+    let host_for_requests = host.to_string();
+    let req_id_owned = req_id.to_string();
+    let admin_state_clone = admin_state.clone();
+
+    let service = service_fn(move |req: Request<Incoming>| {
+        let host = host_for_requests.clone();
+        let port = port;
+        let req_id = req_id_owned.clone();
+        let admin_state = admin_state_clone.clone();
+        async move { handle_intercepted_request(req, &host, port, &req_id, admin_state).await }
+    });
+
+    let (client_read, client_write) = tokio::io::split(client_tls);
+    let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
+
+    let conn = ServerBuilder::new().serve_connection(client_io, service);
+
+    if let Err(e) = conn.await {
+        if verbose_logging {
+            debug!("[{}] HTTP connection ended: {}", req_id, e);
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_intercepted_request(
+    req: Request<Incoming>,
+    host: &str,
+    port: u16,
+    req_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    let start_time = std::time::Instant::now();
+    let method = req.method().to_string();
+    let uri = req.uri().clone();
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let url = format!("https://{}{}", host, path);
+
+    debug!("[{}] Intercepted: {} {}", req_id, method, url);
+
+    let (parts, body) = req.into_parts();
+    let body_bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes().to_vec(),
+        Err(e) => {
+            error!("[{}] Failed to read request body: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let target_stream = match TcpStream::connect(format!("{}:{}", host, port)).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[{}] Failed to connect to target: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let client_config = ClientConfig::builder()
+        .with_root_certificates(build_root_cert_store())
+        .with_no_client_auth();
+
+    let server_name = match ServerName::try_from(host.to_string()) {
+        Ok(n) => n,
+        Err(e) => {
+            error!("[{}] Invalid server name: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let tls_stream = match connector.connect(server_name, target_stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[{}] TLS connect failed: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let io = TokioIo::new(tls_stream);
+    let (mut sender, conn) = match ClientBuilder::new().handshake(io).await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("[{}] HTTP handshake failed: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            debug!("Connection error: {}", e);
+        }
+    });
+
+    let mut new_req = Request::builder().method(parts.method).uri(uri);
+
+    for (name, value) in parts.headers.iter() {
+        if name != hyper::header::HOST {
+            new_req = new_req.header(name, value);
+        }
+    }
+    new_req = new_req.header(hyper::header::HOST, host);
+
+    let outgoing_req = match new_req.body(full_body(body_bytes.clone())) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("[{}] Failed to build request: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let response = match sender.send_request(outgoing_req).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("[{}] Failed to send request: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let (res_parts, res_body) = response.into_parts();
+    let res_body_bytes = match res_body.collect().await {
+        Ok(collected) => collected.to_bytes().to_vec(),
+        Err(e) => {
+            error!("[{}] Failed to read response body: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    if let Some(ref state) = admin_state {
+        state
+            .metrics_collector
+            .add_bytes_sent(body_bytes.len() as u64);
+        state
+            .metrics_collector
+            .add_bytes_received(res_body_bytes.len() as u64);
+        state.metrics_collector.increment_requests();
+
+        let mut record = TrafficRecord::new(req_id.to_string(), method, url);
+        record.status = res_parts.status.as_u16();
+        record.content_type = res_parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        record.request_size = body_bytes.len();
+        record.response_size = res_body_bytes.len();
+        record.duration_ms = start_time.elapsed().as_millis() as u64;
+        record.host = host.to_string();
+
+        let req_headers: Vec<(String, String)> = parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.request_headers = Some(req_headers);
+
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.response_headers = Some(res_headers);
+
+        if !body_bytes.is_empty() {
+            record.request_body = String::from_utf8(body_bytes.clone()).ok();
+        }
+        if !res_body_bytes.is_empty() {
+            record.response_body = String::from_utf8(res_body_bytes.clone()).ok();
+        }
+
+        state.traffic_recorder.record(record);
+    }
+
+    Ok(Response::from_parts(res_parts, full_body(res_body_bytes)))
+}
+
+struct SingleCertResolver(Arc<CertifiedKey>);
+
+impl std::fmt::Debug for SingleCertResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SingleCertResolver")
+    }
+}
+
+impl ResolvesServerCert for SingleCertResolver {
+    fn resolve(
+        &self,
+        _client_hello: tokio_rustls::rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<CertifiedKey>> {
+        Some(self.0.clone())
+    }
+}
+
+fn build_root_cert_store() -> RootCertStore {
+    let mut root_store = RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    root_store
+}
+
+struct CombinedAsyncRw<R, W> {
+    reader: R,
+    writer: W,
+}
+
+impl<R, W> CombinedAsyncRw<R, W> {
+    fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer }
+    }
+}
+
+impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for CombinedAsyncRw<R, W> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
+}
+
+impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for CombinedAsyncRw<R, W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
+    }
 }
 
 pub async fn tunnel_bidirectional(

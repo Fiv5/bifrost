@@ -7,7 +7,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "response_add_header",
             "response",
-            vec!["httpbin.org resHeaders://{X-Injected-By: Bifrost}"],
+            vec!["httpbin.org resHeaders://X-Injected-By=Bifrost"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://httpbin.org/get")
@@ -33,7 +33,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "response_cache_control",
             "response",
-            vec!["httpbin.org resHeaders://{Cache-Control: no-cache}"],
+            vec!["httpbin.org resHeaders://Cache-Control=no-cache"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://httpbin.org/get")
@@ -46,7 +46,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "response_set_cookie",
             "response",
-            vec!["httpbin.org resCookies://{proxy_session: xyz789}"],
+            vec!["httpbin.org resCookies://proxy_session=xyz789"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://httpbin.org/get")
@@ -59,7 +59,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "response_content_type",
             "response",
-            vec!["httpbin.org resHeaders://{Content-Type: text/plain}"],
+            vec!["httpbin.org resHeaders://Content-Type=text/plain"],
             |client: ProxyClient| async move {
                 let resp = client
                     .get("http://httpbin.org/get")
@@ -73,8 +73,8 @@ pub fn tests() -> Vec<TestCase> {
             "response_multiple_headers",
             "response",
             vec![
-                "httpbin.org resHeaders://{X-Frame-Options: DENY}",
-                "httpbin.org resHeaders://{X-Content-Type-Options: nosniff}",
+                "httpbin.org resHeaders://X-Frame-Options=DENY",
+                "httpbin.org resHeaders://X-Content-Type-Options=nosniff",
             ],
             |client: ProxyClient| async move {
                 let resp = client

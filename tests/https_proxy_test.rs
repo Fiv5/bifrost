@@ -2,7 +2,7 @@ mod common;
 
 use bifrost_core::Protocol;
 use bifrost_proxy::ProxyConfig;
-use bifrost_tls::{generate_root_ca, CertCache, DynamicCertGenerator};
+use bifrost_tls::{generate_root_ca, init_crypto_provider, CertCache, DynamicCertGenerator};
 use common::{add_test_rule, start_test_proxy, start_test_proxy_with_config};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -104,6 +104,7 @@ async fn test_https_interception() {
 
 #[tokio::test]
 async fn test_dynamic_cert_generation() {
+    init_crypto_provider();
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(Arc::clone(&ca));
 
@@ -126,6 +127,7 @@ async fn test_dynamic_cert_generation() {
 
 #[tokio::test]
 async fn test_cert_cache() {
+    init_crypto_provider();
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(Arc::clone(&ca));
     let cache = CertCache::new();
@@ -196,6 +198,7 @@ async fn test_https_tunnel_invalid_host() {
 
 #[test]
 fn test_generate_root_ca() {
+    init_crypto_provider();
     let ca = generate_root_ca().expect("Failed to generate root CA");
     let cert_der = ca.certificate_der().expect("Failed to get cert DER");
     let key_der = ca.private_key_der();
@@ -211,6 +214,7 @@ fn test_generate_root_ca() {
 
 #[test]
 fn test_dynamic_cert_for_subdomain() {
+    init_crypto_provider();
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(ca);
 
@@ -222,6 +226,7 @@ fn test_dynamic_cert_for_subdomain() {
 
 #[test]
 fn test_dynamic_cert_for_localhost() {
+    init_crypto_provider();
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(ca);
 
@@ -233,6 +238,7 @@ fn test_dynamic_cert_for_localhost() {
 
 #[test]
 fn test_dynamic_cert_for_ipv4() {
+    init_crypto_provider();
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(ca);
 
@@ -244,6 +250,7 @@ fn test_dynamic_cert_for_ipv4() {
 
 #[test]
 fn test_cert_cache_capacity() {
+    init_crypto_provider();
     let cache = CertCache::with_capacity(2);
     let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
     let generator = DynamicCertGenerator::new(ca);

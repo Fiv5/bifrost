@@ -297,6 +297,19 @@ impl CurlResult {
         }
     }
 
+    pub fn assert_header_missing(&self, header: &str) -> Result<(), String> {
+        let header_lower = header.to_lowercase();
+        if self.headers.contains_key(&header_lower) {
+            Err(format!(
+                "Header '{}' should not exist but found value: '{}'",
+                header,
+                self.headers.get(&header_lower).unwrap()
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn get_header(&self, header: &str) -> Option<&String> {
         self.headers.get(&header.to_lowercase())
     }

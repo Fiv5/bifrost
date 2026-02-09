@@ -146,6 +146,7 @@ impl RulesResolver for NoOpRulesResolver {
 pub struct TlsConfig {
     pub ca_cert: Option<Vec<u8>>,
     pub ca_key: Option<Vec<u8>>,
+    pub cert_generator: Option<Arc<bifrost_tls::DynamicCertGenerator>>,
 }
 
 pub struct ProxyServer {
@@ -186,6 +187,7 @@ impl ProxyServer {
     }
 
     pub fn with_admin_state(mut self, admin_state: AdminState) -> Self {
+        let admin_state = admin_state.with_access_control(Arc::clone(&self.access_control));
         self.admin_state = Some(Arc::new(admin_state));
         self
     }

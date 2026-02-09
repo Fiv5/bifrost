@@ -7,7 +7,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "request_add_header",
             "request",
-            vec!["httpbin.org reqHeaders://{X-Custom-Header: test-value}"],
+            vec!["httpbin.org reqHeaders://X-Custom-Header=test-value"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -46,7 +46,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "request_add_cookie",
             "request",
-            vec!["httpbin.org reqCookies://{session: abc123}"],
+            vec!["httpbin.org reqCookies://session=abc123"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/cookies")
@@ -60,8 +60,8 @@ pub fn tests() -> Vec<TestCase> {
             "request_multiple_headers",
             "request",
             vec![
-                "httpbin.org reqHeaders://{X-Header-1: value1}",
-                "httpbin.org reqHeaders://{X-Header-2: value2}",
+                "httpbin.org reqHeaders://X-Header-1=value1",
+                "httpbin.org reqHeaders://X-Header-2=value2",
             ],
             |client: ProxyClient| async move {
                 let json = client
@@ -76,7 +76,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "request_auth_header",
             "request",
-            vec!["httpbin.org reqHeaders://{Authorization: Bearer token123}"],
+            vec!["httpbin.org reqHeaders://Authorization=Bearer token123"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")
@@ -89,7 +89,7 @@ pub fn tests() -> Vec<TestCase> {
         TestCase::new(
             "request_accept_header",
             "request",
-            vec!["httpbin.org reqHeaders://{Accept: application/xml}"],
+            vec!["httpbin.org reqHeaders://Accept=application/xml"],
             |client: ProxyClient| async move {
                 let json = client
                     .get_json("http://httpbin.org/headers")

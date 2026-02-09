@@ -17,3 +17,7 @@ pub use sni::{build_sni_server_config, SniResolver};
 pub use rustls;
 pub use rustls::pki_types;
 pub use rustls::sign::CertifiedKey;
+
+pub fn init_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}

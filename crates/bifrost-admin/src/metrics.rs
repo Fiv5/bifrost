@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
@@ -16,6 +18,8 @@ pub struct MetricsSnapshot {
     pub active_connections: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    pub bytes_sent_rate: f32,
+    pub bytes_received_rate: f32,
     pub qps: f32,
 }
 
@@ -27,6 +31,8 @@ pub struct MetricsCollector {
     history: RwLock<VecDeque<MetricsSnapshot>>,
     max_history: usize,
     last_request_count: AtomicU64,
+    last_bytes_sent: AtomicU64,
+    last_bytes_received: AtomicU64,
     last_snapshot_time: AtomicU64,
     system: RwLock<System>,
     pid: Pid,
@@ -44,6 +50,8 @@ impl MetricsCollector {
             history: RwLock::new(VecDeque::with_capacity(max_history)),
             max_history,
             last_request_count: AtomicU64::new(0),
+            last_bytes_sent: AtomicU64::new(0),
+            last_bytes_received: AtomicU64::new(0),
             last_snapshot_time: AtomicU64::new(0),
             system: RwLock::new(system),
             pid,
@@ -84,18 +92,27 @@ impl MetricsCollector {
 
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let total_requests = self.total_requests.load(Ordering::Relaxed);
+        let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
+        let bytes_received = self.bytes_received.load(Ordering::Relaxed);
+
         let last_count = self.last_request_count.load(Ordering::Relaxed);
+        let last_bytes_sent = self.last_bytes_sent.load(Ordering::Relaxed);
+        let last_bytes_received = self.last_bytes_received.load(Ordering::Relaxed);
         let last_time = self.last_snapshot_time.load(Ordering::Relaxed);
 
-        let qps = if last_time > 0 && now > last_time {
+        let (qps, bytes_sent_rate, bytes_received_rate) = if last_time > 0 && now > last_time {
             let elapsed_secs = (now - last_time) as f32 / 1000.0;
             if elapsed_secs > 0.0 {
-                (total_requests - last_count) as f32 / elapsed_secs
+                (
+                    (total_requests - last_count) as f32 / elapsed_secs,
+                    (bytes_sent - last_bytes_sent) as f32 / elapsed_secs,
+                    (bytes_received - last_bytes_received) as f32 / elapsed_secs,
+                )
             } else {
-                0.0
+                (0.0, 0.0, 0.0)
             }
         } else {
-            0.0
+            (0.0, 0.0, 0.0)
         };
 
         MetricsSnapshot {
@@ -105,8 +122,10 @@ impl MetricsCollector {
             cpu_usage,
             total_requests,
             active_connections: self.active_connections.load(Ordering::Relaxed),
-            bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
-            bytes_received: self.bytes_received.load(Ordering::Relaxed),
+            bytes_sent,
+            bytes_received,
+            bytes_sent_rate,
+            bytes_received_rate,
             qps,
         }
     }
@@ -116,6 +135,10 @@ impl MetricsCollector {
 
         self.last_request_count
             .store(snapshot.total_requests, Ordering::Relaxed);
+        self.last_bytes_sent
+            .store(snapshot.bytes_sent, Ordering::Relaxed);
+        self.last_bytes_received
+            .store(snapshot.bytes_received, Ordering::Relaxed);
         self.last_snapshot_time
             .store(snapshot.timestamp, Ordering::Relaxed);
 
@@ -152,6 +175,19 @@ impl Default for MetricsCollector {
 }
 
 pub type SharedMetricsCollector = Arc<MetricsCollector>;
+
+pub fn start_metrics_collector_task(
+    collector: SharedMetricsCollector,
+    interval_secs: u64,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+        loop {
+            interval.tick().await;
+            collector.take_snapshot();
+        }
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {

@@ -370,10 +370,12 @@ impl ConnectionPool<TcpStream> {
             });
         }
 
-        let _permit =
-            self.inner.semaphore.acquire().await.map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "pool semaphore closed")
-            })?;
+        let _permit = self
+            .inner
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| std::io::Error::other("pool semaphore closed"))?;
 
         let stream = timeout(
             self.inner.config.connect_timeout,
@@ -479,10 +481,12 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectionPool<S> {
             });
         }
 
-        let _permit =
-            self.inner.semaphore.acquire().await.map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::Other, "pool semaphore closed")
-            })?;
+        let _permit = self
+            .inner
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|_| std::io::Error::other("pool semaphore closed"))?;
 
         let stream = timeout(self.inner.config.connect_timeout, create_fn(&key))
             .await
