@@ -1,1 +1,329 @@
-# bifrost
+# Bifrost
+
+Bifrost 是一个用 Rust 编写的高性能 HTTP/HTTPS/SOCKS5 代理服务器，灵感来源于 Whistle。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
+
+## 特性
+
+- 🚀 **高性能** - 基于 Tokio 异步运行时和 Hyper HTTP 库
+- 🔒 **TLS 拦截** - 支持 HTTPS 流量解密和检查
+- 🧩 **插件系统** - 支持 Rust 原生插件和 Node.js 插件
+- 📝 **规则引擎** - 强大的 URL 匹配和请求/响应修改规则
+- 🌐 **多协议支持** - HTTP/HTTPS 代理和 SOCKS5 代理
+- 💾 **持久化存储** - 规则和配置的本地存储管理
+
+## 项目结构
+
+```
+rust/
+├── crates/
+│   ├── bifrost-core/       # 核心库：规则解析、匹配器、协议定义
+│   ├── bifrost-proxy/      # 代理服务器：HTTP/SOCKS5 代理实现
+│   ├── bifrost-tls/        # TLS 处理：CA 证书管理、动态证书生成
+│   ├── bifrost-plugin/     # 插件系统：Rust/Node.js 插件管理
+│   ├── bifrost-storage/    # 存储层：配置和规则持久化
+│   ├── bifrost-cli/        # 命令行工具
+│   └── bifrost-tests/      # 集成测试
+└── tests/                  # 端到端测试
+```
+
+## 快速开始
+
+### 环境要求
+
+- Rust 1.70+
+- Cargo
+
+### 构建
+
+```bash
+cd rust
+cargo build --release
+```
+
+### 运行
+
+```bash
+# 启动代理服务器（默认端口 8899）
+cargo run --bin bifrost
+
+# 指定端口
+cargo run --bin bifrost -- --port 9000
+
+# 启用 SOCKS5 代理
+cargo run --bin bifrost -- --socks5-port 1080
+
+# 守护进程模式
+cargo run --bin bifrost -- start --daemon
+```
+
+### 基本命令
+
+```bash
+# 查看状态
+bifrost status
+
+# 停止服务
+bifrost stop
+
+# CA 证书管理
+bifrost ca generate          # 生成 CA 证书
+bifrost ca export -o ca.crt  # 导出 CA 证书
+bifrost ca info              # 查看 CA 信息
+
+# 规则管理
+bifrost rule list                           # 列出所有规则
+bifrost rule add <name> --content "rule"    # 添加规则
+bifrost rule add <name> --file rules.txt    # 从文件添加规则
+bifrost rule enable <name>                  # 启用规则
+bifrost rule disable <name>                 # 禁用规则
+bifrost rule delete <name>                  # 删除规则
+bifrost rule show <name>                    # 查看规则内容
+```
+
+## 模块说明
+
+### bifrost-core
+
+核心库，提供基础功能：
+
+- **规则解析** (`rule/`) - 解析和管理代理规则
+- **匹配器** (`matcher/`) - URL 模式匹配（域名、IP、正则、通配符）
+- **协议定义** (`protocol.rs`) - 74 种协议操作类型
+
+```rust
+use bifrost_core::{parse_rules, DomainMatcher, Protocol};
+
+// 解析规则
+let rules = parse_rules("example.com host://127.0.0.1");
+
+// 创建匹配器
+let matcher = DomainMatcher::new("*.example.com");
+```
+
+### bifrost-proxy
+
+代理服务器实现：
+
+- **HTTP 代理** - 处理 HTTP/HTTPS 请求
+- **SOCKS5 代理** - SOCKS5 协议支持（可选认证）
+- **WebSocket** - WebSocket 连接代理
+- **隧道** - CONNECT 隧道处理
+
+```rust
+use bifrost_proxy::{ProxyConfig, ProxyServer};
+
+let config = ProxyConfig {
+    port: 8899,
+    host: "0.0.0.0".to_string(),
+    socks5_port: Some(1080),
+    ..Default::default()
+};
+
+let server = ProxyServer::new(config);
+server.run().await?;
+```
+
+### bifrost-tls
+
+TLS 证书管理：
+
+- **CA 证书** - 根证书生成和加载
+- **动态证书** - 按需生成服务器证书
+- **证书缓存** - LRU 缓存优化性能
+- **SNI 处理** - 服务器名称指示支持
+
+```rust
+use bifrost_tls::{generate_root_ca, DynamicCertGenerator, CertCache};
+
+// 生成 CA 证书
+let ca = generate_root_ca()?;
+
+// 创建动态证书生成器
+let generator = DynamicCertGenerator::new(ca);
+let cert = generator.generate("example.com")?;
+```
+
+### bifrost-plugin
+
+插件系统：
+
+- **22 种 Hook 点** - 覆盖请求/响应全生命周期
+- **Rust 插件** - 原生高性能插件
+- **Node.js 插件** - 灵活的脚本插件
+
+```rust
+use bifrost_plugin::{BifrostPlugin, PluginHook, PluginManager};
+use async_trait::async_trait;
+
+struct MyPlugin;
+
+#[async_trait]
+impl BifrostPlugin for MyPlugin {
+    fn name(&self) -> &str { "my-plugin" }
+    fn hooks(&self) -> Vec<PluginHook> {
+        vec![PluginHook::Http, PluginHook::ReqRules]
+    }
+}
+
+let manager = PluginManager::new();
+manager.register_rust_plugin(MyPlugin)?;
+```
+
+**支持的 Hook 类型：**
+
+| 类别 | Hook |
+|------|------|
+| 认证 | `Auth` |
+| TLS | `Sni` |
+| 界面 | `Ui` |
+| HTTP | `Http` |
+| 隧道 | `Tunnel`, `TunnelRules`, `TunnelReqRead/Write`, `TunnelResRead/Write` |
+| 规则 | `ReqRules`, `ResRules` |
+| 请求 | `ReqRead`, `ReqWrite`, `ReqStats` |
+| 响应 | `ResRead`, `ResWrite`, `ResStats` |
+| WebSocket | `WsReqRead/Write`, `WsResRead/Write` |
+
+### bifrost-storage
+
+配置和状态存储：
+
+- **规则存储** - 规则文件的持久化
+- **配置管理** - 代理配置
+- **状态管理** - 运行时状态
+
+```rust
+use bifrost_storage::{RulesStorage, RuleFile, StateManager};
+
+// 规则存储
+let storage = RulesStorage::new()?;
+let rule = RuleFile::new("my-rule", "example.com host://127.0.0.1");
+storage.save(&rule)?;
+
+// 状态管理
+let state = StateManager::new()?;
+let enabled_groups = state.enabled_groups();
+```
+
+## 规则语法
+
+Bifrost 支持类似 Whistle 的规则语法：
+
+```
+# 基本格式：pattern protocol://value
+
+# Host 映射
+example.com host://127.0.0.1
+*.api.example.com host://192.168.1.100
+
+# 代理转发
+example.com proxy://proxy.server:8080
+
+# 请求修改
+example.com reqHeaders://(content-type=application/json)
+example.com reqBody://{"key": "value"}
+example.com method://POST
+
+# 响应修改
+example.com resHeaders://(cache-control=no-cache)
+example.com resBody://{"response": "data"}
+example.com statusCode://200
+
+# 内容注入
+example.com htmlAppend://</script><script>alert(1)</script>
+example.com jsAppend://console.log('injected')
+example.com cssAppend://body{background:red}
+
+# 延迟和限速
+example.com reqDelay://1000
+example.com resDelay://500
+example.com resSpeed://10
+
+# 过滤和控制
+example.com enable://
+example.com disable://
+example.com ignore://
+example.com filter://keyword
+```
+
+### 支持的协议（74 种）
+
+| 分类 | 协议 |
+|------|------|
+| 路由 | `host`, `proxy`, `pac`, `internal-proxy`, `https2http-proxy`, `http2https-proxy` |
+| 控制 | `filter`, `ignore`, `enable`, `disable`, `delete`, `G`, `style` |
+| 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
+| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment` |
+| 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody` |
+| 高级 | `plugin`, `rulesFile`, `resScript`, `sniCallback`, `cipher` |
+
+## 配置
+
+默认配置文件位于 `~/.bifrost/`：
+
+```
+~/.bifrost/
+├── whistle.pid      # 进程 PID 文件
+├── whistle.log      # 日志文件
+├── whistle.err      # 错误日志
+├── rules/           # 规则文件目录
+└── certs/           # 证书目录
+    ├── ca.crt       # CA 证书
+    └── ca.key       # CA 私钥
+```
+
+## 测试
+
+```bash
+# 运行所有测试
+cargo test
+
+# 运行特定测试
+cargo test --package bifrost-core
+cargo test --package bifrost-proxy
+
+# 运行集成测试
+cargo test --test http_proxy_test
+cargo test --test https_proxy_test
+cargo test --test socks5_test
+```
+
+## 开发
+
+### 添加新协议
+
+1. 在 `bifrost-core/src/protocol.rs` 中添加新协议枚举值
+2. 实现 `from_str` 和 `to_str` 方法
+3. 在 `category()` 中指定协议分类
+4. 如果需要多匹配支持，添加到 `MULTI_MATCH_PROTOCOLS`
+
+### 添加新插件 Hook
+
+1. 在 `bifrost-plugin/src/hook.rs` 中添加新 Hook 枚举值
+2. 更新 `PluginHook::ALL` 数组
+3. 实现 `as_str` 和 `from_str` 方法
+4. 更新 `HOOK_COUNT` 常量
+
+### 添加新匹配器
+
+1. 在 `bifrost-core/src/matcher/` 下创建新文件
+2. 实现 `Matcher` trait
+3. 在 `factory.rs` 中添加解析逻辑
+
+## 依赖
+
+主要依赖：
+
+| 依赖 | 用途 |
+|------|------|
+| `tokio` | 异步运行时 |
+| `hyper` | HTTP 库 |
+| `rustls` | TLS 实现 |
+| `rcgen` | 证书生成 |
+| `clap` | 命令行解析 |
+| `serde` | 序列化 |
+| `tracing` | 日志追踪 |
+| `regex` | 正则表达式 |
+
+## License
+
+MIT
