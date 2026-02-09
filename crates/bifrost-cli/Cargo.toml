@@ -1,0 +1,25 @@
+[package]
+name = "bifrost-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Command-line interface for Bifrost proxy"
+
+[[bin]]
+name = "bifrost"
+path = "src/main.rs"
+
+[dependencies]
+bifrost-core = { path = "../bifrost-core" }
+bifrost-proxy = { path = "../bifrost-proxy" }
+bifrost-tls = { path = "../bifrost-tls" }
+bifrost-storage = { path = "../bifrost-storage" }
+bifrost-plugin = { path = "../bifrost-plugin" }
+tracing.workspace = true
+tokio.workspace = true
+clap.workspace = true
+dirs.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.28", features = ["signal", "process", "fs"] }

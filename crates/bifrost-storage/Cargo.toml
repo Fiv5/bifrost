@@ -1,0 +1,18 @@
+[package]
+name = "bifrost-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Configuration and storage management for Bifrost proxy"
+
+[dependencies]
+bifrost-core = { path = "../bifrost-core" }
+serde.workspace = true
+toml.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

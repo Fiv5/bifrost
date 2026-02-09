@@ -1,0 +1,45 @@
+[package]
+name = "bifrost-tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Integration tests for Bifrost proxy"
+publish = false
+
+[dependencies]
+bifrost-core = { path = "../bifrost-core" }
+bifrost-proxy = { path = "../bifrost-proxy" }
+bifrost-tls = { path = "../bifrost-tls" }
+bifrost-plugin = { path = "../bifrost-plugin" }
+tokio = { workspace = true, features = ["full", "test-util"] }
+async-trait.workspace = true
+bytes.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+parking_lot.workspace = true
+reqwest = { version = "0.11", features = ["socks"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[test]]
+name = "http_proxy_test"
+path = "../../tests/http_proxy_test.rs"
+
+[[test]]
+name = "https_proxy_test"
+path = "../../tests/https_proxy_test.rs"
+
+[[test]]
+name = "socks5_test"
+path = "../../tests/socks5_test.rs"
+
+[[test]]
+name = "rules_test"
+path = "../../tests/rules_test.rs"
+
+[[test]]
+name = "plugin_test"
+path = "../../tests/plugin_test.rs"

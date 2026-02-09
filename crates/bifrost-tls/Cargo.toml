@@ -1,0 +1,19 @@
+[package]
+name = "bifrost-tls"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TLS certificate management for Bifrost proxy"
+
+[dependencies]
+bifrost-core = { path = "../bifrost-core" }
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+lru.workspace = true
+parking_lot.workspace = true
+webpki-roots.workspace = true
+
+[dev-dependencies]
+tempfile = "3.10"
