@@ -59,7 +59,10 @@ fn main() {
                 "npm install stderr: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            panic!("npm install failed with exit code: {:?}", output.status.code());
+            panic!(
+                "npm install failed with exit code: {:?}",
+                output.status.code()
+            );
         }
     }
 

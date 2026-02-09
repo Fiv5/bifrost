@@ -29,6 +29,7 @@ pub struct CertSystemInfo {
 
 pub struct CertInstaller {
     cert_path: std::path::PathBuf,
+    #[allow(dead_code)]
     cert_name: String,
 }
 
