@@ -7,7 +7,7 @@ use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer, TlsConfig};
 use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager};
 use bifrost_tls::{
     generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca, parse_cert_info,
-    save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator,
+    save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator, SniResolver,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select};
@@ -158,9 +158,7 @@ enum WhitelistCommands {
 }
 
 fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
-    dirs::home_dir()
-        .map(|p| p.join(".bifrost"))
-        .ok_or_else(|| bifrost_core::BifrostError::Config("Cannot find home directory".to_string()))
+    Ok(bifrost_storage::data_dir())
 }
 
 fn get_pid_file() -> bifrost_core::Result<PathBuf> {
@@ -896,7 +894,9 @@ fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConfig>>
     let ca = load_root_ca(&ca_cert_path, &ca_key_path)?;
     let ca_cert_bytes = std::fs::read(&ca_cert_path)?;
     let ca_key_bytes = std::fs::read(&ca_key_path)?;
-    let cert_generator = DynamicCertGenerator::new(Arc::new(ca));
+    let ca_arc = Arc::new(ca);
+    let sni_resolver = SniResolver::new(ca_arc.clone());
+    let cert_generator = DynamicCertGenerator::new(ca_arc);
 
     println!("✓ TLS interception enabled");
 
@@ -904,6 +904,7 @@ fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConfig>>
         ca_cert: Some(ca_cert_bytes),
         ca_key: Some(ca_key_bytes),
         cert_generator: Some(Arc::new(cert_generator)),
+        sni_resolver: Some(Arc::new(sni_resolver)),
     }))
 }
 

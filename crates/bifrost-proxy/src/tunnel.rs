@@ -1,17 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper::client::conn::http1::Builder as ClientBuilder;
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -23,6 +24,45 @@ use tracing::{debug, error, info, warn};
 
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
+
+static SHARED_CLIENT_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+
+type HttpsPooledClient = Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    http_body_util::Full<Bytes>,
+>;
+
+static HTTPS_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
+
+fn get_https_pooled_client() -> &'static HttpsPooledClient {
+    HTTPS_POOLED_CLIENT.get_or_init(|| {
+        let config = ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth();
+
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        Client::builder(TokioExecutor::new())
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_max_idle_per_host(10)
+            .build(https_connector)
+    })
+}
+
+fn get_shared_client_config() -> Arc<ClientConfig> {
+    SHARED_CLIENT_CONFIG
+        .get_or_init(|| {
+            let client_config = ClientConfig::builder()
+                .with_root_certificates(build_root_cert_store())
+                .with_no_client_auth();
+            Arc::new(client_config)
+        })
+        .clone()
+}
 
 pub async fn handle_connect(
     req: Request<Incoming>,
@@ -181,11 +221,15 @@ async fn handle_tls_interception(
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
-    let cert_generator = tls_config.cert_generator.as_ref().ok_or_else(|| {
-        BifrostError::Tls("TLS interception enabled but cert generator not configured".to_string())
-    })?;
-
-    let certified_key = Arc::new(cert_generator.generate_for_domain(host)?);
+    let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
+        sni_resolver.resolve(host)?
+    } else if let Some(ref cert_generator) = tls_config.cert_generator {
+        Arc::new(cert_generator.generate_for_domain(host)?)
+    } else {
+        return Err(BifrostError::Tls(
+            "TLS interception enabled but cert generator not configured".to_string(),
+        ));
+    };
 
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
@@ -264,14 +308,12 @@ async fn tls_intercept_tunnel(
         .await
         .map_err(|e| BifrostError::Network(format!("Connect to target failed: {e}")))?;
 
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(build_root_cert_store())
-        .with_no_client_auth();
+    let client_config = get_shared_client_config();
 
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|e| BifrostError::Tls(format!("Invalid server name: {e}")))?;
 
-    let connector = TlsConnector::from(Arc::new(client_config));
+    let connector = TlsConnector::from(client_config);
     let _server_tls = connector
         .connect(server_name, target_stream)
         .await
@@ -315,12 +357,18 @@ async fn handle_intercepted_request(
     admin_state: Option<Arc<AdminState>>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let start_time = Instant::now();
-    let method = req.method().to_string();
+    let method = req.method().clone();
+    let method_str = method.to_string();
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    let url = format!("https://{}{}", host, path);
 
-    debug!("[{}] Intercepted: {} {}", req_id, method, url);
+    let target_uri = if port == 443 {
+        format!("https://{}{}", host, path)
+    } else {
+        format!("https://{}:{}{}", host, port, path)
+    };
+
+    debug!("[{}] Intercepted: {} {}", req_id, method_str, target_uri);
 
     let (parts, body) = req.into_parts();
 
@@ -341,27 +389,10 @@ async fn handle_intercepted_request(
         }
     };
 
-    let connect_start = Instant::now();
-    let target_stream = match TcpStream::connect(format!("{}:{}", host, port)).await {
-        Ok(s) => s,
+    let parsed_uri: hyper::Uri = match target_uri.parse() {
+        Ok(u) => u,
         Err(e) => {
-            error!("[{}] Failed to connect to target: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
-    let connect_ms = connect_start.elapsed().as_millis() as u64;
-
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(build_root_cert_store())
-        .with_no_client_auth();
-
-    let server_name = match ServerName::try_from(host.to_string()) {
-        Ok(n) => n,
-        Err(e) => {
-            error!("[{}] Invalid server name: {}", req_id, e);
+            error!("[{}] Failed to parse URI: {}", req_id, e);
             return Ok(Response::builder()
                 .status(502)
                 .body(full_body(b"Bad Gateway".to_vec()))
@@ -369,39 +400,7 @@ async fn handle_intercepted_request(
         }
     };
 
-    let tls_start = Instant::now();
-    let connector = TlsConnector::from(Arc::new(client_config));
-    let tls_stream = match connector.connect(server_name, target_stream).await {
-        Ok(s) => s,
-        Err(e) => {
-            error!("[{}] TLS connect failed: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
-    let tls_ms = tls_start.elapsed().as_millis() as u64;
-
-    let io = TokioIo::new(tls_stream);
-    let (mut sender, conn) = match ClientBuilder::new().handshake(io).await {
-        Ok(c) => c,
-        Err(e) => {
-            error!("[{}] HTTP handshake failed: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
-
-    tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            debug!("Connection error: {}", e);
-        }
-    });
-
-    let mut new_req = Request::builder().method(parts.method).uri(uri);
+    let mut new_req = Request::builder().method(method).uri(&parsed_uri);
 
     for (name, value) in parts.headers.iter() {
         if name != hyper::header::HOST {
@@ -410,19 +409,21 @@ async fn handle_intercepted_request(
     }
     new_req = new_req.header(hyper::header::HOST, host);
 
-    let outgoing_req = match new_req.body(full_body(body_bytes.clone())) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("[{}] Failed to build request: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
+    let outgoing_req =
+        match new_req.body(http_body_util::Full::new(Bytes::from(body_bytes.clone()))) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] Failed to build request: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
 
+    let client = get_https_pooled_client();
     let send_start = Instant::now();
-    let response = match sender.send_request(outgoing_req).await {
+    let response = match client.request(outgoing_req).await {
         Ok(r) => r,
         Err(e) => {
             error!("[{}] Failed to send request: {}", req_id, e);
@@ -466,7 +467,7 @@ async fn handle_intercepted_request(
             .add_bytes_received(res_body_bytes.len() as u64);
         state.metrics_collector.increment_requests();
 
-        let mut record = TrafficRecord::new(req_id.to_string(), method, url);
+        let mut record = TrafficRecord::new(req_id.to_string(), method_str, target_uri);
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
@@ -479,8 +480,8 @@ async fn handle_intercepted_request(
         record.host = host.to_string();
         record.timing = Some(RequestTiming {
             dns_ms: None,
-            connect_ms: Some(connect_ms),
-            tls_ms: Some(tls_ms),
+            connect_ms: None,
+            tls_ms: None,
             send_ms: None,
             wait_ms: Some(wait_ms),
             receive_ms: Some(receive_ms),

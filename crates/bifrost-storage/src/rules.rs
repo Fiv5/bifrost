@@ -36,10 +36,7 @@ pub struct RulesStorage {
 
 impl RulesStorage {
     pub fn new() -> Result<Self> {
-        let base_dir = dirs::home_dir()
-            .ok_or_else(|| BifrostError::Config("Cannot find home directory".to_string()))?
-            .join(".bifrost")
-            .join("rules");
+        let base_dir = crate::data_dir().join("rules");
         Self::with_dir(base_dir)
     }
 

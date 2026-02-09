@@ -147,6 +147,7 @@ pub struct TlsConfig {
     pub ca_cert: Option<Vec<u8>>,
     pub ca_key: Option<Vec<u8>>,
     pub cert_generator: Option<Arc<bifrost_tls::DynamicCertGenerator>>,
+    pub sni_resolver: Option<Arc<bifrost_tls::SniResolver>>,
 }
 
 pub struct ProxyServer {

@@ -24,10 +24,7 @@ pub struct StateManager {
 
 impl StateManager {
     pub fn new() -> Result<Self> {
-        let state_file = dirs::home_dir()
-            .ok_or_else(|| BifrostError::Config("Cannot find home directory".to_string()))?
-            .join(".bifrost")
-            .join("state.json");
+        let state_file = crate::data_dir().join("state.json");
         Self::with_file(state_file)
     }
 

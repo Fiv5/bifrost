@@ -11,10 +11,7 @@ pub struct ValuesStorage {
 
 impl ValuesStorage {
     pub fn new() -> Result<Self> {
-        let base_dir = dirs::home_dir()
-            .ok_or_else(|| BifrostError::Config("Cannot find home directory".to_string()))?
-            .join(".bifrost")
-            .join("values");
+        let base_dir = crate::data_dir().join("values");
         Self::with_dir(base_dir)
     }
 

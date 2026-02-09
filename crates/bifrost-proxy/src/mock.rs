@@ -3,12 +3,47 @@ use hyper::{header, Response, StatusCode};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::logging::RequestContext;
 use crate::server::{full_body, BoxBody, ResolvedRules};
 use crate::url::build_redirect_uri;
+
+type HttpClient =
+    Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Empty<Bytes>>;
+
+type HttpsClient = Client<
+    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
+    http_body_util::Empty<Bytes>,
+>;
+
+static HTTP_CLIENT: OnceLock<HttpClient> = OnceLock::new();
+static HTTPS_CLIENT: OnceLock<HttpsClient> = OnceLock::new();
+
+fn get_http_client() -> &'static HttpClient {
+    HTTP_CLIENT.get_or_init(|| Client::builder(TokioExecutor::new()).build_http())
+}
+
+fn get_https_client() -> &'static HttpsClient {
+    HTTPS_CLIENT.get_or_init(|| {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        Client::builder(TokioExecutor::new()).build(https_connector)
+    })
+}
 
 pub async fn generate_mock_response(
     rules: &ResolvedRules,
@@ -223,7 +258,7 @@ async fn load_http_content(
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use http_body_util::BodyExt;
 
-    let client = Client::builder(TokioExecutor::new()).build_http();
+    let client = get_http_client();
 
     let req = hyper::Request::builder()
         .method("GET")
@@ -250,22 +285,8 @@ async fn load_https_content(
     ctx: &RequestContext,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
     use http_body_util::BodyExt;
-    use rustls::RootCertStore;
 
-    let mut root_store = RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(config)
-        .https_or_http()
-        .enable_http1()
-        .build();
-
-    let client = Client::builder(TokioExecutor::new()).build(https_connector);
+    let client = get_https_client();
 
     let req = hyper::Request::builder()
         .method("GET")

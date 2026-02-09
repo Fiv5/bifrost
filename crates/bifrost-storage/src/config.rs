@@ -25,7 +25,7 @@ impl Default for TrafficConfig {
         Self {
             max_records: 5000,
             max_body_memory_size: 2 * 1024 * 1024, // 2MB
-            temp_dir: PathBuf::from(".bifrost/traffic"),
+            temp_dir: crate::data_dir().join("traffic"),
             file_retention_days: 7,
         }
     }
@@ -48,13 +48,14 @@ pub struct BifrostConfig {
 
 impl Default for BifrostConfig {
     fn default() -> Self {
+        let base = crate::data_dir();
         Self {
             port: 8899,
             host: "127.0.0.1".to_string(),
-            rules_dir: PathBuf::from(".bifrost/rules"),
-            values_dir: PathBuf::from(".bifrost/values"),
-            plugins_dir: PathBuf::from(".bifrost/plugins"),
-            cert_dir: PathBuf::from(".bifrost/certs"),
+            rules_dir: base.join("rules"),
+            values_dir: base.join("values"),
+            plugins_dir: base.join("plugins"),
+            cert_dir: base.join("certs"),
             access: AccessConfig::default(),
             traffic: TrafficConfig::default(),
             enable_tls_interception: true,
