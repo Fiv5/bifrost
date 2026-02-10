@@ -152,13 +152,54 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
 
         return response_data
 
+    def _get_content_type_and_body(self, response_data):
+        """根据请求路径确定 Content-Type 和响应体"""
+        path = self.path.lower()
+        
+        if path.endswith('.html') or path.endswith('.htm'):
+            body = f"""<!DOCTYPE html>
+<html>
+<head><title>HTTPS Echo Response</title></head>
+<body>
+<h1>HTTPS Echo Response</h1>
+<pre>{json.dumps(response_data, indent=2, ensure_ascii=False)}</pre>
+</body>
+</html>"""
+            return 'text/html; charset=utf-8', body
+        elif path.endswith('.js'):
+            body = f"""// HTTPS Echo Response
+var echoData = {json.dumps(response_data, ensure_ascii=False)};
+console.log('HTTPS Echo Server Response:', echoData);"""
+            return 'application/javascript; charset=utf-8', body
+        elif path.endswith('.css'):
+            body = f"""/* HTTPS Echo Response */
+/* Request Info: {response_data.get('request', {}).get('path', '')} */
+body {{ color: #333; }}
+.echo-data {{ display: block; }}"""
+            return 'text/css; charset=utf-8', body
+        elif path.endswith('.xml'):
+            body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<echo>
+<request>
+<method>{response_data.get('request', {}).get('method', '')}</method>
+<path>{response_data.get('request', {}).get('path', '')}</path>
+<protocol>https</protocol>
+</request>
+</echo>"""
+            return 'application/xml; charset=utf-8', body
+        elif path.endswith('.txt'):
+            body = f"HTTPS Echo Response\n\n{json.dumps(response_data, indent=2, ensure_ascii=False)}"
+            return 'text/plain; charset=utf-8', body
+        else:
+            return 'application/json; charset=utf-8', json.dumps(response_data, indent=2, ensure_ascii=False)
+
     def _send_response(self, status_code=200, extra_headers=None, body_content=None):
         response_data = self._build_response(body_content)
-        response_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+        content_type, response_body = self._get_content_type_and_body(response_data)
 
         self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json; charset=utf-8')
-        self.send_header('Content-Length', str(len(response_json.encode('utf-8'))))
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(len(response_body.encode('utf-8'))))
         self.send_header('X-Echo-Server', 'bifrost-test-https')
         self.send_header('X-Request-Method', self.command)
         self.send_header('X-Request-Path', self.path)
@@ -170,9 +211,9 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
                 self.send_header(key, value)
 
         self.end_headers()
-        self.wfile.write(response_json.encode('utf-8'))
+        self.wfile.write(response_body.encode('utf-8'))
 
-        print(f"  -> Response: {status_code}, Body size: {len(response_json)} bytes")
+        print(f"  -> Response: {status_code}, Content-Type: {content_type.split(';')[0]}, Body size: {len(response_body)} bytes")
 
     def _read_body(self):
         content_length = self.headers.get('Content-Length')

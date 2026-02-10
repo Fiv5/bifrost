@@ -1,0 +1,25 @@
+# LP-01: lineProps 行属性测试
+# 需求: lineProps://important 应提升规则优先级
+# 需求: lineProps://disabled 应禁用规则
+
+# LP-01 基础 important 测试
+lp-basic.local http://127.0.0.1:3000 resHeaders://`X-Priority:normal`
+lp-basic.local http://127.0.0.1:3000 resHeaders://`X-Priority:important` lineProps://important
+
+# LP-02 important 覆盖普通规则 (验证 important 生效)
+lp-override.local http://127.0.0.1:3000 resHeaders://`X-Result:should-be-overridden`
+lp-override.local http://127.0.0.1:3000 resHeaders://`X-Result:important-wins` lineProps://important
+
+# LP-03 disabled 规则测试 - 规则被禁用，不应匹配
+lp-disabled.local http://127.0.0.1:3000 resHeaders://`X-Disabled:should-not-appear` lineProps://disabled
+lp-disabled.local http://127.0.0.1:3000 resHeaders://`X-Disabled:fallback-rule`
+
+# LP-04 组合属性测试 - important 和 disabled 同时设置
+lp-combo.local http://127.0.0.1:3000 resHeaders://`X-Combo:normal`
+lp-combo.local http://127.0.0.1:3000 resHeaders://`X-Combo:important-but-disabled` lineProps://important,disabled
+
+# 测试用例:
+# 1. 请求 http://lp-basic.local/ 应返回 X-Priority: important
+# 2. 请求 http://lp-override.local/ 应返回 X-Result: important-wins
+# 3. 请求 http://lp-disabled.local/ 应返回 X-Disabled: fallback-rule (第一条被禁用)
+# 4. 请求 http://lp-combo.local/ 应返回 X-Combo: normal (第二条虽然 important 但被 disabled)

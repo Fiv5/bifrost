@@ -1,5 +1,6 @@
 use crate::matcher::Matcher;
 use crate::protocol::Protocol;
+use crate::rule::filter::{Filter, LineProps};
 use crate::rule::value_source::ValueSource;
 use std::fmt;
 use std::sync::Arc;
@@ -13,6 +14,9 @@ pub struct Rule {
     pub raw: String,
     pub file: Option<String>,
     pub line: Option<usize>,
+    pub line_props: LineProps,
+    pub include_filters: Vec<Filter>,
+    pub exclude_filters: Vec<Filter>,
 }
 
 impl Rule {
@@ -33,6 +37,9 @@ impl Rule {
             raw,
             file: None,
             line: None,
+            line_props: LineProps::default(),
+            include_filters: Vec::new(),
+            exclude_filters: Vec::new(),
         }
     }
 
@@ -42,12 +49,36 @@ impl Rule {
         self
     }
 
+    pub fn with_line_props(mut self, line_props: LineProps) -> Self {
+        self.line_props = line_props;
+        self
+    }
+
+    pub fn with_include_filters(mut self, filters: Vec<Filter>) -> Self {
+        self.include_filters = filters;
+        self
+    }
+
+    pub fn with_exclude_filters(mut self, filters: Vec<Filter>) -> Self {
+        self.exclude_filters = filters;
+        self
+    }
+
     pub fn priority(&self) -> i32 {
-        self.matcher.priority()
+        let base = self.matcher.priority();
+        if self.line_props.important {
+            base + 10000
+        } else {
+            base
+        }
     }
 
     pub fn is_negated(&self) -> bool {
         self.matcher.is_negated()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        self.line_props.disabled
     }
 }
 
@@ -61,6 +92,9 @@ impl fmt::Debug for Rule {
             .field("raw", &self.raw)
             .field("file", &self.file)
             .field("line", &self.line)
+            .field("line_props", &self.line_props)
+            .field("include_filters", &self.include_filters)
+            .field("exclude_filters", &self.exclude_filters)
             .finish()
     }
 }
@@ -76,6 +110,9 @@ impl Clone for Rule {
             raw: self.raw.clone(),
             file: self.file.clone(),
             line: self.line,
+            line_props: self.line_props.clone(),
+            include_filters: self.include_filters.clone(),
+            exclude_filters: self.exclude_filters.clone(),
         }
     }
 }

@@ -17,6 +17,7 @@ pub struct WildcardMatcher {
     negated: bool,
     raw_pattern: String,
     wildcard_type: WildcardType,
+    capture_groups: usize,
 }
 
 impl WildcardMatcher {
@@ -24,7 +25,8 @@ impl WildcardMatcher {
         let (negated, clean_pattern) = Self::parse_negation(pattern);
         let (has_protocol, pattern_without_protocol) = Self::strip_protocol(clean_pattern);
         let wildcard_type = Self::detect_type(pattern_without_protocol);
-        let regex_pattern = Self::to_regex(clean_pattern, &wildcard_type, has_protocol);
+        let (regex_pattern, capture_groups) =
+            Self::to_regex(clean_pattern, &wildcard_type, has_protocol);
         let compiled = Regex::new(&regex_pattern)?;
 
         Ok(Self {
@@ -32,6 +34,7 @@ impl WildcardMatcher {
             negated,
             raw_pattern: pattern.to_string(),
             wildcard_type,
+            capture_groups,
         })
     }
 
@@ -84,10 +87,14 @@ impl WildcardMatcher {
         }
     }
 
-    fn to_regex(pattern: &str, wildcard_type: &WildcardType, has_protocol: bool) -> String {
-        let escaped = Self::pattern_to_regex(pattern);
+    fn to_regex(
+        pattern: &str,
+        wildcard_type: &WildcardType,
+        has_protocol: bool,
+    ) -> (String, usize) {
+        let (escaped, capture_groups) = Self::pattern_to_regex(pattern, wildcard_type);
 
-        match wildcard_type {
+        let regex = match wildcard_type {
             WildcardType::DomainWildcard => {
                 let domain_pattern = escaped.replace("__DOLLAR__", "");
                 format!("^https?://{}(/.*)?$", domain_pattern)
@@ -113,37 +120,76 @@ impl WildcardMatcher {
                     format!("^https?://{}$", escaped)
                 }
             }
-        }
+        };
+
+        (regex, capture_groups)
     }
 
-    fn pattern_to_regex(pattern: &str) -> String {
+    fn pattern_to_regex(pattern: &str, wildcard_type: &WildcardType) -> (String, usize) {
         let mut result = String::with_capacity(pattern.len() * 2);
         let special_chars = ['.', '+', '^', '(', ')', '[', ']', '{', '}', '|', '\\'];
-        let mut after_slash = false;
+        let mut in_path = false;
+        let mut chars = pattern.chars().peekable();
+        let mut capture_count = 0;
 
-        for c in pattern.chars() {
+        while let Some(c) = chars.next() {
             match c {
                 '*' => {
-                    if after_slash {
-                        result.push_str(".*");
+                    capture_count += 1;
+                    if in_path {
+                        result.push_str("(.*)");
                     } else {
-                        result.push_str("[^/]*");
+                        let is_double = chars.peek() == Some(&'*');
+                        if is_double {
+                            chars.next();
+                            result.push_str("([^/?]*)");
+                        } else {
+                            match wildcard_type {
+                                WildcardType::DomainWildcard | WildcardType::PathWildcard => {
+                                    result.push_str("([^/?.]*)");
+                                }
+                                WildcardType::Prefix => {
+                                    result.push_str("([^/?.]*)");
+                                }
+                                _ => {
+                                    result.push_str("([^/?]*)");
+                                }
+                            }
+                        }
                     }
                 }
-                '?' => result.push('.'),
-                '$' => result.push_str("__DOLLAR__"),
+                '?' => {
+                    result.push('.');
+                }
+                '$' => {
+                    result.push_str("__DOLLAR__");
+                }
                 '/' => {
-                    after_slash = true;
+                    in_path = true;
                     result.push(c);
                 }
                 _ if special_chars.contains(&c) => {
                     result.push('\\');
                     result.push(c);
                 }
-                _ => result.push(c),
+                _ => {
+                    result.push(c);
+                }
             }
         }
-        result
+        (result, capture_count)
+    }
+
+    fn extract_captures(&self, url: &str) -> Option<Vec<String>> {
+        self.pattern.captures(url).map(|caps| {
+            (1..=self.capture_groups)
+                .filter_map(|i| caps.get(i).map(|m| m.as_str().to_string()))
+                .collect()
+        })
+    }
+
+    pub fn capture_groups(&self) -> usize {
+        self.capture_groups
     }
 
     pub fn raw_pattern(&self) -> &str {
@@ -161,7 +207,13 @@ impl Matcher for WildcardMatcher {
         let effective_match = if self.negated { !is_match } else { is_match };
 
         if effective_match {
-            MatchResult::matched()
+            if self.negated {
+                MatchResult::matched()
+            } else if let Some(captures) = self.extract_captures(url) {
+                MatchResult::matched_with_captures(captures)
+            } else {
+                MatchResult::matched()
+            }
         } else {
             MatchResult::not_matched()
         }
@@ -420,5 +472,144 @@ mod tests {
 
         let result = matcher.matches("http://www.example.com", "www.example.com", "");
         assert!(result.matched);
+    }
+
+    #[test]
+    fn test_single_star_no_dot_match() {
+        let matcher = WildcardMatcher::new("*.example.com").unwrap();
+
+        let result = matcher.matches("http://www.example.com", "www.example.com", "/");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://api.example.com", "api.example.com", "/");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://a.b.example.com", "a.b.example.com", "/");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_double_star_with_dot_match() {
+        let matcher = WildcardMatcher::new("**.example.com").unwrap();
+
+        let result = matcher.matches("http://www.example.com", "www.example.com", "/");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://api.example.com", "api.example.com", "/");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://a.b.example.com", "a.b.example.com", "/");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://a.b.c.example.com", "a.b.c.example.com", "/");
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_domain_dollar_single_star() {
+        let matcher = WildcardMatcher::new("$*.example.com").unwrap();
+
+        let result = matcher.matches("http://www.example.com/path", "www.example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://a.b.example.com/path", "a.b.example.com", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_domain_dollar_double_star() {
+        let matcher = WildcardMatcher::new("$**.example.com").unwrap();
+
+        let result = matcher.matches("http://www.example.com/path", "www.example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://a.b.example.com/path", "a.b.example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://x.y.z.example.com/", "x.y.z.example.com", "/");
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_capture_groups_prefix() {
+        let matcher = WildcardMatcher::new("*.example.com").unwrap();
+        assert_eq!(matcher.capture_groups(), 1);
+
+        let result = matcher.matches("http://www.example.com/", "www.example.com", "/");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["www".to_string()]));
+
+        let result = matcher.matches("http://api.example.com/", "api.example.com", "/");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["api".to_string()]));
+    }
+
+    #[test]
+    fn test_capture_groups_suffix() {
+        let matcher = WildcardMatcher::new("example.*").unwrap();
+        assert_eq!(matcher.capture_groups(), 1);
+
+        let result = matcher.matches("http://example.com/", "example.com", "/");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["com".to_string()]));
+
+        let result = matcher.matches("http://example.org/", "example.org", "/");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["org".to_string()]));
+    }
+
+    #[test]
+    fn test_capture_groups_contains() {
+        let matcher = WildcardMatcher::new("*example*").unwrap();
+        assert_eq!(matcher.capture_groups(), 2);
+
+        let result = matcher.matches("http://myexample.com/", "myexample.com", "/");
+        assert!(result.matched);
+        assert_eq!(
+            result.captures,
+            Some(vec!["my".to_string(), ".com".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_capture_groups_path() {
+        let matcher = WildcardMatcher::new("example.com/*").unwrap();
+        assert_eq!(matcher.capture_groups(), 1);
+
+        let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["api/users".to_string()]));
+    }
+
+    #[test]
+    fn test_capture_groups_multiple() {
+        let matcher = WildcardMatcher::new("*.*.example.com").unwrap();
+        assert_eq!(matcher.capture_groups(), 2);
+
+        let result = matcher.matches("http://a.b.example.com/", "a.b.example.com", "/");
+        assert!(result.matched);
+        assert_eq!(
+            result.captures,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_capture_groups_negated() {
+        let matcher = WildcardMatcher::new("!*.example.com").unwrap();
+
+        let result = matcher.matches("http://other.com/", "other.com", "/");
+        assert!(result.matched);
+        assert!(result.captures.is_none());
+    }
+
+    #[test]
+    fn test_capture_groups_double_star() {
+        let matcher = WildcardMatcher::new("**.example.com").unwrap();
+        assert_eq!(matcher.capture_groups(), 1);
+
+        let result = matcher.matches("http://a.b.c.example.com/", "a.b.c.example.com", "/");
+        assert!(result.matched);
+        assert_eq!(result.captures, Some(vec!["a.b.c".to_string()]));
     }
 }

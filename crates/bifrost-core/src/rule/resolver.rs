@@ -1,4 +1,5 @@
 use crate::protocol::Protocol;
+use crate::rule::filter::Filter;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -190,7 +191,7 @@ impl RulesResolver {
     }
 
     pub fn resolve(&self, ctx: &RequestContext) -> ResolvedRules {
-        let cache_key = format!("{}|{}|{}", ctx.url, ctx.host, ctx.path);
+        let cache_key = format!("{}|{}|{}|{}", ctx.url, ctx.host, ctx.path, ctx.method);
 
         if self.cache_enabled {
             if let Ok(mut cache) = self.cache.write() {
@@ -204,6 +205,10 @@ impl RulesResolver {
         let mut matched_protocols: HashMap<Protocol, bool> = HashMap::new();
 
         for rule in &self.rules {
+            if rule.is_disabled() {
+                continue;
+            }
+
             if rule.is_negated() {
                 let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
                 if match_result.matched {
@@ -217,14 +222,26 @@ impl RulesResolver {
             }
 
             let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
-            if match_result.matched {
-                let resolved =
-                    ResolvedRule::new(rule.clone(), match_result.captures, ctx, &self.values);
-                result.add(resolved);
+            if !match_result.matched {
+                continue;
+            }
 
-                if !rule.protocol.is_multi_match() {
-                    matched_protocols.insert(rule.protocol, true);
-                }
+            if !rule.include_filters.is_empty()
+                && !Self::matches_any_filter(&rule.include_filters, ctx)
+            {
+                continue;
+            }
+
+            if Self::matches_any_filter(&rule.exclude_filters, ctx) {
+                continue;
+            }
+
+            let resolved =
+                ResolvedRule::new(rule.clone(), match_result.captures, ctx, &self.values);
+            result.add(resolved);
+
+            if !rule.protocol.is_multi_match() {
+                matched_protocols.insert(rule.protocol, true);
             }
         }
 
@@ -235,6 +252,48 @@ impl RulesResolver {
         }
 
         result
+    }
+
+    fn matches_any_filter(filters: &[Filter], ctx: &RequestContext) -> bool {
+        filters.iter().any(|f| Self::matches_filter(f, ctx))
+    }
+
+    fn matches_filter(filter: &Filter, ctx: &RequestContext) -> bool {
+        match filter {
+            Filter::Method(methods) => {
+                let req_method = ctx.method.to_uppercase();
+                methods.iter().any(|m| m.to_uppercase() == req_method)
+            }
+            Filter::StatusCode(range) => {
+                if let Some(status) = ctx.status_code {
+                    range.matches(status)
+                } else {
+                    false
+                }
+            }
+            Filter::Path(matcher) => matcher.matches(&ctx.path),
+            Filter::HeaderExists(name) => ctx.req_headers.contains_key(&name.to_lowercase()),
+            Filter::HeaderMatch {
+                name,
+                pattern,
+                is_request,
+            } => {
+                let headers = if *is_request {
+                    Some(&ctx.req_headers)
+                } else {
+                    ctx.res_headers.as_ref()
+                };
+                if let Some(headers) = headers {
+                    if let Some(value) = headers.get(&name.to_lowercase()) {
+                        return pattern.is_match(value);
+                    }
+                }
+                false
+            }
+            Filter::ClientIp(matcher) => matcher.matches(&ctx.client_ip),
+            Filter::Body(_regex) => false,
+            Filter::Custom(_key, _value) => true,
+        }
     }
 
     pub fn rules(&self) -> &[Rule] {
@@ -250,6 +309,7 @@ impl RulesResolver {
 mod tests {
     use super::*;
     use crate::matcher::WildcardMatcher;
+    use crate::rule::filter::{parse_filter, LineProps};
     use std::sync::Arc;
 
     fn create_test_rule(pattern: &str, protocol: Protocol, value: &str) -> Rule {
@@ -261,6 +321,25 @@ mod tests {
             value.to_string(),
             format!("{} {}://{}", pattern, protocol.to_str(), value),
         )
+    }
+
+    fn create_test_rule_with_filters(
+        pattern: &str,
+        protocol: Protocol,
+        value: &str,
+        include_filters: Vec<Filter>,
+        exclude_filters: Vec<Filter>,
+    ) -> Rule {
+        let matcher = Arc::new(WildcardMatcher::new(pattern).unwrap());
+        Rule::new(
+            pattern.to_string(),
+            matcher,
+            protocol,
+            value.to_string(),
+            format!("{} {}://{}", pattern, protocol.to_str(), value),
+        )
+        .with_include_filters(include_filters)
+        .with_exclude_filters(exclude_filters)
     }
 
     fn create_test_context(url: &str, host: &str, path: &str) -> RequestContext {
@@ -666,5 +745,241 @@ mod tests {
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
         assert_eq!(result.rules[0].resolved_value, "session=abc123");
+    }
+
+    #[test]
+    fn test_include_filter_method() {
+        let include_filters = vec![parse_filter("m:GET").unwrap()];
+        let rules = vec![create_test_rule_with_filters(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+            include_filters,
+            vec![],
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx_get = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .method("GET")
+            .build();
+
+        let result = resolver.resolve(&ctx_get);
+        assert_eq!(result.len(), 1);
+
+        let ctx_post = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .method("POST")
+            .build();
+
+        let result = resolver.resolve(&ctx_post);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_exclude_filter_path() {
+        let exclude_filters = vec![parse_filter("/admin/").unwrap()];
+        let rules = vec![create_test_rule_with_filters(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+            vec![],
+            exclude_filters,
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx_api = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .build();
+
+        let result = resolver.resolve(&ctx_api);
+        assert_eq!(result.len(), 1);
+
+        let ctx_admin = RequestContext::builder()
+            .url("http://www.example.com/admin/users")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/admin/users")
+            .pathname("/admin/users")
+            .build();
+
+        let result = resolver.resolve(&ctx_admin);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_combined_include_exclude_filters() {
+        let include_filters = vec![parse_filter("m:GET,POST").unwrap()];
+        let exclude_filters = vec![parse_filter("/health/").unwrap()];
+        let rules = vec![create_test_rule_with_filters(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+            include_filters,
+            exclude_filters,
+        )];
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .method("GET")
+            .build();
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+
+        let ctx_health = RequestContext::builder()
+            .url("http://www.example.com/health/")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/health/")
+            .pathname("/health/")
+            .method("GET")
+            .build();
+
+        let result = resolver.resolve(&ctx_health);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_include_filter_header_exists() {
+        let include_filters = vec![parse_filter("h:X-Custom-Header").unwrap()];
+        let rules = vec![create_test_rule_with_filters(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+            include_filters,
+            vec![],
+        )];
+        let resolver = RulesResolver::new(rules).disable_cache();
+
+        let ctx_with_header = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .header("X-Custom-Header", "value")
+            .build();
+
+        let result = resolver.resolve(&ctx_with_header);
+        assert_eq!(result.len(), 1);
+
+        let ctx_without_header = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .build();
+
+        let result = resolver.resolve(&ctx_without_header);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_include_filter_client_ip() {
+        let include_filters = vec![parse_filter("i:192.168.0.0/16").unwrap()];
+        let rules = vec![create_test_rule_with_filters(
+            "*.example.com",
+            Protocol::Host,
+            "127.0.0.1",
+            include_filters,
+            vec![],
+        )];
+        let resolver = RulesResolver::new(rules).disable_cache();
+
+        let ctx_match = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .client_ip("192.168.1.100")
+            .build();
+
+        let result = resolver.resolve(&ctx_match);
+        assert_eq!(result.len(), 1);
+
+        let ctx_no_match = RequestContext::builder()
+            .url("http://www.example.com/api")
+            .host("www.example.com")
+            .hostname("www.example.com")
+            .path("/api")
+            .pathname("/api")
+            .client_ip("10.0.0.1")
+            .build();
+
+        let result = resolver.resolve(&ctx_no_match);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_disabled_rule() {
+        let matcher = Arc::new(WildcardMatcher::new("*.example.com").unwrap());
+        let rule = Rule::new(
+            "*.example.com".to_string(),
+            matcher,
+            Protocol::Host,
+            "127.0.0.1".to_string(),
+            "*.example.com host://127.0.0.1".to_string(),
+        )
+        .with_line_props(LineProps {
+            important: false,
+            disabled: true,
+        });
+
+        let resolver = RulesResolver::new(vec![rule]);
+
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
+
+        let result = resolver.resolve(&ctx);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_important_priority_ordering() {
+        let matcher1 = Arc::new(WildcardMatcher::new("*.example.com").unwrap());
+        let rule1 = Rule::new(
+            "*.example.com".to_string(),
+            matcher1,
+            Protocol::Host,
+            "127.0.0.1".to_string(),
+            "*.example.com host://127.0.0.1".to_string(),
+        );
+
+        let matcher2 = Arc::new(WildcardMatcher::new("*.example.com").unwrap());
+        let rule2 = Rule::new(
+            "*.example.com".to_string(),
+            matcher2,
+            Protocol::Host,
+            "127.0.0.2".to_string(),
+            "*.example.com host://127.0.0.2".to_string(),
+        )
+        .with_line_props(LineProps {
+            important: true,
+            disabled: false,
+        });
+
+        let resolver = RulesResolver::new(vec![rule1, rule2]);
+
+        assert!(resolver.rules()[0].line_props.important);
+        assert!(resolver.rules()[0].priority() > resolver.rules()[1].priority());
     }
 }

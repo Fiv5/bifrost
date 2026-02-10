@@ -1,0 +1,26 @@
+# 路径通配符匹配测试 (^前缀)
+# PW-01: 单星 * 匹配单个路径段 (不含 / 和 ?)
+# PW-02: 双星 ** 匹配多个路径段 (不含 ?)
+# PW-03: 三星 *** 匹配任意内容 (含 ? 和参数)
+# PW-04: 多个通配符组合
+
+# PW-01 单星匹配单个路径段
+^path-single.local/api/*/info http://127.0.0.1:3000
+
+# PW-02 双星匹配多路径段(不含查询)
+^path-double.local/api/** http://127.0.0.1:3000
+
+# PW-03 三星匹配任意内容(含查询)
+^path-triple.local/api/*** http://127.0.0.1:3000
+
+# PW-04 多个单星组合
+^path-multi.local/v1/*/items/*/details http://127.0.0.1:3000
+
+# PW-05 带固定后缀的单星
+^path-suffix.local/files/*.json http://127.0.0.1:3000
+
+# PW-06 路径中间的双星
+^path-middle.local/**/end http://127.0.0.1:3000
+
+# PW-07 否定路径通配符
+!^path-negate.local/api/* http://127.0.0.1:3000

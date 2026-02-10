@@ -1,0 +1,32 @@
+# EF-01: excludeFilter 排除条件测试
+# 需求: 当请求满足排除条件时规则不生效
+
+# EF-01 排除特定请求方法
+ef-method.local http://127.0.0.1:3000 resHeaders://`X-Exclude-Method:visible` excludeFilter://m:DELETE
+
+# EF-02 排除特定路径
+ef-path.local http://127.0.0.1:3000 resHeaders://`X-Exclude-Path:visible` excludeFilter:///admin/
+
+# EF-03 排除特定状态码 (用于响应修改)
+ef-status.local http://127.0.0.1:3000 resHeaders://`X-Exclude-Status:visible` excludeFilter://s:500
+
+# EF-04 组合 include 和 exclude
+ef-combo.local http://127.0.0.1:3000 resHeaders://`X-Combo:visible` includeFilter://m:GET,POST excludeFilter:///health/
+
+# EF-05 排除特定请求头
+ef-header.local http://127.0.0.1:3000 resHeaders://`X-Exclude-Header:visible` excludeFilter://h:X-Skip-Rule
+
+# EF-06 排除特定客户端 IP
+ef-ip.local http://127.0.0.1:3000 resHeaders://`X-Exclude-IP:visible` excludeFilter://i:10.0.0.0/8
+
+# EF-07 多个排除条件 (OR 逻辑 - 任一满足则排除)
+ef-multi.local http://127.0.0.1:3000 resHeaders://`X-Multi-Exclude:visible` excludeFilter:///admin/ excludeFilter:///internal/
+
+# 测试用例:
+# 1. GET http://ef-method.local/ 应返回 X-Exclude-Method: visible
+# 2. DELETE http://ef-method.local/ 不应返回该头
+# 3. GET http://ef-path.local/api 应返回 X-Exclude-Path: visible
+# 4. GET http://ef-path.local/admin/users 不应返回该头
+# 5. GET http://ef-combo.local/api 应返回 X-Combo: visible
+# 6. GET http://ef-combo.local/health/ 不应返回该头
+# 7. DELETE http://ef-combo.local/api 不应返回该头 (不满足 include)

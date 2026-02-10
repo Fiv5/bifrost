@@ -1,11 +1,13 @@
 mod domain;
 pub mod factory;
 mod ip;
+mod path_wildcard;
 mod regex;
 mod wildcard;
 
 pub use domain::DomainMatcher;
 pub use ip::IpMatcher;
+pub use path_wildcard::{is_path_wildcard_pattern, PathWildcardMatcher};
 pub use regex::RegexMatcher;
 pub use wildcard::WildcardMatcher;
 

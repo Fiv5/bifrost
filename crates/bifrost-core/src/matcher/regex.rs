@@ -2,17 +2,24 @@ use regex::Regex;
 
 use super::{MatchResult, Matcher};
 
+#[derive(Debug, Clone, Default)]
+pub struct RegexFlags {
+    pub case_insensitive: bool,
+    pub unicode: bool,
+}
+
 pub struct RegexMatcher {
     pattern: Regex,
     negated: bool,
     raw_pattern: String,
+    flags: RegexFlags,
 }
 
 impl RegexMatcher {
     pub fn new(pattern: &str) -> Result<Self, regex::Error> {
-        let (negated, actual_pattern, case_insensitive) = Self::parse_pattern(pattern);
+        let (negated, actual_pattern, flags) = Self::parse_pattern(pattern);
 
-        let regex_pattern = if case_insensitive {
+        let regex_pattern = if flags.case_insensitive {
             format!("(?i){}", actual_pattern)
         } else {
             actual_pattern.to_string()
@@ -24,10 +31,11 @@ impl RegexMatcher {
             pattern: compiled,
             negated,
             raw_pattern: pattern.to_string(),
+            flags,
         })
     }
 
-    fn parse_pattern(pattern: &str) -> (bool, &str, bool) {
+    fn parse_pattern(pattern: &str) -> (bool, &str, RegexFlags) {
         let mut input = pattern;
         let mut negated = false;
 
@@ -37,16 +45,44 @@ impl RegexMatcher {
         }
 
         if input.starts_with('/') && input.len() > 1 {
-            if input.ends_with("/i") {
-                let inner = &input[1..input.len() - 2];
-                return (negated, inner, true);
-            } else if input.ends_with('/') {
-                let inner = &input[1..input.len() - 1];
-                return (negated, inner, false);
+            if let Some((inner, flags_str)) = Self::parse_with_flags(input) {
+                let flags = Self::parse_flags(flags_str);
+                return (negated, inner, flags);
             }
         }
 
-        (negated, input, false)
+        (negated, input, RegexFlags::default())
+    }
+
+    fn parse_with_flags(input: &str) -> Option<(&str, &str)> {
+        if !input.starts_with('/') {
+            return None;
+        }
+
+        let content = &input[1..];
+        if let Some(last_slash) = content.rfind('/') {
+            let inner = &content[..last_slash];
+            let flags = &content[last_slash + 1..];
+            Some((inner, flags))
+        } else {
+            None
+        }
+    }
+
+    fn parse_flags(flags_str: &str) -> RegexFlags {
+        let mut flags = RegexFlags::default();
+        for c in flags_str.chars() {
+            match c {
+                'i' => flags.case_insensitive = true,
+                'u' => flags.unicode = true,
+                _ => {}
+            }
+        }
+        flags
+    }
+
+    pub fn flags(&self) -> &RegexFlags {
+        &self.flags
     }
 
     pub fn raw_pattern(&self) -> &str {
@@ -227,5 +263,50 @@ mod tests {
             "/api/v1/users",
         );
         assert!(result.matched);
+    }
+
+    #[test]
+    fn test_unicode_flag() {
+        let matcher = RegexMatcher::new("/测试/u").unwrap();
+        assert!(matcher.flags().unicode);
+        assert!(!matcher.flags().case_insensitive);
+
+        let result = matcher.matches("http://example.com/测试/path", "example.com", "/测试/path");
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_unicode_case_insensitive_flag() {
+        let matcher = RegexMatcher::new("/ТЕСТ/iu").unwrap();
+        assert!(matcher.flags().unicode);
+        assert!(matcher.flags().case_insensitive);
+
+        let result = matcher.matches("http://example.com/тест/path", "example.com", "/тест/path");
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_unicode_flag_order_ui() {
+        let matcher = RegexMatcher::new("/test/ui").unwrap();
+        assert!(matcher.flags().unicode);
+        assert!(matcher.flags().case_insensitive);
+    }
+
+    #[test]
+    fn test_unicode_emoji_match() {
+        let matcher = RegexMatcher::new("/emoji-🎉/u").unwrap();
+        let result = matcher.matches(
+            "http://example.com/emoji-🎉/test",
+            "example.com",
+            "/emoji-🎉/test",
+        );
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_no_flags() {
+        let matcher = RegexMatcher::new("/test/").unwrap();
+        assert!(!matcher.flags().unicode);
+        assert!(!matcher.flags().case_insensitive);
     }
 }

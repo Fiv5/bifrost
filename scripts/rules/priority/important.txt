@@ -1,0 +1,28 @@
+# IMP-01: important 优先级测试
+# 需求: lineProps://important 的规则应优先于普通规则
+
+# IMP-01 普通规则 vs important 规则 (后定义的 important 优先)
+imp-test.local http://127.0.0.1:3000 resHeaders://`X-Winner:normal-first`
+imp-test.local http://127.0.0.1:3000 resHeaders://`X-Winner:important` lineProps://important
+
+# IMP-02 important vs important (先定义的 important 优先，因为 priority 相同时按定义顺序)
+imp-both.local http://127.0.0.1:3000 resHeaders://`X-Both:first-important` lineProps://important
+imp-both.local http://127.0.0.1:3000 resHeaders://`X-Both:second-important` lineProps://important
+
+# IMP-03 通配符 important vs 精确普通
+*.imp-wildcard.local http://127.0.0.1:3000 resHeaders://`X-Wildcard:important-wildcard` lineProps://important
+test.imp-wildcard.local http://127.0.0.1:3000 resHeaders://`X-Wildcard:exact-normal`
+
+# IMP-04 较低优先级的 important vs 较高优先级的普通
+*.*.imp-deep.local http://127.0.0.1:3000 resHeaders://`X-Deep:deep-important` lineProps://important
+test.imp-deep.local http://127.0.0.1:3000 resHeaders://`X-Deep:shallow-normal`
+
+# IMP-05 important 不影响协议的多匹配特性
+imp-multi.local http://127.0.0.1:3000 resHeaders://`X-Multi:first`
+imp-multi.local http://127.0.0.1:3000 resAppend://`<!--appended-->` lineProps://important
+
+# 测试用例:
+# 1. GET http://imp-test.local/ 应返回 X-Winner: important
+# 2. GET http://imp-both.local/ 应返回 X-Both: first-important
+# 3. GET http://test.imp-wildcard.local/ 应返回 X-Wildcard: important-wildcard
+# 4. GET http://a.test.imp-deep.local/ 应返回 X-Deep: deep-important

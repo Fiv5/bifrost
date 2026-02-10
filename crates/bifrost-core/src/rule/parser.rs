@@ -1,11 +1,24 @@
 use crate::error::{BifrostError, Result};
 use crate::matcher::factory::parse_pattern;
 use crate::protocol::Protocol;
+use crate::rule::filter::{parse_filter, parse_line_props, Filter, LineProps};
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::Rule;
+
+const INCLUDE_FILTER_PREFIX: &str = "includeFilter://";
+const EXCLUDE_FILTER_PREFIX: &str = "excludeFilter://";
+const LINE_PROPS_PREFIX: &str = "lineProps://";
+
+type ParsedPatternResult = (
+    String,
+    Vec<(Protocol, String)>,
+    Vec<Filter>,
+    Vec<Filter>,
+    LineProps,
+);
 
 lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
@@ -69,7 +82,8 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
         return Ok(vec![]);
     }
 
-    let (pattern, protocol_values) = extract_pattern_and_protocols(&parts)?;
+    let (pattern, protocol_values, include_filters, exclude_filters, line_props) =
+        extract_pattern_and_protocols(&parts)?;
 
     if protocol_values.is_empty() {
         return Err(BifrostError::Parse(format!(
@@ -90,7 +104,10 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
             protocol,
             value,
             line.clone(),
-        );
+        )
+        .with_line_props(line_props.clone())
+        .with_include_filters(include_filters.clone())
+        .with_exclude_filters(exclude_filters.clone());
         rules.push(rule);
     }
 
@@ -101,10 +118,41 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
     let mut rules = Vec::new();
     let mut current_line = String::new();
     let mut start_line_num = 1;
+    let mut in_line_block = false;
+    let mut line_block_content = String::new();
+    let mut line_block_start = 1;
 
     for (line_num, line) in text.lines().enumerate() {
         let line_num = line_num + 1;
         let trimmed = line.trim();
+
+        if in_line_block {
+            if trimmed == "`" {
+                in_line_block = false;
+                let block_line = line_block_content.trim().replace('\n', " ");
+                let parsed = parse_line_with_values(&block_line, values)?;
+                for mut rule in parsed {
+                    rule.line = Some(line_block_start);
+                    rules.push(rule);
+                }
+                line_block_content.clear();
+            } else {
+                line_block_content.push_str(trimmed);
+                line_block_content.push('\n');
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("line`") {
+            in_line_block = true;
+            line_block_start = line_num;
+            let after_marker = trimmed.strip_prefix("line`").unwrap_or("");
+            if !after_marker.is_empty() {
+                line_block_content.push_str(after_marker);
+                line_block_content.push('\n');
+            }
+            continue;
+        }
 
         if let Some(stripped) = trimmed.strip_suffix('\\') {
             if current_line.is_empty() {
@@ -136,6 +184,15 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
         let parsed = parse_line_with_values(&current_line, values)?;
         for mut rule in parsed {
             rule.line = Some(start_line_num);
+            rules.push(rule);
+        }
+    }
+
+    if in_line_block && !line_block_content.is_empty() {
+        let block_line = line_block_content.trim().replace('\n', " ");
+        let parsed = parse_line_with_values(&block_line, values)?;
+        for mut rule in parsed {
+            rule.line = Some(line_block_start);
             rules.push(rule);
         }
     }
@@ -247,15 +304,40 @@ fn split_rule_parts(line: &str) -> Vec<String> {
     parts
 }
 
-fn extract_pattern_and_protocols(parts: &[String]) -> Result<(String, Vec<(Protocol, String)>)> {
+fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult> {
     if parts.is_empty() {
         return Err(BifrostError::Parse("Empty rule".to_string()));
     }
 
     let mut pattern_idx = None;
     let mut protocol_values = Vec::new();
+    let mut include_filters = Vec::new();
+    let mut exclude_filters = Vec::new();
+    let mut line_props = LineProps::default();
 
     for (idx, part) in parts.iter().enumerate() {
+        if let Some(stripped) = part.strip_prefix(INCLUDE_FILTER_PREFIX) {
+            let filter_value = strip_backticks(stripped);
+            if let Some(filter) = parse_filter(&filter_value) {
+                include_filters.push(filter);
+            }
+            continue;
+        }
+
+        if let Some(stripped) = part.strip_prefix(EXCLUDE_FILTER_PREFIX) {
+            let filter_value = strip_backticks(stripped);
+            if let Some(filter) = parse_filter(&filter_value) {
+                exclude_filters.push(filter);
+            }
+            continue;
+        }
+
+        if let Some(stripped) = part.strip_prefix(LINE_PROPS_PREFIX) {
+            let props_value = strip_backticks(stripped);
+            line_props = parse_line_props(&props_value);
+            continue;
+        }
+
         if let Some(caps) = PROTOCOL_REGEX.captures(part) {
             let proto_name = caps.get(1).unwrap().as_str();
             let raw_value = caps.get(2).unwrap().as_str();
@@ -287,7 +369,21 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<(String, Vec<(Proto
         None => return Err(BifrostError::Parse("No pattern found in rule".to_string())),
     };
 
-    Ok((pattern, protocol_values))
+    Ok((
+        pattern,
+        protocol_values,
+        include_filters,
+        exclude_filters,
+        line_props,
+    ))
+}
+
+fn strip_backticks(s: &str) -> String {
+    if s.starts_with('`') && s.ends_with('`') && s.len() >= 2 {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -617,5 +713,134 @@ reqHeaders://{test=1}"#;
         assert!(!HOST_PORT_REGEX.is_match("example.com"));
         assert!(!HOST_PORT_REGEX.is_match("host://127.0.0.1:3000"));
         assert!(!HOST_PORT_REGEX.is_match("*.example.com"));
+    }
+
+    #[test]
+    fn test_parse_include_filter() {
+        let rules = parse_line("example.com host://127.0.0.1 includeFilter://m:GET").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].include_filters.len(), 1);
+        assert!(rules[0].exclude_filters.is_empty());
+    }
+
+    #[test]
+    fn test_parse_exclude_filter() {
+        let rules = parse_line("example.com host://127.0.0.1 excludeFilter:///admin/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].include_filters.is_empty());
+        assert_eq!(rules[0].exclude_filters.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_multiple_filters() {
+        let rules = parse_line(
+            "example.com host://127.0.0.1 includeFilter://m:GET includeFilter:///api/ excludeFilter:///admin/",
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].include_filters.len(), 2);
+        assert_eq!(rules[0].exclude_filters.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_line_props_important() {
+        let rules = parse_line("example.com host://127.0.0.1 lineProps://important").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].line_props.important);
+        assert!(!rules[0].line_props.disabled);
+    }
+
+    #[test]
+    fn test_parse_line_props_disabled() {
+        let rules = parse_line("example.com host://127.0.0.1 lineProps://disabled").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(!rules[0].line_props.important);
+        assert!(rules[0].line_props.disabled);
+    }
+
+    #[test]
+    fn test_parse_line_props_multiple() {
+        let rules =
+            parse_line("example.com host://127.0.0.1 lineProps://important,disabled").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].line_props.important);
+        assert!(rules[0].line_props.disabled);
+    }
+
+    #[test]
+    fn test_important_priority() {
+        let rules1 = parse_line("example.com host://127.0.0.1").unwrap();
+        let rules2 = parse_line("example.com host://127.0.0.1 lineProps://important").unwrap();
+
+        assert!(rules2[0].priority() > rules1[0].priority());
+        assert!(rules2[0].priority() >= 10000);
+    }
+
+    #[test]
+    fn test_parse_filters_with_backticks() {
+        let rules =
+            parse_line("example.com host://127.0.0.1 includeFilter://`m:GET,POST`").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].include_filters.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_line_block_basic() {
+        let text = r#"line`
+host://127.0.0.1
+example.com
+`"#;
+        let rules = parse_rules(text).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+    }
+
+    #[test]
+    fn test_parse_line_block_with_filters() {
+        let text = r#"line`
+host://127.0.0.1
+example.com
+includeFilter://m:GET
+excludeFilter:///admin/
+`"#;
+        let rules = parse_rules(text).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].include_filters.len(), 1);
+        assert_eq!(rules[0].exclude_filters.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_line_block_with_line_props() {
+        let text = r#"line`
+host://127.0.0.1
+example.com
+lineProps://important
+`"#;
+        let rules = parse_rules(text).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].line_props.important);
+    }
+
+    #[test]
+    fn test_parse_combined_filters_and_props() {
+        let rules = parse_line(
+            "example.com host://127.0.0.1 includeFilter://m:GET excludeFilter:///admin/ lineProps://important",
+        )
+        .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].include_filters.len(), 1);
+        assert_eq!(rules[0].exclude_filters.len(), 1);
+        assert!(rules[0].line_props.important);
+    }
+
+    #[test]
+    fn test_is_disabled() {
+        let rules1 = parse_line("example.com host://127.0.0.1").unwrap();
+        let rules2 = parse_line("example.com host://127.0.0.1 lineProps://disabled").unwrap();
+
+        assert!(!rules1[0].is_disabled());
+        assert!(rules2[0].is_disabled());
     }
 }

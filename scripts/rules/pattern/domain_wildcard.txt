@@ -1,0 +1,27 @@
+# 域名通配符匹配测试
+# DW-01: 单星 * 匹配单级子域 (不含点)
+# DW-02: 双星 ** 匹配多级子域 (可含点)
+# DW-03: $ 前缀域名通配符
+# DW-04: 后缀匹配
+# DW-05: 包含匹配
+
+# DW-01 单星匹配单级子域
+*.single-level.local http://127.0.0.1:3000
+
+# DW-02 双星匹配多级子域
+**.multi-level.local http://127.0.0.1:3000
+
+# DW-03 $ 前缀 + 单星
+$*.dollar-single.local http://127.0.0.1:3000
+
+# DW-04 $ 前缀 + 双星
+$**.dollar-multi.local http://127.0.0.1:3000
+
+# DW-05 后缀匹配 - 应该使用宽松匹配
+domain-suffix.* http://127.0.0.1:3000
+
+# DW-06 包含匹配
+*wildcard-contains* http://127.0.0.1:3000
+
+# DW-07 多个单星 *.*.domain.local 匹配 a.b.domain.local
+*.*.double-single-star.local http://127.0.0.1:3000

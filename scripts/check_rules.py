@@ -5,6 +5,12 @@
 检查 Whistle 规则文件中操作符后的值是否包含空格。
 如果值包含空格，必须使用引用值 {name} 方式。
 
+支持的特殊语法:
+- ``` 代码块 - 块内内容跳过检查
+- line`...` 多行块 - 块内内容作为单条规则，不检查空格
+- includeFilter:// / excludeFilter:// - 过滤器语法
+- lineProps:// - 行属性语法
+
 用法:
     python3 check_rules.py                     # 检查所有规则文件
     python3 check_rules.py rules/xxx.txt       # 检查单个文件
@@ -35,9 +41,12 @@ class RuleError:
 
 
 SIMPLE_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\S+)')
-BACKTICK_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(`[^`]*`)')
-BRACE_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\{[^}]*\})')
-PAREN_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\([^)]*\))')
+OPERATOR_WITH_TRAILING_SPACE_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\s+)')
+
+LINE_BLOCK_START_PATTERN = re.compile(r'^line`')
+LINE_BLOCK_END_PATTERN = re.compile(r'^`$')
+
+CONTROL_OPERATORS = {'includeFilter', 'excludeFilter', 'lineProps'}
 
 
 def check_value_has_space(value: str) -> Tuple[bool, Optional[str]]:
@@ -49,16 +58,8 @@ def check_value_has_space(value: str) -> Tuple[bool, Optional[str]]:
     if not value:
         return True, None
 
-    if value.startswith('{') and value.endswith('}'):
-        return True, None
-
-    if value.startswith('`') and value.endswith('`'):
-        return True, None
-
     if ' ' in value:
-        if value.startswith('('):
-            return False, "内联值 () 中包含空格，必须使用引用值"
-        return False, "值包含空格，必须使用引用值"
+        return False, "值包含空格，空格会被解析为规则分隔符"
 
     return True, None
 
@@ -95,31 +96,28 @@ def check_incomplete_value(value: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def check_operator_trailing_space(line: str) -> List[Tuple[str, str]]:
+    """
+    检查操作符后是否紧跟空格 (xxx:// 后面有空格)
+
+    返回: [(operator, error_marker), ...] 其中 error_marker 为空字符串表示 :// 后有空格
+    """
+    results = []
+    for m in OPERATOR_WITH_TRAILING_SPACE_PATTERN.finditer(line):
+        results.append((m.group(1), ''))
+    return results
+
+
 def parse_rule_line(line: str) -> List[Tuple[str, str]]:
     """
     解析规则行，提取所有 operator://value 对
 
-    返回: [(operator, value, start_pos), ...]
+    返回: [(operator, value), ...]
     """
     results = []
-
-    backtick_matches = list(BACKTICK_OPERATOR_PATTERN.finditer(line))
-    brace_matches = list(BRACE_OPERATOR_PATTERN.finditer(line))
-    paren_matches = list(PAREN_OPERATOR_PATTERN.finditer(line))
-    simple_matches = list(SIMPLE_OPERATOR_PATTERN.finditer(line))
-
-    special_positions = set()
-    for m in backtick_matches + brace_matches + paren_matches:
-        results.append((m.group(1), m.group(2), m.start()))
-        for pos in range(m.start(), m.end()):
-            special_positions.add(pos)
-
-    for m in simple_matches:
-        if m.start() not in special_positions:
-            results.append((m.group(1), m.group(2), m.start()))
-
-    results.sort(key=lambda x: x[2])
-    return [(r[0], r[1]) for r in results]
+    for m in SIMPLE_OPERATOR_PATTERN.finditer(line):
+        results.append((m.group(1), m.group(2)))
+    return results
 
 
 def check_file(file_path: str) -> List[RuleError]:
@@ -130,6 +128,9 @@ def check_file(file_path: str) -> List[RuleError]:
     """
     errors = []
     in_code_block = False
+    in_line_block = False
+    line_block_start = 0
+    line_block_content = []
 
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -148,12 +149,48 @@ def check_file(file_path: str) -> List[RuleError]:
         if in_code_block:
             continue
 
+        if in_line_block:
+            if LINE_BLOCK_END_PATTERN.match(stripped):
+                in_line_block = False
+                combined_line = ' '.join(line_block_content)
+                block_errors = check_line_block_content(
+                    file_path, line_block_start, combined_line
+                )
+                errors.extend(block_errors)
+                line_block_content = []
+            else:
+                line_block_content.append(stripped)
+            continue
+
+        if LINE_BLOCK_START_PATTERN.match(stripped):
+            in_line_block = True
+            line_block_start = line_num
+            after_marker = stripped[5:]
+            if after_marker:
+                line_block_content.append(after_marker)
+            continue
+
         if not stripped or stripped.startswith('#'):
             continue
+
+        trailing_space_errors = check_operator_trailing_space(stripped)
+        for operator, _ in trailing_space_errors:
+            if operator not in CONTROL_OPERATORS:
+                errors.append(RuleError(
+                    file_path=file_path,
+                    line_num=line_num,
+                    line_content=stripped,
+                    operator=operator,
+                    value='<空格>',
+                    message="操作符 :// 后面不能有空格"
+                ))
 
         operators = parse_rule_line(stripped)
 
         for operator, value in operators:
+            if operator in CONTROL_OPERATORS:
+                continue
+
             is_valid, error_msg = check_value_has_space(value)
             if not is_valid:
                 errors.append(RuleError(
@@ -176,6 +213,44 @@ def check_file(file_path: str) -> List[RuleError]:
                     value=value,
                     message=error_msg
                 ))
+
+    if in_line_block:
+        errors.append(RuleError(
+            file_path=file_path,
+            line_num=line_block_start,
+            line_content='line`...',
+            operator='line',
+            value='<未闭合>',
+            message="line` 块未闭合，缺少结束的 `"
+        ))
+
+    return errors
+
+
+def check_line_block_content(file_path: str, line_num: int, content: str) -> List[RuleError]:
+    """
+    检查 line` 块内容
+
+    line` 块内的内容会被合并为单行处理，空格是合法的分隔符
+    只检查操作符值的完整性（括号匹配等）
+    """
+    errors = []
+    operators = parse_rule_line(content)
+
+    for operator, value in operators:
+        if operator in CONTROL_OPERATORS:
+            continue
+
+        is_valid, error_msg = check_incomplete_value(value)
+        if not is_valid:
+            errors.append(RuleError(
+                file_path=file_path,
+                line_num=line_num,
+                line_content=f"line`...` 块",
+                operator=operator,
+                value=value,
+                message=error_msg
+            ))
 
     return errors
 

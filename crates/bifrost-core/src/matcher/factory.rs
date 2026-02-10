@@ -1,8 +1,12 @@
-use super::{DomainMatcher, IpMatcher, Matcher, RegexMatcher, WildcardMatcher};
+use super::{
+    is_path_wildcard_pattern, DomainMatcher, IpMatcher, Matcher, PathWildcardMatcher, RegexMatcher,
+    WildcardMatcher,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternType {
     Regex,
+    PathWildcard,
     Wildcard,
     Domain,
     Ip,
@@ -22,6 +26,11 @@ pub fn parse_pattern(pattern: &str) -> Result<Box<dyn Matcher>, PatternParseErro
                 IpMatcher::new(pattern).map_err(|e| PatternParseError::InvalidIp(e.to_string()))?;
             Ok(Box::new(matcher))
         }
+        PatternType::PathWildcard => {
+            let matcher = PathWildcardMatcher::new(pattern)
+                .map_err(|e| PatternParseError::InvalidPathWildcard(e.to_string()))?;
+            Ok(Box::new(matcher))
+        }
         PatternType::Wildcard => {
             let matcher = WildcardMatcher::new(pattern)
                 .map_err(|e| PatternParseError::InvalidWildcard(e.to_string()))?;
@@ -39,6 +48,10 @@ pub fn detect_pattern_type(pattern: &str) -> PatternType {
 
     if is_regex_pattern(clean_pattern) {
         return PatternType::Regex;
+    }
+
+    if is_path_wildcard_pattern(pattern) {
+        return PatternType::PathWildcard;
     }
 
     if is_ip_pattern(clean_pattern) {
@@ -141,15 +154,33 @@ fn is_wildcard_pattern(pattern: &str) -> bool {
     let clean = pattern
         .strip_prefix("http://")
         .or_else(|| pattern.strip_prefix("https://"))
+        .or_else(|| pattern.strip_prefix("http*://"))
+        .or_else(|| pattern.strip_prefix("ws*://"))
+        .or_else(|| pattern.strip_prefix("//"))
         .unwrap_or(pattern);
 
-    clean.contains('*') || clean.contains('?') || clean.starts_with('$')
+    if clean.starts_with('$') {
+        return true;
+    }
+
+    let domain_part = clean.split('/').next().unwrap_or(clean);
+    if let Some(colon_pos) = domain_part.rfind(':') {
+        let host = &domain_part[..colon_pos];
+        let port = &domain_part[colon_pos + 1..];
+
+        if port.contains('*') && !host.contains('*') && !host.contains('?') {
+            return false;
+        }
+    }
+
+    clean.contains('*') || clean.contains('?')
 }
 
 #[derive(Debug, Clone)]
 pub enum PatternParseError {
     InvalidRegex(String),
     InvalidWildcard(String),
+    InvalidPathWildcard(String),
     InvalidIp(String),
 }
 
@@ -158,6 +189,9 @@ impl std::fmt::Display for PatternParseError {
         match self {
             PatternParseError::InvalidRegex(s) => write!(f, "Invalid regex pattern: {}", s),
             PatternParseError::InvalidWildcard(s) => write!(f, "Invalid wildcard pattern: {}", s),
+            PatternParseError::InvalidPathWildcard(s) => {
+                write!(f, "Invalid path wildcard pattern: {}", s)
+            }
             PatternParseError::InvalidIp(s) => write!(f, "Invalid IP pattern: {}", s),
         }
     }
@@ -195,6 +229,30 @@ mod tests {
         assert_eq!(detect_pattern_type("example.com/*"), PatternType::Wildcard);
         assert_eq!(detect_pattern_type("!*.example.com"), PatternType::Wildcard);
         assert_eq!(detect_pattern_type("example?.com"), PatternType::Wildcard);
+    }
+
+    #[test]
+    fn test_detect_path_wildcard_pattern() {
+        assert_eq!(
+            detect_pattern_type("^example.com/*"),
+            PatternType::PathWildcard
+        );
+        assert_eq!(
+            detect_pattern_type("^example.com/**"),
+            PatternType::PathWildcard
+        );
+        assert_eq!(
+            detect_pattern_type("^example.com/***"),
+            PatternType::PathWildcard
+        );
+        assert_eq!(
+            detect_pattern_type("!^example.com/*"),
+            PatternType::PathWildcard
+        );
+        assert_eq!(
+            detect_pattern_type("^api.example.com/v1/*/info"),
+            PatternType::PathWildcard
+        );
     }
 
     #[test]
@@ -254,6 +312,53 @@ mod tests {
 
         let result = matcher.matches("http://example.com", "example.com", "/");
         assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_parse_path_wildcard_pattern() {
+        let matcher = parse_pattern("^example.com/api/*").unwrap();
+        assert_eq!(matcher.priority(), 70);
+
+        let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
+        assert!(result.matched);
+
+        let result = matcher.matches(
+            "http://example.com/api/users/nested",
+            "example.com",
+            "/api/users/nested",
+        );
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_parse_path_wildcard_double_star() {
+        let matcher = parse_pattern("^example.com/api/**").unwrap();
+
+        let result = matcher.matches(
+            "http://example.com/api/users/123/details",
+            "example.com",
+            "/api/users/123/details",
+        );
+        assert!(result.matched);
+
+        let result = matcher.matches(
+            "http://example.com/api/users?id=123",
+            "example.com",
+            "/api/users?id=123",
+        );
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_parse_path_wildcard_triple_star() {
+        let matcher = parse_pattern("^example.com/api/***").unwrap();
+
+        let result = matcher.matches(
+            "http://example.com/api/users?id=123",
+            "example.com",
+            "/api/users?id=123",
+        );
+        assert!(result.matched);
     }
 
     #[test]

@@ -1,0 +1,49 @@
+# LB-01: line 块换行语法测试
+# 需求: line`...` 语法应将多行合并为单条规则
+
+# LB-01 基础换行配置
+line`
+http://127.0.0.1:3000
+lb-basic.local
+`
+
+# LB-02 换行配置 + 过滤器
+line`
+http://127.0.0.1:3000
+lb-filter.local
+includeFilter://m:GET
+excludeFilter:///admin/
+`
+
+# LB-03 换行配置 + 多个操作
+line`
+http://127.0.0.1:3000
+resHeaders://`X-Line-Block:yes`
+lb-multi-op.local
+`
+
+# LB-04 复杂换行配置
+line`
+http://127.0.0.1:8080
+lb-complex.local
+resHeaders://`X-Proxied:true`
+includeFilter://m:GET,POST
+excludeFilter:///internal/
+lineProps://important
+`
+
+# LB-05 多域名换行配置 - 位置调换
+line`
+host://127.0.0.1:3000
+lb-multi-1.local
+lb-multi-2.local
+lb-multi-3.local
+`
+
+# 测试用例:
+# 1. GET http://lb-basic.local/ 应被正确转发
+# 2. GET http://lb-filter.local/api 应被正确转发
+# 3. GET http://lb-filter.local/admin/users 不应匹配规则
+# 4. GET http://lb-multi-op.local/ 应返回 X-Line-Block: yes
+# 5. GET http://lb-complex.local/ 应返回 X-Proxied: true
+# 6. DELETE http://lb-complex.local/ 不应匹配规则 (不满足 include)

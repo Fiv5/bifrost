@@ -1,10 +1,26 @@
+use regex::Regex;
+
 use super::{MatchResult, Matcher};
+
+#[derive(Debug, Clone)]
+enum PortMatcher {
+    Exact(u16),
+    Wildcard(Regex),
+}
+
+#[derive(Debug, Clone)]
+enum ProtocolMatcher {
+    Exact(String),
+    HttpWildcard,
+    WsWildcard,
+    AnyProtocol,
+}
 
 pub struct DomainMatcher {
     domain: String,
-    port: Option<u16>,
+    port: Option<PortMatcher>,
     path_pattern: Option<PathPattern>,
-    protocol: Option<String>,
+    protocol: Option<ProtocolMatcher>,
     negated: bool,
     raw_pattern: String,
 }
@@ -39,17 +55,29 @@ impl DomainMatcher {
         }
     }
 
-    fn parse_protocol(pattern: &str) -> (Option<String>, &str) {
-        if let Some(stripped) = pattern.strip_prefix("http://") {
-            (Some("http".to_string()), stripped)
+    fn parse_protocol(pattern: &str) -> (Option<ProtocolMatcher>, &str) {
+        if let Some(stripped) = pattern.strip_prefix("//") {
+            (Some(ProtocolMatcher::AnyProtocol), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("http*://") {
+            (Some(ProtocolMatcher::HttpWildcard), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("ws*://") {
+            (Some(ProtocolMatcher::WsWildcard), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("http://") {
+            (Some(ProtocolMatcher::Exact("http".to_string())), stripped)
         } else if let Some(stripped) = pattern.strip_prefix("https://") {
-            (Some("https".to_string()), stripped)
+            (Some(ProtocolMatcher::Exact("https".to_string())), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("ws://") {
+            (Some(ProtocolMatcher::Exact("ws".to_string())), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("wss://") {
+            (Some(ProtocolMatcher::Exact("wss".to_string())), stripped)
+        } else if let Some(stripped) = pattern.strip_prefix("tunnel://") {
+            (Some(ProtocolMatcher::Exact("tunnel".to_string())), stripped)
         } else {
             (None, pattern)
         }
     }
 
-    fn parse_domain_port_path(pattern: &str) -> (String, Option<u16>, Option<PathPattern>) {
+    fn parse_domain_port_path(pattern: &str) -> (String, Option<PortMatcher>, Option<PathPattern>) {
         let (domain_port, path) = if let Some(pos) = pattern.find('/') {
             let (dp, p) = pattern.split_at(pos);
             (dp, Some(p))
@@ -58,9 +86,15 @@ impl DomainMatcher {
         };
 
         let (domain, port) = if let Some(colon_pos) = domain_port.rfind(':') {
-            let potential_port = &domain_port[colon_pos + 1..];
-            if let Ok(p) = potential_port.parse::<u16>() {
-                (domain_port[..colon_pos].to_string(), Some(p))
+            let port_str = &domain_port[colon_pos + 1..];
+            if port_str.contains('*') {
+                let port_matcher = Self::parse_port_wildcard(port_str);
+                (domain_port[..colon_pos].to_string(), port_matcher)
+            } else if let Ok(p) = port_str.parse::<u16>() {
+                (
+                    domain_port[..colon_pos].to_string(),
+                    Some(PortMatcher::Exact(p)),
+                )
             } else {
                 (domain_port.to_string(), None)
             }
@@ -79,12 +113,36 @@ impl DomainMatcher {
         (domain, port, path_pattern)
     }
 
+    fn parse_port_wildcard(port_pattern: &str) -> Option<PortMatcher> {
+        let mut regex_str = String::from("^");
+
+        for c in port_pattern.chars() {
+            if c == '*' {
+                regex_str.push_str("[0-9]*");
+            } else if c.is_ascii_digit() {
+                regex_str.push(c);
+            } else {
+                return None;
+            }
+        }
+        regex_str.push('$');
+
+        Regex::new(&regex_str).ok().map(PortMatcher::Wildcard)
+    }
+
     pub fn domain(&self) -> &str {
         &self.domain
     }
 
     pub fn port(&self) -> Option<u16> {
-        self.port
+        match &self.port {
+            Some(PortMatcher::Exact(p)) => Some(*p),
+            _ => None,
+        }
+    }
+
+    pub fn has_port_pattern(&self) -> bool {
+        self.port.is_some()
     }
 
     pub fn raw_pattern(&self) -> &str {
@@ -98,13 +156,16 @@ impl DomainMatcher {
             return false;
         }
 
-        if let Some(expected_port) = self.port {
-            match check_port {
-                Some(p) => p == expected_port,
-                None => expected_port == 80 || expected_port == 443,
-            }
-        } else {
-            true
+        match &self.port {
+            Some(PortMatcher::Exact(expected_port)) => match check_port {
+                Some(p) => p == *expected_port,
+                None => *expected_port == 80 || *expected_port == 443,
+            },
+            Some(PortMatcher::Wildcard(regex)) => match check_port {
+                Some(p) => regex.is_match(&p.to_string()),
+                None => false,
+            },
+            None => true,
         }
     }
 
@@ -133,9 +194,22 @@ impl DomainMatcher {
     fn matches_protocol(&self, url: &str) -> bool {
         match &self.protocol {
             None => true,
-            Some(proto) => {
+            Some(ProtocolMatcher::Exact(proto)) => {
                 let expected_prefix = format!("{}://", proto);
                 url.starts_with(&expected_prefix)
+            }
+            Some(ProtocolMatcher::HttpWildcard) => {
+                url.starts_with("http://") || url.starts_with("https://")
+            }
+            Some(ProtocolMatcher::WsWildcard) => {
+                url.starts_with("ws://") || url.starts_with("wss://")
+            }
+            Some(ProtocolMatcher::AnyProtocol) => {
+                url.starts_with("http://")
+                    || url.starts_with("https://")
+                    || url.starts_with("ws://")
+                    || url.starts_with("wss://")
+                    || url.starts_with("tunnel://")
             }
         }
     }
@@ -451,6 +525,200 @@ mod tests {
             "example.com",
             "/search?q=test",
         );
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_port_wildcard_simple() {
+        let matcher = DomainMatcher::new("example.com:8*8");
+        assert!(matcher.has_port_pattern());
+
+        let result = matcher.matches("http://example.com:88/path", "example.com:88", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:808/path", "example.com:808", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8888/path", "example.com:8888", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8008/path", "example.com:8008", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:80/path", "example.com:80", "/path");
+        assert!(!result.matched);
+
+        let result = matcher.matches("http://example.com:9999/path", "example.com:9999", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_port_wildcard_prefix() {
+        let matcher = DomainMatcher::new("example.com:8*");
+
+        let result = matcher.matches("http://example.com:80/path", "example.com:80", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8080/path", "example.com:8080", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8888/path", "example.com:8888", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:9000/path", "example.com:9000", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_port_wildcard_suffix() {
+        let matcher = DomainMatcher::new("example.com:*80");
+
+        let result = matcher.matches("http://example.com:80/path", "example.com:80", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:180/path", "example.com:180", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8080/path", "example.com:8080", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:8081/path", "example.com:8081", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_port_wildcard_all() {
+        let matcher = DomainMatcher::new("example.com:*");
+
+        let result = matcher.matches("http://example.com:80/path", "example.com:80", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com:443/path", "example.com:443", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches(
+            "http://example.com:12345/path",
+            "example.com:12345",
+            "/path",
+        );
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_port_wildcard_with_path() {
+        let matcher = DomainMatcher::new("example.com:8*/api/*");
+        assert!(matcher.has_port_pattern());
+
+        let result = matcher.matches(
+            "http://example.com:8080/api/users",
+            "example.com:8080",
+            "/api/users",
+        );
+        assert!(result.matched);
+
+        let result = matcher.matches(
+            "http://example.com:9090/api/users",
+            "example.com:9090",
+            "/api/users",
+        );
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_ws() {
+        let matcher = DomainMatcher::new("ws://example.com/socket");
+
+        let result = matcher.matches("ws://example.com/socket", "example.com", "/socket");
+        assert!(result.matched);
+
+        let result = matcher.matches("wss://example.com/socket", "example.com", "/socket");
+        assert!(!result.matched);
+
+        let result = matcher.matches("http://example.com/socket", "example.com", "/socket");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_wss() {
+        let matcher = DomainMatcher::new("wss://example.com/socket");
+
+        let result = matcher.matches("wss://example.com/socket", "example.com", "/socket");
+        assert!(result.matched);
+
+        let result = matcher.matches("ws://example.com/socket", "example.com", "/socket");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_tunnel() {
+        let matcher = DomainMatcher::new("tunnel://example.com");
+
+        let result = matcher.matches("tunnel://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_http_wildcard() {
+        let matcher = DomainMatcher::new("http*://example.com");
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("https://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("ws://example.com/path", "example.com", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_ws_wildcard() {
+        let matcher = DomainMatcher::new("ws*://example.com");
+
+        let result = matcher.matches("ws://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("wss://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_protocol_any() {
+        let matcher = DomainMatcher::new("//example.com");
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("https://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("ws://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("wss://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+
+        let result = matcher.matches("tunnel://example.com/path", "example.com", "/path");
+        assert!(result.matched);
+    }
+
+    #[test]
+    fn test_protocol_any_with_path() {
+        let matcher = DomainMatcher::new("//example.com/api/*");
+
+        let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
+        assert!(result.matched);
+
+        let result = matcher.matches("wss://example.com/api/users", "example.com", "/api/users");
         assert!(result.matched);
     }
 }

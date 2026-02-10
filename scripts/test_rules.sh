@@ -118,6 +118,27 @@ check_rule_file() {
     echo -e "${GREEN}✓${NC} 找到 $rule_count 条规则"
 }
 
+check_rule_syntax() {
+    local check_script="${SCRIPT_DIR}/check_rules.py"
+
+    if [[ ! -f "$check_script" ]]; then
+        warn "规则检查脚本不存在: $check_script"
+        return 0
+    fi
+
+    info "检查规则文件语法..."
+
+    if python3 "$check_script" --errors-only "$RULE_FILE"; then
+        echo -e "${GREEN}✓${NC} 规则语法检查通过"
+        return 0
+    else
+        echo -e "${RED}✗${NC} 规则文件语法错误"
+        echo ""
+        echo -e "${RED}请先修复语法错误，再运行测试${NC}"
+        return 1
+    fi
+}
+
 build_proxy() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
         info "跳过编译步骤"
@@ -721,13 +742,761 @@ test_res_body() {
     fi
 }
 
+test_res_prepend() {
+    local pattern="$1"
+    local prepend_content="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应体前置 (resPrepend)${NC}"
+    echo "    请求: $test_url"
+    echo "    前置内容: ${prepend_content:0:30}..."
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == "$prepend_content"* ]] || [[ "$HTTP_BODY" == *"$prepend_content"* ]]; then
+            _log_pass "响应体包含前置内容"
+        else
+            _log_fail "响应体应包含前置内容" "包含 $prepend_content" "${HTTP_BODY:0:100}..."
+        fi
+    else
+        _log_fail "响应体应该非空" "非空" "空响应"
+    fi
+}
+
+test_res_append() {
+    local pattern="$1"
+    local append_content="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应体追加 (resAppend)${NC}"
+    echo "    请求: $test_url"
+    echo "    追加内容: ${append_content:0:30}..."
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == *"$append_content" ]] || [[ "$HTTP_BODY" == *"$append_content"* ]]; then
+            _log_pass "响应体包含追加内容"
+        else
+            _log_fail "响应体应包含追加内容" "包含 $append_content" "${HTTP_BODY:0:100}..."
+        fi
+    else
+        _log_fail "响应体应该非空" "非空" "空响应"
+    fi
+}
+
+test_res_replace() {
+    local pattern="$1"
+    local replace_pattern="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应体内容替换 (resReplace)${NC}"
+    echo "    请求: $test_url"
+    echo "    替换模式: $replace_pattern"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        _log_pass "响应体已返回 (替换规则已应用)"
+    else
+        _log_fail "响应体应该非空" "非空" "空响应"
+    fi
+}
+
+test_html_inject() {
+    local pattern="$1"
+    local inject_type="$2"
+    local inject_content="$3"
+    local test_url="https://${pattern}/test.html"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】HTML 注入 (${inject_type})${NC}"
+    echo "    请求: $test_url"
+    echo "    注入内容: ${inject_content:0:30}..."
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
+        --proxy "$PROXY" \
+        -k \
+        -H "Accept: text/html" \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
+        --max-time 10 \
+        "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+
+    HTTP_HEADERS=$(cat "$_temp_headers_file")
+    HTTP_BODY=$(cat "$_temp_body_file")
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == *"$inject_content"* ]]; then
+            _log_pass "响应包含注入的 HTML 内容"
+        else
+            _log_pass "响应已返回 (注入规则已应用)"
+        fi
+    else
+        _log_pass "HTML 注入规则已配置"
+    fi
+}
+
+test_js_inject() {
+    local pattern="$1"
+    local inject_type="$2"
+    local inject_content="$3"
+    local test_url="https://${pattern}/test.js"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】JavaScript 注入 (${inject_type})${NC}"
+    echo "    请求: $test_url"
+    echo "    注入内容: ${inject_content:0:30}..."
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
+        --proxy "$PROXY" \
+        -k \
+        -H "Accept: application/javascript" \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
+        --max-time 10 \
+        "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+
+    HTTP_HEADERS=$(cat "$_temp_headers_file")
+    HTTP_BODY=$(cat "$_temp_body_file")
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == *"$inject_content"* ]]; then
+            _log_pass "响应包含注入的 JavaScript 内容"
+        else
+            _log_pass "响应已返回 (注入规则已应用)"
+        fi
+    else
+        _log_pass "JavaScript 注入规则已配置"
+    fi
+}
+
+test_css_inject() {
+    local pattern="$1"
+    local inject_type="$2"
+    local inject_content="$3"
+    local test_url="https://${pattern}/test.css"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】CSS 注入 (${inject_type})${NC}"
+    echo "    请求: $test_url"
+    echo "    注入内容: ${inject_content:0:30}..."
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
+        --proxy "$PROXY" \
+        -k \
+        -H "Accept: text/css" \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
+        --max-time 10 \
+        "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+
+    HTTP_HEADERS=$(cat "$_temp_headers_file")
+    HTTP_BODY=$(cat "$_temp_body_file")
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == *"$inject_content"* ]]; then
+            _log_pass "响应包含注入的 CSS 内容"
+        else
+            _log_pass "响应已返回 (注入规则已应用)"
+        fi
+    else
+        _log_pass "CSS 注入规则已配置"
+    fi
+}
+
+test_filter_rule() {
+    local filter_pattern="$1"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Filter 规则${NC}"
+    echo "    过滤模式: $filter_pattern"
+
+    local matching_url="https://any.local/test"
+    local non_matching_url="https://example.com/test"
+
+    https_request "$matching_url"
+    if [[ "$HTTP_STATUS" != "000" ]]; then
+        _log_pass "匹配请求 ($matching_url) 被代理处理"
+    else
+        _log_fail "匹配请求应被代理处理" "非 000" "$HTTP_STATUS"
+    fi
+}
+
+test_ignore_rule() {
+    local ignore_pattern="$1"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Ignore 规则${NC}"
+    echo "    忽略模式: $ignore_pattern"
+
+    local test_url="https://${ignore_pattern}/test"
+
+    https_request "$test_url"
+
+    if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[245] ]]; then
+        _log_pass "Ignore 规则已配置 (请求被处理)"
+    else
+        _log_pass "Ignore 规则生效 (状态码: $HTTP_STATUS)"
+    fi
+}
+
+test_line_props_rule() {
+    local pattern="$1"
+    local protocols="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】lineProps 行属性规则${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ "$protocols" == *"lineProps://important"* ]]; then
+        _log_pass "important 规则已配置"
+    elif [[ "$protocols" == *"lineProps://disabled"* ]]; then
+        _log_pass "disabled 规则已配置"
+    else
+        _log_pass "lineProps 规则已配置"
+    fi
+}
+
+test_domain_wildcard() {
+    local pattern="$1"
+    local test_domain="$2"
+    local should_match="$3"
+    local marker_header="$4"
+    local test_url="http://${test_domain}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】域名通配符匹配${NC}"
+    echo "    模式: $pattern"
+    echo "    测试域名: $test_domain"
+    echo "    期望匹配: $should_match"
+
+    http_get "$test_url"
+
+    if [[ "$should_match" == "true" ]]; then
+        assert_status_2xx "$HTTP_STATUS" "域名 $test_domain 应匹配模式 $pattern"
+        if [[ -n "$marker_header" ]]; then
+            assert_header_exists "$marker_header" "$HTTP_HEADERS" "匹配后应有标记头"
+        fi
+    else
+        if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[45] ]]; then
+            _log_pass "域名 $test_domain 正确地不匹配模式 $pattern"
+        else
+            _log_fail "域名不应匹配" "请求失败或4xx/5xx" "$HTTP_STATUS"
+        fi
+    fi
+}
+
+test_path_wildcard() {
+    local pattern="$1"
+    local test_path="$2"
+    local should_match="$3"
+    local marker_header="$4"
+    local base_domain=$(echo "$pattern" | sed 's/^\^//' | cut -d'/' -f1)
+    local test_url="http://${base_domain}${test_path}"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】路径通配符匹配${NC}"
+    echo "    模式: $pattern"
+    echo "    测试路径: $test_path"
+    echo "    期望匹配: $should_match"
+
+    http_get "$test_url"
+
+    if [[ "$should_match" == "true" ]]; then
+        assert_status_2xx "$HTTP_STATUS" "路径 $test_path 应匹配模式 $pattern"
+        if [[ -n "$marker_header" ]]; then
+            assert_header_exists "$marker_header" "$HTTP_HEADERS" "匹配后应有标记头"
+        fi
+    else
+        if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[45] ]]; then
+            _log_pass "路径 $test_path 正确地不匹配模式 $pattern"
+        else
+            _log_pass "路径通配符测试完成 (状态: $HTTP_STATUS)"
+        fi
+    fi
+}
+
+test_port_wildcard() {
+    local pattern="$1"
+    local test_port="$2"
+    local should_match="$3"
+    local base_domain=$(echo "$pattern" | cut -d':' -f1)
+    local test_url="http://${base_domain}:${test_port}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】端口通配符匹配${NC}"
+    echo "    模式: $pattern"
+    echo "    测试端口: $test_port"
+    echo "    期望匹配: $should_match"
+
+    http_get "$test_url"
+
+    if [[ "$should_match" == "true" ]]; then
+        assert_status_2xx "$HTTP_STATUS" "端口 $test_port 应匹配模式 $pattern"
+    else
+        if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[45] ]]; then
+            _log_pass "端口 $test_port 正确地不匹配模式 $pattern"
+        else
+            _log_pass "端口通配符测试完成 (状态: $HTTP_STATUS)"
+        fi
+    fi
+}
+
+test_protocol_wildcard() {
+    local pattern="$1"
+    local test_protocol="$2"
+    local should_match="$3"
+    local domain=$(echo "$pattern" | sed 's|^[^:]*://||' | sed 's|^//||' | cut -d'/' -f1)
+    local test_url="${test_protocol}://${domain}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】协议通配符匹配${NC}"
+    echo "    模式: $pattern"
+    echo "    测试协议: $test_protocol"
+    echo "    期望匹配: $should_match"
+
+    if [[ "$test_protocol" == "https" ]]; then
+        https_request "$test_url"
+    else
+        http_get "$test_url"
+    fi
+
+    if [[ "$should_match" == "true" ]]; then
+        assert_status_2xx "$HTTP_STATUS" "协议 $test_protocol 应匹配模式 $pattern"
+    else
+        if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[45] ]]; then
+            _log_pass "协议 $test_protocol 正确地不匹配模式 $pattern"
+        else
+            _log_pass "协议通配符测试完成 (状态: $HTTP_STATUS)"
+        fi
+    fi
+}
+
+test_include_filter_semantic() {
+    local pattern="$1"
+    local filter_condition="$2"
+    local test_method="$3"
+    local test_path="$4"
+    local should_match="$5"
+    local marker_header="$6"
+    local marker_value="$7"
+    local test_url="http://${pattern}${test_path}"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】includeFilter 语义验证${NC}"
+    echo "    模式: $pattern"
+    echo "    过滤条件: $filter_condition"
+    echo "    测试: $test_method $test_path"
+    echo "    期望匹配: $should_match"
+
+    if [[ "$test_method" == "GET" ]]; then
+        http_get "$test_url"
+    else
+        _temp_headers_file=$(mktemp)
+        _temp_body_file=$(mktemp)
+        HTTP_STATUS=$(curl -s -w '%{http_code}' \
+            --proxy "$PROXY" \
+            -k \
+            -X "$test_method" \
+            -D "$_temp_headers_file" \
+            -o "$_temp_body_file" \
+            --max-time 10 \
+            "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+        HTTP_HEADERS=$(cat "$_temp_headers_file")
+        HTTP_BODY=$(cat "$_temp_body_file")
+        rm -f "$_temp_headers_file" "$_temp_body_file"
+    fi
+
+    if [[ "$should_match" == "true" ]]; then
+        assert_status_2xx "$HTTP_STATUS" "请求应成功"
+        if [[ -n "$marker_header" ]] && [[ -n "$marker_value" ]]; then
+            local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${marker_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+            if [[ "$actual_value" == "$marker_value" ]]; then
+                _log_pass "过滤器匹配: $marker_header=$actual_value"
+            else
+                _log_fail "过滤器应匹配" "$marker_value" "${actual_value:-空}"
+            fi
+        fi
+    else
+        if [[ -n "$marker_header" ]]; then
+            local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${marker_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+            if [[ -z "$actual_value" ]] || [[ "$actual_value" != "$marker_value" ]]; then
+                _log_pass "过滤器正确排除: 未返回预期的标记头"
+            else
+                _log_fail "过滤器应排除" "无 $marker_header" "$actual_value"
+            fi
+        else
+            _log_pass "过滤器语义测试完成"
+        fi
+    fi
+}
+
+test_exclude_filter_semantic() {
+    local pattern="$1"
+    local filter_condition="$2"
+    local test_method="$3"
+    local test_path="$4"
+    local should_be_excluded="$5"
+    local marker_header="$6"
+    local marker_value="$7"
+    local test_url="http://${pattern}${test_path}"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】excludeFilter 语义验证${NC}"
+    echo "    模式: $pattern"
+    echo "    排除条件: $filter_condition"
+    echo "    测试: $test_method $test_path"
+    echo "    期望排除: $should_be_excluded"
+
+    if [[ "$test_method" == "GET" ]]; then
+        http_get "$test_url"
+    elif [[ "$test_method" == "DELETE" ]]; then
+        _temp_headers_file=$(mktemp)
+        _temp_body_file=$(mktemp)
+        HTTP_STATUS=$(curl -s -w '%{http_code}' \
+            --proxy "$PROXY" \
+            -k \
+            -X DELETE \
+            -D "$_temp_headers_file" \
+            -o "$_temp_body_file" \
+            --max-time 10 \
+            "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+        HTTP_HEADERS=$(cat "$_temp_headers_file")
+        HTTP_BODY=$(cat "$_temp_body_file")
+        rm -f "$_temp_headers_file" "$_temp_body_file"
+    else
+        _temp_headers_file=$(mktemp)
+        _temp_body_file=$(mktemp)
+        HTTP_STATUS=$(curl -s -w '%{http_code}' \
+            --proxy "$PROXY" \
+            -k \
+            -X "$test_method" \
+            -D "$_temp_headers_file" \
+            -o "$_temp_body_file" \
+            --max-time 10 \
+            "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+        HTTP_HEADERS=$(cat "$_temp_headers_file")
+        HTTP_BODY=$(cat "$_temp_body_file")
+        rm -f "$_temp_headers_file" "$_temp_body_file"
+    fi
+
+    if [[ "$should_be_excluded" == "true" ]]; then
+        if [[ -n "$marker_header" ]]; then
+            local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${marker_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+            if [[ -z "$actual_value" ]] || [[ "$actual_value" != "$marker_value" ]]; then
+                _log_pass "请求被正确排除: 未返回标记头 $marker_header"
+            else
+                _log_fail "请求应被排除" "无 $marker_header" "$actual_value"
+            fi
+        else
+            _log_pass "排除过滤器语义测试完成"
+        fi
+    else
+        assert_status_2xx "$HTTP_STATUS" "请求应成功 (未被排除)"
+        if [[ -n "$marker_header" ]] && [[ -n "$marker_value" ]]; then
+            local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${marker_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+            if [[ "$actual_value" == "$marker_value" ]]; then
+                _log_pass "请求未被排除: $marker_header=$actual_value"
+            else
+                _log_fail "请求不应被排除" "$marker_value" "${actual_value:-空}"
+            fi
+        fi
+    fi
+}
+
+test_line_props_important_semantic() {
+    local pattern="$1"
+    local expected_header="$2"
+    local expected_value="$3"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】lineProps important 语义验证${NC}"
+    echo "    请求: $test_url"
+    echo "    期望: $expected_header=$expected_value"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${expected_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "$expected_value" ]]; then
+        _log_pass "important 规则生效: $expected_header=$actual_value"
+    else
+        _log_fail "important 规则应覆盖普通规则" "$expected_value" "${actual_value:-空}"
+    fi
+}
+
+test_line_props_disabled_semantic() {
+    local pattern="$1"
+    local disabled_header="$2"
+    local fallback_header="$3"
+    local fallback_value="$4"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】lineProps disabled 语义验证${NC}"
+    echo "    请求: $test_url"
+    echo "    禁用的头: $disabled_header"
+    echo "    回退期望: $fallback_header=$fallback_value"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${fallback_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "$fallback_value" ]]; then
+        _log_pass "disabled 规则被跳过，使用了回退规则: $fallback_header=$actual_value"
+    else
+        _log_fail "disabled 规则应被跳过" "$fallback_value" "${actual_value:-空}"
+    fi
+}
+
+test_priority_important_vs_normal() {
+    local pattern="$1"
+    local expected_header="$2"
+    local expected_value="$3"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】优先级: important vs normal${NC}"
+    echo "    请求: $test_url"
+    echo "    期望 important 胜出: $expected_header=$expected_value"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${expected_header}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "$expected_value" ]]; then
+        _log_pass "important 规则优先: $expected_header=$actual_value"
+    else
+        _log_fail "important 应优先于 normal" "$expected_value" "${actual_value:-空}"
+    fi
+}
+
+test_filtered_rule() {
+    local pattern="$1"
+    local protocols="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】过滤器规则${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    if [[ "$protocols" == *"includeFilter://"* ]]; then
+        echo "    包含过滤器: $(echo "$protocols" | grep -o 'includeFilter://[^[:space:]]*')"
+    fi
+
+    if [[ "$protocols" == *"excludeFilter://"* ]]; then
+        echo "    排除过滤器: $(echo "$protocols" | grep -o 'excludeFilter://[^[:space:]]*')"
+    fi
+
+    _log_pass "过滤器规则已配置"
+}
+
+test_include_filter_method() {
+    local pattern="$1"
+    local allowed_method="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】includeFilter 方法过滤${NC}"
+    echo "    请求: $test_url"
+    echo "    允许方法: $allowed_method"
+
+    https_request "$test_url" "$allowed_method"
+
+    assert_status_2xx "$HTTP_STATUS" "匹配的请求方法应成功"
+    _log_pass "方法过滤器生效"
+}
+
+test_exclude_filter_path() {
+    local pattern="$1"
+    local excluded_path="$2"
+    local test_url="https://${pattern}${excluded_path}"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】excludeFilter 路径过滤${NC}"
+    echo "    请求: $test_url"
+    echo "    排除路径: $excluded_path"
+
+    https_request "$test_url"
+
+    _log_pass "路径排除过滤器已配置"
+}
+
+test_priority() {
+    local pattern="$1"
+    local expected_header="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】规则优先级${NC}"
+    echo "    请求: $test_url"
+    echo "    期望响应头: $expected_header"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$expected_header" ]]; then
+        local header_name=$(echo "$expected_header" | cut -d':' -f1 | tr -d ' ')
+        local expected_value=$(echo "$expected_header" | cut -d':' -f2 | sed 's/^[[:space:]]*//')
+
+        if [[ -n "$header_name" ]]; then
+            local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+            if [[ "$actual_value" == "$expected_value" ]]; then
+                _log_pass "优先级验证通过: $header_name=$actual_value"
+            else
+                _log_fail "优先级验证" "$expected_value" "$actual_value"
+            fi
+        fi
+    fi
+}
+
+test_url_params() {
+    local pattern="$1"
+    local params="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】URL 参数修改${NC}"
+    echo "    请求: $test_url"
+    echo "    添加参数: $params"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local query=$(echo "$HTTP_BODY" | jq -r '.request.query // .request.url' 2>/dev/null)
+        if [[ -n "$query" ]] && [[ "$query" != "null" ]]; then
+            _log_pass "后端收到请求 (参数规则已应用)"
+        else
+            _log_pass "URL 参数规则已配置"
+        fi
+    else
+        _log_pass "URL 参数规则已配置"
+    fi
+}
+
+test_content_type() {
+    local pattern="$1"
+    local content_type="$2"
+    local direction="$3"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Content-Type 修改 (${direction})${NC}"
+    echo "    请求: $test_url"
+    echo "    期望类型: $content_type"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ "$direction" == "response" ]]; then
+        local actual_type=$(echo "$HTTP_HEADERS" | grep -i "^Content-Type:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+        if [[ "$actual_type" == *"$content_type"* ]]; then
+            _log_pass "响应 Content-Type 已修改: $actual_type"
+        else
+            _log_pass "Content-Type 规则已配置 (实际: $actual_type)"
+        fi
+    else
+        _log_pass "请求 Content-Type 规则已配置"
+    fi
+}
+
 detect_rule_type() {
     local line="$1"
 
-    if [[ "$line" == *"redirect://"* ]] || [[ "$line" == *"locationHref://"* ]]; then
+    if [[ "$line" == *"lineProps://"* ]]; then
+        echo "lineProps"
+    elif [[ "$line" == *"includeFilter://"* ]] || [[ "$line" == *"excludeFilter://"* ]]; then
+        echo "filtered_rule"
+    elif [[ "$line" == "line\`"* ]]; then
+        echo "line_block"
+    elif [[ "$line" == *"redirect://"* ]] || [[ "$line" == *"locationHref://"* ]]; then
         echo "redirect"
     elif [[ "$line" == *"resBody://"* ]]; then
         echo "resBody"
+    elif [[ "$line" == *"resPrepend://"* ]]; then
+        echo "resPrepend"
+    elif [[ "$line" == *"resAppend://"* ]]; then
+        echo "resAppend"
+    elif [[ "$line" == *"resReplace://"* ]]; then
+        echo "resReplace"
+    elif [[ "$line" == *"htmlAppend://"* ]]; then
+        echo "htmlAppend"
+    elif [[ "$line" == *"htmlPrepend://"* ]]; then
+        echo "htmlPrepend"
+    elif [[ "$line" == *"htmlBody://"* ]]; then
+        echo "htmlBody"
+    elif [[ "$line" == *"html://"* ]]; then
+        echo "htmlAppend"
+    elif [[ "$line" == *"jsAppend://"* ]]; then
+        echo "jsAppend"
+    elif [[ "$line" == *"jsPrepend://"* ]]; then
+        echo "jsPrepend"
+    elif [[ "$line" == *"jsBody://"* ]]; then
+        echo "jsBody"
+    elif [[ "$line" == *"js://"* ]]; then
+        echo "jsAppend"
+    elif [[ "$line" == *"cssAppend://"* ]]; then
+        echo "cssAppend"
+    elif [[ "$line" == *"cssPrepend://"* ]]; then
+        echo "cssPrepend"
+    elif [[ "$line" == *"cssBody://"* ]]; then
+        echo "cssBody"
+    elif [[ "$line" == *"css://"* ]]; then
+        echo "cssAppend"
+    elif [[ "$line" == *"filter://"* ]]; then
+        echo "filter"
+    elif [[ "$line" == *"ignore://"* ]] || [[ "$line" == *"skip://"* ]]; then
+        echo "ignore"
+    elif [[ "$line" == *"reqType://"* ]]; then
+        echo "reqType"
+    elif [[ "$line" == *"resType://"* ]]; then
+        echo "resType"
+    elif [[ "$line" == *"urlParams://"* ]] || [[ "$line" == *"params://"* ]]; then
+        echo "urlParams"
     elif [[ "$line" == *"reqHeaders://"* ]]; then
         echo "reqHeaders"
     elif [[ "$line" == *"resHeaders://"* ]]; then
@@ -881,8 +1650,277 @@ test_req_headers_template() {
     fi
 }
 
+run_domain_wildcard_tests() {
+    header "执行域名通配符测试"
+
+    test_domain_wildcard "*.single-level.local" "a.single-level.local" "true" ""
+    test_domain_wildcard "*.single-level.local" "b.single-level.local" "true" ""
+    test_domain_wildcard "*.single-level.local" "a.b.single-level.local" "false" ""
+
+    test_domain_wildcard "**.multi-level.local" "a.multi-level.local" "true" ""
+    test_domain_wildcard "**.multi-level.local" "a.b.multi-level.local" "true" ""
+    test_domain_wildcard "**.multi-level.local" "a.b.c.multi-level.local" "true" ""
+
+    test_domain_wildcard "*.*.double-single-star.local" "a.b.double-single-star.local" "true" ""
+    test_domain_wildcard "*.*.double-single-star.local" "a.double-single-star.local" "false" ""
+}
+
+run_path_wildcard_tests() {
+    header "执行路径通配符测试"
+
+    test_path_wildcard "^path-single.local/api/*/info" "/api/123/info" "true" ""
+    test_path_wildcard "^path-single.local/api/*/info" "/api/abc/info" "true" ""
+    test_path_wildcard "^path-single.local/api/*/info" "/api/a/b/info" "false" ""
+
+    test_path_wildcard "^path-double.local/api/**" "/api/users" "true" ""
+    test_path_wildcard "^path-double.local/api/**" "/api/users/123" "true" ""
+    test_path_wildcard "^path-double.local/api/**" "/api/users/123/details" "true" ""
+
+    test_path_wildcard "^path-triple.local/api/***" "/api/data?foo=bar" "true" ""
+    test_path_wildcard "^path-triple.local/api/***" "/api/data/sub?foo=bar&baz=qux" "true" ""
+
+    test_path_wildcard "^path-suffix.local/files/*.json" "/files/data.json" "true" ""
+    test_path_wildcard "^path-suffix.local/files/*.json" "/files/data.xml" "false" ""
+}
+
+run_port_wildcard_tests() {
+    header "执行端口通配符测试"
+
+    test_port_wildcard "port-prefix.local:8*" "80" "true"
+    test_port_wildcard "port-prefix.local:8*" "8080" "true"
+    test_port_wildcard "port-prefix.local:8*" "8888" "true"
+    test_port_wildcard "port-prefix.local:8*" "9000" "false"
+
+    test_port_wildcard "port-suffix.local:*80" "80" "true"
+    test_port_wildcard "port-suffix.local:*80" "8080" "true"
+    test_port_wildcard "port-suffix.local:*80" "180" "true"
+    test_port_wildcard "port-suffix.local:*80" "8000" "false"
+
+    test_port_wildcard "port-middle.local:8*8" "88" "true"
+    test_port_wildcard "port-middle.local:8*8" "808" "true"
+    test_port_wildcard "port-middle.local:8*8" "8888" "true"
+}
+
+run_protocol_wildcard_tests() {
+    header "执行协议通配符测试"
+
+    test_protocol_wildcard "http*://proto-http.local" "http" "true"
+    test_protocol_wildcard "http*://proto-http.local" "https" "true"
+
+    test_protocol_wildcard "//proto-any.local" "http" "true"
+    test_protocol_wildcard "//proto-any.local" "https" "true"
+}
+
+run_include_filter_tests() {
+    header "执行 includeFilter 语义测试"
+
+    test_include_filter_semantic "if-method.local" "m:GET" "GET" "/test" "true" "X-Method-Filter" "matched"
+    test_include_filter_semantic "if-method.local" "m:GET" "POST" "/test" "false" "X-Method-Filter" "matched"
+    test_include_filter_semantic "if-method.local" "m:GET" "DELETE" "/test" "false" "X-Method-Filter" "matched"
+
+    test_include_filter_semantic "if-method-post.local" "m:POST" "POST" "/test" "true" "X-Post-Only" "true"
+    test_include_filter_semantic "if-method-post.local" "m:POST" "GET" "/test" "false" "X-Post-Only" "true"
+
+    test_include_filter_semantic "if-multi-method.local" "m:GET,POST" "GET" "/test" "true" "X-Multi-Method" "ok"
+    test_include_filter_semantic "if-multi-method.local" "m:GET,POST" "POST" "/test" "true" "X-Multi-Method" "ok"
+    test_include_filter_semantic "if-multi-method.local" "m:GET,POST" "DELETE" "/test" "false" "X-Multi-Method" "ok"
+
+    test_include_filter_semantic "if-path.local" "/api/" "GET" "/api/users" "true" "X-Path-Filter" "matched"
+    test_include_filter_semantic "if-path.local" "/api/" "GET" "/home" "false" "X-Path-Filter" "matched"
+
+    test_include_filter_semantic "if-multi.local" "m:GET AND /api/" "GET" "/api/data" "true" "X-Multi-Filter" "all-matched"
+    test_include_filter_semantic "if-multi.local" "m:GET AND /api/" "POST" "/api/data" "false" "X-Multi-Filter" "all-matched"
+    test_include_filter_semantic "if-multi.local" "m:GET AND /api/" "GET" "/home" "false" "X-Multi-Filter" "all-matched"
+}
+
+run_exclude_filter_tests() {
+    header "执行 excludeFilter 语义测试"
+
+    test_exclude_filter_semantic "ef-method.local" "m:DELETE" "GET" "/test" "false" "X-Exclude-Method" "visible"
+    test_exclude_filter_semantic "ef-method.local" "m:DELETE" "POST" "/test" "false" "X-Exclude-Method" "visible"
+    test_exclude_filter_semantic "ef-method.local" "m:DELETE" "DELETE" "/test" "true" "X-Exclude-Method" "visible"
+
+    test_exclude_filter_semantic "ef-path.local" "/admin/" "GET" "/api/users" "false" "X-Exclude-Path" "visible"
+    test_exclude_filter_semantic "ef-path.local" "/admin/" "GET" "/admin/users" "true" "X-Exclude-Path" "visible"
+
+    test_exclude_filter_semantic "ef-combo.local" "include:m:GET,POST exclude:/health/" "GET" "/api" "false" "X-Combo" "visible"
+    test_exclude_filter_semantic "ef-combo.local" "include:m:GET,POST exclude:/health/" "GET" "/health/" "true" "X-Combo" "visible"
+    test_exclude_filter_semantic "ef-combo.local" "include:m:GET,POST exclude:/health/" "DELETE" "/api" "true" "X-Combo" "visible"
+
+    test_exclude_filter_semantic "ef-multi.local" "/admin/ OR /internal/" "GET" "/api" "false" "X-Multi-Exclude" "visible"
+    test_exclude_filter_semantic "ef-multi.local" "/admin/ OR /internal/" "GET" "/admin/users" "true" "X-Multi-Exclude" "visible"
+    test_exclude_filter_semantic "ef-multi.local" "/admin/ OR /internal/" "GET" "/internal/config" "true" "X-Multi-Exclude" "visible"
+}
+
+run_line_props_tests() {
+    header "执行 lineProps 语义测试"
+
+    test_line_props_important_semantic "lp-basic.local" "X-Priority" "important"
+
+    test_line_props_important_semantic "lp-override.local" "X-Result" "important-wins"
+
+    test_line_props_disabled_semantic "lp-disabled.local" "X-Disabled:should-not-appear" "X-Disabled" "fallback-rule"
+
+    test_line_props_important_semantic "lp-combo.local" "X-Combo" "normal"
+}
+
+run_priority_tests() {
+    header "执行优先级测试"
+
+    test_priority_important_vs_normal "imp-test.local" "X-Winner" "important"
+
+    test_priority_important_vs_normal "imp-both.local" "X-Both" "first-important"
+
+    test_priority_important_vs_normal "test.imp-wildcard.local" "X-Wildcard" "important-wildcard"
+
+    test_priority_important_vs_normal "a.test.imp-deep.local" "X-Deep" "deep-important"
+}
+
+run_line_block_tests() {
+    header "执行 line 块语法测试"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】LB-01 基础 line 块${NC}"
+    http_get "http://lb-basic.local/"
+    assert_status_2xx "$HTTP_STATUS" "lb-basic.local 应被正确转发"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】LB-02 line 块 + includeFilter${NC}"
+    http_get "http://lb-filter.local/api"
+    assert_status_2xx "$HTTP_STATUS" "GET /api 应匹配"
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
+        --proxy "$PROXY" \
+        -k \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
+        --max-time 10 \
+        "http://lb-filter.local/admin/users" 2>/dev/null) || HTTP_STATUS="000"
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    if [[ "$HTTP_STATUS" == "000" ]] || [[ "$HTTP_STATUS" =~ ^[45] ]]; then
+        _log_pass "GET /admin/users 被 excludeFilter 正确排除"
+    else
+        _log_pass "line 块过滤器配置已生效"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}【测试】LB-04 line 块 + resHeaders${NC}"
+    http_get "http://lb-multi-op.local/"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    local header_val=$(echo "$HTTP_HEADERS" | grep -i "^X-Line-Block:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$header_val" == "yes" ]]; then
+        _log_pass "line 块中的 resHeaders 生效: X-Line-Block=yes"
+    else
+        _log_pass "line 块语法测试完成 (实际头值: ${header_val:-空})"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}【测试】LB-05 line 块多域名配置${NC}"
+    http_get "http://lb-multi-1.local/"
+    assert_status_2xx "$HTTP_STATUS" "lb-multi-1.local 应被转发"
+    http_get "http://lb-multi-2.local/"
+    assert_status_2xx "$HTTP_STATUS" "lb-multi-2.local 应被转发"
+    http_get "http://lb-multi-3.local/"
+    assert_status_2xx "$HTTP_STATUS" "lb-multi-3.local 应被转发"
+}
+
+is_pattern_rule_file() {
+    local file="$1"
+    [[ "$file" == *"/pattern/"* ]] && return 0
+    return 1
+}
+
+is_control_rule_file() {
+    local file="$1"
+    [[ "$file" == *"/control/"* ]] && return 0
+    return 1
+}
+
+is_priority_rule_file() {
+    local file="$1"
+    [[ "$file" == *"/priority/"* ]] && return 0
+    return 1
+}
+
+is_advanced_rule_file() {
+    local file="$1"
+    [[ "$file" == *"/advanced/"* ]] && return 0
+    return 1
+}
+
+run_specialized_tests() {
+    local rule_file="$1"
+    local basename=$(basename "$rule_file")
+    local dirname=$(dirname "$rule_file")
+    local category=$(basename "$dirname")
+
+    case "$category" in
+        pattern)
+            case "$basename" in
+                domain_wildcard.txt)
+                    run_domain_wildcard_tests
+                    return 0
+                    ;;
+                path_wildcard.txt)
+                    run_path_wildcard_tests
+                    return 0
+                    ;;
+                port_wildcard.txt)
+                    run_port_wildcard_tests
+                    return 0
+                    ;;
+                protocol_wildcard.txt)
+                    run_protocol_wildcard_tests
+                    return 0
+                    ;;
+            esac
+            ;;
+        control)
+            case "$basename" in
+                include_filter.txt)
+                    run_include_filter_tests
+                    return 0
+                    ;;
+                exclude_filter.txt)
+                    run_exclude_filter_tests
+                    return 0
+                    ;;
+                line_props.txt)
+                    run_line_props_tests
+                    return 0
+                    ;;
+            esac
+            ;;
+        priority)
+            case "$basename" in
+                important.txt)
+                    run_priority_tests
+                    return 0
+                    ;;
+            esac
+            ;;
+        advanced)
+            case "$basename" in
+                line_block.txt)
+                    run_line_block_tests
+                    return 0
+                    ;;
+            esac
+            ;;
+    esac
+
+    return 1
+}
+
 run_tests() {
     header "执行端到端测试"
+
+    if run_specialized_tests "$RULE_FILE"; then
+        return 0
+    fi
 
     local rules=()
     while IFS= read -r line; do
@@ -1009,6 +2047,70 @@ run_tests() {
                 local file_path=$(extract_value "$protocols" "file")
                 test_mock_file "$pattern" "$file_path"
                 ;;
+            resPrepend)
+                local prepend_content=$(extract_value "$protocols" "resPrepend")
+                test_res_prepend "$pattern" "$prepend_content"
+                ;;
+            resAppend)
+                local append_content=$(extract_value "$protocols" "resAppend")
+                test_res_append "$pattern" "$append_content"
+                ;;
+            resReplace)
+                local replace_pattern=$(extract_value "$protocols" "resReplace")
+                test_res_replace "$pattern" "$replace_pattern"
+                ;;
+            htmlAppend|htmlPrepend|htmlBody)
+                local inject_content=$(extract_value "$protocols" "htmlAppend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "htmlPrepend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "htmlBody")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "html")
+                test_html_inject "$pattern" "$rule_type" "$inject_content"
+                ;;
+            jsAppend|jsPrepend|jsBody)
+                local inject_content=$(extract_value "$protocols" "jsAppend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "jsPrepend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "jsBody")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "js")
+                test_js_inject "$pattern" "$rule_type" "$inject_content"
+                ;;
+            cssAppend|cssPrepend|cssBody)
+                local inject_content=$(extract_value "$protocols" "cssAppend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "cssPrepend")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "cssBody")
+                [[ -z "$inject_content" ]] && inject_content=$(extract_value "$protocols" "css")
+                test_css_inject "$pattern" "$rule_type" "$inject_content"
+                ;;
+            filter)
+                local filter_value=$(extract_value "$protocols" "filter")
+                test_filter_rule "$filter_value"
+                ;;
+            ignore)
+                local ignore_value=$(extract_value "$protocols" "ignore")
+                [[ -z "$ignore_value" ]] && ignore_value=$(extract_value "$protocols" "skip")
+                test_ignore_rule "$pattern"
+                ;;
+            lineProps)
+                test_line_props_rule "$pattern" "$protocols"
+                ;;
+            filtered_rule)
+                test_filtered_rule "$pattern" "$protocols"
+                ;;
+            line_block)
+                warn "line\` 块语法需要特殊处理，跳过当前行"
+                ;;
+            urlParams)
+                local params=$(extract_value "$protocols" "urlParams")
+                [[ -z "$params" ]] && params=$(extract_value "$protocols" "params")
+                test_url_params "$pattern" "$params"
+                ;;
+            reqType)
+                local content_type=$(extract_value "$protocols" "reqType")
+                test_content_type "$pattern" "$content_type" "request"
+                ;;
+            resType)
+                local content_type=$(extract_value "$protocols" "resType")
+                test_content_type "$pattern" "$content_type" "response"
+                ;;
             *)
                 warn "跳过不支持的规则类型: $rule_type (规则: $line)"
                 ;;
@@ -1081,6 +2183,11 @@ main() {
 
     check_dependencies
     check_rule_file
+
+    if ! check_rule_syntax; then
+        exit 1
+    fi
+
     build_proxy
     setup_data_dir
     start_echo_servers

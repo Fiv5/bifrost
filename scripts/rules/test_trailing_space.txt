@@ -1,0 +1,7 @@
+# 测试引用值格式
+
+# 正确示例 - 值内无空格
+192.168.1.100 resHeaders://{x-matched-by:exact-ip}
+
+# 另一个正确示例
+192.168.1.200 resHeaders://{x-custom-header:value}

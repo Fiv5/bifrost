@@ -277,6 +277,44 @@ parse_args() {
     done
 }
 
+check_rules_syntax() {
+    header "检查规则文件语法"
+    
+    local check_script="${SCRIPT_DIR}/check_rules.py"
+    
+    if [[ ! -f "$check_script" ]]; then
+        warn "规则检查脚本不存在: $check_script"
+        return 0
+    fi
+    
+    local check_args=("--errors-only")
+    
+    if [[ ${#SPECIFIC_FILES[@]} -gt 0 ]]; then
+        check_args+=("${SPECIFIC_FILES[@]}")
+    elif [[ -n "$CATEGORY" ]]; then
+        check_args+=("--base-path" "$SCRIPT_DIR")
+        local category_files=$(find "${RULES_DIR}/${CATEGORY}" -name "*.txt" -type f 2>/dev/null)
+        if [[ -n "$category_files" ]]; then
+            while IFS= read -r f; do
+                check_args+=("$f")
+            done <<< "$category_files"
+        fi
+    fi
+    
+    info "运行规则语法检查..."
+    
+    if python3 "$check_script" "${check_args[@]}"; then
+        echo -e "${GREEN}✓${NC} 所有规则文件语法检查通过"
+        return 0
+    else
+        echo -e "${RED}✗${NC} 规则文件语法检查失败"
+        echo ""
+        echo -e "${RED}请先修复规则文件中的语法错误，再运行测试${NC}"
+        echo "运行 'python3 ${check_script}' 查看详细错误信息"
+        return 1
+    fi
+}
+
 main() {
     parse_args "$@"
     
@@ -286,6 +324,10 @@ main() {
         echo "测试分类: $CATEGORY"
     fi
     echo ""
+    
+    if ! check_rules_syntax; then
+        exit 1
+    fi
     
     build_proxy_once
     start_echo_servers_once

@@ -1,0 +1,11 @@
+# PT-01: port prefix 8*
+port-prefix.local:8* http://127.0.0.1:3000
+
+# PT-02: port suffix *80
+port-suffix.local:*80 http://127.0.0.1:3000
+
+# PT-03: port middle 8*8
+port-middle.local:8*8 http://127.0.0.1:3000
+
+# PT-04: any port *
+port-any.local:* http://127.0.0.1:3000
