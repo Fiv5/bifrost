@@ -389,6 +389,14 @@ async fn handle_request(
         }
     }
 
+    if is_direct_browser_access(&req, &proxy_config) && admin_state.is_some() {
+        debug!(
+            "Redirecting direct browser access from {} to admin UI",
+            peer_addr
+        );
+        return Ok(redirect_response(ADMIN_PATH_PREFIX));
+    }
+
     if let Some(ref state) = admin_state {
         state.metrics_collector.increment_requests();
     }
@@ -471,6 +479,58 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
         .status(status)
         .body(full_body(message.to_string()))
         .unwrap()
+}
+
+fn redirect_response(location: &str) -> Response<BoxBody> {
+    Response::builder()
+        .status(302)
+        .header("Location", location)
+        .body(empty_body())
+        .unwrap()
+}
+
+fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bool {
+    let uri = req.uri();
+    let path = uri.path();
+
+    if path != "/" {
+        return false;
+    }
+
+    if uri.scheme().is_some() || uri.host().is_some() {
+        return false;
+    }
+
+    let headers = req.headers();
+    let host = match headers.get("host").and_then(|h| h.to_str().ok()) {
+        Some(h) => h,
+        None => return false,
+    };
+
+    let host_without_port = host.split(':').next().unwrap_or(host);
+    let is_local = host_without_port == "localhost"
+        || host_without_port == "127.0.0.1"
+        || host_without_port == config.host;
+
+    if !is_local {
+        return false;
+    }
+
+    let port = host
+        .split(':')
+        .nth(1)
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(80);
+
+    if port != config.port {
+        return false;
+    }
+
+    let accept = headers
+        .get("accept")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    accept.contains("text/html")
 }
 
 fn convert_admin_response(
