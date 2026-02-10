@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use bifrost_admin::AdminState;
 use bifrost_core::{BifrostError, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
@@ -15,6 +16,7 @@ use crate::server::{empty_body, BoxBody, RulesResolver};
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
+    admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let url = uri.to_string();
@@ -66,10 +68,15 @@ pub async fn handle_websocket_upgrade(
 
     let sec_accept = extract_sec_websocket_accept(&response_str);
 
+    if let Some(ref state) = admin_state {
+        state.metrics_collector.increment_requests();
+    }
+
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_bidirectional(upgraded, target_stream).await {
+                if let Err(e) = websocket_bidirectional(upgraded, target_stream, admin_state).await
+                {
                     error!("WebSocket tunnel error: {}", e);
                 }
             }
@@ -178,7 +185,11 @@ fn parse_host_port(host: &str) -> Result<(String, u16)> {
     }
 }
 
-async fn websocket_bidirectional(upgraded: Upgraded, target: TcpStream) -> Result<()> {
+async fn websocket_bidirectional(
+    upgraded: Upgraded,
+    target: TcpStream,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<()> {
     let client = TokioIo::new(upgraded);
     let (mut target_read, mut target_write) = target.into_split();
 
@@ -186,7 +197,9 @@ async fn websocket_bidirectional(upgraded: Upgraded, target: TcpStream) -> Resul
     let mut client_read = client_read;
     let mut client_write = client_write;
 
-    let client_to_target = async {
+    let admin_state_clone = admin_state.clone();
+
+    let client_to_target = async move {
         let mut buf = vec![0u8; 65536];
         loop {
             let n = client_read.read(&mut buf).await?;
@@ -194,12 +207,16 @@ async fn websocket_bidirectional(upgraded: Upgraded, target: TcpStream) -> Resul
                 break;
             }
             target_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state_clone {
+                state.metrics_collector.add_bytes_sent(n as u64);
+            }
         }
         target_write.shutdown().await?;
         Ok::<_, std::io::Error>(())
     };
 
-    let target_to_client = async {
+    let target_to_client = async move {
         let mut buf = vec![0u8; 65536];
         loop {
             let n = target_read.read(&mut buf).await?;
@@ -207,6 +224,10 @@ async fn websocket_bidirectional(upgraded: Upgraded, target: TcpStream) -> Resul
                 break;
             }
             client_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state {
+                state.metrics_collector.add_bytes_received(n as u64);
+            }
         }
         Ok::<_, std::io::Error>(())
     };

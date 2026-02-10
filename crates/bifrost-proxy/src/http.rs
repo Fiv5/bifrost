@@ -345,6 +345,7 @@ pub async fn handle_http_request(
             state
                 .metrics_collector
                 .add_bytes_sent(final_body.len() as u64);
+            state.metrics_collector.increment_requests();
 
             let mut record = TrafficRecord::new(record_id.clone(), method, url);
             record.status = res_parts.status.as_u16();
@@ -611,6 +612,7 @@ async fn forward_without_rules(
         state
             .metrics_collector
             .add_bytes_sent(body_bytes.len() as u64);
+        state.metrics_collector.increment_requests();
 
         let mut record = TrafficRecord::new(record_id.clone(), method, url);
         record.status = res_parts.status.as_u16();

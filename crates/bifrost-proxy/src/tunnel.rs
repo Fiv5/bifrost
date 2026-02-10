@@ -1,4 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -940,12 +939,10 @@ pub async fn tunnel_bidirectional(
     let mut client_read = client_read;
     let mut client_write = client_write;
 
-    let bytes_sent = Arc::new(AtomicU64::new(0));
-    let bytes_received = Arc::new(AtomicU64::new(0));
-    let bytes_sent_clone = bytes_sent.clone();
-    let bytes_received_clone = bytes_received.clone();
+    let admin_state_clone = admin_state.cloned();
+    let admin_state_clone2 = admin_state.cloned();
 
-    let client_to_target = async {
+    let client_to_target = async move {
         let mut buf = vec![0u8; 8192];
         loop {
             let n = client_read.read(&mut buf).await?;
@@ -953,13 +950,16 @@ pub async fn tunnel_bidirectional(
                 break;
             }
             target_write.write_all(&buf[..n]).await?;
-            bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
+
+            if let Some(ref state) = admin_state_clone {
+                state.metrics_collector.add_bytes_sent(n as u64);
+            }
         }
         target_write.shutdown().await?;
         Ok::<_, std::io::Error>(())
     };
 
-    let target_to_client = async {
+    let target_to_client = async move {
         let mut buf = vec![0u8; 8192];
         loop {
             let n = target_read.read(&mut buf).await?;
@@ -967,21 +967,15 @@ pub async fn tunnel_bidirectional(
                 break;
             }
             client_write.write_all(&buf[..n]).await?;
-            bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
+
+            if let Some(ref state) = admin_state_clone2 {
+                state.metrics_collector.add_bytes_received(n as u64);
+            }
         }
         Ok::<_, std::io::Error>(())
     };
 
     let result = tokio::try_join!(client_to_target, target_to_client);
-
-    if let Some(state) = admin_state {
-        state
-            .metrics_collector
-            .add_bytes_sent(bytes_sent.load(Ordering::Relaxed));
-        state
-            .metrics_collector
-            .add_bytes_received(bytes_received.load(Ordering::Relaxed));
-    }
 
     match result {
         Ok(_) => {
