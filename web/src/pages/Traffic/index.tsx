@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, type CSSProperties } from "react";
 import { message, theme } from "antd";
 import { useTrafficStore } from "../../stores/useTrafficStore";
-import TrafficTable from "../../components/TrafficTable";
+import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
@@ -17,9 +17,12 @@ export default function Traffic() {
     responseBody,
     loading,
     paused,
+    hasMore,
     toolbarFilters,
     filterConditions,
-    fetchTraffic,
+    fetchInitialData,
+    startPolling,
+    stopPolling,
     fetchTrafficDetail,
     clearTraffic,
     setToolbarFilters,
@@ -31,10 +34,13 @@ export default function Traffic() {
   const [showFilterBar, setShowFilterBar] = useState(false);
 
   useEffect(() => {
-    fetchTraffic();
-    const interval = setInterval(fetchTraffic, 1000);
-    return () => clearInterval(interval);
-  }, [fetchTraffic]);
+    fetchInitialData().then(() => {
+      startPolling();
+    });
+    return () => {
+      stopPolling();
+    };
+  }, [fetchInitialData, startPolling, stopPolling]);
 
   const handleSelect = useCallback(async (record: TrafficSummary) => {
     setSelectedId(record.id);
@@ -126,11 +132,12 @@ export default function Traffic() {
           minRightWidth={350}
           left={
             <div style={styles.tableWrapper}>
-              <TrafficTable
+              <VirtualTrafficTable
                 data={records}
                 loading={loading}
                 onSelect={handleSelect}
                 selectedId={selectedId}
+                hasMore={hasMore}
               />
             </div>
           }

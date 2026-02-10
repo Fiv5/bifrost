@@ -51,6 +51,18 @@ export interface TrafficListResponse {
   records: TrafficSummary[];
 }
 
+export interface TrafficUpdatesResponse {
+  new_records: TrafficSummary[];
+  updated_records: TrafficSummary[];
+  has_more: boolean;
+  server_total: number;
+}
+
+export interface TrafficUpdatesFilter extends TrafficFilter {
+  after_id?: string;
+  pending_ids?: string;
+}
+
 export interface TrafficFilter {
   method?: string;
   status?: number;

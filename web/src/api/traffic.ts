@@ -1,5 +1,5 @@
 import { get, del } from './client';
-import type { TrafficListResponse, TrafficRecord, TrafficFilter, ApiResponse } from '../types';
+import type { TrafficListResponse, TrafficRecord, TrafficFilter, TrafficUpdatesFilter, TrafficUpdatesResponse, ApiResponse } from '../types';
 
 export async function getTrafficList(filter?: TrafficFilter): Promise<TrafficListResponse> {
   const params = new URLSearchParams();
@@ -12,6 +12,19 @@ export async function getTrafficList(filter?: TrafficFilter): Promise<TrafficLis
   }
   const query = params.toString();
   return get<TrafficListResponse>(`/traffic${query ? `?${query}` : ''}`);
+}
+
+export async function getTrafficUpdates(filter?: TrafficUpdatesFilter): Promise<TrafficUpdatesResponse> {
+  const params = new URLSearchParams();
+  if (filter) {
+    Object.entries(filter).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params.append(key, String(value));
+      }
+    });
+  }
+  const query = params.toString();
+  return get<TrafficUpdatesResponse>(`/traffic/updates${query ? `?${query}` : ''}`);
 }
 
 export async function getTrafficDetail(id: string): Promise<TrafficRecord> {

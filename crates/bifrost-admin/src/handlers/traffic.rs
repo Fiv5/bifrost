@@ -18,6 +18,11 @@ pub async fn handle_traffic(
             Method::DELETE => clear_traffic(state).await,
             _ => method_not_allowed(),
         }
+    } else if path == "/api/traffic/updates" {
+        match method {
+            Method::GET => get_traffic_updates(req, state).await,
+            _ => method_not_allowed(),
+        }
     } else if let Some(rest) = path.strip_prefix("/api/traffic/") {
         if let Some(id) = rest.strip_suffix("/request-body") {
             match method {
@@ -59,6 +64,72 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
     });
 
     json_response(&response)
+}
+
+async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    let query = req.uri().query().unwrap_or("");
+    let params = parse_updates_params(query);
+    let filter = parse_traffic_filter(query);
+
+    let limit = params.limit.unwrap_or(100);
+
+    let (new_records, has_more) =
+        state
+            .traffic_recorder
+            .get_after(params.after_id.as_deref(), &filter, limit);
+
+    let updated_records = if !params.pending_ids.is_empty() {
+        let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
+        state.traffic_recorder.get_by_ids(&ids)
+    } else {
+        Vec::new()
+    };
+
+    let server_total = state.traffic_recorder.total();
+
+    let response = serde_json::json!({
+        "new_records": new_records,
+        "updated_records": updated_records,
+        "has_more": has_more,
+        "server_total": server_total
+    });
+
+    json_response(&response)
+}
+
+#[derive(Debug, Default)]
+struct UpdatesParams {
+    after_id: Option<String>,
+    pending_ids: Vec<String>,
+    limit: Option<usize>,
+}
+
+fn parse_updates_params(query: &str) -> UpdatesParams {
+    let mut params = UpdatesParams::default();
+
+    for pair in query.split('&') {
+        if let Some((key, value)) = pair.split_once('=') {
+            let value = urlencoding::decode(value).unwrap_or_default();
+            match key {
+                "after_id" => {
+                    if !value.is_empty() {
+                        params.after_id = Some(value.to_string());
+                    }
+                }
+                "pending_ids" => {
+                    if !value.is_empty() {
+                        params.pending_ids = value.split(',').map(|s| s.to_string()).collect();
+                    }
+                }
+                "limit" => {
+                    params.limit = value.parse().ok();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    params
 }
 
 async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBody> {

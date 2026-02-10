@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TrafficSummary, TrafficRecord, TrafficFilter, ToolbarFilters, FilterCondition } from '../types';
+import type { TrafficSummary, TrafficRecord, TrafficFilter, ToolbarFilters, FilterCondition, TrafficUpdatesFilter } from '../types';
 import * as api from '../api';
 
 interface TrafficState {
@@ -7,17 +7,24 @@ interface TrafficState {
   currentRecord: TrafficRecord | null;
   requestBody: string | null;
   responseBody: string | null;
-  total: number;
-  filter: TrafficFilter;
+  serverTotal: number;
+  hasMore: boolean;
+  lastId: string | null;
+  pendingIds: Set<string>;
   toolbarFilters: ToolbarFilters;
   filterConditions: FilterCondition[];
   paused: boolean;
   loading: boolean;
+  polling: boolean;
   error: string | null;
-  fetchTraffic: () => Promise<void>;
+  pollTimeoutId: number | null;
+
+  startPolling: () => void;
+  stopPolling: () => void;
+  fetchUpdates: () => Promise<void>;
+  fetchInitialData: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
   clearTraffic: () => Promise<boolean>;
-  setFilter: (filter: Partial<TrafficFilter>) => void;
   setToolbarFilters: (filters: ToolbarFilters) => void;
   setFilterConditions: (conditions: FilterCondition[]) => void;
   setPaused: (paused: boolean) => void;
@@ -25,9 +32,12 @@ interface TrafficState {
   clearCurrentRecord: () => void;
 }
 
+const POLL_INTERVAL = 1000;
+const BATCH_LIMIT = 100;
+
 const buildFilterFromToolbar = (toolbar: ToolbarFilters, conditions: FilterCondition[]): Partial<TrafficFilter> => {
   const filter: Partial<TrafficFilter> = {};
-  
+
   if (toolbar.rule.includes('Hit Rule')) {
     filter.has_rule_hit = true;
   }
@@ -108,30 +118,144 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   currentRecord: null,
   requestBody: null,
   responseBody: null,
-  total: 0,
-  filter: { limit: 500, offset: 0 },
+  serverTotal: 0,
+  hasMore: false,
+  lastId: null,
+  pendingIds: new Set(),
   toolbarFilters: { rule: [], protocol: [], type: [], status: [] },
   filterConditions: [],
   paused: false,
   loading: false,
+  polling: false,
   error: null,
+  pollTimeoutId: null,
 
-  fetchTraffic: async () => {
-    if (get().paused) return;
-    
+  startPolling: () => {
+    const state = get();
+    if (state.polling) return;
+
+    set({ polling: true });
+    get().fetchUpdates();
+  },
+
+  stopPolling: () => {
+    const state = get();
+    if (state.pollTimeoutId) {
+      clearTimeout(state.pollTimeoutId);
+    }
+    set({ polling: false, pollTimeoutId: null });
+  },
+
+  fetchInitialData: async () => {
     set({ loading: true, error: null });
     try {
       const state = get();
       const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
-      const mergedFilter = { ...state.filter, ...toolbarFilter };
-      const response = await api.getTrafficList(mergedFilter);
-      set({ 
-        records: response.records, 
-        total: response.total, 
-        loading: false 
+      const filter: TrafficUpdatesFilter = {
+        ...toolbarFilter,
+        limit: BATCH_LIMIT,
+      };
+      const response = await api.getTrafficUpdates(filter);
+
+      const newPendingIds = new Set<string>();
+      response.new_records.forEach(r => {
+        if (r.status === 0) {
+          newPendingIds.add(r.id);
+        }
+      });
+
+      const lastRecord = response.new_records[response.new_records.length - 1];
+
+      set({
+        records: response.new_records,
+        serverTotal: response.server_total,
+        hasMore: response.has_more,
+        lastId: lastRecord?.id || null,
+        pendingIds: newPendingIds,
+        loading: false,
       });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
+    }
+  },
+
+  fetchUpdates: async () => {
+    const state = get();
+    if (state.paused || !state.polling) return;
+
+    try {
+      const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
+      const pendingIdsArray = Array.from(state.pendingIds);
+      
+      const filter: TrafficUpdatesFilter = {
+        ...toolbarFilter,
+        after_id: state.lastId || undefined,
+        pending_ids: pendingIdsArray.length > 0 ? pendingIdsArray.join(',') : undefined,
+        limit: BATCH_LIMIT,
+      };
+      
+      const response = await api.getTrafficUpdates(filter);
+
+      set((prevState) => {
+        const recordsMap = new Map(prevState.records.map(r => [r.id, r]));
+        
+        response.updated_records.forEach(r => {
+          recordsMap.set(r.id, r);
+        });
+        
+        response.new_records.forEach(r => {
+          if (!recordsMap.has(r.id)) {
+            recordsMap.set(r.id, r);
+          }
+        });
+
+        const newPendingIds = new Set(prevState.pendingIds);
+        
+        response.updated_records.forEach(r => {
+          if (r.status !== 0) {
+            newPendingIds.delete(r.id);
+          }
+        });
+        
+        response.new_records.forEach(r => {
+          if (r.status === 0) {
+            newPendingIds.add(r.id);
+          }
+        });
+
+        const allRecords = Array.from(recordsMap.values());
+        allRecords.sort((a, b) => a.timestamp - b.timestamp);
+
+        const lastRecord = response.new_records[response.new_records.length - 1];
+        const newLastId = lastRecord?.id || prevState.lastId;
+
+        return {
+          records: allRecords,
+          serverTotal: response.server_total,
+          hasMore: response.has_more,
+          lastId: newLastId,
+          pendingIds: newPendingIds,
+        };
+      });
+
+      const currentState = get();
+      if (currentState.polling) {
+        const nextDelay = response.has_more ? 0 : POLL_INTERVAL;
+        const timeoutId = window.setTimeout(() => {
+          get().fetchUpdates();
+        }, nextDelay);
+        set({ pollTimeoutId: timeoutId });
+      }
+    } catch (e) {
+      set({ error: (e as Error).message });
+      
+      const currentState = get();
+      if (currentState.polling) {
+        const timeoutId = window.setTimeout(() => {
+          get().fetchUpdates();
+        }, POLL_INTERVAL);
+        set({ pollTimeoutId: timeoutId });
+      }
     }
   },
 
@@ -159,7 +283,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       await api.clearTraffic();
       set({ 
         records: [], 
-        total: 0, 
+        serverTotal: 0,
+        hasMore: false,
+        lastId: null,
+        pendingIds: new Set(),
         currentRecord: null, 
         requestBody: null,
         responseBody: null,
@@ -172,23 +299,41 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
-  setFilter: (filter: Partial<TrafficFilter>) => {
-    set((state) => ({
-      filter: { ...state.filter, ...filter },
-    }));
-  },
-
   setToolbarFilters: (filters: ToolbarFilters) => {
-    set({ toolbarFilters: filters });
-    get().fetchTraffic();
+    const state = get();
+    state.stopPolling();
+    set({ 
+      toolbarFilters: filters,
+      records: [],
+      lastId: null,
+      pendingIds: new Set(),
+    });
+    get().fetchInitialData().then(() => {
+      get().startPolling();
+    });
   },
 
   setFilterConditions: (conditions: FilterCondition[]) => {
-    set({ filterConditions: conditions });
+    const state = get();
+    state.stopPolling();
+    set({ 
+      filterConditions: conditions,
+      records: [],
+      lastId: null,
+      pendingIds: new Set(),
+    });
+    get().fetchInitialData().then(() => {
+      get().startPolling();
+    });
   },
 
   setPaused: (paused: boolean) => {
     set({ paused });
+    if (paused) {
+      get().stopPolling();
+    } else {
+      get().startPolling();
+    }
   },
 
   clearError: () => set({ error: null }),

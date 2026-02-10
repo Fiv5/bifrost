@@ -234,6 +234,50 @@ impl TrafficRecorder {
             .map(TrafficSummary::from)
             .collect()
     }
+
+    pub fn get_after(
+        &self,
+        after_id: Option<&str>,
+        filter: &TrafficFilter,
+        limit: usize,
+    ) -> (Vec<TrafficSummary>, bool) {
+        let records = self.records.read();
+
+        let start_idx = if let Some(after_id) = after_id {
+            records
+                .iter()
+                .position(|r| r.id == after_id)
+                .map(|idx| idx + 1)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let filtered: Vec<TrafficSummary> = records
+            .iter()
+            .skip(start_idx)
+            .filter(|r| filter.matches(r))
+            .map(TrafficSummary::from)
+            .collect();
+
+        let total = filtered.len();
+        let has_more = total > limit;
+        let result = filtered.into_iter().take(limit).collect();
+
+        (result, has_more)
+    }
+
+    pub fn get_by_ids(&self, ids: &[&str]) -> Vec<TrafficSummary> {
+        let records = self.records.read();
+        ids.iter()
+            .filter_map(|id| records.iter().find(|r| r.id == *id))
+            .map(TrafficSummary::from)
+            .collect()
+    }
+
+    pub fn total(&self) -> usize {
+        self.records.read().len()
+    }
 }
 
 impl Default for TrafficRecorder {
