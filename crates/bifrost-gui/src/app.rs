@@ -63,35 +63,31 @@ impl eframe::App for BifrostApp {
             self.controller.stop();
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(16.0);
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                ui.vertical(|ui| {
-                    let mut state = self.state.lock();
-                    match self.current_panel {
-                        Panel::Dashboard => {
-                            DashboardPanel::show(ui, &state);
-                        }
-                        Panel::Traffic => {
-                            TrafficPanel::show(ui, &mut state);
-                        }
-                        Panel::Rules => {
-                            self.rules_panel.show(ui, &mut state, &self.controller);
-                        }
-                        Panel::Values => {
-                            self.values_panel.show(ui, &mut state, &self.controller);
-                        }
-                        Panel::Whitelist => {
-                            self.whitelist_panel.show(ui, &mut state);
-                        }
-                        Panel::Settings => {
-                            SettingsPanel::show(ui, &mut state);
-                        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(16.0))
+            .show(ctx, |ui| {
+                let mut state = self.state.lock();
+                match self.current_panel {
+                    Panel::Dashboard => {
+                        DashboardPanel::show(ui, &state);
                     }
-                });
+                    Panel::Traffic => {
+                        TrafficPanel::show(ui, &mut state);
+                    }
+                    Panel::Rules => {
+                        self.rules_panel.show(ui, &mut state, &self.controller);
+                    }
+                    Panel::Values => {
+                        self.values_panel.show(ui, &mut state, &self.controller);
+                    }
+                    Panel::Whitelist => {
+                        self.whitelist_panel.show(ui, &mut state);
+                    }
+                    Panel::Settings => {
+                        SettingsPanel::show(ui, &mut state);
+                    }
+                }
             });
-        });
 
         if self.controller.is_running() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));

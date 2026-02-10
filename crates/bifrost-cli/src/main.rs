@@ -80,6 +80,13 @@ enum Commands {
         rules: Vec<String>,
         #[arg(long, help = "Path to rules file (one rule per line)")]
         rules_file: Option<PathBuf>,
+        #[arg(long, help = "Enable system proxy configuration")]
+        system_proxy: bool,
+        #[arg(
+            long,
+            help = "System proxy bypass list (comma-separated, e.g., 'localhost,127.0.0.1,*.local')"
+        )]
+        proxy_bypass: Option<String>,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
@@ -275,6 +282,8 @@ fn main() {
             unsafe_ssl,
             ref rules,
             ref rules_file,
+            system_proxy,
+            ref proxy_bypass,
         }) => run_start(
             &cli,
             daemon,
@@ -287,6 +296,8 @@ fn main() {
             unsafe_ssl,
             rules.clone(),
             rules_file.clone(),
+            system_proxy,
+            proxy_bypass.clone(),
         ),
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
@@ -305,6 +316,8 @@ fn main() {
             None,
             false,
             vec![],
+            None,
+            false,
             None,
         ),
     };
@@ -328,6 +341,8 @@ fn run_start(
     unsafe_ssl: bool,
     rules: Vec<String>,
     rules_file: Option<PathBuf>,
+    system_proxy: bool,
+    proxy_bypass: Option<String>,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
@@ -433,10 +448,35 @@ fn run_start(
         }
     }
 
+    let enable_system_proxy = if system_proxy {
+        true
+    } else {
+        let config = load_config();
+        config.system_proxy.enabled
+    };
+
+    let system_proxy_bypass = proxy_bypass.unwrap_or_else(|| {
+        let config = load_config();
+        config.system_proxy.bypass.clone()
+    });
+
+    if enable_system_proxy {
+        if bifrost_core::SystemProxyManager::is_supported() {
+            println!("System proxy: enabled (bypass: {})", system_proxy_bypass);
+        } else {
+            println!("⚠️  WARNING: System proxy is not supported on this platform");
+        }
+    }
+
     if daemon {
         #[cfg(unix)]
         {
-            run_daemon(proxy_config, parsed_rules)?;
+            run_daemon(
+                proxy_config,
+                parsed_rules,
+                enable_system_proxy,
+                system_proxy_bypass,
+            )?;
         }
         #[cfg(not(unix))]
         {
@@ -445,7 +485,12 @@ fn run_start(
             ));
         }
     } else {
-        run_foreground(proxy_config, parsed_rules)?;
+        run_foreground(
+            proxy_config,
+            parsed_rules,
+            enable_system_proxy,
+            system_proxy_bypass,
+        )?;
     }
 
     Ok(())
@@ -710,7 +755,12 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
-fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result<()> {
+fn run_foreground(
+    config: ProxyConfig,
+    cli_rules: Vec<Rule>,
+    enable_system_proxy: bool,
+    system_proxy_bypass: String,
+) -> bifrost_core::Result<()> {
     let pid = std::process::id();
     write_pid(pid)?;
 
@@ -725,6 +775,26 @@ fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Re
     println!("PID: {}", pid);
 
     let tls_config = load_tls_config(&config)?;
+
+    let bifrost_dir = get_bifrost_dir()?;
+    let mut system_proxy_manager = bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
+
+    if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
+        tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
+    }
+
+    if enable_system_proxy {
+        let proxy_host = if config.host == "0.0.0.0" {
+            "127.0.0.1".to_string()
+        } else {
+            config.host.clone()
+        };
+        if let Err(e) =
+            system_proxy_manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass))
+        {
+            eprintln!("Failed to enable system proxy: {}", e);
+        }
+    }
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
         bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
@@ -798,13 +868,22 @@ fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Re
         }
     });
 
+    if let Err(e) = system_proxy_manager.restore() {
+        eprintln!("Failed to restore system proxy: {}", e);
+    }
+
     remove_pid()?;
     println!("Bifrost proxy stopped.");
     Ok(())
 }
 
 #[cfg(unix)]
-fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result<()> {
+fn run_daemon(
+    config: ProxyConfig,
+    cli_rules: Vec<Rule>,
+    enable_system_proxy: bool,
+    system_proxy_bypass: String,
+) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
 
@@ -857,6 +936,28 @@ fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result
 
             let tls_config = load_tls_config(&config)?;
 
+            let mut system_proxy_manager =
+                bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
+
+            if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
+                tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
+            }
+
+            if enable_system_proxy {
+                let proxy_host = if config.host == "0.0.0.0" {
+                    "127.0.0.1".to_string()
+                } else {
+                    config.host.clone()
+                };
+                if let Err(e) = system_proxy_manager.enable(
+                    &proxy_host,
+                    config.port,
+                    Some(&system_proxy_bypass),
+                ) {
+                    eprintln!("Failed to enable system proxy: {}", e);
+                }
+            }
+
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
             })?;
@@ -904,6 +1005,10 @@ fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result
                     eprintln!("Server error: {}", e);
                 }
             });
+
+            if let Err(e) = system_proxy_manager.restore() {
+                eprintln!("Failed to restore system proxy: {}", e);
+            }
 
             remove_pid()?;
             std::process::exit(0);

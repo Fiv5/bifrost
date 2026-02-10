@@ -13,6 +13,22 @@ pub struct AccessConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct SystemProxyConfig {
+    pub enabled: bool,
+    pub bypass: String,
+}
+
+impl Default for SystemProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bypass: "localhost,127.0.0.1,::1,*.local".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TrafficConfig {
     pub max_records: usize,
     pub max_body_memory_size: usize,
@@ -44,6 +60,7 @@ pub struct BifrostConfig {
     pub traffic: TrafficConfig,
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
+    pub system_proxy: SystemProxyConfig,
 }
 
 impl Default for BifrostConfig {
@@ -60,6 +77,7 @@ impl Default for BifrostConfig {
             traffic: TrafficConfig::default(),
             enable_tls_interception: true,
             intercept_exclude: Vec::new(),
+            system_proxy: SystemProxyConfig::default(),
         }
     }
 }

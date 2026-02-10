@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bifrost_core::ClientAccessControl;
+use bifrost_core::{ClientAccessControl, SystemProxyManager};
 use bifrost_storage::{RulesStorage, ValuesStorage};
 use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
@@ -12,6 +12,7 @@ use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
+pub type SharedSystemProxyManager = Arc<RwLock<SystemProxyManager>>;
 
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
@@ -23,6 +24,7 @@ pub struct AdminState {
     pub start_time: u64,
     pub port: u16,
     pub ca_cert_path: Option<PathBuf>,
+    pub system_proxy_manager: Option<SharedSystemProxyManager>,
 }
 
 impl AdminState {
@@ -37,6 +39,7 @@ impl AdminState {
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
             ca_cert_path: None,
+            system_proxy_manager: None,
         }
     }
 
@@ -72,6 +75,11 @@ impl AdminState {
 
     pub fn with_ca_cert_path(mut self, ca_cert_path: PathBuf) -> Self {
         self.ca_cert_path = Some(ca_cert_path);
+        self
+    }
+
+    pub fn with_system_proxy_manager(mut self, manager: SystemProxyManager) -> Self {
+        self.system_proxy_manager = Some(Arc::new(RwLock::new(manager)));
         self
     }
 }

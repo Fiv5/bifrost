@@ -88,9 +88,10 @@ impl WhitelistPanel {
 
         let mut to_remove = None;
 
+        let available_height = ui.available_height();
         egui::ScrollArea::vertical()
             .id_salt("whitelist_scroll")
-            .max_height(400.0)
+            .max_height(available_height)
             .show(ui, |ui| {
                 for (idx, entry) in state.whitelist.iter().enumerate() {
                     ui.horizontal(|ui| {

@@ -47,10 +47,23 @@ impl RulesPanel {
             self.new_rule_dialog(ui, state, controller);
         }
 
+        let available_size = ui.available_size();
         ui.horizontal(|ui| {
-            self.rules_list(ui, state, controller);
+            ui.allocate_ui_with_layout(
+                egui::vec2(250.0, available_size.y),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    self.rules_list(ui, state, controller);
+                },
+            );
             ui.separator();
-            self.rule_editor(ui, state, controller);
+            ui.allocate_ui_with_layout(
+                egui::vec2(available_size.x - 260.0, available_size.y),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    self.rule_editor(ui, state, controller);
+                },
+            );
         });
     }
 
@@ -99,11 +112,12 @@ impl RulesPanel {
         state: &mut AppState,
         controller: &ProxyController,
     ) {
+        let available_height = ui.available_height();
         egui::ScrollArea::vertical()
             .id_salt("rules_list")
-            .max_width(250.0)
+            .max_height(available_height)
             .show(ui, |ui| {
-                ui.set_min_width(200.0);
+                ui.set_min_width(230.0);
 
                 if state.rules.is_empty() {
                     ui.label(RichText::new("No rules configured").weak());
@@ -149,58 +163,55 @@ impl RulesPanel {
         state: &mut AppState,
         controller: &ProxyController,
     ) {
-        ui.vertical(|ui| {
-            if let Some(ref name) = self.selected_rule.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(name).strong().size(16.0));
+        if let Some(ref name) = self.selected_rule.clone() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(name).strong().size(16.0));
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                RichText::new("🗑 Delete").color(Color32::from_rgb(224, 108, 117)),
-                            )
-                            .clicked()
-                            && controller.delete_rule(name).is_ok()
-                        {
-                            state.rules = controller.load_rules();
-                            self.selected_rule = None;
-                            self.editing_content.clear();
-                        }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(RichText::new("🗑 Delete").color(Color32::from_rgb(224, 108, 117)))
+                        .clicked()
+                        && controller.delete_rule(name).is_ok()
+                    {
+                        state.rules = controller.load_rules();
+                        self.selected_rule = None;
+                        self.editing_content.clear();
+                    }
 
-                        if ui.button("💾 Save").clicked() {
-                            if let Some(rule) = state.rules.iter().find(|r| &r.name == name) {
-                                let updated = RuleEntry {
-                                    name: rule.name.clone(),
-                                    enabled: rule.enabled,
-                                    content: self.editing_content.clone(),
-                                };
-                                if controller.save_rule(&updated).is_ok() {
-                                    state.rules = controller.load_rules();
-                                }
+                    if ui.button("💾 Save").clicked() {
+                        if let Some(rule) = state.rules.iter().find(|r| &r.name == name) {
+                            let updated = RuleEntry {
+                                name: rule.name.clone(),
+                                enabled: rule.enabled,
+                                content: self.editing_content.clone(),
+                            };
+                            if controller.save_rule(&updated).is_ok() {
+                                state.rules = controller.load_rules();
                             }
                         }
-                    });
+                    }
                 });
+            });
 
-                ui.add_space(8.0);
+            ui.add_space(8.0);
 
-                let available_size = ui.available_size();
-                egui::ScrollArea::vertical()
-                    .id_salt("rule_editor")
-                    .show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut self.editing_content)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(available_size.x - 20.0)
-                                .desired_rows(30)
-                                .code_editor(),
-                        );
-                    });
-            } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("Select a rule to edit").weak());
+            let available_size = ui.available_size();
+            egui::ScrollArea::vertical()
+                .id_salt("rule_editor")
+                .max_height(available_size.y)
+                .show(ui, |ui| {
+                    ui.add(
+                        TextEdit::multiline(&mut self.editing_content)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(available_size.x - 16.0)
+                            .desired_rows(30)
+                            .code_editor(),
+                    );
                 });
-            }
-        });
+        } else {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("Select a rule to edit").weak());
+            });
+        }
     }
 }

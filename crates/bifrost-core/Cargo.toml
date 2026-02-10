@@ -20,3 +20,5 @@ urlencoding.workspace = true
 chrono.workspace = true
 once_cell.workspace = true
 serde.workspace = true
+sysproxy.workspace = true
+serde_json.workspace = true

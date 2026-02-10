@@ -59,10 +59,23 @@ impl ValuesPanel {
 
         ui.add_space(8.0);
 
+        let available_size = ui.available_size();
         ui.horizontal(|ui| {
-            self.values_list(ui, state, controller);
+            ui.allocate_ui_with_layout(
+                egui::vec2(250.0, available_size.y),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    self.values_list(ui, state, controller);
+                },
+            );
             ui.separator();
-            self.value_editor(ui, state, controller);
+            ui.allocate_ui_with_layout(
+                egui::vec2(available_size.x - 260.0, available_size.y),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    self.value_editor(ui, state, controller);
+                },
+            );
         });
     }
 
@@ -110,11 +123,12 @@ impl ValuesPanel {
         state: &mut AppState,
         controller: &ProxyController,
     ) {
+        let available_height = ui.available_height();
         egui::ScrollArea::vertical()
             .id_salt("values_list")
-            .max_width(250.0)
+            .max_height(available_height)
             .show(ui, |ui| {
-                ui.set_min_width(200.0);
+                ui.set_min_width(230.0);
 
                 if state.values.is_empty() {
                     ui.label(RichText::new("No values defined").weak());
@@ -178,78 +192,75 @@ impl ValuesPanel {
         state: &mut AppState,
         controller: &ProxyController,
     ) {
-        ui.vertical(|ui| {
-            if let Some(ref name) = self.selected_value.clone() {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(name).strong().monospace().size(16.0));
+        if let Some(ref name) = self.selected_value.clone() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(name).strong().monospace().size(16.0));
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .button(
-                                RichText::new("🗑 Delete").color(Color32::from_rgb(224, 108, 117)),
-                            )
-                            .clicked()
-                            && controller.delete_value(name).is_ok()
-                        {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(RichText::new("🗑 Delete").color(Color32::from_rgb(224, 108, 117)))
+                        .clicked()
+                        && controller.delete_value(name).is_ok()
+                    {
+                        state.values = controller.load_values();
+                        self.selected_value = None;
+                        self.editing_value.clear();
+                    }
+
+                    if ui.button("📋 Copy").clicked() {
+                        ui.ctx().copy_text(self.editing_value.clone());
+                    }
+
+                    if ui.button("💾 Save").clicked() {
+                        let updated = ValueEntry {
+                            name: name.clone(),
+                            value: self.editing_value.clone(),
+                        };
+                        if controller.save_value(&updated).is_ok() {
                             state.values = controller.load_values();
-                            self.selected_value = None;
-                            self.editing_value.clear();
                         }
-
-                        if ui.button("📋 Copy").clicked() {
-                            ui.ctx().copy_text(self.editing_value.clone());
-                        }
-
-                        if ui.button("💾 Save").clicked() {
-                            let updated = ValueEntry {
-                                name: name.clone(),
-                                value: self.editing_value.clone(),
-                            };
-                            if controller.save_value(&updated).is_ok() {
-                                state.values = controller.load_values();
-                            }
-                        }
-                    });
+                    }
                 });
+            });
 
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!(
-                        "Use {{{}}} in rules to reference this value.",
-                        name
-                    ))
-                    .weak()
-                    .small(),
-                );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "Use {{{}}} in rules to reference this value.",
+                    name
+                ))
+                .weak()
+                .small(),
+            );
 
-                ui.add_space(8.0);
+            ui.add_space(8.0);
 
-                let available_size = ui.available_size();
-                egui::ScrollArea::vertical()
-                    .id_salt("value_editor")
-                    .show(ui, |ui| {
-                        ui.add(
-                            TextEdit::multiline(&mut self.editing_value)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(available_size.x - 20.0)
-                                .desired_rows(20)
-                                .hint_text("Enter value content..."),
-                        );
-                    });
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("{} characters", self.editing_value.len()))
-                            .weak()
-                            .small(),
+            let available_size = ui.available_size();
+            egui::ScrollArea::vertical()
+                .id_salt("value_editor")
+                .max_height(available_size.y - 30.0)
+                .show(ui, |ui| {
+                    ui.add(
+                        TextEdit::multiline(&mut self.editing_value)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(available_size.x - 16.0)
+                            .desired_rows(20)
+                            .hint_text("Enter value content..."),
                     );
                 });
-            } else {
-                ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("Select a value to edit").weak());
-                });
-            }
-        });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{} characters", self.editing_value.len()))
+                        .weak()
+                        .small(),
+                );
+            });
+        } else {
+            ui.centered_and_justified(|ui| {
+                ui.label(RichText::new("Select a value to edit").weak());
+            });
+        }
     }
 }

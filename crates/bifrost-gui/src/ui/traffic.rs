@@ -34,7 +34,7 @@ impl TrafficPanel {
             .column(Column::auto().at_least(60.0))
             .column(Column::auto().at_least(80.0))
             .column(Column::auto().at_least(80.0))
-            .min_scrolled_height(0.0)
+            .auto_shrink([false, false])
             .max_scroll_height(available_height)
             .header(20.0, |mut header| {
                 header.col(|ui| {

@@ -1,5 +1,6 @@
 pub mod cert;
 pub mod metrics;
+pub mod proxy;
 pub mod rules;
 pub mod system;
 pub mod traffic;

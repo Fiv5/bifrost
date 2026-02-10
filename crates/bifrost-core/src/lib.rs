@@ -4,6 +4,7 @@ pub mod logging;
 pub mod matcher;
 pub mod protocol;
 pub mod rule;
+pub mod system_proxy;
 
 pub use access_control::{
     AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
@@ -20,3 +21,4 @@ pub use rule::{
     RequestContext, RequestContextBuilder, ResolvedRule, ResolvedRules, Rule, RuleGroup,
     RuleGroupManager, RuleParser, RulesResolver, SharedValueStore, TemplateEngine, ValueStore,
 };
+pub use system_proxy::{ProxyBackup, SystemProxyManager};

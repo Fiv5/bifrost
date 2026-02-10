@@ -4,6 +4,7 @@ use crate::handlers::{
     cert::{handle_cert, handle_cert_public},
     cors_preflight, error_response,
     metrics::handle_metrics,
+    proxy::handle_proxy,
     rules::handle_rules,
     system::handle_system,
     traffic::handle_traffic,
@@ -68,6 +69,8 @@ impl AdminRouter {
             }
         } else if path.starts_with("/api/cert") {
             handle_cert(req, state, path).await
+        } else if path.starts_with("/api/proxy") {
+            handle_proxy(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

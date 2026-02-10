@@ -4,7 +4,7 @@ mod rules;
 mod state;
 mod values;
 
-pub use config::{AccessConfig, BifrostConfig, TrafficConfig};
+pub use config::{AccessConfig, BifrostConfig, SystemProxyConfig, TrafficConfig};
 pub use data_dir::{data_dir, set_data_dir};
 pub use rules::{RuleFile, RulesStorage};
 pub use state::{RuntimeState, StateManager};

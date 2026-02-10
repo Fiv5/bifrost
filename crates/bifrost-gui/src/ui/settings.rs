@@ -9,13 +9,16 @@ impl SettingsPanel {
         ui.heading("Settings");
         ui.add_space(16.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            Self::proxy_settings(ui, state);
-            ui.add_space(16.0);
-            Self::tls_settings(ui, state);
-            ui.add_space(16.0);
-            Self::certificate_section(ui, state);
-        });
+        let available_height = ui.available_height();
+        egui::ScrollArea::vertical()
+            .max_height(available_height)
+            .show(ui, |ui| {
+                Self::proxy_settings(ui, state);
+                ui.add_space(16.0);
+                Self::tls_settings(ui, state);
+                ui.add_space(16.0);
+                Self::certificate_section(ui, state);
+            });
     }
 
     fn proxy_settings(ui: &mut egui::Ui, state: &mut AppState) {
