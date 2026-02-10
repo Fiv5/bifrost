@@ -1,0 +1,34 @@
+# P-04: 转发协议顺序优先级测试
+# 需求: 转发类协议采用阻断方式，前面定义的优先
+
+# 测试1: host:// 转发优先级
+# 第一条规则应生效 (转发到 3000 端口)
+forward-host.local host://127.0.0.1:3000
+# 第二条规则应被忽略
+forward-host.local host://127.0.0.1:3001
+# 第三条规则应被忽略
+forward-host.local host://127.0.0.1:3002
+
+# 测试2: 无协议前缀的转发优先级
+# 第一条规则应生效
+forward-bare.local 127.0.0.1:3000
+# 第二条规则应被忽略
+forward-bare.local 127.0.0.1:3001
+
+# 测试3: http:// 转发优先级
+# 第一条规则应生效
+forward-http.local http://127.0.0.1:3000
+# 第二条规则应被忽略
+forward-http.local http://127.0.0.1:3001
+
+# 测试4: https:// 协议转发 (升级到 HTTPS)
+# 第一条规则应生效 (3443 是 HTTPS Echo Server 端口)
+forward-https.local https://127.0.0.1:3443
+# 第二条规则应被忽略
+forward-https.local https://127.0.0.1:3444
+
+# 测试用例:
+# 1. 请求 http://forward-host.local/ 应被转发到 3000 端口
+# 2. 请求 http://forward-bare.local/ 应被转发到 3000 端口
+# 3. 请求 http://forward-http.local/ 应被转发到 3000 端口
+# 4. 请求 https://forward-https.local/ 应被转发到 3443 端口

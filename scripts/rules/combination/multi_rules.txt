@@ -31,26 +31,26 @@ test-forward-type.local http://127.0.0.1:3000 reqType://application/json resType
 # M-09 转发 + URL 参数修改
 test-forward-params.local http://127.0.0.1:3000 urlParams://added=true params://merged=data
 
-``` x_added
+```x_added
 X-Added: true
 ```
 
-``` x_custom
+```x_custom
 X-Custom: value
 ```
 
-``` x_first
+```x_first
 X-First: 1
 ```
 
-``` x_second
+```x_second
 X-Second: 2
 ```
 
-``` x_test
+```x_test
 X-Test: full
 ```
 
-``` x_response
+```x_response
 X-Response: modified
 ```

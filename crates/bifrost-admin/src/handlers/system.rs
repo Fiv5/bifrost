@@ -42,6 +42,13 @@ async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
         Err(_) => (0, 0),
     };
 
+    let pending_count = if let Some(ref access_control) = state.access_control {
+        let ac = access_control.read().await;
+        ac.pending_authorization_count()
+    } else {
+        0
+    };
+
     let overview = serde_json::json!({
         "system": system_info,
         "metrics": metrics,
@@ -55,7 +62,8 @@ async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
         "server": {
             "port": state.port,
             "admin_url": format!("http://127.0.0.1:{}/_bifrost/", state.port)
-        }
+        },
+        "pending_authorizations": pending_count
     });
 
     json_response(&overview)

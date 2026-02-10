@@ -81,13 +81,14 @@ http://127.0.0.1:8899/_bifrost/
 
 管理端提供以下功能：
 
-| 路径                      | 功能         |
-| ------------------------- | ------------ |
-| `/_bifrost/`              | Web UI 界面  |
-| `/_bifrost/api/rules/*`   | 规则管理 API |
-| `/_bifrost/api/traffic/*` | 流量记录 API |
-| `/_bifrost/api/metrics/*` | 指标监控 API |
-| `/_bifrost/api/system/*`  | 系统信息 API |
+| 路径                      | 功能            |
+| ------------------------- | --------------- |
+| `/_bifrost/`              | Web UI 界面     |
+| `/_bifrost/api/rules/*`   | 规则管理 API    |
+| `/_bifrost/api/values/*`  | Values 管理 API |
+| `/_bifrost/api/traffic/*` | 流量记录 API    |
+| `/_bifrost/api/metrics/*` | 指标监控 API    |
+| `/_bifrost/api/system/*`  | 系统信息 API    |
 
 > **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
 
@@ -196,6 +197,13 @@ bifrost whitelist remove 192.168.1.100      # 移除 IP
 bifrost whitelist allow-lan true            # 启用局域网访问
 bifrost whitelist allow-lan false           # 禁用局域网访问
 bifrost whitelist status                    # 查看访问控制状态
+
+# Values 管理（模板变量）
+bifrost value list                          # 列出所有 values
+bifrost value get <name>                    # 获取指定 value 的值
+bifrost value set <name> <value>            # 设置 value
+bifrost value delete <name>                 # 删除 value
+bifrost value import <file>                 # 从文件导入 values (KEY=VALUE 格式)
 ```
 
 ### 环境变量
@@ -323,20 +331,59 @@ manager.register_rust_plugin(MyPlugin)?;
 配置和状态存储：
 
 - **规则存储** - 规则文件的持久化
+- **Values 存储** - 模板变量的持久化
 - **配置管理** - 代理配置
 - **状态管理** - 运行时状态
 
 ```rust
-use bifrost_storage::{RulesStorage, RuleFile, StateManager};
+use bifrost_storage::{RulesStorage, RuleFile, ValuesStorage, StateManager};
 
 // 规则存储
 let storage = RulesStorage::new()?;
 let rule = RuleFile::new("my-rule", "example.com host://127.0.0.1");
 storage.save(&rule)?;
 
+// Values 存储
+let mut values = ValuesStorage::new()?;
+values.set_value("API_HOST", "127.0.0.1:3000")?;
+let host = values.get_value("API_HOST");
+
 // 状态管理
 let state = StateManager::new()?;
 let enabled_groups = state.enabled_groups();
+```
+
+## Values 变量系统
+
+Values 是一套统一的变量管理系统，用于在规则中使用可复用的变量。变量可以通过 CLI、Web 界面或 GUI 进行管理。
+
+### 变量定义
+
+变量存储在 `~/.bifrost/values/` 目录下，每个变量一个文件，文件名为变量名，内容为变量值。
+
+### 在规则中使用变量
+
+```
+# 使用 ${变量名} 语法引用变量
+example.com host://${API_HOST}
+*.api.com proxy://${PROXY_SERVER}
+test.com reqHeaders://(Authorization=Bearer ${AUTH_TOKEN})
+```
+
+### 变量优先级
+
+当规则文件内定义了同名变量（块级变量）时，优先使用块级变量，其次使用 values 目录中的变量：
+
+````
+# 规则文件内的块级变量
+```values
+API_HOST=local.dev:3000
+````
+
+# 使用变量
+
+example.com host://${API_HOST} # 优先使用块级变量
+
 ```
 
 ## 规则语法
@@ -344,40 +391,49 @@ let enabled_groups = state.enabled_groups();
 Bifrost 支持类似其他代理工具的规则语法：
 
 ```
+
 # 基本格式：pattern protocol://value
 
 # Host 映射
+
 example.com host://127.0.0.1
-*.api.example.com host://192.168.1.100
+\*.api.example.com host://192.168.1.100
 
 # 代理转发
+
 example.com proxy://proxy.server:8080
 
 # 请求修改
+
 example.com reqHeaders://(content-type=application/json)
 example.com reqBody://{"key": "value"}
 example.com method://POST
 
 # 响应修改
+
 example.com resHeaders://(cache-control=no-cache)
 example.com resBody://{"response": "data"}
 example.com statusCode://200
 
 # 内容注入
+
 example.com htmlAppend://</script><script>alert(1)</script>
 example.com jsAppend://console.log('injected')
 example.com cssAppend://body{background:red}
 
 # 延迟和限速
+
 example.com reqDelay://1000
 example.com resDelay://500
 example.com resSpeed://10
 
 # 过滤和控制
+
 example.com enable://
 example.com disable://
 example.com ignore://
 example.com filter://keyword
+
 ```
 
 ### 支持的协议（74 种）
@@ -396,15 +452,18 @@ example.com filter://keyword
 默认配置文件位于 `~/.bifrost/`：
 
 ```
+
 ~/.bifrost/
-├── bifrost.pid      # 进程 PID 文件
-├── bifrost.log      # 日志文件
-├── bifrost.err      # 错误日志
-├── rules/           # 规则文件目录
-└── certs/           # 证书目录
-    ├── ca.crt       # CA 证书
-    └── ca.key       # CA 私钥
-```
+├── bifrost.pid # 进程 PID 文件
+├── bifrost.log # 日志文件
+├── bifrost.err # 错误日志
+├── rules/ # 规则文件目录
+├── values/ # Values 变量目录
+└── certs/ # 证书目录
+├── ca.crt # CA 证书
+└── ca.key # CA 私钥
+
+````
 
 ## 测试
 
@@ -420,7 +479,7 @@ cargo test --package bifrost-proxy
 cargo test --test http_proxy_test
 cargo test --test https_proxy_test
 cargo test --test socks5_test
-```
+````
 
 ## 开发
 

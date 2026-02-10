@@ -1,21 +1,22 @@
-# 变量引用测试
-# V-01: 值引用 (Values)
-# V-02: 内联值
-# V-03: 括号内容值
-# V-04: 文件路径值
+# 内联值测试
+# V-01: 内联响应体
+# V-02: 内联请求头
+# V-03: 内联响应头
+# V-04: 多值组合
+# V-05: 文件路径值
+# V-06: URL 参数
 
-# V-01 值引用 - 使用 {valueName} 引用预定义值
-# 预定义值需要在 values 目录中定义
-test-value-ref.local http://127.0.0.1:3000 resBody://{mockResponse}
+# V-01 内联响应体 - 使用 backticks 语法（需要指定转发目标才能修改响应体）
+test-value-ref.local http://127.0.0.1:3000 resBody://`{"success":true}`
 
-# V-02 值引用用于请求头
-test-value-header.local http://127.0.0.1:3000 reqHeaders://{authHeaders}
+# V-02 内联请求头 - 使用 backticks 语法
+test-value-header.local http://127.0.0.1:3000 reqHeaders://`X-Test-Header:test-value`
 
-# V-03 值引用用于响应头
-test-value-res-header.local http://127.0.0.1:3000 resHeaders://{customHeaders}
+# V-03 内联响应头 - 使用 backticks 语法
+test-value-res-header.local http://127.0.0.1:3000 resHeaders://`X-Test-Response:test-value`
 
-# V-04 多值引用组合
-test-multi-values.local http://127.0.0.1:3000 reqHeaders://{authHeaders} resHeaders://{customHeaders}
+# V-04 多值组合 - 同时设置请求头和响应头
+test-multi-values.local http://127.0.0.1:3000 reqHeaders://`X-Test-Header:test-value` resHeaders://`X-Test-Response:test-value`
 
 # V-05 文件路径值 - 从本地文件读取值
 test-file-value.local file:///Users/eden/work/github/whistle/rust/scripts/test_data/mock.json

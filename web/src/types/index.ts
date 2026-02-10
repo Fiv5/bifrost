@@ -96,6 +96,9 @@ export interface MetricsSnapshot {
   bytes_sent_rate: number;
   bytes_received_rate: number;
   qps: number;
+  max_qps: number;
+  max_bytes_sent_rate: number;
+  max_bytes_received_rate: number;
 }
 
 export interface SystemInfo {
@@ -121,6 +124,7 @@ export interface SystemOverview {
     port: number;
     admin_url: string;
   };
+  pending_authorizations: number;
 }
 
 export interface ApiResponse<T = unknown> {
@@ -138,4 +142,10 @@ export interface WhitelistStatus {
   allow_lan: boolean;
   whitelist: string[];
   temporary_whitelist: string[];
+}
+
+export interface PendingAuth {
+  ip: string;
+  first_seen: number;
+  attempt_count: number;
 }

@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use super::context::RequestContext;
 use super::template::TemplateEngine;
 use super::types::Rule;
+use super::ValueStore;
 
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
@@ -157,6 +158,22 @@ impl RulesResolver {
     pub fn with_values(mut self, values: HashMap<String, String>) -> Self {
         self.values = values;
         self
+    }
+
+    pub fn from_store(rules: Vec<Rule>, store: &dyn ValueStore) -> Self {
+        let resolver = Self::new(rules);
+        resolver.with_values(store.as_hashmap())
+    }
+
+    pub fn merge_from_store(&mut self, store: &dyn ValueStore) {
+        for (k, v) in store.list() {
+            self.values.entry(k).or_insert(v);
+        }
+        self.clear_cache();
+    }
+
+    pub fn values(&self) -> &HashMap<String, String> {
+        &self.values
     }
 
     pub fn with_cache_capacity(self, capacity: usize) -> Self {

@@ -4,11 +4,19 @@
 
 ## 覆盖状态说明
 
-- ✅ 已覆盖 - 有对应测试用例
-- ⚠️ 部分覆盖 - 有基本测试但缺少边界情况
+- ✅ 已覆盖 - 有对应测试用例且通过
+- ⚠️ 部分覆盖 - 有基本测试但部分用例失败
 - ❌ 未覆盖 - 需要添加测试
 - 🔄 待验证 - 测试已添加但未运行验证
 - ➖ 不适用 - 当前版本不支持或不需要测试
+
+## 最新测试执行结果
+
+**执行时间**: 2026-02-10
+**总断言数**: 413
+**通过**: 339 (82%)
+**失败**: 74 (18%)
+**测试套件**: 28 通过 / 21 失败
 
 ## 1. 基础路由协议 (Basic Routing)
 
@@ -36,12 +44,12 @@
 
 | 协议          | 状态 | 测试文件                      | 说明           |
 | ------------- | ---- | ----------------------------- | -------------- |
-| `reqHeaders`  | ✅   | request_modify/headers.txt    | 请求头修改     |
+| `reqHeaders`  | ⚠️   | request_modify/headers.txt    | 请求头修改     |
 | `reqBody`     | 🔄   | request_modify/body.txt       | 请求体替换     |
 | `reqPrepend`  | 🔄   | request_modify/body.txt       | 请求体前置     |
 | `reqAppend`   | 🔄   | request_modify/body.txt       | 请求体追加     |
 | `reqReplace`  | 🔄   | request_modify/body.txt       | 请求体内容替换 |
-| `reqCookies`  | ✅   | request_modify/cookies.txt    | 请求 Cookie    |
+| `reqCookies`  | ⚠️   | request_modify/cookies.txt    | 请求 Cookie    |
 | `reqCors`     | ⚠️   | response_modify/cors.txt      | 请求 CORS      |
 | `reqDelay`    | ✅   | response_modify/delay.txt     | 请求延迟       |
 | `reqSpeed`    | 🔄   | advanced/speed.txt            | 请求速度限制   |
@@ -51,7 +59,7 @@
 | `reqWriteRaw` | ❌   | -                             | 请求原始写入   |
 | `method`      | ✅   | request_modify/method.txt     | HTTP 方法      |
 | `auth`        | 🔄   | advanced/auth.txt             | 基本认证       |
-| `ua`          | ✅   | request_modify/ua.txt         | User-Agent     |
+| `ua`          | ⚠️   | request_modify/ua.txt         | User-Agent     |
 | `referer`     | ✅   | request_modify/referer.txt    | Referer        |
 | `urlParams`   | 🔄   | request_modify/url_params.txt | URL 参数       |
 | `params`      | 🔄   | request_modify/url_params.txt | 参数合并       |
@@ -60,13 +68,13 @@
 
 | 协议            | 状态 | 测试文件                    | 说明            |
 | --------------- | ---- | --------------------------- | --------------- |
-| `resHeaders`    | ✅   | response_modify/headers.txt | 响应头修改      |
-| `resBody`       | 🔄   | response_modify/body.txt    | 响应体替换      |
+| `resHeaders`    | ⚠️   | response_modify/headers.txt | 响应头修改      |
+| `resBody`       | ⚠️   | response_modify/body.txt    | 响应体替换      |
 | `resPrepend`    | 🔄   | response_modify/body.txt    | 响应体前置      |
 | `resAppend`     | 🔄   | response_modify/body.txt    | 响应体追加      |
 | `resReplace`    | 🔄   | response_modify/body.txt    | 响应体内容替换  |
-| `resCookies`    | ✅   | response_modify/cookies.txt | 响应 Cookie     |
-| `resCors`       | ✅   | response_modify/cors.txt    | 响应 CORS       |
+| `resCookies`    | ⚠️   | response_modify/cookies.txt | 响应 Cookie     |
+| `resCors`       | ⚠️   | response_modify/cors.txt    | 响应 CORS       |
 | `resDelay`      | ✅   | response_modify/delay.txt   | 响应延迟        |
 | `resSpeed`      | 🔄   | advanced/speed.txt          | 响应速度限制    |
 | `resType`       | 🔄   | advanced/content_type.txt   | 响应内容类型    |
@@ -110,8 +118,8 @@
 
 | 协议            | 状态 | 测试文件                   | 说明        |
 | --------------- | ---- | -------------------------- | ----------- |
-| `filter`        | ✅   | control/filter.txt         | 过滤器      |
-| `ignore`        | ✅   | control/ignore.txt         | 忽略规则    |
+| `filter`        | ⚠️   | control/filter.txt         | 过滤器      |
+| `ignore`        | ⚠️   | control/ignore.txt         | 忽略规则    |
 | `skip`          | ⚠️   | control/ignore.txt         | ignore 别名 |
 | `enable`        | 🔄   | control/enable_disable.txt | 启用规则    |
 | `disable`       | 🔄   | control/enable_disable.txt | 禁用规则    |
@@ -119,8 +127,8 @@
 | `G`             | 🔄   | control/group.txt          | 分组协议    |
 | `P`             | 🔄   | control/group.txt          | G 别名      |
 | `style`         | 🔄   | control/group.txt          | 样式协议    |
-| `lineProps`     | 🔄   | control/line_props.txt     | 行属性配置  |
-| `includeFilter` | 🔄   | control/include_filter.txt | 包含过滤器  |
+| `lineProps`     | ✅   | control/line_props.txt     | 行属性配置  |
+| `includeFilter` | ⚠️   | control/include_filter.txt | 包含过滤器  |
 | `excludeFilter` | 🔄   | control/exclude_filter.txt | 排除过滤器  |
 
 ## 7. 脚本与插件协议 (Scripts & Plugins)
@@ -153,21 +161,21 @@
 | `${random}`        | 🔄   | template/template_vars.txt | 随机数       |
 | `${randomInt(N)}`  | 🔄   | template/template_vars.txt | 随机整数     |
 | `${randomUUID}`    | 🔄   | template/template_vars.txt | 随机 UUID    |
-| `${url}`           | 🔄   | template/template_vars.txt | 完整 URL     |
-| `${host}`          | 🔄   | template/template_vars.txt | 主机名:端口  |
-| `${hostname}`      | 🔄   | template/template_vars.txt | 主机名       |
-| `${port}`          | 🔄   | template/template_vars.txt | 端口         |
-| `${path}`          | 🔄   | template/template_vars.txt | 路径         |
-| `${pathname}`      | 🔄   | template/template_vars.txt | 路径(无查询) |
-| `${search}`        | 🔄   | template/template_vars.txt | 查询字符串   |
-| `${query.key}`     | 🔄   | template/template_vars.txt | 查询参数     |
-| `${method}`        | 🔄   | template/template_vars.txt | HTTP 方法    |
-| `${reqH.key}`      | 🔄   | template/template_vars.txt | 请求头       |
-| `${reqCookie.key}` | 🔄   | template/template_vars.txt | 请求 Cookie  |
+| `${url}`           | ✅   | template/template_vars.txt | 完整 URL     |
+| `${host}`          | ✅   | template/template_vars.txt | 主机名:端口  |
+| `${hostname}`      | ✅   | template/template_vars.txt | 主机名       |
+| `${port}`          | ✅   | template/template_vars.txt | 端口         |
+| `${path}`          | ✅   | template/template_vars.txt | 路径         |
+| `${pathname}`      | ✅   | template/template_vars.txt | 路径(无查询) |
+| `${search}`        | ✅   | template/template_vars.txt | 查询字符串   |
+| `${query.key}`     | ⚠️   | template/template_vars.txt | 查询参数     |
+| `${method}`        | ✅   | template/template_vars.txt | HTTP 方法    |
+| `${reqH.key}`      | ⚠️   | template/template_vars.txt | 请求头       |
+| `${reqCookie.key}` | ⚠️   | template/template_vars.txt | 请求 Cookie  |
 | `${clientIp}`      | 🔄   | template/template_vars.txt | 客户端 IP    |
 | `${env.VAR}`       | 🔄   | template/template_vars.txt | 环境变量     |
 | `${{var}}`         | 🔄   | template/template_vars.txt | URL 编码     |
-| `$${var}`          | 🔄   | template/template_vars.txt | 转义         |
+| `$${var}`          | ⚠️   | template/template_vars.txt | 转义         |
 | `${var.replace()}` | 🔄   | template/template_vars.txt | 替换操作     |
 
 ## 10. 值来源 (Value Sources)
@@ -175,10 +183,10 @@
 | 类型     | 状态 | 测试文件                      | 说明                      |
 | -------- | ---- | ----------------------------- | ------------------------- |
 | 内联值   | ✅   | 多个文件                      | `127.0.0.1:8080`          |
-| 内联参数 | 🔄   | request_modify/url_params.txt | `key=value&k2=v2`         |
+| 内联参数 | ✅   | request_modify/url_params.txt | `key=value&k2=v2`         |
 | 括号内容 | ❌   | -                             | `({"ok":true})`           |
 | 值引用   | 🔄   | template/values.txt           | `{valueName}`             |
-| 文件路径 | 🔄   | template/values.txt           | `/path/to/file`           |
+| 文件路径 | ✅   | template/values.txt           | `/path/to/file`           |
 | 远程 URL | ❌   | -                             | `http://example.com/data` |
 
 ## 11. 模式匹配 (Pattern Matching)
@@ -189,49 +197,49 @@
 | 单层通配符    | ✅   | pattern/domain_wildcard.txt   | `*.example.com` (不含点)      |
 | 多层通配符    | ✅   | pattern/domain_wildcard.txt   | `**.example.com` (可含点)     |
 | 路径前缀      | ✅   | combination/pattern_match.txt | `example.com/api`             |
-| 路径通配符    | ✅   | combination/pattern_match.txt | `example.com/*`               |
-| ^前缀路径单星 | ✅   | pattern/path_wildcard.txt     | `^example.com/api/*` (不含/?) |
-| ^前缀路径双星 | ✅   | pattern/path_wildcard.txt     | `^example.com/api/**` (不含?) |
-| ^前缀路径三星 | ✅   | pattern/path_wildcard.txt     | `^example.com/api/***` (含?)  |
+| 路径通配符    | ⚠️   | combination/pattern_match.txt | `example.com/*`               |
+| ^前缀路径单星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/*` (不含/?) |
+| ^前缀路径双星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/**` (不含?) |
+| ^前缀路径三星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/***` (含?)  |
 | 正则匹配      | ✅   | combination/pattern_match.txt | `/regex/`                     |
 | 正则 i 标志   | ✅   | combination/pattern_match.txt | `/regex/i`                    |
 | 正则 u 标志   | ✅   | combination/pattern_match.txt | `/regex/u` (Unicode)          |
 | 正则捕获      | ✅   | combination/pattern_match.txt | `/(\w+)/` → `$1`              |
 | 通配符捕获    | ✅   | pattern/domain_wildcard.txt   | `*.example.com` → `$1`        |
-| IP 匹配       | ✅   | combination/pattern_match.txt | `127.0.0.1`                   |
-| CIDR 匹配     | ✅   | priority/ip_vs_cidr.txt       | `192.168.0.0/16`              |
+| IP 匹配       | ⚠️   | combination/pattern_match.txt | `127.0.0.1`                   |
+| CIDR 匹配     | ⚠️   | priority/ip_vs_cidr.txt       | `192.168.0.0/16`              |
 | 端口匹配      | ✅   | combination/pattern_match.txt | `example.com:8080`            |
-| 端口通配符    | ✅   | pattern/port_wildcard.txt     | `example.com:8*8`             |
-| http\* 协议   | ✅   | pattern/protocol_wildcard.txt | `http*://` 匹配 http/https    |
-| ws\* 协议     | ✅   | pattern/protocol_wildcard.txt | `ws*://` 匹配 ws/wss          |
-| // 协议       | ✅   | pattern/protocol_wildcard.txt | `//` 匹配所有协议             |
-| ws/wss 协议   | ✅   | pattern/protocol_wildcard.txt | `ws://`, `wss://`             |
-| tunnel 协议   | ✅   | pattern/protocol_wildcard.txt | `tunnel://`                   |
+| 端口通配符    | ⚠️   | pattern/port_wildcard.txt     | `example.com:8*8`             |
+| http\* 协议   | ⚠️   | pattern/protocol_wildcard.txt | `http*://` 匹配 http/https    |
+| ws\* 协议     | ⚠️   | pattern/protocol_wildcard.txt | `ws*://` 匹配 ws/wss          |
+| // 协议       | ⚠️   | pattern/protocol_wildcard.txt | `//` 匹配所有协议             |
+| ws/wss 协议   | ⚠️   | pattern/protocol_wildcard.txt | `ws://`, `wss://`             |
+| tunnel 协议   | ⚠️   | pattern/protocol_wildcard.txt | `tunnel://`                   |
 
 ## 12. 规则优先级 (Priority)
 
 | 场景             | 状态 | 测试文件                       | 说明           |
 | ---------------- | ---- | ------------------------------ | -------------- |
-| 精确 vs 通配符   | ✅   | priority/exact_vs_wildcard.txt | 精确优先       |
-| 通配符层级       | ✅   | priority/wildcard_level.txt    | 更具体优先     |
-| 规则顺序         | ✅   | priority/order.txt             | 先定义优先     |
-| IP vs CIDR       | ✅   | priority/ip_vs_cidr.txt        | 精确 IP 优先   |
-| important 优先级 | 🔄   | priority/important.txt         | important 属性 |
+| 精确 vs 通配符   | ⚠️   | priority/exact_vs_wildcard.txt | 精确优先       |
+| 通配符层级       | ⚠️   | priority/wildcard_level.txt    | 更具体优先     |
+| 规则顺序         | ⚠️   | priority/order.txt             | 先定义优先     |
+| IP vs CIDR       | ⚠️   | priority/ip_vs_cidr.txt        | 精确 IP 优先   |
+| important 优先级 | ✅   | control/line_props.txt         | important 属性 |
 
 ## 13. 规则组合 (Combination)
 
 | 场景                   | 状态 | 测试文件                    | 说明         |
 | ---------------------- | ---- | --------------------------- | ------------ |
-| 转发 + 请求头          | 🔄   | combination/multi_rules.txt | 组合规则     |
-| 转发 + 响应头 + 状态码 | 🔄   | combination/multi_rules.txt | 多规则       |
-| 多重请求头             | 🔄   | combination/multi_rules.txt | 同类型多规则 |
-| 完整修改链             | 🔄   | combination/multi_rules.txt | 全方位修改   |
+| 转发 + 请求头          | ⚠️   | combination/multi_rules.txt | 组合规则     |
+| 转发 + 响应头 + 状态码 | ⚠️   | combination/multi_rules.txt | 多规则       |
+| 多重请求头             | ⚠️   | combination/multi_rules.txt | 同类型多规则 |
+| 完整修改链             | ⚠️   | combination/multi_rules.txt | 全方位修改   |
 
 ## 14. 高级语法 (Advanced Syntax)
 
 | 语法          | 状态 | 测试文件                | 说明         |
 | ------------- | ---- | ----------------------- | ------------ |
-| `line\`...\`` | 🔄   | advanced/line_block.txt | 换行配置语法 |
+| `line\`...\`` | ⚠️   | advanced/line_block.txt | 换行配置语法 |
 
 ---
 
@@ -240,28 +248,38 @@
 | 分类       | 已覆盖 | 部分覆盖 | 待验证 | 未覆盖 |
 | ---------- | ------ | -------- | ------ | ------ |
 | 基础路由   | 8      | 0        | 9      | 1      |
-| 请求修改   | 7      | 1        | 7      | 2      |
-| 响应修改   | 6      | 1        | 8      | 4      |
+| 请求修改   | 4      | 4        | 7      | 2      |
+| 响应修改   | 3      | 5        | 8      | 4      |
 | 内容注入   | 0      | 0        | 12     | 0      |
 | URL 处理   | 0      | 0        | 1      | 1      |
-| 控制协议   | 2      | 1        | 6      | 0      |
+| 控制协议   | 1      | 4        | 6      | 0      |
 | 脚本插件   | 0      | 0        | 0      | 8      |
 | 安全协议   | 0      | 0        | 0      | 3      |
-| 模板变量   | 0      | 0        | 21     | 0      |
-| 值来源     | 1      | 0        | 3      | 2      |
-| 模式匹配   | 23     | 0        | 0      | 0      |
-| 规则优先级 | 4      | 0        | 0      | 0      |
-| 规则组合   | 0      | 0        | 4      | 0      |
+| 模板变量   | 9      | 4        | 8      | 0      |
+| 值来源     | 3      | 0        | 1      | 2      |
+| 模式匹配   | 12     | 11       | 0      | 0      |
+| 规则优先级 | 1      | 4        | 0      | 0      |
+| 规则组合   | 0      | 4        | 0      | 0      |
 
-**总计**: 已覆盖 51 | 部分覆盖 3 | 待验证 71 | 未覆盖 21
+**总计**: 已覆盖 41 | 部分覆盖 36 | 待验证 52 | 未覆盖 21
 
 ---
 
 ## 优先补充清单
 
-以下功能需要优先添加测试用例:
+以下功能需要优先修复或添加测试用例:
 
-### 高优先级 (影响核心功能)
+### 高优先级 (当前失败的测试)
+
+1. `filter` / `ignore` / `includeFilter` - 控制协议测试失败
+2. `path_wildcard` / `port_wildcard` / `protocol_wildcard` - 通配符匹配问题
+3. `priority/*` - 优先级测试失败
+4. `template_vars` - 部分模板变量不工作 (reqHeaders, reqCookies, 转义符号)
+5. `request_modify/cookies.txt` / `headers.txt` - 请求修改问题
+6. `response_modify/*` - 响应修改问题
+7. `combination/*` - 组合规则问题
+
+### 中优先级 (扩展功能)
 
 1. `pac` - PAC 自动配置
 2. `headerReplace` - 头部替换
@@ -271,17 +289,14 @@
 6. 括号内容值来源 `({"ok":true})`
 7. 远程 URL 值来源
 
-### 中优先级 (扩展功能)
+### 低优先级 (特殊场景)
 
 1. `trailers` - HTTP Trailers
 2. `plugin` - 插件系统
 3. `rulesFile` - 规则文件引用
 4. `resScript` - 响应脚本
 5. `cipher/tlsOptions` - TLS 选项
-
-### 低优先级 (特殊场景)
-
-1. `log` - 日志协议
-2. `weinre` - 调试工具
-3. `sniCallback` - SNI 回调
-4. `frameScript` - Frame 脚本
+6. `log` - 日志协议
+7. `weinre` - 调试工具
+8. `sniCallback` - SNI 回调
+9. `frameScript` - Frame 脚本

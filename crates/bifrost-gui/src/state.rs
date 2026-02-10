@@ -85,6 +85,12 @@ pub struct WhitelistEntry {
     pub ip_or_cidr: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValueEntry {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub proxy_status: ProxyStatus,
@@ -92,6 +98,7 @@ pub struct AppState {
     pub metrics: MetricsSnapshot,
     pub traffic: VecDeque<TrafficEntry>,
     pub rules: Vec<RuleEntry>,
+    pub values: Vec<ValueEntry>,
     pub whitelist: Vec<WhitelistEntry>,
     pub error_message: Option<String>,
     pub ca_installed: Option<bool>,

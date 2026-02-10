@@ -11,6 +11,7 @@ name = "bifrost-gui"
 path = "src/main.rs"
 
 [dependencies]
+bifrost-admin = { path = "../bifrost-admin" }
 bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
 bifrost-tls = { path = "../bifrost-tls" }

@@ -2,7 +2,8 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 
 use crate::handlers::{
     cors_preflight, error_response, metrics::handle_metrics, rules::handle_rules,
-    system::handle_system, traffic::handle_traffic, whitelist::handle_whitelist_request, BoxBody,
+    system::handle_system, traffic::handle_traffic, values::handle_values,
+    whitelist::handle_whitelist_request, BoxBody,
 };
 use crate::state::SharedAdminState;
 use crate::static_files::serve_static_file;
@@ -43,6 +44,9 @@ impl AdminRouter {
             handle_metrics(req, state, path).await
         } else if path.starts_with("/api/system") {
             handle_system(req, state, path).await
+        } else if path.starts_with("/api/values") {
+            let path_suffix = path.strip_prefix("/api/values").unwrap_or("");
+            handle_values(req, state, path_suffix).await
         } else if path.starts_with("/api/whitelist") {
             if let Some(access_control) = &state.access_control {
                 handle_whitelist_request(req, access_control.clone(), path).await

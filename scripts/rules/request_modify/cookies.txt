@@ -1,11 +1,12 @@
 # R-07: 请求 Cookie 修改测试
 # 需求: 代理应能添加、修改请求 Cookie
 
-# 添加 Cookie
-req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_cookies}
+# 添加 Cookie (每个 cookie 使用单独的代码块)
+req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_session}
+req-cookie-add.local reqCookies://{add_user}
 
 # 修改 Cookie (覆盖同名 Cookie)
-req-cookie-modify.local 127.0.0.1:3000 reqCookies://{modify_cookies}
+req-cookie-modify.local 127.0.0.1:3000 reqCookies://{modify_session}
 
 # 测试用例:
 # 1. 请求 http://req-cookie-add.local/test
@@ -13,11 +14,14 @@ req-cookie-modify.local 127.0.0.1:3000 reqCookies://{modify_cookies}
 # 2. 请求 http://req-cookie-modify.local/test (带 session=old)
 #    后端应收到 Cookie: session=new_session
 
-```add_cookies
+```add_session
 session=abc123
+```
+
+```add_user
 user=test
 ```
 
-```modify_cookies
+```modify_session
 session=new_session
 ```

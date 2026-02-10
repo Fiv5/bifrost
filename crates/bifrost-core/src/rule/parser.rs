@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::Rule;
+use super::ValueStore;
 
 const INCLUDE_FILTER_PREFIX: &str = "includeFilter://";
 const EXCLUDE_FILTER_PREFIX: &str = "excludeFilter://";
@@ -41,8 +42,24 @@ impl RuleParser {
         Self { values }
     }
 
+    pub fn from_store(store: &dyn ValueStore) -> Self {
+        Self {
+            values: store.as_hashmap(),
+        }
+    }
+
     pub fn set_value(&mut self, key: String, value: String) {
         self.values.insert(key, value);
+    }
+
+    pub fn merge_from_store(&mut self, store: &dyn ValueStore) {
+        for (k, v) in store.list() {
+            self.values.entry(k).or_insert(v);
+        }
+    }
+
+    pub fn values(&self) -> &HashMap<String, String> {
+        &self.values
     }
 
     pub fn parse_line(&self, line: &str) -> Result<Vec<Rule>> {
@@ -115,6 +132,9 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
 }
 
 fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Result<Vec<Rule>> {
+    let mut merged_values = values.clone();
+    let text = extract_markdown_value_blocks(text, &mut merged_values);
+
     let mut rules = Vec::new();
     let mut current_line = String::new();
     let mut start_line_num = 1;
@@ -130,7 +150,7 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
             if trimmed == "`" {
                 in_line_block = false;
                 let block_line = line_block_content.trim().replace('\n', " ");
-                let parsed = parse_line_with_values(&block_line, values)?;
+                let parsed = parse_line_with_values(&block_line, &merged_values)?;
                 for mut rule in parsed {
                     rule.line = Some(line_block_start);
                     rules.push(rule);
@@ -165,14 +185,14 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
 
         if !current_line.is_empty() {
             current_line.push_str(trimmed);
-            let parsed = parse_line_with_values(&current_line, values)?;
+            let parsed = parse_line_with_values(&current_line, &merged_values)?;
             for mut rule in parsed {
                 rule.line = Some(start_line_num);
                 rules.push(rule);
             }
             current_line.clear();
         } else {
-            let parsed = parse_line_with_values(trimmed, values)?;
+            let parsed = parse_line_with_values(trimmed, &merged_values)?;
             for mut rule in parsed {
                 rule.line = Some(line_num);
                 rules.push(rule);
@@ -181,7 +201,7 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
     }
 
     if !current_line.is_empty() {
-        let parsed = parse_line_with_values(&current_line, values)?;
+        let parsed = parse_line_with_values(&current_line, &merged_values)?;
         for mut rule in parsed {
             rule.line = Some(start_line_num);
             rules.push(rule);
@@ -190,7 +210,7 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
 
     if in_line_block && !line_block_content.is_empty() {
         let block_line = line_block_content.trim().replace('\n', " ");
-        let parsed = parse_line_with_values(&block_line, values)?;
+        let parsed = parse_line_with_values(&block_line, &merged_values)?;
         for mut rule in parsed {
             rule.line = Some(line_block_start);
             rules.push(rule);
@@ -198,6 +218,117 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
     }
 
     Ok(rules)
+}
+
+fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String>) -> String {
+    if !text.contains("```") {
+        return text.to_string();
+    }
+
+    let mut result = String::new();
+    let mut chars = text.chars().peekable();
+    let mut line_start = true;
+
+    while let Some(c) = chars.next() {
+        if line_start && c == '`' {
+            let mut backtick_count = 1;
+            while chars.peek() == Some(&'`') {
+                chars.next();
+                backtick_count += 1;
+            }
+
+            if backtick_count >= 3 {
+                while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
+                    chars.next();
+                }
+
+                let mut key = String::new();
+                while let Some(&ch) = chars.peek() {
+                    if ch == '\n' || ch == '\r' {
+                        break;
+                    }
+                    if ch.is_whitespace() {
+                        break;
+                    }
+                    key.push(chars.next().unwrap());
+                }
+
+                while let Some(&ch) = chars.peek() {
+                    if ch == '\n' || ch == '\r' {
+                        break;
+                    }
+                    chars.next();
+                }
+                if chars.peek() == Some(&'\r') {
+                    chars.next();
+                }
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+
+                let mut content = String::new();
+                let closing_pattern: String = "`".repeat(backtick_count);
+
+                loop {
+                    let mut line = String::new();
+                    let mut at_eol = false;
+
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '\n' || ch == '\r' {
+                            at_eol = true;
+                            break;
+                        }
+                        line.push(chars.next().unwrap());
+                    }
+
+                    let trimmed = line.trim();
+                    if trimmed == closing_pattern || trimmed.starts_with(&closing_pattern) {
+                        if chars.peek() == Some(&'\r') {
+                            chars.next();
+                        }
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                        break;
+                    }
+
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(&line);
+
+                    if at_eol {
+                        if chars.peek() == Some(&'\r') {
+                            chars.next();
+                        }
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                    }
+
+                    if chars.peek().is_none() {
+                        break;
+                    }
+                }
+
+                if !key.is_empty() {
+                    values.insert(key, content);
+                }
+
+                line_start = true;
+                continue;
+            } else {
+                for _ in 0..backtick_count {
+                    result.push('`');
+                }
+            }
+        }
+
+        result.push(c);
+        line_start = c == '\n';
+    }
+
+    result
 }
 
 fn expand_inline_values(line: &str, values: &HashMap<String, String>) -> String {
@@ -219,7 +350,12 @@ fn expand_inline_values(line: &str, values: &HashMap<String, String>) -> String 
             let key = caps.get(1).unwrap().as_str();
 
             if let Some(value) = values.get(key) {
-                result = result.replacen(full_match, value, 1);
+                let replacement = if value.contains(' ') || value.contains('\t') {
+                    format!("`{}`", value)
+                } else {
+                    value.clone()
+                };
+                result = result.replacen(full_match, &replacement, 1);
                 changed = true;
             }
         }
@@ -842,5 +978,116 @@ lineProps://important
 
         assert!(!rules1[0].is_disabled());
         assert!(rules2[0].is_disabled());
+    }
+
+    #[test]
+    fn test_extract_markdown_value_blocks() {
+        let mut values = HashMap::new();
+        let text = r#"
+# Comment
+example.com resBody://{my_response}
+
+``` my_response
+{"status":"ok"}
+```
+"#;
+        let result = extract_markdown_value_blocks(text, &mut values);
+        assert_eq!(
+            values.get("my_response"),
+            Some(&r#"{"status":"ok"}"#.to_string())
+        );
+        assert!(!result.contains("```"));
+    }
+
+    #[test]
+    fn test_extract_markdown_value_blocks_multiple() {
+        let mut values = HashMap::new();
+        let text = r#"
+example.com resBody://{response1}
+another.com resBody://{response2}
+
+``` response1
+content1
+```
+
+``` response2
+content2
+```
+"#;
+        let result = extract_markdown_value_blocks(text, &mut values);
+        assert_eq!(values.get("response1"), Some(&"content1".to_string()));
+        assert_eq!(values.get("response2"), Some(&"content2".to_string()));
+        assert!(!result.contains("```"));
+    }
+
+    #[test]
+    fn test_extract_markdown_value_blocks_multiline() {
+        let mut values = HashMap::new();
+        let text = r#"
+example.com resBody://{json_data}
+
+``` json_data
+{
+  "name": "test",
+  "value": 123
+}
+```
+"#;
+        let result = extract_markdown_value_blocks(text, &mut values);
+        let expected = r#"{
+  "name": "test",
+  "value": 123
+}"#;
+        assert_eq!(values.get("json_data"), Some(&expected.to_string()));
+        assert!(!result.contains("```"));
+    }
+
+    #[test]
+    fn test_parse_rules_with_markdown_value_blocks() {
+        let text = r#"
+example.com resBody://{custom_response}
+
+``` custom_response
+{"custom":"response"}
+```
+"#;
+        let rules = parse_rules(text).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].value, r#"{"custom":"response"}"#);
+    }
+
+    #[test]
+    fn test_parse_rules_with_multiple_markdown_blocks() {
+        let text = r#"
+test1.local resBody://{body1}
+test2.local resBody://{body2}
+
+``` body1
+first content
+```
+
+``` body2
+second content
+```
+"#;
+        let rules = parse_rules(text).unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].value, "first content");
+        assert_eq!(rules[1].value, "second content");
+    }
+
+    #[test]
+    fn test_extract_markdown_blocks_overwrite_existing() {
+        let mut values = HashMap::new();
+        values.insert("existing".to_string(), "original".to_string());
+
+        let text = r#"
+``` existing
+new_value
+```
+"#;
+        extract_markdown_value_blocks(text, &mut values);
+        assert_eq!(values.get("existing"), Some(&"new_value".to_string()));
     }
 }

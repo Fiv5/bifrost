@@ -60,6 +60,14 @@ pub async fn handle_whitelist_request(
         (&Method::DELETE, "/api/whitelist/temporary") => {
             handle_remove_temporary(req, access_control).await
         }
+        (&Method::GET, "/api/whitelist/pending") => handle_get_pending(access_control).await,
+        (&Method::POST, "/api/whitelist/pending/approve") => {
+            handle_approve_pending(req, access_control).await
+        }
+        (&Method::POST, "/api/whitelist/pending/reject") => {
+            handle_reject_pending(req, access_control).await
+        }
+        (&Method::DELETE, "/api/whitelist/pending") => handle_clear_pending(access_control).await,
         _ => method_not_allowed(),
     }
 }
@@ -316,4 +324,118 @@ async fn handle_remove_temporary(
             &format!("{} not found in temporary whitelist", ip),
         )
     }
+}
+
+async fn handle_get_pending(access_control: Arc<RwLock<ClientAccessControl>>) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let pending = ac.get_pending_authorizations();
+    json_response(&pending)
+}
+
+async fn handle_approve_pending(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: TemporaryWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    let ac = access_control.read().await;
+    if ac.approve_pending(&ip) {
+        info!("Approved pending authorization for {} via API", ip);
+        let response = serde_json::json!({
+            "success": true,
+            "message": format!("Approved {} and added to temporary whitelist", ip)
+        });
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(full_body(response.to_string()))
+            .unwrap()
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("{} not found in pending authorizations", ip),
+        )
+    }
+}
+
+async fn handle_reject_pending(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: TemporaryWhitelistRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let ip: IpAddr = match request.ip.parse() {
+        Ok(ip) => ip,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Invalid IP address: {}", e),
+            )
+        }
+    };
+
+    let ac = access_control.read().await;
+    if ac.reject_pending(&ip) {
+        info!("Rejected pending authorization for {} via API", ip);
+        let response = serde_json::json!({
+            "success": true,
+            "message": format!("Rejected {} and added to session denied list", ip)
+        });
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(full_body(response.to_string()))
+            .unwrap()
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("{} not found in pending authorizations", ip),
+        )
+    }
+}
+
+async fn handle_clear_pending(
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    ac.clear_pending_authorizations();
+    info!("Cleared all pending authorizations via API");
+    let response = serde_json::json!({
+        "success": true,
+        "message": "Cleared all pending authorizations"
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(full_body(response.to_string()))
+        .unwrap()
 }

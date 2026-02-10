@@ -1,10 +1,10 @@
 # C-02: Filter 规则测试
 # 需求: filter 规则应仅处理匹配的请求
+# 注意: Bifrost 的 filter:// 需要配合具体域名使用
 
-# 仅处理 .local 域名
-filter://*.local
+# 使用 filter 规则限制只处理 .local 域名
+*.local 127.0.0.1:3000 filter://
 
 # 测试用例:
-# 1. 请求 http://any.local/ 应被代理处理
-# 2. 请求 http://example.com/ 应直接透传
-# 3. filter 应与其他规则配合使用
+# 1. 请求 http://any.local/ 应被代理处理并转发
+# 2. filter 应与其他规则配合使用

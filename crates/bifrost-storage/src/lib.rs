@@ -8,4 +8,4 @@ pub use config::{AccessConfig, BifrostConfig, TrafficConfig};
 pub use data_dir::{data_dir, set_data_dir};
 pub use rules::{RuleFile, RulesStorage};
 pub use state::{RuntimeState, StateManager};
-pub use values::ValuesStorage;
+pub use values::{ValueEntry, ValuesStorage};

@@ -538,6 +538,7 @@ dependencies = [
  "dirs 5.0.1",
  "ipnet",
  "nix",
+ "parking_lot",
  "tokio",
  "toml",
  "tracing",
@@ -553,6 +554,7 @@ dependencies = [
  "once_cell",
  "rand 0.8.5",
  "regex",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
@@ -589,6 +591,7 @@ dependencies = [
 name = "bifrost-gui"
 version = "0.1.0"
 dependencies = [
+ "bifrost-admin",
  "bifrost-core",
  "bifrost-proxy",
  "bifrost-storage",

@@ -5,7 +5,9 @@ pub mod matcher;
 pub mod protocol;
 pub mod rule;
 
-pub use access_control::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
+pub use access_control::{
+    AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
+};
 pub use error::{BifrostError, Result};
 pub use logging::init_logging;
 pub use matcher::{
@@ -14,6 +16,7 @@ pub use matcher::{
 };
 pub use protocol::*;
 pub use rule::{
-    parse_line, parse_rules, RequestContext, RequestContextBuilder, ResolvedRule, ResolvedRules,
-    Rule, RuleGroup, RuleGroupManager, RuleParser, RulesResolver, TemplateEngine,
+    create_shared_store, parse_line, parse_rules, CompositeValueStore, MemoryValueStore,
+    RequestContext, RequestContextBuilder, ResolvedRule, ResolvedRules, Rule, RuleGroup,
+    RuleGroupManager, RuleParser, RulesResolver, SharedValueStore, TemplateEngine, ValueStore,
 };

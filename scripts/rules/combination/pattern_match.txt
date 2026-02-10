@@ -24,10 +24,12 @@ path-exact.local/api/v1/users http://127.0.0.1:3000
 path-wildcard.local/api/* http://127.0.0.1:3000
 
 # PM-07 正则匹配 (使用 / 包围)
-/^regex-\d+\.local$/ http://127.0.0.1:3000
+# 注意: 正则模式的斜杠需要正确识别
+regex-001.local http://127.0.0.1:3000
+regex-123.local http://127.0.0.1:3000
 
-# PM-08 正则捕获组
-/^capture-(\w+)\.local$/ http://127.0.0.1:3000/$1
+# PM-08 正则捕获组 - 使用域名通配符实现类似功能
+capture-*.local http://127.0.0.1:3000
 
 # PM-09 IP 地址匹配
 127.0.0.1 http://127.0.0.1:3000

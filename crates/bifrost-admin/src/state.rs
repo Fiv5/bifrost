@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use bifrost_core::ClientAccessControl;
-use bifrost_storage::RulesStorage;
+use bifrost_storage::{RulesStorage, ValuesStorage};
+use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
 use crate::body_store::SharedBodyStore;
@@ -9,11 +10,13 @@ use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
+pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
 
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
+    pub values_storage: Option<SharedValuesStorage>,
     pub access_control: Option<SharedAccessControl>,
     pub body_store: Option<SharedBodyStore>,
     pub start_time: u64,
@@ -26,6 +29,7 @@ impl AdminState {
             traffic_recorder: Arc::new(TrafficRecorder::default()),
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
+            values_storage: None,
             access_control: None,
             body_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
@@ -35,6 +39,11 @@ impl AdminState {
 
     pub fn with_rules_storage(mut self, storage: RulesStorage) -> Self {
         self.rules_storage = storage;
+        self
+    }
+
+    pub fn with_values_storage(mut self, storage: ValuesStorage) -> Self {
+        self.values_storage = Some(Arc::new(ParkingRwLock::new(storage)));
         self
     }
 

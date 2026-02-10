@@ -1,12 +1,16 @@
 # C-01: Ignore 规则测试
 # 需求: ignore 规则应使请求绕过代理处理
+# 注意: Bifrost 的 ignore:// 需要域名在前
 
 # 忽略特定域名
-ignore://ignore-this.local
+ignore-this.local ignore://
 
 # 忽略特定路径
-ignore://*/health
-ignore://*/metrics
+*.local/health ignore://
+*.local/metrics ignore://
+
+# 提供一个可测试的正常转发规则
+normal.local 127.0.0.1:3000
 
 # 测试用例:
 # 1. 请求 http://ignore-this.local/ 应直接透传，不经过规则处理

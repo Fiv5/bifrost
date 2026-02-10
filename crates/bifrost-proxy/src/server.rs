@@ -274,9 +274,13 @@ impl ProxyServer {
                     continue;
                 }
                 AccessDecision::Prompt(ip) => {
+                    {
+                        let access_control = self.access_control.read().await;
+                        access_control.add_pending_authorization(ip);
+                    }
                     warn!(
-                        "Non-whitelisted client {} requires confirmation. \
-                        Use `bifrost whitelist add {}` to allow, or set --access-mode=allow_all",
+                        "Non-whitelisted client {} added to pending authorization. \
+                        Approve via admin UI or use `bifrost whitelist add {}`",
                         ip, ip
                     );
                     continue;

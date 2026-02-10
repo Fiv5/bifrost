@@ -3,6 +3,7 @@ mod rules;
 mod settings;
 mod sidebar;
 mod traffic;
+mod values;
 mod whitelist;
 
 pub use dashboard::DashboardPanel;
@@ -10,14 +11,17 @@ pub use rules::RulesPanel;
 pub use settings::SettingsPanel;
 pub use sidebar::Sidebar;
 pub use traffic::TrafficPanel;
+pub use values::ValuesPanel;
 pub use whitelist::WhitelistPanel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
 pub enum Panel {
     #[default]
     Dashboard,
     Traffic,
     Rules,
+    Values,
     Whitelist,
     Settings,
 }
@@ -28,6 +32,7 @@ impl Panel {
             Panel::Dashboard => "Dashboard",
             Panel::Traffic => "Traffic",
             Panel::Rules => "Rules",
+            Panel::Values => "Values",
             Panel::Whitelist => "Whitelist",
             Panel::Settings => "Settings",
         }
@@ -38,6 +43,7 @@ impl Panel {
             Panel::Dashboard => "📊",
             Panel::Traffic => "📡",
             Panel::Rules => "📋",
+            Panel::Values => "💾",
             Panel::Whitelist => "🔒",
             Panel::Settings => "⚙️",
         }

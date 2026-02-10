@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client';
-import type { WhitelistStatus, AccessMode } from '../types';
+import type { WhitelistStatus, AccessMode, PendingAuth } from '../types';
 
 export async function getWhitelistStatus(): Promise<WhitelistStatus> {
   return get<WhitelistStatus>('/whitelist');
@@ -35,4 +35,20 @@ export async function addTemporary(ip: string): Promise<{ success: boolean; mess
 
 export async function removeTemporary(ip: string): Promise<{ success: boolean; message: string }> {
   return del('/whitelist/temporary', { data: { ip } });
+}
+
+export async function getPendingAuthorizations(): Promise<PendingAuth[]> {
+  return get<PendingAuth[]>('/whitelist/pending');
+}
+
+export async function approvePending(ip: string): Promise<{ success: boolean; message: string }> {
+  return post('/whitelist/pending/approve', { ip });
+}
+
+export async function rejectPending(ip: string): Promise<{ success: boolean; message: string }> {
+  return post('/whitelist/pending/reject', { ip });
+}
+
+export async function clearPendingAuthorizations(): Promise<{ success: boolean; message: string }> {
+  return del('/whitelist/pending');
 }

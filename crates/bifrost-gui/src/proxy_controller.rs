@@ -2,23 +2,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use bifrost_admin::{AdminState, BodyStore};
 use bifrost_core::{
-    parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
+    parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver, ValueStore,
 };
 use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
-use bifrost_storage::RulesStorage;
+use bifrost_storage::{RulesStorage, ValuesStorage};
 use bifrost_tls::{
     generate_root_ca, load_root_ca, save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator,
     SniResolver,
 };
 use chrono::Local;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock as ParkingRwLock};
 use tracing::{error, info};
 
-use crate::state::{AppState, ProxySettings, ProxyStatus, RuleEntry};
+use crate::state::{AppState, ProxySettings, ProxyStatus, RuleEntry, ValueEntry};
 
 struct RulesResolverAdapter {
     inner: CoreRulesResolver,
@@ -207,6 +208,37 @@ impl ProxyController {
             .set_enabled(name, enabled)
             .map_err(|e| e.to_string())
     }
+
+    pub fn load_values(&self) -> Vec<ValueEntry> {
+        let storage = match ValuesStorage::new() {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        match storage.list_entries() {
+            Ok(entries) => entries
+                .into_iter()
+                .map(|e| ValueEntry {
+                    name: e.name,
+                    value: e.value,
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    pub fn save_value(&self, entry: &ValueEntry) -> Result<(), String> {
+        let mut storage = ValuesStorage::new().map_err(|e| e.to_string())?;
+        storage
+            .set_value(&entry.name, &entry.value)
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn delete_value(&self, name: &str) -> Result<(), String> {
+        let mut storage = ValuesStorage::new().map_err(|e| e.to_string())?;
+        storage.remove_value(name).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 async fn run_proxy_server(
@@ -234,15 +266,35 @@ async fn run_proxy_server(
     let tls_config = load_tls_config(&proxy_config)?;
 
     let rules = load_all_rules()?;
-    let values = load_values_from_dir();
+
+    let values_storage = ValuesStorage::new().ok();
+    let values = values_storage
+        .as_ref()
+        .map(|s| s.as_hashmap())
+        .unwrap_or_default();
 
     let resolver = Arc::new(RulesResolverAdapter {
         inner: CoreRulesResolver::new(rules).with_values(values),
     });
 
+    let body_temp_dir = get_bifrost_dir()
+        .map(|p| p.join("body_cache"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_body_cache"));
+    let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
+        body_temp_dir,
+        64 * 1024,
+        7,
+    )));
+
+    let mut admin_state = AdminState::new(settings.port).with_body_store(body_store);
+    if let Some(vs) = values_storage {
+        admin_state = admin_state.with_values_storage(vs);
+    }
+
     let server = ProxyServer::new(proxy_config)
         .with_tls_config(tls_config)
-        .with_rules(resolver);
+        .with_rules(resolver)
+        .with_admin_state(admin_state);
 
     info!(
         "GUI: Proxy server starting on {}:{}",
@@ -317,32 +369,4 @@ fn load_all_rules() -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync
     }
 
     Ok(all_rules)
-}
-
-fn load_values_from_dir() -> HashMap<String, String> {
-    let mut values = HashMap::new();
-
-    let values_dir = match get_bifrost_dir() {
-        Ok(d) => d.join("values"),
-        Err(_) => return values,
-    };
-
-    if !values_dir.exists() {
-        return values;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(&values_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        values.insert(name.to_string(), content.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    values
 }

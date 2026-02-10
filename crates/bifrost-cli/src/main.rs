@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bifrost_admin::{start_metrics_collector_task, AdminState};
+use bifrost_admin::{start_metrics_collector_task, AdminState, BodyStore};
 use bifrost_core::{
     init_logging, parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
 };
@@ -10,13 +10,14 @@ use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
-use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager};
+use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager, ValuesStorage};
 use bifrost_tls::{
     generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca, parse_cert_info,
     save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator, SniResolver,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select};
+use parking_lot::RwLock as ParkingRwLock;
 use tracing::info;
 
 #[derive(Parser)]
@@ -99,6 +100,11 @@ enum Commands {
         #[command(subcommand)]
         action: WhitelistCommands,
     },
+    #[command(about = "Manage values for rule variable expansion")]
+    Value {
+        #[command(subcommand)]
+        action: ValueCommands,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -173,6 +179,34 @@ enum WhitelistCommands {
     },
     #[command(about = "Show current access control settings")]
     Status,
+}
+
+#[derive(Subcommand, Clone)]
+enum ValueCommands {
+    #[command(about = "List all values")]
+    List,
+    #[command(about = "Get a value by name")]
+    Get {
+        #[arg(help = "Value name")]
+        name: String,
+    },
+    #[command(about = "Set a value")]
+    Set {
+        #[arg(help = "Value name")]
+        name: String,
+        #[arg(help = "Value content")]
+        value: String,
+    },
+    #[command(about = "Delete a value")]
+    Delete {
+        #[arg(help = "Value name")]
+        name: String,
+    },
+    #[command(about = "Import values from file")]
+    Import {
+        #[arg(help = "File path (supports .txt, .kv, .json)")]
+        file: PathBuf,
+    },
 }
 
 fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
@@ -259,6 +293,7 @@ fn main() {
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
         Some(Commands::Whitelist { action }) => handle_whitelist_command(action),
+        Some(Commands::Value { action }) => handle_value_command(action),
         None => run_start(
             &cli,
             false,
@@ -511,29 +546,6 @@ fn parse_cli_rules(
     Ok(all_rules)
 }
 
-fn load_values_from_dir(values_dir: &std::path::Path) -> HashMap<String, String> {
-    let mut values = HashMap::new();
-
-    if !values_dir.exists() {
-        return values;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(values_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        values.insert(name.to_string(), content.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    values
-}
-
 struct RulesResolverAdapter {
     inner: CoreRulesResolver,
 }
@@ -575,14 +587,28 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::ReqHeaders => {
                     if let Some(headers) = parse_header_value(value) {
                         for (k, v) in headers {
-                            result.req_headers.push((k, v));
+                            let key_lower = k.to_lowercase();
+                            if !result
+                                .req_headers
+                                .iter()
+                                .any(|(existing, _)| existing.to_lowercase() == key_lower)
+                            {
+                                result.req_headers.push((k, v));
+                            }
                         }
                     }
                 }
                 Protocol::ResHeaders => {
                     if let Some(headers) = parse_header_value(value) {
                         for (k, v) in headers {
-                            result.res_headers.push((k, v));
+                            let key_lower = k.to_lowercase();
+                            if !result
+                                .res_headers
+                                .iter()
+                                .any(|(existing, _)| existing.to_lowercase() == key_lower)
+                            {
+                                result.res_headers.push((k, v));
+                            }
                         }
                     }
                 }
@@ -705,17 +731,38 @@ fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Re
     })?;
 
     rt.block_on(async {
-        let admin_state = AdminState::new(config.port);
+        let body_temp_dir = get_bifrost_dir()
+            .map(|p| p.join("body_cache"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_body_cache"));
+        let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
+            body_temp_dir,
+            64 * 1024,
+            7,
+        )));
+
+        let values_dir = get_bifrost_dir()
+            .map(|p| p.join(".bifrost").join("values"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
+        let values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
+        let values = values_storage
+            .as_ref()
+            .map(|s| {
+                use bifrost_core::ValueStore;
+                s.as_hashmap()
+            })
+            .unwrap_or_default();
+
+        let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
+        if let Some(vs) = values_storage {
+            admin_state = admin_state.with_values_storage(vs);
+        }
+
         let metrics_collector = admin_state.metrics_collector.clone();
         let mut server = ProxyServer::new(config)
             .with_tls_config(tls_config)
             .with_admin_state(admin_state);
 
         if !cli_rules.is_empty() {
-            let values_dir = get_bifrost_dir()
-                .map(|p| p.join("values"))
-                .unwrap_or_default();
-            let values = load_values_from_dir(&values_dir);
             if !values.is_empty() {
                 println!(
                     "Loaded {} values from {}",
@@ -808,15 +855,34 @@ fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result
             })?;
 
             rt.block_on(async {
-                let admin_state = AdminState::new(config.port);
+                let body_temp_dir = bifrost_dir.join("body_cache");
+                let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
+                    body_temp_dir,
+                    64 * 1024,
+                    7,
+                )));
+
+                let values_dir = bifrost_dir.join(".bifrost").join("values");
+                let values_storage = ValuesStorage::with_dir(values_dir).ok();
+                let values = values_storage
+                    .as_ref()
+                    .map(|s| {
+                        use bifrost_core::ValueStore;
+                        s.as_hashmap()
+                    })
+                    .unwrap_or_default();
+
+                let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
+                if let Some(vs) = values_storage {
+                    admin_state = admin_state.with_values_storage(vs);
+                }
+
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let mut server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
                     .with_admin_state(admin_state);
 
                 if !cli_rules.is_empty() {
-                    let values_dir = bifrost_dir.join("values");
-                    let values = load_values_from_dir(&values_dir);
                     let resolver = Arc::new(RulesResolverAdapter {
                         inner: CoreRulesResolver::new(cli_rules).with_values(values),
                     });
@@ -1419,6 +1485,73 @@ fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Result<(
             println!("  whitelist   - Allow localhost + whitelisted IPs/CIDRs");
             println!("  interactive - Prompt for confirmation on unknown IPs");
             println!("  allow_all   - Allow all connections (not recommended)");
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_value_command(action: ValueCommands) -> bifrost_core::Result<()> {
+    let values_dir = bifrost_storage::data_dir().join(".bifrost").join("values");
+    let mut storage = ValuesStorage::with_dir(values_dir.clone())?;
+
+    match action {
+        ValueCommands::List => {
+            let entries = storage.list_entries()?;
+            if entries.is_empty() {
+                println!("No values defined.");
+                println!();
+                println!("Values directory: {}", values_dir.display());
+            } else {
+                println!("Values ({}):", entries.len());
+                println!("====================");
+                for entry in entries {
+                    let preview = if entry.value.len() > 50 {
+                        format!("{}...", &entry.value[..47])
+                    } else {
+                        entry.value.clone()
+                    };
+                    let preview = preview.replace('\n', "\\n");
+                    println!("  {} = {}", entry.name, preview);
+                }
+                println!();
+                println!("Values directory: {}", values_dir.display());
+            }
+        }
+        ValueCommands::Get { name } => {
+            if let Some(value) = storage.get_value(&name) {
+                println!("{}", value);
+            } else {
+                return Err(bifrost_core::BifrostError::NotFound(format!(
+                    "Value '{}' not found",
+                    name
+                )));
+            }
+        }
+        ValueCommands::Set { name, value } => {
+            storage.set_value(&name, &value)?;
+            println!("Value '{}' has been set.", name);
+        }
+        ValueCommands::Delete { name } => {
+            if storage.exists(&name) {
+                storage.remove_value(&name)?;
+                println!("Value '{}' has been deleted.", name);
+            } else {
+                return Err(bifrost_core::BifrostError::NotFound(format!(
+                    "Value '{}' not found",
+                    name
+                )));
+            }
+        }
+        ValueCommands::Import { file } => {
+            if !file.exists() {
+                return Err(bifrost_core::BifrostError::NotFound(format!(
+                    "File not found: {}",
+                    file.display()
+                )));
+            }
+            let count = storage.load_from_file(&file)?;
+            println!("Imported {} value(s) from '{}'.", count, file.display());
         }
     }
 

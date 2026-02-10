@@ -1,7 +1,7 @@
-# 测试引用值格式
+# 测试行尾空格处理和内联 header 语法
 
-# 正确示例 - 值内无空格
-192.168.1.100 resHeaders://{x-matched-by:exact-ip}
+# 正确示例 - 内联 header 语法使用 backticks
+trailing-space-1.local http://127.0.0.1:3000 resHeaders://`x-matched-by:exact-ip`
 
 # 另一个正确示例
-192.168.1.200 resHeaders://{x-custom-header:value}
+trailing-space-2.local http://127.0.0.1:3000 resHeaders://`x-custom-header:value`

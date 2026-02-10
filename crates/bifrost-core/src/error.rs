@@ -11,6 +11,7 @@ pub enum BifrostError {
     Io(std::io::Error),
     Network(String),
     NotFound(String),
+    AlreadyExists(String),
     Storage(String),
 }
 
@@ -26,6 +27,7 @@ impl fmt::Display for BifrostError {
             BifrostError::Io(err) => write!(f, "IO error: {}", err),
             BifrostError::Network(msg) => write!(f, "Network error: {}", msg),
             BifrostError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            BifrostError::AlreadyExists(msg) => write!(f, "Already exists: {}", msg),
             BifrostError::Storage(msg) => write!(f, "Storage error: {}", msg),
         }
     }

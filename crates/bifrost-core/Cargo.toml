@@ -19,3 +19,4 @@ url.workspace = true
 urlencoding.workspace = true
 chrono.workspace = true
 once_cell.workspace = true
+serde.workspace = true

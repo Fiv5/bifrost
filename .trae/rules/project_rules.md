@@ -44,3 +44,12 @@ cargo test --all-features
 ```bash
 cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo build --all-targets --all-features && cargo test --all-features
 ```
+
+## 启动服务的要求
+
+必须配置临时数据目录，避免启动服务时覆盖了正在运行的服务数据
+例如：
+
+```bash
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --skip-cert-check --unsafe-ssl
+```

@@ -2,6 +2,7 @@ pub mod metrics;
 pub mod rules;
 pub mod system;
 pub mod traffic;
+pub mod values;
 pub mod whitelist;
 
 use bytes::Bytes;

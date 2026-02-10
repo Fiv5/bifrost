@@ -14,10 +14,10 @@ exact.priority-test.local 127.0.0.1:3000 resHeaders://{exact_match}
 #    响应应包含 X-Match: wildcard (通配符匹配)
 # 3. 精确匹配规则写在通配符后面也应优先匹配
 
-``` wildcard_match
+```wildcard_match
 X-Match: wildcard
 ```
 
-``` exact_match
+```exact_match
 X-Match: exact
 ```

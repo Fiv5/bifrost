@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use super::ValueStore;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueSource {
     Inline(String),
@@ -119,6 +121,27 @@ impl ValueSource {
             _ => HashMap::new(),
         }
     }
+
+    pub fn resolve(&self, store: &dyn ValueStore) -> Option<String> {
+        match self {
+            ValueSource::Inline(s) => Some(s.clone()),
+            ValueSource::InlineParams(params) => Some(
+                params
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join("&"),
+            ),
+            ValueSource::ParenContent(s) => Some(s.clone()),
+            ValueSource::ValueRef(var_name) => store.get(var_name),
+            ValueSource::FilePath(path) => std::fs::read_to_string(path).ok(),
+            ValueSource::RemoteUrl(_url) => None,
+        }
+    }
+
+    pub fn resolve_with_fallback(&self, store: &dyn ValueStore) -> String {
+        self.resolve(store).unwrap_or_else(|| self.get_raw_value())
+    }
 }
 
 fn parse_inline_params(value: &str) -> Vec<(String, String)> {
@@ -146,6 +169,10 @@ fn parse_inline_params(value: &str) -> Vec<(String, String)> {
 
 pub fn expand_value_ref(value_ref: &str, values: &HashMap<String, String>) -> Option<String> {
     values.get(value_ref).cloned()
+}
+
+pub fn expand_value_ref_from_store(value_ref: &str, store: &dyn ValueStore) -> Option<String> {
+    store.get(value_ref)
 }
 
 #[cfg(test)]
@@ -406,5 +433,56 @@ mod tests {
         let source = ValueSource::Inline("test".to_string());
         let debug_str = format!("{:?}", source);
         assert!(debug_str.contains("Inline"));
+    }
+
+    #[test]
+    fn test_resolve_inline() {
+        use super::super::MemoryValueStore;
+        let store = MemoryValueStore::new();
+        let source = ValueSource::Inline("test_value".to_string());
+        assert_eq!(source.resolve(&store), Some("test_value".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_paren_content() {
+        use super::super::MemoryValueStore;
+        let store = MemoryValueStore::new();
+        let source = ValueSource::ParenContent(r#"{"ok":true}"#.to_string());
+        assert_eq!(source.resolve(&store), Some(r#"{"ok":true}"#.to_string()));
+    }
+
+    #[test]
+    fn test_resolve_value_ref() {
+        use super::super::MemoryValueStore;
+        let mut store = MemoryValueStore::new();
+        store.set("myVar", "resolved_content".to_string());
+
+        let source = ValueSource::ValueRef("myVar".to_string());
+        assert_eq!(source.resolve(&store), Some("resolved_content".to_string()));
+
+        let source2 = ValueSource::ValueRef("unknown".to_string());
+        assert_eq!(source2.resolve(&store), None);
+    }
+
+    #[test]
+    fn test_resolve_with_fallback() {
+        use super::super::MemoryValueStore;
+        let store = MemoryValueStore::new();
+
+        let source = ValueSource::ValueRef("unknown".to_string());
+        assert_eq!(source.resolve_with_fallback(&store), "{unknown}");
+    }
+
+    #[test]
+    fn test_expand_value_ref_from_store() {
+        use super::super::MemoryValueStore;
+        let mut store = MemoryValueStore::new();
+        store.set("key", "value".to_string());
+
+        assert_eq!(
+            expand_value_ref_from_store("key", &store),
+            Some("value".to_string())
+        );
+        assert_eq!(expand_value_ref_from_store("missing", &store), None);
     }
 }

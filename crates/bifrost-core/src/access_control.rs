@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::RwLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ipnet::IpNet;
+use serde::Serialize;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,6 +48,13 @@ pub enum AccessDecision {
     Prompt(IpAddr),
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingAuth {
+    pub ip: String,
+    pub first_seen: u64,
+    pub attempt_count: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct AccessControlConfig {
     pub mode: AccessMode,
@@ -69,6 +78,7 @@ pub struct ClientAccessControl {
     allow_lan: bool,
     temporary_whitelist: RwLock<HashSet<IpAddr>>,
     session_denied: RwLock<HashSet<IpAddr>>,
+    pending_authorization: RwLock<Vec<(IpAddr, u64, u32)>>,
 }
 
 impl ClientAccessControl {
@@ -92,6 +102,7 @@ impl ClientAccessControl {
             allow_lan: config.allow_lan,
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
+            pending_authorization: RwLock::new(Vec::new()),
         }
     }
 
@@ -102,6 +113,7 @@ impl ClientAccessControl {
             allow_lan: false,
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
+            pending_authorization: RwLock::new(Vec::new()),
         }
     }
 
@@ -294,6 +306,75 @@ impl ClientAccessControl {
     pub fn set_allow_lan(&mut self, allow: bool) {
         self.allow_lan = allow;
         info!("Allow LAN set to: {}", allow);
+    }
+
+    pub fn add_pending_authorization(&self, ip: IpAddr) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut pending = self.pending_authorization.write().unwrap();
+
+        if let Some(entry) = pending.iter_mut().find(|(addr, _, _)| *addr == ip) {
+            entry.2 += 1;
+        } else {
+            pending.push((ip, now, 1));
+            info!("Added {} to pending authorization", ip);
+        }
+    }
+
+    pub fn get_pending_authorizations(&self) -> Vec<PendingAuth> {
+        let pending = self.pending_authorization.read().unwrap();
+        pending
+            .iter()
+            .map(|(ip, first_seen, count)| PendingAuth {
+                ip: ip.to_string(),
+                first_seen: *first_seen,
+                attempt_count: *count,
+            })
+            .collect()
+    }
+
+    pub fn pending_authorization_count(&self) -> usize {
+        let pending = self.pending_authorization.read().unwrap();
+        pending.len()
+    }
+
+    pub fn approve_pending(&self, ip: &IpAddr) -> bool {
+        let mut pending = self.pending_authorization.write().unwrap();
+        let original_len = pending.len();
+        pending.retain(|(addr, _, _)| addr != ip);
+
+        if pending.len() < original_len {
+            drop(pending);
+            self.add_temporary(*ip);
+            info!("Approved pending authorization for {}", ip);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reject_pending(&self, ip: &IpAddr) -> bool {
+        let mut pending = self.pending_authorization.write().unwrap();
+        let original_len = pending.len();
+        pending.retain(|(addr, _, _)| addr != ip);
+
+        if pending.len() < original_len {
+            drop(pending);
+            self.deny_session(*ip);
+            info!("Rejected pending authorization for {}", ip);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn clear_pending_authorizations(&self) {
+        let mut pending = self.pending_authorization.write().unwrap();
+        pending.clear();
+        info!("Cleared all pending authorizations");
     }
 }
 

@@ -37,11 +37,13 @@ usage() {
     echo "用法: $0 [选项] <规则文件>"
     echo ""
     echo "选项:"
-    echo "  -h, --help         显示帮助信息"
-    echo "  -p, --port PORT    指定代理端口 (默认: 8080)"
-    echo "  -l, --list         列出所有可用的规则文件"
-    echo "  --no-build         跳过编译步骤"
-    echo "  --keep-proxy       测试完成后保持代理运行"
+    echo "  -h, --help            显示帮助信息"
+    echo "  -p, --port PORT       指定代理端口 (默认: 8080)"
+    echo "  -d, --data-dir DIR    指定数据目录 (默认: .bifrost-test)"
+    echo "  -l, --list            列出所有可用的规则文件"
+    echo "  --no-build            跳过编译步骤"
+    echo "  --keep-proxy          测试完成后保持代理运行"
+    echo "  --skip-mock-servers   跳过 mock 服务器启动/停止 (用于并行测试)"
     echo ""
     echo "环境变量:"
     echo "  ECHO_HTTP_PORT     HTTP Echo 服务器端口 (默认: 3000)"
@@ -75,7 +77,9 @@ cleanup() {
         fi
     fi
 
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    if [[ "$SKIP_MOCK_SERVERS" != "true" ]]; then
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    fi
 }
 
 trap cleanup EXIT
@@ -180,6 +184,15 @@ TOML
 }
 
 start_echo_servers() {
+    if [[ "$SKIP_MOCK_SERVERS" == "true" ]]; then
+        if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+            return 0
+        else
+            echo -e "${RED}✗${NC} Mock 服务器未运行，但指定了 --skip-mock-servers"
+            exit 1
+        fi
+    fi
+
     header "启动 Echo 服务器"
 
     if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
@@ -1565,6 +1578,57 @@ extract_value() {
     echo "$protocols" | grep -o "${prefix}://[^[:space:]]*" | sed "s|${prefix}://||"
 }
 
+resolve_code_block_var() {
+    local value="$1"
+    local rule_file="$2"
+
+    if [[ ! "$value" =~ ^\{[a-zA-Z0-9_]+\}$ ]]; then
+        echo "$value"
+        return
+    fi
+
+    local var_name="${value:1}"
+    var_name="${var_name%\}}"
+
+    if [[ -z "$rule_file" ]] || [[ ! -f "$rule_file" ]]; then
+        echo "$value"
+        return
+    fi
+
+    local in_block=false
+    local block_name=""
+    local content=""
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^\`\`\`[[:space:]]*([a-zA-Z0-9_]+)[[:space:]]*$ ]]; then
+            in_block=true
+            block_name="${BASH_REMATCH[1]}"
+            content=""
+            continue
+        fi
+
+        if [[ "$line" == '```' ]] && [[ "$in_block" == true ]]; then
+            if [[ "$block_name" == "$var_name" ]]; then
+                echo "$content"
+                return
+            fi
+            in_block=false
+            block_name=""
+            continue
+        fi
+
+        if [[ "$in_block" == true ]]; then
+            if [[ -z "$content" ]]; then
+                content="$line"
+            else
+                content="$content"$'\n'"$line"
+            fi
+        fi
+    done < "$rule_file"
+
+    echo "$value"
+}
+
 extract_header_from_value() {
     local value="$1"
     value="${value#\`}"
@@ -1776,6 +1840,148 @@ run_priority_tests() {
     test_priority_important_vs_normal "a.test.imp-deep.local" "X-Deep" "deep-important"
 }
 
+run_priority_order_tests() {
+    header "执行规则顺序优先级测试 (先定义优先)"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-03 同一 pattern 多条规则: 第一条规则应生效${NC}"
+    echo "    请求: http://order-test.local/test"
+    echo "    期望: X-Match: first (第一条定义的规则生效)"
+
+    http_get "http://order-test.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "first" ]]; then
+        _log_pass "第一条规则生效: X-Match=first"
+    else
+        _log_fail "第一条规则应优先" "first" "${actual_value:-空}"
+    fi
+}
+
+run_priority_exact_vs_wildcard_tests() {
+    header "执行精确匹配 vs 通配符优先级测试"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-01a 精确匹配优先于通配符${NC}"
+    echo "    请求: http://exact.priority-test.local/test"
+    echo "    期望: X-Match: exact (精确匹配)"
+
+    http_get "http://exact.priority-test.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "exact" ]]; then
+        _log_pass "精确匹配优先: X-Match=exact"
+    else
+        _log_fail "精确匹配应优先于通配符" "exact" "${actual_value:-空}"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-01b 通配符匹配其他域名${NC}"
+    echo "    请求: http://other.priority-test.local/test"
+    echo "    期望: X-Match: wildcard (通配符匹配)"
+
+    http_get "http://other.priority-test.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "wildcard" ]]; then
+        _log_pass "通配符匹配生效: X-Match=wildcard"
+    else
+        _log_fail "其他域名应被通配符匹配" "wildcard" "${actual_value:-空}"
+    fi
+}
+
+run_priority_forward_order_tests() {
+    header "执行转发协议顺序优先级测试 (前面定义优先，阻断方式)"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-04a host:// 转发优先级${NC}"
+    echo "    请求: http://forward-host.local/test"
+    echo "    期望: 请求被转发到 3000 端口 (第一条规则)"
+
+    http_get "http://forward-host.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功 (转发到第一条规则的 3000 端口)"
+    _log_pass "host:// 转发优先级测试通过"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-04b 无协议前缀转发优先级${NC}"
+    echo "    请求: http://forward-bare.local/test"
+    echo "    期望: 请求被转发到 3000 端口 (第一条规则)"
+
+    http_get "http://forward-bare.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功 (转发到第一条规则的 3000 端口)"
+    _log_pass "无协议前缀转发优先级测试通过"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-04c http:// 转发优先级${NC}"
+    echo "    请求: http://forward-http.local/test"
+    echo "    期望: 请求被转发到 3000 端口 (第一条规则)"
+
+    http_get "http://forward-http.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功 (转发到第一条规则的 3000 端口)"
+    _log_pass "http:// 转发优先级测试通过"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-04d https:// 协议转发优先级${NC}"
+    echo "    请求: http://forward-https.local/test"
+    echo "    期望: 请求被转发到 3443 端口 (第一条规则，使用 https:// 协议)"
+
+    http_get "http://forward-https.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功 (转发到第一条规则的 3443 端口)"
+    _log_pass "https:// 协议转发优先级测试通过"
+}
+
+run_priority_wildcard_level_tests() {
+    header "执行通配符层级优先级测试"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-02a 最通用通配符匹配${NC}"
+    echo "    请求: http://any.local/test"
+    echo "    期望: X-Match: level-1 (*.local 匹配)"
+
+    http_get "http://any.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "level-1" ]]; then
+        _log_pass "一级通配符匹配: X-Match=level-1"
+    else
+        _log_fail "*.local 应匹配 any.local" "level-1" "${actual_value:-空}"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-02b 二级通配符优先${NC}"
+    echo "    请求: http://any.wildcard.local/test"
+    echo "    期望: X-Match: level-2 (*.wildcard.local 优先于 *.local)"
+
+    http_get "http://any.wildcard.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "level-2" ]]; then
+        _log_pass "二级通配符优先: X-Match=level-2"
+    else
+        _log_fail "更具体的通配符应优先" "level-2" "${actual_value:-空}"
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}【测试】P-02c 三级通配符优先${NC}"
+    echo "    请求: http://any.sub.wildcard.local/test"
+    echo "    期望: X-Match: level-3 (*.sub.wildcard.local 优先)"
+
+    http_get "http://any.sub.wildcard.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    actual_value=$(echo "$HTTP_HEADERS" | grep -i "^X-Match:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == "level-3" ]]; then
+        _log_pass "三级通配符优先: X-Match=level-3"
+    else
+        _log_fail "最具体的通配符应优先" "level-3" "${actual_value:-空}"
+    fi
+}
+
 run_line_block_tests() {
     header "执行 line 块语法测试"
 
@@ -1900,6 +2106,22 @@ run_specialized_tests() {
                     run_priority_tests
                     return 0
                     ;;
+                order.txt)
+                    run_priority_order_tests
+                    return 0
+                    ;;
+                exact_vs_wildcard.txt)
+                    run_priority_exact_vs_wildcard_tests
+                    return 0
+                    ;;
+                wildcard_level.txt)
+                    run_priority_wildcard_level_tests
+                    return 0
+                    ;;
+                forward_order.txt)
+                    run_priority_forward_order_tests
+                    return 0
+                    ;;
             esac
             ;;
         advanced)
@@ -1963,11 +2185,14 @@ run_tests() {
                 ;;
             resBody)
                 local res_body_raw=$(extract_value "$protocols" "resBody")
+                res_body_raw=$(resolve_code_block_var "$res_body_raw" "$RULE_FILE")
                 test_res_body "$pattern" "$res_body_raw"
                 ;;
             reqHeaders)
                 local req_header_raw=$(extract_value "$protocols" "reqHeaders")
-                local req_header_info=$(extract_header_from_value "$req_header_raw")
+                req_header_raw=$(resolve_code_block_var "$req_header_raw" "$RULE_FILE")
+                local req_header_first_line=$(echo "$req_header_raw" | head -1)
+                local req_header_info=$(extract_header_from_value "$req_header_first_line")
                 local req_header_name=$(echo "$req_header_info" | cut -d'|' -f1)
                 local req_header_value=$(echo "$req_header_info" | cut -d'|' -f2)
                 if [[ -n "$req_header_name" ]]; then
@@ -1982,7 +2207,9 @@ run_tests() {
                 ;;
             resHeaders)
                 local res_header_raw=$(extract_value "$protocols" "resHeaders")
-                local res_header_info=$(extract_header_from_value "$res_header_raw")
+                res_header_raw=$(resolve_code_block_var "$res_header_raw" "$RULE_FILE")
+                local res_header_first_line=$(echo "$res_header_raw" | head -1)
+                local res_header_info=$(extract_header_from_value "$res_header_first_line")
                 local res_header_name=$(echo "$res_header_info" | cut -d'|' -f1)
                 local res_header_value=$(echo "$res_header_info" | cut -d'|' -f2)
                 if [[ -n "$res_header_name" ]]; then
@@ -2005,6 +2232,8 @@ run_tests() {
                 ;;
             ua)
                 local ua=$(extract_value "$protocols" "ua")
+                ua=$(resolve_code_block_var "$ua" "$RULE_FILE")
+                ua=$(echo "$ua" | head -1)
                 test_ua_change "$pattern" "${ua:-Bifrost}"
                 ;;
             referer)
@@ -2121,6 +2350,7 @@ run_tests() {
 
 SKIP_BUILD="false"
 KEEP_PROXY="false"
+SKIP_MOCK_SERVERS="false"
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -2133,6 +2363,10 @@ parse_args() {
                 PROXY="http://${PROXY_HOST}:${PROXY_PORT}"
                 shift 2
                 ;;
+            -d|--data-dir)
+                TEST_DATA_DIR="$2"
+                shift 2
+                ;;
             -l|--list)
                 list_rules
                 ;;
@@ -2142,6 +2376,10 @@ parse_args() {
                 ;;
             --keep-proxy)
                 KEEP_PROXY="true"
+                shift
+                ;;
+            --skip-mock-servers)
+                SKIP_MOCK_SERVERS="true"
                 shift
                 ;;
             *)

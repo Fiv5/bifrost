@@ -4,8 +4,10 @@
 # 设置单个 Cookie
 res-cookie-single.local 127.0.0.1:3000 resCookies://{single_cookie}
 
-# 设置多个 Cookie
-res-cookie-multi.local 127.0.0.1:3000 resCookies://{multi_cookies}
+# 设置多个 Cookie (每个 cookie 单独一条规则)
+res-cookie-multi.local 127.0.0.1:3000 resCookies://{multi_session}
+res-cookie-multi.local resCookies://{multi_tracking}
+res-cookie-multi.local resCookies://{multi_user}
 
 # 带属性的 Cookie
 res-cookie-attrs.local 127.0.0.1:3000 resCookies://{cookie_with_attrs}
@@ -19,9 +21,15 @@ res-cookie-attrs.local 127.0.0.1:3000 resCookies://{cookie_with_attrs}
 session=proxy-session
 ```
 
-```multi_cookies
+```multi_session
 session=abc123
+```
+
+```multi_tracking
 tracking=xyz789
+```
+
+```multi_user
 user=testuser
 ```
 

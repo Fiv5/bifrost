@@ -5,7 +5,8 @@ use parking_lot::Mutex;
 use crate::proxy_controller::ProxyController;
 use crate::state::AppState;
 use crate::ui::{
-    DashboardPanel, Panel, RulesPanel, SettingsPanel, Sidebar, TrafficPanel, WhitelistPanel,
+    DashboardPanel, Panel, RulesPanel, SettingsPanel, Sidebar, TrafficPanel, ValuesPanel,
+    WhitelistPanel,
 };
 
 pub struct BifrostApp {
@@ -14,6 +15,7 @@ pub struct BifrostApp {
     current_panel: Panel,
     rules_panel: RulesPanel,
     whitelist_panel: WhitelistPanel,
+    values_panel: ValuesPanel,
 }
 
 impl BifrostApp {
@@ -24,6 +26,7 @@ impl BifrostApp {
         {
             let mut s = state.lock();
             s.rules = controller.load_rules();
+            s.values = controller.load_values();
             s.ca_installed = controller.check_ca_status();
         }
 
@@ -33,6 +36,7 @@ impl BifrostApp {
             current_panel: Panel::Dashboard,
             rules_panel: RulesPanel::new(),
             whitelist_panel: WhitelistPanel::new(),
+            values_panel: ValuesPanel::new(),
         }
     }
 }
@@ -74,6 +78,9 @@ impl eframe::App for BifrostApp {
                         }
                         Panel::Rules => {
                             self.rules_panel.show(ui, &mut state, &self.controller);
+                        }
+                        Panel::Values => {
+                            self.values_panel.show(ui, &mut state, &self.controller);
                         }
                         Panel::Whitelist => {
                             self.whitelist_panel.show(ui, &mut state);

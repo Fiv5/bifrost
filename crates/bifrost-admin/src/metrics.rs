@@ -21,6 +21,9 @@ pub struct MetricsSnapshot {
     pub bytes_sent_rate: f32,
     pub bytes_received_rate: f32,
     pub qps: f32,
+    pub max_qps: f32,
+    pub max_bytes_sent_rate: f32,
+    pub max_bytes_received_rate: f32,
 }
 
 pub struct MetricsCollector {
@@ -36,6 +39,9 @@ pub struct MetricsCollector {
     last_snapshot_time: AtomicU64,
     system: RwLock<System>,
     pid: Pid,
+    max_qps: RwLock<f32>,
+    max_bytes_sent_rate: RwLock<f32>,
+    max_bytes_received_rate: RwLock<f32>,
 }
 
 impl MetricsCollector {
@@ -55,6 +61,9 @@ impl MetricsCollector {
             last_snapshot_time: AtomicU64::new(0),
             system: RwLock::new(system),
             pid,
+            max_qps: RwLock::new(0.0),
+            max_bytes_sent_rate: RwLock::new(0.0),
+            max_bytes_received_rate: RwLock::new(0.0),
         }
     }
 
@@ -115,6 +124,10 @@ impl MetricsCollector {
             (0.0, 0.0, 0.0)
         };
 
+        let max_qps = *self.max_qps.read();
+        let max_bytes_sent_rate = *self.max_bytes_sent_rate.read();
+        let max_bytes_received_rate = *self.max_bytes_received_rate.read();
+
         MetricsSnapshot {
             timestamp: now,
             memory_used,
@@ -127,11 +140,14 @@ impl MetricsCollector {
             bytes_sent_rate,
             bytes_received_rate,
             qps,
+            max_qps,
+            max_bytes_sent_rate,
+            max_bytes_received_rate,
         }
     }
 
     pub fn take_snapshot(&self) -> MetricsSnapshot {
-        let snapshot = self.get_current();
+        let mut snapshot = self.get_current();
 
         self.last_request_count
             .store(snapshot.total_requests, Ordering::Relaxed);
@@ -141,6 +157,30 @@ impl MetricsCollector {
             .store(snapshot.bytes_received, Ordering::Relaxed);
         self.last_snapshot_time
             .store(snapshot.timestamp, Ordering::Relaxed);
+
+        {
+            let mut max_qps = self.max_qps.write();
+            if snapshot.qps > *max_qps {
+                *max_qps = snapshot.qps;
+            }
+            snapshot.max_qps = *max_qps;
+        }
+
+        {
+            let mut max_sent = self.max_bytes_sent_rate.write();
+            if snapshot.bytes_sent_rate > *max_sent {
+                *max_sent = snapshot.bytes_sent_rate;
+            }
+            snapshot.max_bytes_sent_rate = *max_sent;
+        }
+
+        {
+            let mut max_recv = self.max_bytes_received_rate.write();
+            if snapshot.bytes_received_rate > *max_recv {
+                *max_recv = snapshot.bytes_received_rate;
+            }
+            snapshot.max_bytes_received_rate = *max_recv;
+        }
 
         let mut history = self.history.write();
         if history.len() >= self.max_history {
