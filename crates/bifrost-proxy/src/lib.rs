@@ -7,6 +7,7 @@ mod request;
 mod response;
 mod server;
 mod socks;
+mod tee;
 mod tunnel;
 mod url;
 mod websocket;

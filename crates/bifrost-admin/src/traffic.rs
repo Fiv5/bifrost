@@ -214,6 +214,19 @@ impl TrafficRecorder {
         self.records.read().iter().find(|r| r.id == id).cloned()
     }
 
+    pub fn update_by_id<F>(&self, id: &str, updater: F) -> bool
+    where
+        F: FnOnce(&mut TrafficRecord),
+    {
+        let mut records = self.records.write();
+        if let Some(record) = records.iter_mut().find(|r| r.id == id) {
+            updater(record);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn clear(&self) {
         self.records.write().clear();
     }

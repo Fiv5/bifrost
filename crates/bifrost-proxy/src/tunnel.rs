@@ -21,8 +21,10 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
+use crate::http::needs_body_processing;
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
+use crate::tee::create_tee_body_with_store;
 
 type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -636,6 +638,71 @@ async fn handle_intercepted_request_with_protocol(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    for (name, value) in &resolved_rules.res_headers {
+        if verbose_logging {
+            info!("[{}] [RES_HEADER] {} = {}", req_id, name, value);
+        }
+        if let Ok(header_name) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
+            if let Ok(header_value) = hyper::header::HeaderValue::from_str(value) {
+                res_parts.headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    let needs_processing = needs_body_processing(&resolved_rules);
+
+    if !needs_processing {
+        let total_ms = start_time.elapsed().as_millis() as u64;
+        let record_id = req_id.to_string();
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .add_bytes_sent(body_bytes.len() as u64);
+            state.metrics_collector.increment_requests();
+
+            let mut record = TrafficRecord::new(record_id.clone(), method_str, target_uri);
+            record.status = res_parts.status.as_u16();
+            record.content_type = res_parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            record.request_size = body_bytes.len();
+            record.response_size = 0;
+            record.duration_ms = total_ms;
+            record.host = original_host.to_string();
+            record.timing = Some(RequestTiming {
+                dns_ms: None,
+                connect_ms: None,
+                tls_ms: None,
+                send_ms: None,
+                wait_ms: Some(wait_ms),
+                receive_ms: None,
+                total_ms,
+            });
+            record.request_headers = Some(req_headers);
+            record.response_headers = Some(res_headers);
+
+            if let Some(ref body_store) = state.body_store {
+                let store = body_store.read();
+                record.request_body_ref = store.store(&record_id, "req", &body_bytes);
+            }
+
+            state.traffic_recorder.record(record);
+        }
+
+        if let Some(delay_ms) = resolved_rules.res_delay {
+            if verbose_logging {
+                info!("[{}] [RES_DELAY] Sleeping {}ms", req_id, delay_ms);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        }
+
+        let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
+        return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+    }
+
     let receive_start = Instant::now();
     let res_body_bytes = match res_body.collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
@@ -712,17 +779,6 @@ async fn handle_intercepted_request_with_protocol(
     } else {
         res_body_bytes
     };
-
-    for (name, value) in &resolved_rules.res_headers {
-        if verbose_logging {
-            info!("[{}] [RES_HEADER] {} = {}", req_id, name, value);
-        }
-        if let Ok(header_name) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
-            if let Ok(header_value) = hyper::header::HeaderValue::from_str(value) {
-                res_parts.headers.insert(header_name, header_value);
-            }
-        }
-    }
 
     Ok(Response::from_parts(res_parts, full_body(final_body)))
 }

@@ -6,6 +6,7 @@ use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
+use hyper::http::response::Parts as ResponseParts;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
@@ -19,8 +20,75 @@ use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
+use crate::tee::create_tee_body_with_store;
 use crate::tunnel::get_tls_client_config;
 use crate::url::apply_url_rules;
+
+const STREAMING_CONTENT_TYPES: &[&str] = &[
+    "video/x-flv",
+    "video/mp4",
+    "video/webm",
+    "video/ogg",
+    "video/mpeg",
+    "video/mp2t",
+    "application/x-mpegurl",
+    "application/vnd.apple.mpegurl",
+    "application/dash+xml",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+    "audio/aac",
+    "text/event-stream",
+    "application/octet-stream",
+];
+
+fn is_streaming_response(res_parts: &ResponseParts) -> bool {
+    let content_type = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let content_type_lower = content_type.to_lowercase();
+    for streaming_type in STREAMING_CONTENT_TYPES {
+        if content_type_lower.starts_with(streaming_type) {
+            return true;
+        }
+    }
+
+    let has_content_length = res_parts
+        .headers
+        .contains_key(hyper::header::CONTENT_LENGTH);
+    let is_chunked = res_parts
+        .headers
+        .get(hyper::header::TRANSFER_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_lowercase().contains("chunked"))
+        .unwrap_or(false);
+
+    if !has_content_length && is_chunked && content_type_lower.contains("video") {
+        return true;
+    }
+
+    false
+}
+
+pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
+    rules.res_body.is_some()
+        || !rules.res_replace.is_empty()
+        || rules.res_prepend.is_some()
+        || rules.res_append.is_some()
+        || rules.res_merge.is_some()
+        || rules.html_append.is_some()
+        || rules.html_prepend.is_some()
+        || rules.html_body.is_some()
+        || rules.js_append.is_some()
+        || rules.js_prepend.is_some()
+        || rules.js_body.is_some()
+        || rules.css_append.is_some()
+        || rules.css_prepend.is_some()
+        || rules.css_body.is_some()
+}
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
@@ -252,6 +320,86 @@ pub async fn handle_http_request(
 
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
 
+    let needs_processing = needs_body_processing(&resolved_rules);
+
+    if !needs_processing {
+        let is_streaming = is_streaming_response(&res_parts);
+        if verbose_logging {
+            if is_streaming {
+                info!(
+                    "[{}] [STREAMING] detected streaming response, forwarding directly with tee",
+                    ctx.id_str()
+                );
+            } else {
+                debug!(
+                    "[{}] No body processing needed, streaming forward with tee",
+                    ctx.id_str()
+                );
+            }
+        }
+
+        let total_ms = start_time.elapsed().as_millis() as u64;
+        let record_id = ctx.id_str();
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .add_bytes_sent(final_body.len() as u64);
+
+            let mut record = TrafficRecord::new(record_id.clone(), method, url);
+            record.status = res_parts.status.as_u16();
+            record.content_type = res_parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            record.request_size = final_body.len();
+            record.response_size = 0;
+            record.duration_ms = total_ms;
+            record.timing = Some(RequestTiming {
+                dns_ms: None,
+                connect_ms: Some(tcp_connect_ms),
+                tls_ms,
+                send_ms: None,
+                wait_ms: Some(wait_ms),
+                receive_ms: None,
+                total_ms,
+            });
+            record.request_headers = Some(req_headers.clone());
+            record.response_headers = Some(res_headers);
+            record.has_rule_hit = has_rules;
+            record.matched_rules = if resolved_rules.rules.is_empty() {
+                None
+            } else {
+                Some(
+                    resolved_rules
+                        .rules
+                        .iter()
+                        .map(|r| MatchedRule {
+                            pattern: r.pattern.clone(),
+                            protocol: format!("{:?}", r.protocol),
+                            value: r.value.clone(),
+                        })
+                        .collect(),
+                )
+            };
+            record.request_content_type = req_headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.clone());
+
+            if let Some(ref body_store) = state.body_store {
+                let store = body_store.read();
+                record.request_body_ref = store.store(&record_id, "req", &body_bytes);
+            }
+
+            state.traffic_recorder.record(record);
+        }
+
+        let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
+        return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+    }
+
     let receive_start = Instant::now();
     let res_body_bytes = res_body
         .collect()
@@ -450,32 +598,21 @@ async fn forward_without_rules(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let receive_start = Instant::now();
-    let res_body_bytes = res_body
-        .collect()
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
-        .to_bytes();
-    let receive_ms = receive_start.elapsed().as_millis() as u64;
-
     let total_ms = start_time.elapsed().as_millis() as u64;
+    let record_id = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
 
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
             .add_bytes_sent(body_bytes.len() as u64);
-        state
-            .metrics_collector
-            .add_bytes_received(res_body_bytes.len() as u64);
 
-        let record_id = format!(
-            "{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
-        let mut record = TrafficRecord::new(record_id, method, url);
+        let mut record = TrafficRecord::new(record_id.clone(), method, url);
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
@@ -483,7 +620,7 @@ async fn forward_without_rules(
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
         record.request_size = body_bytes.len();
-        record.response_size = res_body_bytes.len();
+        record.response_size = 0;
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
             dns_ms: None,
@@ -491,7 +628,7 @@ async fn forward_without_rules(
             tls_ms: None,
             send_ms: None,
             wait_ms: Some(wait_ms),
-            receive_ms: Some(receive_ms),
+            receive_ms: None,
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
@@ -505,14 +642,14 @@ async fn forward_without_rules(
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-            record.request_body_ref = store.store(&record.id, "req", &body_bytes);
-            record.response_body_ref = store.store(&record.id, "res", &res_body_bytes);
+            record.request_body_ref = store.store(&record_id, "req", &body_bytes);
         }
 
         state.traffic_recorder.record(record);
     }
 
-    Ok(Response::from_parts(res_parts, full_body(res_body_bytes)))
+    let tee_body = create_tee_body_with_store(res_body, admin_state, record_id);
+    Ok(Response::from_parts(res_parts, tee_body.boxed()))
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
