@@ -1,0 +1,13 @@
+# F-02: HTTPS to HTTP 转发测试
+# 需求: https 请求应能正确转发到 http 后端服务（TLS 终止）
+
+# 规则: 将 https 请求转发到 HTTP Echo Server
+https-to-http.local 127.0.0.1:3000
+
+# 测试用例:
+# 1. 请求 https://https-to-http.local/api/test 通过代理
+# 2. 代理终止 TLS，将请求以 HTTP 协议转发到 127.0.0.1:3000
+# 3. Echo Server 的响应 server.protocol 应为 "http"
+# 4. 客户端仍然通过 HTTPS 收到响应
+
+# 注意: 测试时需要代理支持 HTTPS 解密（MITM）

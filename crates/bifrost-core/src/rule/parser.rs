@@ -10,6 +10,7 @@ use super::types::Rule;
 lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
     static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_.\-]*)\}").unwrap();
+    static ref HOST_PORT_REGEX: Regex = Regex::new(r"^([a-zA-Z0-9][-a-zA-Z0-9.]*|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[:0-9a-fA-F]+\]):(\d+)(/.*)?$").unwrap();
 }
 
 pub struct RuleParser {
@@ -259,6 +260,8 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<(String, Vec<(Proto
                     pattern_idx = Some(idx);
                 }
             }
+        } else if HOST_PORT_REGEX.is_match(part) {
+            protocol_values.push((Protocol::Host, part.clone()));
         } else if pattern_idx.is_none() {
             pattern_idx = Some(idx);
         }
@@ -549,5 +552,55 @@ reqHeaders://{test=1}"#;
             .unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].value, r#"{"host":"${hostname}","path":"${path}"}"#);
+    }
+
+    #[test]
+    fn test_parse_bare_host_port() {
+        let rules = parse_line("example.com 127.0.0.1:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn test_parse_bare_host_port_with_path() {
+        let rules = parse_line("example.com 127.0.0.1:3000/api").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "127.0.0.1:3000/api");
+    }
+
+    #[test]
+    fn test_parse_bare_host_port_with_deep_path() {
+        let rules = parse_line("example.com localhost:8080/api/v1/users").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "localhost:8080/api/v1/users");
+    }
+
+    #[test]
+    fn test_parse_bare_host_port_with_other_protocols() {
+        let rules = parse_line("example.com 127.0.0.1:3000/api reqHeaders://{x-test=1}").unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "127.0.0.1:3000/api");
+        assert_eq!(rules[1].protocol, Protocol::ReqHeaders);
+    }
+
+    #[test]
+    fn test_host_port_regex() {
+        assert!(HOST_PORT_REGEX.is_match("127.0.0.1:3000"));
+        assert!(HOST_PORT_REGEX.is_match("127.0.0.1:3000/api"));
+        assert!(HOST_PORT_REGEX.is_match("localhost:8080"));
+        assert!(HOST_PORT_REGEX.is_match("localhost:8080/path/to/api"));
+        assert!(HOST_PORT_REGEX.is_match("my-server.local:3000"));
+        assert!(HOST_PORT_REGEX.is_match("[::1]:8080"));
+        assert!(HOST_PORT_REGEX.is_match("[::1]:8080/api"));
+        assert!(!HOST_PORT_REGEX.is_match("example.com"));
+        assert!(!HOST_PORT_REGEX.is_match("host://127.0.0.1:3000"));
+        assert!(!HOST_PORT_REGEX.is_match("*.example.com"));
     }
 }

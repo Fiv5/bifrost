@@ -1,0 +1,22 @@
+# S-01: 响应状态码修改测试
+# 需求: 代理应能修改响应状态码
+
+# 改为 201 Created
+status-201.local 127.0.0.1:3000 statusCode://201
+
+# 改为 404 Not Found
+status-404.local 127.0.0.1:3000 statusCode://404
+
+# 改为 500 Internal Server Error
+status-500.local 127.0.0.1:3000 statusCode://500
+
+# 改为 302 (模拟重定向，但不实际重定向)
+status-302.local 127.0.0.1:3000 statusCode://302
+
+# 测试用例:
+# 1. 请求 http://status-201.local/test
+#    客户端应收到 HTTP 201 状态码
+# 2. 请求 http://status-404.local/test
+#    客户端应收到 HTTP 404 状态码
+# 3. 请求 http://status-500.local/test
+#    客户端应收到 HTTP 500 状态码

@@ -1,0 +1,29 @@
+# 响应体修改测试
+# S-10: 响应体替换
+# S-11: 响应体前置
+# S-12: 响应体追加
+# S-13: 响应体内容替换
+
+# S-10 响应体替换 - 完全替换响应体
+test-res-body.local http://127.0.0.1:3000 resBody://{custom_response}
+
+# S-11 响应体前置 - 在响应体前添加内容
+test-res-prepend.local http://127.0.0.1:3000 resPrepend://{prepend_content}
+
+# S-12 响应体追加 - 在响应体后添加内容
+test-res-append.local http://127.0.0.1:3000 resAppend://{append_content}
+
+# S-13 响应体内容替换 - 替换响应体中的特定内容
+test-res-replace.local http://127.0.0.1:3000 resReplace://original/modified
+
+``` custom_response
+{"custom":"response"}
+```
+
+``` prepend_content
+<!-- prepended -->
+```
+
+``` append_content
+<!-- appended -->
+```

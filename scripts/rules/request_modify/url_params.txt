@@ -1,0 +1,21 @@
+# URL 和参数修改测试
+# R-20: URL 参数添加
+# R-21: URL 参数修改
+# R-22: URL 参数删除
+# R-23: URL 路径替换
+# R-24: params 合并参数
+
+# R-20 URL 参数添加 - 向 URL 添加查询参数
+test-url-params-add.local http://127.0.0.1:3000 urlParams://added_param=added_value
+
+# R-21 URL 参数修改 - 修改现有查询参数
+test-url-params-modify.local http://127.0.0.1:3000 urlParams://existing=modified
+
+# R-22 URL 参数删除 - 删除特定查询参数 (设置为空)
+test-url-params-delete.local http://127.0.0.1:3000 urlParams://remove_me=
+
+# R-23 URL 路径替换 - 替换 URL 路径中的内容
+test-url-replace.local http://127.0.0.1:3000 urlReplace://old-path/new-path
+
+# R-24 params 合并 - 合并请求参数
+test-params.local http://127.0.0.1:3000 params://merged_key=merged_value&another=data

@@ -1,4 +1,0 @@
-# Request Headers 规则测试
-# 添加或修改请求头
-
-bifrost-test-reqheaders.local http://127.0.0.1:3002 reqHeaders://X-Bifrost-Test=req-header-test&X-Custom-Header=custom-value

@@ -1,0 +1,14 @@
+# R-04: 请求方法修改测试
+# 需求: 代理应能修改 HTTP 请求方法
+
+# GET 改为 POST
+method-get-to-post.local 127.0.0.1:3000 method://POST
+
+# POST 改为 PUT
+method-post-to-put.local 127.0.0.1:3000 method://PUT
+
+# 测试用例:
+# 1. 发送 GET http://method-get-to-post.local/test
+#    后端 Echo Server 应收到 POST 请求
+# 2. 发送 POST http://method-post-to-put.local/test
+#    后端 Echo Server 应收到 PUT 请求

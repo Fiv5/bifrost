@@ -1,0 +1,17 @@
+# 请求体修改测试
+# R-10: 请求体替换
+# R-11: 请求体前置
+# R-12: 请求体追加
+# R-13: 请求体内容替换
+
+# R-10 请求体替换 - 完全替换请求体
+test-req-body.local http://127.0.0.1:3000 reqBody://{"replaced":"body"}
+
+# R-11 请求体前置 - 在请求体前添加内容
+test-req-prepend.local http://127.0.0.1:3000 reqPrepend://PREFIX_
+
+# R-12 请求体追加 - 在请求体后添加内容
+test-req-append.local http://127.0.0.1:3000 reqAppend://_SUFFIX
+
+# R-13 请求体内容替换 - 替换请求体中的特定内容
+test-req-replace.local http://127.0.0.1:3000 reqReplace://old_text/new_text

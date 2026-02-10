@@ -1,0 +1,20 @@
+# F-05 ~ F-08: WebSocket 转发测试
+# 需求: WebSocket 连接应能正确转发
+
+# ws to ws
+ws-forward.local 127.0.0.1:3020
+
+# wss to ws (TLS 终止)
+wss-to-ws.local 127.0.0.1:3020
+
+# ws to wss
+ws-to-wss.local wss://127.0.0.1:3021
+
+# wss to wss
+wss-forward.local wss://127.0.0.1:3021
+
+# 测试用例:
+# 1. 建立 WebSocket 连接
+# 2. 发送消息 "hello"
+# 3. 应收到 Echo Server 的回显消息
+# 4. connection_info 消息中应包含原始请求头

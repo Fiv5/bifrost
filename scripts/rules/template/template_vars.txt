@@ -1,0 +1,82 @@
+# 模板变量测试
+# T-01: 请求信息变量
+# T-02: 时间和随机变量
+# T-03: Header 和 Cookie 变量
+# T-04: 特殊语法
+# T-05: 正则捕获组
+
+# ==================== T-01 请求信息变量 ====================
+
+# T-01-1 请求 ID 变量
+test-tpl-reqid.local http://127.0.0.1:3000 resHeaders://`X-Request-Id: ${reqId}`
+
+# T-01-2 URL 相关变量
+test-tpl-url.local http://127.0.0.1:3000 resHeaders://`X-Full-Url: ${url}`
+
+# T-01-3 Host 变量
+test-tpl-host.local http://127.0.0.1:3000 resHeaders://`X-Original-Host: ${url.host}`
+
+# T-01-4 Hostname 变量 (不含端口)
+test-tpl-hostname.local http://127.0.0.1:3000 resHeaders://`X-Hostname: ${url.hostname}`
+
+# T-01-5 端口变量
+test-tpl-port.local http://127.0.0.1:3000 resHeaders://`X-Port: ${url.port}`
+
+# T-01-6 路径变量
+test-tpl-path.local http://127.0.0.1:3000 resHeaders://`X-Path: ${url.path}`
+
+# T-01-7 Pathname 变量 (不含查询参数)
+test-tpl-pathname.local http://127.0.0.1:3000 resHeaders://`X-Pathname: ${url.pathname}`
+
+# T-01-8 查询字符串变量
+test-tpl-search.local http://127.0.0.1:3000 resHeaders://`X-Search: ${url.search}`
+
+# T-01-9 HTTP 方法变量
+test-tpl-method.local http://127.0.0.1:3000 resHeaders://`X-Method: ${method}`
+
+# ==================== T-02 时间和随机变量 ====================
+
+# T-02-1 当前时间戳
+test-tpl-now.local http://127.0.0.1:3000 resHeaders://`X-Timestamp: ${now}`
+
+# T-02-2 随机数
+test-tpl-random.local http://127.0.0.1:3000 resHeaders://`X-Random: ${random}`
+
+# T-02-3 随机整数 (0 到 N)
+test-tpl-randomint.local http://127.0.0.1:3000 resHeaders://`X-Random-Int: ${randomInt(100)}`
+
+# T-02-4 随机整数范围 (N 到 M)
+test-tpl-randomint-range.local http://127.0.0.1:3000 resHeaders://`X-Random-Range: ${randomInt(10-100)}`
+
+# T-02-5 随机 UUID
+test-tpl-uuid.local http://127.0.0.1:3000 resHeaders://`X-UUID: ${randomUUID}`
+
+# ==================== T-03 Header 和 Cookie 变量 ====================
+
+# T-03-1 请求头变量 - 获取指定请求头
+test-tpl-reqheader.local http://127.0.0.1:3000 resHeaders://`X-Client-UA: ${reqHeaders.User-Agent}`
+
+# T-03-2 请求 Cookie 变量
+test-tpl-reqcookie.local http://127.0.0.1:3000 resHeaders://`X-Session: ${reqCookies.session}`
+
+# T-03-3 查询参数变量
+test-tpl-query.local http://127.0.0.1:3000 resHeaders://`X-Query-Param: ${query.param}`
+
+# T-03-4 客户端 IP 变量
+test-tpl-clientip.local http://127.0.0.1:3000 resHeaders://`X-Client-IP: ${clientIp}`
+
+# ==================== T-04 特殊语法 ====================
+
+# T-04-1 转义语法 $${var} - 输出字面量 ${var}
+test-tpl-escape.local http://127.0.0.1:3000 resHeaders://`X-Literal: $${notVar}`
+
+# T-04-2 环境变量
+test-tpl-env.local http://127.0.0.1:3000 resHeaders://`X-Env-User: ${env.USER}`
+
+# ==================== T-05 组合使用 ====================
+
+# T-05-1 多变量组合
+test-tpl-combined.local http://127.0.0.1:3000 resHeaders://`X-Debug: ${method} ${url.pathname} from ${clientIp}`
+
+# T-05-2 Whistle 版本和端口
+test-tpl-whistle.local http://127.0.0.1:3000 resHeaders://`X-Whistle-Info: v${version} on port ${port}`

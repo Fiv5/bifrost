@@ -1,0 +1,16 @@
+# S-08, R-09: 延迟测试
+# 需求: 代理应能对请求/响应添加延迟
+
+# 请求延迟 1 秒
+req-delay-1s.local 127.0.0.1:3000 reqDelay://1000
+
+# 响应延迟 500ms
+res-delay-500ms.local 127.0.0.1:3000 resDelay://500
+
+# 请求和响应都延迟
+delay-both.local 127.0.0.1:3000 reqDelay://500 resDelay://500
+
+# 测试用例:
+# 1. 请求 http://req-delay-1s.local/test 应在约 1 秒后收到响应
+# 2. 请求 http://res-delay-500ms.local/test 后端立即收到，客户端延迟 500ms 收到
+# 3. 总延迟应约等于 reqDelay + resDelay + 实际处理时间

@@ -1,0 +1,20 @@
+# 代理协议测试
+# A-01: proxy 二级代理
+# A-02: http-proxy 别名
+# A-03: https2http-proxy
+# A-04: http2https-proxy
+
+# A-01 proxy 协议 - 通过另一个代理转发
+test-proxy.local proxy://127.0.0.1:9999
+
+# A-02 http-proxy 别名 (等同于 proxy)
+test-http-proxy.local http-proxy://127.0.0.1:9999
+
+# A-03 https2http-proxy - HTTPS 请求转为 HTTP 代理
+test-https2http.local https2http-proxy://127.0.0.1:9999
+
+# A-04 http2https-proxy - HTTP 请求转为 HTTPS 代理
+test-http2https.local http2https-proxy://127.0.0.1:9999
+
+# A-05 internal-proxy - 内部代理
+test-internal.local internal-proxy://127.0.0.1:8888

@@ -1,0 +1,28 @@
+# P-03: 规则顺序优先级测试
+# 需求: 同优先级的规则，先定义的应优先匹配
+
+# 第一条规则 (应优先)
+order-test.local 127.0.0.1:3000 resHeaders://{match_first}
+
+# 第二条规则 (应被忽略)
+order-test.local 127.0.0.1:3000 resHeaders://{match_second}
+
+# 第三条规则 (应被忽略)
+order-test.local 127.0.0.1:3000 resHeaders://{match_third}
+
+# 测试用例:
+# 1. 请求 http://order-test.local/
+#    响应应包含 X-Match: first
+# 2. 第二、第三条规则不应生效
+
+``` match_first
+X-Match: first
+```
+
+``` match_second
+X-Match: second
+```
+
+``` match_third
+X-Match: third
+```

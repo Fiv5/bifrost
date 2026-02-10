@@ -1,0 +1,24 @@
+# 变量引用测试
+# V-01: 值引用 (Values)
+# V-02: 内联值
+# V-03: 括号内容值
+# V-04: 文件路径值
+
+# V-01 值引用 - 使用 {valueName} 引用预定义值
+# 预定义值需要在 values 目录中定义
+test-value-ref.local http://127.0.0.1:3000 resBody://{mockResponse}
+
+# V-02 值引用用于请求头
+test-value-header.local http://127.0.0.1:3000 reqHeaders://{authHeaders}
+
+# V-03 值引用用于响应头
+test-value-res-header.local http://127.0.0.1:3000 resHeaders://{customHeaders}
+
+# V-04 多值引用组合
+test-multi-values.local http://127.0.0.1:3000 reqHeaders://{authHeaders} resHeaders://{customHeaders}
+
+# V-05 文件路径值 - 从本地文件读取值
+test-file-value.local file:///Users/eden/work/github/whistle/rust/scripts/test_data/mock.json
+
+# V-06 内联参数值 - key=value 格式
+test-inline-params.local http://127.0.0.1:3000 urlParams://key1=value1&key2=value2

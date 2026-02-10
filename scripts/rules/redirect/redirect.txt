@@ -1,0 +1,23 @@
+# D-01 ~ D-04: 重定向测试
+# 需求: 代理应能正确处理各种重定向场景
+
+# D-01: 302 临时重定向
+redirect-302.local redirect://http://target.local/new-page
+
+# D-02: 301 永久重定向
+redirect-301.local redirect://301:http://target.local/permanent
+
+# D-03: 相对路径重定向
+redirect-relative.local redirect:///new-path
+
+# D-04: 完整 URL 重定向
+redirect-full.local redirect://https://www.example.com/landing
+
+# 带查询参数的重定向
+redirect-with-query.local redirect://http://target.local/page?from=proxy
+
+# 测试用例:
+# 1. 请求 http://redirect-302.local/ 应收到 302 和 Location: http://target.local/new-page
+# 2. 请求 http://redirect-301.local/ 应收到 301 和 Location: http://target.local/permanent
+# 3. 请求 http://redirect-relative.local/old 应收到 Location: /new-path
+# 4. 请求 http://redirect-full.local/ 应收到 Location: https://www.example.com/landing

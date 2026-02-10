@@ -1,0 +1,12 @@
+# 速度限制测试
+# A-40: reqSpeed 请求速度限制
+# A-41: resSpeed 响应速度限制
+
+# A-40 reqSpeed - 限制请求速度 (KB/s)
+test-req-speed.local http://127.0.0.1:3000 reqSpeed://100
+
+# A-41 resSpeed - 限制响应速度 (KB/s)
+test-res-speed.local http://127.0.0.1:3000 resSpeed://50
+
+# A-42 组合延迟和速度限制
+test-delay-speed.local http://127.0.0.1:3000 reqDelay://200 resSpeed://100

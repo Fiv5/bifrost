@@ -1,0 +1,14 @@
+# R-06: Referer 修改测试
+# 需求: 代理应能修改请求的 Referer
+
+# 设置 Referer
+referer-test.local 127.0.0.1:3000 referer://https://example.com/page
+
+# 删除 Referer
+referer-remove.local 127.0.0.1:3000 referer://
+
+# 测试用例:
+# 1. 请求 http://referer-test.local/api
+#    后端应收到 Referer: https://example.com/page
+# 2. 请求 http://referer-remove.local/api (带 Referer 头)
+#    后端不应收到 Referer 头

@@ -1,0 +1,25 @@
+# S-07: CORS 支持测试
+# 需求: 代理应能正确设置 CORS 响应头
+
+# 允许所有来源
+cors-allow-all.local 127.0.0.1:3000 resCors://*
+
+# 允许指定来源
+cors-allow-origin.local 127.0.0.1:3000 resCors://https://example.com
+
+# 完整 CORS 配置
+cors-full.local 127.0.0.1:3000 resCors://{cors_full}
+
+# 测试用例:
+# 1. OPTIONS 预检请求应返回正确的 CORS 头
+# 2. 响应应包含 Access-Control-Allow-Origin
+# 3. 响应应包含 Access-Control-Allow-Methods
+# 4. 响应应包含 Access-Control-Allow-Headers
+
+```cors_full
+origin: https://app.example.com
+methods: GET, POST, PUT, DELETE
+headers: Content-Type, Authorization, X-Custom-Header
+credentials: true
+maxAge: 86400
+```

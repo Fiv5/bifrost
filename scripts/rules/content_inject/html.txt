@@ -1,0 +1,32 @@
+# HTML 内容注入测试
+# I-01: HTML 追加
+# I-02: HTML 前置
+# I-03: HTML Body 替换
+
+# I-01 HTML 追加 - 在 HTML 响应末尾追加内容
+test-html-append.local http://127.0.0.1:3000 htmlAppend://{html_append}
+
+# I-02 HTML 前置 - 在 HTML 响应开头添加内容
+test-html-prepend.local http://127.0.0.1:3000 htmlPrepend://{html_prepend}
+
+# I-03 HTML Body 替换 - 替换整个 HTML 响应
+test-html-body.local http://127.0.0.1:3000 htmlBody://{html_body}
+
+# I-04 使用 html 别名 (等同于 htmlAppend)
+test-html-alias.local http://127.0.0.1:3000 html://{html_inject}
+
+``` html_append
+<script>console.log('appended')</script>
+```
+
+``` html_prepend
+<!-- prepended html -->
+```
+
+``` html_body
+<html><body>Custom HTML</body></html>
+```
+
+``` html_inject
+<div>injected</div>
+```

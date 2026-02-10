@@ -7,9 +7,17 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULES_DIR="${SCRIPT_DIR}/rules"
 TEST_DATA_DIR="${PROJECT_DIR}/.bifrost-test"
 
+source "$SCRIPT_DIR/test_utils/assert.sh"
+source "$SCRIPT_DIR/test_utils/http_client.sh"
+
 PROXY_PORT="${PROXY_PORT:-8080}"
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY="http://${PROXY_HOST}:${PROXY_PORT}"
+
+ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-3000}"
+ECHO_HTTPS_PORT="${ECHO_HTTPS_PORT:-3443}"
+ECHO_WS_PORT="${ECHO_WS_PORT:-3020}"
+ECHO_WSS_PORT="${ECHO_WSS_PORT:-3021}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -18,17 +26,11 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-pass() { echo -e "${GREEN}✓ PASS${NC}: $1"; }
-fail() { echo -e "${RED}✗ FAIL${NC}: $1"; }
-info() { echo -e "${BLUE}ℹ INFO${NC}: $1"; }
-warn() { echo -e "${YELLOW}⚠ WARN${NC}: $1"; }
 header() { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"; }
+info() { echo -e "${BLUE}ℹ${NC} $1"; }
+warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 
 PROXY_PID=""
-MOCK_SERVER_PID=""
-PASS_COUNT=0
-FAIL_COUNT=0
-SKIP_COUNT=0
 RULE_FILE=""
 
 usage() {
@@ -38,76 +40,99 @@ usage() {
     echo "  -h, --help         显示帮助信息"
     echo "  -p, --port PORT    指定代理端口 (默认: 8080)"
     echo "  -l, --list         列出所有可用的规则文件"
+    echo "  --no-build         跳过编译步骤"
+    echo "  --keep-proxy       测试完成后保持代理运行"
+    echo ""
+    echo "环境变量:"
+    echo "  ECHO_HTTP_PORT     HTTP Echo 服务器端口 (默认: 3000)"
+    echo "  ECHO_HTTPS_PORT    HTTPS Echo 服务器端口 (默认: 3443)"
+    echo "  ECHO_WS_PORT       WebSocket Echo 服务器端口 (默认: 3020)"
     echo ""
     echo "示例:"
-    echo "  $0 rules/host.txt"
-    echo "  $0 -p 9090 rules/req_headers.txt"
+    echo "  $0 rules/forwarding/http_to_http.txt"
+    echo "  $0 -p 9090 rules/request_modify/headers.txt"
     echo "  $0 --list"
     exit 0
 }
 
 list_rules() {
     header "可用的规则文件"
-    if [[ -d "$RULES_DIR" ]]; then
-        for rule_file in "$RULES_DIR"/*.txt; do
-            if [[ -f "$rule_file" ]]; then
-                local name=$(basename "$rule_file" .txt)
-                local desc=$(grep -m1 '^#' "$rule_file" 2>/dev/null | sed 's/^# *//' || echo "无描述")
-                printf "  ${CYAN}%-20s${NC} %s\n" "$name" "$desc"
-            fi
-        done
-    else
-        warn "规则目录不存在: $RULES_DIR"
-    fi
+
+    find "$RULES_DIR" -name "*.txt" -type f 2>/dev/null | sort | while read -r rule_file; do
+        local rel_path="${rule_file#$RULES_DIR/}"
+        local desc=$(grep -m1 '^#' "$rule_file" 2>/dev/null | sed 's/^# *//' || echo "无描述")
+        printf "  ${CYAN}%-40s${NC} %s\n" "$rel_path" "$desc"
+    done
     exit 0
 }
 
 cleanup() {
-    if [[ -n "$MOCK_SERVER_PID" ]] && kill -0 "$MOCK_SERVER_PID" 2>/dev/null; then
-        info "正在停止 Mock 服务器 (PID: $MOCK_SERVER_PID)..."
-        kill "$MOCK_SERVER_PID" 2>/dev/null || true
-        wait "$MOCK_SERVER_PID" 2>/dev/null || true
+    if [[ "$KEEP_PROXY" != "true" ]]; then
+        if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+            info "正在停止代理服务器 (PID: $PROXY_PID)..."
+            kill "$PROXY_PID" 2>/dev/null || true
+            wait "$PROXY_PID" 2>/dev/null || true
+        fi
     fi
-    if [[ -n "$WS_MOCK_SERVER_PID" ]] && kill -0 "$WS_MOCK_SERVER_PID" 2>/dev/null; then
-        info "正在停止 WebSocket Mock 服务器 (PID: $WS_MOCK_SERVER_PID)..."
-        kill "$WS_MOCK_SERVER_PID" 2>/dev/null || true
-        wait "$WS_MOCK_SERVER_PID" 2>/dev/null || true
-    fi
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        info "正在停止代理服务器 (PID: $PROXY_PID)..."
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
-    fi
+
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 }
 
 trap cleanup EXIT
 
+check_dependencies() {
+    header "检查依赖"
+
+    if ! command -v curl &> /dev/null; then
+        echo -e "${RED}✗${NC} curl 未安装"
+        exit 1
+    fi
+    echo -e "${GREEN}✓${NC} curl 已安装"
+
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${RED}✗${NC} python3 未安装"
+        exit 1
+    fi
+    echo -e "${GREEN}✓${NC} python3 已安装"
+
+    if ! command -v jq &> /dev/null; then
+        echo -e "${YELLOW}⚠${NC} jq 未安装 (JSON 断言将被跳过)"
+    else
+        echo -e "${GREEN}✓${NC} jq 已安装"
+    fi
+}
+
 check_rule_file() {
     if [[ ! -f "$RULE_FILE" ]]; then
-        fail "规则文件不存在: $RULE_FILE"
+        echo -e "${RED}✗${NC} 规则文件不存在: $RULE_FILE"
         echo "请使用 --list 查看可用的规则文件"
         exit 1
     fi
 
     local rule_count=$(grep -v '^#' "$RULE_FILE" | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')
     if [[ "$rule_count" -eq 0 ]]; then
-        fail "规则文件为空或只包含注释"
+        echo -e "${RED}✗${NC} 规则文件为空或只包含注释"
         exit 1
     fi
 
-    pass "找到 $rule_count 条规则"
+    echo -e "${GREEN}✓${NC} 找到 $rule_count 条规则"
 }
 
 build_proxy() {
+    if [[ "$SKIP_BUILD" == "true" ]]; then
+        info "跳过编译步骤"
+        return 0
+    fi
+
     header "编译代理服务器"
-    
+
     if [[ -f "${PROJECT_DIR}/target/release/bifrost" ]]; then
         local mod_time=$(stat -f %m "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null || stat -c %Y "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null)
         local now=$(date +%s)
         local age=$((now - mod_time))
-        
+
         if [[ $age -lt 86400 ]]; then
-            pass "使用已编译的代理 (编译于 $((age / 60)) 分钟前)"
+            echo -e "${GREEN}✓${NC} 使用已编译的代理 (编译于 $((age / 60)) 分钟前)"
             return 0
         fi
     fi
@@ -115,14 +140,12 @@ build_proxy() {
     info "正在编译代理服务器..."
     cd "$PROJECT_DIR"
     cargo build --release --bin bifrost 2>&1 | tail -5
-    pass "代理服务器编译完成"
+    echo -e "${GREEN}✓${NC} 代理服务器编译完成"
 }
 
 setup_data_dir() {
-    header "初始化配置目录"
-    
     mkdir -p "${TEST_DATA_DIR}"/{rules,values,plugins,certs}
-    
+
     if [[ ! -f "${TEST_DATA_DIR}/config.toml" ]]; then
         cat > "${TEST_DATA_DIR}/config.toml" << 'TOML'
 [access]
@@ -133,16 +156,68 @@ allow_lan = false
 intercept_exclude = []
 TOML
     fi
-    
-    pass "配置目录: ${TEST_DATA_DIR}"
+}
+
+start_echo_servers() {
+    header "启动 Echo 服务器"
+
+    if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} HTTP Echo 服务器已在运行 (端口: ${ECHO_HTTP_PORT})"
+        return 0
+    fi
+
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
+
+    sleep 2
+
+    if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓${NC} HTTP Echo 服务器已启动 (端口: ${ECHO_HTTP_PORT})"
+    else
+        echo -e "${RED}✗${NC} HTTP Echo 服务器启动失败"
+        exit 1
+    fi
+}
+
+start_proxy() {
+    header "启动代理服务器"
+
+    if lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1; then
+        local existing_pid=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | head -1)
+        warn "端口 ${PROXY_PORT} 已被占用 (PID: $existing_pid)"
+        info "尝试终止现有进程..."
+        kill "$existing_pid" 2>/dev/null || true
+        sleep 1
+    fi
+
+    info "启动代理 (端口: ${PROXY_PORT})..."
+
+    mkdir -p "${TEST_DATA_DIR}"
+    export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
+    BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" --port "${PROXY_PORT}" start --skip-cert-check --rules-file "${RULE_FILE}" &
+    PROXY_PID=$!
+
+    local max_wait=10
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC} 代理服务器已启动 (PID: $PROXY_PID)"
+            echo -e "${GREEN}✓${NC} 规则已从文件加载: ${RULE_FILE}"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    echo -e "${RED}✗${NC} 代理服务器启动超时"
+    exit 1
 }
 
 show_rules() {
     header "规则配置"
-    
+
     info "规则文件: ${RULE_FILE}"
     echo ""
-    
+
     echo "规则内容:"
     echo "─────────────────────────────────────────────────"
     grep -v '^#' "$RULE_FILE" | grep -v '^[[:space:]]*$' | while read -r line; do
@@ -152,851 +227,343 @@ show_rules() {
     echo ""
 }
 
-start_proxy() {
-    header "启动代理服务器"
-    
-    if lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1; then
-        local existing_pid=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | head -1)
-        warn "端口 ${PROXY_PORT} 已被占用 (PID: $existing_pid)"
-        info "尝试终止现有进程..."
-        kill "$existing_pid" 2>/dev/null || true
-        sleep 1
-    fi
-    
-    info "启动代理 (端口: ${PROXY_PORT})..."
-    info "使用 --rules-file 参数直接加载规则"
-    
-    export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
-    "${PROJECT_DIR}/target/release/bifrost" --port "${PROXY_PORT}" start --skip-cert-check --rules-file "${RULE_FILE}" &
-    PROXY_PID=$!
-    
-    local max_wait=10
-    local waited=0
-    while [[ $waited -lt $max_wait ]]; do
-        if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
-            pass "代理服务器已启动 (PID: $PROXY_PID)"
-            return 0
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    
-    fail "代理服务器启动超时"
-    exit 1
-}
-
-start_mock_server() {
-    local port="$1"
-    local mock_response="${2:-mock-response}"
-    
-    if lsof -i ":${port}" -t >/dev/null 2>&1; then
-        local existing_pid=$(lsof -i ":${port}" -t 2>/dev/null | head -1)
-        kill "$existing_pid" 2>/dev/null || true
-        sleep 0.5
-    fi
-    
-    python3 -c "
-import http.server
-import socketserver
-import json
-
-class MockHandler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('X-Mock-Server', 'bifrost-test')
-        self.end_headers()
-        
-        headers_dict = {k: v for k, v in self.headers.items()}
-        response = {
-            'status': 'ok',
-            'message': '$mock_response',
-            'path': self.path,
-            'method': self.command,
-            'headers': headers_dict
-        }
-        self.wfile.write(json.dumps(response).encode())
-    
-    def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ''
-        
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('X-Mock-Server', 'bifrost-test')
-        self.end_headers()
-        
-        headers_dict = {k: v for k, v in self.headers.items()}
-        response = {
-            'status': 'ok',
-            'message': '$mock_response',
-            'path': self.path,
-            'method': self.command,
-            'headers': headers_dict,
-            'body': body
-        }
-        self.wfile.write(json.dumps(response).encode())
-    
-    def do_PUT(self):
-        self.do_POST()
-    
-    def do_DELETE(self):
-        self.do_GET()
-    
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', '*')
-        self.end_headers()
-    
-    def log_message(self, format, *args):
-        pass
-
-with socketserver.TCPServer(('127.0.0.1', $port), MockHandler) as httpd:
-    httpd.serve_forever()
-" &
-    MOCK_SERVER_PID=$!
-    sleep 1
-    
-    if ! kill -0 "$MOCK_SERVER_PID" 2>/dev/null; then
-        fail "Mock 服务器启动失败"
-        return 1
-    fi
-    
-    return 0
-}
-
-stop_mock_server() {
-    if [[ -n "$MOCK_SERVER_PID" ]] && kill -0 "$MOCK_SERVER_PID" 2>/dev/null; then
-        kill "$MOCK_SERVER_PID" 2>/dev/null || true
-        wait "$MOCK_SERVER_PID" 2>/dev/null || true
-        MOCK_SERVER_PID=""
-    fi
-}
-
-extract_http_url() {
-    local protocols="$1"
-    echo "$protocols" | grep -o 'http://[^[:space:]]*\|https://[^[:space:]]*' | head -1
-}
-
-extract_target_port() {
-    local protocols="$1"
-    
-    local target_url=$(echo "$protocols" | grep -o 'http://[^[:space:]]*\|https://[^[:space:]]*\|host://[^[:space:]]*' | head -1)
-    
-    if [[ -z "$target_url" ]]; then
-        echo "3000"
-        return
-    fi
-    
-    local target_host
-    if [[ "$target_url" == *"://"* ]]; then
-        target_host=$(echo "$target_url" | sed 's|.*://||' | sed 's|/.*||')
-    else
-        target_host="$target_url"
-    fi
-    
-    local port=$(echo "$target_host" | grep -o ':[0-9]*$' | tr -d ':')
-    echo "${port:-3000}"
-}
-
-CURL_RESPONSE_CODE=""
-CURL_RESPONSE_BODY=""
-CURL_RESPONSE_HEADERS=""
-
-do_curl_request() {
-    local url="$1"
-    local method="${2:-GET}"
-    local extra_args="${3:-}"
-    local tmpfile=$(mktemp)
-    local headers_file=$(mktemp)
-    
-    CURL_RESPONSE_CODE=$(curl -s -w "%{http_code}" \
-        --proxy "$PROXY" \
-        -k \
-        -X "$method" \
-        --connect-timeout 10 \
-        --max-time 15 \
-        -D "$headers_file" \
-        -o "$tmpfile" \
-        $extra_args \
-        "$url" 2>/dev/null) || CURL_RESPONSE_CODE="000"
-    
-    CURL_RESPONSE_BODY=$(cat "$tmpfile" 2>/dev/null || echo "")
-    CURL_RESPONSE_HEADERS=$(cat "$headers_file" 2>/dev/null || echo "")
-    rm -f "$tmpfile" "$headers_file"
-}
-
-test_host_rule() {
+test_http_to_http_forward() {
     local pattern="$1"
     local target="$2"
-    local target_port
-    if [[ "$target" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]] || [[ "$target" =~ ^[^:]+:[0-9]+$ ]]; then
-        target_port=$(echo "$target" | grep -o ':[0-9]*$' | tr -d ':')
-    else
-        target_port=$(extract_target_port "$target")
-    fi
-    target_port="${target_port:-3000}"
-    local test_url="http://${pattern}/"
+    local test_url="http://${pattern}/test"
 
     echo ""
-    echo -e "  ${CYAN}【场景1】目标服务未启动 - 期望返回 502${NC}"
-    
-    stop_mock_server
-    
-    do_curl_request "$test_url"
-    
-    echo "    HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "    响应体: ${CURL_RESPONSE_BODY:0:100}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "502" ]] || [[ "$CURL_RESPONSE_CODE" == "503" ]]; then
-        pass "目标服务未启动时返回 $CURL_RESPONSE_CODE"
-        ((PASS_COUNT++))
-    elif [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        fail "目标服务未启动但收到 200 - 规则可能未生效"
-        ((FAIL_COUNT++))
-    else
-        fail "目标服务未启动时期望返回 502/503，实际返回: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
+    echo -e "  ${CYAN}【测试】HTTP→HTTP 转发${NC}"
+    echo "    请求: $test_url"
+    echo "    目标: $target"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "代理应成功转发请求"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        assert_json_field_exists ".request.method" "$HTTP_BODY" "Echo 服务器应返回请求信息"
+        assert_json_field ".server.protocol" "http" "$HTTP_BODY" "后端应通过 HTTP 接收请求"
     fi
-    
+}
+
+test_https_to_http_forward() {
+    local pattern="$1"
+    local target="$2"
+    local test_url="https://${pattern}/test"
+
     echo ""
-    echo -e "  ${CYAN}【场景2】目标服务已启动 - 期望返回 200${NC}"
-    
-    info "启动 Mock 服务器 (端口: ${target_port})..."
-    if ! start_mock_server "$target_port" "mock-response-from-bifrost-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    echo -e "  ${CYAN}【测试】HTTPS→HTTP 转发 (TLS 终止)${NC}"
+    echo "    请求: $test_url"
+    echo "    目标: $target"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "代理应成功转发 HTTPS 请求"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        assert_json_field ".server.protocol" "http" "$HTTP_BODY" "后端应通过 HTTP 接收请求 (TLS 已终止)"
     fi
-    echo -e "    ${GREEN}Mock 服务器已启动${NC}"
-    
-    do_curl_request "$test_url"
-    
-    echo "    HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "    响应体: ${CURL_RESPONSE_BODY:0:100}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        if [[ "$CURL_RESPONSE_BODY" == *"mock-response-from-bifrost-test"* ]] || [[ "$CURL_RESPONSE_BODY" == *"bifrost-test"* ]]; then
-            pass "目标服务启动时返回 200，响应来自 Mock 服务器"
-            ((PASS_COUNT++))
-        else
-            warn "目标服务启动时返回 200，但响应可能不是来自 Mock 服务器"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "目标服务启动时期望返回 200，实际返回: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
+}
+
+test_http_to_https_forward() {
+    local pattern="$1"
+    local target="$2"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】HTTP→HTTPS 转发 (TLS 建立)${NC}"
+    echo "    请求: $test_url"
+    echo "    目标: $target"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "代理应成功转发请求到 HTTPS 后端"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        assert_json_field ".server.protocol" "https" "$HTTP_BODY" "后端应通过 HTTPS 接收请求"
+        assert_json_field_exists ".server.tls_info" "$HTTP_BODY" "HTTPS 连接应有 TLS 信息"
     fi
-    
-    stop_mock_server
 }
 
 test_redirect_rule() {
     local pattern="$1"
     local target="$2"
     local test_url="https://${pattern}/"
-    
-    info "测试重定向: ${test_url} -> ${target}"
 
-    local response
-    response=$(curl -s -o /dev/null -w "%{http_code}|%{redirect_url}" \
+    echo ""
+    echo -e "  ${CYAN}【测试】重定向规则${NC}"
+    echo "    请求: $test_url"
+    echo "    目标: $target"
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
         -k \
-        --connect-timeout 5 \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
         --max-time 10 \
-        "$test_url" 2>/dev/null || echo "ERROR|")
-    
-    local http_code=$(echo "$response" | cut -d'|' -f1)
-    local redirect_url=$(echo "$response" | cut -d'|' -f2)
-    
-    echo "  HTTP 响应码: $http_code"
-    if [[ -n "$redirect_url" ]]; then
-        echo "  重定向到: $redirect_url"
-    fi
-    
-    if [[ "$http_code" == "301" ]] || [[ "$http_code" == "302" ]] || [[ "$http_code" == "307" ]] || [[ "$http_code" == "308" ]]; then
-        if [[ "$redirect_url" == *"$target"* ]] || [[ -n "$redirect_url" ]]; then
-            pass "重定向成功 - ${test_url} (HTTP $http_code) -> $redirect_url"
-            ((PASS_COUNT++))
-        else
-            warn "重定向返回 $http_code 但目标地址不匹配"
-            ((SKIP_COUNT++))
-        fi
-    elif [[ "$http_code" == "ERROR" ]]; then
-        fail "请求失败 - ${test_url}"
-        ((FAIL_COUNT++))
-    else
-        fail "期望重定向状态码 (301/302/307/308)，实际返回: $http_code"
-        ((FAIL_COUNT++))
+        "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+
+    HTTP_HEADERS=$(cat "$_temp_headers_file")
+    HTTP_BODY=$(cat "$_temp_body_file")
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    assert_status_3xx "$HTTP_STATUS" "重定向应返回 3xx 状态码"
+    assert_header_exists "Location" "$HTTP_HEADERS" "重定向应包含 Location 头"
+
+    if [[ -n "$target" ]]; then
+        assert_header_contains "Location" "$target" "$HTTP_HEADERS" "Location 应指向目标地址"
     fi
 }
 
-test_req_headers_rule() {
+test_req_headers_add() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    info "测试请求头修改..."
-    
-    if ! start_mock_server "$target_port" "req-headers-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    local header_name="$2"
+    local header_value="$3"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】添加请求头${NC}"
+    echo "    请求: $test_url"
+    echo "    期望添加: $header_name: $header_value"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local header_key_lower=$(echo "$header_name" | tr '[:upper:]' '[:lower:]')
+        local actual_value=$(echo "$HTTP_BODY" | jq -r ".request.headers[\"$header_name\"] // .request.headers[\"$header_key_lower\"]" 2>/dev/null)
+
+        assert_equals "$header_value" "$actual_value" "后端应收到添加的请求头 $header_name=$header_value"
     fi
-    
-    do_curl_request "$test_url"
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  响应体: ${CURL_RESPONSE_BODY:0:200}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        if [[ "$CURL_RESPONSE_BODY" == *"X-Bifrost-Test"* ]] || [[ "$CURL_RESPONSE_BODY" == *"x-bifrost-test"* ]] || [[ "$CURL_RESPONSE_BODY" == *"req-header-test"* ]]; then
-            pass "请求头已成功添加/修改"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未能确认请求头是否被修改"
-            echo "  提示: 检查 Mock 服务器是否正确回显请求头"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
 }
 
-test_res_headers_rule() {
+test_req_headers_delete() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    info "测试响应头修改..."
-    
-    if ! start_mock_server "$target_port" "res-headers-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    local header_name="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】删除请求头${NC}"
+    echo "    请求: $test_url"
+    echo "    期望删除: $header_name"
+
+    https_request "$test_url" "GET" "" "X-Custom-Test: should-be-deleted"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local header_key_lower=$(echo "$header_name" | tr '[:upper:]' '[:lower:]')
+        local actual_value=$(echo "$HTTP_BODY" | jq -r ".request.headers[\"$header_name\"] // .request.headers[\"$header_key_lower\"] // \"null\"" 2>/dev/null)
+
+        assert_equals "null" "$actual_value" "后端不应收到被删除的请求头 $header_name"
     fi
-    
-    local tmpfile=$(mktemp)
-    local headers_file=$(mktemp)
-    
-    local response_code
-    response_code=$(curl -s -w "%{http_code}" \
-        --proxy "$PROXY" \
-        -k \
-        --connect-timeout 10 \
-        --max-time 15 \
-        -D "$headers_file" \
-        -o "$tmpfile" \
-        "$test_url" 2>&1) || true
-    
-    local headers=$(cat "$headers_file" 2>/dev/null || echo "")
-    rm -f "$tmpfile" "$headers_file"
-    
-    echo "  HTTP 响应码: $response_code"
-    echo "  响应头 (部分): ${headers:0:300}..."
-    
-    if [[ "$response_code" == "200" ]]; then
-        if [[ "$headers" == *"X-Bifrost-Response"* ]] || [[ "$headers" == *"x-bifrost-response"* ]] || [[ "$headers" == *"res-header-test"* ]]; then
-            pass "响应头已成功添加/修改"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未能确认响应头是否被修改"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $response_code"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
 }
 
-test_status_code_rule() {
+test_res_headers_add() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    local expected_status=$(echo "$protocols" | grep -o 'statusCode://[0-9]*' | sed 's|statusCode://||')
-    expected_status=${expected_status:-201}
-    
-    info "测试状态码修改 (期望: $expected_status)..."
-    
-    if ! start_mock_server "$target_port" "status-code-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    local header_name="$2"
+    local header_value="$3"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】添加响应头${NC}"
+    echo "    请求: $test_url"
+    echo "    期望添加: $header_name: $header_value"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "$header_name" "$HTTP_HEADERS" "响应应包含添加的头 $header_name"
+
+    if [[ -n "$header_value" ]]; then
+        assert_header_value "$header_name" "$header_value" "$HTTP_HEADERS" "响应头值应正确"
     fi
-    
-    do_curl_request "$test_url"
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  期望响应码: $expected_status"
-    
-    if [[ "$CURL_RESPONSE_CODE" == "$expected_status" ]]; then
-        pass "状态码已成功修改为 $expected_status"
-        ((PASS_COUNT++))
-    else
-        fail "状态码修改失败，期望 $expected_status，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
 }
 
-test_method_rule() {
+test_status_code() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    local expected_method=$(echo "$protocols" | grep -o 'method://[A-Z]*' | sed 's|method://||')
-    expected_method=${expected_method:-POST}
-    
-    info "测试请求方法修改 (期望: $expected_method)..."
-    
-    if ! start_mock_server "$target_port" "method-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
-    fi
-    
-    do_curl_request "$test_url" "GET"
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  响应体: ${CURL_RESPONSE_BODY:0:200}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        if [[ "$CURL_RESPONSE_BODY" == *"\"method\": \"$expected_method\""* ]] || [[ "$CURL_RESPONSE_BODY" == *"\"method\":\"$expected_method\""* ]]; then
-            pass "请求方法已成功修改为 $expected_method"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未能确认请求方法是否被修改"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
+    local expected_status="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】状态码修改${NC}"
+    echo "    请求: $test_url"
+    echo "    期望状态码: $expected_status"
+
+    https_request "$test_url"
+
+    assert_status "$expected_status" "$HTTP_STATUS" "响应状态码应被修改为 $expected_status"
 }
 
-test_ua_rule() {
+test_method_change() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    local expected_ua=$(echo "$protocols" | grep -o 'ua://[^[:space:]]*' | sed 's|ua://||')
-    
-    info "测试 User-Agent 修改..."
-    
-    if ! start_mock_server "$target_port" "ua-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    local expected_method="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】请求方法修改${NC}"
+    echo "    请求: GET $test_url"
+    echo "    期望后端收到: $expected_method"
+
+    https_request "$test_url" "GET"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        assert_backend_received_method "$expected_method" "$HTTP_BODY" "后端应收到 $expected_method 方法"
     fi
-    
-    do_curl_request "$test_url"
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  响应体: ${CURL_RESPONSE_BODY:0:200}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        if [[ "$CURL_RESPONSE_BODY" == *"$expected_ua"* ]] || [[ "$CURL_RESPONSE_BODY" == *"Bifrost"* ]]; then
-            pass "User-Agent 已成功修改"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未能确认 User-Agent 是否被修改"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
 }
 
-test_referer_rule() {
+test_ua_change() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    local expected_referer=$(echo "$protocols" | grep -o 'referer://[^[:space:]]*' | sed 's|referer://||')
-    
-    info "测试 Referer 修改..."
-    
-    if ! start_mock_server "$target_port" "referer-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    local expected_ua="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】User-Agent 修改${NC}"
+    echo "    请求: $test_url"
+    echo "    期望 UA: $expected_ua"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_ua=$(echo "$HTTP_BODY" | jq -r '.request.headers["User-Agent"] // .request.headers["user-agent"]' 2>/dev/null)
+        assert_body_contains "$expected_ua" "$actual_ua" "User-Agent 应被修改为包含 $expected_ua"
     fi
-    
-    do_curl_request "$test_url"
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  响应体: ${CURL_RESPONSE_BODY:0:200}..."
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        if [[ "$CURL_RESPONSE_BODY" == *"$expected_referer"* ]] || [[ "$CURL_RESPONSE_BODY" == *"bifrost"* ]]; then
-            pass "Referer 已成功修改"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未能确认 Referer 是否被修改"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
 }
 
-test_delay_rule() {
+test_referer_change() {
     local pattern="$1"
-    local protocols="$2"
+    local expected_referer="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Referer 修改${NC}"
+    echo "    请求: $test_url"
+    echo "    期望 Referer: $expected_referer"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_referer=$(echo "$HTTP_BODY" | jq -r '.request.headers["Referer"] // .request.headers["referer"]' 2>/dev/null)
+        assert_equals "$expected_referer" "$actual_referer" "Referer 应被修改为 $expected_referer"
+    fi
+}
+
+test_delay() {
+    local pattern="$1"
+    local delay_ms="$2"
     local delay_type="$3"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    local expected_delay
-    if [[ "$delay_type" == "req" ]]; then
-        expected_delay=$(echo "$protocols" | grep -o 'reqDelay://[0-9]*' | sed 's|reqDelay://||')
-    else
-        expected_delay=$(echo "$protocols" | grep -o 'resDelay://[0-9]*' | sed 's|resDelay://||')
-    fi
-    expected_delay=${expected_delay:-500}
-    
-    info "测试 ${delay_type} 延迟 (期望延迟: ${expected_delay}ms)..."
-    
-    if ! start_mock_server "$target_port" "delay-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
-    fi
-    
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】${delay_type}延迟${NC}"
+    echo "    请求: $test_url"
+    echo "    期望延迟: ${delay_ms}ms"
+
     local start_time=$(python3 -c "import time; print(int(time.time() * 1000))")
-    do_curl_request "$test_url"
+    https_request "$test_url"
     local end_time=$(python3 -c "import time; print(int(time.time() * 1000))")
-    
+
     local elapsed=$((end_time - start_time))
-    
-    echo "  HTTP 响应码: $CURL_RESPONSE_CODE"
-    echo "  实际耗时: ${elapsed}ms"
-    echo "  期望延迟: ${expected_delay}ms"
-    
-    if [[ "$CURL_RESPONSE_CODE" == "200" ]]; then
-        local min_expected=$((expected_delay - 100))
-        if [[ $elapsed -ge $min_expected ]]; then
-            pass "延迟生效，耗时 ${elapsed}ms >= ${min_expected}ms"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但延迟可能未生效 (耗时 ${elapsed}ms < ${min_expected}ms)"
-            ((SKIP_COUNT++))
-        fi
+    local min_expected=$((delay_ms - 100))
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ $elapsed -ge $min_expected ]]; then
+        _log_pass "延迟生效: 实际 ${elapsed}ms >= 预期 ${min_expected}ms"
     else
-        fail "请求失败，期望 200，实际: $CURL_RESPONSE_CODE"
-        ((FAIL_COUNT++))
+        _log_fail "延迟可能未生效" ">= ${min_expected}ms" "${elapsed}ms"
     fi
-    
-    stop_mock_server
 }
 
-test_cors_rule() {
+test_cors() {
     local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    info "测试 CORS 响应头..."
-    
-    if ! start_mock_server "$target_port" "cors-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
-    fi
-    
-    local tmpfile=$(mktemp)
-    local headers_file=$(mktemp)
-    
-    local response_code
-    response_code=$(curl -s -w "%{http_code}" \
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】CORS 支持${NC}"
+    echo "    请求: $test_url"
+
+    _temp_headers_file=$(mktemp)
+    _temp_body_file=$(mktemp)
+
+    HTTP_STATUS=$(curl -s -w '%{http_code}' \
         --proxy "$PROXY" \
         -k \
         -H "Origin: https://example.com" \
-        --connect-timeout 10 \
-        --max-time 15 \
-        -D "$headers_file" \
-        -o "$tmpfile" \
-        "$test_url" 2>&1) || true
-    
-    local headers=$(cat "$headers_file" 2>/dev/null || echo "")
-    rm -f "$tmpfile" "$headers_file"
-    
-    echo "  HTTP 响应码: $response_code"
-    echo "  响应头 (部分): ${headers:0:300}..."
-    
-    if [[ "$response_code" == "200" ]]; then
-        if [[ "$headers" == *"Access-Control-Allow-Origin"* ]] || [[ "$headers" == *"access-control-allow-origin"* ]]; then
-            pass "CORS 响应头已添加"
-            ((PASS_COUNT++))
-        else
-            warn "请求返回 200，但未找到 CORS 响应头"
-            ((SKIP_COUNT++))
-        fi
-    else
-        fail "请求失败，期望 200，实际: $response_code"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
-}
-
-test_cookies_rule() {
-    local pattern="$1"
-    local protocols="$2"
-    local cookie_type="$3"
-    local target_port=$(extract_target_port "$protocols")
-    local test_url="https://${pattern}/"
-    
-    info "测试 ${cookie_type} Cookie..."
-    
-    if ! start_mock_server "$target_port" "cookies-test"; then
-        fail "无法启动 Mock 服务器"
-        ((FAIL_COUNT++))
-        return
-    fi
-    
-    local tmpfile=$(mktemp)
-    local headers_file=$(mktemp)
-    
-    local response_code
-    response_code=$(curl -s -w "%{http_code}" \
-        --proxy "$PROXY" \
-        -k \
-        --connect-timeout 10 \
-        --max-time 15 \
-        -D "$headers_file" \
-        -o "$tmpfile" \
-        "$test_url" 2>&1) || true
-    
-    local body=$(cat "$tmpfile" 2>/dev/null || echo "")
-    local headers=$(cat "$headers_file" 2>/dev/null || echo "")
-    rm -f "$tmpfile" "$headers_file"
-    
-    echo "  HTTP 响应码: $response_code"
-    
-    if [[ "$response_code" == "200" ]]; then
-        if [[ "$cookie_type" == "req" ]]; then
-            if [[ "$body" == *"bifrost_test"* ]] || [[ "$body" == *"cookie"* ]]; then
-                pass "请求 Cookie 已添加"
-                ((PASS_COUNT++))
-            else
-                warn "请求返回 200，但未能确认请求 Cookie 是否被添加"
-                ((SKIP_COUNT++))
-            fi
-        else
-            if [[ "$headers" == *"Set-Cookie"* ]] || [[ "$headers" == *"set-cookie"* ]] || [[ "$headers" == *"bifrost"* ]]; then
-                pass "响应 Cookie 已设置"
-                ((PASS_COUNT++))
-            else
-                warn "请求返回 200，但未找到响应 Cookie"
-                ((SKIP_COUNT++))
-            fi
-        fi
-    else
-        fail "请求失败，期望 200，实际: $response_code"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_mock_server
-}
-
-WS_MOCK_SERVER_PID=""
-
-start_ws_mock_server() {
-    local port="$1"
-    
-    if lsof -i ":${port}" -t >/dev/null 2>&1; then
-        local existing_pid=$(lsof -i ":${port}" -t 2>/dev/null | head -1)
-        kill "$existing_pid" 2>/dev/null || true
-        sleep 0.5
-    fi
-    
-    python3 -c "
-import asyncio
-import hashlib
-import base64
-import struct
-
-async def handle_client(reader, writer):
-    try:
-        request = await reader.read(4096)
-        request_str = request.decode('utf-8', errors='ignore')
-        
-        key = None
-        for line in request_str.split('\r\n'):
-            if line.lower().startswith('sec-websocket-key:'):
-                key = line.split(':', 1)[1].strip()
-                break
-        
-        if not key:
-            writer.close()
-            return
-        
-        accept = base64.b64encode(
-            hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()
-        ).decode()
-        
-        response = (
-            'HTTP/1.1 101 Switching Protocols\r\n'
-            'Upgrade: websocket\r\n'
-            'Connection: Upgrade\r\n'
-            f'Sec-WebSocket-Accept: {accept}\r\n'
-            '\r\n'
-        )
-        writer.write(response.encode())
-        await writer.drain()
-        
-        while True:
-            header = await reader.read(2)
-            if len(header) < 2:
-                break
-            
-            opcode = header[0] & 0x0F
-            masked = (header[1] & 0x80) != 0
-            payload_len = header[1] & 0x7F
-            
-            if payload_len == 126:
-                ext = await reader.read(2)
-                payload_len = struct.unpack('>H', ext)[0]
-            elif payload_len == 127:
-                ext = await reader.read(8)
-                payload_len = struct.unpack('>Q', ext)[0]
-            
-            mask = await reader.read(4) if masked else b''
-            payload = await reader.read(payload_len)
-            
-            if masked and mask:
-                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-            
-            if opcode == 8:
-                close_frame = bytes([0x88, 0x00])
-                writer.write(close_frame)
-                await writer.drain()
-                break
-            elif opcode == 9:
-                pong_frame = bytes([0x8A, len(payload)]) + payload
-                writer.write(pong_frame)
-                await writer.drain()
-            elif opcode in (1, 2):
-                response_header = bytes([0x80 | opcode, len(payload)])
-                writer.write(response_header + payload)
-                await writer.drain()
-    except Exception:
-        pass
-    finally:
-        writer.close()
-
-async def main():
-    server = await asyncio.start_server(handle_client, '127.0.0.1', $port)
-    async with server:
-        await server.serve_forever()
-
-asyncio.run(main())
-" &
-    WS_MOCK_SERVER_PID=$!
-    sleep 1
-    
-    if ! kill -0 "$WS_MOCK_SERVER_PID" 2>/dev/null; then
-        fail "WebSocket Mock 服务器启动失败"
-        return 1
-    fi
-    
-    return 0
-}
-
-stop_ws_mock_server() {
-    if [[ -n "$WS_MOCK_SERVER_PID" ]] && kill -0 "$WS_MOCK_SERVER_PID" 2>/dev/null; then
-        kill "$WS_MOCK_SERVER_PID" 2>/dev/null || true
-        wait "$WS_MOCK_SERVER_PID" 2>/dev/null || true
-        WS_MOCK_SERVER_PID=""
-    fi
-}
-
-extract_ws_target_port() {
-    local protocols="$1"
-    local ws_url=$(echo "$protocols" | grep -o 'ws://[^[:space:]]*\|wss://[^[:space:]]*' | head -1)
-    
-    if [[ -z "$ws_url" ]]; then
-        echo "3020"
-        return
-    fi
-    
-    local target_host=$(echo "$ws_url" | sed 's|wss\?://||' | sed 's|/.*||')
-    local port=$(echo "$target_host" | grep -o ':[0-9]*$' | tr -d ':')
-    echo "${port:-3020}"
-}
-
-test_websocket_rule() {
-    local pattern="$1"
-    local protocols="$2"
-    local target_port=$(extract_ws_target_port "$protocols")
-    
-    info "测试 WebSocket 转发规则..."
-    
-    echo ""
-    echo -e "  ${CYAN}【场景1】WebSocket 目标服务未启动 - 期望连接失败${NC}"
-    
-    stop_ws_mock_server
-    
-    local ws_test_result
-    ws_test_result=$(curl -s -o /dev/null -w "%{http_code}" \
-        --proxy "$PROXY" \
-        -k \
-        --connect-timeout 5 \
+        -D "$_temp_headers_file" \
+        -o "$_temp_body_file" \
         --max-time 10 \
-        -H "Upgrade: websocket" \
-        -H "Connection: Upgrade" \
-        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-        -H "Sec-WebSocket-Version: 13" \
-        "http://${pattern}/ws" 2>/dev/null) || ws_test_result="000"
-    
-    echo "    HTTP 响应码: $ws_test_result"
-    
-    if [[ "$ws_test_result" == "502" ]] || [[ "$ws_test_result" == "503" ]] || [[ "$ws_test_result" == "000" ]]; then
-        pass "WebSocket 目标服务未启动时正确返回错误"
-        ((PASS_COUNT++))
-    else
-        warn "WebSocket 目标服务未启动时返回: $ws_test_result (期望 502/503)"
-        ((SKIP_COUNT++))
-    fi
-    
+        "$test_url" 2>/dev/null) || HTTP_STATUS="000"
+
+    HTTP_HEADERS=$(cat "$_temp_headers_file")
+    rm -f "$_temp_headers_file" "$_temp_body_file"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "Access-Control-Allow-Origin" "$HTTP_HEADERS" "响应应包含 CORS 头"
+}
+
+test_req_cookies() {
+    local pattern="$1"
+    local cookie_name="$2"
+    local cookie_value="$3"
+    local test_url="https://${pattern}/test"
+
     echo ""
-    echo -e "  ${CYAN}【场景2】WebSocket 目标服务已启动 - 期望握手成功${NC}"
-    
-    info "启动 WebSocket Mock 服务器 (端口: ${target_port})..."
-    if ! start_ws_mock_server "$target_port"; then
-        fail "无法启动 WebSocket Mock 服务器"
-        ((FAIL_COUNT++))
-        return
+    echo -e "  ${CYAN}【测试】添加请求 Cookie${NC}"
+    echo "    请求: $test_url"
+    echo "    期望 Cookie: $cookie_name=$cookie_value"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_cookie=$(echo "$HTTP_BODY" | jq -r ".request.cookies[\"$cookie_name\"]" 2>/dev/null)
+        assert_equals "$cookie_value" "$actual_cookie" "后端应收到 Cookie $cookie_name=$cookie_value"
     fi
-    echo -e "    ${GREEN}WebSocket Mock 服务器已启动${NC}"
-    
+}
+
+test_res_cookies() {
+    local pattern="$1"
+    local cookie_name="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】设置响应 Cookie${NC}"
+    echo "    请求: $test_url"
+    echo "    期望 Set-Cookie 包含: $cookie_name"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "Set-Cookie" "$HTTP_HEADERS" "响应应包含 Set-Cookie 头"
+    assert_header_contains "Set-Cookie" "$cookie_name" "$HTTP_HEADERS" "Set-Cookie 应包含 $cookie_name"
+}
+
+test_websocket_forward() {
+    local pattern="$1"
+    local target="$2"
+    local test_url="http://${pattern}/ws"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】WebSocket 转发${NC}"
+    echo "    请求: $test_url"
+    echo "    目标: $target"
+
     local tmpfile=$(mktemp)
     local headers_file=$(mktemp)
-    
+
     local ws_response_code
     ws_response_code=$(curl -s -w "%{http_code}" \
         --proxy "$PROXY" \
@@ -1009,40 +576,22 @@ test_websocket_rule() {
         -H "Sec-WebSocket-Version: 13" \
         -D "$headers_file" \
         -o "$tmpfile" \
-        "http://${pattern}/ws" 2>/dev/null) || ws_response_code="000"
-    
+        "$test_url" 2>/dev/null) || ws_response_code="000"
+
     local ws_headers=$(cat "$headers_file" 2>/dev/null || echo "")
     rm -f "$tmpfile" "$headers_file"
-    
+
     if [[ "$ws_response_code" == "000" ]] && [[ "$ws_headers" == *"101"* ]]; then
         ws_response_code="101"
     fi
-    
-    echo "    HTTP 响应码: $ws_response_code"
-    echo "    响应头 (部分): ${ws_headers:0:200}..."
-    
-    if [[ "$ws_response_code" == "101" ]]; then
-        if [[ "$ws_headers" == *"Upgrade"* ]] || [[ "$ws_headers" == *"upgrade"* ]]; then
-            pass "WebSocket 握手成功 (101 Switching Protocols)"
-            ((PASS_COUNT++))
-        else
-            warn "返回 101 但响应头可能不完整"
-            ((SKIP_COUNT++))
-        fi
-    elif [[ "$ws_response_code" == "200" ]]; then
-        warn "返回 200 而非 101，可能代理未正确处理 WebSocket 升级"
-        ((SKIP_COUNT++))
-    else
-        fail "WebSocket 握手失败，期望 101，实际: $ws_response_code"
-        ((FAIL_COUNT++))
-    fi
-    
-    stop_ws_mock_server
+
+    assert_status "101" "$ws_response_code" "WebSocket 握手应返回 101"
+    assert_header_contains "Upgrade" "websocket" "$ws_headers" "响应应包含 Upgrade: websocket"
 }
 
 detect_rule_type() {
     local line="$1"
-    
+
     if [[ "$line" == *"redirect://"* ]] || [[ "$line" == *"locationHref://"* ]]; then
         echo "redirect"
     elif [[ "$line" == *"reqHeaders://"* ]]; then
@@ -1067,106 +616,140 @@ detect_rule_type() {
         echo "reqCookies"
     elif [[ "$line" == *"resCookies://"* ]]; then
         echo "resCookies"
+    elif [[ "$line" == *" ws://"* ]]; then
+        echo "websocket"
+    elif [[ "$line" == *" wss://"* ]]; then
+        echo "websocket_secure"
+    elif [[ "$line" == *" https://"* ]]; then
+        if [[ "$line" == "http://"* ]] || [[ "$line" != "https://"* ]]; then
+            echo "http_to_https"
+        else
+            echo "https_forward"
+        fi
+    elif [[ "$line" == *" http://"* ]]; then
+        if [[ "$line" == "https://"* ]]; then
+            echo "https_to_http"
+        else
+            echo "http_forward"
+        fi
     elif [[ "$line" == *"host://"* ]] || [[ "$line" == *"xhost://"* ]]; then
         echo "host"
-    elif [[ "$line" == *" http://"* ]] || [[ "$line" == *" https://"* ]]; then
-        echo "host"
-    elif [[ "$line" == *" ws://"* ]] || [[ "$line" == *" wss://"* ]]; then
-        echo "websocket"
+    elif [[ "$line" =~ [[:space:]][0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+ ]] || [[ "$line" =~ [[:space:]]localhost:[0-9]+ ]] || [[ "$line" =~ [[:space:]]127\.0\.0\.1:[0-9]+ ]]; then
+        echo "ip_forward"
     else
         echo "unknown"
     fi
 }
 
+extract_target() {
+    local protocols="$1"
+    local target=$(echo "$protocols" | grep -o 'http://[^[:space:]]*\|https://[^[:space:]]*\|ws://[^[:space:]]*\|wss://[^[:space:]]*\|host://[^[:space:]]*' | head -1 | sed 's|host://||')
+    if [[ -z "$target" ]]; then
+        target=$(echo "$protocols" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+(/[^[:space:]]*)?' | head -1)
+    fi
+    echo "$target"
+}
+
+extract_value() {
+    local protocols="$1"
+    local prefix="$2"
+    echo "$protocols" | grep -o "${prefix}://[^[:space:]]*" | sed "s|${prefix}://||"
+}
+
 run_tests() {
     header "执行端到端测试"
 
+    local rules=()
     while IFS= read -r line; do
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "${line// }" ]] && continue
-        
+        rules+=("$line")
+    done < "$RULE_FILE"
+
+    set +e
+    for line in "${rules[@]}"; do
         local pattern=$(echo "$line" | awk '{print $1}')
         local protocols=$(echo "$line" | cut -d' ' -f2-)
-        
+
         if [[ -z "$pattern" ]] || [[ -z "$protocols" ]]; then
             continue
         fi
-        
+
         echo ""
         echo -e "${YELLOW}┌─────────────────────────────────────────────────────${NC}"
         echo -e "${YELLOW}│ 规则: $line${NC}"
         echo -e "${YELLOW}└─────────────────────────────────────────────────────${NC}"
-        
+
         local rule_type=$(detect_rule_type "$line")
-        
+        local target=$(extract_target "$protocols")
+
         case "$rule_type" in
-            host)
-                local target=$(echo "$protocols" | grep -o 'host://[^[:space:]]*\|http://[^[:space:]]*\|https://[^[:space:]]*' | head -1 | sed 's|host://||')
-                test_host_rule "$pattern" "$target"
+            http_forward|host|ip_forward)
+                test_http_to_http_forward "$pattern" "$target"
+                ;;
+            https_to_http)
+                test_https_to_http_forward "$pattern" "$target"
+                ;;
+            http_to_https)
+                test_http_to_https_forward "$pattern" "$target"
                 ;;
             redirect)
-                local target=$(echo "$protocols" | grep -o 'redirect://[^[:space:]]*\|locationHref://[^[:space:]]*' | sed 's|redirect://||; s|locationHref://||')
-                test_redirect_rule "$pattern" "$target"
+                local redirect_target=$(extract_value "$protocols" "redirect")
+                [[ -z "$redirect_target" ]] && redirect_target=$(extract_value "$protocols" "locationHref")
+                test_redirect_rule "$pattern" "$redirect_target"
                 ;;
             reqHeaders)
-                test_req_headers_rule "$pattern" "$protocols"
+                test_req_headers_add "$pattern" "X-Test-Header" "test-value"
                 ;;
             resHeaders)
-                test_res_headers_rule "$pattern" "$protocols"
+                test_res_headers_add "$pattern" "X-Test-Response" "test-value"
                 ;;
             statusCode)
-                test_status_code_rule "$pattern" "$protocols"
+                local status=$(extract_value "$protocols" "statusCode")
+                test_status_code "$pattern" "${status:-201}"
                 ;;
             method)
-                test_method_rule "$pattern" "$protocols"
+                local method=$(extract_value "$protocols" "method")
+                test_method_change "$pattern" "${method:-POST}"
                 ;;
             ua)
-                test_ua_rule "$pattern" "$protocols"
+                local ua=$(extract_value "$protocols" "ua")
+                test_ua_change "$pattern" "${ua:-Bifrost}"
                 ;;
             referer)
-                test_referer_rule "$pattern" "$protocols"
+                local referer=$(extract_value "$protocols" "referer")
+                test_referer_change "$pattern" "${referer:-https://bifrost.test}"
                 ;;
             reqDelay)
-                test_delay_rule "$pattern" "$protocols" "req"
+                local delay=$(extract_value "$protocols" "reqDelay")
+                test_delay "$pattern" "${delay:-500}" "请求"
                 ;;
             resDelay)
-                test_delay_rule "$pattern" "$protocols" "res"
+                local delay=$(extract_value "$protocols" "resDelay")
+                test_delay "$pattern" "${delay:-500}" "响应"
                 ;;
             cors)
-                test_cors_rule "$pattern" "$protocols"
+                test_cors "$pattern"
                 ;;
             reqCookies)
-                test_cookies_rule "$pattern" "$protocols" "req"
+                test_req_cookies "$pattern" "test_cookie" "test_value"
                 ;;
             resCookies)
-                test_cookies_rule "$pattern" "$protocols" "res"
+                test_res_cookies "$pattern" "bifrost"
                 ;;
-            websocket)
-                test_websocket_rule "$pattern" "$protocols"
+            websocket|websocket_secure)
+                test_websocket_forward "$pattern" "$target"
                 ;;
             *)
-                warn "跳过不支持的规则类型: $rule_type"
-                ((SKIP_COUNT++))
+                warn "跳过不支持的规则类型: $rule_type (规则: $line)"
                 ;;
         esac
-        
-    done < "$RULE_FILE"
+    done
+    set -e
 }
 
-show_summary() {
-    header "测试结果汇总"
-    
-    echo -e "${GREEN}通过: $PASS_COUNT${NC}"
-    echo -e "${RED}失败: $FAIL_COUNT${NC}"
-    echo -e "${YELLOW}跳过: $SKIP_COUNT${NC}"
-    echo ""
-    
-    if [[ $FAIL_COUNT -eq 0 ]]; then
-        echo -e "${GREEN}所有测试通过！${NC}"
-    else
-        echo -e "${RED}有 $FAIL_COUNT 个测试失败${NC}"
-    fi
-}
+SKIP_BUILD="false"
+KEEP_PROXY="false"
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -1181,6 +764,14 @@ parse_args() {
                 ;;
             -l|--list)
                 list_rules
+                ;;
+            --no-build)
+                SKIP_BUILD="true"
+                shift
+                ;;
+            --keep-proxy)
+                KEEP_PROXY="true"
+                shift
                 ;;
             *)
                 if [[ -z "$RULE_FILE" ]]; then
@@ -1200,9 +791,9 @@ parse_args() {
                 ;;
         esac
     done
-    
+
     if [[ -z "$RULE_FILE" ]]; then
-        fail "请指定规则文件"
+        echo -e "${RED}✗${NC} 请指定规则文件"
         echo ""
         usage
     fi
@@ -1210,24 +801,26 @@ parse_args() {
 
 main() {
     parse_args "$@"
-    
-    header "Bifrost 规则端到端测试"
+
+    header "Bifrost 规则端到端测试 v2"
     echo "代理端口: $PROXY_PORT"
     echo "规则文件: $RULE_FILE"
     echo "项目目录: $PROJECT_DIR"
     echo ""
 
+    reset_test_stats
+
+    check_dependencies
     check_rule_file
     build_proxy
     setup_data_dir
+    start_echo_servers
     show_rules
     start_proxy
     run_tests
-    show_summary
 
-    if [[ $FAIL_COUNT -gt 0 ]]; then
-        exit 1
-    fi
+    print_test_summary
+    exit $?
 }
 
 main "$@"

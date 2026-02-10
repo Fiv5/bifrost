@@ -1,0 +1,10 @@
+# C-02: Filter 规则测试
+# 需求: filter 规则应仅处理匹配的请求
+
+# 仅处理 .local 域名
+filter://*.local
+
+# 测试用例:
+# 1. 请求 http://any.local/ 应被代理处理
+# 2. 请求 http://example.com/ 应直接透传
+# 3. filter 应与其他规则配合使用

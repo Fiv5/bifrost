@@ -1,0 +1,31 @@
+# P-02: 通配符层级优先级测试
+# 需求: 更具体的通配符应优先于更通用的通配符
+
+# 最通用的通配符 (最低优先级)
+*.local 127.0.0.1:3000 resHeaders://{match_level1}
+
+# 二级通配符 (中等优先级)
+*.wildcard.local 127.0.0.1:3000 resHeaders://{match_level2}
+
+# 三级通配符 (较高优先级)
+*.sub.wildcard.local 127.0.0.1:3000 resHeaders://{match_level3}
+
+# 测试用例:
+# 1. 请求 http://any.local/
+#    响应应包含 X-Match: level-1
+# 2. 请求 http://any.wildcard.local/
+#    响应应包含 X-Match: level-2
+# 3. 请求 http://any.sub.wildcard.local/
+#    响应应包含 X-Match: level-3
+
+``` match_level1
+X-Match: level-1
+```
+
+``` match_level2
+X-Match: level-2
+```
+
+``` match_level3
+X-Match: level-3
+```

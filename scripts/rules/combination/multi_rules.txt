@@ -1,0 +1,56 @@
+# 多规则组合测试
+# M-01: 转发 + 请求头修改
+# M-02: 转发 + 响应头修改 + 状态码
+# M-03: 多重头修改
+# M-04: 完整修改链
+
+# M-01 转发 + 请求头修改
+test-forward-reqheader.local http://127.0.0.1:3000 reqHeaders://{x_added}
+
+# M-02 转发 + 响应头修改 + 状态码修改
+test-forward-multi.local http://127.0.0.1:3000 resHeaders://{x_custom} statusCode://201
+
+# M-03 多重请求头修改 (添加多个头)
+test-multi-reqheaders.local http://127.0.0.1:3000 reqHeaders://{x_first} reqHeaders://{x_second}
+
+# M-04 完整修改链: 方法 + UA + Referer + 请求头 + 响应头 + 状态码
+test-full-chain.local http://127.0.0.1:3000 method://POST ua://TestBot referer://https://test.com reqHeaders://{x_test} resHeaders://{x_response} statusCode://202
+
+# M-05 转发 + 延迟
+test-forward-delay.local http://127.0.0.1:3000 reqDelay://100 resDelay://100
+
+# M-06 转发 + Cookie 修改
+test-forward-cookies.local http://127.0.0.1:3000 reqCookies://session=abc123 resCookies://token=xyz789
+
+# M-07 转发 + CORS
+test-forward-cors.local http://127.0.0.1:3000 resCors://*
+
+# M-08 转发 + 内容类型修改
+test-forward-type.local http://127.0.0.1:3000 reqType://application/json resType://application/xml
+
+# M-09 转发 + URL 参数修改
+test-forward-params.local http://127.0.0.1:3000 urlParams://added=true params://merged=data
+
+``` x_added
+X-Added: true
+```
+
+``` x_custom
+X-Custom: value
+```
+
+``` x_first
+X-First: 1
+```
+
+``` x_second
+X-Second: 2
+```
+
+``` x_test
+X-Test: full
+```
+
+``` x_response
+X-Response: modified
+```

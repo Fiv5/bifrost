@@ -1,0 +1,42 @@
+# 模式匹配测试
+# PM-01: 精确域名匹配
+# PM-02: 通配符匹配
+# PM-03: 路径匹配
+# PM-04: 正则匹配
+# PM-05: IP/CIDR 匹配
+
+# PM-01 精确域名匹配
+exact.test.local http://127.0.0.1:3000
+
+# PM-02 通配符匹配 - 单层
+*.wildcard.local http://127.0.0.1:3000
+
+# PM-03 通配符匹配 - 多层
+**.deep.wildcard.local http://127.0.0.1:3000
+
+# PM-04 路径前缀匹配
+path-prefix.local/api http://127.0.0.1:3000
+
+# PM-05 路径精确匹配
+path-exact.local/api/v1/users http://127.0.0.1:3000
+
+# PM-06 路径通配符匹配
+path-wildcard.local/api/* http://127.0.0.1:3000
+
+# PM-07 正则匹配 (使用 / 包围)
+/^regex-\d+\.local$/ http://127.0.0.1:3000
+
+# PM-08 正则捕获组
+/^capture-(\w+)\.local$/ http://127.0.0.1:3000/$1
+
+# PM-09 IP 地址匹配
+127.0.0.1 http://127.0.0.1:3000
+
+# PM-10 CIDR 匹配
+192.168.0.0/16 http://127.0.0.1:3000
+
+# PM-11 端口匹配
+portmatch.local:8080 http://127.0.0.1:3000
+
+# PM-12 协议 + 域名 + 端口 + 路径 完整匹配
+https://full-match.local:443/api/v1 http://127.0.0.1:3000

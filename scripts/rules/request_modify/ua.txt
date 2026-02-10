@@ -1,0 +1,25 @@
+# R-05: User-Agent 修改测试
+# 需求: 代理应能修改请求的 User-Agent
+
+# 设置为移动端 UA
+ua-mobile.local 127.0.0.1:3000 ua://{mobile_ua}
+
+# 设置为桌面端 UA
+ua-desktop.local 127.0.0.1:3000 ua://{desktop_ua}
+
+# 设置为自定义 UA
+ua-custom.local 127.0.0.1:3000 ua://BifrostProxy/1.0
+
+# 测试用例:
+# 1. 请求 http://ua-mobile.local/test
+#    后端应收到 iPhone User-Agent
+# 2. 请求 http://ua-custom.local/test
+#    后端应收到 "BifrostProxy/1.0" User-Agent
+
+```mobile_ua
+Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15
+```
+
+```desktop_ua
+Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+```

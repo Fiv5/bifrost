@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""
+HTTPS Echo Server - 用于验证代理服务的 TLS 处理能力
+
+启动方式:
+    python3 https_echo_server.py [port]
+    python3 https_echo_server.py 3443
+
+功能:
+    - 自签名证书的 HTTPS 服务
+    - 详细回显所有收到的请求信息
+    - 返回 JSON 格式，便于断言验证
+    - 用于测试 https→http, http→https 转发场景
+"""
+
+import http.server
+import json
+import os
+import socketserver
+import ssl
+import sys
+import tempfile
+import urllib.parse
+from datetime import datetime
+
+
+def generate_self_signed_cert():
+    """生成临时自签名证书"""
+    cert_dir = tempfile.mkdtemp(prefix='bifrost_test_')
+    cert_path = os.path.join(cert_dir, 'cert.pem')
+    key_path = os.path.join(cert_dir, 'key.pem')
+
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from datetime import timedelta
+        import ipaddress
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "CN"),
+            x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Beijing"),
+            x509.NameAttribute(NameOID.LOCALITY_NAME, "Beijing"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Bifrost Test"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+        ])
+
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(datetime.utcnow())
+            .not_valid_after(datetime.utcnow() + timedelta(days=365))
+            .add_extension(
+                x509.SubjectAlternativeName([
+                    x509.DNSName("localhost"),
+                    x509.DNSName("*.local"),
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
+                ]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+
+        with open(key_path, 'wb') as f:
+            f.write(key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.TraditionalOpenSSL,
+                encryption_algorithm=serialization.NoEncryption()
+            ))
+
+        with open(cert_path, 'wb') as f:
+            f.write(cert.public_bytes(serialization.Encoding.PEM))
+
+        print(f"  Certificate generated: {cert_path}")
+        return cert_path, key_path, cert_dir
+
+    except ImportError:
+        print("  Warning: cryptography not installed, using openssl command")
+        import subprocess
+        subprocess.run([
+            'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+            '-keyout', key_path, '-out', cert_path,
+            '-days', '365', '-nodes',
+            '-subj', '/CN=localhost/O=Bifrost Test'
+        ], capture_output=True)
+        return cert_path, key_path, cert_dir
+
+
+class EchoHandler(http.server.BaseHTTPRequestHandler):
+    """回显所有请求信息的 Handler"""
+
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, format, *args):
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"[{timestamp}] {self.client_address[0]}:{self.client_address[1]} - {format % args}")
+
+    def _build_response(self, body_content=None):
+        headers_dict = {}
+        headers_list = []
+        for key, value in self.headers.items():
+            headers_dict[key] = value
+            headers_list.append(f"{key}: {value}")
+
+        parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+
+        tls_info = {}
+        if hasattr(self.connection, 'getpeercert'):
+            try:
+                tls_info['peer_cert'] = str(self.connection.getpeercert())
+                tls_info['cipher'] = self.connection.cipher()
+                tls_info['version'] = self.connection.version()
+            except Exception:
+                pass
+
+        response_data = {
+            "timestamp": datetime.now().isoformat(),
+            "server": {
+                "type": "https_echo_server",
+                "protocol": "https",
+                "port": self.server.server_address[1],
+                "address": f"{self.server.server_address[0]}:{self.server.server_address[1]}",
+                "tls": tls_info
+            },
+            "request": {
+                "method": self.command,
+                "path": self.path,
+                "parsed_path": parsed_path.path,
+                "query_string": parsed_path.query,
+                "query_params": query_params,
+                "http_version": self.request_version,
+                "headers": headers_dict,
+                "headers_raw": headers_list,
+                "client_address": f"{self.client_address[0]}:{self.client_address[1]}"
+            }
+        }
+
+        if body_content is not None:
+            try:
+                response_data["request"]["body"] = body_content.decode('utf-8')
+                response_data["request"]["body_raw"] = body_content.hex()
+            except UnicodeDecodeError:
+                response_data["request"]["body"] = None
+                response_data["request"]["body_raw"] = body_content.hex()
+
+        return response_data
+
+    def _send_response(self, status_code=200, extra_headers=None, body_content=None):
+        response_data = self._build_response(body_content)
+        response_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(response_json.encode('utf-8'))))
+        self.send_header('X-Echo-Server', 'bifrost-test-https')
+        self.send_header('X-Request-Method', self.command)
+        self.send_header('X-Request-Path', self.path)
+        self.send_header('X-Protocol', 'https')
+        self.send_header('Connection', 'keep-alive')
+
+        if extra_headers:
+            for key, value in extra_headers.items():
+                self.send_header(key, value)
+
+        self.end_headers()
+        self.wfile.write(response_json.encode('utf-8'))
+
+        print(f"  -> Response: {status_code}, Body size: {len(response_json)} bytes")
+
+    def _read_body(self):
+        content_length = self.headers.get('Content-Length')
+        if content_length:
+            try:
+                return self.rfile.read(int(content_length))
+            except Exception:
+                return None
+        return None
+
+    def do_GET(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] GET {self.path}")
+        print(f"Headers:")
+        for key, value in self.headers.items():
+            print(f"  {key}: {value}")
+        self._send_response()
+
+    def do_POST(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] POST {self.path}")
+        body = self._read_body()
+        self._send_response(body_content=body)
+
+    def do_PUT(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] PUT {self.path}")
+        body = self._read_body()
+        self._send_response(body_content=body)
+
+    def do_DELETE(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] DELETE {self.path}")
+        self._send_response()
+
+    def do_PATCH(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] PATCH {self.path}")
+        body = self._read_body()
+        self._send_response(body_content=body)
+
+    def do_HEAD(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] HEAD {self.path}")
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('X-Echo-Server', 'bifrost-test-https')
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        print(f"\n{'='*60}")
+        print(f"[HTTPS] OPTIONS {self.path}")
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD')
+        self.send_header('Access-Control-Allow-Headers', '*')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+
+class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3443
+    host = '127.0.0.1'
+
+    print(f"""
+╔══════════════════════════════════════════════════════════════╗
+║          HTTPS Echo Server - Bifrost E2E Testing             ║
+╠══════════════════════════════════════════════════════════════╣
+║  Address: https://{host}:{port:<5}                             ║
+║  Purpose: Test TLS termination and https forwarding          ║
+║                                                              ║
+║  Note: Uses self-signed certificate                          ║
+╚══════════════════════════════════════════════════════════════╝
+""")
+
+    print("Generating self-signed certificate...")
+    cert_path, key_path, cert_dir = generate_self_signed_cert()
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert_path, key_path)
+
+    with ThreadedHTTPServer((host, port), EchoHandler) as httpd:
+        httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+        print(f"Starting HTTPS Echo Server on {host}:{port}...")
+        print("Press Ctrl+C to stop\n")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down server...")
+            httpd.shutdown()
+        finally:
+            import shutil
+            shutil.rmtree(cert_dir, ignore_errors=True)
+
+
+if __name__ == '__main__':
+    main()

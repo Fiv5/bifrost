@@ -1,0 +1,32 @@
+# CSS 内容注入测试
+# I-20: CSS 追加
+# I-21: CSS 前置
+# I-22: CSS Body 替换
+
+# I-20 CSS 追加 - 在 CSS 响应末尾追加样式
+test-css-append.local http://127.0.0.1:3000 cssAppend://{css_append}
+
+# I-21 CSS 前置 - 在 CSS 响应开头添加样式
+test-css-prepend.local http://127.0.0.1:3000 cssPrepend://{css_prepend}
+
+# I-22 CSS Body 替换 - 替换整个 CSS 响应
+test-css-body.local http://127.0.0.1:3000 cssBody://{css_body}
+
+# I-23 使用 css 别名 (等同于 cssAppend)
+test-css-alias.local http://127.0.0.1:3000 css://{css_inject}
+
+``` css_append
+.appended { color: red; }
+```
+
+``` css_prepend
+/* prepended */
+```
+
+``` css_body
+body { background: #fff; }
+```
+
+``` css_inject
+.injected { display: block; }
+```

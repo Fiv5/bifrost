@@ -1,0 +1,23 @@
+# P-01: 精确匹配 vs 通配符优先级测试
+# 需求: 精确匹配应优先于通配符匹配
+
+# 通配符规则 (低优先级)
+*.priority-test.local 127.0.0.1:3000 resHeaders://{wildcard_match}
+
+# 精确匹配规则 (高优先级)
+exact.priority-test.local 127.0.0.1:3000 resHeaders://{exact_match}
+
+# 测试用例:
+# 1. 请求 http://exact.priority-test.local/
+#    响应应包含 X-Match: exact (精确匹配)
+# 2. 请求 http://other.priority-test.local/
+#    响应应包含 X-Match: wildcard (通配符匹配)
+# 3. 精确匹配规则写在通配符后面也应优先匹配
+
+``` wildcard_match
+X-Match: wildcard
+```
+
+``` exact_match
+X-Match: exact
+```

@@ -1,0 +1,15 @@
+# 缓存和附件测试
+# A-20: cache 缓存控制
+# A-21: attachment 下载附件
+
+# A-20 cache 协议 - 设置缓存时间 (秒)
+test-cache.local http://127.0.0.1:3000 cache://3600
+
+# A-21 cache 禁用缓存
+test-no-cache.local http://127.0.0.1:3000 cache://0
+
+# A-22 attachment 协议 - 强制下载
+test-attachment.local http://127.0.0.1:3000 attachment://download.txt
+
+# A-23 download 别名 (等同于 attachment)
+test-download.local http://127.0.0.1:3000 download://file.dat

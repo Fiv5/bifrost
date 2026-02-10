@@ -1,0 +1,32 @@
+# JavaScript 内容注入测试
+# I-10: JS 追加
+# I-11: JS 前置
+# I-12: JS Body 替换
+
+# I-10 JS 追加 - 在 JS 响应末尾追加代码
+test-js-append.local http://127.0.0.1:3000 jsAppend://{js_append}
+
+# I-11 JS 前置 - 在 JS 响应开头添加代码
+test-js-prepend.local http://127.0.0.1:3000 jsPrepend://{js_prepend}
+
+# I-12 JS Body 替换 - 替换整个 JS 响应
+test-js-body.local http://127.0.0.1:3000 jsBody://{js_body}
+
+# I-13 使用 js 别名 (等同于 jsAppend)
+test-js-alias.local http://127.0.0.1:3000 js://{js_inject}
+
+``` js_append
+console.log('appended js');
+```
+
+``` js_prepend
+// prepended js
+```
+
+``` js_body
+function custom() { return true; }
+```
+
+``` js_inject
+console.log('injected');
+```

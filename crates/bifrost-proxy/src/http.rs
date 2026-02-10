@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord};
-use bifrost_core::{BifrostError, Result};
+use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
@@ -92,7 +92,7 @@ pub async fn handle_http_request(
 
     let original_host = uri.host().unwrap_or("unknown").to_string();
     let original_port = uri.port_u16().unwrap_or(80);
-    let (host, port) = extract_host_port(&processed_uri, &resolved_rules)?;
+    let (host, port) = extract_host_port(&processed_uri, &resolved_rules, false)?;
 
     if verbose_logging {
         if resolved_rules.host.is_some() {
@@ -493,15 +493,17 @@ fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody
         .unwrap()
 }
 
-fn extract_host_port(uri: &Uri, rules: &ResolvedRules) -> Result<(String, u16)> {
+fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result<(String, u16)> {
+    let default_port = get_default_port(&rules.host_protocol, is_https);
+
     if let Some(ref host_rule) = rules.host {
         let host_without_path = host_rule.split('/').next().unwrap_or(host_rule);
         let parts: Vec<&str> = host_without_path.split(':').collect();
         let host = parts[0].to_string();
         let port = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(80)
+            parts[1].parse().unwrap_or(default_port)
         } else {
-            80
+            default_port
         };
         return Ok((host, port));
     }
@@ -511,9 +513,24 @@ fn extract_host_port(uri: &Uri, rules: &ResolvedRules) -> Result<(String, u16)> 
         .ok_or_else(|| BifrostError::Network("Missing host in URI".to_string()))?
         .to_string();
 
-    let port = uri.port_u16().unwrap_or(80);
+    let port = uri.port_u16().unwrap_or(default_port);
 
     Ok((host, port))
+}
+
+fn get_default_port(host_protocol: &Option<Protocol>, is_https: bool) -> u16 {
+    match host_protocol {
+        Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+        Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+        None | Some(Protocol::Host) => {
+            if is_https {
+                443
+            } else {
+                80
+            }
+        }
+        _ => 80,
+    }
 }
 
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
@@ -559,7 +576,7 @@ mod tests {
     fn test_extract_host_port_from_uri() {
         let uri: Uri = "http://example.com:8080/path".parse().unwrap();
         let rules = ResolvedRules::default();
-        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 8080);
     }
@@ -568,7 +585,7 @@ mod tests {
     fn test_extract_host_port_default_port() {
         let uri: Uri = "http://example.com/path".parse().unwrap();
         let rules = ResolvedRules::default();
-        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 80);
     }
@@ -580,7 +597,7 @@ mod tests {
             host: Some("override.com:9000".to_string()),
             ..Default::default()
         };
-        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "override.com");
         assert_eq!(port, 9000);
     }
@@ -592,7 +609,7 @@ mod tests {
             host: Some("override.com".to_string()),
             ..Default::default()
         };
-        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "override.com");
         assert_eq!(port, 80);
     }
@@ -604,8 +621,69 @@ mod tests {
             host: Some("127.0.0.1:3020/ws".to_string()),
             ..Default::default()
         };
-        let (host, port) = extract_host_port(&uri, &rules).unwrap();
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 3020);
+    }
+
+    #[test]
+    fn test_extract_host_port_https_default_port() {
+        let uri: Uri = "https://example.com/path".parse().unwrap();
+        let rules = ResolvedRules::default();
+        let (host, port) = extract_host_port(&uri, &rules, true).unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_extract_host_port_https_rule_without_port() {
+        let uri: Uri = "https://example.com/path".parse().unwrap();
+        let rules = ResolvedRules {
+            host: Some("override.com".to_string()),
+            ..Default::default()
+        };
+        let (host, port) = extract_host_port(&uri, &rules, true).unwrap();
+        assert_eq!(host, "override.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_extract_host_port_http_protocol_forces_port_80() {
+        let uri: Uri = "https://example.com/path".parse().unwrap();
+        let rules = ResolvedRules {
+            host: Some("override.com".to_string()),
+            host_protocol: Some(Protocol::Http),
+            ..Default::default()
+        };
+        let (host, port) = extract_host_port(&uri, &rules, true).unwrap();
+        assert_eq!(host, "override.com");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn test_extract_host_port_https_protocol_forces_port_443() {
+        let uri: Uri = "http://example.com/path".parse().unwrap();
+        let rules = ResolvedRules {
+            host: Some("override.com".to_string()),
+            host_protocol: Some(Protocol::Https),
+            ..Default::default()
+        };
+        let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
+        assert_eq!(host, "override.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_get_default_port() {
+        assert_eq!(get_default_port(&None, false), 80);
+        assert_eq!(get_default_port(&None, true), 443);
+        assert_eq!(get_default_port(&Some(Protocol::Host), false), 80);
+        assert_eq!(get_default_port(&Some(Protocol::Host), true), 443);
+        assert_eq!(get_default_port(&Some(Protocol::Http), false), 80);
+        assert_eq!(get_default_port(&Some(Protocol::Http), true), 80);
+        assert_eq!(get_default_port(&Some(Protocol::Https), false), 443);
+        assert_eq!(get_default_port(&Some(Protocol::Https), true), 443);
+        assert_eq!(get_default_port(&Some(Protocol::Ws), false), 80);
+        assert_eq!(get_default_port(&Some(Protocol::Wss), true), 443);
     }
 }

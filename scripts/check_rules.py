@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""
+规则文件检查脚本
+
+检查 Whistle 规则文件中操作符后的值是否包含空格。
+如果值包含空格，必须使用引用值 {name} 方式。
+
+用法:
+    python3 check_rules.py                     # 检查所有规则文件
+    python3 check_rules.py rules/xxx.txt       # 检查单个文件
+    python3 check_rules.py --errors-only       # 仅显示错误
+"""
+
+import os
+import re
+import sys
+import argparse
+from pathlib import Path
+from typing import List, Tuple, Optional
+
+
+class RuleError:
+    def __init__(self, file_path: str, line_num: int, line_content: str,
+                 operator: str, value: str, message: str):
+        self.file_path = file_path
+        self.line_num = line_num
+        self.line_content = line_content
+        self.operator = operator
+        self.value = value
+        self.message = message
+
+    def suggest_fix(self) -> str:
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', self.operator.lower())
+        return f"定义引用值 {{{safe_name}_value}} 并使用 {self.operator}://{{{safe_name}_value}}"
+
+
+SIMPLE_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\S+)')
+BACKTICK_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(`[^`]*`)')
+BRACE_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\{[^}]*\})')
+PAREN_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\([^)]*\))')
+
+
+def check_value_has_space(value: str) -> Tuple[bool, Optional[str]]:
+    """
+    检查操作符值是否合法（不含空格）
+
+    返回: (is_valid, error_message)
+    """
+    if not value:
+        return True, None
+
+    if value.startswith('{') and value.endswith('}'):
+        return True, None
+
+    if value.startswith('`') and value.endswith('`'):
+        return True, None
+
+    if ' ' in value:
+        if value.startswith('('):
+            return False, "内联值 () 中包含空格，必须使用引用值"
+        return False, "值包含空格，必须使用引用值"
+
+    return True, None
+
+
+def check_incomplete_value(value: str) -> Tuple[bool, Optional[str]]:
+    """
+    检查值是否因为空格而被截断（不完整）
+
+    例如: ua://Mozilla/5.0 会被正则匹配为 Mozilla/5.0，但用户实际想输入的可能是
+          ua://Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X)
+
+    检测规则:
+    1. 以 ( 开头但没有对应的 ) 结尾 - 括号不匹配
+    2. 以 { 开头但没有对应的 } 结尾 - 大括号不匹配
+    3. 以 ` 开头但没有对应的 ` 结尾 - 反引号不匹配
+
+    返回: (is_valid, error_message)
+    """
+    if not value:
+        return True, None
+
+    if value.startswith('(') and not value.endswith(')'):
+        return False, "内联值 () 括号不匹配，可能因空格被截断，请使用引用值 {name}"
+
+    if value.startswith('{') and not value.endswith('}'):
+        return False, "引用值 {} 括号不匹配，可能因空格被截断"
+
+    if value.startswith('`') and not value.endswith('`'):
+        return False, "模板字符串反引号不匹配，可能因空格被截断"
+
+    if value.count('(') > value.count(')'):
+        return False, "值中包含未闭合的括号 (，可能因空格被截断，请使用引用值 {name}"
+
+    return True, None
+
+
+def parse_rule_line(line: str) -> List[Tuple[str, str]]:
+    """
+    解析规则行，提取所有 operator://value 对
+
+    返回: [(operator, value, start_pos), ...]
+    """
+    results = []
+
+    backtick_matches = list(BACKTICK_OPERATOR_PATTERN.finditer(line))
+    brace_matches = list(BRACE_OPERATOR_PATTERN.finditer(line))
+    paren_matches = list(PAREN_OPERATOR_PATTERN.finditer(line))
+    simple_matches = list(SIMPLE_OPERATOR_PATTERN.finditer(line))
+
+    special_positions = set()
+    for m in backtick_matches + brace_matches + paren_matches:
+        results.append((m.group(1), m.group(2), m.start()))
+        for pos in range(m.start(), m.end()):
+            special_positions.add(pos)
+
+    for m in simple_matches:
+        if m.start() not in special_positions:
+            results.append((m.group(1), m.group(2), m.start()))
+
+    results.sort(key=lambda x: x[2])
+    return [(r[0], r[1]) for r in results]
+
+
+def check_file(file_path: str) -> List[RuleError]:
+    """
+    检查单个规则文件
+
+    返回: 错误列表
+    """
+    errors = []
+    in_code_block = False
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except Exception as e:
+        print(f"无法读取文件 {file_path}: {e}", file=sys.stderr)
+        return errors
+
+    for line_num, line in enumerate(lines, 1):
+        stripped = line.strip()
+
+        if stripped.startswith('```'):
+            in_code_block = not in_code_block
+            continue
+
+        if in_code_block:
+            continue
+
+        if not stripped or stripped.startswith('#'):
+            continue
+
+        operators = parse_rule_line(stripped)
+
+        for operator, value in operators:
+            is_valid, error_msg = check_value_has_space(value)
+            if not is_valid:
+                errors.append(RuleError(
+                    file_path=file_path,
+                    line_num=line_num,
+                    line_content=stripped,
+                    operator=operator,
+                    value=value,
+                    message=error_msg
+                ))
+                continue
+
+            is_valid, error_msg = check_incomplete_value(value)
+            if not is_valid:
+                errors.append(RuleError(
+                    file_path=file_path,
+                    line_num=line_num,
+                    line_content=stripped,
+                    operator=operator,
+                    value=value,
+                    message=error_msg
+                ))
+
+    return errors
+
+
+def find_rule_files(base_path: str) -> List[str]:
+    """
+    查找所有规则文件
+    """
+    rules_dir = os.path.join(base_path, 'rules')
+    if not os.path.isdir(rules_dir):
+        return []
+
+    files = []
+    for root, _, filenames in os.walk(rules_dir):
+        for filename in filenames:
+            if filename.endswith('.txt'):
+                files.append(os.path.join(root, filename))
+
+    return sorted(files)
+
+
+def print_error(error: RuleError, base_path: str):
+    """打印错误信息"""
+    rel_path = os.path.relpath(error.file_path, base_path)
+    print(f"\n✗ {rel_path}:{error.line_num}")
+    print(f"   错误: {error.message}")
+    print(f"   当前: {error.operator}://{error.value}")
+    print(f"   建议: {error.suggest_fix()}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='检查规则文件中操作符后的值是否包含空格'
+    )
+    parser.add_argument(
+        'files',
+        nargs='*',
+        help='要检查的文件（默认检查所有规则文件）'
+    )
+    parser.add_argument(
+        '--errors-only',
+        action='store_true',
+        help='仅显示错误'
+    )
+    parser.add_argument(
+        '--base-path',
+        default=os.path.dirname(os.path.abspath(__file__)),
+        help='规则文件基础路径'
+    )
+
+    args = parser.parse_args()
+    base_path = args.base_path
+
+    if args.files:
+        files = []
+        for f in args.files:
+            if os.path.isabs(f):
+                files.append(f)
+            else:
+                files.append(os.path.join(base_path, f))
+    else:
+        files = find_rule_files(base_path)
+
+    if not files:
+        print("未找到规则文件")
+        sys.exit(1)
+
+    print("检查规则文件...")
+
+    total_errors = []
+    files_with_errors = 0
+    files_passed = 0
+
+    for file_path in files:
+        if not os.path.exists(file_path):
+            print(f"文件不存在: {file_path}", file=sys.stderr)
+            continue
+
+        errors = check_file(file_path)
+
+        if errors:
+            files_with_errors += 1
+            total_errors.extend(errors)
+            for error in errors:
+                print_error(error, base_path)
+        else:
+            files_passed += 1
+            if not args.errors_only:
+                rel_path = os.path.relpath(file_path, base_path)
+                print(f"✓ {rel_path}")
+
+    print("\n" + "─" * 50)
+    print(f"检查完成: {len(files)} 个文件")
+    print(f"  ✓ 通过: {files_passed} 个")
+    print(f"  ✗ 错误: {files_with_errors} 个 ({len(total_errors)} 处问题)")
+
+    sys.exit(0 if not total_errors else 1)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,29 @@
+# S-02 ~ S-04: 响应头修改测试
+# 需求: 代理应能添加、修改、删除响应头
+
+# S-02: 添加响应头
+res-header-add.local 127.0.0.1:3000 resHeaders://{add_res_headers}
+
+# S-03: 修改响应头
+res-header-modify.local 127.0.0.1:3000 resHeaders://{modify_res_headers}
+
+# S-04: 删除响应头
+res-header-delete.local 127.0.0.1:3000 resHeaders://{delete_res_headers}
+
+# 测试用例:
+# 1. [添加] 响应应包含 X-Custom-Response: added-by-proxy
+# 2. [修改] 响应的 Content-Type 应被修改
+# 3. [删除] 响应不应包含 X-Echo-Server 头
+
+```add_res_headers
+X-Custom-Response: added-by-proxy
+X-Proxy-Version: bifrost-1.0
+```
+
+```modify_res_headers
+Content-Type: text/plain
+```
+
+```delete_res_headers
+X-Echo-Server:
+```

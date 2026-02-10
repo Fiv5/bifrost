@@ -1,0 +1,13 @@
+# F-03: HTTP to HTTPS 转发测试
+# 需求: http 请求应能正确转发到 https 后端服务
+
+# 规则: 将 http 请求转发到 HTTPS Echo Server
+http-to-https.local https://127.0.0.1:3443
+
+# 测试用例:
+# 1. 请求 http://http-to-https.local/api/test 通过代理
+# 2. 代理将请求以 HTTPS 协议转发到 127.0.0.1:3443
+# 3. Echo Server 的响应 server.protocol 应为 "https"
+# 4. 客户端通过 HTTP 收到响应
+
+# 注意: 代理需要能够建立到后端的 TLS 连接

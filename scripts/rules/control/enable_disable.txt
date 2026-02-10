@@ -1,0 +1,13 @@
+# 启用/禁用规则测试
+# C-10: enable 启用规则
+# C-11: disable 禁用规则
+# C-12: delete 删除规则
+
+# C-10 enable 协议 - 启用特定规则
+test-enable.local enable://
+
+# C-11 disable 协议 - 禁用特定规则  
+test-disable.local disable://
+
+# C-12 delete 协议 - 删除匹配的规则
+test-delete.local delete://

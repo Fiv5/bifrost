@@ -220,6 +220,22 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::XHost => {
                     result.host = Some(value.to_string());
                 }
+                Protocol::Http => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Http);
+                }
+                Protocol::Https => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Https);
+                }
+                Protocol::Ws => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Ws);
+                }
+                Protocol::Wss => {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(Protocol::Wss);
+                }
                 _ => {}
             }
         }

@@ -46,14 +46,23 @@ cargo build --release
 # 启动代理服务器（默认端口 8899）
 cargo run --bin bifrost
 
-# 指定端口
-cargo run --bin bifrost -- --port 9000
+# 指定端口和监听地址
+cargo run --bin bifrost -- --port 9000 --host 127.0.0.1
 
-# 启用 SOCKS5 代理
-cargo run --bin bifrost -- --socks5-port 1080
+# 启用 HTTP 和 SOCKS5 代理
+cargo run --bin bifrost -- --port 8899 --socks5-port 1080
 
 # 守护进程模式
 cargo run --bin bifrost -- start --daemon
+
+# 禁用 TLS 拦截
+cargo run --bin bifrost -- start --no-intercept
+
+# 启动时指定规则
+cargo run --bin bifrost -- start --rules "example.com host://127.0.0.1:3000"
+
+# 指定自定义数据目录
+BIFROST_DATA_DIR=/tmp/bifrost cargo run --bin bifrost
 ```
 
 ### 管理端界面
@@ -82,6 +91,78 @@ http://127.0.0.1:8899/_bifrost/
 
 > **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
 
+### 全局参数
+
+```bash
+bifrost [OPTIONS] [COMMAND]
+
+# 全局选项
+-p, --port <PORT>           HTTP 代理端口 [默认: 8899]
+-H, --host <HOST>           监听地址 [默认: 0.0.0.0]
+    --socks5-port <PORT>    SOCKS5 代理端口
+-l, --log-level <LEVEL>     日志级别 [默认: info]
+-h, --help                  显示帮助信息
+-V, --version               显示版本号
+```
+
+### 启动命令 (start)
+
+```bash
+# 基本启动（前台运行）
+bifrost start
+
+# 守护进程模式启动
+bifrost start --daemon
+
+# 自定义端口启动
+bifrost -p 9000 start
+
+# 同时启用 HTTP 和 SOCKS5 代理
+bifrost -p 8899 --socks5-port 1080 start
+
+# 跳过证书安装检查（适用于无交互环境）
+bifrost start --skip-cert-check
+
+# 禁用 TLS 拦截（不解密 HTTPS 流量）
+bifrost start --no-intercept
+
+# 排除特定域名的 TLS 拦截
+bifrost start --intercept-exclude "*.example.com,internal.corp.com"
+
+# 启动时指定规则
+bifrost start --rules "example.com host://127.0.0.1:3000"
+bifrost start --rules "api.test.com proxy://127.0.0.1:8080" --rules "*.cdn.com ignore://"
+
+# 从文件加载规则
+bifrost start --rules-file ./my-rules.txt
+
+# 访问控制配置
+bifrost start --access-mode local_only       # 仅本地访问（默认）
+bifrost start --access-mode whitelist        # 白名单模式
+bifrost start --access-mode interactive      # 交互式确认模式
+bifrost start --access-mode allow_all        # 允许所有（不推荐）
+
+# 配置 IP 白名单
+bifrost start --access-mode whitelist --whitelist "192.168.1.100,10.0.0.0/8"
+
+# 允许局域网访问
+bifrost start --allow-lan
+```
+
+**start 命令参数详解：**
+
+| 参数                            | 说明                                                             |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `-d, --daemon`                  | 以守护进程模式在后台运行                                         |
+| `--skip-cert-check`             | 跳过 CA 证书安装检查，适用于 CI/CD 或无交互环境                  |
+| `--access-mode <MODE>`          | 访问控制模式：`local_only`/`whitelist`/`interactive`/`allow_all` |
+| `--whitelist <IPS>`             | 客户端 IP 白名单，逗号分隔，支持 CIDR 表示法                     |
+| `--allow-lan`                   | 允许局域网（私有网络）客户端访问                                 |
+| `--no-intercept`                | 禁用 TLS/HTTPS 拦截                                              |
+| `--intercept-exclude <DOMAINS>` | 排除 TLS 拦截的域名列表，逗号分隔，支持通配符                    |
+| `--rules <RULE>`                | 代理规则，可多次指定                                             |
+| `--rules-file <PATH>`           | 规则文件路径，每行一条规则                                       |
+
 ### 基本命令
 
 ```bash
@@ -92,9 +173,11 @@ bifrost status
 bifrost stop
 
 # CA 证书管理
-bifrost ca generate          # 生成 CA 证书
-bifrost ca export -o ca.crt  # 导出 CA 证书
-bifrost ca info              # 查看 CA 信息
+bifrost ca generate           # 生成 CA 证书
+bifrost ca generate --force   # 强制重新生成 CA 证书
+bifrost ca export             # 导出 CA 证书到 bifrost-ca.crt
+bifrost ca export -o ca.crt   # 导出 CA 证书到指定路径
+bifrost ca info               # 查看 CA 证书详细信息
 
 # 规则管理
 bifrost rule list                           # 列出所有规则
@@ -104,6 +187,32 @@ bifrost rule enable <name>                  # 启用规则
 bifrost rule disable <name>                 # 禁用规则
 bifrost rule delete <name>                  # 删除规则
 bifrost rule show <name>                    # 查看规则内容
+
+# IP 白名单管理
+bifrost whitelist list                      # 列出白名单
+bifrost whitelist add 192.168.1.100         # 添加 IP 到白名单
+bifrost whitelist add 10.0.0.0/8            # 添加 CIDR 网段
+bifrost whitelist remove 192.168.1.100      # 移除 IP
+bifrost whitelist allow-lan true            # 启用局域网访问
+bifrost whitelist allow-lan false           # 禁用局域网访问
+bifrost whitelist status                    # 查看访问控制状态
+```
+
+### 环境变量
+
+| 环境变量           | 说明         | 默认值       |
+| ------------------ | ------------ | ------------ |
+| `BIFROST_DATA_DIR` | 数据目录路径 | `~/.bifrost` |
+
+通过设置 `BIFROST_DATA_DIR` 环境变量，可以自定义 Bifrost 的数据存储目录：
+
+```bash
+# 指定自定义数据目录
+export BIFROST_DATA_DIR=/path/to/custom/dir
+bifrost start
+
+# 或直接在命令中指定
+BIFROST_DATA_DIR=/tmp/bifrost bifrost start
 ```
 
 ## 模块说明

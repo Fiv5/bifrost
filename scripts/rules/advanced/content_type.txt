@@ -1,0 +1,17 @@
+# 内容类型和字符集测试
+# A-30: reqType 请求内容类型
+# A-31: resType 响应内容类型
+# A-32: reqCharset 请求字符集
+# A-33: resCharset 响应字符集
+
+# A-30 reqType - 修改请求 Content-Type
+test-req-type.local http://127.0.0.1:3000 reqType://application/json
+
+# A-31 resType - 修改响应 Content-Type
+test-res-type.local http://127.0.0.1:3000 resType://text/plain
+
+# A-32 reqCharset - 修改请求字符集
+test-req-charset.local http://127.0.0.1:3000 reqCharset://utf-8
+
+# A-33 resCharset - 修改响应字符集
+test-res-charset.local http://127.0.0.1:3000 resCharset://gbk
