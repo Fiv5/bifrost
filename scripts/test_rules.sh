@@ -2278,10 +2278,12 @@ run_tests() {
                 ;;
             resPrepend)
                 local prepend_content=$(extract_value "$protocols" "resPrepend")
+                prepend_content=$(resolve_code_block_var "$prepend_content" "$RULE_FILE")
                 test_res_prepend "$pattern" "$prepend_content"
                 ;;
             resAppend)
                 local append_content=$(extract_value "$protocols" "resAppend")
+                append_content=$(resolve_code_block_var "$append_content" "$RULE_FILE")
                 test_res_append "$pattern" "$append_content"
                 ;;
             resReplace)

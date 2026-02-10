@@ -2,8 +2,7 @@
 # 需求: 代理应能添加、修改请求 Cookie
 
 # 添加 Cookie (每个 cookie 使用单独的代码块)
-req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_session}
-req-cookie-add.local reqCookies://{add_user}
+req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_session} reqCookies://{add_user}
 
 # 修改 Cookie (覆盖同名 Cookie)
 req-cookie-modify.local 127.0.0.1:3000 reqCookies://{modify_session}
