@@ -122,7 +122,9 @@ impl DomainMatcher {
         match &self.path_pattern {
             None => true,
             Some(PathPattern::Exact(expected)) => {
-                path == expected || path.starts_with(&format!("{}?", expected))
+                path == expected
+                    || path.starts_with(&format!("{}?", expected))
+                    || path.starts_with(&format!("{}/", expected))
             }
             Some(PathPattern::Prefix(prefix)) => path.starts_with(prefix),
         }
@@ -256,6 +258,33 @@ mod tests {
             "example.com",
             "/api/products",
         );
+        assert!(!result.matched);
+    }
+
+    #[test]
+    fn test_domain_with_path_subpath_match() {
+        let matcher = DomainMatcher::new("example.com/api");
+
+        let result = matcher.matches("http://example.com/api", "example.com", "/api");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/api/users", "example.com", "/api/users");
+        assert!(result.matched);
+
+        let result = matcher.matches(
+            "http://example.com/api/users/123",
+            "example.com",
+            "/api/users/123",
+        );
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/api?q=1", "example.com", "/api?q=1");
+        assert!(result.matched);
+
+        let result = matcher.matches("http://example.com/other", "example.com", "/other");
+        assert!(!result.matched);
+
+        let result = matcher.matches("http://example.com/apitest", "example.com", "/apitest");
         assert!(!result.matched);
     }
 
