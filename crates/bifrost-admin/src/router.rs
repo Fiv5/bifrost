@@ -1,9 +1,15 @@
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 
 use crate::handlers::{
-    cors_preflight, error_response, metrics::handle_metrics, rules::handle_rules,
-    system::handle_system, traffic::handle_traffic, values::handle_values,
-    whitelist::handle_whitelist_request, BoxBody,
+    cert::{handle_cert, handle_cert_public},
+    cors_preflight, error_response,
+    metrics::handle_metrics,
+    rules::handle_rules,
+    system::handle_system,
+    traffic::handle_traffic,
+    values::handle_values,
+    whitelist::handle_whitelist_request,
+    BoxBody,
 };
 use crate::state::SharedAdminState;
 use crate::static_files::serve_static_file;
@@ -22,6 +28,10 @@ impl AdminRouter {
 
         if req.method() == Method::OPTIONS {
             return cors_preflight();
+        }
+
+        if admin_path.starts_with("/public/cert") {
+            return handle_cert_public(req, state, &admin_path).await;
         }
 
         if admin_path.starts_with("/api/") {
@@ -56,6 +66,8 @@ impl AdminRouter {
                     "Access control not configured",
                 )
             }
+        } else if path.starts_with("/api/cert") {
+            handle_cert(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

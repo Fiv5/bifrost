@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_core::ClientAccessControl;
@@ -21,6 +22,7 @@ pub struct AdminState {
     pub body_store: Option<SharedBodyStore>,
     pub start_time: u64,
     pub port: u16,
+    pub ca_cert_path: Option<PathBuf>,
 }
 
 impl AdminState {
@@ -34,6 +36,7 @@ impl AdminState {
             body_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
+            ca_cert_path: None,
         }
     }
 
@@ -64,6 +67,11 @@ impl AdminState {
 
     pub fn with_body_store(mut self, body_store: SharedBodyStore) -> Self {
         self.body_store = Some(body_store);
+        self
+    }
+
+    pub fn with_ca_cert_path(mut self, ca_cert_path: PathBuf) -> Self {
+        self.ca_cert_path = Some(ca_cert_path);
         self
     }
 }

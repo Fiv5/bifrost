@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bifrost_admin::{
-    is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState, ADMIN_PATH_PREFIX,
+    is_cert_public_request, is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState,
+    ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -360,7 +361,15 @@ async fn handle_request(
 
     if path.starts_with(ADMIN_PATH_PREFIX) {
         if let Some(state) = admin_state {
-            if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
+            if path.starts_with(CERT_PUBLIC_PATH_PREFIX) && is_cert_public_request(&req) {
+                debug!(
+                    "Public cert request from {}: {} {}",
+                    peer_addr, method, path
+                );
+                return Ok(convert_admin_response(
+                    AdminRouter::handle(req, state).await,
+                ));
+            } else if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
                 debug!(
                     "Valid admin request from {}: {} {}",
                     peer_addr, method, path

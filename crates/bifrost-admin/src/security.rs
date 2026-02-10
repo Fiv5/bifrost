@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 
 use hyper::Request;
 
+use crate::CERT_PUBLIC_PATH_PREFIX;
+
 #[derive(Debug, Clone)]
 pub struct AdminSecurityConfig {
     pub listen_port: u16,
@@ -21,6 +23,23 @@ impl AdminSecurityConfig {
             allowed_hosts,
         }
     }
+}
+
+pub fn is_cert_public_request<T>(req: &Request<T>) -> bool {
+    if req.uri().scheme().is_some() {
+        tracing::debug!(
+            "Cert public request rejected: URI contains scheme (proxy request): {}",
+            req.uri()
+        );
+        return false;
+    }
+
+    let path = req.uri().path();
+    if !path.starts_with(CERT_PUBLIC_PATH_PREFIX) {
+        return false;
+    }
+
+    true
 }
 
 pub fn is_valid_admin_request<T>(

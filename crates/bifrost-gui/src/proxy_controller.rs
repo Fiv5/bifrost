@@ -12,8 +12,8 @@ use bifrost_proxy::{
 };
 use bifrost_storage::{RulesStorage, ValuesStorage};
 use bifrost_tls::{
-    generate_root_ca, load_root_ca, save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator,
-    SniResolver,
+    ensure_valid_ca, generate_root_ca, load_root_ca, save_root_ca, CertInstaller, CertStatus,
+    DynamicCertGenerator, SniResolver,
 };
 use chrono::Local;
 use parking_lot::{Mutex, RwLock as ParkingRwLock};
@@ -286,9 +286,16 @@ async fn run_proxy_server(
         7,
     )));
 
+    let ca_cert_path = get_bifrost_dir()
+        .map(|p| p.join("certs").join("ca.crt"))
+        .ok();
+
     let mut admin_state = AdminState::new(settings.port).with_body_store(body_store);
     if let Some(vs) = values_storage {
         admin_state = admin_state.with_values_storage(vs);
+    }
+    if let Some(cert_path) = ca_cert_path {
+        admin_state = admin_state.with_ca_cert_path(cert_path);
     }
 
     let server = ProxyServer::new(proxy_config)
@@ -332,7 +339,8 @@ fn load_tls_config(
     let ca_key_path = cert_dir.join("ca.key");
     let ca_cert_path = cert_dir.join("ca.crt");
 
-    if !ca_cert_path.exists() || !ca_key_path.exists() {
+    let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)?;
+    if !ca_valid {
         std::fs::create_dir_all(&cert_dir)?;
         let ca = generate_root_ca()?;
         save_root_ca(&ca_cert_path, &ca_key_path, &ca)?;

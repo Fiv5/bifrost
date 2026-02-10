@@ -1,3 +1,4 @@
+pub mod cert;
 pub mod metrics;
 pub mod rules;
 pub mod system;

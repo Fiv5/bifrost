@@ -88,6 +88,79 @@ pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuth
     Ok(CertificateAuthority::new(cert))
 }
 
+pub fn validate_ca_files(cert_path: &Path, key_path: &Path) -> Result<()> {
+    if !cert_path.exists() || !key_path.exists() {
+        return Err(BifrostError::Tls(
+            "CA certificate or key file not found".to_string(),
+        ));
+    }
+
+    let key_pem = fs::read_to_string(key_path)?;
+    if !key_pem.contains("BEGIN EC PRIVATE KEY") && !key_pem.contains("BEGIN PRIVATE KEY") {
+        return Err(BifrostError::Tls(
+            "CA key is not in ECDSA format (expected EC PRIVATE KEY or PKCS#8 format)".to_string(),
+        ));
+    }
+
+    if key_pem.contains("BEGIN RSA PRIVATE KEY") {
+        return Err(BifrostError::Tls(
+            "CA key is in RSA format, but ECDSA P-256 is required".to_string(),
+        ));
+    }
+
+    KeyPair::from_pem(&key_pem)
+        .map_err(|e| BifrostError::Tls(format!("Invalid CA key format: {e}")))?;
+
+    let cert_pem = fs::read_to_string(cert_path)?;
+    let pem = parse_x509_pem(cert_pem.as_bytes())
+        .map_err(|e| BifrostError::Tls(format!("Failed to parse CA certificate PEM: {e}")))?
+        .1;
+
+    let cert = pem
+        .parse_x509()
+        .map_err(|e| BifrostError::Tls(format!("Failed to parse X.509 certificate: {e}")))?;
+
+    if !cert.is_ca() {
+        return Err(BifrostError::Tls(
+            "Certificate is not a CA certificate".to_string(),
+        ));
+    }
+
+    let algo_oid = cert.public_key().algorithm.algorithm.to_id_string();
+    let is_ecdsa = algo_oid.contains("1.2.840.10045.2.1");
+    if !is_ecdsa {
+        return Err(BifrostError::Tls(format!(
+            "CA certificate uses unsupported algorithm (OID: {}), expected ECDSA",
+            algo_oid
+        )));
+    }
+
+    Ok(())
+}
+
+pub fn ensure_valid_ca(cert_path: &Path, key_path: &Path) -> Result<bool> {
+    if !cert_path.exists() || !key_path.exists() {
+        return Ok(false);
+    }
+
+    match validate_ca_files(cert_path, key_path) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            eprintln!("⚠ Invalid CA certificate files detected: {}", e);
+            eprintln!("  Removing invalid CA files for regeneration...");
+
+            if cert_path.exists() {
+                fs::remove_file(cert_path)?;
+            }
+            if key_path.exists() {
+                fs::remove_file(key_path)?;
+            }
+
+            Ok(false)
+        }
+    }
+}
+
 pub fn save_root_ca(cert_path: &Path, key_path: &Path, ca: &CertificateAuthority) -> Result<()> {
     let cert_pem = ca
         .certificate

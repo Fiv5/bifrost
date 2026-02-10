@@ -12,8 +12,8 @@ use bifrost_proxy::{
 };
 use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager, ValuesStorage};
 use bifrost_tls::{
-    generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca, parse_cert_info,
-    save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator, SniResolver,
+    ensure_valid_ca, generate_root_ca, get_platform_name, init_crypto_provider, load_root_ca,
+    parse_cert_info, save_root_ca, CertInstaller, CertStatus, DynamicCertGenerator, SniResolver,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{Confirm, Select};
@@ -752,9 +752,16 @@ fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Re
             })
             .unwrap_or_default();
 
+        let ca_cert_path = get_bifrost_dir()
+            .map(|p| p.join("certs").join("ca.crt"))
+            .ok();
+
         let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
         if let Some(vs) = values_storage {
             admin_state = admin_state.with_values_storage(vs);
+        }
+        if let Some(cert_path) = ca_cert_path {
+            admin_state = admin_state.with_ca_cert_path(cert_path);
         }
 
         let metrics_collector = admin_state.metrics_collector.clone();
@@ -872,10 +879,13 @@ fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result
                     })
                     .unwrap_or_default();
 
+                let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
+
                 let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
                 if let Some(vs) = values_storage {
                     admin_state = admin_state.with_values_storage(vs);
                 }
+                admin_state = admin_state.with_ca_cert_path(ca_cert_path);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let mut server = ProxyServer::new(config)
@@ -1246,8 +1256,9 @@ fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConfig>>
     let ca_key_path = cert_dir.join("ca.key");
     let ca_cert_path = cert_dir.join("ca.crt");
 
-    if !ca_cert_path.exists() || !ca_key_path.exists() {
-        println!("TLS interception enabled but CA certificate not found.");
+    let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)?;
+    if !ca_valid {
+        println!("TLS interception enabled but valid CA certificate not found.");
         println!("Generating CA certificate...");
         std::fs::create_dir_all(&cert_dir)?;
         let ca = generate_root_ca()?;
@@ -1277,8 +1288,9 @@ fn check_and_install_certificate() -> bifrost_core::Result<()> {
     let ca_key_path = cert_dir.join("ca.key");
     let ca_cert_path = cert_dir.join("ca.crt");
 
-    if !ca_cert_path.exists() || !ca_key_path.exists() {
-        println!("CA certificate not found. Generating...");
+    let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)?;
+    if !ca_valid {
+        println!("Valid CA certificate not found. Generating...");
         std::fs::create_dir_all(&cert_dir)?;
         let ca = generate_root_ca()?;
         save_root_ca(&ca_cert_path, &ca_key_path, &ca)?;
