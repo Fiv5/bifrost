@@ -2,10 +2,10 @@
 # 需求: WebSocket 连接应能正确转发
 
 # ws to ws
-ws-forward.local 127.0.0.1:3020
+ws-forward.local ws://127.0.0.1:3020
 
 # wss to ws (TLS 终止)
-wss-to-ws.local 127.0.0.1:3020
+wss-to-ws.local ws://127.0.0.1:3020
 
 # ws to wss
 ws-to-wss.local wss://127.0.0.1:3021

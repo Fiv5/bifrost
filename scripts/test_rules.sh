@@ -193,7 +193,7 @@ start_proxy() {
 
     mkdir -p "${TEST_DATA_DIR}"
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
-    BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" --port "${PROXY_PORT}" start --skip-cert-check --rules-file "${RULE_FILE}" &
+    BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
     PROXY_PID=$!
 
     local max_wait=10
@@ -282,7 +282,7 @@ test_http_to_https_forward() {
 
     if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
         assert_json_field ".server.protocol" "https" "$HTTP_BODY" "后端应通过 HTTPS 接收请求"
-        assert_json_field_exists ".server.tls_info" "$HTTP_BODY" "HTTPS 连接应有 TLS 信息"
+        assert_json_field_exists ".server.tls" "$HTTP_BODY" "HTTPS 连接应有 TLS 信息"
     fi
 }
 

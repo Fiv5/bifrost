@@ -296,6 +296,7 @@ fn test_proxy_config_custom() {
         access_mode: bifrost_core::AccessMode::AllowAll,
         client_whitelist: vec![],
         allow_lan: true,
+        unsafe_ssl: false,
     };
     assert_eq!(config.port, 9000);
     assert!(config.enable_tls_interception);

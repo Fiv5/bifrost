@@ -9,6 +9,8 @@ use hyper::client::conn::http1::Builder as ClientBuilder;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info};
 
 use crate::body::{apply_body_rules, apply_content_injection, Phase};
@@ -17,12 +19,14 @@ use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
+use crate::tunnel::get_tls_client_config;
 use crate::url::apply_url_rules;
 
 pub async fn handle_http_request(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
+    unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
@@ -153,22 +157,59 @@ pub async fn handle_http_request(
         .map_err(|e| {
             BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
         })?;
-    let connect_ms = connect_start.elapsed().as_millis() as u64;
+    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
-    let io = TokioIo::new(stream);
+    let use_tls = matches!(
+        resolved_rules.host_protocol,
+        Some(Protocol::Https) | Some(Protocol::Wss)
+    );
 
-    let (mut sender, conn) = ClientBuilder::new()
-        .preserve_header_case(true)
-        .title_case_headers(true)
-        .handshake(io)
-        .await
-        .map_err(|e| BifrostError::Network(format!("Handshake failed: {}", e)))?;
+    let (mut sender, tls_ms) = if use_tls {
+        let tls_start = Instant::now();
+        let tls_config = get_tls_client_config(unsafe_ssl);
+        let connector = TlsConnector::from(tls_config);
 
-    tokio::spawn(async move {
-        if let Err(err) = conn.await {
-            error!("Connection failed: {:?}", err);
-        }
-    });
+        let server_name = ServerName::try_from(host.clone())
+            .map_err(|_| BifrostError::Network(format!("Invalid server name for TLS: {}", host)))?;
+
+        let tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| BifrostError::Network(format!("TLS handshake failed: {}", e)))?;
+        let tls_elapsed = tls_start.elapsed().as_millis() as u64;
+
+        let io = TokioIo::new(tls_stream);
+        let (sender, conn) = ClientBuilder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .handshake(io)
+            .await
+            .map_err(|e| BifrostError::Network(format!("HTTP handshake failed: {}", e)))?;
+
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                error!("Connection failed: {:?}", err);
+            }
+        });
+
+        (sender, Some(tls_elapsed))
+    } else {
+        let io = TokioIo::new(stream);
+        let (sender, conn) = ClientBuilder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .handshake(io)
+            .await
+            .map_err(|e| BifrostError::Network(format!("HTTP handshake failed: {}", e)))?;
+
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                error!("Connection failed: {:?}", err);
+            }
+        });
+
+        (sender, None)
+    };
 
     let path = processed_uri
         .path_and_query()
@@ -276,8 +317,8 @@ pub async fn handle_http_request(
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
             dns_ms: None,
-            connect_ms: Some(connect_ms),
-            tls_ms: None,
+            connect_ms: Some(tcp_connect_ms),
+            tls_ms,
             send_ms: None,
             wait_ms: Some(wait_ms),
             receive_ms: Some(receive_ms),

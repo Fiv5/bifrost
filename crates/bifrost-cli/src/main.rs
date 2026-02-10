@@ -69,6 +69,11 @@ enum Commands {
         intercept_exclude: Option<String>,
         #[arg(
             long,
+            help = "Skip upstream server TLS certificate verification (dangerous, for testing only)"
+        )]
+        unsafe_ssl: bool,
+        #[arg(
+            long,
             help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000'). Can be specified multiple times."
         )]
         rules: Vec<String>,
@@ -233,6 +238,7 @@ fn main() {
             allow_lan,
             no_intercept,
             ref intercept_exclude,
+            unsafe_ssl,
             ref rules,
             ref rules_file,
         }) => run_start(
@@ -244,6 +250,7 @@ fn main() {
             allow_lan,
             no_intercept,
             intercept_exclude.clone(),
+            unsafe_ssl,
             rules.clone(),
             rules_file.clone(),
         ),
@@ -261,6 +268,7 @@ fn main() {
             false,
             false,
             None,
+            false,
             vec![],
             None,
         ),
@@ -282,6 +290,7 @@ fn run_start(
     allow_lan: bool,
     no_intercept: bool,
     intercept_exclude: Option<String>,
+    unsafe_ssl: bool,
     rules: Vec<String>,
     rules_file: Option<PathBuf>,
 ) -> bifrost_core::Result<()> {
@@ -353,6 +362,7 @@ fn run_start(
         allow_lan: allow_lan_final,
         enable_tls_interception,
         intercept_exclude: exclude_list.clone(),
+        unsafe_ssl,
         ..Default::default()
     };
 
@@ -370,6 +380,9 @@ fn run_start(
         }
     } else {
         println!("TLS interception: disabled");
+    }
+    if unsafe_ssl {
+        println!("⚠️  WARNING: Upstream TLS certificate verification is DISABLED (--unsafe-ssl)");
     }
 
     let parsed_rules = parse_cli_rules(&rules, &rules_file)?;

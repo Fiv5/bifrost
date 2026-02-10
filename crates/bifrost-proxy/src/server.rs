@@ -36,6 +36,7 @@ pub struct ProxyConfig {
     pub access_mode: AccessMode,
     pub client_whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub unsafe_ssl: bool,
 }
 
 impl Default for ProxyConfig {
@@ -54,6 +55,7 @@ impl Default for ProxyConfig {
             access_mode: AccessMode::LocalOnly,
             client_whitelist: Vec::new(),
             allow_lan: false,
+            unsafe_ssl: false,
         }
     }
 }
@@ -406,7 +408,16 @@ async fn handle_request(
             }
         }
     } else {
-        match handle_http_request(req, rules, verbose_logging, &ctx, admin_state.clone()).await {
+        match handle_http_request(
+            req,
+            rules,
+            verbose_logging,
+            proxy_config.unsafe_ssl,
+            &ctx,
+            admin_state.clone(),
+        )
+        .await
+        {
             Ok(response) => {
                 if verbose_logging {
                     info!(
@@ -519,6 +530,7 @@ mod tests {
             access_mode: AccessMode::Whitelist,
             client_whitelist: vec!["192.168.1.0/24".to_string()],
             allow_lan: true,
+            unsafe_ssl: false,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);

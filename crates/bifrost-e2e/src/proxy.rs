@@ -324,6 +324,7 @@ impl ProxyInstance {
             access_mode: bifrost_proxy::AccessMode::AllowAll,
             client_whitelist: Vec::new(),
             allow_lan: true,
+            unsafe_ssl: false,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
