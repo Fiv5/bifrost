@@ -1,9 +1,5 @@
 {
   "status": "ok",
-  "message": "This is a mock response from file",
-  "timestamp": "${now}",
-  "data": {
-    "items": [1, 2, 3],
-    "count": 3
-  }
+  "message": "This is a mock response",
+  "type": "file"
 }

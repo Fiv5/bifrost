@@ -14,6 +14,8 @@ lazy_static::lazy_static! {
 
     static ref INLINE_FILE_RE: Regex = Regex::new(r"\{([^{}\s]+\.[a-zA-Z0-9]+)\}").unwrap();
 
+    static ref VALUE_REF_RE: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}").unwrap();
+
     static ref TPL_VAR_RE: Regex = Regex::new(r"(?ix)
         (\$)?                                   # $1: escape marker ($$)
         \$\{                                    # literal ${
@@ -66,6 +68,7 @@ impl TemplateEngine {
         result = Self::expand_captures(&result, captures);
         result = Self::expand_builtin_vars(&result, ctx, values);
         result = Self::expand_named_vars(&result, values);
+        result = Self::expand_value_refs(&result, values);
         result = Self::expand_inline_files(&result, values);
 
         result
@@ -364,6 +367,18 @@ impl TemplateEngine {
 
     fn expand_named_vars(template: &str, values: &HashMap<String, String>) -> String {
         NAMED_VAR_RE
+            .replace_all(template, |cap: &Captures| {
+                let name = cap.get(1).unwrap().as_str();
+                values
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| cap.get(0).unwrap().as_str().to_string())
+            })
+            .to_string()
+    }
+
+    fn expand_value_refs(template: &str, values: &HashMap<String, String>) -> String {
+        VALUE_REF_RE
             .replace_all(template, |cap: &Captures| {
                 let name = cap.get(1).unwrap().as_str();
                 values
@@ -773,5 +788,21 @@ mod tests {
             &values,
         );
         assert_eq!(result, "127.0.0.1:8080 GET /api");
+    }
+
+    #[test]
+    fn test_expand_value_refs() {
+        let mut values = HashMap::new();
+        values.insert("mockResponse".to_string(), "hello world".to_string());
+        values.insert("authHeaders".to_string(), "X-Test: value".to_string());
+
+        let result = TemplateEngine::expand("{mockResponse}", None, &values);
+        assert_eq!(result, "hello world");
+
+        let result2 = TemplateEngine::expand("{authHeaders}", None, &values);
+        assert_eq!(result2, "X-Test: value");
+
+        let result3 = TemplateEngine::expand("{unknownValue}", None, &values);
+        assert_eq!(result3, "{unknownValue}");
     }
 }

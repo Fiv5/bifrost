@@ -147,7 +147,7 @@ assert_header_value() {
     local message=${4:-"Header '$header_name' should be '$expected_value'"}
 
     local actual_value
-    actual_value=$(echo "$headers" | grep -i "^${header_name}:" | head -1 | sed "s/^${header_name}:[[:space:]]*//" | tr -d '\r')
+    actual_value=$(echo "$headers" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
 
     if [ "$actual_value" == "$expected_value" ]; then
         _log_pass "$message"
@@ -165,7 +165,7 @@ assert_header_contains() {
     local message=${4:-"Header '$header_name' should contain '$expected_substring'"}
 
     local actual_value
-    actual_value=$(echo "$headers" | grep -i "^${header_name}:" | head -1 | sed "s/^${header_name}:[[:space:]]*//" | tr -d '\r')
+    actual_value=$(echo "$headers" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
 
     if [[ "$actual_value" == *"$expected_substring"* ]]; then
         _log_pass "$message"

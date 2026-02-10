@@ -459,6 +459,34 @@ test_referer_change() {
     fi
 }
 
+test_referer_removed() {
+    local pattern="$1"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Referer 删除${NC}"
+    echo "    请求: $test_url (带 Referer 头)"
+    echo "    期望: Referer 头被删除"
+
+    https_request "$test_url" "GET" "" "Referer: https://original.example.com"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_referer=$(echo "$HTTP_BODY" | jq -r '.request.headers["Referer"] // .request.headers["referer"]' 2>/dev/null)
+        if [[ "$actual_referer" == "null" ]] || [[ -z "$actual_referer" ]]; then
+            echo -e "  ${GREEN}✓${NC} Referer 已被正确删除"
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+            TESTS_TOTAL=$((TESTS_TOTAL + 1))
+        else
+            echo -e "  ${RED}✗${NC} Referer 应该被删除"
+            echo "    实际值: $actual_referer"
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            TESTS_TOTAL=$((TESTS_TOTAL + 1))
+        fi
+    fi
+}
+
 test_delay() {
     local pattern="$1"
     local delay_ms="$2"
@@ -589,11 +617,117 @@ test_websocket_forward() {
     assert_header_contains "Upgrade" "websocket" "$ws_headers" "响应应包含 Upgrade: websocket"
 }
 
+test_template_file() {
+    local pattern="$1"
+    local file_path="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】模板文件响应 (tpl)${NC}"
+    echo "    请求: $test_url"
+    echo "    模板文件: $file_path"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if echo "$HTTP_BODY" | grep -q '"template"'; then
+            _log_pass "响应包含模板内容"
+        else
+            _log_fail "响应应该来自模板文件" "包含 template" "$HTTP_BODY"
+        fi
+
+        if echo "$HTTP_BODY" | grep -q '\${'; then
+            _log_fail "模板变量应该被替换" "不包含 \${" "包含未替换的变量"
+        else
+            _log_pass "模板变量已被替换"
+        fi
+    fi
+}
+
+test_raw_file() {
+    local pattern="$1"
+    local file_path="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】原始文件响应 (rawfile)${NC}"
+    echo "    请求: $test_url"
+    echo "    原始文件: $file_path"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if echo "$HTTP_BODY" | grep -q 'raw file content'; then
+            _log_pass "响应包含原始文件内容"
+        else
+            _log_fail "响应应该来自原始文件" "包含 raw file content" "$HTTP_BODY"
+        fi
+
+        if echo "$HTTP_BODY" | grep -q '\${url}'; then
+            _log_pass "模板变量未被替换 (正确行为)"
+        else
+            _log_fail "rawfile 不应替换模板变量" "包含 \${url}" "变量被替换了"
+        fi
+    fi
+}
+
+test_mock_file() {
+    local pattern="$1"
+    local file_path="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】文件响应 (file)${NC}"
+    echo "    请求: $test_url"
+    echo "    文件: $file_path"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        _log_pass "响应包含文件内容"
+    else
+        _log_fail "响应应该包含文件内容" "非空内容" "空响应"
+    fi
+}
+
+test_res_body() {
+    local pattern="$1"
+    local expected_body="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应体替换 (resBody)${NC}"
+    echo "    请求: $test_url"
+    echo "    期望内容: ${expected_body:0:50}..."
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" == *"$expected_body"* ]] || [[ -n "$expected_body" && "$HTTP_BODY" != *"request"* ]]; then
+            _log_pass "响应体已被替换"
+        else
+            _log_fail "响应体应被替换" "不包含 echo 响应" "包含原始响应"
+        fi
+    else
+        _log_fail "响应体应该非空" "非空" "空响应"
+    fi
+}
+
 detect_rule_type() {
     local line="$1"
 
     if [[ "$line" == *"redirect://"* ]] || [[ "$line" == *"locationHref://"* ]]; then
         echo "redirect"
+    elif [[ "$line" == *"resBody://"* ]]; then
+        echo "resBody"
     elif [[ "$line" == *"reqHeaders://"* ]]; then
         echo "reqHeaders"
     elif [[ "$line" == *"resHeaders://"* ]]; then
@@ -616,6 +750,12 @@ detect_rule_type() {
         echo "reqCookies"
     elif [[ "$line" == *"resCookies://"* ]]; then
         echo "resCookies"
+    elif [[ "$line" == *"tpl://"* ]]; then
+        echo "tpl"
+    elif [[ "$line" == *"rawfile://"* ]]; then
+        echo "rawfile"
+    elif [[ "$line" == *"file://"* ]]; then
+        echo "file"
     elif [[ "$line" == *" ws://"* ]]; then
         echo "websocket"
     elif [[ "$line" == *" wss://"* ]]; then
@@ -654,6 +794,91 @@ extract_value() {
     local protocols="$1"
     local prefix="$2"
     echo "$protocols" | grep -o "${prefix}://[^[:space:]]*" | sed "s|${prefix}://||"
+}
+
+extract_header_from_value() {
+    local value="$1"
+    value="${value#\`}"
+    value="${value%\`}"
+    value="${value#(}"
+    value="${value%)}"
+
+    local header_name=""
+    local header_value=""
+
+    if [[ "$value" == *":"* ]]; then
+        header_name=$(echo "$value" | cut -d':' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        header_value=$(echo "$value" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    fi
+
+    echo "$header_name|$header_value"
+}
+
+test_res_headers_template() {
+    local pattern="$1"
+    local header_info="$2"
+    local test_url="https://${pattern}/test"
+
+    local header_name=$(echo "$header_info" | cut -d'|' -f1)
+    local header_template=$(echo "$header_info" | cut -d'|' -f2)
+
+    echo ""
+    echo -e "  ${CYAN}【测试】添加响应头 (模板变量)${NC}"
+    echo "    请求: $test_url"
+    echo "    期望添加头: $header_name"
+    echo "    模板: $header_template"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "$header_name" "$HTTP_HEADERS" "响应应包含添加的头 $header_name"
+
+    if [[ "$header_template" == *'${'* ]]; then
+        local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//')
+        if [[ -n "$actual_value" ]] && [[ "$actual_value" != *'${'* ]]; then
+            _log_pass "模板变量已替换: $actual_value"
+        else
+            _log_fail "模板变量应该被替换" "不包含 \${}" "${actual_value:-空值}"
+        fi
+    fi
+}
+
+test_req_headers_template() {
+    local pattern="$1"
+    local header_info="$2"
+    local test_url="https://${pattern}/test"
+
+    local header_name=$(echo "$header_info" | cut -d'|' -f1)
+    local header_template=$(echo "$header_info" | cut -d'|' -f2)
+
+    echo ""
+    echo -e "  ${CYAN}【测试】添加请求头 (模板变量)${NC}"
+    echo "    请求: $test_url"
+    echo "    期望添加头: $header_name"
+    echo "    模板: $header_template"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local header_key_lower=$(echo "$header_name" | tr '[:upper:]' '[:lower:]')
+        local actual_value=$(echo "$HTTP_BODY" | jq -r ".request.headers[\"$header_name\"] // .request.headers[\"$header_key_lower\"]" 2>/dev/null)
+
+        if [[ -n "$actual_value" ]] && [[ "$actual_value" != "null" ]]; then
+            if [[ "$header_template" == *'${'* ]]; then
+                if [[ "$actual_value" != *'${'* ]]; then
+                    _log_pass "请求头已添加且模板变量已替换: $actual_value"
+                else
+                    _log_fail "模板变量应该被替换" "不包含 \${}" "$actual_value"
+                fi
+            else
+                _log_pass "后端收到添加的请求头: $header_name=$actual_value"
+            fi
+        else
+            _log_fail "后端应收到添加的请求头" "$header_name" "未找到"
+        fi
+    fi
 }
 
 run_tests() {
@@ -698,11 +923,39 @@ run_tests() {
                 [[ -z "$redirect_target" ]] && redirect_target=$(extract_value "$protocols" "locationHref")
                 test_redirect_rule "$pattern" "$redirect_target"
                 ;;
+            resBody)
+                local res_body_raw=$(extract_value "$protocols" "resBody")
+                test_res_body "$pattern" "$res_body_raw"
+                ;;
             reqHeaders)
-                test_req_headers_add "$pattern" "X-Test-Header" "test-value"
+                local req_header_raw=$(extract_value "$protocols" "reqHeaders")
+                local req_header_info=$(extract_header_from_value "$req_header_raw")
+                local req_header_name=$(echo "$req_header_info" | cut -d'|' -f1)
+                local req_header_value=$(echo "$req_header_info" | cut -d'|' -f2)
+                if [[ -n "$req_header_name" ]]; then
+                    if [[ "$req_header_value" == *'${'* ]] || [[ "$req_header_raw" == *'`'* ]]; then
+                        test_req_headers_template "$pattern" "$req_header_info"
+                    else
+                        test_req_headers_add "$pattern" "$req_header_name" "$req_header_value"
+                    fi
+                else
+                    test_req_headers_add "$pattern" "X-Test-Header" "test-value"
+                fi
                 ;;
             resHeaders)
-                test_res_headers_add "$pattern" "X-Test-Response" "test-value"
+                local res_header_raw=$(extract_value "$protocols" "resHeaders")
+                local res_header_info=$(extract_header_from_value "$res_header_raw")
+                local res_header_name=$(echo "$res_header_info" | cut -d'|' -f1)
+                local res_header_value=$(echo "$res_header_info" | cut -d'|' -f2)
+                if [[ -n "$res_header_name" ]]; then
+                    if [[ "$res_header_value" == *'${'* ]] || [[ "$res_header_raw" == *'`'* ]]; then
+                        test_res_headers_template "$pattern" "$res_header_info"
+                    else
+                        test_res_headers_add "$pattern" "$res_header_name" "$res_header_value"
+                    fi
+                else
+                    test_res_headers_add "$pattern" "X-Test-Response" "test-value"
+                fi
                 ;;
             statusCode)
                 local status=$(extract_value "$protocols" "statusCode")
@@ -718,7 +971,11 @@ run_tests() {
                 ;;
             referer)
                 local referer=$(extract_value "$protocols" "referer")
-                test_referer_change "$pattern" "${referer:-https://bifrost.test}"
+                if [[ -z "$referer" ]]; then
+                    test_referer_removed "$pattern"
+                else
+                    test_referer_change "$pattern" "$referer"
+                fi
                 ;;
             reqDelay)
                 local delay=$(extract_value "$protocols" "reqDelay")
@@ -739,6 +996,18 @@ run_tests() {
                 ;;
             websocket|websocket_secure)
                 test_websocket_forward "$pattern" "$target"
+                ;;
+            tpl)
+                local file_path=$(extract_value "$protocols" "tpl")
+                test_template_file "$pattern" "$file_path"
+                ;;
+            rawfile)
+                local file_path=$(extract_value "$protocols" "rawfile")
+                test_raw_file "$pattern" "$file_path"
+                ;;
+            file)
+                local file_path=$(extract_value "$protocols" "file")
+                test_mock_file "$pattern" "$file_path"
                 ;;
             *)
                 warn "跳过不支持的规则类型: $rule_type (规则: $line)"

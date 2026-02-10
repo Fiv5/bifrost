@@ -511,6 +511,29 @@ fn parse_cli_rules(
     Ok(all_rules)
 }
 
+fn load_values_from_dir(values_dir: &std::path::Path) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+
+    if !values_dir.exists() {
+        return values;
+    }
+
+    if let Ok(entries) = std::fs::read_dir(values_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        values.insert(name.to_string(), content.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    values
+}
+
 struct RulesResolverAdapter {
     inner: CoreRulesResolver,
 }
@@ -519,6 +542,7 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
     fn resolve(&self, url: &str, method: &str) -> ProxyResolvedRules {
         let mut ctx = RequestContext::from_url(url);
         ctx.method = method.to_string();
+        ctx.client_ip = "127.0.0.1".to_string();
 
         let core_result = self.inner.resolve(&ctx);
         let mut result = ProxyResolvedRules::default();
@@ -590,6 +614,12 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::File => {
                     result.mock_file = Some(value.to_string());
                 }
+                Protocol::Tpl => {
+                    result.mock_template = Some(value.to_string());
+                }
+                Protocol::RawFile => {
+                    result.mock_rawfile = Some(value.to_string());
+                }
                 Protocol::Ua => {
                     result.ua = Some(value.to_string());
                 }
@@ -598,6 +628,16 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 }
                 Protocol::Method => {
                     result.method = Some(value.to_string());
+                }
+                Protocol::ReqDelay => {
+                    if let Ok(delay) = value.parse::<u64>() {
+                        result.req_delay = Some(delay);
+                    }
+                }
+                Protocol::ResDelay => {
+                    if let Ok(delay) = value.parse::<u64>() {
+                        result.res_delay = Some(delay);
+                    }
                 }
                 _ => {}
             }
@@ -616,12 +656,17 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
         (&trimmed[1..trimmed.len() - 1], true)
     } else {
-        (trimmed, false)
+        (trimmed, trimmed.contains('\n') || trimmed.contains(':'))
     };
 
     let mut headers = Vec::new();
-    for part in content.split(',') {
+
+    let delimiter = if content.contains('\n') { '\n' } else { ',' };
+    for part in content.split(delimiter) {
         let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
         let separator = if use_colon { ':' } else { '=' };
         if let Some(pos) = part.find(separator) {
             let key = part[..pos].trim().to_string();
@@ -667,8 +712,19 @@ fn run_foreground(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Re
             .with_admin_state(admin_state);
 
         if !cli_rules.is_empty() {
+            let values_dir = get_bifrost_dir()
+                .map(|p| p.join("values"))
+                .unwrap_or_default();
+            let values = load_values_from_dir(&values_dir);
+            if !values.is_empty() {
+                println!(
+                    "Loaded {} values from {}",
+                    values.len(),
+                    values_dir.display()
+                );
+            }
             let resolver = Arc::new(RulesResolverAdapter {
-                inner: CoreRulesResolver::new(cli_rules),
+                inner: CoreRulesResolver::new(cli_rules).with_values(values),
             });
             server = server.with_rules(resolver);
         }
@@ -759,8 +815,10 @@ fn run_daemon(config: ProxyConfig, cli_rules: Vec<Rule>) -> bifrost_core::Result
                     .with_admin_state(admin_state);
 
                 if !cli_rules.is_empty() {
+                    let values_dir = bifrost_dir.join("values");
+                    let values = load_values_from_dir(&values_dir);
                     let resolver = Arc::new(RulesResolverAdapter {
-                        inner: CoreRulesResolver::new(cli_rules),
+                        inner: CoreRulesResolver::new(cli_rules).with_values(values),
                     });
                     server = server.with_rules(resolver);
                 }

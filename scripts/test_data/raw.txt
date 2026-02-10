@@ -1,3 +1,2 @@
-This is a raw file response.
-It should NOT process template variables like ${now} or ${reqId}.
-The text ${variable} should appear as-is.
+This is a raw file content.
+Template variables like ${url} should NOT be replaced.

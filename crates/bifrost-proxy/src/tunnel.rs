@@ -449,7 +449,58 @@ async fn handle_intercepted_request_with_protocol(
         return Ok(build_redirect_response(302, redirect_url));
     }
 
+    if let Some(ref mock_file) = resolved_rules.mock_file {
+        if verbose_logging {
+            info!("[{}] [MOCK_FILE] Serving file: {}", req_id, mock_file);
+        }
+        let status_code = resolved_rules.status_code.unwrap_or(200);
+        return Ok(serve_mock_file(mock_file, status_code, None).await);
+    }
+
+    if let Some(ref mock_template) = resolved_rules.mock_template {
+        if verbose_logging {
+            info!(
+                "[{}] [MOCK_TPL] Serving template: {}",
+                req_id, mock_template
+            );
+        }
+        let template_vars = TemplateVars {
+            url: original_uri.clone(),
+            method: method_str.clone(),
+            host: target_host.to_string(),
+            pathname: path.to_string(),
+            search: uri.query().map(|q| format!("?{}", q)).unwrap_or_default(),
+            client_ip: "127.0.0.1".to_string(),
+            req_id: req_id.to_string(),
+        };
+        let status_code = resolved_rules.status_code.unwrap_or(200);
+        return Ok(serve_mock_file(mock_template, status_code, Some(&template_vars)).await);
+    }
+
+    if let Some(ref mock_rawfile) = resolved_rules.mock_rawfile {
+        if verbose_logging {
+            info!(
+                "[{}] [MOCK_RAWFILE] Serving raw file: {}",
+                req_id, mock_rawfile
+            );
+        }
+        let status_code = resolved_rules.status_code.unwrap_or(200);
+        return Ok(serve_mock_file(mock_rawfile, status_code, None).await);
+    }
+
     let (parts, body) = req.into_parts();
+
+    let actual_method = if let Some(ref method_override) = resolved_rules.method {
+        if verbose_logging {
+            info!(
+                "[{}] [METHOD] {} -> {}",
+                req_id, method_str, method_override
+            );
+        }
+        hyper::Method::from_bytes(method_override.as_bytes()).unwrap_or(method)
+    } else {
+        method
+    };
 
     let req_headers: Vec<(String, String)> = parts
         .headers
@@ -479,14 +530,55 @@ async fn handle_intercepted_request_with_protocol(
         }
     };
 
-    let mut new_req = Request::builder().method(method).uri(&parsed_uri);
+    let mut new_req = Request::builder().method(actual_method).uri(&parsed_uri);
+
+    let mut skip_referer = false;
+    let mut skip_ua = false;
 
     for (name, value) in parts.headers.iter() {
-        if name != hyper::header::HOST {
-            new_req = new_req.header(name, value);
+        if name == hyper::header::HOST {
+            continue;
         }
+        if name == hyper::header::REFERER && resolved_rules.referer.is_some() {
+            skip_referer = true;
+            continue;
+        }
+        if name == hyper::header::USER_AGENT && resolved_rules.ua.is_some() {
+            skip_ua = true;
+            continue;
+        }
+        new_req = new_req.header(name, value);
     }
     new_req = new_req.header(hyper::header::HOST, target_host);
+
+    if let Some(ref referer) = resolved_rules.referer {
+        if !referer.is_empty() {
+            if verbose_logging {
+                info!("[{}] [REFERER] -> {}", req_id, referer);
+            }
+            new_req = new_req.header(hyper::header::REFERER, referer);
+        } else if verbose_logging && skip_referer {
+            info!("[{}] [REFERER] Removed", req_id);
+        }
+    }
+
+    if let Some(ref ua) = resolved_rules.ua {
+        if !ua.is_empty() {
+            if verbose_logging {
+                info!("[{}] [USER-AGENT] -> {}", req_id, ua);
+            }
+            new_req = new_req.header(hyper::header::USER_AGENT, ua);
+        } else if verbose_logging && skip_ua {
+            info!("[{}] [USER-AGENT] Removed", req_id);
+        }
+    }
+
+    for (name, value) in &resolved_rules.req_headers {
+        if verbose_logging {
+            info!("[{}] [REQ_HEADER] {} = {}", req_id, name, value);
+        }
+        new_req = new_req.header(name.as_str(), value.as_str());
+    }
 
     let outgoing_req =
         match new_req.body(http_body_util::Full::new(Bytes::from(body_bytes.clone()))) {
@@ -499,6 +591,13 @@ async fn handle_intercepted_request_with_protocol(
                     .unwrap());
             }
         };
+
+    if let Some(delay_ms) = resolved_rules.req_delay {
+        if verbose_logging {
+            info!("[{}] [REQ_DELAY] Sleeping {}ms", req_id, delay_ms);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
 
     let client = get_https_pooled_client();
     let send_start = Instant::now();
@@ -593,7 +692,39 @@ async fn handle_intercepted_request_with_protocol(
         state.traffic_recorder.record(record);
     }
 
-    Ok(Response::from_parts(res_parts, full_body(res_body_bytes)))
+    if let Some(delay_ms) = resolved_rules.res_delay {
+        if verbose_logging {
+            info!("[{}] [RES_DELAY] Sleeping {}ms", req_id, delay_ms);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+
+    let final_body = if let Some(ref new_body) = resolved_rules.res_body {
+        if verbose_logging {
+            info!(
+                "[{}] [RES_BODY] replaced: {} bytes -> {} bytes",
+                req_id,
+                res_body_bytes.len(),
+                new_body.len()
+            );
+        }
+        new_body.to_vec()
+    } else {
+        res_body_bytes
+    };
+
+    for (name, value) in &resolved_rules.res_headers {
+        if verbose_logging {
+            info!("[{}] [RES_HEADER] {} = {}", req_id, name, value);
+        }
+        if let Ok(header_name) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
+            if let Ok(header_value) = hyper::header::HeaderValue::from_str(value) {
+                res_parts.headers.insert(header_name, header_value);
+            }
+        }
+    }
+
+    Ok(Response::from_parts(res_parts, full_body(final_body)))
 }
 
 struct SingleCertResolver(Arc<CertifiedKey>);
@@ -860,6 +991,81 @@ pub fn parse_connect_authority(authority: &str) -> Result<(String, u16)> {
             "Invalid authority: {}",
             authority
         ))),
+    }
+}
+
+struct TemplateVars {
+    url: String,
+    method: String,
+    host: String,
+    pathname: String,
+    search: String,
+    client_ip: String,
+    req_id: String,
+}
+
+fn process_template(content: &str, vars: &TemplateVars) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_default();
+
+    let random: u64 = rand::random();
+
+    content
+        .replace("${url}", &vars.url)
+        .replace("${method}", &vars.method)
+        .replace("${host}", &vars.host)
+        .replace("${pathname}", &vars.pathname)
+        .replace("${path}", &vars.pathname)
+        .replace("${search}", &vars.search)
+        .replace("${query}", &vars.search)
+        .replace("${clientIp}", &vars.client_ip)
+        .replace("${reqId}", &vars.req_id)
+        .replace("${now}", &now)
+        .replace("${timestamp}", &now)
+        .replace("${random}", &random.to_string())
+}
+
+async fn serve_mock_file(
+    file_path: &str,
+    status_code: u16,
+    template_vars: Option<&TemplateVars>,
+) -> Response<BoxBody> {
+    match tokio::fs::read_to_string(file_path).await {
+        Ok(content) => {
+            let body = if let Some(vars) = template_vars {
+                process_template(&content, vars)
+            } else {
+                content
+            };
+
+            let content_type = if file_path.ends_with(".json") || body.trim_start().starts_with('{')
+            {
+                "application/json"
+            } else if file_path.ends_with(".html") {
+                "text/html; charset=utf-8"
+            } else if file_path.ends_with(".xml") {
+                "application/xml"
+            } else {
+                "text/plain; charset=utf-8"
+            };
+
+            Response::builder()
+                .status(status_code)
+                .header(hyper::header::CONTENT_TYPE, content_type)
+                .body(full_body(body.into_bytes()))
+                .unwrap()
+        }
+        Err(e) => {
+            error!("Failed to read mock file {}: {}", file_path, e);
+            Response::builder()
+                .status(500)
+                .body(full_body(
+                    format!("Failed to read file: {}", e).into_bytes(),
+                ))
+                .unwrap()
+        }
     }
 }
 
