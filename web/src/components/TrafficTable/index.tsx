@@ -1,7 +1,6 @@
 import { Table, Tag, Typography, Tooltip, Badge } from "antd";
 import { ThunderboltOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
-import dayjs from "dayjs";
 import type { TrafficSummary } from "../../types";
 
 const { Text } = Typography;
@@ -36,6 +35,7 @@ export default function TrafficTable({
       PATCH: "purple",
       OPTIONS: "default",
       HEAD: "cyan",
+      CONNECT: "magenta",
     };
     return colors[method.toUpperCase()] || "default";
   };
@@ -49,13 +49,34 @@ export default function TrafficTable({
 
   const columns: ColumnsType<TrafficSummary> = [
     {
-      title: "Time",
-      dataIndex: "timestamp",
-      key: "timestamp",
-      width: 90,
-      render: (ts: number) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {dayjs(ts).format("HH:mm:ss")}
+      title: "",
+      dataIndex: "has_rule_hit",
+      key: "has_rule_hit",
+      width: 28,
+      align: "center",
+      render: (hit: boolean, record) => (
+        <Tooltip
+          title={
+            hit
+              ? `${record.matched_rule_count} rule(s): ${record.matched_protocols?.join(", ") || ""}`
+              : "No rules matched"
+          }
+        >
+          <Badge
+            status={hit ? "success" : "default"}
+            style={{ cursor: "pointer" }}
+          />
+        </Tooltip>
+      ),
+    },
+    {
+      title: "Protocol",
+      dataIndex: "protocol",
+      key: "protocol",
+      width: 60,
+      render: (protocol: string) => (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {protocol?.replace("HTTP/", "") || "-"}
         </Text>
       ),
     },
@@ -63,9 +84,9 @@ export default function TrafficTable({
       title: "Method",
       dataIndex: "method",
       key: "method",
-      width: 80,
+      width: 70,
       render: (method: string) => (
-        <Tag color={getMethodColor(method)} style={{ margin: 0 }}>
+        <Tag color={getMethodColor(method)} style={{ margin: 0, fontSize: 11 }}>
           {method}
         </Tag>
       ),
@@ -74,11 +95,14 @@ export default function TrafficTable({
       title: "Status",
       dataIndex: "status",
       key: "status",
-      width: 70,
+      width: 55,
       align: "center",
       render: (status: number) =>
         status > 0 ? (
-          <Tag color={getStatusColor(status)} style={{ margin: 0 }}>
+          <Tag
+            color={getStatusColor(status)}
+            style={{ margin: 0, fontSize: 11 }}
+          >
             {status}
           </Tag>
         ) : (
@@ -86,10 +110,22 @@ export default function TrafficTable({
         ),
     },
     {
+      title: "Client",
+      dataIndex: "client_ip",
+      key: "client_ip",
+      width: 90,
+      ellipsis: true,
+      render: (ip: string) => (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {ip || "-"}
+        </Text>
+      ),
+    },
+    {
       title: "Host",
       dataIndex: "host",
       key: "host",
-      width: 180,
+      width: 160,
       ellipsis: true,
       render: (host: string) => (
         <Tooltip title={host}>
@@ -112,22 +148,25 @@ export default function TrafficTable({
       title: "Type",
       dataIndex: "content_type",
       key: "content_type",
-      width: 120,
+      width: 80,
       ellipsis: true,
-      render: (ct: string | null) => (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {ct?.split(";")[0] || "-"}
-        </Text>
-      ),
+      render: (ct: string | null) => {
+        const short = ct?.split(";")[0]?.split("/").pop() || "-";
+        return (
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {short}
+          </Text>
+        );
+      },
     },
     {
       title: "Size",
       dataIndex: "response_size",
       key: "response_size",
-      width: 80,
+      width: 65,
       align: "right",
       render: (size: number) => (
-        <Text type="secondary" style={{ fontSize: 12 }}>
+        <Text type="secondary" style={{ fontSize: 11 }}>
           {formatSize(size)}
         </Text>
       ),
@@ -136,12 +175,12 @@ export default function TrafficTable({
       title: "Time",
       dataIndex: "duration_ms",
       key: "duration_ms",
-      width: 70,
+      width: 55,
       align: "right",
       render: (ms: number) => (
         <Text
           type={ms > 1000 ? "warning" : "secondary"}
-          style={{ fontSize: 12 }}
+          style={{ fontSize: 11 }}
         >
           {ms > 0 ? `${ms}ms` : "-"}
         </Text>
@@ -149,12 +188,12 @@ export default function TrafficTable({
     },
     {
       title: "Rules",
-      dataIndex: "has_matched_rules",
+      dataIndex: "has_rule_hit",
       key: "rules",
-      width: 80,
+      width: 60,
       align: "center",
       render: (_: boolean, record: TrafficSummary) =>
-        record.has_matched_rules ? (
+        record.has_rule_hit ? (
           <Tooltip
             title={
               <div>
@@ -185,7 +224,7 @@ export default function TrafficTable({
       loading={loading}
       pagination={false}
       size="small"
-      scroll={{ y: "calc(100vh - 350px)" }}
+      scroll={{ y: "calc(100vh - 150px)" }}
       onRow={(record) => ({
         onClick: () => onSelect?.(record),
         style: {
@@ -193,6 +232,9 @@ export default function TrafficTable({
           background: record.id === selectedId ? "#e6f7ff" : undefined,
         },
       })}
+      rowClassName={(record) =>
+        record.id === selectedId ? "selected-row" : ""
+      }
     />
   );
 }

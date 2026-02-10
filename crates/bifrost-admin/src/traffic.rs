@@ -58,8 +58,12 @@ pub struct TrafficRecord {
     pub protocol: String,
     #[serde(default)]
     pub is_tunnel: bool,
+    #[serde(default)]
+    pub has_rule_hit: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_rules: Option<Vec<MatchedRule>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_content_type: Option<String>,
 }
 
 impl TrafficRecord {
@@ -99,7 +103,9 @@ impl TrafficRecord {
             path,
             protocol,
             is_tunnel: false,
+            has_rule_hit: false,
             matched_rules: None,
+            request_content_type: None,
         }
     }
 }
@@ -117,25 +123,27 @@ pub struct TrafficSummary {
     pub duration_ms: u64,
     pub host: String,
     pub path: String,
-    pub has_matched_rules: bool,
+    pub protocol: String,
+    pub client_ip: String,
+    pub has_rule_hit: bool,
     pub matched_rule_count: usize,
     pub matched_protocols: Vec<String>,
 }
 
 impl From<&TrafficRecord> for TrafficSummary {
     fn from(record: &TrafficRecord) -> Self {
-        let (has_matched_rules, matched_rule_count, matched_protocols) =
-            if let Some(ref rules) = record.matched_rules {
-                let protocols: Vec<String> = rules
-                    .iter()
-                    .map(|r| r.protocol.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                (!rules.is_empty(), rules.len(), protocols)
-            } else {
-                (false, 0, Vec::new())
-            };
+        let (matched_rule_count, matched_protocols) = if let Some(ref rules) = record.matched_rules
+        {
+            let protocols: Vec<String> = rules
+                .iter()
+                .map(|r| r.protocol.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+            (rules.len(), protocols)
+        } else {
+            (0, Vec::new())
+        };
 
         Self {
             id: record.id.clone(),
@@ -149,7 +157,9 @@ impl From<&TrafficRecord> for TrafficSummary {
             duration_ms: record.duration_ms,
             host: record.host.clone(),
             path: record.path.clone(),
-            has_matched_rules,
+            protocol: record.protocol.clone(),
+            client_ip: record.client_ip.clone(),
+            has_rule_hit: record.has_rule_hit,
             matched_rule_count,
             matched_protocols,
         }
@@ -243,8 +253,13 @@ pub struct TrafficFilter {
     pub content_type: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
-    pub has_rules: Option<bool>,
+    pub has_rule_hit: Option<bool>,
     pub protocol: Option<String>,
+    pub request_content_type: Option<String>,
+    pub domain: Option<String>,
+    pub path_contains: Option<String>,
+    pub header_contains: Option<String>,
+    pub client_ip: Option<String>,
 }
 
 impl TrafficFilter {
@@ -274,20 +289,24 @@ impl TrafficFilter {
         }
 
         if let Some(ref url_contains) = self.url_contains {
-            if !record.url.contains(url_contains) {
+            if !record
+                .url
+                .to_lowercase()
+                .contains(&url_contains.to_lowercase())
+            {
                 return false;
             }
         }
 
         if let Some(ref host) = self.host {
-            if !record.host.contains(host) {
+            if !record.host.to_lowercase().contains(&host.to_lowercase()) {
                 return false;
             }
         }
 
         if let Some(ref content_type) = self.content_type {
             if let Some(ref ct) = record.content_type {
-                if !ct.contains(content_type) {
+                if !ct.to_lowercase().contains(&content_type.to_lowercase()) {
                     return false;
                 }
             } else {
@@ -295,20 +314,73 @@ impl TrafficFilter {
             }
         }
 
-        if let Some(has_rules) = self.has_rules {
-            let record_has_rules = record.matched_rules.as_ref().is_some_and(|r| !r.is_empty());
-            if has_rules != record_has_rules {
+        if let Some(has_rule_hit) = self.has_rule_hit {
+            if record.has_rule_hit != has_rule_hit {
                 return false;
             }
         }
 
         if let Some(ref protocol) = self.protocol {
-            let has_protocol = record.matched_rules.as_ref().is_some_and(|rules| {
-                rules
-                    .iter()
-                    .any(|r| r.protocol.eq_ignore_ascii_case(protocol))
-            });
-            if !has_protocol {
+            if !record.protocol.eq_ignore_ascii_case(protocol) {
+                return false;
+            }
+        }
+
+        if let Some(ref request_ct) = self.request_content_type {
+            if let Some(ref ct) = record.request_content_type {
+                if !ct.to_lowercase().contains(&request_ct.to_lowercase()) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+
+        if let Some(ref domain) = self.domain {
+            if !record.host.to_lowercase().contains(&domain.to_lowercase()) {
+                return false;
+            }
+        }
+
+        if let Some(ref path_contains) = self.path_contains {
+            if !record
+                .path
+                .to_lowercase()
+                .contains(&path_contains.to_lowercase())
+            {
+                return false;
+            }
+        }
+
+        if let Some(ref header_contains) = self.header_contains {
+            let search = header_contains.to_lowercase();
+            let mut found = false;
+            if let Some(ref headers) = record.request_headers {
+                for (k, v) in headers {
+                    if k.to_lowercase().contains(&search) || v.to_lowercase().contains(&search) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                if let Some(ref headers) = record.response_headers {
+                    for (k, v) in headers {
+                        if k.to_lowercase().contains(&search) || v.to_lowercase().contains(&search)
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found {
+                return false;
+            }
+        }
+
+        if let Some(ref client_ip) = self.client_ip {
+            if !record.client_ip.contains(client_ip) {
                 return false;
             }
         }

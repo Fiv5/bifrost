@@ -28,7 +28,9 @@ export interface TrafficSummary {
   duration_ms: number;
   host: string;
   path: string;
-  has_matched_rules: boolean;
+  protocol: string;
+  client_ip: string;
+  has_rule_hit: boolean;
   matched_rule_count: number;
   matched_protocols: string[];
 }
@@ -38,9 +40,8 @@ export interface TrafficRecord extends TrafficSummary {
   response_headers: [string, string][] | null;
   request_body: string | null;
   response_body: string | null;
-  client_ip: string;
-  protocol: string;
   matched_rules: MatchedRule[] | null;
+  request_content_type: string | null;
 }
 
 export interface TrafficListResponse {
@@ -60,8 +61,27 @@ export interface TrafficFilter {
   content_type?: string;
   limit?: number;
   offset?: number;
-  has_rules?: boolean;
+  has_rule_hit?: boolean;
   protocol?: string;
+  request_content_type?: string;
+  domain?: string;
+  path_contains?: string;
+  header_contains?: string;
+  client_ip?: string;
+}
+
+export interface ToolbarFilters {
+  rule: string[];
+  protocol: string[];
+  type: string[];
+  status: string[];
+}
+
+export interface FilterCondition {
+  id: string;
+  field: string;
+  operator: string;
+  value: string;
 }
 
 export interface MetricsSnapshot {

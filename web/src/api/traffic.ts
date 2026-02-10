@@ -21,3 +21,13 @@ export async function getTrafficDetail(id: string): Promise<TrafficRecord> {
 export async function clearTraffic(): Promise<ApiResponse> {
   return del<ApiResponse>('/traffic');
 }
+
+export async function getRequestBody(id: string): Promise<string | null> {
+  const response = await get<ApiResponse<string>>(`/traffic/${encodeURIComponent(id)}/request-body`);
+  return response.data || null;
+}
+
+export async function getResponseBody(id: string): Promise<string | null> {
+  const response = await get<ApiResponse<string>>(`/traffic/${encodeURIComponent(id)}/response-body`);
+  return response.data || null;
+}

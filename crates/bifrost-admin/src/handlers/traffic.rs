@@ -161,6 +161,13 @@ fn parse_traffic_filter(query: &str) -> TrafficFilter {
                 "content_type" => filter.content_type = Some(value.to_string()),
                 "limit" => filter.limit = value.parse().ok(),
                 "offset" => filter.offset = value.parse().ok(),
+                "has_rule_hit" => filter.has_rule_hit = value.parse().ok(),
+                "protocol" => filter.protocol = Some(value.to_string()),
+                "request_content_type" => filter.request_content_type = Some(value.to_string()),
+                "domain" => filter.domain = Some(value.to_string()),
+                "path_contains" | "path" => filter.path_contains = Some(value.to_string()),
+                "header_contains" | "header" => filter.header_contains = Some(value.to_string()),
+                "client_ip" => filter.client_ip = Some(value.to_string()),
                 _ => {}
             }
         }

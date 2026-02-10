@@ -283,8 +283,9 @@ pub async fn handle_http_request(
             receive_ms: Some(receive_ms),
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(res_headers);
+        record.has_rule_hit = has_rules;
         record.matched_rules = if resolved_rules.rules.is_empty() {
             None
         } else {
@@ -300,6 +301,10 @@ pub async fn handle_http_request(
                     .collect(),
             )
         };
+        record.request_content_type = req_headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone());
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
@@ -448,8 +453,14 @@ async fn forward_without_rules(
             receive_ms: Some(receive_ms),
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(res_headers);
+        record.has_rule_hit = false;
+        record.matched_rules = None;
+        record.request_content_type = req_headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone());
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
