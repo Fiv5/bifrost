@@ -20,7 +20,7 @@ use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
-use crate::tee::create_tee_body_with_store;
+use crate::tee::{create_sse_tee_body, create_tee_body_with_store};
 use crate::tunnel::get_tls_client_config;
 use crate::url::apply_url_rules;
 
@@ -42,14 +42,22 @@ const STREAMING_CONTENT_TYPES: &[&str] = &[
     "application/octet-stream",
 ];
 
-fn is_streaming_response(res_parts: &ResponseParts) -> bool {
-    let content_type = res_parts
+fn get_content_type(res_parts: &ResponseParts) -> String {
+    res_parts
         .headers
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_lowercase()
+}
 
-    let content_type_lower = content_type.to_lowercase();
+fn is_sse_response(res_parts: &ResponseParts) -> bool {
+    get_content_type(res_parts).starts_with("text/event-stream")
+}
+
+fn is_streaming_response(res_parts: &ResponseParts) -> bool {
+    let content_type_lower = get_content_type(res_parts);
+
     for streaming_type in STREAMING_CONTENT_TYPES {
         if content_type_lower.starts_with(streaming_type) {
             return true;
@@ -332,8 +340,14 @@ pub async fn handle_http_request(
 
     if !needs_processing {
         let is_streaming = is_streaming_response(&res_parts);
+        let is_sse = is_sse_response(&res_parts);
         if verbose_logging {
-            if is_streaming {
+            if is_sse {
+                info!(
+                    "[{}] [SSE] detected SSE response, forwarding with event capture",
+                    ctx.id_str()
+                );
+            } else if is_streaming {
                 info!(
                     "[{}] [STREAMING] detected streaming response, forwarding directly with tee",
                     ctx.id_str()
@@ -401,6 +415,10 @@ pub async fn handle_http_request(
                 record.protocol = "ws".to_string();
             }
 
+            if is_sse {
+                record.set_sse();
+            }
+
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
                 record.request_body_ref = store.store(&record_id, "req", &body_bytes);
@@ -409,8 +427,13 @@ pub async fn handle_http_request(
             state.traffic_recorder.record(record);
         }
 
-        let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
-        return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        if is_sse {
+            let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
+            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        } else {
+            let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
+            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        }
     }
 
     let receive_start = Instant::now();
@@ -663,11 +686,20 @@ async fn forward_without_rules(
             record.request_body_ref = store.store(&record_id, "req", &body_bytes);
         }
 
+        if is_sse_response(&res_parts) {
+            record.set_sse();
+        }
+
         state.traffic_recorder.record(record);
     }
 
-    let tee_body = create_tee_body_with_store(res_body, admin_state, record_id);
-    Ok(Response::from_parts(res_parts, tee_body.boxed()))
+    if is_sse_response(&res_parts) {
+        let tee_body = create_sse_tee_body(res_body, admin_state, record_id);
+        Ok(Response::from_parts(res_parts, tee_body.boxed()))
+    } else {
+        let tee_body = create_tee_body_with_store(res_body, admin_state, record_id);
+        Ok(Response::from_parts(res_parts, tee_body.boxed()))
+    }
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {

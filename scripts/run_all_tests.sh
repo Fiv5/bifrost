@@ -46,13 +46,13 @@ usage() {
 
 list_tests() {
     header "可用的测试文件"
-    
+
     local categories=$(find "$RULES_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
-    
+
     for category_dir in $categories; do
         local category=$(basename "$category_dir")
         echo -e "${CYAN}[$category]${NC}"
-        
+
         find "$category_dir" -name "*.txt" -type f 2>/dev/null | sort | while read -r rule_file; do
             local filename=$(basename "$rule_file")
             local rule_count=$(grep -v '^#' "$rule_file" | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')
@@ -61,7 +61,7 @@ list_tests() {
         done
         echo ""
     done
-    
+
     if [[ -n "$(find "$RULES_DIR" -maxdepth 1 -name "*.txt" -type f 2>/dev/null)" ]]; then
         echo -e "${CYAN}[root]${NC}"
         find "$RULES_DIR" -maxdepth 1 -name "*.txt" -type f 2>/dev/null | sort | while read -r rule_file; do
@@ -70,14 +70,14 @@ list_tests() {
             printf "  %-30s (%d rules)\n" "$filename" "$rule_count"
         done
     fi
-    
+
     exit 0
 }
 
 collect_test_files() {
     local category="$1"
     local test_files=()
-    
+
     if [[ -n "$category" ]]; then
         if [[ -d "${RULES_DIR}/${category}" ]]; then
             while IFS= read -r -d '' file; do
@@ -92,27 +92,27 @@ collect_test_files() {
             test_files+=("$file")
         done < <(find "$RULES_DIR" -name "*.txt" -type f -print0 2>/dev/null | sort -z)
     fi
-    
+
     printf '%s\n' "${test_files[@]}"
 }
 
 run_single_test() {
     local rule_file="$1"
     local rel_path="${rule_file#$RULES_DIR/}"
-    
+
     echo ""
     echo -e "${YELLOW}┌────────────────────────────────────────────────────────────────${NC}"
     echo -e "${YELLOW}│ 测试套件: $rel_path${NC}"
     echo -e "${YELLOW}└────────────────────────────────────────────────────────────────${NC}"
-    
+
     local output_file=$(mktemp)
     local exit_code=0
-    
+
     if [[ "$VERBOSE" == "true" ]]; then
         "$SCRIPT_DIR/test_rules.sh" $BUILD_FLAG -p "$PROXY_PORT" "$rule_file" 2>&1 | tee "$output_file" || exit_code=$?
     else
         "$SCRIPT_DIR/test_rules.sh" $BUILD_FLAG -p "$PROXY_PORT" "$rule_file" > "$output_file" 2>&1 || exit_code=$?
-        
+
         if [[ $exit_code -ne 0 ]]; then
             echo -e "${RED}测试失败，输出如下:${NC}"
             cat "$output_file"
@@ -121,19 +121,19 @@ run_single_test() {
             echo "$summary"
         fi
     fi
-    
+
     local passed=$(grep "Passed:" "$output_file" | grep -o '[0-9]*' | head -1 || echo "0")
     local failed=$(grep "Failed:" "$output_file" | grep -o '[0-9]*' | head -1 || echo "0")
-    
+
     TOTAL_PASSED=$((TOTAL_PASSED + passed))
     TOTAL_FAILED=$((TOTAL_FAILED + failed))
-    
+
     rm -f "$output_file"
-    
+
     if [[ $exit_code -ne 0 ]]; then
         FAILED_SUITES+=("$rel_path")
         echo -e "${RED}✗${NC} 测试套件失败: $rel_path"
-        
+
         if [[ "$FAIL_FAST" == "true" ]]; then
             echo -e "${RED}首次失败，停止测试${NC}"
             return 1
@@ -141,46 +141,43 @@ run_single_test() {
     else
         echo -e "${GREEN}✓${NC} 测试套件通过: $rel_path"
     fi
-    
+
     return 0
 }
 
 build_proxy_once() {
-    header "编译代理服务器"
-    
+    header "检查代理服务器"
+
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        info "跳过编译步骤"
+        info "跳过编译步骤 (将使用 cargo run 增量编译)"
         BUILD_FLAG="--no-build"
         return 0
     fi
-    
+
     if [[ -f "${PROJECT_DIR}/target/release/bifrost" ]]; then
         local mod_time=$(stat -f %m "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null || stat -c %Y "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null)
         local now=$(date +%s)
         local age=$((now - mod_time))
-        
+
         if [[ $age -lt 86400 ]]; then
-            echo -e "${GREEN}✓${NC} 使用已编译的代理 (编译于 $((age / 60)) 分钟前)"
+            echo -e "${GREEN}✓${NC} 已有编译的代理 (编译于 $((age / 60)) 分钟前)，cargo run 将自动检测是否需要重新编译"
             BUILD_FLAG="--no-build"
             return 0
         fi
     fi
 
-    info "正在编译代理服务器..."
-    cd "$PROJECT_DIR"
-    cargo build --release --bin bifrost 2>&1 | tail -5
-    echo -e "${GREEN}✓${NC} 代理服务器编译完成"
+    info "首次运行将自动编译代理服务器 (通过 cargo run)..."
     BUILD_FLAG="--no-build"
 }
 
 start_echo_servers_once() {
     header "启动 Echo 服务器"
-    
+
     "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
     sleep 1
     "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
     sleep 2
-    
+
     if curl -s "http://127.0.0.1:3000/health" >/dev/null 2>&1; then
         echo -e "${GREEN}✓${NC} Echo 服务器已启动"
     else
@@ -191,12 +188,12 @@ start_echo_servers_once() {
 
 print_final_summary() {
     header "最终测试结果"
-    
+
     echo -e "总断言数: $((TOTAL_PASSED + TOTAL_FAILED))"
     echo -e "通过: ${GREEN}${TOTAL_PASSED}${NC}"
     echo -e "失败: ${RED}${TOTAL_FAILED}${NC}"
     echo ""
-    
+
     if [[ ${#FAILED_SUITES[@]} -gt 0 ]]; then
         echo -e "${RED}失败的测试套件:${NC}"
         for suite in "${FAILED_SUITES[@]}"; do
@@ -204,7 +201,7 @@ print_final_summary() {
         done
         echo ""
     fi
-    
+
     if [[ $TOTAL_FAILED -eq 0 ]]; then
         echo -e "${GREEN}═══════════════════════════════════════${NC}"
         echo -e "${GREEN}  ✓ 所有测试通过！${NC}"
@@ -279,16 +276,16 @@ parse_args() {
 
 check_rules_syntax() {
     header "检查规则文件语法"
-    
+
     local check_script="${SCRIPT_DIR}/check_rules.py"
-    
+
     if [[ ! -f "$check_script" ]]; then
         warn "规则检查脚本不存在: $check_script"
         return 0
     fi
-    
+
     local check_args=("--errors-only")
-    
+
     if [[ ${#SPECIFIC_FILES[@]} -gt 0 ]]; then
         check_args+=("${SPECIFIC_FILES[@]}")
     elif [[ -n "$CATEGORY" ]]; then
@@ -300,9 +297,9 @@ check_rules_syntax() {
             done <<< "$category_files"
         fi
     fi
-    
+
     info "运行规则语法检查..."
-    
+
     if python3 "$check_script" "${check_args[@]}"; then
         echo -e "${GREEN}✓${NC} 所有规则文件语法检查通过"
         return 0
@@ -317,23 +314,23 @@ check_rules_syntax() {
 
 main() {
     parse_args "$@"
-    
+
     header "Bifrost 端到端测试运行器"
     echo "代理端口: $PROXY_PORT"
     if [[ -n "$CATEGORY" ]]; then
         echo "测试分类: $CATEGORY"
     fi
     echo ""
-    
+
     if ! check_rules_syntax; then
         exit 1
     fi
-    
+
     build_proxy_once
     start_echo_servers_once
-    
+
     local test_files=()
-    
+
     if [[ ${#SPECIFIC_FILES[@]} -gt 0 ]]; then
         test_files=("${SPECIFIC_FILES[@]}")
     else
@@ -341,29 +338,29 @@ main() {
             [[ -n "$file" ]] && test_files+=("$file")
         done < <(collect_test_files "$CATEGORY")
     fi
-    
+
     local total_suites=${#test_files[@]}
-    
+
     if [[ $total_suites -eq 0 ]]; then
         warn "没有找到测试文件"
         exit 0
     fi
-    
+
     info "找到 $total_suites 个测试套件"
-    
+
     local current=0
     for test_file in "${test_files[@]}"; do
         current=$((current + 1))
         echo ""
         echo -e "${BLUE}[$current/$total_suites]${NC}"
-        
+
         if ! run_single_test "$test_file"; then
             if [[ "$FAIL_FAST" == "true" ]]; then
                 break
             fi
         fi
     done
-    
+
     print_final_summary
 }
 

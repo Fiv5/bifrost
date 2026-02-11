@@ -1,5 +1,6 @@
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 
+use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
 use crate::state::SharedAdminState;
@@ -32,6 +33,34 @@ pub async fn handle_traffic(
         } else if let Some(id) = rest.strip_suffix("/response-body") {
             match method {
                 Method::GET => get_response_body(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some(id) = rest.strip_suffix("/frames/stream") {
+            match method {
+                Method::GET => subscribe_frames(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some(id) = rest.strip_suffix("/frames/unsubscribe") {
+            match method {
+                Method::DELETE => unsubscribe_frames(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else if rest.contains("/frames/") {
+            if let Some((id, frame_part)) = rest.split_once("/frames/") {
+                if let Ok(frame_id) = frame_part.parse::<u64>() {
+                    match method {
+                        Method::GET => get_frame_detail(state, id, frame_id).await,
+                        _ => method_not_allowed(),
+                    }
+                } else {
+                    error_response(StatusCode::BAD_REQUEST, "Invalid frame ID")
+                }
+            } else {
+                error_response(StatusCode::BAD_REQUEST, "Invalid path")
+            }
+        } else if let Some(id) = rest.strip_suffix("/frames") {
+            match method {
+                Method::GET => get_frames(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else {

@@ -65,7 +65,7 @@ collect_test_files() {
 
 build_proxy_once() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        info "跳过编译步骤"
+        info "跳过编译步骤 (将使用 cargo run 增量编译)"
         return 0
     fi
 
@@ -75,15 +75,12 @@ build_proxy_once() {
         local age=$((now - mod_time))
 
         if [[ $age -lt 86400 ]]; then
-            echo -e "${GREEN}✓${NC} 使用已编译的代理 (编译于 $((age / 60)) 分钟前)"
+            echo -e "${GREEN}✓${NC} 已有编译的代理 (编译于 $((age / 60)) 分钟前)，cargo run 将自动检测是否需要重新编译"
             return 0
         fi
     fi
 
-    info "正在编译代理服务器..."
-    cd "$PROJECT_DIR"
-    cargo build --release --bin bifrost 2>&1 | tail -5
-    echo -e "${GREEN}✓${NC} 代理服务器编译完成"
+    info "首次运行将自动编译代理服务器 (通过 cargo run)..."
 }
 
 run_single_test() {

@@ -51,5 +51,5 @@ cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D wa
 例如：
 
 ```bash
-BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --skip-cert-check --unsafe-ssl
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080  --unsafe-ssl
 ```

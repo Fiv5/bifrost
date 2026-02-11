@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use crate::body_store::SharedBodyStore;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
+use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -25,6 +26,7 @@ pub struct AdminState {
     pub port: u16,
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
+    pub websocket_monitor: SharedWebSocketMonitor,
 }
 
 impl AdminState {
@@ -40,6 +42,7 @@ impl AdminState {
             port,
             ca_cert_path: None,
             system_proxy_manager: None,
+            websocket_monitor: Arc::new(WebSocketMonitor::new()),
         }
     }
 

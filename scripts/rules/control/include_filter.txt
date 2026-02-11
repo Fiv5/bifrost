@@ -1,42 +1,53 @@
 # IF-01: includeFilter 过滤条件测试
-# 需求: 仅当请求满足过滤条件时规则才生效
+# 需求: 仅当请求满足过滤条件时，规则修改才生效
+# 注意: includeFilter 应用于同一行的所有协议，所以需要分开写转发和修改规则
 
-# IF-01 按请求方法过滤 (仅 GET 生效)
-if-method.local http://127.0.0.1:3000 resHeaders://`X-Method-Filter:matched` includeFilter://m:GET
+# IF-01 按请求方法过滤 (仅 GET 请求添加 header)
+if-method.local http://127.0.0.1:3000
+if-method.local resHeaders://`X-Method-Filter:matched` includeFilter://m:GET
 
-# IF-02 按请求方法过滤 (仅 POST 生效)
-if-method-post.local http://127.0.0.1:3000 resHeaders://`X-Post-Only:true` includeFilter://m:POST
+# IF-02 按请求方法过滤 (仅 POST 请求添加 header)
+if-method-post.local http://127.0.0.1:3000
+if-method-post.local resHeaders://`X-Post-Only:true` includeFilter://m:POST
 
-# IF-03 按多个方法过滤 (GET 或 POST)
-if-multi-method.local http://127.0.0.1:3000 resHeaders://`X-Multi-Method:ok` includeFilter://m:GET,POST
+# IF-03 按多个方法过滤 (GET 或 POST 请求添加 header)
+if-multi-method.local http://127.0.0.1:3000
+if-multi-method.local resHeaders://`X-Multi-Method:ok` includeFilter://m:GET,POST
 
-# IF-04 按状态码过滤 (用于响应修改)
-if-status.local http://127.0.0.1:3000 resHeaders://`X-Status-Filter:matched` includeFilter://s:200
+# IF-04 按状态码过滤 (仅响应 200 时添加 header)
+if-status.local http://127.0.0.1:3000
+if-status.local resHeaders://`X-Status-Filter:matched` includeFilter://s:200
 
-# IF-05 按路径正则过滤
-if-path.local http://127.0.0.1:3000 resHeaders://`X-Path-Filter:matched` includeFilter:///api/
+# IF-05 按路径正则过滤 (仅 /api/ 开头的路径添加 header)
+if-path.local http://127.0.0.1:3000
+if-path.local resHeaders://`X-Path-Filter:matched` includeFilter:///api/
 
-# IF-06 按请求头存在过滤
-if-header.local http://127.0.0.1:3000 resHeaders://`X-Header-Filter:matched` includeFilter://h:X-Custom-Header
+# IF-06 按请求头存在过滤 (仅带 X-Custom-Header 的请求添加 header)
+if-header.local http://127.0.0.1:3000
+if-header.local resHeaders://`X-Header-Filter:matched` includeFilter://h:X-Custom-Header
 
-# IF-07 按请求头值过滤
-if-header-value.local http://127.0.0.1:3000 resHeaders://`X-HeaderVal-Filter:matched` includeFilter://reqH:Content-Type=/json/
+# IF-07 按请求头值过滤 (仅 Content-Type 包含 json 的请求添加 header)
+if-header-value.local http://127.0.0.1:3000
+if-header-value.local resHeaders://`X-HeaderVal-Filter:matched` includeFilter://reqH:Content-Type=/json/
 
-# IF-08 按客户端 IP 过滤
-if-ip.local http://127.0.0.1:3000 resHeaders://`X-IP-Filter:matched` includeFilter://i:127.0.0.1
+# IF-08 按客户端 IP 过滤 (仅来自 127.0.0.1 的请求添加 header)
+if-ip.local http://127.0.0.1:3000
+if-ip.local resHeaders://`X-IP-Filter:matched` includeFilter://i:127.0.0.1
 
-# IF-09 按 CIDR 网段过滤
-if-cidr.local http://127.0.0.1:3000 resHeaders://`X-CIDR-Filter:matched` includeFilter://i:192.168.0.0/16
+# IF-09 按 CIDR 网段过滤 (仅来自 192.168.x.x 的请求添加 header)
+if-cidr.local http://127.0.0.1:3000
+if-cidr.local resHeaders://`X-CIDR-Filter:matched` includeFilter://i:192.168.0.0/16
 
-# IF-10 多个过滤条件 (AND 逻辑)
-if-multi.local http://127.0.0.1:3000 resHeaders://`X-Multi-Filter:all-matched` includeFilter://m:GET includeFilter:///api/
+# IF-10 多个过滤条件 (AND 逻辑: 仅 GET 请求且路径包含 /api/ 时添加 header)
+if-multi.local http://127.0.0.1:3000
+if-multi.local resHeaders://`X-Multi-Filter:all-matched` includeFilter://m:GET includeFilter:///api/
 
 # 测试用例:
 # 1. GET http://if-method.local/ 应返回 X-Method-Filter: matched
-# 2. POST http://if-method.local/ 不应返回该头
+# 2. POST http://if-method.local/ 不应返回该头 (但请求应成功)
 # 3. POST http://if-method-post.local/ 应返回 X-Post-Only: true
 # 4. GET http://if-multi-method.local/ 应返回 X-Multi-Method: ok
 # 5. GET http://if-path.local/api/users 应返回 X-Path-Filter: matched
-# 6. GET http://if-path.local/home 不应返回该头
+# 6. GET http://if-path.local/home 不应返回该头 (但请求应成功)
 # 7. 带 X-Custom-Header 的请求到 http://if-header.local/ 应返回 X-Header-Filter: matched
-# 8. 不带 X-Custom-Header 的请求到 http://if-header.local/ 不应返回该头
+# 8. 不带 X-Custom-Header 的请求到 http://if-header.local/ 不应返回该头 (但请求应成功)

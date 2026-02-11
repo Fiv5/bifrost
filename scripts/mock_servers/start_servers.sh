@@ -7,6 +7,7 @@ HTTP_PORT=${HTTP_PORT:-3000}
 HTTPS_PORT=${HTTPS_PORT:-3443}
 WS_PORT=${WS_PORT:-3020}
 WSS_PORT=${WSS_PORT:-3021}
+SSE_PORT=${SSE_PORT:-3003}
 
 declare -a PIDS=()
 
@@ -51,6 +52,12 @@ start_wss() {
     PIDS+=($!)
 }
 
+start_sse() {
+    log "Starting SSE Echo Server on port $SSE_PORT..."
+    python3 "$SCRIPT_DIR/sse_echo_server.py" --port "$SSE_PORT" &
+    PIDS+=($!)
+}
+
 start_all() {
     start_http
     sleep 0.5
@@ -59,6 +66,8 @@ start_all() {
     start_ws
     sleep 0.5
     start_wss
+    sleep 0.5
+    start_sse
 }
 
 wait_for_server() {
@@ -104,6 +113,12 @@ status() {
     else
         echo "WSS    (port $WSS_PORT): ❌ Not running"
     fi
+
+    if nc -z 127.0.0.1 "$SSE_PORT" 2>/dev/null; then
+        echo "SSE    (port $SSE_PORT): ✅ Running"
+    else
+        echo "SSE    (port $SSE_PORT): ❌ Not running"
+    fi
 }
 
 stop_all() {
@@ -111,11 +126,12 @@ stop_all() {
     pkill -f "http_echo_server.py" 2>/dev/null
     pkill -f "https_echo_server.py" 2>/dev/null
     pkill -f "ws_echo_server.py" 2>/dev/null
+    pkill -f "sse_echo_server.py" 2>/dev/null
     log "All servers stopped"
 }
 
 usage() {
-    echo "Usage: $0 {start|stop|status|start-http|start-https|start-ws|start-wss}"
+    echo "Usage: $0 {start|stop|status|start-http|start-https|start-ws|start-wss|start-sse}"
     echo ""
     echo "Commands:"
     echo "  start       Start all mock servers in foreground"
@@ -126,12 +142,14 @@ usage() {
     echo "  start-https Start only HTTPS echo server"
     echo "  start-ws    Start only WebSocket echo server"
     echo "  start-wss   Start only WebSocket Secure echo server"
+    echo "  start-sse   Start only SSE echo server"
     echo ""
     echo "Environment variables:"
     echo "  HTTP_PORT   HTTP server port (default: 3000)"
     echo "  HTTPS_PORT  HTTPS server port (default: 3443)"
     echo "  WS_PORT     WebSocket server port (default: 3020)"
     echo "  WSS_PORT    WebSocket Secure server port (default: 3021)"
+    echo "  SSE_PORT    SSE server port (default: 3003)"
 }
 
 case "$1" in
@@ -166,6 +184,10 @@ case "$1" in
         ;;
     start-wss)
         start_wss
+        wait
+        ;;
+    start-sse)
+        start_sse
         wait
         ;;
     *)

@@ -12,6 +12,13 @@ WebSocket Echo Server - 用于验证代理服务的 WebSocket 处理能力
     - 详细打印连接信息、收到的消息
     - 消息回显功能
     - 返回连接时的 headers 信息
+
+测试端点:
+    /ws           - 标准 echo 模式
+    /ws/broadcast - 连接后自动推送 5 条消息
+    /ws/binary    - 接收 text 返回 binary
+    /ws/ping      - 立即发送 ping 帧
+    /ws/close     - 发送带状态码的 close 帧
 """
 
 import asyncio
@@ -130,13 +137,16 @@ def compute_accept_key(key):
     return base64.b64encode(sha1).decode()
 
 
-def create_ws_frame(payload, opcode=1, mask=False):
+def create_ws_frame(payload, opcode=1, mask=False, fin=True):
     """创建 WebSocket 帧"""
     if isinstance(payload, str):
         payload = payload.encode('utf-8')
 
     length = len(payload)
-    header = bytes([0x80 | opcode])
+    first_byte = opcode
+    if fin:
+        first_byte |= 0x80
+    header = bytes([first_byte])
 
     if length <= 125:
         header += bytes([length])
@@ -146,6 +156,12 @@ def create_ws_frame(payload, opcode=1, mask=False):
         header += bytes([127]) + struct.pack('>Q', length)
 
     return header + payload
+
+
+def create_close_frame(code=1000, reason=""):
+    """创建带状态码的 close 帧"""
+    payload = struct.pack('>H', code) + reason.encode('utf-8')
+    return create_ws_frame(payload, opcode=8)
 
 
 def parse_ws_frame(data):
@@ -260,7 +276,16 @@ class WebSocketConnection:
             await self.writer.drain()
             log(f"Sent welcome message with connection info")
 
-            await self.message_loop()
+            if self.path.startswith("/ws/broadcast"):
+                await self.handle_broadcast_mode()
+            elif self.path.startswith("/ws/ping"):
+                await self.handle_ping_mode()
+            elif self.path.startswith("/ws/close"):
+                await self.handle_close_mode()
+            elif self.path.startswith("/ws/binary"):
+                await self.handle_binary_mode()
+            else:
+                await self.message_loop()
 
         except Exception as e:
             log(f"Error handling connection: {e}")
@@ -331,6 +356,77 @@ class WebSocketConnection:
                 await self.writer.drain()
             except Exception as e:
                 log(f"Error in message loop: {e}")
+                break
+
+    async def handle_broadcast_mode(self):
+        """广播模式：自动推送 5 条消息"""
+        log("Broadcast mode: sending 5 messages")
+        for i in range(5):
+            msg = json.dumps({
+                "type": "broadcast",
+                "index": i + 1,
+                "total": 5,
+                "message": f"Broadcast message {i + 1}",
+                "timestamp": datetime.now().isoformat()
+            })
+            self.writer.write(create_ws_frame(msg))
+            await self.writer.drain()
+            log(f"Sent broadcast message {i + 1}/5")
+            await asyncio.sleep(0.3)
+
+        self.writer.write(create_close_frame(1000, "Broadcast complete"))
+        await self.writer.drain()
+        log("Broadcast complete, sent close frame")
+
+    async def handle_ping_mode(self):
+        """Ping 模式：立即发送 ping 帧"""
+        log("Ping mode: sending ping frame")
+        self.writer.write(create_ws_frame(b'server_ping', opcode=9))
+        await self.writer.drain()
+        await self.message_loop()
+
+    async def handle_close_mode(self):
+        """Close 模式：发送带状态码的 close 帧"""
+        log("Close mode: sending close frame with code 1001")
+        await asyncio.sleep(0.5)
+        self.writer.write(create_close_frame(1001, "Going away"))
+        await self.writer.drain()
+        log("Sent close frame")
+
+    async def handle_binary_mode(self):
+        """Binary 模式：接收 text 返回 binary"""
+        log("Binary mode: will respond with binary frames")
+        buffer = b''
+
+        while True:
+            try:
+                data = await asyncio.wait_for(self.reader.read(4096), timeout=60)
+                if not data:
+                    break
+
+                buffer += data
+
+                while buffer:
+                    opcode, payload, buffer = parse_ws_frame(buffer)
+                    if opcode is None:
+                        break
+
+                    if opcode == 8:
+                        log("Received close frame")
+                        self.writer.write(create_ws_frame(b'', opcode=8))
+                        await self.writer.drain()
+                        return
+
+                    elif opcode in (1, 2):
+                        binary_response = payload if opcode == 2 else payload
+                        self.writer.write(create_ws_frame(binary_response, opcode=2))
+                        await self.writer.drain()
+                        log(f"Sent binary response: {len(binary_response)} bytes")
+
+            except asyncio.TimeoutError:
+                break
+            except Exception as e:
+                log(f"Error in binary mode: {e}")
                 break
 
 

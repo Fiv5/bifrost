@@ -244,7 +244,7 @@ impl RulesResolver {
             }
 
             if !rule.include_filters.is_empty()
-                && !Self::matches_any_filter(&rule.include_filters, ctx)
+                && !Self::matches_all_filters(&rule.include_filters, ctx)
             {
                 continue;
             }
@@ -269,6 +269,10 @@ impl RulesResolver {
         }
 
         result
+    }
+
+    fn matches_all_filters(filters: &[Filter], ctx: &RequestContext) -> bool {
+        filters.iter().all(|f| Self::matches_filter(f, ctx))
     }
 
     fn matches_any_filter(filters: &[Filter], ctx: &RequestContext) -> bool {

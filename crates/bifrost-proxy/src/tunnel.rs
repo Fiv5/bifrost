@@ -1,7 +1,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, RequestTiming, TrafficRecord};
+use bifrost_admin::{AdminState, FrameDirection, FrameType, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -22,8 +22,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::http::needs_body_processing;
 use crate::logging::{format_rules_summary, RequestContext};
+use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
 use crate::tee::create_tee_body_with_store;
+
+use futures_util::StreamExt;
 
 type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -968,7 +971,9 @@ async fn handle_intercepted_websocket(
                 .collect(),
         );
         record.host = original_host.to_string();
+        record.set_websocket();
 
+        state.websocket_monitor.register_connection(req_id);
         state.traffic_recorder.record(record);
     }
 
@@ -986,12 +991,23 @@ async fn handle_intercepted_websocket(
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) =
-                    websocket_bidirectional_generic(upgraded, stream, admin_state_clone).await
+                if let Err(e) = websocket_bidirectional_generic_with_capture(
+                    upgraded,
+                    stream,
+                    &req_id_owned,
+                    admin_state_clone.clone(),
+                )
+                .await
                 {
                     if verbose_logging {
                         debug!("[{}] WebSocket tunnel closed: {}", req_id_owned, e);
                     }
+                }
+
+                if let Some(ref state) = admin_state_clone {
+                    state
+                        .websocket_monitor
+                        .set_connection_closed(&req_id_owned, None, None);
                 }
             }
             Err(e) => {
@@ -1103,57 +1119,132 @@ fn extract_sec_websocket_protocol(response: &str) -> Option<String> {
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 
-async fn websocket_bidirectional_generic<S>(
+fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
+    match opcode {
+        Opcode::Continuation => FrameType::Continuation,
+        Opcode::Text => FrameType::Text,
+        Opcode::Binary => FrameType::Binary,
+        Opcode::Close => FrameType::Close,
+        Opcode::Ping => FrameType::Ping,
+        Opcode::Pong => FrameType::Pong,
+    }
+}
+
+async fn websocket_bidirectional_generic_with_capture<S>(
     upgraded: Upgraded,
     target: S,
+    record_id: &str,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let client = TokioIo::new(upgraded);
-    let (mut target_read, mut target_write) = tokio::io::split(target);
-
+    let (target_read, target_write) = tokio::io::split(target);
     let (client_read, client_write) = tokio::io::split(client);
-    let mut client_read = client_read;
-    let mut client_write = client_write;
 
-    let admin_state_clone = admin_state.clone();
+    let record_id_owned = record_id.to_string();
+    let admin_state_c2s = admin_state.clone();
+    let admin_state_s2c = admin_state.clone();
 
-    let client_to_target = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            let n = client_read.read(&mut buf).await?;
-            if n == 0 {
+    let client_to_server = async move {
+        let mut reader = WebSocketReader::new(client_read);
+        let mut writer = WebSocketWriter::new(target_write, true);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    debug!("Client read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_c2s {
+                state
+                    .metrics_collector
+                    .add_bytes_sent(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned,
+                    FrameDirection::Send,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                debug!("Server write error: {}", e);
                 break;
             }
-            target_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state_clone {
-                state.metrics_collector.add_bytes_sent(n as u64);
-            }
         }
-        target_write.shutdown().await?;
+
         Ok::<_, std::io::Error>(())
     };
 
-    let target_to_client = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            let n = target_read.read(&mut buf).await?;
-            if n == 0 {
+    let record_id_owned2 = record_id.to_string();
+    let server_to_client = async move {
+        let mut reader = WebSocketReader::new(target_read);
+        let mut writer = WebSocketWriter::new(client_write, false);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    debug!("Server read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_s2c {
+                state
+                    .metrics_collector
+                    .add_bytes_received(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned2,
+                    FrameDirection::Receive,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned2,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                debug!("Client write error: {}", e);
                 break;
             }
-            client_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state {
-                state.metrics_collector.add_bytes_received(n as u64);
-            }
         }
+
         Ok::<_, std::io::Error>(())
     };
 
-    let result = tokio::try_join!(client_to_target, target_to_client);
+    let result = tokio::try_join!(client_to_server, server_to_client);
 
     match result {
         Ok(_) => {

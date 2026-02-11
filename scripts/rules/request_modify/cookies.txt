@@ -1,16 +1,21 @@
 # R-07: 请求 Cookie 修改测试
 # 需求: 代理应能添加、修改请求 Cookie
 
-# 添加 Cookie (每个 cookie 使用单独的代码块)
-req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_session} reqCookies://{add_user}
+# 添加 Cookie (单个)
+req-cookie-add.local 127.0.0.1:3000 reqCookies://{add_session}
+
+# 添加另一个 Cookie
+req-cookie-add2.local 127.0.0.1:3000 reqCookies://{add_user}
 
 # 修改 Cookie (覆盖同名 Cookie)
 req-cookie-modify.local 127.0.0.1:3000 reqCookies://{modify_session}
 
 # 测试用例:
 # 1. 请求 http://req-cookie-add.local/test
-#    后端应收到 Cookie: session=abc123; user=test
-# 2. 请求 http://req-cookie-modify.local/test (带 session=old)
+#    后端应收到 Cookie: session=abc123
+# 2. 请求 http://req-cookie-add2.local/test
+#    后端应收到 Cookie: user=test
+# 3. 请求 http://req-cookie-modify.local/test (带 session=old)
 #    后端应收到 Cookie: session=new_session
 
 ```add_session

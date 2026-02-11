@@ -7,6 +7,66 @@ use tokio::sync::broadcast;
 
 use crate::body_store::BodyRef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrameDirection {
+    Send,
+    Receive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrameType {
+    Text,
+    Binary,
+    Ping,
+    Pong,
+    Close,
+    Continuation,
+    Sse,
+}
+
+impl FrameType {
+    pub fn from_opcode(opcode: u8) -> Self {
+        match opcode {
+            0x0 => FrameType::Continuation,
+            0x1 => FrameType::Text,
+            0x2 => FrameType::Binary,
+            0x8 => FrameType::Close,
+            0x9 => FrameType::Ping,
+            0xA => FrameType::Pong,
+            _ => FrameType::Binary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SocketStatus {
+    pub is_open: bool,
+    pub send_count: u64,
+    pub receive_count: u64,
+    pub send_bytes: u64,
+    pub receive_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<String>,
+}
+
+impl Default for SocketStatus {
+    fn default() -> Self {
+        Self {
+            is_open: true,
+            send_count: 0,
+            receive_count: 0,
+            send_bytes: 0,
+            receive_bytes: 0,
+            close_code: None,
+            close_reason: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchedRule {
     pub pattern: String,
@@ -64,6 +124,16 @@ pub struct TrafficRecord {
     pub matched_rules: Option<Vec<MatchedRule>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_content_type: Option<String>,
+    #[serde(default)]
+    pub is_websocket: bool,
+    #[serde(default)]
+    pub is_sse: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_status: Option<SocketStatus>,
+    #[serde(default)]
+    pub frame_count: usize,
+    #[serde(default)]
+    pub last_frame_id: u64,
 }
 
 impl TrafficRecord {
@@ -106,7 +176,22 @@ impl TrafficRecord {
             has_rule_hit: false,
             matched_rules: None,
             request_content_type: None,
+            is_websocket: false,
+            is_sse: false,
+            socket_status: None,
+            frame_count: 0,
+            last_frame_id: 0,
         }
+    }
+
+    pub fn set_websocket(&mut self) {
+        self.is_websocket = true;
+        self.socket_status = Some(SocketStatus::default());
+    }
+
+    pub fn set_sse(&mut self) {
+        self.is_sse = true;
+        self.socket_status = Some(SocketStatus::default());
     }
 }
 
@@ -128,6 +213,14 @@ pub struct TrafficSummary {
     pub has_rule_hit: bool,
     pub matched_rule_count: usize,
     pub matched_protocols: Vec<String>,
+    #[serde(default)]
+    pub is_websocket: bool,
+    #[serde(default)]
+    pub is_sse: bool,
+    #[serde(default)]
+    pub frame_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub socket_status: Option<SocketStatus>,
 }
 
 impl From<&TrafficRecord> for TrafficSummary {
@@ -162,6 +255,10 @@ impl From<&TrafficRecord> for TrafficSummary {
             has_rule_hit: record.has_rule_hit,
             matched_rule_count,
             matched_protocols,
+            is_websocket: record.is_websocket,
+            is_sse: record.is_sse,
+            frame_count: record.frame_count,
+            socket_status: record.socket_status.clone(),
         }
     }
 }

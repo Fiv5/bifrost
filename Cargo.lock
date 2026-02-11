@@ -511,6 +511,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 name = "bifrost-admin"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bifrost-core",
  "bifrost-storage",
  "bytes",
@@ -520,11 +521,14 @@ dependencies = [
  "mime_guess",
  "parking_lot",
  "qrcode",
+ "regex 1.12.3",
  "rust-embed",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sysinfo",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "tracing",
  "url",
@@ -549,6 +553,7 @@ dependencies = [
  "ipnet",
  "nix 0.28.0",
  "parking_lot",
+ "serde_json",
  "tokio",
  "toml",
  "tracing",
@@ -4740,6 +4745,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -1,18 +1,22 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord};
+use bifrost_admin::{
+    AdminState, FrameDirection, FrameType, MatchedRule, RequestTiming, TrafficRecord,
+};
 use bifrost_core::{BifrostError, Result};
-use bytes::Bytes;
+
+use futures_util::StreamExt;
 use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 use crate::logging::RequestContext;
+use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, BoxBody, RulesResolver};
 
 pub async fn handle_websocket_upgrade(
@@ -125,16 +129,31 @@ pub async fn handle_websocket_upgrade(
                     .collect(),
             )
         };
+        record.set_websocket();
 
+        state.websocket_monitor.register_connection(&record_id);
         state.traffic_recorder.record(record);
     }
 
+    let record_id_clone = record_id.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_bidirectional(upgraded, target_stream, admin_state).await
+                if let Err(e) = websocket_bidirectional_with_capture(
+                    upgraded,
+                    target_stream,
+                    &record_id_clone,
+                    admin_state.clone(),
+                )
+                .await
                 {
                     error!("WebSocket tunnel error: {}", e);
+                }
+
+                if let Some(ref state) = admin_state {
+                    state
+                        .websocket_monitor
+                        .set_connection_closed(&record_id_clone, None, None);
                 }
             }
             Err(e) => {
@@ -242,54 +261,129 @@ fn parse_host_port(host: &str) -> Result<(String, u16)> {
     }
 }
 
-async fn websocket_bidirectional(
+fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
+    match opcode {
+        Opcode::Continuation => FrameType::Continuation,
+        Opcode::Text => FrameType::Text,
+        Opcode::Binary => FrameType::Binary,
+        Opcode::Close => FrameType::Close,
+        Opcode::Ping => FrameType::Ping,
+        Opcode::Pong => FrameType::Pong,
+    }
+}
+
+async fn websocket_bidirectional_with_capture(
     upgraded: Upgraded,
     target: TcpStream,
+    record_id: &str,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<()> {
     let client = TokioIo::new(upgraded);
-    let (mut target_read, mut target_write) = target.into_split();
-
+    let (target_read, target_write) = target.into_split();
     let (client_read, client_write) = tokio::io::split(client);
-    let mut client_read = client_read;
-    let mut client_write = client_write;
 
-    let admin_state_clone = admin_state.clone();
+    let record_id_owned = record_id.to_string();
+    let admin_state_c2s = admin_state.clone();
+    let admin_state_s2c = admin_state.clone();
 
-    let client_to_target = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            let n = client_read.read(&mut buf).await?;
-            if n == 0 {
+    let client_to_server = async move {
+        let mut reader = WebSocketReader::new(client_read);
+        let mut writer = WebSocketWriter::new(target_write, true);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    trace!("Client read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_c2s {
+                state
+                    .metrics_collector
+                    .add_bytes_sent(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned,
+                    FrameDirection::Send,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                trace!("Server write error: {}", e);
                 break;
             }
-            target_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state_clone {
-                state.metrics_collector.add_bytes_sent(n as u64);
-            }
         }
-        target_write.shutdown().await?;
+
         Ok::<_, std::io::Error>(())
     };
 
-    let target_to_client = async move {
-        let mut buf = vec![0u8; 65536];
-        loop {
-            let n = target_read.read(&mut buf).await?;
-            if n == 0 {
+    let record_id_owned2 = record_id.to_string();
+    let server_to_client = async move {
+        let mut reader = WebSocketReader::new(target_read);
+        let mut writer = WebSocketWriter::new(client_write, false);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    trace!("Server read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_s2c {
+                state
+                    .metrics_collector
+                    .add_bytes_received(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned2,
+                    FrameDirection::Receive,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned2,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                trace!("Client write error: {}", e);
                 break;
             }
-            client_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state {
-                state.metrics_collector.add_bytes_received(n as u64);
-            }
         }
+
         Ok::<_, std::io::Error>(())
     };
 
-    let result = tokio::try_join!(client_to_target, target_to_client);
+    let result = tokio::try_join!(client_to_server, server_to_client);
 
     match result {
         Ok(_) => {
@@ -309,81 +403,136 @@ async fn websocket_bidirectional(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WebSocketOpcode {
-    Continuation = 0x0,
-    Text = 0x1,
-    Binary = 0x2,
-    Close = 0x8,
-    Ping = 0x9,
-    Pong = 0xA,
-}
+pub async fn websocket_bidirectional_generic_with_capture<S>(
+    upgraded: Upgraded,
+    target: S,
+    record_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let client = TokioIo::new(upgraded);
+    let (target_read, target_write) = tokio::io::split(target);
+    let (client_read, client_write) = tokio::io::split(client);
 
-impl WebSocketOpcode {
-    pub fn from_byte(byte: u8) -> Option<Self> {
-        match byte & 0x0F {
-            0x0 => Some(WebSocketOpcode::Continuation),
-            0x1 => Some(WebSocketOpcode::Text),
-            0x2 => Some(WebSocketOpcode::Binary),
-            0x8 => Some(WebSocketOpcode::Close),
-            0x9 => Some(WebSocketOpcode::Ping),
-            0xA => Some(WebSocketOpcode::Pong),
-            _ => None,
+    let record_id_owned = record_id.to_string();
+    let admin_state_c2s = admin_state.clone();
+    let admin_state_s2c = admin_state.clone();
+
+    let client_to_server = async move {
+        let mut reader = WebSocketReader::new(client_read);
+        let mut writer = WebSocketWriter::new(target_write, true);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    trace!("Client read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_c2s {
+                state
+                    .metrics_collector
+                    .add_bytes_sent(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned,
+                    FrameDirection::Send,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                trace!("Server write error: {}", e);
+                break;
+            }
         }
-    }
-}
 
-#[derive(Debug)]
-pub struct WebSocketFrame {
-    pub fin: bool,
-    pub opcode: WebSocketOpcode,
-    pub masked: bool,
-    pub payload: Bytes,
-}
+        Ok::<_, std::io::Error>(())
+    };
 
-impl WebSocketFrame {
-    pub fn text(data: impl Into<Bytes>) -> Self {
-        Self {
-            fin: true,
-            opcode: WebSocketOpcode::Text,
-            masked: false,
-            payload: data.into(),
+    let record_id_owned2 = record_id.to_string();
+    let server_to_client = async move {
+        let mut reader = WebSocketReader::new(target_read);
+        let mut writer = WebSocketWriter::new(client_write, false);
+
+        while let Some(result) = reader.next().await {
+            let frame = match result {
+                Ok(f) => f,
+                Err(e) => {
+                    trace!("Server read error: {}", e);
+                    break;
+                }
+            };
+
+            if let Some(ref state) = admin_state_s2c {
+                state
+                    .metrics_collector
+                    .add_bytes_received(frame.payload.len() as u64);
+
+                state.websocket_monitor.record_frame(
+                    &record_id_owned2,
+                    FrameDirection::Receive,
+                    opcode_to_frame_type(frame.opcode),
+                    &frame.payload,
+                    frame.mask.is_some(),
+                    frame.fin,
+                    state.body_store.as_ref(),
+                );
+
+                if frame.opcode == Opcode::Close {
+                    let close_code = frame.close_code();
+                    let close_reason = frame.close_reason().map(str::to_string);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_owned2,
+                        close_code,
+                        close_reason,
+                    );
+                }
+            }
+
+            if let Err(e) = writer.write_frame(frame).await {
+                trace!("Client write error: {}", e);
+                break;
+            }
         }
-    }
 
-    pub fn binary(data: impl Into<Bytes>) -> Self {
-        Self {
-            fin: true,
-            opcode: WebSocketOpcode::Binary,
-            masked: false,
-            payload: data.into(),
+        Ok::<_, std::io::Error>(())
+    };
+
+    let result = tokio::try_join!(client_to_server, server_to_client);
+
+    match result {
+        Ok(_) => {
+            debug!("WebSocket connection closed normally");
+            Ok(())
         }
-    }
-
-    pub fn close() -> Self {
-        Self {
-            fin: true,
-            opcode: WebSocketOpcode::Close,
-            masked: false,
-            payload: Bytes::new(),
-        }
-    }
-
-    pub fn ping(data: impl Into<Bytes>) -> Self {
-        Self {
-            fin: true,
-            opcode: WebSocketOpcode::Ping,
-            masked: false,
-            payload: data.into(),
-        }
-    }
-
-    pub fn pong(data: impl Into<Bytes>) -> Self {
-        Self {
-            fin: true,
-            opcode: WebSocketOpcode::Pong,
-            masked: false,
-            payload: data.into(),
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::ConnectionReset
+                || e.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                debug!("WebSocket connection closed: {}", e);
+                Ok(())
+            } else {
+                Err(BifrostError::Network(format!("WebSocket error: {}", e)))
+            }
         }
     }
 }
@@ -427,58 +576,54 @@ mod tests {
     }
 
     #[test]
-    fn test_websocket_opcode_from_byte() {
-        assert_eq!(
-            WebSocketOpcode::from_byte(0x0),
-            Some(WebSocketOpcode::Continuation)
-        );
-        assert_eq!(WebSocketOpcode::from_byte(0x1), Some(WebSocketOpcode::Text));
-        assert_eq!(
-            WebSocketOpcode::from_byte(0x2),
-            Some(WebSocketOpcode::Binary)
-        );
-        assert_eq!(
-            WebSocketOpcode::from_byte(0x8),
-            Some(WebSocketOpcode::Close)
-        );
-        assert_eq!(WebSocketOpcode::from_byte(0x9), Some(WebSocketOpcode::Ping));
-        assert_eq!(WebSocketOpcode::from_byte(0xA), Some(WebSocketOpcode::Pong));
-        assert_eq!(WebSocketOpcode::from_byte(0xF), None);
+    fn test_websocket_opcode_from_u8() {
+        use crate::protocol::{Opcode, WebSocketFrame};
+        assert_eq!(Opcode::from_u8(0x0), Some(Opcode::Continuation));
+        assert_eq!(Opcode::from_u8(0x1), Some(Opcode::Text));
+        assert_eq!(Opcode::from_u8(0x2), Some(Opcode::Binary));
+        assert_eq!(Opcode::from_u8(0x8), Some(Opcode::Close));
+        assert_eq!(Opcode::from_u8(0x9), Some(Opcode::Ping));
+        assert_eq!(Opcode::from_u8(0xA), Some(Opcode::Pong));
+        assert_eq!(Opcode::from_u8(0xF), None);
+        let _ = WebSocketFrame::text("");
     }
 
     #[test]
     fn test_websocket_frame_text() {
+        use crate::protocol::{Opcode, WebSocketFrame};
         let frame = WebSocketFrame::text("hello");
         assert!(frame.fin);
-        assert_eq!(frame.opcode, WebSocketOpcode::Text);
-        assert!(!frame.masked);
-        assert_eq!(frame.payload, Bytes::from("hello"));
+        assert_eq!(frame.opcode, Opcode::Text);
+        assert!(frame.mask.is_none());
+        assert_eq!(frame.payload, bytes::Bytes::from("hello"));
     }
 
     #[test]
     fn test_websocket_frame_binary() {
+        use crate::protocol::{Opcode, WebSocketFrame};
         let data = vec![0x01, 0x02, 0x03];
         let frame = WebSocketFrame::binary(data.clone());
         assert!(frame.fin);
-        assert_eq!(frame.opcode, WebSocketOpcode::Binary);
-        assert_eq!(frame.payload, Bytes::from(data));
+        assert_eq!(frame.opcode, Opcode::Binary);
+        assert_eq!(frame.payload, bytes::Bytes::from(data));
     }
 
     #[test]
     fn test_websocket_frame_close() {
-        let frame = WebSocketFrame::close();
+        use crate::protocol::{Opcode, WebSocketFrame};
+        let frame = WebSocketFrame::close(None, "");
         assert!(frame.fin);
-        assert_eq!(frame.opcode, WebSocketOpcode::Close);
-        assert!(frame.payload.is_empty());
+        assert_eq!(frame.opcode, Opcode::Close);
     }
 
     #[test]
     fn test_websocket_frame_ping_pong() {
+        use crate::protocol::{Opcode, WebSocketFrame};
         let ping = WebSocketFrame::ping("ping");
-        assert_eq!(ping.opcode, WebSocketOpcode::Ping);
+        assert_eq!(ping.opcode, Opcode::Ping);
 
         let pong = WebSocketFrame::pong("pong");
-        assert_eq!(pong.opcode, WebSocketOpcode::Pong);
+        assert_eq!(pong.opcode, Opcode::Pong);
     }
 
     #[test]

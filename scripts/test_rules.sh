@@ -145,11 +145,11 @@ check_rule_syntax() {
 
 build_proxy() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        info "跳过编译步骤"
+        info "跳过编译步骤 (将使用 cargo run 增量编译)"
         return 0
     fi
 
-    header "编译代理服务器"
+    header "检查代理服务器"
 
     if [[ -f "${PROJECT_DIR}/target/release/bifrost" ]]; then
         local mod_time=$(stat -f %m "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null || stat -c %Y "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null)
@@ -157,15 +157,12 @@ build_proxy() {
         local age=$((now - mod_time))
 
         if [[ $age -lt 86400 ]]; then
-            echo -e "${GREEN}✓${NC} 使用已编译的代理 (编译于 $((age / 60)) 分钟前)"
+            echo -e "${GREEN}✓${NC} 已有编译的代理 (编译于 $((age / 60)) 分钟前)，cargo run 将自动检测是否需要重新编译"
             return 0
         fi
     fi
 
-    info "正在编译代理服务器..."
-    cd "$PROJECT_DIR"
-    cargo build --release --bin bifrost 2>&1 | tail -5
-    echo -e "${GREEN}✓${NC} 代理服务器编译完成"
+    info "首次运行将自动编译代理服务器 (通过 cargo run)..."
 }
 
 setup_data_dir() {
@@ -224,13 +221,15 @@ start_proxy() {
     fi
 
     info "启动代理 (端口: ${PROXY_PORT})..."
+    info "数据目录: ${TEST_DATA_DIR}"
 
     mkdir -p "${TEST_DATA_DIR}"
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
-    BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+    cd "$PROJECT_DIR"
+    BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
     PROXY_PID=$!
 
-    local max_wait=10
+    local max_wait=30
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
@@ -1600,9 +1599,10 @@ resolve_code_block_var() {
     local content=""
 
     while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" =~ ^\`\`\`[[:space:]]*([a-zA-Z0-9_]+)[[:space:]]*$ ]]; then
+        if [[ "$line" == '```'* ]] && [[ "$line" != '```' ]]; then
             in_block=true
-            block_name="${BASH_REMATCH[1]}"
+            block_name="${line#\`\`\`}"
+            block_name="${block_name%% *}"
             content=""
             continue
         fi
@@ -2256,10 +2256,17 @@ run_tests() {
                 test_cors "$pattern"
                 ;;
             reqCookies)
-                test_req_cookies "$pattern" "test_cookie" "test_value"
+                local req_cookie_raw=$(extract_value "$protocols" "reqCookies")
+                req_cookie_raw=$(resolve_code_block_var "$req_cookie_raw" "$RULE_FILE")
+                local cookie_name=$(echo "$req_cookie_raw" | cut -d'=' -f1)
+                local cookie_value=$(echo "$req_cookie_raw" | cut -d'=' -f2-)
+                test_req_cookies "$pattern" "$cookie_name" "$cookie_value"
                 ;;
             resCookies)
-                test_res_cookies "$pattern" "bifrost"
+                local res_cookie_raw=$(extract_value "$protocols" "resCookies")
+                res_cookie_raw=$(resolve_code_block_var "$res_cookie_raw" "$RULE_FILE")
+                local cookie_name=$(echo "$res_cookie_raw" | cut -d'=' -f1)
+                test_res_cookies "$pattern" "$cookie_name"
                 ;;
             websocket|websocket_secure)
                 test_websocket_forward "$pattern" "$target"
