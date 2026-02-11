@@ -8,23 +8,23 @@ Bifrost 通过简洁的规则配置来修改请求和响应。
 pattern operation [operations...] [filters...] [lineProps://...]
 ```
 
-| 组成部分        | 是否必填 | 描述                                                 |
-| :-------------- | :------- | :--------------------------------------------------- |
-| **pattern**     | 是       | 匹配请求 URL 的表达式，详见 [pattern](./pattern)     |
-| **operation**   | 是       | 操作指令 `protocol://value`，详见 [operation](./operation) |
-| **filters**     | 否       | 过滤条件，详见下文                                   |
-| **lineProps**   | 否       | 规则属性，详见下文                                   |
+| 组成部分      | 是否必填 | 描述                                                          |
+| :------------ | :------- | :------------------------------------------------------------ |
+| **pattern**   | 是       | 匹配请求 URL 的表达式，详见 [pattern](./pattern.md)           |
+| **operation** | 是       | 操作指令 `protocol://value`，详见 [operation](./operation.md) |
+| **filters**   | 否       | 过滤条件，详见下文                                            |
+| **lineProps** | 否       | 规则属性，详见下文                                            |
 
 ## Pattern 类型
 
 Pattern 根据格式自动识别类型，优先级影响匹配顺序：
 
-| 类型     | 格式示例                           | 优先级 |
-| :------- | :--------------------------------- | :----- |
-| Domain   | `example.com` `example.com/api`    | 100    |
-| IP/CIDR  | `192.168.1.1` `192.168.0.0/16`     | 95     |
-| Regex    | `/pattern/` `/pattern/i`           | 80     |
-| Wildcard | `*.example.com` `$host` `api?`     | 55     |
+| 类型     | 格式示例                        | 优先级 |
+| :------- | :------------------------------ | :----- |
+| Domain   | `example.com` `example.com/api` | 100    |
+| IP/CIDR  | `192.168.1.1` `192.168.0.0/16`  | 95     |
+| Regex    | `/pattern/` `/pattern/i`        | 80     |
+| Wildcard | `*.example.com` `$host` `api?`  | 55     |
 
 取反匹配：所有类型均支持 `!` 前缀，如 `!*.example.com`
 
@@ -88,26 +88,26 @@ example.com host://127.0.0.1 includeFilter://m:GET excludeFilter:///admin/
 
 **过滤条件类型**：
 
-| 前缀      | 说明             | 示例                          |
-| :-------- | :--------------- | :---------------------------- |
-| `m:`      | HTTP 方法        | `m:GET` `m:GET,POST,PUT`      |
-| `s:`      | 状态码           | `s:200` `s:200-299` `s:200,404,500` |
-| `h:`      | 请求头存在       | `h:X-Custom-Header`           |
-| `reqH:`   | 请求头匹配       | `reqH:Content-Type=/json/`    |
-| `resH:`   | 响应头匹配       | `resH:Content-Type=/json/`    |
-| `i:`      | 客户端 IP        | `i:192.168.1.1` `i:192.168.0.0/16` |
-| `b:`      | 响应体匹配       | `b:/error/`                   |
-| `/path/`  | 路径包含         | `/api/`                       |
-| `/regex/` | 路径正则         | `/^\/api\/v\d+/`              |
+| 前缀      | 说明       | 示例                                |
+| :-------- | :--------- | :---------------------------------- |
+| `m:`      | HTTP 方法  | `m:GET` `m:GET,POST,PUT`            |
+| `s:`      | 状态码     | `s:200` `s:200-299` `s:200,404,500` |
+| `h:`      | 请求头存在 | `h:X-Custom-Header`                 |
+| `reqH:`   | 请求头匹配 | `reqH:Content-Type=/json/`          |
+| `resH:`   | 响应头匹配 | `resH:Content-Type=/json/`          |
+| `i:`      | 客户端 IP  | `i:192.168.1.1` `i:192.168.0.0/16`  |
+| `b:`      | 响应体匹配 | `b:/error/`                         |
+| `/path/`  | 路径包含   | `/api/`                             |
+| `/regex/` | 路径正则   | `/^\/api\/v\d+/`                    |
 
 ### 6. 规则属性
 
 通过 `lineProps://` 设置规则属性：
 
-| 属性        | 说明                             |
-| :---------- | :------------------------------- |
-| `important` | 提升优先级（+10000）             |
-| `disabled`  | 禁用规则                         |
+| 属性        | 说明                 |
+| :---------- | :------------------- |
+| `important` | 提升优先级（+10000） |
+| `disabled`  | 禁用规则             |
 
 ```txt
 example.com host://127.0.0.1 lineProps://important

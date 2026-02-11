@@ -347,5 +347,3 @@ key1=value1&key2=value2&keyN=valueN
 ### 内容注入类
 
 `htmlAppend`、`htmlPrepend`、`htmlBody`、`jsAppend`、`jsPrepend`、`jsBody`、`cssAppend`、`cssPrepend`、`cssBody`
-
-具体用法参考：[协议列表](./protocols)
