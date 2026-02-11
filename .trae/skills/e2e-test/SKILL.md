@@ -29,46 +29,101 @@ Client (curl) → Proxy (bifrost) → Mock Server (echo)
 
 ```
 rust/scripts/
-├── rules/              # 测试规则文件 (按功能分类)
-│   ├── forwarding/     # 转发类测试
-│   ├── request_modify/ # 请求修改测试
-│   ├── response_modify/# 响应修改测试
-│   ├── redirect/       # 重定向测试
-│   ├── priority/       # 优先级测试
-│   ├── control/        # 控制类测试
-│   └── template/       # 模板类测试 (values, 变量替换)
-├── values/             # 预定义值文件
-├── mock_servers/       # Mock 服务器实现
-├── test_utils/         # 测试工具库
-│   ├── assert.sh       # 断言函数库
-│   └── http_client.sh  # HTTP 请求封装
-├── test_*.sh           # 测试脚本文件
-└── run_all_tests.sh    # 批量测试运行器
+├── rules/                      # 测试规则文件 (按功能分类)
+│   ├── forwarding/             # 转发类测试
+│   ├── request_modify/         # 请求修改测试
+│   ├── response_modify/        # 响应修改测试
+│   ├── redirect/               # 重定向测试
+│   ├── priority/               # 优先级测试
+│   ├── control/                # 控制类测试
+│   └── template/               # 模板类测试 (values, 变量替换)
+├── values/                     # 预定义值文件
+├── mock_servers/               # Mock 服务器实现
+├── test_utils/                 # 测试工具库
+│   ├── assert.sh               # 断言函数库
+│   └── http_client.sh          # HTTP 请求封装
+├── test_rules.sh               # 核心规则测试 (依赖共享 mock 服务器)
+├── test_values_e2e.sh          # Values E2E 测试 (独立，自管理服务)
+├── test_values_cli.sh          # Values CLI 测试 (独立，无服务依赖)
+├── test_pattern.sh             # Pattern 匹配测试 (独立，自管理服务)
+└── run_all_tests_parallel.sh   # 并行测试运行器
 ```
 
 ## 执行测试
 
-### 运行所有测试
+### 测试脚本分类
+
+| 脚本 | 类型 | 端口 | 说明 |
+|------|------|------|------|
+| `test_rules.sh` | 依赖共享服务 | 8080/9000+ | 核心规则测试，需要外部 mock 服务器 |
+| `test_values_e2e.sh` | 独立 | 18080/13000 | Values E2E 测试，自管理服务 |
+| `test_values_cli.sh` | 独立 | 无 | Values CLI 测试，纯命令行 |
+| `test_pattern.sh` | 独立 | 18080/3000 | Pattern 匹配测试，自管理服务 |
+
+### 运行全量测试（推荐）
+
+⚠️ **重要**：`run_all_tests_parallel.sh` 只覆盖 `test_rules.sh`（规则测试），不包含独立测试脚本。
+要确保测试覆盖完整，必须同时运行所有测试脚本：
 
 ```bash
 cd rust/scripts
-./run_all_tests.sh
+
+# 方式 1：顺序执行全量测试（简单可靠）
+./run_all_tests_parallel.sh && \
+./test_values_cli.sh && \
+./test_values_e2e.sh && \
+./test_pattern.sh
+
+# 方式 2：并行执行全量测试（最高效，需要端口隔离）
+./run_all_tests_parallel.sh &                              # 代理: 9000+, Mock: 3000/3443
+./test_values_cli.sh &                                     # 无服务依赖
+./test_values_e2e.sh &                                     # 代理: 18080, Mock: 13000
+PROXY_PORT=18090 ECHO_HTTP_PORT=13100 ECHO_HTTPS_PORT=13443 ./test_pattern.sh &  # 独立端口
+wait
+echo "全量测试完成"
 ```
 
-### 运行单个测试脚本
+**端口分配说明**（并行执行时避免冲突）：
+
+| 脚本 | 代理端口 | Mock HTTP | Mock HTTPS |
+|------|---------|----------|------------|
+| `run_all_tests_parallel.sh` | 9000+ | 3000 | 3443 |
+| `test_values_e2e.sh` | 18080 | 13000 | - |
+| `test_pattern.sh` | 18090 | 13100 | 13443 |
+
+### 单独运行规则测试
+
+`run_all_tests_parallel.sh` 并行执行 `rules/` 目录下的所有规则文件：
 
 ```bash
 cd rust/scripts
-./test_rules.sh           # 核心规则测试
-./test_values_e2e.sh      # Values 系统 E2E 测试
-./test_values_cli.sh      # Values CLI 单元测试
+./run_all_tests_parallel.sh
+```
+
+特性：
+- 自动检测 CPU 核心数，并行运行测试
+- 为每个测试分配独立端口 (BASE_PORT=9000 递增)
+- 共享一组 mock 服务器，减少资源开销
+- 使用独立的 `BIFROST_DATA_DIR` 确保测试隔离
+
+### 单独运行独立测试脚本
+
+独立测试脚本自管理服务生命周期，可单独运行：
+
+```bash
+cd rust/scripts
+
+./test_values_cli.sh      # 纯 CLI 测试，无服务依赖
+./test_values_e2e.sh      # 自管理服务，端口 18080/13000
+./test_pattern.sh         # 自管理服务，端口 18080/3000
 ```
 
 ### 可选参数
 
 ```bash
-./run_all_tests.sh --verbose      # 详细输出
-./run_all_tests.sh --fail-fast    # 遇到失败立即停止
+./run_all_tests_parallel.sh --verbose      # 详细输出
+./run_all_tests_parallel.sh --fail-fast    # 遇到失败立即停止
+./test_rules.sh --skip-mock-servers        # 跳过 mock 服务器启动（用于并行执行）
 ```
 
 ## 创建新测试

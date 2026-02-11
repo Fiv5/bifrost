@@ -123,7 +123,8 @@ header "启动 Echo 服务器"
         return 0
     fi
 
-"$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
+HTTP_PORT="${ECHO_HTTP_PORT}" HTTPS_PORT="${ECHO_HTTPS_PORT}" \
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
 
     sleep 2
 
