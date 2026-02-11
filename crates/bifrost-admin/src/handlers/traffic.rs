@@ -83,7 +83,20 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
     let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
 
     let total = records.len();
-    let paginated: Vec<_> = records.into_iter().skip(offset).take(limit).collect();
+    let paginated: Vec<_> = records
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|mut summary| {
+            if summary.is_sse || summary.is_websocket {
+                if let Some(status) = state.websocket_monitor.get_connection_status(&summary.id) {
+                    summary.frame_count = status.frame_count;
+                    summary.socket_status = Some(status);
+                }
+            }
+            summary
+        })
+        .collect();
 
     let response = serde_json::json!({
         "total": total,
@@ -107,9 +120,35 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
             .traffic_recorder
             .get_after(params.after_id.as_deref(), &filter, limit);
 
+    let enrich_summary = |mut summary: crate::traffic::TrafficSummary| {
+        if summary.is_sse || summary.is_websocket {
+            if let Some(status) = state.websocket_monitor.get_connection_status(&summary.id) {
+                summary.frame_count = status.frame_count;
+                summary.socket_status = Some(status);
+            }
+        }
+        summary
+    };
+
+    let new_records: Vec<_> = new_records.into_iter().map(enrich_summary).collect();
+
     let updated_records = if !params.pending_ids.is_empty() {
         let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
-        state.traffic_recorder.get_by_ids(&ids)
+        state
+            .traffic_recorder
+            .get_by_ids(&ids)
+            .into_iter()
+            .map(|mut summary| {
+                if summary.is_sse || summary.is_websocket {
+                    if let Some(status) = state.websocket_monitor.get_connection_status(&summary.id)
+                    {
+                        summary.frame_count = status.frame_count;
+                        summary.socket_status = Some(status);
+                    }
+                }
+                summary
+            })
+            .collect()
     } else {
         Vec::new()
     };

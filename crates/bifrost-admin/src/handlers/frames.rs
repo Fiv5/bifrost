@@ -20,12 +20,21 @@ struct FramesResponse {
     is_monitored: bool,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct FramesQuery {
     #[serde(default)]
     pub after: Option<u64>,
     #[serde(default = "default_limit")]
     pub limit: usize,
+}
+
+impl Default for FramesQuery {
+    fn default() -> Self {
+        Self {
+            after: None,
+            limit: 100,
+        }
+    }
 }
 
 fn default_limit() -> usize {
@@ -43,6 +52,10 @@ pub async fn get_frames(
     connection_id: &str,
     query_str: Option<&str>,
 ) -> Response<BoxBody> {
+    tracing::debug!(
+        "[FRAMES API] get_frames called for connection_id: {}",
+        connection_id
+    );
     let query = parse_frames_query(query_str);
     let monitor = &state.websocket_monitor;
 

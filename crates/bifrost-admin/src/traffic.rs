@@ -47,6 +47,8 @@ pub struct SocketStatus {
     pub receive_count: u64,
     pub send_bytes: u64,
     pub receive_bytes: u64,
+    #[serde(default)]
+    pub frame_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_code: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,6 +63,7 @@ impl Default for SocketStatus {
             receive_count: 0,
             send_bytes: 0,
             receive_bytes: 0,
+            frame_count: 0,
             close_code: None,
             close_reason: None,
         }

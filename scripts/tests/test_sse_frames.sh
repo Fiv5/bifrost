@@ -110,7 +110,7 @@ test_sse_basic_events() {
 test_sse_custom_events() {
     local events
 
-    events=$(sse_fetch_all "$SSE_TARGET" "/sse/custom?count=2&interval=100" 5)
+    events=$(sse_fetch_all "$SSE_TARGET" "/sse/custom?count=2&interval=0.1" 5)
     if [[ $? -ne 0 ]]; then
         log_fail "Failed to fetch custom SSE events"
         return 1
@@ -204,7 +204,7 @@ test_sse_frames_capture() {
 }
 
 test_sse_frames_api() {
-    sse_fetch_all "$SSE_TARGET" "/sse/custom?count=5&interval=50" 5 > /dev/null 2>&1
+    sse_fetch_all "$SSE_TARGET" "/sse/custom?count=5&interval=0.05" 5 > /dev/null 2>&1
 
     sleep 1
 
@@ -261,7 +261,7 @@ test_sse_frame_content() {
     local frame_data
 
     for i in $(seq 0 9); do
-        frame_data=$(echo "$frames" | jq -r ".frames[$i].data // empty")
+        frame_data=$(echo "$frames" | jq -r ".frames[$i].payload_preview // empty")
         if [[ -n "$frame_data" && "$frame_data" != "null" ]]; then
             has_content=true
             break

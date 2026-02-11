@@ -326,6 +326,14 @@ impl WebSocketMonitor {
             .unwrap_or(false)
     }
 
+    pub fn get_connection_status(&self, connection_id: &str) -> Option<SocketStatus> {
+        let connections = self.connections.read();
+        let store = connections.get(connection_id)?;
+        let mut status = store.status.clone();
+        status.frame_count = store.frames.len();
+        Some(status)
+    }
+
     pub fn get_frames(
         &self,
         connection_id: &str,
