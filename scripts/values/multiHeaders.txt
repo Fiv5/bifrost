@@ -1,0 +1,5 @@
+X-Auth-Token: multi-header-token-12345
+X-Auth-User: test-multi-user
+X-Request-Source: values-file
+X-Custom-Tag: multi-header-test
+Authorization: Bearer multi-jwt-token

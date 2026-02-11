@@ -3,7 +3,7 @@
 ## 校验要求
 
 - 每次开发任务结束前必须使用技能进行规范校验
-- 使用技能：rust-project-validate，详见 [SKILL.md](file:///Users/eden/work/github/whistle/rust/.trae/skills/rust-project-validate/SKILL.md)
+- 使用技能：rust-project-validate
 
 ## 文档更新要求
 
@@ -20,3 +20,8 @@
 ```bash
 BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --unsafe-ssl
 ```
+
+## E2E 测试要求
+
+- 添加新功能或修复 bug 后需要创建/执行端到端测试进行验证
+- 使用技能：e2e-test

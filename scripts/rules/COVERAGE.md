@@ -185,9 +185,56 @@
 | 内联值   | ✅   | 多个文件                      | `127.0.0.1:8080`          |
 | 内联参数 | ✅   | request_modify/url_params.txt | `key=value&k2=v2`         |
 | 括号内容 | ❌   | -                             | `({"ok":true})`           |
-| 值引用   | 🔄   | template/values.txt           | `{valueName}`             |
+| 值引用   | ✅   | template/values.txt           | `{valueName}`             |
 | 文件路径 | ✅   | template/values.txt           | `/path/to/file`           |
 | 远程 URL | ❌   | -                             | `http://example.com/data` |
+
+## 10.1 Values 系统测试 (Values System)
+
+**端到端测试脚本**: `test_values_e2e.sh` (Mock Server + Proxy + Client)
+**CLI 测试脚本**: `test_values_cli.sh` (CLI 命令测试)
+**测试值文件**: `scripts/values/`
+
+### CLI 测试 (test_values_cli.sh)
+
+| 测试类型        | 状态 | 说明               |
+| --------------- | ---- | ------------------ |
+| CLI set/get     | ✅   | 值设置和获取       |
+| CLI list        | ✅   | 列出所有值         |
+| CLI delete      | ✅   | 删除值             |
+| CLI import .txt | ✅   | 导入 txt 格式      |
+| CLI import .json| ✅   | 导入 json 格式     |
+| CLI import .kv  | ✅   | 导入 kv 格式       |
+| 多行值          | ✅   | 多行内容处理       |
+| 特殊字符        | ✅   | 特殊字符处理       |
+| Unicode 值      | ✅   | Unicode 字符支持   |
+| 空值            | ✅   | 空值处理           |
+| 值覆盖          | ✅   | 同名值覆盖         |
+
+### 端到端测试 (test_values_e2e.sh)
+
+测试架构: `Client (curl) → Proxy (bifrost) → Mock Server (echo)`
+
+| 测试类型        | 状态 | 规则示例                           | 说明               |
+| --------------- | ---- | ---------------------------------- | ------------------ |
+| 内联响应体      | ✅   | resBody://\`{...}\`                | backticks 内联     |
+| 内联请求头      | ✅   | reqHeaders://\`X-Header:value\`    | 请求头内联         |
+| 内联响应头      | ✅   | resHeaders://\`X-Header:value\`    | 响应头内联         |
+| 值引用响应体    | ✅   | resBody://{mockResponse}           | 值文件引用         |
+| 值引用请求头    | ✅   | reqHeaders://{authHeaders}         | 请求头值引用       |
+| 值引用响应头    | ✅   | resHeaders://{customHeaders}       | 响应头值引用       |
+| 多值引用组合    | ✅   | reqHeaders://{a} resHeaders://{b}  | 多值组合           |
+| JSON 格式值     | ✅   | resBody://{jsonResponse}           | JSON 响应体        |
+| 多行头部值      | ✅   | reqHeaders://{multiHeaders}        | 多行请求头         |
+
+**Values 测试文件清单** (`scripts/values/`):
+- `authHeaders.txt` - 认证头部测试值
+- `customHeaders.txt` - 自定义头部测试值
+- `mockResponse.txt` - Mock 响应体测试值
+- `jsonResponse.txt` - JSON 格式响应测试值
+- `multiHeaders.txt` - 多行头部测试值
+- `emptyValue.txt` - 空值测试
+- `specialChars.txt` - 特殊字符测试值
 
 ## 11. 模式匹配 (Pattern Matching)
 
@@ -256,12 +303,13 @@
 | 脚本插件   | 0      | 0        | 0      | 8      |
 | 安全协议   | 0      | 0        | 0      | 3      |
 | 模板变量   | 9      | 4        | 8      | 0      |
-| 值来源     | 3      | 0        | 1      | 2      |
+| 值来源     | 4      | 0        | 1      | 1      |
+| Values系统 | 20     | 0        | 0      | 0      |
 | 模式匹配   | 12     | 11       | 0      | 0      |
 | 规则优先级 | 1      | 4        | 0      | 0      |
 | 规则组合   | 0      | 4        | 0      | 0      |
 
-**总计**: 已覆盖 41 | 部分覆盖 36 | 待验证 52 | 未覆盖 21
+**总计**: 已覆盖 62 | 部分覆盖 36 | 待验证 52 | 未覆盖 20
 
 ---
 

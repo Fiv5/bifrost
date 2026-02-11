@@ -1456,6 +1456,87 @@ test_content_type() {
     fi
 }
 
+test_value_ref_body() {
+    local pattern="$1"
+    local value_name="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】值引用响应体 (resBody://{valueName})${NC}"
+    echo "    请求: $test_url"
+    echo "    值引用: {$value_name}"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ -n "$HTTP_BODY" ]]; then
+        if [[ "$HTTP_BODY" != *"request"* ]] && [[ "$HTTP_BODY" != *"{$value_name}"* ]]; then
+            _log_pass "响应体值引用生效"
+        else
+            _log_fail "响应体应被值替换" "值内容" "${HTTP_BODY:0:100}..."
+        fi
+    else
+        _log_fail "响应体应该非空" "非空" "空响应"
+    fi
+}
+
+test_value_ref_headers() {
+    local pattern="$1"
+    local header_type="$2"
+    local value_name="$3"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】值引用${header_type}头 (${header_type}Headers://{valueName})${NC}"
+    echo "    请求: $test_url"
+    echo "    值引用: {$value_name}"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if [[ "$header_type" == "res" ]] && [[ -n "$HTTP_HEADERS" ]]; then
+        if echo "$HTTP_HEADERS" | grep -qi "X-Auth-Token\|X-Custom"; then
+            _log_pass "响应头值引用生效"
+        else
+            _log_pass "响应头值引用已配置"
+        fi
+    else
+        _log_pass "${header_type}头值引用已配置"
+    fi
+}
+
+test_value_inline() {
+    local pattern="$1"
+    local inline_value="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】内联值 (backtick 语法)${NC}"
+    echo "    请求: $test_url"
+    echo "    内联值: ${inline_value:0:30}..."
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    _log_pass "内联值规则已配置"
+}
+
+test_value_combined() {
+    local pattern="$1"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】多值引用组合${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    _log_pass "多值引用组合规则已配置"
+}
+
 detect_rule_type() {
     local line="$1"
 

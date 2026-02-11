@@ -1,0 +1,4 @@
+X-Special-Chars: test=value&foo=bar
+X-Unicode: 中文测试-日本語-한국어
+X-Symbols: !@#$%^*()_+-[]{}|
+X-Escaped: value\"with\"quotes

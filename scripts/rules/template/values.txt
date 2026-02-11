@@ -1,10 +1,8 @@
-# 内联值测试
-# V-01: 内联响应体
-# V-02: 内联请求头
-# V-03: 内联响应头
-# V-04: 多值组合
-# V-05: 文件路径值
-# V-06: URL 参数
+# Values 值引用测试
+# 测试 {valueName} 语法引用预定义值
+# 测试值文件位于: scripts/values/
+
+# ==================== V-01 ~ V-06 基础内联值测试 ====================
 
 # V-01 内联响应体 - 使用 backticks 语法（需要指定转发目标才能修改响应体）
 test-value-ref.local http://127.0.0.1:3000 resBody://`{"success":true}`
@@ -23,3 +21,39 @@ test-file-value.local file:///Users/eden/work/github/whistle/rust/scripts/test_d
 
 # V-06 内联参数值 - key=value 格式
 test-inline-params.local http://127.0.0.1:3000 urlParams://key1=value1&key2=value2
+
+# ==================== V-07 ~ V-10 值引用测试 ====================
+
+# V-07 值引用响应体 - 使用 {valueName} 引用 scripts/values/mockResponse.txt
+test-value-ref-body.local http://127.0.0.1:3000 resBody://{mockResponse}
+
+# V-08 值引用请求头 - 使用 {valueName} 引用 scripts/values/authHeaders.txt
+test-value-ref-reqheaders.local http://127.0.0.1:3000 reqHeaders://{authHeaders}
+
+# V-09 值引用响应头 - 使用 {valueName} 引用 scripts/values/customHeaders.txt
+test-value-ref-resheaders.local http://127.0.0.1:3000 resHeaders://{customHeaders}
+
+# V-10 值引用组合 - 同时使用多个值引用
+test-value-ref-combined.local http://127.0.0.1:3000 reqHeaders://{authHeaders} resHeaders://{customHeaders}
+
+# ==================== V-11 ~ V-13 高级值引用测试 ====================
+
+# V-11 JSON 格式值引用 - 引用 JSON 格式的响应体
+test-value-json-body.local http://127.0.0.1:3000 resBody://{jsonResponse}
+
+# V-12 多行头部值引用 - 引用包含多个头部的值
+test-value-multi-headers.local http://127.0.0.1:3000 reqHeaders://{multiHeaders}
+
+# V-13 值引用 + 模板变量组合 - 值引用与模板变量混用
+test-value-with-template.local http://127.0.0.1:3000 resHeaders://`X-Request-Id:${reqId}` resBody://{mockResponse}
+
+# ==================== V-14 ~ V-16 边界条件测试 ====================
+
+# V-14 特殊字符值引用 - 测试包含特殊字符的值
+test-value-special-chars.local http://127.0.0.1:3000 resHeaders://{specialChars}
+
+# V-15 空值引用测试 - 测试空值的处理
+test-value-empty.local http://127.0.0.1:3000 resBody://{emptyValue}
+
+# V-16 不存在的值引用 - 测试 fallback 行为（应返回原始 {valueName} 字符串）
+test-value-missing.local http://127.0.0.1:3000 resHeaders://`X-Missing:{nonExistentValue}`

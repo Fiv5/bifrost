@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "id": 12345,
+    "name": "test-value",
+    "enabled": true,
+    "tags": ["value-ref", "json", "test"]
+  },
+  "timestamp": "2024-01-01T00:00:00Z"
+}
