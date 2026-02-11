@@ -650,6 +650,14 @@ async fn handle_intercepted_request_with_protocol(
 
     let needs_processing = needs_body_processing(&resolved_rules);
 
+    let is_websocket = res_parts.status == hyper::StatusCode::SWITCHING_PROTOCOLS
+        && res_parts
+            .headers
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
     if !needs_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = req_id.to_string();
@@ -682,6 +690,10 @@ async fn handle_intercepted_request_with_protocol(
             });
             record.request_headers = Some(req_headers);
             record.response_headers = Some(res_headers);
+
+            if is_websocket {
+                record.protocol = "wss".to_string();
+            }
 
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
@@ -748,6 +760,10 @@ async fn handle_intercepted_request_with_protocol(
         });
         record.request_headers = Some(req_headers);
         record.response_headers = Some(res_headers);
+
+        if is_websocket {
+            record.protocol = "wss".to_string();
+        }
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();

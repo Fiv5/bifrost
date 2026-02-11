@@ -1,6 +1,7 @@
 use std::sync::Arc;
+use std::time::Instant;
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord};
 use bifrost_core::{BifrostError, Result};
 use bytes::Bytes;
 use hyper::body::Incoming;
@@ -11,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error};
 
+use crate::logging::RequestContext;
 use crate::server::{empty_body, BoxBody, RulesResolver};
 
 pub async fn handle_websocket_upgrade(
@@ -18,10 +20,21 @@ pub async fn handle_websocket_upgrade(
     rules: Arc<dyn RulesResolver>,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
+    let ctx = RequestContext::new();
+    let start_time = Instant::now();
     let uri = req.uri().clone();
     let url = uri.to_string();
+    let method = req.method().to_string();
 
     let resolved_rules = rules.resolve(&url, "GET");
+
+    let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
+
+    let req_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     let host = req
         .headers()
@@ -37,6 +50,7 @@ pub async fn handle_websocket_upgrade(
 
     debug!("WebSocket upgrade to {}:{}", target_host, target_port);
 
+    let connect_start = Instant::now();
     let mut target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
         .await
         .map_err(|e| {
@@ -45,6 +59,7 @@ pub async fn handle_websocket_upgrade(
                 target_host, target_port, e
             ))
         })?;
+    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
     let upgrade_request = build_websocket_handshake(&req)?;
     target_stream
@@ -68,8 +83,50 @@ pub async fn handle_websocket_upgrade(
 
     let sec_accept = extract_sec_websocket_accept(&response_str);
 
+    let total_ms = start_time.elapsed().as_millis() as u64;
+    let record_id = ctx.id_str();
+
     if let Some(ref state) = admin_state {
         state.metrics_collector.increment_requests();
+
+        let ws_url = format!(
+            "ws://{}{}",
+            host,
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+        );
+
+        let mut record = TrafficRecord::new(record_id.clone(), method, ws_url);
+        record.status = 101;
+        record.protocol = "ws".to_string();
+        record.duration_ms = total_ms;
+        record.timing = Some(RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(tcp_connect_ms),
+            tls_ms: None,
+            send_ms: None,
+            wait_ms: Some(total_ms.saturating_sub(tcp_connect_ms)),
+            receive_ms: None,
+            total_ms,
+        });
+        record.request_headers = Some(req_headers);
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                    })
+                    .collect(),
+            )
+        };
+
+        state.traffic_recorder.record(record);
     }
 
     tokio::spawn(async move {

@@ -322,6 +322,14 @@ pub async fn handle_http_request(
 
     let needs_processing = needs_body_processing(&resolved_rules);
 
+    let is_websocket = res_parts.status == StatusCode::SWITCHING_PROTOCOLS
+        && res_parts
+            .headers
+            .get(hyper::header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
     if !needs_processing {
         let is_streaming = is_streaming_response(&res_parts);
         if verbose_logging {
@@ -388,6 +396,10 @@ pub async fn handle_http_request(
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.clone());
+
+            if is_websocket {
+                record.protocol = "ws".to_string();
+            }
 
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
@@ -495,6 +507,10 @@ pub async fn handle_http_request(
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
+
+        if is_websocket {
+            record.protocol = "ws".to_string();
+        }
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
