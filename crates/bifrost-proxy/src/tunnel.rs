@@ -393,7 +393,11 @@ async fn tls_intercept_tunnel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let conn = ServerBuilder::new().serve_connection(client_io, service);
+    let conn = ServerBuilder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(client_io, service)
+        .with_upgrades();
 
     if let Err(e) = conn.await {
         if verbose_logging {
@@ -402,6 +406,22 @@ async fn tls_intercept_tunnel(
     }
 
     Ok(())
+}
+
+fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
+    let connection = req
+        .headers()
+        .get(hyper::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let upgrade = req
+        .headers()
+        .get(hyper::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    connection.to_lowercase().contains("upgrade") && upgrade.to_lowercase() == "websocket"
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -416,6 +436,20 @@ async fn handle_intercepted_request_with_protocol(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    if is_websocket_upgrade_request(&req) {
+        return handle_intercepted_websocket(
+            req,
+            original_host,
+            target_host,
+            target_port,
+            req_id,
+            admin_state,
+            use_http,
+            verbose_logging,
+        )
+        .await;
+    }
+
     let start_time = Instant::now();
     let method = req.method().clone();
     let method_str = method.to_string();
@@ -796,6 +830,347 @@ async fn handle_intercepted_request_with_protocol(
     };
 
     Ok(Response::from_parts(res_parts, full_body(final_body)))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_intercepted_websocket(
+    req: Request<Incoming>,
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
+    req_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+    use_http: bool,
+    verbose_logging: bool,
+) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    use tokio_rustls::rustls::pki_types::ServerName;
+    use tokio_rustls::TlsConnector;
+
+    let start_time = Instant::now();
+    let uri = req.uri().clone();
+    let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+
+    if verbose_logging {
+        info!("[{}] WebSocket upgrade request detected: {}", req_id, path);
+    }
+
+    let connect_start = Instant::now();
+    let target_stream = match TcpStream::connect(format!("{}:{}", target_host, target_port)).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                "[{}] Failed to connect to WebSocket target {}:{}: {}",
+                req_id, target_host, target_port, e
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+
+    let stream: Box<dyn AsyncReadWrite + Send + Unpin> = if use_http {
+        Box::new(target_stream)
+    } else {
+        let tls_config = get_tls_client_config(false);
+        let connector = TlsConnector::from(tls_config);
+
+        let server_name = match ServerName::try_from(target_host.to_string()) {
+            Ok(name) => name,
+            Err(_) => {
+                error!("[{}] Invalid server name for TLS: {}", req_id, target_host);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+
+        match connector.connect(server_name, target_stream).await {
+            Ok(tls_stream) => Box::new(tls_stream),
+            Err(e) => {
+                error!("[{}] TLS handshake failed: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        }
+    };
+
+    let handshake = build_websocket_handshake_request(&req, target_host);
+
+    let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+
+    if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
+        error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
+        return Ok(Response::builder()
+            .status(502)
+            .body(full_body(b"Bad Gateway".to_vec()))
+            .unwrap());
+    }
+
+    let mut response_buf = vec![0u8; 4096];
+    let n = match stream_read.read(&mut response_buf).await {
+        Ok(n) => n,
+        Err(e) => {
+            error!(
+                "[{}] Failed to read WebSocket handshake response: {}",
+                req_id, e
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let response_str = String::from_utf8_lossy(&response_buf[..n]);
+    if !response_str.contains("101") {
+        error!("[{}] WebSocket handshake failed: {}", req_id, response_str);
+        return Ok(Response::builder()
+            .status(502)
+            .body(full_body(b"WebSocket handshake failed".to_vec()))
+            .unwrap());
+    }
+
+    let sec_accept = extract_sec_websocket_accept(&response_str);
+    let sec_protocol = extract_sec_websocket_protocol(&response_str);
+
+    let total_ms = start_time.elapsed().as_millis() as u64;
+
+    if let Some(ref state) = admin_state {
+        state.metrics_collector.increment_requests();
+
+        let ws_url = format!("wss://{}{}", original_host, path);
+        let mut record = TrafficRecord::new(req_id.to_string(), "GET".to_string(), ws_url);
+        record.status = 101;
+        record.protocol = "wss".to_string();
+        record.duration_ms = total_ms;
+        record.timing = Some(RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(tcp_connect_ms),
+            tls_ms: if use_http {
+                None
+            } else {
+                Some(total_ms.saturating_sub(tcp_connect_ms))
+            },
+            send_ms: None,
+            wait_ms: None,
+            receive_ms: None,
+            total_ms,
+        });
+        record.request_headers = Some(
+            req.headers()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect(),
+        );
+        record.host = original_host.to_string();
+
+        state.traffic_recorder.record(record);
+    }
+
+    if verbose_logging {
+        info!(
+            "[{}] WebSocket connection established to {}:{}",
+            req_id, target_host, target_port
+        );
+    }
+
+    let stream = stream_read.unsplit(stream_write);
+    let req_id_owned = req_id.to_string();
+    let admin_state_clone = admin_state.clone();
+
+    tokio::spawn(async move {
+        match hyper::upgrade::on(req).await {
+            Ok(upgraded) => {
+                if let Err(e) =
+                    websocket_bidirectional_generic(upgraded, stream, admin_state_clone).await
+                {
+                    if verbose_logging {
+                        debug!("[{}] WebSocket tunnel closed: {}", req_id_owned, e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("[{}] WebSocket upgrade error: {}", req_id_owned, e);
+            }
+        }
+    });
+
+    let mut response = Response::builder()
+        .status(101)
+        .header(hyper::header::UPGRADE, "websocket")
+        .header(hyper::header::CONNECTION, "Upgrade");
+
+    if let Some(accept) = sec_accept {
+        response = response.header("Sec-WebSocket-Accept", accept);
+    }
+
+    if let Some(protocol) = sec_protocol {
+        response = response.header("Sec-WebSocket-Protocol", protocol);
+    }
+
+    Ok(response.body(empty_body()).unwrap())
+}
+
+fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str) -> String {
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let ws_key = req
+        .headers()
+        .get("Sec-WebSocket-Key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let ws_version = req
+        .headers()
+        .get("Sec-WebSocket-Version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("13");
+
+    let mut handshake = format!(
+        "GET {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {}\r\n\
+         Sec-WebSocket-Version: {}\r\n",
+        path, target_host, ws_key, ws_version
+    );
+
+    if let Some(protocol) = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok())
+    {
+        handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocol));
+    }
+
+    if let Some(extensions) = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok())
+    {
+        handshake.push_str(&format!("Sec-WebSocket-Extensions: {}\r\n", extensions));
+    }
+
+    if let Some(origin) = req.headers().get("Origin").and_then(|v| v.to_str().ok()) {
+        handshake.push_str(&format!("Origin: {}\r\n", origin));
+    }
+
+    handshake.push_str("\r\n");
+
+    handshake
+}
+
+fn extract_sec_websocket_accept(response: &str) -> Option<String> {
+    for line in response.lines() {
+        if line.to_lowercase().starts_with("sec-websocket-accept:") {
+            return Some(
+                line.split(':')
+                    .skip(1)
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+fn extract_sec_websocket_protocol(response: &str) -> Option<String> {
+    for line in response.lines() {
+        if line.to_lowercase().starts_with("sec-websocket-protocol:") {
+            return Some(
+                line.split(':')
+                    .skip(1)
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            );
+        }
+    }
+    None
+}
+
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
+
+async fn websocket_bidirectional_generic<S>(
+    upgraded: Upgraded,
+    target: S,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let client = TokioIo::new(upgraded);
+    let (mut target_read, mut target_write) = tokio::io::split(target);
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut client_read = client_read;
+    let mut client_write = client_write;
+
+    let admin_state_clone = admin_state.clone();
+
+    let client_to_target = async move {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            target_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state_clone {
+                state.metrics_collector.add_bytes_sent(n as u64);
+            }
+        }
+        target_write.shutdown().await?;
+        Ok::<_, std::io::Error>(())
+    };
+
+    let target_to_client = async move {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            let n = target_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state {
+                state.metrics_collector.add_bytes_received(n as u64);
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    };
+
+    let result = tokio::try_join!(client_to_target, target_to_client);
+
+    match result {
+        Ok(_) => {
+            debug!("WebSocket connection closed normally");
+            Ok(())
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::ConnectionReset
+                || e.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                debug!("WebSocket connection closed: {}", e);
+                Ok(())
+            } else {
+                Err(BifrostError::Network(format!("WebSocket error: {}", e)))
+            }
+        }
+    }
 }
 
 struct SingleCertResolver(Arc<CertifiedKey>);
