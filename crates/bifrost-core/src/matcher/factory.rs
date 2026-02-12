@@ -407,6 +407,34 @@ mod tests {
     }
 
     #[test]
+    fn test_full_url_pattern_with_exact_path() {
+        let matcher = parse_pattern("https://full-match.local:443/api/v1").unwrap();
+        let result = matcher.matches(
+            "https://full-match.local:443/api/v1",
+            "full-match.local:443",
+            "/api/v1",
+        );
+        assert!(result.matched, "Exact path should match");
+
+        let result = matcher.matches(
+            "https://full-match.local:443/api/v1/test",
+            "full-match.local:443",
+            "/api/v1/test",
+        );
+        assert!(
+            result.matched,
+            "Subpath should also match (prefix matching)"
+        );
+
+        let result = matcher.matches(
+            "https://full-match.local:443/api/v2",
+            "full-match.local:443",
+            "/api/v2",
+        );
+        assert!(!result.matched, "Different path should not match");
+    }
+
+    #[test]
     fn test_priority_ordering() {
         let domain = parse_pattern("example.com").unwrap();
         let ip = parse_pattern("192.168.1.1").unwrap();

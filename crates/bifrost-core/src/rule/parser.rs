@@ -14,7 +14,7 @@ const EXCLUDE_FILTER_PREFIX: &str = "excludeFilter://";
 const LINE_PROPS_PREFIX: &str = "lineProps://";
 
 type ParsedPatternResult = (
-    String,
+    Vec<String>,
     Vec<(Protocol, String)>,
     Vec<Filter>,
     Vec<Filter>,
@@ -24,7 +24,7 @@ type ParsedPatternResult = (
 lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
     static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_.\-]*)\}").unwrap();
-    static ref HOST_PORT_REGEX: Regex = Regex::new(r"^([a-zA-Z0-9][-a-zA-Z0-9.]*|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[:0-9a-fA-F]+\]):(\d+)(/.*)?$").unwrap();
+    static ref HOST_PORT_REGEX: Regex = Regex::new(r"^(localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[:0-9a-fA-F]+\]):(\d+)(/.*)?$").unwrap();
 }
 
 pub struct RuleParser {
@@ -99,7 +99,7 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
         return Ok(vec![]);
     }
 
-    let (pattern, protocol_values, include_filters, exclude_filters, line_props) =
+    let (patterns, protocol_values, include_filters, exclude_filters, line_props) =
         extract_pattern_and_protocols(&parts)?;
 
     if protocol_values.is_empty() {
@@ -109,23 +109,25 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
         )));
     }
 
-    let matcher = parse_pattern(&pattern)
-        .map_err(|e| BifrostError::Parse(format!("Invalid pattern '{}': {}", pattern, e)))?;
-    let matcher = Arc::from(matcher);
-
     let mut rules = Vec::new();
-    for (protocol, value) in protocol_values {
-        let rule = Rule::new(
-            pattern.clone(),
-            Arc::clone(&matcher),
-            protocol,
-            value,
-            line.clone(),
-        )
-        .with_line_props(line_props.clone())
-        .with_include_filters(include_filters.clone())
-        .with_exclude_filters(exclude_filters.clone());
-        rules.push(rule);
+    for pattern in patterns {
+        let matcher = parse_pattern(&pattern)
+            .map_err(|e| BifrostError::Parse(format!("Invalid pattern '{}': {}", pattern, e)))?;
+        let matcher = Arc::from(matcher);
+
+        for (protocol, value) in &protocol_values {
+            let rule = Rule::new(
+                pattern.clone(),
+                Arc::clone(&matcher),
+                *protocol,
+                value.clone(),
+                line.clone(),
+            )
+            .with_line_props(line_props.clone())
+            .with_include_filters(include_filters.clone())
+            .with_exclude_filters(exclude_filters.clone());
+            rules.push(rule);
+        }
     }
 
     Ok(rules)
@@ -350,6 +352,9 @@ fn expand_inline_values(line: &str, values: &HashMap<String, String>) -> String 
             let key = caps.get(1).unwrap().as_str();
 
             if let Some(value) = values.get(key) {
+                if value.contains('\n') || value.contains('\r') {
+                    continue;
+                }
                 let replacement = if value.contains(' ') || value.contains('\t') {
                     format!("`{}`", value)
                 } else {
@@ -440,18 +445,37 @@ fn split_rule_parts(line: &str) -> Vec<String> {
     parts
 }
 
+fn is_target_address(value: &str) -> bool {
+    let host_part = if let Some(idx) = value.find('/') {
+        &value[..idx]
+    } else {
+        value
+    };
+    let host_without_port = if let Some(idx) = host_part.rfind(':') {
+        &host_part[..idx]
+    } else {
+        host_part
+    };
+    host_without_port == "localhost"
+        || host_without_port.starts_with("127.")
+        || host_without_port
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.')
+        || host_without_port.starts_with('[')
+}
+
 fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult> {
     if parts.is_empty() {
         return Err(BifrostError::Parse("Empty rule".to_string()));
     }
 
-    let mut pattern_idx = None;
+    let mut patterns = Vec::new();
     let mut protocol_values = Vec::new();
     let mut include_filters = Vec::new();
     let mut exclude_filters = Vec::new();
     let mut line_props = LineProps::default();
 
-    for (idx, part) in parts.iter().enumerate() {
+    for part in parts.iter() {
         if let Some(stripped) = part.strip_prefix(INCLUDE_FILTER_PREFIX) {
             let filter_value = strip_backticks(stripped);
             if let Some(filter) = parse_filter(&filter_value) {
@@ -484,29 +508,34 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
             };
 
             if let Some(protocol) = Protocol::parse(proto_name) {
-                protocol_values.push((protocol, value));
+                if (protocol == Protocol::Http || protocol == Protocol::Https)
+                    && !is_target_address(&value)
+                {
+                    patterns.push(part.clone());
+                } else {
+                    protocol_values.push((protocol, value));
+                }
             } else {
                 let resolved = Protocol::resolve_alias(proto_name);
                 if let Some(protocol) = Protocol::parse(resolved) {
                     protocol_values.push((protocol, value));
-                } else if pattern_idx.is_none() {
-                    pattern_idx = Some(idx);
+                } else {
+                    patterns.push(part.clone());
                 }
             }
         } else if HOST_PORT_REGEX.is_match(part) {
             protocol_values.push((Protocol::Host, part.clone()));
-        } else if pattern_idx.is_none() {
-            pattern_idx = Some(idx);
+        } else {
+            patterns.push(part.clone());
         }
     }
 
-    let pattern = match pattern_idx {
-        Some(idx) => parts[idx].clone(),
-        None => return Err(BifrostError::Parse("No pattern found in rule".to_string())),
-    };
+    if patterns.is_empty() {
+        return Err(BifrostError::Parse("No pattern found in rule".to_string()));
+    }
 
     Ok((
-        pattern,
+        patterns,
         protocol_values,
         include_filters,
         exclude_filters,
@@ -843,12 +872,38 @@ reqHeaders://{test=1}"#;
         assert!(HOST_PORT_REGEX.is_match("127.0.0.1:3000/api"));
         assert!(HOST_PORT_REGEX.is_match("localhost:8080"));
         assert!(HOST_PORT_REGEX.is_match("localhost:8080/path/to/api"));
-        assert!(HOST_PORT_REGEX.is_match("my-server.local:3000"));
         assert!(HOST_PORT_REGEX.is_match("[::1]:8080"));
         assert!(HOST_PORT_REGEX.is_match("[::1]:8080/api"));
         assert!(!HOST_PORT_REGEX.is_match("example.com"));
         assert!(!HOST_PORT_REGEX.is_match("host://127.0.0.1:3000"));
         assert!(!HOST_PORT_REGEX.is_match("*.example.com"));
+        assert!(
+            !HOST_PORT_REGEX.is_match("my-server.local:3000"),
+            "Domain names with port should be treated as patterns, not host targets"
+        );
+        assert!(
+            !HOST_PORT_REGEX.is_match("portmatch.local:8080"),
+            "Domain names with port should be treated as patterns, not host targets"
+        );
+    }
+
+    #[test]
+    fn test_parse_domain_with_port_as_pattern() {
+        let rules = parse_line("portmatch.local:8080 http://127.0.0.1:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "portmatch.local:8080");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn test_parse_full_url_as_pattern() {
+        let rules =
+            parse_line("https://full-match.local:443/api/v1 http://127.0.0.1:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://full-match.local:443/api/v1");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "127.0.0.1:3000");
     }
 
     #[test]

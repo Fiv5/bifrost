@@ -50,9 +50,11 @@ fn apply_res_headers(
     ctx: &RequestContext,
 ) {
     for (name, value) in &rules.res_headers {
-        if let (Ok(header_name), Ok(header_value)) =
-            (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
-        {
+        let processed_value = process_template_value(value, ctx);
+        if let (Ok(header_name), Ok(header_value)) = (
+            name.parse::<HeaderName>(),
+            processed_value.parse::<HeaderValue>(),
+        ) {
             if verbose_logging {
                 let old_value = parts
                     .headers
@@ -65,12 +67,87 @@ fn apply_res_headers(
                     ctx.id_str(),
                     name,
                     old_value,
-                    value
+                    processed_value
                 );
             }
             parts.headers.insert(header_name, header_value);
         }
     }
+}
+
+fn process_template_value(value: &str, ctx: &RequestContext) -> String {
+    use regex::Regex;
+    use std::sync::LazyLock;
+
+    static RE_REQ_HEADERS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\$\{reqHeaders\.([^}]+)\}").unwrap());
+    static RE_REQ_COOKIES: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\$\{reqCookies\.([^}]+)\}").unwrap());
+    static RE_QUERY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\$\{query\.([^}]+)\}").unwrap());
+
+    let mut result = value.to_string();
+
+    result = result.replace("$${", "\x00ESCAPED_DOLLAR\x00");
+
+    result = RE_REQ_HEADERS
+        .replace_all(&result, |caps: &regex::Captures| {
+            let header_name = &caps[1];
+            ctx.req_headers
+                .get(&header_name.to_lowercase())
+                .cloned()
+                .unwrap_or_default()
+        })
+        .to_string();
+
+    result = RE_REQ_COOKIES
+        .replace_all(&result, |caps: &regex::Captures| {
+            let cookie_name = &caps[1];
+            ctx.req_cookies
+                .get(cookie_name)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .to_string();
+
+    result = RE_QUERY
+        .replace_all(&result, |caps: &regex::Captures| {
+            let param_name = &caps[1];
+            ctx.query_params
+                .get(param_name)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .to_string();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_default();
+    let random: u64 = rand::random();
+
+    result = result
+        .replace("${url}", &ctx.url)
+        .replace("${method}", &ctx.method)
+        .replace("${host}", &ctx.host)
+        .replace("${url.host}", &ctx.host)
+        .replace("${url.hostname}", &ctx.host)
+        .replace("${pathname}", &ctx.pathname)
+        .replace("${path}", &ctx.pathname)
+        .replace("${url.path}", &ctx.pathname)
+        .replace("${url.pathname}", &ctx.pathname)
+        .replace("${search}", &ctx.search)
+        .replace("${query}", &ctx.search)
+        .replace("${url.search}", &ctx.search)
+        .replace("${clientIp}", &ctx.client_ip)
+        .replace("${reqId}", &ctx.id_str())
+        .replace("${now}", &now)
+        .replace("${timestamp}", &now)
+        .replace("${random}", &random.to_string());
+
+    result = result.replace("\x00ESCAPED_DOLLAR\x00", "${");
+
+    result
 }
 
 fn apply_res_cookies(

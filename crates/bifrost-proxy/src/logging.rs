@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -5,10 +6,19 @@ use crate::server::ResolvedRules;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequestContext {
     pub id: u64,
     pub start_time: Instant,
+    pub req_headers: HashMap<String, String>,
+    pub req_cookies: HashMap<String, String>,
+    pub query_params: HashMap<String, String>,
+    pub url: String,
+    pub method: String,
+    pub host: String,
+    pub pathname: String,
+    pub search: String,
+    pub client_ip: String,
 }
 
 impl RequestContext {
@@ -16,6 +26,15 @@ impl RequestContext {
         Self {
             id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
             start_time: Instant::now(),
+            req_headers: HashMap::new(),
+            req_cookies: HashMap::new(),
+            query_params: HashMap::new(),
+            url: String::new(),
+            method: String::new(),
+            host: String::new(),
+            pathname: String::new(),
+            search: String::new(),
+            client_ip: String::new(),
         }
     }
 
@@ -25,6 +44,39 @@ impl RequestContext {
 
     pub fn id_str(&self) -> String {
         format!("REQ-{:06}", self.id)
+    }
+
+    pub fn with_request_info(
+        mut self,
+        url: String,
+        method: String,
+        host: String,
+        pathname: String,
+        search: String,
+        client_ip: String,
+    ) -> Self {
+        self.url = url;
+        self.method = method;
+        self.host = host;
+        self.pathname = pathname;
+        self.search = search;
+        self.client_ip = client_ip;
+        self
+    }
+
+    pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.req_headers = headers;
+        self
+    }
+
+    pub fn with_cookies(mut self, cookies: HashMap<String, String>) -> Self {
+        self.req_cookies = cookies;
+        self
+    }
+
+    pub fn with_query_params(mut self, params: HashMap<String, String>) -> Self {
+        self.query_params = params;
+        self
     }
 }
 

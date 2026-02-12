@@ -149,7 +149,7 @@ impl DomainMatcher {
         &self.raw_pattern
     }
 
-    fn matches_domain(&self, host: &str) -> bool {
+    fn matches_domain(&self, url: &str, host: &str) -> bool {
         let (check_host, check_port) = Self::split_host_port(host);
 
         if !self.domain.eq_ignore_ascii_case(check_host) {
@@ -163,7 +163,14 @@ impl DomainMatcher {
             },
             Some(PortMatcher::Wildcard(regex)) => match check_port {
                 Some(p) => regex.is_match(&p.to_string()),
-                None => false,
+                None => {
+                    let default_port = if url.starts_with("https://") || url.starts_with("wss://") {
+                        443
+                    } else {
+                        80
+                    };
+                    regex.is_match(&default_port.to_string())
+                }
             },
             None => true,
         }
@@ -218,7 +225,7 @@ impl DomainMatcher {
 impl Matcher for DomainMatcher {
     fn matches(&self, url: &str, host: &str, path: &str) -> MatchResult {
         let protocol_match = self.matches_protocol(url);
-        let domain_match = self.matches_domain(host);
+        let domain_match = self.matches_domain(url, host);
         let path_match = self.matches_path(path);
 
         let is_match = protocol_match && domain_match && path_match;
@@ -567,6 +574,12 @@ mod tests {
 
         let result = matcher.matches("http://example.com:9000/path", "example.com:9000", "/path");
         assert!(!result.matched);
+
+        let result = matcher.matches("http://example.com/path", "example.com", "/path");
+        assert!(result.matched, "HTTP default port 80 matches 8*");
+
+        let result = matcher.matches("https://example.com/path", "example.com", "/path");
+        assert!(!result.matched, "HTTPS default port 443 does not match 8*");
     }
 
     #[test]
@@ -604,7 +617,10 @@ mod tests {
         assert!(result.matched);
 
         let result = matcher.matches("http://example.com/path", "example.com", "/path");
-        assert!(!result.matched);
+        assert!(result.matched, "Should match default port 80 via wildcard");
+
+        let result = matcher.matches("https://example.com/path", "example.com", "/path");
+        assert!(result.matched, "Should match default port 443 via wildcard");
     }
 
     #[test]

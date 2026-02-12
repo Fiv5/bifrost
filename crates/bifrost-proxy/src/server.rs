@@ -135,14 +135,35 @@ pub struct ResolvedRules {
 }
 
 pub trait RulesResolver: Send + Sync {
-    fn resolve(&self, url: &str, method: &str) -> ResolvedRules;
+    fn resolve(&self, url: &str, method: &str) -> ResolvedRules {
+        self.resolve_with_context(
+            url,
+            method,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    fn resolve_with_context(
+        &self,
+        url: &str,
+        method: &str,
+        req_headers: &std::collections::HashMap<String, String>,
+        req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ResolvedRules;
 }
 
 #[derive(Default)]
 pub struct NoOpRulesResolver;
 
 impl RulesResolver for NoOpRulesResolver {
-    fn resolve(&self, _url: &str, _method: &str) -> ResolvedRules {
+    fn resolve_with_context(
+        &self,
+        _url: &str,
+        _method: &str,
+        _req_headers: &std::collections::HashMap<String, String>,
+        _req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ResolvedRules {
         ResolvedRules::default()
     }
 }

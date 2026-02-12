@@ -164,14 +164,16 @@ assert_header_contains() {
     local headers=$3
     local message=${4:-"Header '$header_name' should contain '$expected_substring'"}
 
-    local actual_value
-    actual_value=$(echo "$headers" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    local all_values
+    all_values=$(echo "$headers" | grep -i "^${header_name}:" | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
 
-    if [[ "$actual_value" == *"$expected_substring"* ]]; then
+    if [[ "$all_values" == *"$expected_substring"* ]]; then
         _log_pass "$message"
         return 0
     else
-        _log_fail "$message" "Contains '$expected_substring'" "$actual_value"
+        local first_value
+        first_value=$(echo "$all_values" | head -1)
+        _log_fail "$message" "Contains '$expected_substring'" "$first_value"
         return 1
     fi
 }

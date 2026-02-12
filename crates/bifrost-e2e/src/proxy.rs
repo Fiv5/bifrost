@@ -14,7 +14,13 @@ struct RulesResolverAdapter {
 }
 
 impl ProxyRulesResolverTrait for RulesResolverAdapter {
-    fn resolve(&self, url: &str, method: &str) -> ProxyResolvedRules {
+    fn resolve_with_context(
+        &self,
+        url: &str,
+        method: &str,
+        _req_headers: &std::collections::HashMap<String, String>,
+        _req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ProxyResolvedRules {
         let mut ctx = RequestContext::from_url(url);
         ctx.method = method.to_string();
 

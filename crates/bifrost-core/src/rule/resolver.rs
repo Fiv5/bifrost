@@ -217,7 +217,6 @@ impl RulesResolver {
                 }
             }
         }
-
         let mut result = ResolvedRules::new();
         let mut matched_protocols: HashMap<Protocol, bool> = HashMap::new();
 
@@ -227,8 +226,16 @@ impl RulesResolver {
             }
 
             if rule.is_negated() {
+                // 对于否定规则，我们需要检查原始匹配结果（不取反）
+                // 如果原始 pattern 匹配成功，则标记该协议已被匹配，阻止后续同协议规则
+                //
+                // 注意：rule.matcher.matches() 对于否定规则返回的是取反后的结果
+                // 所以这里需要再次取反来获得原始匹配结果
                 let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
-                if match_result.matched {
+                // 对于否定规则，matched=true 意味着原始 pattern 不匹配（因为被取反了）
+                // 我们需要的是原始匹配结果，所以再次取反
+                let original_matched = !match_result.matched;
+                if original_matched {
                     matched_protocols.insert(rule.protocol, true);
                 }
                 continue;
@@ -1002,5 +1009,123 @@ mod tests {
 
         assert!(resolver.rules()[0].line_props.important);
         assert!(resolver.rules()[0].priority() > resolver.rules()[1].priority());
+    }
+
+    #[test]
+    fn test_path_wildcard_double_star_matching() {
+        use crate::matcher::PathWildcardMatcher;
+
+        let pattern = "^path-double.local/api/**";
+        let matcher = Arc::new(PathWildcardMatcher::new(pattern).unwrap());
+
+        let rule = Rule::new(
+            pattern.to_string(),
+            matcher,
+            Protocol::Host,
+            "127.0.0.1:3000".to_string(),
+            format!("{} host://127.0.0.1:3000", pattern),
+        );
+
+        let resolver = RulesResolver::new(vec![rule]);
+        let ctx = RequestContext::from_url("http://path-double.local/api/users");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(result.len(), 1, "Should match the path wildcard rule");
+        assert_eq!(result.rules[0].resolved_value, "127.0.0.1:3000");
+    }
+
+    #[test]
+    fn test_path_wildcard_via_rule_parser() {
+        use crate::rule::parser::RuleParser;
+
+        let rule_text = "^path-double.local/api/** http://127.0.0.1:3000";
+        let parser = RuleParser::new();
+        let rules = parser.parse_line(rule_text).expect("Failed to parse rule");
+
+        assert_eq!(rules.len(), 1, "Should parse one rule");
+
+        let resolver = RulesResolver::new(rules);
+        let ctx = RequestContext::from_url("http://path-double.local/api/users");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(result.len(), 1, "Should match the path wildcard rule");
+    }
+
+    #[test]
+    fn test_negated_rule_does_not_block_other_patterns() {
+        use crate::rule::parser::RuleParser;
+
+        // 否定规则不应该阻止不匹配的其他规则
+        let parser = RuleParser::new();
+        let mut rules = parser
+            .parse_line("!^path-negate.local/api/* http://127.0.0.1:3000")
+            .unwrap();
+        rules.extend(
+            parser
+                .parse_line("^path-double.local/api/** http://127.0.0.1:3000")
+                .unwrap(),
+        );
+
+        let resolver = RulesResolver::new(rules);
+
+        // 请求 path-double.local，不应该被 path-negate 的否定规则影响
+        let ctx = RequestContext::from_url("http://path-double.local/api/users");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(result.len(), 1, "Should match path-double rule");
+        assert_eq!(
+            result.rules[0].rule.pattern, "^path-double.local/api/**",
+            "Should match the correct rule"
+        );
+    }
+
+    #[test]
+    fn test_negated_rule_blocks_matching_pattern() {
+        use crate::rule::parser::RuleParser;
+
+        // 否定规则应该阻止匹配的同协议规则
+        let parser = RuleParser::new();
+        let mut rules = parser
+            .parse_line("!^path-negate.local/api/* http://127.0.0.1:3000")
+            .unwrap();
+        rules.extend(
+            parser
+                .parse_line("^path-negate.local/api/** http://127.0.0.1:3000")
+                .unwrap(),
+        );
+
+        let resolver = RulesResolver::new(rules);
+
+        // 请求 path-negate.local，应该被否定规则阻止
+        let ctx = RequestContext::from_url("http://path-negate.local/api/users");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(result.len(), 0, "Should be blocked by the negated rule");
+    }
+
+    #[test]
+    fn test_multiple_different_protocols_all_match() {
+        use crate::rule::parser::RuleParser;
+
+        let parser = RuleParser::new();
+        let rules = parser
+            .parse_line("test.local http://127.0.0.1:3000 resBody://{test-body}")
+            .unwrap();
+
+        assert_eq!(
+            rules.len(),
+            2,
+            "Should create 2 rules for different protocols"
+        );
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[1].protocol, Protocol::ResBody);
+
+        let resolver = RulesResolver::new(rules);
+        let ctx = RequestContext::from_url("http://test.local/path");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(result.len(), 2, "Both Http and ResBody rules should match");
+        assert!(result.has_protocol(Protocol::Http));
+        assert!(result.has_protocol(Protocol::ResBody));
     }
 }

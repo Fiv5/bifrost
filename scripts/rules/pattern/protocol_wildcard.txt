@@ -1,5 +1,8 @@
 # PR-01: http* matches http and https
 http*://proto-http.local http://127.0.0.1:3000
 
+# PR-02: // matches any protocol (http, https, ws, wss)
+//proto-any.local http://127.0.0.1:3000
+
 # PR-07: protocol wildcard + path
 http*://proto-path.local/api/* http://127.0.0.1:3000

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bifrost_admin::{start_metrics_collector_task, AdminState, BodyStore};
 use bifrost_core::{
-    init_logging, parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
+    init_logging, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
 };
 use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
@@ -435,7 +435,26 @@ fn run_start(
         println!("⚠️  WARNING: Upstream TLS certificate verification is DISABLED (--unsafe-ssl)");
     }
 
-    let parsed_rules = parse_cli_rules(&rules, &rules_file)?;
+    let values_dir = get_bifrost_dir()
+        .map(|p| p.join(".bifrost").join("values"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
+    let early_values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
+    let early_values = early_values_storage
+        .as_ref()
+        .map(|s| {
+            use bifrost_core::ValueStore;
+            s.as_hashmap()
+        })
+        .unwrap_or_default();
+    if !early_values.is_empty() {
+        println!(
+            "Loaded {} values from {}",
+            early_values.len(),
+            values_dir.display()
+        );
+    }
+
+    let parsed_rules = parse_cli_rules(&rules, &rules_file, &early_values)?;
     if !parsed_rules.is_empty() {
         println!("Loaded {} rules from command line", parsed_rules.len());
         for rule in &parsed_rules {
@@ -553,11 +572,14 @@ fn save_config(config: &BifrostConfig) -> bifrost_core::Result<()> {
 fn parse_cli_rules(
     rules: &[String],
     rules_file: &Option<PathBuf>,
+    values: &HashMap<String, String>,
 ) -> bifrost_core::Result<Vec<Rule>> {
     let mut all_rules = Vec::new();
 
+    let parser = bifrost_core::RuleParser::with_values(values.clone());
+
     for rule_str in rules {
-        match parse_rules(rule_str) {
+        match parser.parse_rules(rule_str) {
             Ok(parsed) => all_rules.extend(parsed),
             Err(e) => {
                 return Err(bifrost_core::BifrostError::Config(format!(
@@ -576,7 +598,7 @@ fn parse_cli_rules(
                 e
             ))
         })?;
-        match parse_rules(&content) {
+        match parser.parse_rules(&content) {
             Ok(parsed) => all_rules.extend(parsed),
             Err(e) => {
                 return Err(bifrost_core::BifrostError::Config(format!(
@@ -596,10 +618,18 @@ struct RulesResolverAdapter {
 }
 
 impl ProxyRulesResolverTrait for RulesResolverAdapter {
-    fn resolve(&self, url: &str, method: &str) -> ProxyResolvedRules {
+    fn resolve_with_context(
+        &self,
+        url: &str,
+        method: &str,
+        req_headers: &std::collections::HashMap<String, String>,
+        req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ProxyResolvedRules {
         let mut ctx = RequestContext::from_url(url);
         ctx.method = method.to_string();
         ctx.client_ip = "127.0.0.1".to_string();
+        ctx.req_headers = req_headers.clone();
+        ctx.req_cookies = req_cookies.clone();
 
         let core_result = self.inner.resolve(&ctx);
         let mut result = ProxyResolvedRules::default();
@@ -967,13 +997,6 @@ fn run_foreground(
             .with_admin_state(admin_state);
 
         if !cli_rules.is_empty() {
-            if !values.is_empty() {
-                println!(
-                    "Loaded {} values from {}",
-                    values.len(),
-                    values_dir.display()
-                );
-            }
             let resolver = Arc::new(RulesResolverAdapter {
                 inner: CoreRulesResolver::new(cli_rules).with_values(values),
             });

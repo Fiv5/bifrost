@@ -20,9 +20,11 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
+use crate::body::{apply_body_rules, Phase};
 use crate::http::needs_body_processing;
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
+use crate::response::apply_res_rules;
 use crate::server::{empty_body, full_body, BoxBody, ProxyConfig, RulesResolver, TlsConfig};
 use crate::tee::create_tee_body_with_store;
 
@@ -458,24 +460,102 @@ async fn handle_intercepted_request_with_protocol(
     let method_str = method.to_string();
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let query_string = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
     let original_uri = format!("https://{}{}", original_host, path);
 
-    let target_uri = if use_http {
-        if target_port == 80 {
-            format!("http://{}{}", target_host, path)
+    let incoming_headers: std::collections::HashMap<String, String> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string().to_lowercase(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+
+    let incoming_cookies: std::collections::HashMap<String, String> = req
+        .headers()
+        .get(hyper::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(';')
+                .filter_map(|part| {
+                    let mut iter = part.trim().splitn(2, '=');
+                    match (iter.next(), iter.next()) {
+                        (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let query_params: std::collections::HashMap<String, String> = uri
+        .query()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|part| {
+                    let mut iter = part.splitn(2, '=');
+                    match (iter.next(), iter.next()) {
+                        (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let resolved_rules = rules.resolve_with_context(
+        &original_uri,
+        &method_str,
+        &incoming_headers,
+        &incoming_cookies,
+    );
+
+    let (actual_target_host, actual_target_port, actual_use_http) =
+        if let Some(ref host_rule) = resolved_rules.host {
+            let parts: Vec<&str> = host_rule.split(':').collect();
+            let h = parts[0].to_string();
+            let p = if parts.len() > 1 {
+                parts[1].parse().unwrap_or(target_port)
+            } else {
+                match resolved_rules.host_protocol {
+                    Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+                    Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+                    _ => target_port,
+                }
+            };
+            let use_http_override = match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => true,
+                Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
+                _ => use_http,
+            };
+            (h, p, use_http_override)
         } else {
-            format!("http://{}:{}{}", target_host, target_port, path)
+            (target_host.to_string(), target_port, use_http)
+        };
+
+    let target_uri = if actual_use_http {
+        if actual_target_port == 80 {
+            format!("http://{}{}", actual_target_host, path)
+        } else {
+            format!(
+                "http://{}:{}{}",
+                actual_target_host, actual_target_port, path
+            )
         }
-    } else if target_port == 443 {
-        format!("https://{}{}", target_host, path)
+    } else if actual_target_port == 443 {
+        format!("https://{}{}", actual_target_host, path)
     } else {
-        format!("https://{}:{}{}", target_host, target_port, path)
+        format!(
+            "https://{}:{}{}",
+            actual_target_host, actual_target_port, path
+        )
     };
 
     debug!("[{}] Intercepted: {} {}", req_id, method_str, target_uri);
-
-    let resolved_rules = rules.resolve(&original_uri, &method_str);
 
     if let Some(ref redirect_url) = resolved_rules.redirect {
         if verbose_logging {
@@ -505,7 +585,7 @@ async fn handle_intercepted_request_with_protocol(
         let template_vars = TemplateVars {
             url: original_uri.clone(),
             method: method_str.clone(),
-            host: target_host.to_string(),
+            host: actual_target_host.clone(),
             pathname: path.to_string(),
             search: uri.query().map(|q| format!("?{}", q)).unwrap_or_default(),
             client_ip: "127.0.0.1".to_string(),
@@ -585,9 +665,12 @@ async fn handle_intercepted_request_with_protocol(
             skip_ua = true;
             continue;
         }
+        if name == hyper::header::COOKIE && !resolved_rules.req_cookies.is_empty() {
+            continue;
+        }
         new_req = new_req.header(name, value);
     }
-    new_req = new_req.header(hyper::header::HOST, target_host);
+    new_req = new_req.header(hyper::header::HOST, &actual_target_host);
 
     if let Some(ref referer) = resolved_rules.referer {
         if !referer.is_empty() {
@@ -616,6 +699,43 @@ async fn handle_intercepted_request_with_protocol(
             info!("[{}] [REQ_HEADER] {} = {}", req_id, name, value);
         }
         new_req = new_req.header(name.as_str(), value.as_str());
+    }
+
+    if !resolved_rules.req_cookies.is_empty() {
+        let existing_cookies: Vec<(String, String)> = parts
+            .headers
+            .get(hyper::header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| {
+                s.split(';')
+                    .filter_map(|part| {
+                        let mut iter = part.trim().splitn(2, '=');
+                        match (iter.next(), iter.next()) {
+                            (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut cookie_map: std::collections::HashMap<String, String> =
+            existing_cookies.into_iter().collect();
+
+        for (name, value) in &resolved_rules.req_cookies {
+            if verbose_logging {
+                info!("[{}] [REQ_COOKIE] {} = {}", req_id, name, value);
+            }
+            cookie_map.insert(name.clone(), value.clone());
+        }
+
+        let cookie_str: String = cookie_map
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        new_req = new_req.header(hyper::header::COOKIE, cookie_str);
     }
 
     let outgoing_req =
@@ -674,16 +794,19 @@ async fn handle_intercepted_request_with_protocol(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    for (name, value) in &resolved_rules.res_headers {
-        if verbose_logging {
-            info!("[{}] [RES_HEADER] {} = {}", req_id, name, value);
-        }
-        if let Ok(header_name) = hyper::header::HeaderName::from_bytes(name.as_bytes()) {
-            if let Ok(header_value) = hyper::header::HeaderValue::from_str(value) {
-                res_parts.headers.insert(header_name, header_value);
-            }
-        }
-    }
+    let ctx = RequestContext::new()
+        .with_request_info(
+            original_uri.clone(),
+            method_str.clone(),
+            actual_target_host.clone(),
+            path.to_string(),
+            query_string.clone(),
+            "127.0.0.1".to_string(),
+        )
+        .with_headers(incoming_headers.clone())
+        .with_cookies(incoming_cookies.clone())
+        .with_query_params(query_params.clone());
+    apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, &ctx);
 
     let needs_processing = needs_body_processing(&resolved_rules);
 
@@ -818,21 +941,34 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
-    let final_body = if let Some(ref new_body) = resolved_rules.res_body {
+    let final_body = apply_body_rules(
+        Bytes::from(res_body_bytes.clone()),
+        &resolved_rules,
+        Phase::Response,
+        verbose_logging,
+        &ctx,
+    );
+
+    if res_body_bytes.len() != final_body.len() {
+        res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        res_parts.headers.insert(
+            hyper::header::CONTENT_LENGTH,
+            hyper::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
+        );
         if verbose_logging {
             info!(
-                "[{}] [RES_BODY] replaced: {} bytes -> {} bytes",
+                "[{}] Updated Content-Length: {} -> {}",
                 req_id,
                 res_body_bytes.len(),
-                new_body.len()
+                final_body.len()
             );
         }
-        new_body.to_vec()
-    } else {
-        res_body_bytes
-    };
+    }
 
-    Ok(Response::from_parts(res_parts, full_body(final_body)))
+    Ok(Response::from_parts(
+        res_parts,
+        full_body(final_body.to_vec()),
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

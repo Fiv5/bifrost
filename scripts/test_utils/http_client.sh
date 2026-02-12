@@ -33,6 +33,10 @@ http_request() {
         -w '%{http_code}'
     )
 
+    if [ -n "$TEST_ID" ]; then
+        curl_args+=(-H "X-Test-ID: $TEST_ID")
+    fi
+
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
         curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
     fi
@@ -101,6 +105,10 @@ http_request_no_proxy() {
         --noproxy '*'
     )
 
+    if [ -n "$TEST_ID" ]; then
+        curl_args+=(-H "X-Test-ID: $TEST_ID")
+    fi
+
     if [ -n "$data" ]; then
         curl_args+=(-d "$data")
     fi
@@ -138,6 +146,10 @@ https_request() {
         -o "$_temp_body_file"
         -w '%{http_code}'
     )
+
+    if [ -n "$TEST_ID" ]; then
+        curl_args+=(-H "X-Test-ID: $TEST_ID")
+    fi
 
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
         curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")

@@ -99,7 +99,15 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        print(f"[{timestamp}] {self.client_address[0]}:{self.client_address[1]} - {format % args}")
+        test_id = getattr(self, '_test_id', 'UNKNOWN')
+        print(f"[{timestamp}] [{test_id}] {self.client_address[0]}:{self.client_address[1]} - {format % args}")
+
+    def _log_request_start(self, method):
+        """打印请求开始日志，包含测试标识"""
+        self._test_id = self.headers.get('X-Test-ID', 'UNKNOWN')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"\n{'='*60}")
+        print(f"[{timestamp}] [{self._test_id}] [HTTPS] {method} {self.path}")
 
     def _build_response(self, body_content=None):
         headers_dict = {}
@@ -225,47 +233,40 @@ body {{ color: #333; }}
         return None
 
     def do_GET(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] GET {self.path}")
+        self._log_request_start("GET")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
         self._send_response()
 
     def do_POST(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] POST {self.path}")
+        self._log_request_start("POST")
         body = self._read_body()
         self._send_response(body_content=body)
 
     def do_PUT(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] PUT {self.path}")
+        self._log_request_start("PUT")
         body = self._read_body()
         self._send_response(body_content=body)
 
     def do_DELETE(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] DELETE {self.path}")
+        self._log_request_start("DELETE")
         self._send_response()
 
     def do_PATCH(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] PATCH {self.path}")
+        self._log_request_start("PATCH")
         body = self._read_body()
         self._send_response(body_content=body)
 
     def do_HEAD(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] HEAD {self.path}")
+        self._log_request_start("HEAD")
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('X-Echo-Server', 'bifrost-test-https')
         self.end_headers()
 
     def do_OPTIONS(self):
-        print(f"\n{'='*60}")
-        print(f"[HTTPS] OPTIONS {self.path}")
+        self._log_request_start("OPTIONS")
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD')

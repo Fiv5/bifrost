@@ -29,7 +29,15 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         """自定义日志格式，包含更多调试信息"""
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-        print(f"[{timestamp}] {self.client_address[0]}:{self.client_address[1]} - {format % args}")
+        test_id = getattr(self, '_test_id', 'UNKNOWN')
+        print(f"[{timestamp}] [{test_id}] {self.client_address[0]}:{self.client_address[1]} - {format % args}")
+
+    def _log_request_start(self, method):
+        """打印请求开始日志，包含测试标识"""
+        self._test_id = self.headers.get('X-Test-ID', 'UNKNOWN')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        print(f"\n{'='*60}")
+        print(f"[{timestamp}] [{self._test_id}] {method} {self.path}")
 
     def _build_response(self, body_content=None):
         """构建统一的响应数据结构"""
@@ -38,6 +46,15 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
         for key, value in self.headers.items():
             headers_dict[key] = value
             headers_list.append(f"{key}: {value}")
+
+        cookies_dict = {}
+        cookie_header = self.headers.get('Cookie', '')
+        if cookie_header:
+            for part in cookie_header.split(';'):
+                part = part.strip()
+                if '=' in part:
+                    key, value = part.split('=', 1)
+                    cookies_dict[key.strip()] = value.strip()
 
         parsed_path = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed_path.query)
@@ -59,6 +76,7 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
                 "http_version": self.request_version,
                 "headers": headers_dict,
                 "headers_raw": headers_list,
+                "cookies": cookies_dict,
                 "client_address": f"{self.client_address[0]}:{self.client_address[1]}"
             }
         }
@@ -77,7 +95,7 @@ class EchoHandler(http.server.BaseHTTPRequestHandler):
     def _get_content_type_and_body(self, response_data):
         """根据请求路径确定 Content-Type 和响应体"""
         path = self.path.lower()
-        
+
         if path.endswith('.html') or path.endswith('.htm'):
             body = f"""<!DOCTYPE html>
 <html>
@@ -150,8 +168,7 @@ body {{ color: #333; }}
 
     def do_GET(self):
         """处理 GET 请求"""
-        print(f"\n{'='*60}")
-        print(f"GET {self.path}")
+        self._log_request_start("GET")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
@@ -159,8 +176,7 @@ body {{ color: #333; }}
 
     def do_POST(self):
         """处理 POST 请求"""
-        print(f"\n{'='*60}")
-        print(f"POST {self.path}")
+        self._log_request_start("POST")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
@@ -177,8 +193,7 @@ body {{ color: #333; }}
 
     def do_PUT(self):
         """处理 PUT 请求"""
-        print(f"\n{'='*60}")
-        print(f"PUT {self.path}")
+        self._log_request_start("PUT")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
@@ -188,8 +203,7 @@ body {{ color: #333; }}
 
     def do_DELETE(self):
         """处理 DELETE 请求"""
-        print(f"\n{'='*60}")
-        print(f"DELETE {self.path}")
+        self._log_request_start("DELETE")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
@@ -197,15 +211,13 @@ body {{ color: #333; }}
 
     def do_PATCH(self):
         """处理 PATCH 请求"""
-        print(f"\n{'='*60}")
-        print(f"PATCH {self.path}")
+        self._log_request_start("PATCH")
         body = self._read_body()
         self._send_response(body_content=body)
 
     def do_HEAD(self):
         """处理 HEAD 请求"""
-        print(f"\n{'='*60}")
-        print(f"HEAD {self.path}")
+        self._log_request_start("HEAD")
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('X-Echo-Server', 'bifrost-test')
@@ -213,8 +225,7 @@ body {{ color: #333; }}
 
     def do_OPTIONS(self):
         """处理 OPTIONS 请求，支持 CORS preflight"""
-        print(f"\n{'='*60}")
-        print(f"OPTIONS {self.path}")
+        self._log_request_start("OPTIONS")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")

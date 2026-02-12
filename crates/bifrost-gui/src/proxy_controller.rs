@@ -26,10 +26,18 @@ struct RulesResolverAdapter {
 }
 
 impl ProxyRulesResolverTrait for RulesResolverAdapter {
-    fn resolve(&self, url: &str, method: &str) -> ProxyResolvedRules {
+    fn resolve_with_context(
+        &self,
+        url: &str,
+        method: &str,
+        req_headers: &std::collections::HashMap<String, String>,
+        req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ProxyResolvedRules {
         let mut ctx = RequestContext::from_url(url);
         ctx.method = method.to_string();
         ctx.client_ip = "127.0.0.1".to_string();
+        ctx.req_headers = req_headers.clone();
+        ctx.req_cookies = req_cookies.clone();
 
         let core_result = self.inner.resolve(&ctx);
         let mut result = ProxyResolvedRules::default();

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 description = "Command-line interface for Bifrost proxy"
 
+[lib]
+path = "src/lib.rs"
+doctest = false
+
 [[bin]]
 name = "bifrost"
 path = "src/main.rs"

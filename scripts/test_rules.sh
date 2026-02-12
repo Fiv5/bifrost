@@ -42,6 +42,7 @@ usage() {
     echo "  -d, --data-dir DIR    指定数据目录 (默认: .bifrost-test)"
     echo "  -l, --list            列出所有可用的规则文件"
     echo "  --no-build            跳过编译步骤"
+    echo "  --use-binary          使用预编译二进制而不是 cargo run (用于并行测试)"
     echo "  --keep-proxy          测试完成后保持代理运行"
     echo "  --skip-mock-servers   跳过 mock 服务器启动/停止 (用于并行测试)"
     echo ""
@@ -166,7 +167,12 @@ build_proxy() {
 }
 
 setup_data_dir() {
-    mkdir -p "${TEST_DATA_DIR}"/{rules,values,plugins,certs}
+    mkdir -p "${TEST_DATA_DIR}"/{rules,plugins,certs}
+    mkdir -p "${TEST_DATA_DIR}/.bifrost/values"
+
+    if [[ -d "${SCRIPT_DIR}/values" ]]; then
+        cp -f "${SCRIPT_DIR}/values"/*.txt "${TEST_DATA_DIR}/.bifrost/values/" 2>/dev/null || true
+    fi
 
     if [[ ! -f "${TEST_DATA_DIR}/config.toml" ]]; then
         cat > "${TEST_DATA_DIR}/config.toml" << 'TOML'
@@ -226,7 +232,17 @@ start_proxy() {
     mkdir -p "${TEST_DATA_DIR}"
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     cd "$PROJECT_DIR"
-    BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+    
+    if [[ "$USE_BINARY" == "true" ]]; then
+        local BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+        if [[ ! -x "$BIFROST_BIN" ]]; then
+            echo -e "${RED}✗${NC} 二进制文件不存在或不可执行: $BIFROST_BIN"
+            exit 1
+        fi
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+    else
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+    fi
     PROXY_PID=$!
 
     local max_wait=30
@@ -260,10 +276,20 @@ show_rules() {
     echo ""
 }
 
+pattern_to_test_host() {
+    local pattern="$1"
+    local host="$pattern"
+    host="${host//\*\*/sub.deep}"
+    host="${host//\*/test}"
+    echo "$host"
+}
+
 test_http_to_http_forward() {
     local pattern="$1"
     local target="$2"
-    local test_url="http://${pattern}/test"
+    local test_host
+    test_host=$(pattern_to_test_host "$pattern")
+    local test_url="http://${test_host}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】HTTP→HTTP 转发${NC}"
@@ -283,7 +309,12 @@ test_http_to_http_forward() {
 test_https_to_http_forward() {
     local pattern="$1"
     local target="$2"
-    local test_url="https://${pattern}/test"
+    local test_url
+    if [[ "$pattern" == https://* ]]; then
+        test_url="${pattern}/test"
+    else
+        test_url="https://${pattern}/test"
+    fi
 
     echo ""
     echo -e "  ${CYAN}【测试】HTTPS→HTTP 转发 (TLS 终止)${NC}"
@@ -302,7 +333,12 @@ test_https_to_http_forward() {
 test_http_to_https_forward() {
     local pattern="$1"
     local target="$2"
-    local test_url="http://${pattern}/test"
+    local test_url
+    if [[ "$pattern" == http://* ]]; then
+        test_url="${pattern}/test"
+    else
+        test_url="http://${pattern}/test"
+    fi
 
     echo ""
     echo -e "  ${CYAN}【测试】HTTP→HTTPS 转发 (TLS 建立)${NC}"
@@ -733,6 +769,8 @@ test_res_body() {
     local pattern="$1"
     local expected_body="$2"
     local test_url="https://${pattern}/test"
+    
+    local resolved_body=$(resolve_value_reference "$expected_body")
 
     echo ""
     echo -e "  ${CYAN}【测试】响应体替换 (resBody)${NC}"
@@ -744,13 +782,17 @@ test_res_body() {
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
 
     if [[ -n "$HTTP_BODY" ]]; then
-        if [[ "$HTTP_BODY" == *"$expected_body"* ]] || [[ -n "$expected_body" && "$HTTP_BODY" != *"request"* ]]; then
+        if [[ "$HTTP_BODY" == *"$resolved_body"* ]] || [[ -n "$resolved_body" && "$HTTP_BODY" != *"request"* ]]; then
             _log_pass "响应体已被替换"
         else
             _log_fail "响应体应被替换" "不包含 echo 响应" "包含原始响应"
         fi
     else
-        _log_fail "响应体应该非空" "非空" "空响应"
+        if [[ -z "$resolved_body" ]]; then
+            _log_pass "空值引用产生空响应 (符合预期)"
+        else
+            _log_fail "响应体应该非空" "非空" "空响应"
+        fi
     fi
 }
 
@@ -1655,7 +1697,7 @@ extract_target() {
 extract_value() {
     local protocols="$1"
     local prefix="$2"
-    echo "$protocols" | grep -o "${prefix}://[^[:space:]]*" | sed "s|${prefix}://||"
+    echo "$protocols" | grep -o "${prefix}://[^[:space:]]*" | head -1 | sed "s|${prefix}://||"
 }
 
 resolve_code_block_var() {
@@ -1710,8 +1752,30 @@ resolve_code_block_var() {
     echo "$value"
 }
 
+resolve_value_reference() {
+    local value="$1"
+    
+    if [[ "$value" =~ ^\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}$ ]]; then
+        local var_name="${BASH_REMATCH[1]}"
+        local values_file="${SCRIPT_DIR}/values/${var_name}.txt"
+        if [[ -f "$values_file" ]]; then
+            cat "$values_file"
+            return 0
+        fi
+        local test_values_file="${TEST_DATA_DIR}/.bifrost/values/${var_name}.txt"
+        if [[ -f "$test_values_file" ]]; then
+            cat "$test_values_file"
+            return 0
+        fi
+    fi
+    echo "$value"
+}
+
 extract_header_from_value() {
     local value="$1"
+    
+    value=$(resolve_value_reference "$value")
+    
     value="${value#\`}"
     value="${value%\`}"
     value="${value#(}"
@@ -1719,10 +1783,12 @@ extract_header_from_value() {
 
     local header_name=""
     local header_value=""
+    
+    local first_line=$(echo "$value" | head -1)
 
-    if [[ "$value" == *":"* ]]; then
-        header_name=$(echo "$value" | cut -d':' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        header_value=$(echo "$value" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ "$first_line" == *":"* ]]; then
+        header_name=$(echo "$first_line" | cut -d':' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        header_value=$(echo "$first_line" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     fi
 
     echo "$header_name|$header_value"
@@ -1732,23 +1798,46 @@ test_res_headers_template() {
     local pattern="$1"
     local header_info="$2"
     local test_url="https://${pattern}/test"
+    local extra_headers=""
 
     local header_name=$(echo "$header_info" | cut -d'|' -f1)
     local header_template=$(echo "$header_info" | cut -d'|' -f2)
+
+    if [[ "$header_template" == *'${reqCookies.'* ]]; then
+        local cookie_name=$(echo "$header_template" | grep -o '\${reqCookies\.[^}]*}' | head -1 | sed 's/\${reqCookies\.//;s/}//')
+        if [[ -n "$cookie_name" ]]; then
+            extra_headers="Cookie: ${cookie_name}=test-cookie-value"
+        fi
+    fi
+
+    if [[ "$header_template" == *'${query.'* ]]; then
+        local query_name=$(echo "$header_template" | grep -o '\${query\.[^}]*}' | head -1 | sed 's/\${query\.//;s/}//')
+        if [[ -n "$query_name" ]]; then
+            test_url="${test_url}?${query_name}=test-query-value"
+        fi
+    fi
 
     echo ""
     echo -e "  ${CYAN}【测试】添加响应头 (模板变量)${NC}"
     echo "    请求: $test_url"
     echo "    期望添加头: $header_name"
     echo "    模板: $header_template"
+    [[ -n "$extra_headers" ]] && echo "    额外头: $extra_headers"
 
-    https_request "$test_url"
+    https_request "$test_url" "GET" "" "$extra_headers"
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
     assert_header_exists "$header_name" "$HTTP_HEADERS" "响应应包含添加的头 $header_name"
 
-    if [[ "$header_template" == *'${'* ]]; then
-        local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//')
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//')
+
+    if [[ "$header_template" == '$${notVar}' ]] || [[ "$header_template" == *'$${'* ]]; then
+        if [[ "$actual_value" == '${notVar}' ]] || [[ "$actual_value" == *'${'* && "$actual_value" != *'$${'* ]]; then
+            _log_pass "转义语法正确: $actual_value"
+        else
+            _log_fail "转义语法应该输出字面量 \${...}" "\${notVar}" "${actual_value:-空值}"
+        fi
+    elif [[ "$header_template" == *'${'* ]]; then
         if [[ -n "$actual_value" ]] && [[ "$actual_value" != *'${'* ]]; then
             _log_pass "模板变量已替换: $actual_value"
         else
@@ -2226,9 +2315,19 @@ run_tests() {
     fi
 
     local rules=()
+    local in_code_block=false
     while IFS= read -r line; do
         [[ "$line" =~ ^#.*$ ]] && continue
         [[ -z "${line// }" ]] && continue
+        if [[ "$line" == '```'* ]]; then
+            if [[ "$in_code_block" == false ]]; then
+                in_code_block=true
+            else
+                in_code_block=false
+            fi
+            continue
+        fi
+        [[ "$in_code_block" == true ]] && continue
         rules+=("$line")
     done < "$RULE_FILE"
 
@@ -2441,6 +2540,7 @@ run_tests() {
 SKIP_BUILD="false"
 KEEP_PROXY="false"
 SKIP_MOCK_SERVERS="false"
+USE_BINARY="false"
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
@@ -2470,6 +2570,10 @@ parse_args() {
                 ;;
             --skip-mock-servers)
                 SKIP_MOCK_SERVERS="true"
+                shift
+                ;;
+            --use-binary)
+                USE_BINARY="true"
                 shift
                 ;;
             *)

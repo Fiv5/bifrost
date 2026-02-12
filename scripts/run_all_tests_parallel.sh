@@ -65,22 +65,21 @@ collect_test_files() {
 
 build_proxy_once() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        info "跳过编译步骤 (将使用 cargo run 增量编译)"
+        if [[ ! -x "${PROJECT_DIR}/target/release/bifrost" ]]; then
+            echo -e "${RED}✗${NC} 跳过编译但二进制文件不存在，请先编译"
+            exit 1
+        fi
+        echo -e "${GREEN}✓${NC} 跳过编译，使用现有二进制"
         return 0
     fi
 
-    if [[ -f "${PROJECT_DIR}/target/release/bifrost" ]]; then
-        local mod_time=$(stat -f %m "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null || stat -c %Y "${PROJECT_DIR}/target/release/bifrost" 2>/dev/null)
-        local now=$(date +%s)
-        local age=$((now - mod_time))
-
-        if [[ $age -lt 86400 ]]; then
-            echo -e "${GREEN}✓${NC} 已有编译的代理 (编译于 $((age / 60)) 分钟前)，cargo run 将自动检测是否需要重新编译"
-            return 0
-        fi
+    info "编译代理服务器 (cargo build --release)..."
+    cd "$PROJECT_DIR"
+    if ! cargo build --release --bin bifrost; then
+        echo -e "${RED}✗${NC} 编译失败"
+        exit 1
     fi
-
-    info "首次运行将自动编译代理服务器 (通过 cargo run)..."
+    echo -e "${GREEN}✓${NC} 编译完成"
 }
 
 run_single_test() {
@@ -98,8 +97,10 @@ run_single_test() {
         echo "TEST_FILE=$rel_path"
         echo "PROXY_PORT=$proxy_port"
 
-        if "$SCRIPT_DIR/test_rules.sh" \
+        local test_id="${rel_path}:${proxy_port}"
+        if TEST_ID="$test_id" "$SCRIPT_DIR/test_rules.sh" \
             --no-build \
+            --use-binary \
             --skip-mock-servers \
             -p "$proxy_port" \
             -d "$data_dir" \

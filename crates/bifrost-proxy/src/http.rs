@@ -6,6 +6,7 @@ use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
+use hyper::header::HeaderValue;
 use hyper::http::response::Parts as ResponseParts;
 use hyper::{Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
@@ -478,6 +479,22 @@ pub async fn handle_http_request(
             ctx,
         )
     };
+
+    if res_body_bytes.len() != final_res_body.len() {
+        res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        res_parts.headers.insert(
+            hyper::header::CONTENT_LENGTH,
+            HeaderValue::from_str(&final_res_body.len().to_string()).unwrap(),
+        );
+        if verbose_logging {
+            info!(
+                "[{}] Updated Content-Length: {} -> {}",
+                ctx.id_str(),
+                res_body_bytes.len(),
+                final_res_body.len()
+            );
+        }
+    }
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 

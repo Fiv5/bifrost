@@ -47,7 +47,13 @@ impl TestRulesResolver {
 }
 
 impl RulesResolver for TestRulesResolver {
-    fn resolve(&self, url: &str, _method: &str) -> ResolvedRules {
+    fn resolve_with_context(
+        &self,
+        url: &str,
+        _method: &str,
+        _req_headers: &std::collections::HashMap<String, String>,
+        _req_cookies: &std::collections::HashMap<String, String>,
+    ) -> ResolvedRules {
         let rules = self.rules.read();
         let mut resolved = ResolvedRules::default();
 
