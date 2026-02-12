@@ -233,15 +233,23 @@ start_proxy() {
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     cd "$PROJECT_DIR"
     
+    # 组装可选系统代理参数
+    local extra_flags=()
+    if [[ "${ENABLE_SYSTEM_PROXY:-}" == "true" ]]; then
+        extra_flags+=(--system-proxy)
+        local bypass_val="${SYSTEM_PROXY_BYPASS:-localhost,127.0.0.1,::1,*.local}"
+        extra_flags+=(--proxy-bypass "$bypass_val")
+    fi
+
     if [[ "$USE_BINARY" == "true" ]]; then
         local BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
         if [[ ! -x "$BIFROST_BIN" ]]; then
             echo -e "${RED}✗${NC} 二进制文件不存在或不可执行: $BIFROST_BIN"
             exit 1
         fi
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" "${extra_flags[@]}" &
     else
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" "${extra_flags[@]}" &
     fi
     PROXY_PID=$!
 

@@ -228,10 +228,18 @@ start_proxy() {
 
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
 
+    # 可选系统代理参数
+    local extra_flags=()
+    if [[ "${ENABLE_SYSTEM_PROXY:-}" == "true" ]]; then
+        extra_flags+=(--system-proxy)
+        local bypass_val="${SYSTEM_PROXY_BYPASS:-localhost,127.0.0.1,::1,*.local}"
+        extra_flags+=(--proxy-bypass "$bypass_val")
+    fi
+
     "$BIFROST_BIN" --port "${PROXY_PORT}" start \
         --skip-cert-check --unsafe-ssl \
         --rules-file "${TEST_DATA_DIR}/.bifrost/rules/values_test.txt" \
-        > "${TEST_DATA_DIR}/proxy.log" 2>&1 &
+        "${extra_flags[@]}" > "${TEST_DATA_DIR}/proxy.log" 2>&1 &
     PROXY_PID=$!
 
     local waited=0

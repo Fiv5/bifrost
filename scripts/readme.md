@@ -67,6 +67,7 @@ scripts/
 - curl (用于发送 HTTP 请求)
 - jq (可选，用于 JSON 断言)
 - lsof (用于检测端口占用)
+- macOS 系统代理权限（仅 macOS）：启用/关闭系统代理可能需要管理员权限。建议在终端使用 sudo 运行 CLI：`sudo bifrost start --system-proxy --proxy-bypass "localhost,127.0.0.1,::1,*.local"`。非管理员运行时，CLI 会提示是否通过 sudo 授权设置系统代理；选择授权后终端将出现密码提示，由系统处理。
 
 ## 快速开始
 
@@ -208,6 +209,15 @@ Echo 服务器返回 JSON 格式的请求详情，便于验证代理行为：
 | HTTPS Echo            | 3443 | `ECHO_HTTPS_PORT` |
 | WebSocket Echo        | 3020 | `ECHO_WS_PORT`    |
 | WebSocket Secure Echo | 3021 | `ECHO_WSS_PORT`   |
+
+### 启动命令可选参数（系统代理）
+
+- 通过环境变量控制脚本在启动代理时传入 CLI 选项：
+  - ENABLE_SYSTEM_PROXY=true 启用系统代理（对应 CLI `--system-proxy`）
+  - SYSTEM_PROXY_BYPASS=localhost,127.0.0.1,::1,*.local 设置绕过列表（对应 CLI `--proxy-bypass`）
+  - 例如：
+    - `ENABLE_SYSTEM_PROXY=true SYSTEM_PROXY_BYPASS="localhost,127.0.0.1,::1,*.local" ./test_rules.sh rules/forwarding/http_to_http.txt`
+    - `ENABLE_SYSTEM_PROXY=true PROXY_PORT=8899 ./test_pattern.sh`
 
 ## 断言库
 

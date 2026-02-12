@@ -162,10 +162,18 @@ local existing_pid=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | head -1)
     info "启动代理 (端口: ${PROXY_PORT}, 数据目录: ${TEST_DATA_DIR})..."
 
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
+    # 可选系统代理参数
+    local extra_flags=()
+    if [[ "${ENABLE_SYSTEM_PROXY:-}" == "true" ]]; then
+        extra_flags+=(--system-proxy)
+        local bypass_val="${SYSTEM_PROXY_BYPASS:-localhost,127.0.0.1,::1,*.local}"
+        extra_flags+=(--proxy-bypass "$bypass_val")
+    fi
+
     BIFROST_DATA_DIR="${TEST_DATA_DIR}" "${PROJECT_DIR}/target/release/bifrost" \
         --port "${PROXY_PORT}" start \
         --skip-cert-check --unsafe-ssl \
-        --rules-file "${rules_file}" &
+        --rules-file "${rules_file}" "${extra_flags[@]}" &
     PROXY_PID=$!
 
     local max_wait=10

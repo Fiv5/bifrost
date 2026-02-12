@@ -134,10 +134,26 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                 };
                 json_response(&status)
             }
-            Err(e) => error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Failed to set system proxy: {}", e),
-            ),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    #[derive(Serialize)]
+                    struct AdminError {
+                        error: &'static str,
+                        message: &'static str,
+                    }
+                    let body = AdminError {
+                        error: "requires_admin",
+                        message: "System proxy requires administrator privileges. Please run the CLI with sudo or grant permission.",
+                    };
+                    json_response(&body)
+                } else {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("Failed to set system proxy: {}", e),
+                    )
+                }
+            }
         }
     } else {
         error_response(

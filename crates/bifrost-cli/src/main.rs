@@ -107,6 +107,11 @@ enum Commands {
         #[command(subcommand)]
         action: WhitelistCommands,
     },
+    #[command(about = "Toggle system proxy (enable/disable/status)")]
+    SystemProxy {
+        #[command(subcommand)]
+        action: SystemProxyCommands,
+    },
     #[command(about = "Manage values for rule variable expansion")]
     Value {
         #[command(subcommand)]
@@ -186,6 +191,23 @@ enum WhitelistCommands {
     },
     #[command(about = "Show current access control settings")]
     Status,
+}
+
+#[derive(Subcommand, Clone)]
+enum SystemProxyCommands {
+    #[command(about = "Show system proxy status")]
+    Status,
+    #[command(about = "Enable system proxy")]
+    Enable {
+        #[arg(long, help = "Bypass list (comma-separated)")]
+        bypass: Option<String>,
+        #[arg(long, help = "Proxy host (default: 127.0.0.1)")]
+        host: Option<String>,
+        #[arg(long, help = "Proxy port (default: global -p)")]
+        port: Option<u16>,
+    },
+    #[command(about = "Disable system proxy")]
+    Disable,
 }
 
 #[derive(Subcommand, Clone)]
@@ -304,6 +326,9 @@ fn main() {
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
         Some(Commands::Whitelist { action }) => handle_whitelist_command(action),
+        Some(Commands::SystemProxy { ref action }) => {
+            handle_system_proxy_command(&cli, action.clone())
+        }
         Some(Commands::Value { action }) => handle_value_command(action),
         None => run_start(
             &cli,
@@ -515,6 +540,122 @@ fn run_start(
     Ok(())
 }
 
+fn handle_system_proxy_command(cli: &Cli, action: SystemProxyCommands) -> bifrost_core::Result<()> {
+    let bifrost_dir = get_bifrost_dir()?;
+    let mut manager = bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
+    match action {
+        SystemProxyCommands::Status => {
+            if !bifrost_core::SystemProxyManager::is_supported() {
+                println!("System proxy not supported on this platform");
+                return Ok(());
+            }
+            match bifrost_core::SystemProxyManager::get_current() {
+                Ok(status) => {
+                    println!("Supported: true");
+                    println!("Enabled:  {}", status.enable);
+                    println!("Host:     {}", status.host);
+                    println!("Port:     {}", status.port);
+                    println!("Bypass:   {}", status.bypass);
+                }
+                Err(e) => {
+                    eprintln!("Failed to get system proxy: {}", e);
+                }
+            }
+        }
+        SystemProxyCommands::Enable { bypass, host, port } => {
+            if !bifrost_core::SystemProxyManager::is_supported() {
+                println!("System proxy not supported on this platform");
+                return Ok(());
+            }
+            let proxy_host = host.unwrap_or_else(|| "127.0.0.1".to_string());
+            let proxy_port = port.unwrap_or(cli.port);
+            let bypass_str = bypass.unwrap_or_else(|| {
+                let cfg = load_config();
+                cfg.system_proxy.bypass
+            });
+            if let Err(e) = manager.enable(&proxy_host, proxy_port, Some(&bypass_str)) {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    println!("System proxy requires administrator privileges.");
+                    let proceed = dialoguer::Confirm::new()
+                        .with_prompt("Try enabling via sudo now?")
+                        .default(true)
+                        .interact();
+                    match proceed {
+                        Ok(true) => {
+                            #[cfg(target_os = "macos")]
+                            {
+                                if let Err(se) = manager.enable_with_privilege(
+                                    &proxy_host,
+                                    proxy_port,
+                                    Some(&bypass_str),
+                                ) {
+                                    eprintln!("Failed to enable with sudo: {}", se);
+                                } else {
+                                    println!("✓ System proxy enabled via sudo");
+                                }
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                eprintln!("Privilege escalation is only applicable on macOS.");
+                            }
+                        }
+                        _ => {
+                            println!("Cancelled.");
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to enable system proxy: {}", e);
+                }
+            } else {
+                println!(
+                    "✓ System proxy enabled: {}:{} (bypass: {})",
+                    proxy_host, proxy_port, bypass_str
+                );
+            }
+        }
+        SystemProxyCommands::Disable => {
+            if !bifrost_core::SystemProxyManager::is_supported() {
+                println!("System proxy not supported on this platform");
+                return Ok(());
+            }
+            if let Err(e) = manager.disable() {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    println!("System proxy disable requires administrator privileges.");
+                    let proceed = dialoguer::Confirm::new()
+                        .with_prompt("Try disabling via sudo now?")
+                        .default(true)
+                        .interact();
+                    match proceed {
+                        Ok(true) => {
+                            #[cfg(target_os = "macos")]
+                            {
+                                if let Err(se) = manager.disable_with_privilege() {
+                                    eprintln!("Failed to disable with sudo: {}", se);
+                                } else {
+                                    println!("✓ System proxy disabled via sudo");
+                                }
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                eprintln!("Privilege escalation is only applicable on macOS.");
+                            }
+                        }
+                        _ => {
+                            println!("Cancelled.");
+                        }
+                    }
+                } else {
+                    eprintln!("Failed to disable system proxy: {}", e);
+                }
+            } else {
+                println!("✓ System proxy disabled");
+            }
+        }
+    }
+    Ok(())
+}
 fn init_config_dir() -> bifrost_core::Result<()> {
     let bifrost_dir = get_bifrost_dir()?;
 
@@ -949,7 +1090,12 @@ fn run_foreground(
         if let Err(e) =
             system_proxy_manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass))
         {
-            eprintln!("Failed to enable system proxy: {}", e);
+            let msg = e.to_string();
+            if msg.contains("RequiresAdmin") {
+                println!("System proxy requires administrator privileges; proxy will start without changing system proxy. You can toggle it later via CLI or Admin UI.");
+            } else {
+                eprintln!("Failed to enable system proxy: {}", e);
+            }
         }
     }
 
@@ -1104,7 +1250,12 @@ fn run_daemon(
                     config.port,
                     Some(&system_proxy_bypass),
                 ) {
-                    eprintln!("Failed to enable system proxy: {}", e);
+                    let msg = e.to_string();
+                    if msg.contains("RequiresAdmin") {
+                        println!("System proxy requires administrator privileges; daemon will continue without changing system proxy. You can toggle it later via CLI or Admin UI.");
+                    } else {
+                        eprintln!("Failed to enable system proxy: {}", e);
+                    }
                 }
             }
 
