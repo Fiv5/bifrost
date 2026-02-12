@@ -15,6 +15,8 @@ import {
   Badge,
   Space,
   Popconfirm,
+  Switch,
+  Tooltip,
 } from "antd";
 import {
   CopyOutlined,
@@ -28,6 +30,7 @@ import {
   CloseOutlined,
   ClearOutlined,
   WarningOutlined,
+  GlobalOutlined,
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import {
@@ -36,6 +39,11 @@ import {
   rejectPending,
   clearPendingAuthorizations,
 } from "../../api/whitelist";
+import {
+  getSystemProxyStatus,
+  setSystemProxy,
+  type SystemProxyStatus,
+} from "../../api/proxy";
 import type { PendingAuth } from "../../types";
 
 const { Text, Paragraph } = Typography;
@@ -44,6 +52,30 @@ export default function Settings() {
   const { overview, loading, error, fetchOverview } = useMetricsStore();
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
+  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(null);
+  const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+
+  const fetchSystemProxy = async () => {
+    try {
+      const status = await getSystemProxyStatus();
+      setSystemProxyState(status);
+    } catch {
+      console.error("Failed to fetch system proxy status");
+    }
+  };
+
+  const handleSystemProxyToggle = async (enabled: boolean) => {
+    setSystemProxyLoading(true);
+    try {
+      const result = await setSystemProxy({ enabled });
+      setSystemProxyState(result);
+      message.success(enabled ? "System proxy enabled" : "System proxy disabled");
+    } catch {
+      message.error("Failed to toggle system proxy");
+    } finally {
+      setSystemProxyLoading(false);
+    }
+  };
 
   const fetchPending = async () => {
     if (overview && overview.pending_authorizations > 0) {
@@ -63,6 +95,7 @@ export default function Settings() {
 
   useEffect(() => {
     fetchOverview();
+    fetchSystemProxy();
     const interval = setInterval(fetchOverview, 1000);
     return () => clearInterval(interval);
   }, [fetchOverview]);
@@ -156,7 +189,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 8899}`;
   const pendingCount = overview?.pending_authorizations || 0;
 
   return (
-    <div>
+    <div style={{ padding: 16 }}>
       {pendingCount > 0 && (
         <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
           <Col xs={24}>
@@ -288,6 +321,26 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 8899}`;
                 >
                   {overview?.server.admin_url}
                 </a>
+              </Descriptions.Item>
+              <Descriptions.Item label="System Proxy">
+                {systemProxy?.supported ? (
+                  <Space>
+                    <Switch
+                      checked={systemProxy?.enabled}
+                      loading={systemProxyLoading}
+                      onChange={handleSystemProxyToggle}
+                      checkedChildren={<GlobalOutlined />}
+                      unCheckedChildren={<GlobalOutlined />}
+                    />
+                    <Text type={systemProxy?.enabled ? "success" : "secondary"}>
+                      {systemProxy?.enabled ? "Enabled" : "Disabled"}
+                    </Text>
+                  </Space>
+                ) : (
+                  <Tooltip title="System proxy is not supported on this platform">
+                    <Text type="secondary">Not Supported</Text>
+                  </Tooltip>
+                )}
               </Descriptions.Item>
             </Descriptions>
             <Paragraph

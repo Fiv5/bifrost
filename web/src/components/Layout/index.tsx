@@ -75,7 +75,7 @@ export default function AppLayout() {
       flex: 1,
       display: "flex",
       flexDirection: "column",
-      overflow: "hidden",
+      overflow: "auto",
       backgroundColor: token.colorBgLayout,
     },
   };
