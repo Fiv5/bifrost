@@ -17,6 +17,7 @@ import {
   Popconfirm,
   Switch,
   Tooltip,
+  Tabs,
 } from "antd";
 import {
   CopyOutlined,
@@ -44,7 +45,7 @@ import {
   setSystemProxy,
   type SystemProxyStatus,
 } from "../../api/proxy";
-import type { PendingAuth } from "../../types";
+import type { PendingAuth, TrafficTypeMetrics } from "../../types";
 
 const { Text, Paragraph } = Typography;
 
@@ -52,7 +53,9 @@ export default function Settings() {
   const { overview, loading, error, fetchOverview } = useMetricsStore();
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
-  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(null);
+  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
+    null,
+  );
   const [systemProxyLoading, setSystemProxyLoading] = useState(false);
 
   const fetchSystemProxy = async () => {
@@ -69,7 +72,9 @@ export default function Settings() {
     try {
       const result = await setSystemProxy({ enabled });
       setSystemProxyState(result);
-      message.success(enabled ? "System proxy enabled" : "System proxy disabled");
+      message.success(
+        enabled ? "System proxy enabled" : "System proxy disabled",
+      );
     } catch {
       message.error("Failed to toggle system proxy");
     } finally {
@@ -139,8 +144,8 @@ export default function Settings() {
   };
 
   const copyProxyConfig = () => {
-    const config = `HTTP Proxy: 127.0.0.1:${overview?.server.port || 8899}
-HTTPS Proxy: 127.0.0.1:${overview?.server.port || 8899}`;
+    const config = `HTTP Proxy: 127.0.0.1:${overview?.server.port || 9900}
+HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     navigator.clipboard.writeText(config);
     message.success("Proxy config copied to clipboard");
   };
@@ -308,10 +313,10 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 8899}`;
           >
             <Descriptions column={1} size="small">
               <Descriptions.Item label="Port">
-                <Text code>{overview?.server.port || 8899}</Text>
+                <Text code>{overview?.server.port || 9900}</Text>
               </Descriptions.Item>
               <Descriptions.Item label="HTTP Proxy">
-                <Text code>127.0.0.1:{overview?.server.port || 8899}</Text>
+                <Text code>127.0.0.1:{overview?.server.port || 9900}</Text>
               </Descriptions.Item>
               <Descriptions.Item label="Admin URL">
                 <a
@@ -357,144 +362,90 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 8899}`;
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24}>
           <Card title="Performance Metrics">
-            <Row gutter={[16, 16]}>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Active Connections"
-                    value={overview?.metrics.active_connections || 0}
-                    prefix={<SwapOutlined />}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Total Requests"
-                    value={overview?.metrics.total_requests || 0}
-                    prefix={<ApiOutlined />}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Current QPS"
-                    value={overview?.metrics.qps.toFixed(2) || 0}
-                    prefix={<DashboardOutlined />}
-                    suffix={
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        max: {overview?.metrics.max_qps.toFixed(2) || 0}
-                      </Text>
-                    }
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Recorded Traffic"
-                    value={overview?.traffic.recorded || 0}
-                    prefix={<DatabaseOutlined />}
-                  />
-                </Card>
-              </Col>
-            </Row>
-
-            <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Upload Rate"
-                    value={formatBytesRate(
-                      overview?.metrics.bytes_sent_rate || 0,
-                    )}
-                    prefix={
-                      <CloudUploadOutlined style={{ color: "#52c41a" }} />
-                    }
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    Max:{" "}
-                    {formatBytesRate(
-                      overview?.metrics.max_bytes_sent_rate || 0,
-                    )}
-                  </Text>
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Download Rate"
-                    value={formatBytesRate(
-                      overview?.metrics.bytes_received_rate || 0,
-                    )}
-                    prefix={
-                      <CloudDownloadOutlined style={{ color: "#1890ff" }} />
-                    }
-                  />
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    Max:{" "}
-                    {formatBytesRate(
-                      overview?.metrics.max_bytes_received_rate || 0,
-                    )}
-                  </Text>
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Total Upload"
-                    value={formatBytes(overview?.metrics.bytes_sent || 0)}
-                    prefix={
-                      <CloudUploadOutlined style={{ color: "#52c41a" }} />
-                    }
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} sm={12} lg={6}>
-                <Card
-                  size="small"
-                  bordered={false}
-                  style={{ background: "#fafafa" }}
-                >
-                  <Statistic
-                    title="Total Download"
-                    value={formatBytes(overview?.metrics.bytes_received || 0)}
-                    prefix={
-                      <CloudDownloadOutlined style={{ color: "#1890ff" }} />
-                    }
-                  />
-                </Card>
-              </Col>
-            </Row>
+            <Tabs
+              defaultActiveKey="overview"
+              items={[
+                {
+                  key: "overview",
+                  label: "Overview",
+                  children: (
+                    <MetricsContent
+                      activeConnections={
+                        overview?.metrics.active_connections || 0
+                      }
+                      totalRequests={overview?.metrics.total_requests || 0}
+                      qps={overview?.metrics.qps || 0}
+                      maxQps={overview?.metrics.max_qps || 0}
+                      recordedTraffic={overview?.traffic.recorded || 0}
+                      bytesSentRate={overview?.metrics.bytes_sent_rate || 0}
+                      bytesReceivedRate={
+                        overview?.metrics.bytes_received_rate || 0
+                      }
+                      maxBytesSentRate={
+                        overview?.metrics.max_bytes_sent_rate || 0
+                      }
+                      maxBytesReceivedRate={
+                        overview?.metrics.max_bytes_received_rate || 0
+                      }
+                      bytesSent={overview?.metrics.bytes_sent || 0}
+                      bytesReceived={overview?.metrics.bytes_received || 0}
+                      formatBytes={formatBytes}
+                      formatBytesRate={formatBytesRate}
+                    />
+                  ),
+                },
+                {
+                  key: "http",
+                  label: "HTTP",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.http}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "https",
+                  label: "HTTPS",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.https}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "tunnel",
+                  label: "Tunnel",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.tunnel}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "ws",
+                  label: "WS",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.ws}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "wss",
+                  label: "WSS",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.wss}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+              ]}
+            />
 
             <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
               <Col xs={24} sm={12}>
@@ -618,4 +569,184 @@ function formatUptime(secs: number): string {
   if (days > 0) return `${days}d ${hours}h ${mins}m`;
   if (hours > 0) return `${hours}h ${mins}m`;
   return `${mins}m ${secs % 60}s`;
+}
+
+interface MetricsContentProps {
+  activeConnections: number;
+  totalRequests: number;
+  qps: number;
+  maxQps: number;
+  recordedTraffic: number;
+  bytesSentRate: number;
+  bytesReceivedRate: number;
+  maxBytesSentRate: number;
+  maxBytesReceivedRate: number;
+  bytesSent: number;
+  bytesReceived: number;
+  formatBytes: (bytes: number) => string;
+  formatBytesRate: (bytesPerSec: number) => string;
+}
+
+function MetricsContent({
+  activeConnections,
+  totalRequests,
+  qps,
+  maxQps,
+  recordedTraffic,
+  bytesSentRate,
+  bytesReceivedRate,
+  maxBytesSentRate,
+  maxBytesReceivedRate,
+  bytesSent,
+  bytesReceived,
+  formatBytes,
+  formatBytesRate,
+}: MetricsContentProps) {
+  return (
+    <>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Active Connections"
+              value={activeConnections}
+              prefix={<SwapOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Total Requests"
+              value={totalRequests}
+              prefix={<ApiOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Current QPS"
+              value={qps.toFixed(2)}
+              prefix={<DashboardOutlined />}
+              suffix={
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  max: {maxQps.toFixed(2)}
+                </Text>
+              }
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Recorded Traffic"
+              value={recordedTraffic}
+              prefix={<DatabaseOutlined />}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Upload Rate"
+              value={formatBytesRate(bytesSentRate)}
+              prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Max: {formatBytesRate(maxBytesSentRate)}
+            </Text>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Download Rate"
+              value={formatBytesRate(bytesReceivedRate)}
+              prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Max: {formatBytesRate(maxBytesReceivedRate)}
+            </Text>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Total Upload"
+              value={formatBytes(bytesSent)}
+              prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+            <Statistic
+              title="Total Download"
+              value={formatBytes(bytesReceived)}
+              prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+            />
+          </Card>
+        </Col>
+      </Row>
+    </>
+  );
+}
+
+interface TrafficTypeContentProps {
+  metrics?: TrafficTypeMetrics;
+  formatBytes: (bytes: number) => string;
+}
+
+function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
+  const data = metrics || {
+    requests: 0,
+    bytes_sent: 0,
+    bytes_received: 0,
+    active_connections: 0,
+  };
+
+  return (
+    <Row gutter={[16, 16]}>
+      <Col xs={24} sm={12} lg={6}>
+        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Statistic
+            title="Active Connections"
+            value={data.active_connections}
+            prefix={<SwapOutlined />}
+          />
+        </Card>
+      </Col>
+      <Col xs={24} sm={12} lg={6}>
+        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Statistic
+            title="Total Requests"
+            value={data.requests}
+            prefix={<ApiOutlined />}
+          />
+        </Card>
+      </Col>
+      <Col xs={24} sm={12} lg={6}>
+        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Statistic
+            title="Total Upload"
+            value={formatBytes(data.bytes_sent)}
+            prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+          />
+        </Card>
+      </Col>
+      <Col xs={24} sm={12} lg={6}>
+        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Statistic
+            title="Total Download"
+            value={formatBytes(data.bytes_received)}
+            prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+          />
+        </Card>
+      </Col>
+    </Row>
+  );
 }

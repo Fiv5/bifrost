@@ -50,7 +50,7 @@ cargo run --bin bifrost
 cargo run --bin bifrost -- --port 9000 --host 127.0.0.1
 
 # 启用 HTTP 和 SOCKS5 代理
-cargo run --bin bifrost -- --port 8899 --socks5-port 1080
+cargo run --bin bifrost -- --port 9900 --socks5-port 1080
 
 # 守护进程模式
 cargo run --bin bifrost -- start --daemon
@@ -73,10 +73,10 @@ BIFROST_DATA_DIR=/tmp/bifrost cargo run --bin bifrost
 http://127.0.0.1:<端口>/_bifrost/
 ```
 
-例如，使用默认端口 8899 启动时，访问地址为：
+例如，使用默认端口 9900 启动时，访问地址为：
 
 ```
-http://127.0.0.1:8899/_bifrost/
+http://127.0.0.1:9900/_bifrost/
 ```
 
 管理端提供以下功能：
@@ -98,7 +98,7 @@ http://127.0.0.1:8899/_bifrost/
 bifrost [OPTIONS] [COMMAND]
 
 # 全局选项
--p, --port <PORT>           HTTP 代理端口 [默认: 8899]
+-p, --port <PORT>           HTTP 代理端口 [默认: 9900]
 -H, --host <HOST>           监听地址 [默认: 0.0.0.0]
     --socks5-port <PORT>    SOCKS5 代理端口
 -l, --log-level <LEVEL>     日志级别 [默认: info]
@@ -119,7 +119,7 @@ bifrost start --daemon
 bifrost -p 9000 start
 
 # 同时启用 HTTP 和 SOCKS5 代理
-bifrost -p 8899 --socks5-port 1080 start
+bifrost -p 9900 --socks5-port 1080 start
 
 # 跳过证书安装检查（适用于无交互环境）
 bifrost start --skip-cert-check
@@ -256,7 +256,7 @@ let matcher = DomainMatcher::new("*.example.com");
 use bifrost_proxy::{ProxyConfig, ProxyServer};
 
 let config = ProxyConfig {
-    port: 8899,
+    port: 9900,
     host: "0.0.0.0".to_string(),
     socks5_port: Some(1080),
     ..Default::default()

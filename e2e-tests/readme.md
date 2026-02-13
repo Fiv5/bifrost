@@ -23,7 +23,17 @@ scripts/
 │
 ├── test_utils/             # 测试工具库
 │   ├── assert.sh               # 断言库
-│   └── http_client.sh          # HTTP 请求封装
+│   ├── http_client.sh          # HTTP 请求封装
+│   └── admin_client.sh         # Admin API 客户端封装
+│
+├── tests/                  # Admin API 测试脚本
+│   ├── test_frames_admin_api.sh    # Frames API 测试 (11 tests)
+│   ├── test_rules_admin_api.sh     # Rules API 测试 (10 tests)
+│   ├── test_values_admin_api.sh    # Values API 测试 (9 tests)
+│   ├── test_whitelist_admin_api.sh # Whitelist API 测试 (14 tests)
+│   ├── test_cert_admin_api.sh      # Cert API 测试 (7 tests)
+│   ├── test_proxy_admin_api.sh     # Proxy API 测试 (6 tests)
+│   └── test_system_admin_api.sh    # System API 测试 (10 tests)
 │
 └── rules/                  # 规则测试用例 (按类别组织)
     ├── forwarding/             # 转发测试
@@ -86,6 +96,14 @@ scripts/
 
 # 详细输出模式
 ./run_all_tests.sh -v
+
+# 运行 Admin API 测试
+./tests/test_rules_admin_api.sh      # 运行 Rules API 测试
+./tests/test_values_admin_api.sh     # 运行 Values API 测试
+./tests/test_whitelist_admin_api.sh  # 运行 Whitelist API 测试
+
+# 运行所有 Admin API 测试
+for test in ./tests/test_*_admin_api.sh; do $test || exit 1; done
 ```
 
 ## test_rules.sh - 单文件测试
@@ -160,6 +178,51 @@ scripts/
 - `priority` - 规则优先级测试
 - `control` - 控制规则测试
 
+## Admin API 测试
+
+Admin API 测试脚本位于 `tests/` 目录，用于测试 Bifrost 的管理 API 接口。
+
+### 测试脚本列表
+
+| 脚本                          | 测试数 | 覆盖 API                             |
+| ----------------------------- | ------ | ------------------------------------ |
+| `test_frames_admin_api.sh`    | 11     | 流量帧列表、详情、WebSocket 连接管理 |
+| `test_rules_admin_api.sh`     | 10     | 规则 CRUD、启用/禁用                 |
+| `test_values_admin_api.sh`    | 9      | 预定义值 CRUD                        |
+| `test_whitelist_admin_api.sh` | 14     | 白名单管理、授权管理、临时白名单     |
+| `test_cert_admin_api.sh`      | 7      | 证书信息、下载、二维码               |
+| `test_proxy_admin_api.sh`     | 6      | 系统代理状态、设置                   |
+| `test_system_admin_api.sh`    | 10     | 系统信息、概览、指标历史             |
+
+### 运行 Admin API 测试
+
+```bash
+cd rust/scripts
+
+# 运行单个测试脚本
+./tests/test_rules_admin_api.sh
+
+# 运行所有 Admin API 测试
+for test in ./tests/test_*_admin_api.sh; do
+    echo "Running $test..."
+    $test || exit 1
+done
+```
+
+### Admin API 客户端工具
+
+`test_utils/admin_client.sh` 提供 Admin API 的封装函数，可在自定义测试中使用：
+
+```bash
+source "$SCRIPT_DIR/test_utils/admin_client.sh"
+
+# 示例：测试规则 CRUD
+rule_id=$(create_rule '{"name":"test","content":"*.test.com http://localhost"}' | jq -r '.id')
+get_rule "$rule_id"
+update_rule "$rule_id" '{"name":"updated"}'
+delete_rule "$rule_id"
+```
+
 ## Echo 服务器
 
 Echo 服务器返回 JSON 格式的请求详情，便于验证代理行为：
@@ -214,10 +277,10 @@ Echo 服务器返回 JSON 格式的请求详情，便于验证代理行为：
 
 - 通过环境变量控制脚本在启动代理时传入 CLI 选项：
   - ENABLE_SYSTEM_PROXY=true 启用系统代理（对应 CLI `--system-proxy`）
-  - SYSTEM_PROXY_BYPASS=localhost,127.0.0.1,::1,*.local 设置绕过列表（对应 CLI `--proxy-bypass`）
+  - SYSTEM_PROXY_BYPASS=localhost,127.0.0.1,::1,\*.local 设置绕过列表（对应 CLI `--proxy-bypass`）
   - 例如：
     - `ENABLE_SYSTEM_PROXY=true SYSTEM_PROXY_BYPASS="localhost,127.0.0.1,::1,*.local" ./test_rules.sh rules/forwarding/http_to_http.txt`
-    - `ENABLE_SYSTEM_PROXY=true PROXY_PORT=8899 ./test_pattern.sh`
+    - `ENABLE_SYSTEM_PROXY=true PROXY_PORT=9900 ./test_pattern.sh`
 
 ## 断言库
 

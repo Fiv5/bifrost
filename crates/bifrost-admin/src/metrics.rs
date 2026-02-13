@@ -8,6 +8,24 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrafficType {
+    Http,
+    Https,
+    Tunnel,
+    Ws,
+    Wss,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TrafficTypeMetrics {
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub active_connections: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsSnapshot {
     pub timestamp: u64,
@@ -24,6 +42,34 @@ pub struct MetricsSnapshot {
     pub max_qps: f32,
     pub max_bytes_sent_rate: f32,
     pub max_bytes_received_rate: f32,
+    pub http: TrafficTypeMetrics,
+    pub https: TrafficTypeMetrics,
+    pub tunnel: TrafficTypeMetrics,
+    pub ws: TrafficTypeMetrics,
+    pub wss: TrafficTypeMetrics,
+}
+
+#[derive(Default)]
+struct TrafficTypeCounters {
+    requests: AtomicU64,
+    bytes_sent: AtomicU64,
+    bytes_received: AtomicU64,
+    active_connections: AtomicU64,
+}
+
+impl TrafficTypeCounters {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn to_metrics(&self) -> TrafficTypeMetrics {
+        TrafficTypeMetrics {
+            requests: self.requests.load(Ordering::Relaxed),
+            bytes_sent: self.bytes_sent.load(Ordering::Relaxed),
+            bytes_received: self.bytes_received.load(Ordering::Relaxed),
+            active_connections: self.active_connections.load(Ordering::Relaxed),
+        }
+    }
 }
 
 pub struct MetricsCollector {
@@ -42,6 +88,11 @@ pub struct MetricsCollector {
     max_qps: RwLock<f32>,
     max_bytes_sent_rate: RwLock<f32>,
     max_bytes_received_rate: RwLock<f32>,
+    http: TrafficTypeCounters,
+    https: TrafficTypeCounters,
+    tunnel: TrafficTypeCounters,
+    ws: TrafficTypeCounters,
+    wss: TrafficTypeCounters,
 }
 
 impl MetricsCollector {
@@ -64,6 +115,21 @@ impl MetricsCollector {
             max_qps: RwLock::new(0.0),
             max_bytes_sent_rate: RwLock::new(0.0),
             max_bytes_received_rate: RwLock::new(0.0),
+            http: TrafficTypeCounters::new(),
+            https: TrafficTypeCounters::new(),
+            tunnel: TrafficTypeCounters::new(),
+            ws: TrafficTypeCounters::new(),
+            wss: TrafficTypeCounters::new(),
+        }
+    }
+
+    fn get_counters(&self, traffic_type: TrafficType) -> &TrafficTypeCounters {
+        match traffic_type {
+            TrafficType::Http => &self.http,
+            TrafficType::Https => &self.https,
+            TrafficType::Tunnel => &self.tunnel,
+            TrafficType::Ws => &self.ws,
+            TrafficType::Wss => &self.wss,
         }
     }
 
@@ -71,20 +137,55 @@ impl MetricsCollector {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn increment_requests_by_type(&self, traffic_type: TrafficType) {
+        self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.get_counters(traffic_type)
+            .requests
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn increment_connections(&self) {
         self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn increment_connections_by_type(&self, traffic_type: TrafficType) {
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.get_counters(traffic_type)
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn decrement_connections(&self) {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
     }
 
+    pub fn decrement_connections_by_type(&self, traffic_type: TrafficType) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.get_counters(traffic_type)
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
+    }
+
     pub fn add_bytes_sent(&self, bytes: u64) {
         self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    pub fn add_bytes_sent_by_type(&self, traffic_type: TrafficType, bytes: u64) {
+        self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+        self.get_counters(traffic_type)
+            .bytes_sent
+            .fetch_add(bytes, Ordering::Relaxed);
+    }
+
     pub fn add_bytes_received(&self, bytes: u64) {
         self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn add_bytes_received_by_type(&self, traffic_type: TrafficType, bytes: u64) {
+        self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
+        self.get_counters(traffic_type)
+            .bytes_received
+            .fetch_add(bytes, Ordering::Relaxed);
     }
 
     pub fn get_current(&self) -> MetricsSnapshot {
@@ -143,6 +244,11 @@ impl MetricsCollector {
             max_qps,
             max_bytes_sent_rate,
             max_bytes_received_rate,
+            http: self.http.to_metrics(),
+            https: self.https.to_metrics(),
+            tunnel: self.tunnel.to_metrics(),
+            ws: self.ws.to_metrics(),
+            wss: self.wss.to_metrics(),
         }
     }
 
@@ -316,5 +422,43 @@ mod tests {
         assert!(!info.version.is_empty());
         assert!(!info.os.is_empty());
         assert!(info.uptime_secs >= 60);
+    }
+
+    #[test]
+    fn test_traffic_type_metrics() {
+        let collector = MetricsCollector::new(10);
+
+        collector.increment_requests_by_type(TrafficType::Http);
+        collector.increment_requests_by_type(TrafficType::Http);
+        collector.increment_requests_by_type(TrafficType::Https);
+        collector.add_bytes_sent_by_type(TrafficType::Http, 100);
+        collector.add_bytes_received_by_type(TrafficType::Https, 200);
+
+        let snapshot = collector.take_snapshot();
+        assert_eq!(snapshot.total_requests, 3);
+        assert_eq!(snapshot.http.requests, 2);
+        assert_eq!(snapshot.https.requests, 1);
+        assert_eq!(snapshot.http.bytes_sent, 100);
+        assert_eq!(snapshot.https.bytes_received, 200);
+    }
+
+    #[test]
+    fn test_connection_tracking_by_type() {
+        let collector = MetricsCollector::new(10);
+
+        collector.increment_connections_by_type(TrafficType::Ws);
+        collector.increment_connections_by_type(TrafficType::Wss);
+        collector.increment_connections_by_type(TrafficType::Tunnel);
+
+        let snapshot = collector.get_current();
+        assert_eq!(snapshot.active_connections, 3);
+        assert_eq!(snapshot.ws.active_connections, 1);
+        assert_eq!(snapshot.wss.active_connections, 1);
+        assert_eq!(snapshot.tunnel.active_connections, 1);
+
+        collector.decrement_connections_by_type(TrafficType::Ws);
+        let snapshot = collector.get_current();
+        assert_eq!(snapshot.active_connections, 2);
+        assert_eq!(snapshot.ws.active_connections, 0);
     }
 }

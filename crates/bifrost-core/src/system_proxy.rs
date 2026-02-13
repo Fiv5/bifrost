@@ -499,7 +499,7 @@ mod tests {
         let backup = ProxyBackup {
             enable: true,
             host: "127.0.0.1".to_string(),
-            port: 8899,
+            port: 9900,
             bypass: "localhost".to_string(),
         };
 

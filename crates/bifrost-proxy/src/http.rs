@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord};
+use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -367,8 +367,10 @@ pub async fn handle_http_request(
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
-                .add_bytes_sent(final_body.len() as u64);
-            state.metrics_collector.increment_requests();
+                .add_bytes_sent_by_type(TrafficType::Http, final_body.len() as u64);
+            state
+                .metrics_collector
+                .increment_requests_by_type(TrafficType::Http);
 
             let mut record = TrafficRecord::new(record_id.clone(), method, url);
             record.status = res_parts.status.as_u16();
@@ -501,10 +503,13 @@ pub async fn handle_http_request(
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
-            .add_bytes_sent(final_body.len() as u64);
+            .add_bytes_sent_by_type(TrafficType::Http, final_body.len() as u64);
         state
             .metrics_collector
-            .add_bytes_received(final_res_body.len() as u64);
+            .add_bytes_received_by_type(TrafficType::Http, final_res_body.len() as u64);
+        state
+            .metrics_collector
+            .increment_requests_by_type(TrafficType::Http);
 
         let mut record = TrafficRecord::new(ctx.id_str(), method, url);
         record.status = res_parts.status.as_u16();
@@ -667,8 +672,10 @@ async fn forward_without_rules(
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
-            .add_bytes_sent(body_bytes.len() as u64);
-        state.metrics_collector.increment_requests();
+            .add_bytes_sent_by_type(TrafficType::Http, body_bytes.len() as u64);
+        state
+            .metrics_collector
+            .increment_requests_by_type(TrafficType::Http);
 
         let mut record = TrafficRecord::new(record_id.clone(), method, url);
         record.status = res_parts.status.as_u16();

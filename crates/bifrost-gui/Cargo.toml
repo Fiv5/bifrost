@@ -24,6 +24,7 @@ eframe = { version = "0.31", default-features = false, features = [
 ] }
 egui = "0.31"
 egui_extras = { version = "0.31", features = ["syntect"] }
+egui_plot = "0.31"
 bytes = "1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

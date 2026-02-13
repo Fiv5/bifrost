@@ -96,6 +96,13 @@ export interface FilterCondition {
   value: string;
 }
 
+export interface TrafficTypeMetrics {
+  requests: number;
+  bytes_sent: number;
+  bytes_received: number;
+  active_connections: number;
+}
+
 export interface MetricsSnapshot {
   timestamp: number;
   memory_used: number;
@@ -111,6 +118,11 @@ export interface MetricsSnapshot {
   max_qps: number;
   max_bytes_sent_rate: number;
   max_bytes_received_rate: number;
+  http: TrafficTypeMetrics;
+  https: TrafficTypeMetrics;
+  tunnel: TrafficTypeMetrics;
+  ws: TrafficTypeMetrics;
+  wss: TrafficTypeMetrics;
 }
 
 export interface SystemInfo {

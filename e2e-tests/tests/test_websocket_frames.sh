@@ -11,7 +11,7 @@ source "$SCRIPT_DIR/../test_utils/ws_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
-PROXY_PORT="${PROXY_PORT:-8899}"
+PROXY_PORT="${PROXY_PORT:-9900}"
 WS_HOST="${WS_HOST:-127.0.0.1}"
 WS_PORT="${WS_PORT:-8766}"
 WS_SERVER="ws://${WS_HOST}:${WS_PORT}"

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use bifrost_admin::{AdminState, BodyStore};
 use bifrost_core::{
-    parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver, ValueStore,
+    parse_rules, system_proxy::SystemProxyManager, Protocol, RequestContext, Rule,
+    RulesResolver as CoreRulesResolver, ValueStore,
 };
 use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
@@ -17,7 +18,7 @@ use bifrost_tls::{
 };
 use chrono::Local;
 use parking_lot::{Mutex, RwLock as ParkingRwLock};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::state::{AppState, ProxySettings, ProxyStatus, RuleEntry, ValueEntry};
 
@@ -96,14 +97,17 @@ pub struct ProxyController {
     state: Arc<Mutex<AppState>>,
     runtime: Option<tokio::runtime::Runtime>,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    system_proxy_manager: SystemProxyManager,
 }
 
 impl ProxyController {
     pub fn new(state: Arc<Mutex<AppState>>) -> Self {
+        let data_dir = bifrost_storage::data_dir();
         Self {
             state,
             runtime: None,
             shutdown_tx: None,
+            system_proxy_manager: SystemProxyManager::new(data_dir),
         }
     }
 
@@ -245,6 +249,66 @@ impl ProxyController {
     pub fn delete_value(&self, name: &str) -> Result<(), String> {
         let mut storage = ValuesStorage::new().map_err(|e| e.to_string())?;
         storage.remove_value(name).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn is_system_proxy_supported(&self) -> bool {
+        SystemProxyManager::is_supported()
+    }
+
+    #[allow(dead_code)]
+    pub fn is_system_proxy_enabled(&self) -> bool {
+        self.system_proxy_manager.is_set()
+    }
+
+    pub fn enable_system_proxy(&mut self) -> Result<(), String> {
+        let settings = self.state.lock().settings.clone();
+        let mut bypass_list: Vec<String> = settings.intercept_exclude.clone();
+        bypass_list.extend(
+            ["localhost", "127.0.0.1", "::1", "*.local"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        let bypass = bypass_list.join(",");
+
+        info!(
+            "Enabling system proxy: {}:{}, bypass: {}",
+            settings.host, settings.port, bypass
+        );
+
+        self.system_proxy_manager
+            .enable(&settings.host, settings.port, Some(&bypass))
+            .map_err(|e| {
+                warn!("Failed to enable system proxy: {}", e);
+                e.to_string()
+            })?;
+
+        self.state.lock().system_proxy_enabled = true;
+        info!("System proxy enabled successfully");
+        Ok(())
+    }
+
+    pub fn disable_system_proxy(&mut self) -> Result<(), String> {
+        info!("Disabling system proxy");
+        self.system_proxy_manager.disable().map_err(|e| {
+            warn!("Failed to disable system proxy: {}", e);
+            e.to_string()
+        })?;
+
+        self.state.lock().system_proxy_enabled = false;
+        info!("System proxy disabled successfully");
+        Ok(())
+    }
+
+    pub fn restore_system_proxy(&mut self) -> Result<(), String> {
+        if self.system_proxy_manager.is_set() {
+            info!("Restoring original system proxy settings");
+            self.system_proxy_manager.restore().map_err(|e| {
+                warn!("Failed to restore system proxy: {}", e);
+                e.to_string()
+            })?;
+            self.state.lock().system_proxy_enabled = false;
+        }
         Ok(())
     }
 }

@@ -12,11 +12,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/_bifrost/api': {
-        target: 'http://127.0.0.1:8899',
+        target: 'http://127.0.0.1:9900',
         changeOrigin: true,
       },
       '/_bifrost/ws': {
-        target: 'ws://127.0.0.1:8899',
+        target: 'ws://127.0.0.1:9900',
         ws: true,
       },
     },

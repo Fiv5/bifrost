@@ -324,7 +324,7 @@ WebSocket 请求转发和代理。
 | `${reqHeaders.xxx}` | 请求头字段 xxx 的值 | `application/json` |
 | `${resHeaders.xxx}` | 响应头字段 xxx 的值 | `text/html` |
 | `${version}` | Whistle 版本号 | `2.9.100` |
-| `${port}` | Whistle 端口号 | `8899` |
+| `${port}` | Whistle 端口号 | `9900` |
 | `${clientIp}` | 客户端 IP | `192.168.1.1` |
 | `${clientPort}` | 客户端端口 | `60582` |
 | `${serverIp}` | 服务端 IP | `10.0.0.1` |

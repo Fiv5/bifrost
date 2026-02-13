@@ -1,7 +1,9 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, FrameDirection, FrameType, RequestTiming, TrafficRecord};
+use bifrost_admin::{
+    AdminState, FrameDirection, FrameType, RequestTiming, TrafficRecord, TrafficType,
+};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -218,7 +220,9 @@ pub async fn handle_connect(
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
     if let Some(ref state) = admin_state {
-        state.metrics_collector.increment_connections();
+        state
+            .metrics_collector
+            .increment_connections_by_type(TrafficType::Tunnel);
     }
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
@@ -232,7 +236,9 @@ pub async fn handle_connect(
                 )
                 .await;
                 if let Some(ref state) = admin_state {
-                    state.metrics_collector.decrement_connections();
+                    state
+                        .metrics_collector
+                        .decrement_connections_by_type(TrafficType::Tunnel);
                 }
                 if let Err(e) = result {
                     error!("[{}] Tunnel error: {}", req_id, e);
@@ -240,7 +246,9 @@ pub async fn handle_connect(
             }
             Err(e) => {
                 if let Some(ref state) = admin_state {
-                    state.metrics_collector.decrement_connections();
+                    state
+                        .metrics_collector
+                        .decrement_connections_by_type(TrafficType::Tunnel);
                 }
                 error!("[{}] Upgrade error: {}", req_id, e);
             }
@@ -283,7 +291,9 @@ async fn handle_tls_interception(
     let target_host = target_host.to_string();
 
     if let Some(ref state) = admin_state {
-        state.metrics_collector.increment_connections();
+        state
+            .metrics_collector
+            .increment_connections_by_type(TrafficType::Https);
     }
 
     tokio::spawn(async move {
@@ -291,7 +301,9 @@ async fn handle_tls_interception(
             Ok(u) => u,
             Err(e) => {
                 if let Some(ref state) = admin_state {
-                    state.metrics_collector.decrement_connections();
+                    state
+                        .metrics_collector
+                        .decrement_connections_by_type(TrafficType::Https);
                 }
                 error!("[{}] TLS interception upgrade error: {}", req_id, e);
                 return;
@@ -313,7 +325,9 @@ async fn handle_tls_interception(
         .await;
 
         if let Some(ref state) = admin_state {
-            state.metrics_collector.decrement_connections();
+            state
+                .metrics_collector
+                .decrement_connections_by_type(TrafficType::Https);
         }
 
         if let Err(e) = result {
@@ -823,10 +837,17 @@ async fn handle_intercepted_request_with_protocol(
         let record_id = req_id.to_string();
 
         if let Some(ref state) = admin_state {
+            let traffic_type = if is_websocket {
+                TrafficType::Wss
+            } else {
+                TrafficType::Https
+            };
             state
                 .metrics_collector
-                .add_bytes_sent(body_bytes.len() as u64);
-            state.metrics_collector.increment_requests();
+                .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
+            state
+                .metrics_collector
+                .increment_requests_by_type(traffic_type);
 
             let mut record = TrafficRecord::new(record_id.clone(), method_str, target_uri);
             record.status = res_parts.status.as_u16();
@@ -890,13 +911,20 @@ async fn handle_intercepted_request_with_protocol(
     let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
+        let traffic_type = if is_websocket {
+            TrafficType::Wss
+        } else {
+            TrafficType::Https
+        };
         state
             .metrics_collector
-            .add_bytes_sent(body_bytes.len() as u64);
+            .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
         state
             .metrics_collector
-            .add_bytes_received(res_body_bytes.len() as u64);
-        state.metrics_collector.increment_requests();
+            .add_bytes_received_by_type(traffic_type, res_body_bytes.len() as u64);
+        state
+            .metrics_collector
+            .increment_requests_by_type(traffic_type);
 
         let mut record = TrafficRecord::new(req_id.to_string(), method_str, target_uri);
         record.status = res_parts.status.as_u16();
@@ -1080,7 +1108,9 @@ async fn handle_intercepted_websocket(
     let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
-        state.metrics_collector.increment_requests();
+        state
+            .metrics_collector
+            .increment_requests_by_type(TrafficType::Wss);
 
         let ws_url = format!("wss://{}{}", original_host, path);
         let mut record = TrafficRecord::new(req_id.to_string(), "GET".to_string(), ws_url);
@@ -1299,7 +1329,7 @@ where
             if let Some(ref state) = admin_state_c2s {
                 state
                     .metrics_collector
-                    .add_bytes_sent(frame.payload.len() as u64);
+                    .add_bytes_sent_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned,
@@ -1348,7 +1378,7 @@ where
             if let Some(ref state) = admin_state_s2c {
                 state
                     .metrics_collector
-                    .add_bytes_received(frame.payload.len() as u64);
+                    .add_bytes_received_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned2,
@@ -1570,7 +1600,9 @@ pub async fn tunnel_bidirectional(
             target_write.write_all(&buf[..n]).await?;
 
             if let Some(ref state) = admin_state_clone {
-                state.metrics_collector.add_bytes_sent(n as u64);
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
             }
         }
         target_write.shutdown().await?;
@@ -1587,7 +1619,9 @@ pub async fn tunnel_bidirectional(
             client_write.write_all(&buf[..n]).await?;
 
             if let Some(ref state) = admin_state_clone2 {
-                state.metrics_collector.add_bytes_received(n as u64);
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
             }
         }
         Ok::<_, std::io::Error>(())

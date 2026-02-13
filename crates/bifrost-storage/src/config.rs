@@ -67,7 +67,7 @@ impl Default for BifrostConfig {
     fn default() -> Self {
         let base = crate::data_dir();
         Self {
-            port: 8899,
+            port: 9900,
             host: "127.0.0.1".to_string(),
             rules_dir: base.join("rules"),
             values_dir: base.join("values"),

@@ -2,7 +2,7 @@
 # Bifrost Admin API 客户端工具
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
-ADMIN_PORT="${ADMIN_PORT:-8899}"
+ADMIN_PORT="${ADMIN_PORT:-9900}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="${ADMIN_BASE_URL:-http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}}"
 
@@ -194,4 +194,183 @@ get_frame_directions() {
 
 clear_traffic() {
     admin_delete "/api/traffic"
+}
+
+admin_put() {
+    local path="$1"
+    local data="$2"
+    curl -s -X PUT -H "Content-Type: application/json" -d "$data" "${ADMIN_BASE_URL}${path}"
+}
+
+admin_delete_with_body() {
+    local path="$1"
+    local data="$2"
+    curl -s -X DELETE -H "Content-Type: application/json" -d "$data" "${ADMIN_BASE_URL}${path}"
+}
+
+list_rules() {
+    admin_get "/api/rules"
+}
+
+get_rule() {
+    local name="$1"
+    admin_get "/api/rules/${name}"
+}
+
+create_rule() {
+    local name="$1"
+    local content="$2"
+    local enabled="${3:-true}"
+    admin_post "/api/rules" "{\"name\":\"${name}\",\"content\":\"${content}\",\"enabled\":${enabled}}"
+}
+
+update_rule() {
+    local name="$1"
+    local content="$2"
+    local enabled="${3:-true}"
+    admin_put "/api/rules/${name}" "{\"content\":\"${content}\",\"enabled\":${enabled}}"
+}
+
+delete_rule() {
+    local name="$1"
+    admin_delete "/api/rules/${name}"
+}
+
+enable_rule() {
+    local name="$1"
+    admin_put "/api/rules/${name}/enable" "{}"
+}
+
+disable_rule() {
+    local name="$1"
+    admin_put "/api/rules/${name}/disable" "{}"
+}
+
+list_values() {
+    admin_get "/api/values"
+}
+
+get_value() {
+    local name="$1"
+    admin_get "/api/values/${name}"
+}
+
+create_value() {
+    local name="$1"
+    local value="$2"
+    admin_post "/api/values" "{\"name\":\"${name}\",\"value\":\"${value}\"}"
+}
+
+update_value() {
+    local name="$1"
+    local value="$2"
+    admin_put "/api/values/${name}" "{\"value\":\"${value}\"}"
+}
+
+delete_value() {
+    local name="$1"
+    admin_delete "/api/values/${name}"
+}
+
+get_whitelist() {
+    admin_get "/api/whitelist"
+}
+
+add_whitelist() {
+    local ip_or_cidr="$1"
+    admin_post "/api/whitelist" "{\"ip_or_cidr\":\"${ip_or_cidr}\"}"
+}
+
+remove_whitelist() {
+    local ip_or_cidr="$1"
+    admin_delete_with_body "/api/whitelist" "{\"ip_or_cidr\":\"${ip_or_cidr}\"}"
+}
+
+get_whitelist_mode() {
+    admin_get "/api/whitelist/mode"
+}
+
+set_whitelist_mode() {
+    local mode="$1"
+    admin_put "/api/whitelist/mode" "{\"mode\":\"${mode}\"}"
+}
+
+get_allow_lan() {
+    admin_get "/api/whitelist/allow-lan"
+}
+
+set_allow_lan() {
+    local allow="$1"
+    admin_put "/api/whitelist/allow-lan" "{\"allow_lan\":${allow}}"
+}
+
+add_temporary_whitelist() {
+    local ip="$1"
+    admin_post "/api/whitelist/temporary" "{\"ip\":\"${ip}\"}"
+}
+
+remove_temporary_whitelist() {
+    local ip="$1"
+    admin_delete_with_body "/api/whitelist/temporary" "{\"ip\":\"${ip}\"}"
+}
+
+get_pending_authorizations() {
+    admin_get "/api/whitelist/pending"
+}
+
+approve_authorization() {
+    local ip="$1"
+    admin_post "/api/whitelist/pending/approve" "{\"ip\":\"${ip}\"}"
+}
+
+reject_authorization() {
+    local ip="$1"
+    admin_post "/api/whitelist/pending/reject" "{\"ip\":\"${ip}\"}"
+}
+
+clear_pending_authorizations() {
+    admin_delete "/api/whitelist/pending"
+}
+
+get_cert_info() {
+    admin_get "/api/cert/info"
+}
+
+download_cert() {
+    curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert"
+}
+
+get_cert_qrcode() {
+    curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert/qrcode"
+}
+
+get_system_proxy() {
+    admin_get "/api/proxy/system"
+}
+
+set_system_proxy() {
+    local enabled="$1"
+    local bypass="${2:-}"
+    if [[ -n "$bypass" ]]; then
+        admin_put "/api/proxy/system" "{\"enabled\":${enabled},\"bypass\":\"${bypass}\"}"
+    else
+        admin_put "/api/proxy/system" "{\"enabled\":${enabled}}"
+    fi
+}
+
+get_system_proxy_support() {
+    admin_get "/api/proxy/system/support"
+}
+
+get_system_info() {
+    admin_get "/api/system"
+}
+
+get_system_overview() {
+    admin_get "/api/system/overview"
+}
+
+get_metrics_history() {
+    local limit="${1:-100}"
+    admin_get "/api/metrics/history?limit=${limit}"
 }

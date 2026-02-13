@@ -274,7 +274,7 @@ async fn test_proxy_keeps_connection_alive() {
 #[test]
 fn test_proxy_config_default() {
     let config = ProxyConfig::default();
-    assert_eq!(config.port, 8899);
+    assert_eq!(config.port, 9900);
     assert_eq!(config.host, "127.0.0.1");
     assert!(config.enable_tls_interception);
     assert!(config.intercept_exclude.is_empty());

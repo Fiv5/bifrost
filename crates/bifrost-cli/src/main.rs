@@ -28,7 +28,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(short, long, default_value = "8899")]
+    #[arg(short, long, default_value = "9900")]
     port: u16,
 
     #[arg(short = 'H', long, default_value = "0.0.0.0")]

@@ -84,7 +84,8 @@ impl eframe::App for BifrostApp {
                         self.whitelist_panel.show(ui, &mut state);
                     }
                     Panel::Settings => {
-                        SettingsPanel::show(ui, &mut state);
+                        drop(state);
+                        SettingsPanel::show(ui, &mut self.state.lock(), &mut self.controller);
                     }
                 }
             });
@@ -95,6 +96,7 @@ impl eframe::App for BifrostApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let _ = self.controller.restore_system_proxy();
         self.controller.stop();
     }
 }

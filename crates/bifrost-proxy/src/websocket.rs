@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, FrameDirection, FrameType, MatchedRule, RequestTiming, TrafficRecord,
+    AdminState, FrameDirection, FrameType, MatchedRule, RequestTiming, TrafficRecord, TrafficType,
 };
 use bifrost_core::{BifrostError, Result};
 
@@ -91,7 +91,9 @@ pub async fn handle_websocket_upgrade(
     let record_id = ctx.id_str();
 
     if let Some(ref state) = admin_state {
-        state.metrics_collector.increment_requests();
+        state
+            .metrics_collector
+            .increment_requests_by_type(TrafficType::Ws);
 
         let ws_url = format!(
             "ws://{}{}",
@@ -302,7 +304,7 @@ async fn websocket_bidirectional_with_capture(
             if let Some(ref state) = admin_state_c2s {
                 state
                     .metrics_collector
-                    .add_bytes_sent(frame.payload.len() as u64);
+                    .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned,
@@ -351,7 +353,7 @@ async fn websocket_bidirectional_with_capture(
             if let Some(ref state) = admin_state_s2c {
                 state
                     .metrics_collector
-                    .add_bytes_received(frame.payload.len() as u64);
+                    .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned2,
@@ -436,7 +438,7 @@ where
             if let Some(ref state) = admin_state_c2s {
                 state
                     .metrics_collector
-                    .add_bytes_sent(frame.payload.len() as u64);
+                    .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned,
@@ -485,7 +487,7 @@ where
             if let Some(ref state) = admin_state_s2c {
                 state
                     .metrics_collector
-                    .add_bytes_received(frame.payload.len() as u64);
+                    .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 state.websocket_monitor.record_frame(
                     &record_id_owned2,

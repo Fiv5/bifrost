@@ -111,29 +111,29 @@ mod tests {
 
     #[test]
     fn test_valid_admin_request() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:8899"));
+        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:9900"));
 
         assert!(is_valid_admin_request(&req, peer_addr, &config));
     }
 
     #[test]
     fn test_reject_non_loopback() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
-        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:8899"));
+        let req = create_request("/_bifrost/api/rules", Some("127.0.0.1:9900"));
 
         assert!(!is_valid_admin_request(&req, peer_addr, &config));
     }
 
     #[test]
     fn test_reject_proxy_request() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
         let req = create_request(
-            "http://127.0.0.1:8899/_bifrost/api/rules",
-            Some("127.0.0.1:8899"),
+            "http://127.0.0.1:9900/_bifrost/api/rules",
+            Some("127.0.0.1:9900"),
         );
 
         assert!(!is_valid_admin_request(&req, peer_addr, &config));
@@ -141,16 +141,16 @@ mod tests {
 
     #[test]
     fn test_reject_wrong_host() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        let req = create_request("/_bifrost/api/rules", Some("evil.com:8899"));
+        let req = create_request("/_bifrost/api/rules", Some("evil.com:9900"));
 
         assert!(!is_valid_admin_request(&req, peer_addr, &config));
     }
 
     #[test]
     fn test_reject_missing_host() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
         let req = create_request("/_bifrost/api/rules", None);
 
@@ -159,18 +159,18 @@ mod tests {
 
     #[test]
     fn test_accept_localhost_host() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        let req = create_request("/_bifrost/api/rules", Some("localhost:8899"));
+        let req = create_request("/_bifrost/api/rules", Some("localhost:9900"));
 
         assert!(is_valid_admin_request(&req, peer_addr, &config));
     }
 
     #[test]
     fn test_reject_wrong_path() {
-        let config = AdminSecurityConfig::new(8899);
+        let config = AdminSecurityConfig::new(9900);
         let peer_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345);
-        let req = create_request("/api/rules", Some("127.0.0.1:8899"));
+        let req = create_request("/api/rules", Some("127.0.0.1:9900"));
 
         assert!(!is_valid_admin_request(&req, peer_addr, &config));
     }

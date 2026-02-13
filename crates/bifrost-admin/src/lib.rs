@@ -9,7 +9,10 @@ mod traffic;
 pub mod websocket_monitor;
 
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
-pub use metrics::{start_metrics_collector_task, MetricsCollector, MetricsSnapshot};
+pub use metrics::{
+    start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
+    TrafficTypeMetrics,
+};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
 pub use state::{AdminState, SharedAccessControl, SharedSystemProxyManager};

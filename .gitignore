@@ -3,7 +3,7 @@ target
 node_modules
 .DS_Store
 .bifrost-test
-scripts/.test_results/
 .bifrost-test-pw*/
 .bifrost-test*
 .bifrost-debug/
+e2e-tests/.test_results/

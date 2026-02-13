@@ -1,23 +1,116 @@
-use egui::{Color32, RichText};
+use egui::{Color32, RichText, ScrollArea};
 
+use crate::proxy_controller::ProxyController;
 use crate::state::AppState;
 
 pub struct SettingsPanel;
 
 impl SettingsPanel {
-    pub fn show(ui: &mut egui::Ui, state: &mut AppState) {
+    pub fn show(ui: &mut egui::Ui, state: &mut AppState, controller: &mut ProxyController) {
         ui.heading("Settings");
         ui.add_space(16.0);
 
-        let available_height = ui.available_height();
-        egui::ScrollArea::vertical()
-            .max_height(available_height)
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
             .show(ui, |ui| {
+                Self::system_proxy_section(ui, state, controller);
+                ui.add_space(16.0);
                 Self::proxy_settings(ui, state);
                 ui.add_space(16.0);
                 Self::tls_settings(ui, state);
                 ui.add_space(16.0);
                 Self::certificate_section(ui, state);
+                ui.add_space(16.0);
+                Self::usage_guide(ui);
+            });
+    }
+
+    fn system_proxy_section(
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        controller: &mut ProxyController,
+    ) {
+        egui::CollapsingHeader::new(RichText::new("🖥️ System Proxy").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+
+                let is_supported = controller.is_system_proxy_supported();
+
+                if !is_supported {
+                    ui.label(
+                        RichText::new("⚠ System proxy is not supported on this platform")
+                            .color(Color32::YELLOW),
+                    );
+                    return;
+                }
+
+                egui::Frame::group(ui.style())
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let is_enabled = state.system_proxy_enabled;
+
+                        ui.horizontal(|ui| {
+                            let toggle_text = if is_enabled {
+                                "✓ System Proxy Enabled"
+                            } else {
+                                "○ System Proxy Disabled"
+                            };
+
+                            let button_color = if is_enabled {
+                                Color32::GREEN
+                            } else {
+                                Color32::GRAY
+                            };
+
+                            if ui
+                                .button(RichText::new(toggle_text).color(button_color))
+                                .clicked()
+                            {
+                                let result = if is_enabled {
+                                    controller.disable_system_proxy()
+                                } else {
+                                    controller.enable_system_proxy()
+                                };
+                                if let Err(e) = result {
+                                    state.error_message =
+                                        Some(format!("Failed to toggle system proxy: {}", e));
+                                }
+                            }
+                        });
+
+                        ui.add_space(8.0);
+
+                        if is_enabled {
+                            ui.label(
+                                RichText::new(format!(
+                                    "HTTP/HTTPS proxy: {}:{}",
+                                    state.settings.host, state.settings.port
+                                ))
+                                .small(),
+                            );
+
+                            if let Some(socks5_port) = state.settings.socks5_port {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "SOCKS5 proxy: {}:{}",
+                                        state.settings.host, socks5_port
+                                    ))
+                                    .small(),
+                                );
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(
+                                "Note: Enabling system proxy will redirect all system HTTP/HTTPS \
+                                 traffic through Bifrost. Remember to disable it when done.",
+                            )
+                            .small()
+                            .weak(),
+                        );
+                    });
             });
     }
 
@@ -186,6 +279,113 @@ impl SettingsPanel {
                     )
                     .small()
                     .weak(),
+                );
+            });
+    }
+
+    fn usage_guide(ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(RichText::new("📖 Usage Guide").strong())
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+
+                ui.label(RichText::new("Rule Syntax").strong());
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Rules use pattern matching to intercept and modify requests:\n\
+                         • pattern operator target\n\
+                         • Example: *.example.com mock://response.json",
+                    )
+                    .small()
+                    .monospace(),
+                );
+
+                ui.add_space(12.0);
+
+                ui.label(RichText::new("Common Operators").strong());
+                ui.add_space(4.0);
+
+                egui::Grid::new("operators_grid")
+                    .num_columns(2)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("mock://").monospace().small());
+                        ui.label(RichText::new("Return mock response").small());
+                        ui.end_row();
+
+                        ui.label(RichText::new("redirect://").monospace().small());
+                        ui.label(RichText::new("Redirect to another URL").small());
+                        ui.end_row();
+
+                        ui.label(RichText::new("delay://").monospace().small());
+                        ui.label(RichText::new("Add delay before response").small());
+                        ui.end_row();
+
+                        ui.label(RichText::new("status://").monospace().small());
+                        ui.label(RichText::new("Return specific status code").small());
+                        ui.end_row();
+
+                        ui.label(RichText::new("header://").monospace().small());
+                        ui.label(RichText::new("Modify request/response headers").small());
+                        ui.end_row();
+
+                        ui.label(RichText::new("replace://").monospace().small());
+                        ui.label(RichText::new("Replace response body content").small());
+                        ui.end_row();
+                    });
+
+                ui.add_space(12.0);
+
+                ui.label(RichText::new("Supported Protocols").strong());
+                ui.add_space(4.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("HTTP")
+                            .small()
+                            .background_color(Color32::from_rgb(40, 60, 80)),
+                    );
+                    ui.label(
+                        RichText::new("HTTPS")
+                            .small()
+                            .background_color(Color32::from_rgb(40, 70, 50)),
+                    );
+                    ui.label(
+                        RichText::new("WebSocket")
+                            .small()
+                            .background_color(Color32::from_rgb(70, 60, 40)),
+                    );
+                    ui.label(
+                        RichText::new("WSS")
+                            .small()
+                            .background_color(Color32::from_rgb(60, 40, 70)),
+                    );
+                    ui.label(
+                        RichText::new("SOCKS5")
+                            .small()
+                            .background_color(Color32::from_rgb(50, 50, 50)),
+                    );
+                    ui.label(
+                        RichText::new("Tunnel")
+                            .small()
+                            .background_color(Color32::from_rgb(50, 50, 50)),
+                    );
+                });
+
+                ui.add_space(12.0);
+
+                ui.label(RichText::new("Quick Start").strong());
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "1. Start the proxy (default port: 9900)\n\
+                         2. Configure your browser/system to use the proxy\n\
+                         3. Install the CA certificate for HTTPS interception\n\
+                         4. Add rules to intercept and modify traffic\n\
+                         5. Monitor traffic in the Traffic panel",
+                    )
+                    .small(),
                 );
             });
     }

@@ -43,7 +43,7 @@ pub struct ProxyConfig {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            port: 8899,
+            port: 9900,
             host: "127.0.0.1".to_string(),
             enable_tls_interception: true,
             intercept_exclude: Vec::new(),
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn test_proxy_config_default() {
         let config = ProxyConfig::default();
-        assert_eq!(config.port, 8899);
+        assert_eq!(config.port, 9900);
         assert_eq!(config.host, "127.0.0.1");
         assert!(config.enable_tls_interception);
         assert!(config.intercept_exclude.is_empty());
