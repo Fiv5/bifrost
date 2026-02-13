@@ -631,7 +631,7 @@ fn run_start(
     }
 
     let values_dir = get_bifrost_dir()
-        .map(|p| p.join(".bifrost").join("values"))
+        .map(|p| p.join("values"))
         .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
     let early_values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
     let early_values = early_values_storage
@@ -1385,9 +1385,13 @@ fn run_foreground(
         )));
 
         let values_dir = get_bifrost_dir()
-            .map(|p| p.join(".bifrost").join("values"))
+            .map(|p| p.join("values"))
             .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
         let values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
+        let rules_dir = get_bifrost_dir()
+            .map(|p| p.join("rules"))
+            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_rules"));
+        let rules_storage = RulesStorage::with_dir(rules_dir).ok();
         let values = values_storage
             .as_ref()
             .map(|s| {
@@ -1403,6 +1407,9 @@ fn run_foreground(
         let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
         if let Some(vs) = values_storage {
             admin_state = admin_state.with_values_storage(vs);
+        }
+        if let Some(rs) = rules_storage {
+            admin_state = admin_state.with_rules_storage(rs);
         }
         if let Some(cert_path) = ca_cert_path {
             admin_state = admin_state.with_ca_cert_path(cert_path);
@@ -1542,8 +1549,10 @@ fn run_daemon(
                     7,
                 )));
 
-                let values_dir = bifrost_dir.join(".bifrost").join("values");
+                let values_dir = bifrost_dir.join("values");
                 let values_storage = ValuesStorage::with_dir(values_dir).ok();
+                let rules_dir = bifrost_dir.join("rules");
+                let rules_storage = RulesStorage::with_dir(rules_dir).ok();
                 let values = values_storage
                     .as_ref()
                     .map(|s| {
@@ -1557,6 +1566,9 @@ fn run_daemon(
                 let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
                 if let Some(vs) = values_storage {
                     admin_state = admin_state.with_values_storage(vs);
+                }
+                if let Some(rs) = rules_storage {
+                    admin_state = admin_state.with_rules_storage(rs);
                 }
                 admin_state = admin_state.with_ca_cert_path(ca_cert_path);
 
