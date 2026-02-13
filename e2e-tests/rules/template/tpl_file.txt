@@ -4,10 +4,10 @@
 
 # T-10 tpl 协议 - 使用模板文件作为响应
 # 模板文件中可以使用 ${var} 语法
-test-tpl-file.local tpl:///Users/eden/work/github/whistle/rust/scripts/test_data/response.tpl
+test-tpl-file.local tpl:///Users/eden/work/github/whistle/rust/e2e-tests/test_data/response.tpl
 
 # T-11 tpl 协议 + 额外规则
-test-tpl-with-status.local tpl:///Users/eden/work/github/whistle/rust/scripts/test_data/response.tpl statusCode://201
+test-tpl-with-status.local tpl:///Users/eden/work/github/whistle/rust/e2e-tests/test_data/response.tpl statusCode://201
 
 # T-12 rawfile 协议 - 原始文件响应 (不处理模板)
-test-rawfile.local rawfile:///Users/eden/work/github/whistle/rust/scripts/test_data/raw.txt
+test-rawfile.local rawfile:///Users/eden/work/github/whistle/rust/e2e-tests/test_data/raw.txt

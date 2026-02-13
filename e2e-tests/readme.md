@@ -451,6 +451,27 @@ EOF
 
 ## 故障排查
 
+### 遗留进程清理
+
+测试运行后可能会有 mock server 或代理进程未正确清理，导致后续测试失败或端口占用。运行新测试前建议先清理遗留进程：
+
+```bash
+# 清理所有 mock server 和代理进程
+pkill -f "http_echo_server.py" 2>/dev/null
+pkill -f "https_echo_server.py" 2>/dev/null
+pkill -f "ws_echo_server.py" 2>/dev/null
+pkill -f "sse_echo_server.py" 2>/dev/null
+pkill -f "bifrost" 2>/dev/null
+
+# 或者使用一行命令
+pkill -f "echo_server.py"; pkill -f "bifrost"
+
+# 检查进程是否清理干净
+ps aux | grep -E "(echo_server|bifrost)" | grep -v grep
+```
+
+**提示**: 如果测试脚本因异常退出（如 Ctrl+C 中断），mock server 进程可能会残留。建议在每次运行测试前执行上述清理命令。
+
 ### 代理启动失败
 
 ```bash

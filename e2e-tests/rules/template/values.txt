@@ -17,7 +17,7 @@ test-value-res-header.local http://127.0.0.1:3000 resHeaders://`X-Test-Response:
 test-multi-values.local http://127.0.0.1:3000 reqHeaders://`X-Test-Header:test-value` resHeaders://`X-Test-Response:test-value`
 
 # V-05 文件路径值 - 从本地文件读取值
-test-file-value.local file:///Users/eden/work/github/whistle/rust/scripts/test_data/mock.json
+test-file-value.local file:///Users/eden/work/github/whistle/rust/e2e-tests/test_data/mock.json
 
 # V-06 内联参数值 - key=value 格式
 test-inline-params.local http://127.0.0.1:3000 urlParams://key1=value1&key2=value2

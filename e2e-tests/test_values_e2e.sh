@@ -239,7 +239,7 @@ start_proxy() {
     "$BIFROST_BIN" --port "${PROXY_PORT}" start \
         --skip-cert-check --unsafe-ssl \
         --rules-file "${TEST_DATA_DIR}/.bifrost/rules/values_test.txt" \
-        "${extra_flags[@]}" > "${TEST_DATA_DIR}/proxy.log" 2>&1 &
+        ${extra_flags[@]+"${extra_flags[@]}"} > "${TEST_DATA_DIR}/proxy.log" 2>&1 &
     PROXY_PID=$!
 
     local waited=0
