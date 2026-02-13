@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use regex::Regex;
+
 use bifrost_admin::{
     is_cert_public_request, is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState,
     ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
@@ -75,6 +77,23 @@ pub struct RuleValue {
     pub line: Option<usize>,
 }
 
+#[derive(Clone)]
+pub struct RegexReplace {
+    pub pattern: Regex,
+    pub replacement: String,
+    pub global: bool,
+}
+
+impl std::fmt::Debug for RegexReplace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegexReplace")
+            .field("pattern", &self.pattern.as_str())
+            .field("replacement", &self.replacement)
+            .field("global", &self.global)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedRules {
     pub host: Option<String>,
@@ -101,6 +120,8 @@ pub struct ResolvedRules {
     pub res_append: Option<Bytes>,
     pub req_replace: Vec<(String, String)>,
     pub res_replace: Vec<(String, String)>,
+    pub req_replace_regex: Vec<RegexReplace>,
+    pub res_replace_regex: Vec<RegexReplace>,
     pub req_merge: Option<serde_json::Value>,
     pub res_merge: Option<serde_json::Value>,
 

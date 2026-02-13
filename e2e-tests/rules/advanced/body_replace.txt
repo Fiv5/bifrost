@@ -31,3 +31,26 @@ test-res-multi.local http://127.0.0.1:3000 resReplace://AAA=XXX&BBB=YYY
 
 # BR-06: 双向替换
 test-both-replace.local http://127.0.0.1:3000 reqReplace://REQ_OLD=REQ_NEW resReplace://RES_OLD=RES_NEW
+
+# ============================================================
+# 正则替换测试
+# 语法: /pattern/=replacement (单次替换)
+#       /pattern/g=replacement (全局替换)
+#       /pattern/i=replacement (忽略大小写)
+#       /pattern/gi=replacement (全局+忽略大小写)
+# ============================================================
+
+# BR-07: 正则单次替换 (只替换第一个匹配)
+test-req-regex.local http://127.0.0.1:3000 reqReplace:///aaa/=XXX
+
+# BR-08: 正则全局替换 (替换所有匹配)
+test-req-regex-global.local http://127.0.0.1:3000 reqReplace:///aaa/g=XXX
+
+# BR-09: 正则忽略大小写
+test-req-regex-case.local http://127.0.0.1:3000 reqReplace:///aaa/gi=XXX
+
+# BR-10: 响应 body 正则全局替换
+test-res-regex-global.local http://127.0.0.1:3000 resReplace:///OLD/g=NEW
+
+# BR-11: 复杂正则模式 (数字匹配)
+test-req-regex-digits.local http://127.0.0.1:3000 reqReplace:///\d+/g=NUM

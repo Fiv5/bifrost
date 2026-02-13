@@ -350,6 +350,145 @@ test_br06_both_replace() {
     fi
 }
 
+test_br07_req_regex() {
+    local test_name="BR-07: 正则单次替换"
+    log_info "测试: $test_name"
+    
+    local body="aaa-bbb-aaa-ccc"
+    log_debug "发送 body: $body"
+    
+    TEST_ID="br-07-$(date +%s)"
+    http_post "http://test-req-regex.local/echo" "$body"
+    
+    log_debug "响应状态: $HTTP_STATUS"
+    local echoed
+    echoed=$(get_json_field '.request.body')
+    log_debug "Echo 收到: $echoed"
+    
+    if [[ "$HTTP_STATUS" != "200" ]]; then
+        log_fail "$test_name - 状态码错误: $HTTP_STATUS"
+        return 1
+    fi
+    
+    if [[ "$echoed" == "XXX-bbb-aaa-ccc" ]]; then
+        log_pass "$test_name - 只替换第一个 aaa"
+    else
+        log_fail "$test_name"
+        log_debug "预期: XXX-bbb-aaa-ccc"
+        log_debug "实际: $echoed"
+    fi
+}
+
+test_br08_req_regex_global() {
+    local test_name="BR-08: 正则全局替换"
+    log_info "测试: $test_name"
+    
+    local body="aaa-bbb-aaa-ccc"
+    log_debug "发送 body: $body"
+    
+    TEST_ID="br-08-$(date +%s)"
+    http_post "http://test-req-regex-global.local/echo" "$body"
+    
+    log_debug "响应状态: $HTTP_STATUS"
+    local echoed
+    echoed=$(get_json_field '.request.body')
+    log_debug "Echo 收到: $echoed"
+    
+    if [[ "$HTTP_STATUS" != "200" ]]; then
+        log_fail "$test_name - 状态码错误: $HTTP_STATUS"
+        return 1
+    fi
+    
+    if [[ "$echoed" == "XXX-bbb-XXX-ccc" ]]; then
+        log_pass "$test_name - 替换所有 aaa"
+    else
+        log_fail "$test_name"
+        log_debug "预期: XXX-bbb-XXX-ccc"
+        log_debug "实际: $echoed"
+    fi
+}
+
+test_br09_req_regex_case() {
+    local test_name="BR-09: 正则忽略大小写"
+    log_info "测试: $test_name"
+    
+    local body="AAA-aaa-AaA"
+    log_debug "发送 body: $body"
+    
+    TEST_ID="br-09-$(date +%s)"
+    http_post "http://test-req-regex-case.local/echo" "$body"
+    
+    log_debug "响应状态: $HTTP_STATUS"
+    local echoed
+    echoed=$(get_json_field '.request.body')
+    log_debug "Echo 收到: $echoed"
+    
+    if [[ "$HTTP_STATUS" != "200" ]]; then
+        log_fail "$test_name - 状态码错误: $HTTP_STATUS"
+        return 1
+    fi
+    
+    if [[ "$echoed" == "XXX-XXX-XXX" ]]; then
+        log_pass "$test_name - 忽略大小写替换所有"
+    else
+        log_fail "$test_name"
+        log_debug "预期: XXX-XXX-XXX"
+        log_debug "实际: $echoed"
+    fi
+}
+
+test_br10_res_regex_global() {
+    local test_name="BR-10: 响应正则全局替换"
+    log_info "测试: $test_name"
+    
+    TEST_ID="br-10-$(date +%s)"
+    http_get "http://test-res-regex-global.local/large-response?size=100&marker=OLD_OLD_OLD"
+    
+    log_debug "响应状态: $HTTP_STATUS"
+    log_debug "响应 body: ${HTTP_BODY:0:200}..."
+    
+    if [[ "$HTTP_STATUS" != "200" ]]; then
+        log_fail "$test_name - 状态码错误: $HTTP_STATUS"
+        return 1
+    fi
+    
+    if [[ "$HTTP_BODY" != *"OLD"* ]] && [[ "$HTTP_BODY" == *"NEW"* ]]; then
+        log_pass "$test_name - 替换所有 OLD"
+    else
+        log_fail "$test_name"
+        log_debug "预期: 所有 OLD 被替换为 NEW"
+    fi
+}
+
+test_br11_req_regex_digits() {
+    local test_name="BR-11: 正则数字匹配"
+    log_info "测试: $test_name"
+    
+    local body="price: 123, qty: 456"
+    log_debug "发送 body: $body"
+    
+    TEST_ID="br-11-$(date +%s)"
+    http_post "http://test-req-regex-digits.local/echo" "$body"
+    
+    log_debug "响应状态: $HTTP_STATUS"
+    local echoed
+    echoed=$(get_json_field '.request.body')
+    log_debug "Echo 收到: $echoed"
+    
+    if [[ "$HTTP_STATUS" != "200" ]]; then
+        log_fail "$test_name - 状态码错误: $HTTP_STATUS"
+        return 1
+    fi
+    
+    if [[ "$echoed" == "price: NUM, qty: NUM" ]]; then
+        log_pass "$test_name - 替换所有数字"
+    else
+        log_fail "$test_name"
+        log_debug "预期: price: NUM, qty: NUM"
+        log_debug "实际: $echoed"
+    fi
+}
+
 
 main() {
     header "Body 替换规则 E2E 测试"
@@ -379,6 +518,14 @@ main() {
     header "双向替换测试"
     
     test_br06_both_replace || true
+    
+    header "正则替换测试"
+    
+    test_br07_req_regex || true
+    test_br08_req_regex_global || true
+    test_br09_req_regex_case || true
+    test_br10_res_regex_global || true
+    test_br11_req_regex_digits || true
     
     header "测试结果汇总"
     

@@ -1096,12 +1096,14 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     result.res_append = Some(bytes::Bytes::from(value.to_string()));
                 }
                 Protocol::ReqReplace => {
-                    let pairs = parse_replace_value(value);
-                    result.req_replace.extend(pairs);
+                    let parsed = parse_replace_value(value);
+                    result.req_replace.extend(parsed.string_rules);
+                    result.req_replace_regex.extend(parsed.regex_rules);
                 }
                 Protocol::ResReplace => {
-                    let pairs = parse_replace_value(value);
-                    result.res_replace.extend(pairs);
+                    let parsed = parse_replace_value(value);
+                    result.res_replace.extend(parsed.string_rules);
+                    result.res_replace_regex.extend(parsed.regex_rules);
                 }
                 Protocol::Params => {
                     if let Ok(json_value) = serde_json::from_str(value) {
@@ -1121,8 +1123,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     }
                 }
                 Protocol::UrlReplace => {
-                    let pairs = parse_replace_value(value);
-                    result.url_replace.extend(pairs);
+                    let parsed = parse_replace_value(value);
+                    result.url_replace.extend(parsed.string_rules);
                 }
                 Protocol::ForwardedFor => {
                     result.forwarded_for = Some(value.to_string());
@@ -1236,8 +1238,55 @@ fn url_decode(s: &str) -> String {
         .into_owned()
 }
 
-fn parse_replace_value(value: &str) -> Vec<(String, String)> {
-    let mut result = Vec::new();
+struct ParsedReplaceRules {
+    string_rules: Vec<(String, String)>,
+    regex_rules: Vec<bifrost_proxy::RegexReplace>,
+}
+
+fn parse_regex_pattern(s: &str) -> Option<(regex::Regex, bool)> {
+    let s = s.trim();
+    if !s.starts_with('/') {
+        return None;
+    }
+
+    let global = s.ends_with("/g") || s.ends_with("/gi") || s.ends_with("/ig");
+    let case_insensitive = s.ends_with("/i") || s.ends_with("/gi") || s.ends_with("/ig");
+
+    let end_pos = if global && case_insensitive {
+        s.len() - 3
+    } else if global || case_insensitive {
+        s.len() - 2
+    } else if s.len() > 1 && s.ends_with('/') {
+        s.len() - 1
+    } else {
+        return None;
+    };
+
+    let pattern_str = &s[1..end_pos];
+    if pattern_str.is_empty() {
+        return None;
+    }
+
+    let regex_result = if case_insensitive {
+        regex::RegexBuilder::new(pattern_str)
+            .case_insensitive(true)
+            .build()
+    } else {
+        regex::Regex::new(pattern_str)
+    };
+
+    match regex_result {
+        Ok(re) => Some((re, global)),
+        Err(e) => {
+            tracing::warn!("Invalid regex pattern '{}': {}", pattern_str, e);
+            None
+        }
+    }
+}
+
+fn parse_replace_value(value: &str) -> ParsedReplaceRules {
+    let mut string_rules = Vec::new();
+    let mut regex_rules = Vec::new();
 
     for pair in value.split('&') {
         let pair = pair.trim();
@@ -1248,14 +1297,34 @@ fn parse_replace_value(value: &str) -> Vec<(String, String)> {
         if let Some((from, to)) = pair.split_once('=') {
             let from = url_decode(from);
             let to = url_decode(to);
-            result.push((from, to));
+
+            if let Some((regex, global)) = parse_regex_pattern(&from) {
+                regex_rules.push(bifrost_proxy::RegexReplace {
+                    pattern: regex,
+                    replacement: to,
+                    global,
+                });
+            } else {
+                string_rules.push((from, to));
+            }
         } else {
             let from = url_decode(pair);
-            result.push((from, String::new()));
+            if let Some((regex, global)) = parse_regex_pattern(&from) {
+                regex_rules.push(bifrost_proxy::RegexReplace {
+                    pattern: regex,
+                    replacement: String::new(),
+                    global,
+                });
+            } else {
+                string_rules.push((from, String::new()));
+            }
         }
     }
 
-    result
+    ParsedReplaceRules {
+        string_rules,
+        regex_rules,
+    }
 }
 
 fn run_foreground(

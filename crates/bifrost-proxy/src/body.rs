@@ -3,7 +3,7 @@ use serde_json::Value;
 use tracing::debug;
 
 use crate::logging::RequestContext;
-use crate::server::ResolvedRules;
+use crate::server::{RegexReplace, ResolvedRules};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Phase {
@@ -20,11 +20,12 @@ pub fn apply_body_rules(
 ) -> Bytes {
     let mut result = body;
 
-    let (prepend, append, replace, merge, body_override) = match phase {
+    let (prepend, append, replace, replace_regex, merge, body_override) = match phase {
         Phase::Request => (
             &rules.req_prepend,
             &rules.req_append,
             &rules.req_replace,
+            &rules.req_replace_regex,
             &rules.req_merge,
             &rules.req_body,
         ),
@@ -32,6 +33,7 @@ pub fn apply_body_rules(
             &rules.res_prepend,
             &rules.res_append,
             &rules.res_replace,
+            &rules.res_replace_regex,
             &rules.res_merge,
             &rules.res_body,
         ),
@@ -90,10 +92,26 @@ pub fn apply_body_rules(
         result = body_str.into_bytes().into();
         if verbose_logging {
             debug!(
-                "[{}] [{:?}_REPLACE] applied {} replacements",
+                "[{}] [{:?}_REPLACE] applied {} string replacements",
                 ctx.id_str(),
                 phase,
                 replace.len()
+            );
+        }
+    }
+
+    if !replace_regex.is_empty() {
+        let mut body_str = String::from_utf8_lossy(&result).into_owned();
+        for regex_rule in replace_regex {
+            body_str = apply_regex_replace(&body_str, regex_rule);
+        }
+        result = body_str.into_bytes().into();
+        if verbose_logging {
+            debug!(
+                "[{}] [{:?}_REPLACE_REGEX] applied {} regex replacements",
+                ctx.id_str(),
+                phase,
+                replace_regex.len()
             );
         }
     }
@@ -111,6 +129,18 @@ pub fn apply_body_rules(
     }
 
     result
+}
+
+fn apply_regex_replace(input: &str, rule: &RegexReplace) -> String {
+    if rule.global {
+        rule.pattern
+            .replace_all(input, rule.replacement.as_str())
+            .into_owned()
+    } else {
+        rule.pattern
+            .replace(input, rule.replacement.as_str())
+            .into_owned()
+    }
 }
 
 fn merge_json(base: Value, patch: Value) -> Value {

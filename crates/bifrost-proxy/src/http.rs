@@ -87,6 +87,7 @@ fn is_streaming_response(res_parts: &ResponseParts) -> bool {
 pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
     rules.res_body.is_some()
         || !rules.res_replace.is_empty()
+        || !rules.res_replace_regex.is_empty()
         || rules.res_prepend.is_some()
         || rules.res_append.is_some()
         || rules.res_merge.is_some()
@@ -106,6 +107,7 @@ pub fn needs_request_body_processing(rules: &ResolvedRules) -> bool {
         || rules.req_prepend.is_some()
         || rules.req_append.is_some()
         || !rules.req_replace.is_empty()
+        || !rules.req_replace_regex.is_empty()
         || rules.req_merge.is_some()
 }
 

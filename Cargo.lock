@@ -553,6 +553,7 @@ dependencies = [
  "ipnet",
  "nix 0.28.0",
  "parking_lot",
+ "regex 1.12.3",
  "serde_json",
  "tokio",
  "toml",
