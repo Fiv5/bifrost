@@ -1,4 +1,4 @@
-import { Tag, Switch, Button, Popconfirm, Space, theme } from 'antd';
+import { Tag, Switch, Button, Popconfirm, Space, theme, Tooltip } from 'antd';
 import {
   PauseOutlined,
   PlayCircleOutlined,
@@ -14,6 +14,10 @@ interface ToolbarProps {
   onClear: () => void;
   onFilterChange: (filters: ToolbarFilters) => void;
   onAddFilter?: () => void;
+  systemProxyEnabled?: boolean;
+  systemProxySupported?: boolean;
+  systemProxyLoading?: boolean;
+  onSystemProxyToggle?: (enabled: boolean) => void;
 }
 
 const filterGroups = {
@@ -30,6 +34,10 @@ export default function Toolbar({
   onClear,
   onFilterChange,
   onAddFilter,
+  systemProxyEnabled,
+  systemProxySupported = true,
+  systemProxyLoading,
+  onSystemProxyToggle,
 }: ToolbarProps) {
   const { token } = theme.useToken();
 
@@ -122,7 +130,18 @@ export default function Toolbar({
         <span style={{ color: token.colorTextSecondary, fontSize: 12 }}>
           System Proxy
         </span>
-        <Switch size="small" />
+        {systemProxySupported ? (
+          <Switch
+            size="small"
+            checked={systemProxyEnabled}
+            loading={systemProxyLoading}
+            onChange={onSystemProxyToggle}
+          />
+        ) : (
+          <Tooltip title="System proxy is not supported on this platform">
+            <Switch size="small" disabled />
+          </Tooltip>
+        )}
       </Space>
     </div>
   );

@@ -955,6 +955,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 protocol,
                 value: value.clone(),
                 options: HashMap::new(),
+                rule_name: resolved_rule.rule.file.clone(),
+                raw: Some(resolved_rule.rule.raw.clone()),
+                line: resolved_rule.rule.line,
             });
 
             match protocol {
@@ -1241,7 +1244,9 @@ fn run_foreground(
     let tls_config = load_tls_config(&config)?;
 
     let bifrost_dir = get_bifrost_dir()?;
-    let mut system_proxy_manager = bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
+    let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
+        bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
+    ));
 
     if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
         tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
@@ -1254,17 +1259,49 @@ fn run_foreground(
         } else {
             config.host.clone()
         };
-        if let Err(e) =
-            system_proxy_manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass))
-        {
-            let msg = e.to_string();
-            if msg.contains("RequiresAdmin") {
-                println!("  ⚠ System proxy requires admin privileges (not enabled)");
-            } else {
-                eprintln!("  ✗ Failed to enable system proxy: {}", e);
+        let mut manager = system_proxy_manager.blocking_write();
+        let result = manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass));
+
+        let final_result = match &result {
+            Ok(()) => result,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    println!(
+                        "  ⚠ System proxy requires admin privileges, requesting authorization..."
+                    );
+                    #[cfg(target_os = "macos")]
+                    {
+                        manager.enable_with_gui_auth(
+                            &proxy_host,
+                            config.port,
+                            Some(&system_proxy_bypass),
+                        )
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        result
+                    }
+                } else {
+                    result
+                }
             }
-        } else {
-            system_proxy_enabled = true;
+        };
+
+        match final_result {
+            Ok(()) => {
+                system_proxy_enabled = true;
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UserCancelled") {
+                    println!("  ⚠ System proxy not enabled (authorization cancelled)");
+                } else if msg.contains("RequiresAdmin") {
+                    println!("  ⚠ System proxy requires admin privileges (not enabled)");
+                } else {
+                    eprintln!("  ✗ Failed to enable system proxy: {}", e);
+                }
+            }
         }
     }
 
@@ -1414,6 +1451,7 @@ fn run_foreground(
         if let Some(cert_path) = ca_cert_path {
             admin_state = admin_state.with_ca_cert_path(cert_path);
         }
+        admin_state = admin_state.with_system_proxy_manager_shared(system_proxy_manager.clone());
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let mut server = ProxyServer::new(config)
@@ -1442,7 +1480,7 @@ fn run_foreground(
         }
     });
 
-    if let Err(e) = system_proxy_manager.restore() {
+    if let Err(e) = system_proxy_manager.blocking_write().restore() {
         eprintln!("Failed to restore system proxy: {}", e);
     }
 
@@ -1510,8 +1548,9 @@ fn run_daemon(
 
             let tls_config = load_tls_config(&config)?;
 
-            let mut system_proxy_manager =
-                bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
+            let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
+                bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
+            ));
 
             if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
                 tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
@@ -1523,13 +1562,38 @@ fn run_daemon(
                 } else {
                     config.host.clone()
                 };
-                if let Err(e) = system_proxy_manager.enable(
-                    &proxy_host,
-                    config.port,
-                    Some(&system_proxy_bypass),
-                ) {
+                let mut manager = system_proxy_manager.blocking_write();
+                let result = manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass));
+
+                let final_result = match &result {
+                    Ok(()) => result,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if msg.contains("RequiresAdmin") {
+                            println!("System proxy requires admin privileges, requesting authorization...");
+                            #[cfg(target_os = "macos")]
+                            {
+                                manager.enable_with_gui_auth(
+                                    &proxy_host,
+                                    config.port,
+                                    Some(&system_proxy_bypass),
+                                )
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                result
+                            }
+                        } else {
+                            result
+                        }
+                    }
+                };
+
+                if let Err(e) = final_result {
                     let msg = e.to_string();
-                    if msg.contains("RequiresAdmin") {
+                    if msg.contains("UserCancelled") {
+                        println!("System proxy not enabled (authorization cancelled)");
+                    } else if msg.contains("RequiresAdmin") {
                         println!("System proxy requires administrator privileges; daemon will continue without changing system proxy. You can toggle it later via CLI or Admin UI.");
                     } else {
                         eprintln!("Failed to enable system proxy: {}", e);
@@ -1571,6 +1635,8 @@ fn run_daemon(
                     admin_state = admin_state.with_rules_storage(rs);
                 }
                 admin_state = admin_state.with_ca_cert_path(ca_cert_path);
+                admin_state =
+                    admin_state.with_system_proxy_manager_shared(system_proxy_manager.clone());
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let mut server = ProxyServer::new(config)
@@ -1590,7 +1656,7 @@ fn run_daemon(
                 }
             });
 
-            if let Err(e) = system_proxy_manager.restore() {
+            if let Err(e) = system_proxy_manager.blocking_write().restore() {
                 eprintln!("Failed to restore system proxy: {}", e);
             }
 

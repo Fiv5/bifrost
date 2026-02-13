@@ -116,6 +116,9 @@ impl RulesResolver for TestRulesResolver {
                             protocol: rule.protocol,
                             value: rule.value.clone(),
                             options: HashMap::new(),
+                            rule_name: None,
+                            raw: None,
+                            line: None,
                         });
                     }
                 }

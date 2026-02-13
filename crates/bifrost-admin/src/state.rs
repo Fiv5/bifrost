@@ -85,6 +85,11 @@ impl AdminState {
         self.system_proxy_manager = Some(Arc::new(RwLock::new(manager)));
         self
     }
+
+    pub fn with_system_proxy_manager_shared(mut self, manager: SharedSystemProxyManager) -> Self {
+        self.system_proxy_manager = Some(manager);
+        self
+    }
 }
 
 pub type SharedAdminState = Arc<AdminState>;

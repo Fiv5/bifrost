@@ -14,6 +14,9 @@ export interface MatchedRule {
   pattern: string;
   protocol: string;
   value: string;
+  rule_name?: string;
+  raw?: string;
+  line?: number;
 }
 
 export interface TrafficSummary {

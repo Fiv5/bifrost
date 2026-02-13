@@ -7,6 +7,11 @@ import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
 import SplitPane from "../../components/SplitPane";
 import type { TrafficSummary, FilterCondition } from "../../types";
+import {
+  getSystemProxyStatus,
+  setSystemProxy,
+  type SystemProxyStatus,
+} from "../../api/proxy";
 
 export default function Traffic() {
   const { token } = theme.useToken();
@@ -32,15 +37,47 @@ export default function Traffic() {
 
   const [selectedId, setSelectedId] = useState<string>();
   const [showFilterBar, setShowFilterBar] = useState(false);
+  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
+    null
+  );
+  const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+
+  const fetchSystemProxy = useCallback(async () => {
+    try {
+      const status = await getSystemProxyStatus();
+      setSystemProxyState(status);
+    } catch {
+      console.error("Failed to fetch system proxy status");
+    }
+  }, []);
+
+  const handleSystemProxyToggle = useCallback(
+    async (enabled: boolean) => {
+      setSystemProxyLoading(true);
+      try {
+        const result = await setSystemProxy({ enabled });
+        setSystemProxyState(result);
+        message.success(
+          enabled ? "System proxy enabled" : "System proxy disabled"
+        );
+      } catch {
+        message.error("Failed to toggle system proxy");
+      } finally {
+        setSystemProxyLoading(false);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     fetchInitialData().then(() => {
       startPolling();
     });
+    fetchSystemProxy();
     return () => {
       stopPolling();
     };
-  }, [fetchInitialData, startPolling, stopPolling]);
+  }, [fetchInitialData, startPolling, stopPolling, fetchSystemProxy]);
 
   const handleSelect = useCallback(async (record: TrafficSummary) => {
     setSelectedId(record.id);
@@ -114,6 +151,10 @@ export default function Traffic() {
         onClear={handleClear}
         onFilterChange={setToolbarFilters}
         onAddFilter={handleAddFilter}
+        systemProxyEnabled={systemProxy?.enabled}
+        systemProxySupported={systemProxy?.supported}
+        systemProxyLoading={systemProxyLoading}
+        onSystemProxyToggle={handleSystemProxyToggle}
       />
 
       {showFilterBar && (

@@ -67,6 +67,9 @@ pub struct RuleValue {
     pub protocol: Protocol,
     pub value: String,
     pub options: HashMap<String, String>,
+    pub rule_name: Option<String>,
+    pub raw: Option<String>,
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -658,6 +661,9 @@ mod tests {
             protocol: Protocol::Host,
             value: "example.com".to_string(),
             options: HashMap::new(),
+            rule_name: None,
+            raw: None,
+            line: None,
         };
         assert_eq!(rule.protocol, Protocol::Host);
         assert_eq!(rule.value, "example.com");

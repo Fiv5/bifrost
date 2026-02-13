@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { Descriptions, Tabs, Typography, Empty, theme } from 'antd';
+import { Descriptions, Tabs, Typography, Empty, theme, Tag, Card } from 'antd';
 import type { CSSProperties } from 'react';
 import dayjs from 'dayjs';
-import type { TrafficRecord } from '../../types';
+import type { TrafficRecord, MatchedRule } from '../../types';
 
 const { Text, Paragraph } = Typography;
 
@@ -56,6 +56,21 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'auto',
     padding: 12,
     borderRadius: 4,
+  },
+  ruleCard: {
+    marginBottom: 12,
+  },
+  ruleRaw: {
+    fontFamily: 'monospace',
+    fontSize: 12,
+    padding: '8px 12px',
+    borderRadius: 4,
+    margin: '8px 0 0 0',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+  },
+  ruleField: {
+    marginBottom: 4,
   },
 };
 
@@ -174,6 +189,57 @@ export default function TrafficDetail({ record, requestBody, responseBody }: Tra
     return lines.join('\n');
   }, [record, responseBody]);
 
+  const renderMatchedRules = (rules: MatchedRule[] | null) => {
+    if (!rules || rules.length === 0) {
+      return <Text type="secondary">No rules matched</Text>;
+    }
+
+    return (
+      <div>
+        {rules.map((rule, index) => {
+          const source = rule.rule_name 
+            ? `${rule.rule_name}${rule.line ? `:${rule.line}` : ''}`
+            : 'Unknown';
+          
+          return (
+            <Card 
+              key={index} 
+              size="small" 
+              style={styles.ruleCard}
+              title={
+                <span>
+                  <Tag color="blue">#{index + 1}</Tag>
+                  <Text strong>{source}</Text>
+                </span>
+              }
+            >
+              <div style={styles.ruleField}>
+                <Text type="secondary">Protocol: </Text>
+                <Tag color="green">{rule.protocol}</Tag>
+              </div>
+              <div style={styles.ruleField}>
+                <Text type="secondary">Pattern: </Text>
+                <Text code>{rule.pattern}</Text>
+              </div>
+              <div style={styles.ruleField}>
+                <Text type="secondary">Value: </Text>
+                <Text code>{rule.value || '(empty)'}</Text>
+              </div>
+              {rule.raw && (
+                <div>
+                  <Text type="secondary">Raw Rule:</Text>
+                  <pre style={{ ...styles.ruleRaw, background: token.colorBgLayout }}>
+                    {rule.raw}
+                  </pre>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    );
+  };
+
   const requestOverview = useMemo(() => {
     if (!record) return null;
     return (
@@ -246,6 +312,8 @@ export default function TrafficDetail({ record, requestBody, responseBody }: Tra
     },
   ];
 
+  const rulesCount = record.matched_rules?.length || 0;
+
   const mainTabs = [
     {
       key: 'request',
@@ -256,6 +324,11 @@ export default function TrafficDetail({ record, requestBody, responseBody }: Tra
       key: 'response',
       label: 'Response',
       children: <Tabs items={responseTabs} size="small" />,
+    },
+    {
+      key: 'rules',
+      label: `Rules${rulesCount > 0 ? ` (${rulesCount})` : ''}`,
+      children: renderMatchedRules(record.matched_rules),
     },
   ];
 

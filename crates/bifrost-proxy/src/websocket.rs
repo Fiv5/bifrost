@@ -127,6 +127,9 @@ pub async fn handle_websocket_upgrade(
                         pattern: r.pattern.clone(),
                         protocol: format!("{:?}", r.protocol),
                         value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
                     })
                     .collect(),
             )

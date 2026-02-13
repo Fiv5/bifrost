@@ -108,14 +108,39 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
 
     if let Some(ref manager) = state.system_proxy_manager {
         let mut manager = manager.write().await;
+        let host = "127.0.0.1";
+
         let result = if request.enabled {
-            let host = "127.0.0.1";
             manager.enable(host, state.port, Some(&bypass))
         } else {
             manager.restore()
         };
 
-        match result {
+        let final_result = match &result {
+            Ok(()) => result,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    tracing::info!("Permission denied, trying GUI authorization...");
+                    #[cfg(target_os = "macos")]
+                    {
+                        if request.enabled {
+                            manager.enable_with_gui_auth(host, state.port, Some(&bypass))
+                        } else {
+                            manager.restore_with_gui_auth()
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        result
+                    }
+                } else {
+                    result
+                }
+            }
+        };
+
+        match final_result {
             Ok(()) => {
                 let status = SystemProxyStatus {
                     supported: true,
@@ -136,7 +161,18 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
             }
             Err(e) => {
                 let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
+                if msg.contains("UserCancelled") {
+                    #[derive(Serialize)]
+                    struct UserCancelledError {
+                        error: &'static str,
+                        message: &'static str,
+                    }
+                    let body = UserCancelledError {
+                        error: "user_cancelled",
+                        message: "Authorization was cancelled by user.",
+                    };
+                    json_response(&body)
+                } else if msg.contains("RequiresAdmin") {
                     #[derive(Serialize)]
                     struct AdminError {
                         error: &'static str,

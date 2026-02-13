@@ -75,6 +75,12 @@ pub struct MatchedRule {
     pub pattern: String,
     pub protocol: String,
     pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

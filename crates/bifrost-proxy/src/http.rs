@@ -405,6 +405,9 @@ pub async fn handle_http_request(
                             pattern: r.pattern.clone(),
                             protocol: format!("{:?}", r.protocol),
                             value: r.value.clone(),
+                            rule_name: r.rule_name.clone(),
+                            raw: r.raw.clone(),
+                            line: r.line,
                         })
                         .collect(),
                 )
@@ -546,6 +549,9 @@ pub async fn handle_http_request(
                         pattern: r.pattern.clone(),
                         protocol: format!("{:?}", r.protocol),
                         value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
                     })
                     .collect(),
             )

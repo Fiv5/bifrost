@@ -41,6 +41,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 protocol,
                 value: value.clone(),
                 options: std::collections::HashMap::new(),
+                rule_name: resolved_rule.rule.file.clone(),
+                raw: Some(resolved_rule.rule.raw.clone()),
+                line: resolved_rule.rule.line,
             });
 
             match protocol {
