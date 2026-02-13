@@ -15,7 +15,9 @@ pub use metrics::{
 };
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
-pub use state::{AdminState, SharedAccessControl, SharedSystemProxyManager};
+pub use state::{
+    AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedSystemProxyManager,
+};
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,
     TrafficRecorder,

@@ -1,4 +1,5 @@
 pub mod cert;
+pub mod config;
 pub mod frames;
 pub mod metrics;
 pub mod proxy;

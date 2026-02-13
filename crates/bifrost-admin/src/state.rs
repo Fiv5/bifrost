@@ -14,6 +14,24 @@ use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
 pub type SharedSystemProxyManager = Arc<RwLock<SystemProxyManager>>;
+pub type SharedRuntimeConfig = Arc<RwLock<RuntimeConfig>>;
+
+#[derive(Debug, Clone)]
+pub struct RuntimeConfig {
+    pub enable_tls_interception: bool,
+    pub intercept_exclude: Vec<String>,
+    pub unsafe_ssl: bool,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enable_tls_interception: true,
+            intercept_exclude: Vec::new(),
+            unsafe_ssl: false,
+        }
+    }
+}
 
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
@@ -27,6 +45,7 @@ pub struct AdminState {
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub websocket_monitor: SharedWebSocketMonitor,
+    pub runtime_config: SharedRuntimeConfig,
 }
 
 impl AdminState {
@@ -43,6 +62,7 @@ impl AdminState {
             ca_cert_path: None,
             system_proxy_manager: None,
             websocket_monitor: Arc::new(WebSocketMonitor::new()),
+            runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
         }
     }
 
@@ -88,6 +108,16 @@ impl AdminState {
 
     pub fn with_system_proxy_manager_shared(mut self, manager: SharedSystemProxyManager) -> Self {
         self.system_proxy_manager = Some(manager);
+        self
+    }
+
+    pub fn with_runtime_config(mut self, config: RuntimeConfig) -> Self {
+        self.runtime_config = Arc::new(RwLock::new(config));
+        self
+    }
+
+    pub fn with_runtime_config_shared(mut self, config: SharedRuntimeConfig) -> Self {
+        self.runtime_config = config;
         self
     }
 }

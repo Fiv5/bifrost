@@ -176,3 +176,22 @@ export interface PendingAuth {
   first_seen: number;
   attempt_count: number;
 }
+
+export interface TlsConfig {
+  enable_tls_interception: boolean;
+  intercept_exclude: string[];
+  unsafe_ssl: boolean;
+}
+
+export interface ProxySettings {
+  tls: TlsConfig;
+  port: number;
+  host: string;
+}
+
+export interface CertInfo {
+  available: boolean;
+  local_ips: string[];
+  download_urls: string[];
+  qrcode_urls: string[];
+}
