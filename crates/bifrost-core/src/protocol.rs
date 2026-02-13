@@ -107,6 +107,10 @@ pub enum Protocol {
 
     // DNS 解析
     Dns,
+
+    // TLS 拦截控制
+    TlsIntercept,
+    TlsPassthrough,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +315,8 @@ impl Protocol {
             "cipher" => Some(Protocol::Cipher),
             "sniCallback" => Some(Protocol::SniCallback),
             "dns" => Some(Protocol::Dns),
+            "tlsIntercept" => Some(Protocol::TlsIntercept),
+            "tlsPassthrough" => Some(Protocol::TlsPassthrough),
             _ => None,
         }
     }
@@ -402,6 +408,8 @@ impl Protocol {
             Protocol::Cipher => "cipher",
             Protocol::SniCallback => "sniCallback",
             Protocol::Dns => "dns",
+            Protocol::TlsIntercept => "tlsIntercept",
+            Protocol::TlsPassthrough => "tlsPassthrough",
         }
     }
 
@@ -416,7 +424,9 @@ impl Protocol {
             | Protocol::Style
             | Protocol::Plugin
             | Protocol::Log
-            | Protocol::Weinre => ProtocolCategory::Control,
+            | Protocol::Weinre
+            | Protocol::TlsIntercept
+            | Protocol::TlsPassthrough => ProtocolCategory::Control,
 
             Protocol::ReplaceStatus
             | Protocol::StatusCode
@@ -543,7 +553,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 79] = [
+pub const ALL_PROTOCOLS: [Protocol; 81] = [
     Protocol::G,
     Protocol::Style,
     Protocol::Host,
@@ -623,6 +633,8 @@ pub const ALL_PROTOCOLS: [Protocol; 79] = [
     Protocol::Cipher,
     Protocol::SniCallback,
     Protocol::Dns,
+    Protocol::TlsIntercept,
+    Protocol::TlsPassthrough,
 ];
 
 #[cfg(test)]
@@ -631,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 79);
+        assert_eq!(ALL_PROTOCOLS.len(), 81);
     }
 
     #[test]
@@ -716,6 +728,8 @@ mod tests {
             "cipher",
             "sniCallback",
             "dns",
+            "tlsIntercept",
+            "tlsPassthrough",
         ];
 
         for name in &protocol_names {
@@ -723,7 +737,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 79);
+        assert_eq!(protocol_names.len(), 81);
     }
 
     #[test]
@@ -844,6 +858,11 @@ mod tests {
         assert_eq!(Protocol::Plugin.category(), ProtocolCategory::Control);
         assert_eq!(Protocol::Log.category(), ProtocolCategory::Control);
         assert_eq!(Protocol::Weinre.category(), ProtocolCategory::Control);
+        assert_eq!(Protocol::TlsIntercept.category(), ProtocolCategory::Control);
+        assert_eq!(
+            Protocol::TlsPassthrough.category(),
+            ProtocolCategory::Control
+        );
     }
 
     #[test]
@@ -978,7 +997,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 79);
+        assert_eq!(all.len(), 81);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));

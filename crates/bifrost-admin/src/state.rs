@@ -10,16 +10,48 @@ use crate::body_store::SharedBodyStore;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
+use serde::{Deserialize, Serialize};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
 pub type SharedSystemProxyManager = Arc<RwLock<SystemProxyManager>>;
 pub type SharedRuntimeConfig = Arc<RwLock<RuntimeConfig>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsInterceptMode {
+    #[default]
+    Blacklist,
+    Whitelist,
+}
+
+impl std::fmt::Display for TlsInterceptMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TlsInterceptMode::Blacklist => write!(f, "blacklist"),
+            TlsInterceptMode::Whitelist => write!(f, "whitelist"),
+        }
+    }
+}
+
+impl std::str::FromStr for TlsInterceptMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "blacklist" => Ok(TlsInterceptMode::Blacklist),
+            "whitelist" => Ok(TlsInterceptMode::Whitelist),
+            _ => Err(format!("Invalid TLS intercept mode: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub enable_tls_interception: bool,
+    pub intercept_mode: TlsInterceptMode,
     pub intercept_exclude: Vec<String>,
+    pub intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
 }
 
@@ -27,7 +59,9 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             enable_tls_interception: true,
+            intercept_mode: TlsInterceptMode::default(),
             intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
             unsafe_ssl: false,
         }
     }

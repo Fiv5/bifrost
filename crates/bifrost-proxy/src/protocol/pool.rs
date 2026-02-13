@@ -335,6 +335,84 @@ impl<S: Send + 'static> ConnectionPoolInner<S> {
             }
         }
     }
+
+    async fn close_by_host(&self, host: &str) -> usize {
+        let mut pools = self.pools.write().await;
+        let host_lower = host.to_lowercase();
+
+        let keys_to_remove: Vec<ConnectionKey> = pools
+            .keys()
+            .filter(|k| {
+                let key_host = k.host.to_lowercase();
+                key_host == host_lower || key_host.ends_with(&format!(".{}", host_lower))
+            })
+            .cloned()
+            .collect();
+
+        let mut total_removed = 0;
+        for key in keys_to_remove {
+            if let Some(pool_mutex) = pools.remove(&key) {
+                let pool = pool_mutex.lock().await;
+                let removed = pool.connections.len();
+                total_removed += removed;
+                self.stats
+                    .idle_connections
+                    .fetch_sub(removed, Ordering::Relaxed);
+                self.stats
+                    .connections_closed
+                    .fetch_add(removed as u64, Ordering::Relaxed);
+                self.stats
+                    .total_connections
+                    .fetch_sub(removed, Ordering::Relaxed);
+            }
+        }
+        total_removed
+    }
+
+    async fn close_by_pattern(&self, pattern: &str) -> usize {
+        let mut pools = self.pools.write().await;
+        let pattern_lower = pattern.to_lowercase();
+
+        let is_wildcard = pattern_lower.starts_with("*.");
+        let base_pattern = if is_wildcard {
+            pattern_lower.strip_prefix("*.").unwrap_or(&pattern_lower)
+        } else {
+            &pattern_lower
+        };
+
+        let keys_to_remove: Vec<ConnectionKey> = pools
+            .keys()
+            .filter(|k| {
+                let key_host = k.host.to_lowercase();
+                if is_wildcard {
+                    let suffix = format!(".{}", base_pattern);
+                    key_host.ends_with(&suffix) || key_host == base_pattern
+                } else {
+                    key_host == pattern_lower || key_host.ends_with(&format!(".{}", pattern_lower))
+                }
+            })
+            .cloned()
+            .collect();
+
+        let mut total_removed = 0;
+        for key in keys_to_remove {
+            if let Some(pool_mutex) = pools.remove(&key) {
+                let pool = pool_mutex.lock().await;
+                let removed = pool.connections.len();
+                total_removed += removed;
+                self.stats
+                    .idle_connections
+                    .fetch_sub(removed, Ordering::Relaxed);
+                self.stats
+                    .connections_closed
+                    .fetch_add(removed as u64, Ordering::Relaxed);
+                self.stats
+                    .total_connections
+                    .fetch_sub(removed, Ordering::Relaxed);
+            }
+        }
+        total_removed
+    }
 }
 
 pub struct ConnectionPool<S> {
@@ -422,6 +500,14 @@ impl ConnectionPool<TcpStream> {
 
     pub async fn cleanup(&self) {
         self.inner.cleanup_expired().await;
+    }
+
+    pub async fn close_by_host(&self, host: &str) -> usize {
+        self.inner.close_by_host(host).await
+    }
+
+    pub async fn close_by_pattern(&self, pattern: &str) -> usize {
+        self.inner.close_by_pattern(pattern).await
     }
 
     pub fn start_cleanup_task(self) -> tokio::task::JoinHandle<()> {

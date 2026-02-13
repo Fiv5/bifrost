@@ -248,6 +248,12 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     result.host = Some(value.to_string());
                     result.host_protocol = Some(Protocol::Wss);
                 }
+                Protocol::TlsIntercept => {
+                    result.tls_intercept = Some(true);
+                }
+                Protocol::TlsPassthrough => {
+                    result.tls_intercept = Some(false);
+                }
                 _ => {}
             }
         }
@@ -434,7 +440,9 @@ impl ProxyInstance {
             port,
             host: "127.0.0.1".to_string(),
             enable_tls_interception: false,
+            intercept_mode: bifrost_proxy::TlsInterceptMode::default(),
             intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
             timeout_secs: 30,
             socks5_port: None,
             socks5_auth_required: false,
@@ -491,7 +499,9 @@ impl ProxyInstance {
             port,
             host: "127.0.0.1".to_string(),
             enable_tls_interception: false,
+            intercept_mode: bifrost_proxy::TlsInterceptMode::default(),
             intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
             timeout_secs: 30,
             socks5_port: None,
             socks5_auth_required: false,

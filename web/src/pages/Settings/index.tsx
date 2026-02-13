@@ -60,7 +60,7 @@ import {
   updateTlsConfig,
   type TlsConfig,
 } from "../../api/config";
-import { getCertInfo, getCertDownloadUrl, type CertInfo } from "../../api/cert";
+import { getCertInfo, getCertDownloadUrl, getCertQRCodeUrl, type CertInfo } from "../../api/cert";
 import type { PendingAuth, TrafficTypeMetrics } from "../../types";
 
 const { Text, Paragraph } = Typography;
@@ -607,10 +607,10 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 style={{ width: "100%", alignItems: "center" }}
                 size="middle"
               >
-                {certInfo?.qrcode_urls && certInfo.qrcode_urls.length > 0 ? (
+                {certInfo?.available ? (
                   <>
                     <Image
-                      src={certInfo.qrcode_urls[0]}
+                      src={getCertQRCodeUrl()}
                       alt="Certificate QR Code"
                       width={180}
                       height={180}

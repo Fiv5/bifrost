@@ -180,6 +180,22 @@ impl SettingsPanel {
                         );
                         ui.end_row();
 
+                        ui.label("Intercept Mode:");
+                        ui.horizontal(|ui| {
+                            use crate::state::TlsInterceptMode;
+                            ui.selectable_value(
+                                &mut state.settings.intercept_mode,
+                                TlsInterceptMode::Blacklist,
+                                "Blacklist (default)",
+                            );
+                            ui.selectable_value(
+                                &mut state.settings.intercept_mode,
+                                TlsInterceptMode::Whitelist,
+                                "Whitelist",
+                            );
+                        });
+                        ui.end_row();
+
                         ui.label("Unsafe SSL:");
                         ui.horizontal(|ui| {
                             ui.checkbox(
@@ -199,23 +215,62 @@ impl SettingsPanel {
 
                 ui.add_space(8.0);
 
-                ui.label("Intercept Exclude Patterns:");
-                ui.add_space(4.0);
+                use crate::state::TlsInterceptMode;
+                match state.settings.intercept_mode {
+                    TlsInterceptMode::Blacklist => {
+                        ui.label("Intercept Exclude Patterns (domains NOT to intercept):");
+                        ui.add_space(4.0);
 
-                let mut exclude_text = state.settings.intercept_exclude.join("\n");
-                let response = ui.add(
-                    egui::TextEdit::multiline(&mut exclude_text)
-                        .desired_width(400.0)
-                        .desired_rows(4)
-                        .hint_text("One pattern per line, e.g.:\n*.apple.com\n*.microsoft.com"),
-                );
+                        let mut exclude_text = state.settings.intercept_exclude.join("\n");
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut exclude_text)
+                                .desired_width(400.0)
+                                .desired_rows(4)
+                                .hint_text(
+                                    "One pattern per line, e.g.:\n*.apple.com\n*.microsoft.com",
+                                ),
+                        );
 
-                if response.changed() {
-                    state.settings.intercept_exclude = exclude_text
-                        .lines()
-                        .filter(|l| !l.trim().is_empty())
-                        .map(|l| l.trim().to_string())
-                        .collect();
+                        if response.changed() {
+                            state.settings.intercept_exclude = exclude_text
+                                .lines()
+                                .filter(|l| !l.trim().is_empty())
+                                .map(|l| l.trim().to_string())
+                                .collect();
+                        }
+                    }
+                    TlsInterceptMode::Whitelist => {
+                        ui.label("Intercept Include Patterns (domains TO intercept):");
+                        ui.add_space(4.0);
+
+                        let mut include_text = state.settings.intercept_include.join("\n");
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut include_text)
+                                .desired_width(400.0)
+                                .desired_rows(4)
+                                .hint_text(
+                                    "One pattern per line, e.g.:\n*.api.example.com\ntest.local",
+                                ),
+                        );
+
+                        if response.changed() {
+                            state.settings.intercept_include = include_text
+                                .lines()
+                                .filter(|l| !l.trim().is_empty())
+                                .map(|l| l.trim().to_string())
+                                .collect();
+                        }
+
+                        if state.settings.intercept_include.is_empty() {
+                            ui.label(
+                                RichText::new(
+                                    "⚠ No domains specified - all HTTPS will pass through",
+                                )
+                                .color(Color32::YELLOW)
+                                .small(),
+                            );
+                        }
+                    }
                 }
             });
     }

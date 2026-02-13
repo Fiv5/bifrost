@@ -1,8 +1,12 @@
 import { get, put } from './client';
 
+export type TlsInterceptMode = 'blacklist' | 'whitelist';
+
 export interface TlsConfig {
   enable_tls_interception: boolean;
+  intercept_mode: TlsInterceptMode;
   intercept_exclude: string[];
+  intercept_include: string[];
   unsafe_ssl: boolean;
 }
 
@@ -14,7 +18,9 @@ export interface ProxySettings {
 
 export interface UpdateTlsConfigRequest {
   enable_tls_interception?: boolean;
+  intercept_mode?: TlsInterceptMode;
   intercept_exclude?: string[];
+  intercept_include?: string[];
   unsafe_ssl?: boolean;
 }
 
