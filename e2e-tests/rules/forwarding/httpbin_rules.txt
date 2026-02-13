@@ -1,0 +1,14 @@
+# httpbin.org 转发规则测试
+# 测试目标:
+# 1. /get 路径 - 转发到 mock 服务 (127.0.0.1:8000)
+# 2. 其他路径 - 访问原始服务 httpbin.org
+
+# 规则: /get 路径转发到 mock 服务
+# 直接使用 URL 路径匹配
+httpbin.org/get host://127.0.0.1:8000
+
+# 测试用例:
+# 1. curl -x http://127.0.0.1:9900 https://httpbin.org/get
+#    预期: 转发到 127.0.0.1:8000 (返回 mock 服务目录)
+# 2. curl -x http://127.0.0.1:9900 https://httpbin.org/ip
+#    预期: 直接访问原始服务 httpbin.org (返回 IP 信息)

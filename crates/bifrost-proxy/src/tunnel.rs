@@ -135,13 +135,43 @@ pub async fn handle_connect(
         debug!("CONNECT tunnel to {}:{}", host, port);
     }
 
+    let should_intercept = proxy_config.enable_tls_interception
+        && tls_config.ca_cert.is_some()
+        && !is_domain_excluded(&host, &proxy_config.intercept_exclude);
+
+    if should_intercept {
+        if verbose_logging {
+            debug!("[{}] TLS interception enabled for {}", ctx.id_str(), host);
+        }
+        return handle_tls_interception(
+            req,
+            &host,
+            port,
+            rules,
+            tls_config,
+            verbose_logging,
+            ctx,
+            admin_state,
+        )
+        .await;
+    } else if proxy_config.enable_tls_interception
+        && tls_config.ca_cert.is_some()
+        && verbose_logging
+    {
+        debug!(
+            "[{}] TLS interception skipped (domain excluded): {}",
+            ctx.id_str(),
+            host
+        );
+    }
+
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
     let has_rules = resolved_rules.host.is_some() || !resolved_rules.rules.is_empty();
     if verbose_logging && has_rules {
         info!(
-            "[{}] CONNECT rules matched: {}",
+            "[{}] CONNECT tunnel rules matched: {}",
             ctx.id_str(),
             format_rules_summary(&resolved_rules)
         );
@@ -157,7 +187,7 @@ pub async fn handle_connect(
         };
         if verbose_logging {
             info!(
-                "[{}] CONNECT target redirected: {}:{} -> {}:{}",
+                "[{}] CONNECT tunnel target redirected: {}:{} -> {}:{}",
                 ctx.id_str(),
                 host,
                 port,
@@ -169,38 +199,6 @@ pub async fn handle_connect(
     } else {
         (host.clone(), port)
     };
-
-    let should_intercept = proxy_config.enable_tls_interception
-        && tls_config.ca_cert.is_some()
-        && !is_domain_excluded(&host, &proxy_config.intercept_exclude);
-
-    if should_intercept {
-        if verbose_logging {
-            debug!("[{}] TLS interception enabled", ctx.id_str());
-        }
-        return handle_tls_interception(
-            req,
-            &host,
-            &target_host,
-            target_port,
-            rules,
-            tls_config,
-            verbose_logging,
-            ctx,
-            admin_state,
-            resolved_rules.host_protocol,
-        )
-        .await;
-    } else if proxy_config.enable_tls_interception
-        && tls_config.ca_cert.is_some()
-        && verbose_logging
-    {
-        debug!(
-            "[{}] TLS interception skipped (domain excluded): {}",
-            ctx.id_str(),
-            host
-        );
-    }
 
     let connect_host = if !resolved_rules.dns_servers.is_empty() {
         if let Some(ref resolver) = dns_resolver {
@@ -299,14 +297,12 @@ pub async fn handle_connect(
 async fn handle_tls_interception(
     req: Request<Incoming>,
     original_host: &str,
-    target_host: &str,
-    target_port: u16,
+    original_port: u16,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
-    host_protocol: Option<Protocol>,
 ) -> Result<Response<BoxBody>> {
     let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
         sni_resolver.resolve(original_host)?
@@ -325,7 +321,6 @@ async fn handle_tls_interception(
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
     let original_host = original_host.to_string();
-    let target_host = target_host.to_string();
 
     if let Some(ref state) = admin_state {
         state
@@ -351,13 +346,11 @@ async fn handle_tls_interception(
             upgraded,
             server_config,
             &original_host,
-            &target_host,
-            target_port,
+            original_port,
             rules,
             verbose,
             &req_id,
             admin_state.clone(),
-            host_protocol,
         )
         .await;
 
@@ -384,13 +377,11 @@ async fn tls_intercept_tunnel(
     upgraded: Upgraded,
     server_config: ServerConfig,
     original_host: &str,
-    target_host: &str,
-    target_port: u16,
+    original_port: u16,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
-    host_protocol: Option<Protocol>,
 ) -> Result<()> {
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let client_tls = acceptor
@@ -402,22 +393,8 @@ async fn tls_intercept_tunnel(
         debug!("[{}] TLS handshake with client completed", req_id);
     }
 
-    let use_http = match host_protocol {
-        Some(Protocol::Http) | Some(Protocol::Ws) => true,
-        Some(Protocol::Host) | Some(Protocol::XHost) => target_port != 443 && target_port != 8443,
-        _ => false,
-    };
-
-    if use_http && verbose_logging {
-        debug!(
-            "[{}] Using HTTP to connect to target (protocol downgrade)",
-            req_id
-        );
-    }
-
     let original_host_for_requests = original_host.to_string();
-    let target_host_for_requests = target_host.to_string();
-    let target_port_for_requests = target_port;
+    let original_port_for_requests = original_port;
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
     let rules_clone = rules.clone();
@@ -425,8 +402,7 @@ async fn tls_intercept_tunnel(
 
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
-        let target_host = target_host_for_requests.clone();
-        let target_port = target_port_for_requests;
+        let original_port = original_port_for_requests;
         let req_id = req_id_owned.clone();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
@@ -434,11 +410,9 @@ async fn tls_intercept_tunnel(
             handle_intercepted_request_with_protocol(
                 req,
                 &original_host,
-                &target_host,
-                target_port,
+                original_port,
                 &req_id,
                 admin_state,
-                use_http,
                 rules,
                 verbose,
             )
@@ -484,11 +458,9 @@ fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
 async fn handle_intercepted_request_with_protocol(
     req: Request<Incoming>,
     original_host: &str,
-    target_host: &str,
-    target_port: u16,
+    original_port: u16,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
-    use_http: bool,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
@@ -496,11 +468,10 @@ async fn handle_intercepted_request_with_protocol(
         return handle_intercepted_websocket(
             req,
             original_host,
-            target_host,
-            target_port,
+            original_port,
             req_id,
             admin_state,
-            use_http,
+            rules,
             verbose_logging,
         )
         .await;
@@ -587,22 +558,22 @@ async fn handle_intercepted_request_with_protocol(
             let parts: Vec<&str> = host_rule.split(':').collect();
             let h = parts[0].to_string();
             let p = if parts.len() > 1 {
-                parts[1].parse().unwrap_or(target_port)
+                parts[1].parse().unwrap_or(original_port)
             } else {
                 match resolved_rules.host_protocol {
                     Some(Protocol::Http) | Some(Protocol::Ws) => 80,
                     Some(Protocol::Https) | Some(Protocol::Wss) => 443,
-                    _ => target_port,
+                    _ => original_port,
                 }
             };
             let use_http_override = match resolved_rules.host_protocol {
                 Some(Protocol::Http) | Some(Protocol::Ws) => true,
                 Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
-                _ => use_http,
+                _ => false,
             };
             (h, p, use_http_override)
         } else {
-            (target_host.to_string(), target_port, use_http)
+            (original_host.to_string(), original_port, false)
         };
 
     let target_uri = if actual_use_http {
@@ -1057,11 +1028,10 @@ async fn handle_intercepted_request_with_protocol(
 async fn handle_intercepted_websocket(
     req: Request<Incoming>,
     original_host: &str,
-    target_host: &str,
-    target_port: u16,
+    original_port: u16,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
-    use_http: bool,
+    rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     use tokio_rustls::rustls::pki_types::ServerName;
@@ -1070,10 +1040,80 @@ async fn handle_intercepted_websocket(
     let start_time = Instant::now();
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let method_str = req.method().to_string();
 
     if verbose_logging {
         info!("[{}] WebSocket upgrade request detected: {}", req_id, path);
     }
+
+    let original_uri = format!("wss://{}{}", original_host, path);
+    let incoming_headers: std::collections::HashMap<String, String> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.to_string().to_lowercase(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+
+    let incoming_cookies: std::collections::HashMap<String, String> = req
+        .headers()
+        .get(hyper::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(';')
+                .filter_map(|part| {
+                    let mut iter = part.trim().splitn(2, '=');
+                    match (iter.next(), iter.next()) {
+                        (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let resolved_rules = rules.resolve_with_context(
+        &original_uri,
+        &method_str,
+        &incoming_headers,
+        &incoming_cookies,
+    );
+
+    let (target_host, target_port, use_http) = if let Some(ref host_rule) = resolved_rules.host {
+        let parts: Vec<&str> = host_rule.split(':').collect();
+        let h = parts[0].to_string();
+        let p = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(original_port)
+        } else {
+            match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+                _ => original_port,
+            }
+        };
+        let use_http_flag = match resolved_rules.host_protocol {
+            Some(Protocol::Http) | Some(Protocol::Ws) => true,
+            Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
+            _ => false,
+        };
+        if verbose_logging {
+            info!(
+                "[{}] [WS] WebSocket target resolved: wss://{}:{} -> {}://{}:{}",
+                req_id,
+                original_host,
+                original_port,
+                if use_http_flag { "ws" } else { "wss" },
+                h,
+                p
+            );
+        }
+        (h, p, use_http_flag)
+    } else {
+        (original_host.to_string(), original_port, false)
+    };
 
     let connect_start = Instant::now();
     let target_stream = match TcpStream::connect(format!("{}:{}", target_host, target_port)).await {
@@ -1120,7 +1160,7 @@ async fn handle_intercepted_websocket(
         }
     };
 
-    let handshake = build_websocket_handshake_request(&req, target_host);
+    let handshake = build_websocket_handshake_request(&req, &target_host);
 
     let (mut stream_read, mut stream_write) = tokio::io::split(stream);
 
