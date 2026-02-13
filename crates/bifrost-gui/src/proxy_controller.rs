@@ -321,6 +321,9 @@ async fn run_proxy_server(
     state: Arc<Mutex<AppState>>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let log_level = std::env::var("BIFROST_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+    let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
+
     let proxy_config = ProxyConfig {
         port: settings.port,
         host: settings.host.clone(),
@@ -335,6 +338,7 @@ async fn run_proxy_server(
         enable_tls_interception: settings.enable_tls_interception,
         intercept_exclude: settings.intercept_exclude.clone(),
         unsafe_ssl: settings.unsafe_ssl,
+        verbose_logging,
         ..Default::default()
     };
 

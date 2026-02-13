@@ -246,9 +246,24 @@ impl RulesResolver {
             }
 
             let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
+            tracing::trace!(
+                "Rule '{}' match result: {} (url={}, host={}, path={})",
+                rule.pattern,
+                match_result.matched,
+                ctx.url,
+                ctx.host,
+                ctx.path
+            );
             if !match_result.matched {
                 continue;
             }
+            tracing::debug!(
+                "Rule '{}' MATCHED! protocol={:?}, value='{}', raw='{}'",
+                rule.pattern,
+                rule.protocol,
+                rule.value,
+                rule.raw
+            );
 
             if !rule.include_filters.is_empty()
                 && !Self::matches_all_filters(&rule.include_filters, ctx)
@@ -505,6 +520,55 @@ mod tests {
         let result = resolver.resolve(&ctx);
         assert_eq!(result.len(), 1);
         assert_eq!(result.rules[0].resolved_value, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_rules_resolver_with_value_ref() {
+        let rules = vec![create_test_rule(
+            "*.example.com",
+            Protocol::ReqHeaders,
+            "{authHeaders}",
+        )];
+
+        let mut values = HashMap::new();
+        values.insert(
+            "authHeaders".to_string(),
+            "X-Auth-Token: secret-12345".to_string(),
+        );
+
+        let resolver = RulesResolver::new(rules).with_values(values);
+
+        let ctx = create_test_context("http://www.example.com/path", "www.example.com", "/path");
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.rules[0].resolved_value, "X-Auth-Token: secret-12345");
+    }
+
+    #[test]
+    fn test_value_ref_with_parsed_rules() {
+        use crate::parse_rules;
+
+        let rules = parse_rules("test.local reqHeaders://{customHeaders}").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].value, "{customHeaders}");
+
+        let mut values = HashMap::new();
+        values.insert(
+            "customHeaders".to_string(),
+            "X-Custom-Token: secret-12345".to_string(),
+        );
+
+        let resolver = RulesResolver::new(rules).with_values(values);
+
+        let ctx = RequestContext::from_url("http://test.local/api");
+
+        let result = resolver.resolve(&ctx);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result.rules[0].resolved_value,
+            "X-Custom-Token: secret-12345"
+        );
     }
 
     #[test]

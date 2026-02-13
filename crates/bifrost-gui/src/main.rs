@@ -12,7 +12,9 @@ use bifrost_tls::init_crypto_provider;
 fn main() -> eframe::Result<()> {
     init_crypto_provider();
 
-    if let Err(e) = init_logging("info") {
+    let log_level = std::env::var("BIFROST_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+
+    if let Err(e) = init_logging(&log_level) {
         eprintln!("Failed to initialize logging: {}", e);
     }
 

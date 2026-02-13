@@ -36,11 +36,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let args = Args::parse();
+
+    let log_level = if args.verbose { "debug" } else { "info" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level));
+
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let reporter = Reporter::new(args.verbose);
     let mut runner = TestRunner::new(args.port, reporter);
 

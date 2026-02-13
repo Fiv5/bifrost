@@ -528,6 +528,23 @@ async fn handle_intercepted_request_with_protocol(
         &incoming_cookies,
     );
 
+    let has_rules = !resolved_rules.rules.is_empty()
+        || resolved_rules.host.is_some()
+        || !resolved_rules.req_headers.is_empty()
+        || !resolved_rules.res_headers.is_empty();
+
+    if verbose_logging {
+        if has_rules {
+            info!(
+                "[{}] [RULES] matched: {}",
+                req_id,
+                format_rules_summary(&resolved_rules)
+            );
+        } else {
+            info!("[{}] [RULES] matched: none", req_id);
+        }
+    }
+
     let (actual_target_host, actual_target_port, actual_use_http) =
         if let Some(ref host_rule) = resolved_rules.host {
             let parts: Vec<&str> = host_rule.split(':').collect();

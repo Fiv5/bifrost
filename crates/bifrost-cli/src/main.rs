@@ -598,6 +598,7 @@ fn run_start(
         }
     };
 
+    let verbose_logging = matches!(cli.log_level.as_str(), "debug" | "trace");
     let proxy_config = ProxyConfig {
         port: cli.port,
         host: cli.host.clone(),
@@ -608,6 +609,7 @@ fn run_start(
         enable_tls_interception,
         intercept_exclude: exclude_list.clone(),
         unsafe_ssl,
+        verbose_logging,
         ..Default::default()
     };
 
@@ -649,7 +651,11 @@ fn run_start(
         );
     }
 
-    let parsed_rules = parse_cli_rules(&rules, &rules_file, &early_values)?;
+    let (parsed_rules, inline_values) = parse_cli_rules(&rules, &rules_file, &early_values)?;
+    let mut all_values = early_values.clone();
+    for (k, v) in inline_values {
+        all_values.entry(k).or_insert(v);
+    }
     if !parsed_rules.is_empty() {
         println!("Loaded {} rules from command line", parsed_rules.len());
         for rule in &parsed_rules {
@@ -688,8 +694,9 @@ fn run_start(
             run_daemon(
                 proxy_config,
                 parsed_rules,
+                all_values.clone(),
                 enable_system_proxy,
-                system_proxy_bypass,
+                system_proxy_bypass.clone(),
             )?;
         }
         #[cfg(not(unix))]
@@ -702,6 +709,7 @@ fn run_start(
         run_foreground(
             proxy_config,
             parsed_rules,
+            all_values,
             enable_system_proxy,
             system_proxy_bypass,
         )?;
@@ -884,8 +892,9 @@ fn parse_cli_rules(
     rules: &[String],
     rules_file: &Option<PathBuf>,
     values: &HashMap<String, String>,
-) -> bifrost_core::Result<Vec<Rule>> {
+) -> bifrost_core::Result<(Vec<Rule>, HashMap<String, String>)> {
     let mut all_rules = Vec::new();
+    let mut merged_values = values.clone();
 
     let parser = bifrost_core::RuleParser::with_values(values.clone());
 
@@ -909,8 +918,14 @@ fn parse_cli_rules(
                 e
             ))
         })?;
-        match parser.parse_rules(&content) {
-            Ok(parsed) => all_rules.extend(parsed),
+        let parser_with_file = bifrost_core::RuleParser::with_values(merged_values.clone());
+        match parser_with_file.parse_rules_with_inline_values(&content) {
+            Ok((parsed, inline_values)) => {
+                all_rules.extend(parsed);
+                for (k, v) in inline_values {
+                    merged_values.entry(k).or_insert(v);
+                }
+            }
             Err(e) => {
                 return Err(bifrost_core::BifrostError::Config(format!(
                     "Failed to parse rules file '{}': {}",
@@ -921,7 +936,7 @@ fn parse_cli_rules(
         }
     }
 
-    Ok(all_rules)
+    Ok((all_rules, merged_values))
 }
 
 struct RulesResolverAdapter {
@@ -1229,6 +1244,7 @@ fn parse_replace_value(value: &str) -> Option<(String, String)> {
 fn run_foreground(
     config: ProxyConfig,
     cli_rules: Vec<Rule>,
+    cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
 ) -> bifrost_core::Result<()> {
@@ -1429,13 +1445,16 @@ fn run_foreground(
             .map(|p| p.join("rules"))
             .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_rules"));
         let rules_storage = RulesStorage::with_dir(rules_dir).ok();
-        let values = values_storage
+        let mut values = values_storage
             .as_ref()
             .map(|s| {
                 use bifrost_core::ValueStore;
                 s.as_hashmap()
             })
             .unwrap_or_default();
+        for (k, v) in cli_values {
+            values.entry(k).or_insert(v);
+        }
 
         let ca_cert_path = get_bifrost_dir()
             .map(|p| p.join("certs").join("ca.crt"))
@@ -1493,6 +1512,7 @@ fn run_foreground(
 fn run_daemon(
     config: ProxyConfig,
     cli_rules: Vec<Rule>,
+    cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
 ) -> bifrost_core::Result<()> {
@@ -1617,13 +1637,16 @@ fn run_daemon(
                 let values_storage = ValuesStorage::with_dir(values_dir).ok();
                 let rules_dir = bifrost_dir.join("rules");
                 let rules_storage = RulesStorage::with_dir(rules_dir).ok();
-                let values = values_storage
+                let mut values = values_storage
                     .as_ref()
                     .map(|s| {
                         use bifrost_core::ValueStore;
                         s.as_hashmap()
                     })
                     .unwrap_or_default();
+                for (k, v) in cli_values {
+                    values.entry(k).or_insert(v);
+                }
 
                 let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 

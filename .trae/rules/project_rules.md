@@ -25,3 +25,55 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --unsafe-ssl
 
 - 添加新功能或修复 bug 后需要创建/执行端到端测试进行验证
 - 使用技能：e2e-test
+
+## 日志配置规范
+
+### 日志级别优先级（从高到低）
+
+1. `RUST_LOG` 环境变量 - 支持精细化控制，如 `RUST_LOG=bifrost_proxy=debug,info`
+2. 命令行参数 `-l/--log-level` - 仅 bifrost-cli 支持
+3. `BIFROST_LOG_LEVEL` 环境变量 - 仅 bifrost-gui 支持
+4. 默认值 `info`
+
+### 各入口点日志初始化规范
+
+| 入口点      | 初始化方式                     | 说明                              |
+| ----------- | ------------------------------ | --------------------------------- |
+| bifrost-cli | `init_logging(&cli.log_level)` | 使用 bifrost-core 统一函数        |
+| bifrost-gui | `init_logging(&log_level)`     | 从 `BIFROST_LOG_LEVEL` 读取       |
+| bifrost-e2e | `tracing_subscriber::fmt()`    | 从 `--verbose` 和 `RUST_LOG` 读取 |
+
+### verbose_logging 双轨机制
+
+项目使用两套日志控制机制：
+
+1. **tracing 级别** - 控制全局日志输出（通过 `EnvFilter`）
+2. **verbose_logging 布尔值** - 控制详细业务日志（规则匹配、请求转发等）
+
+规则：当日志级别为 `debug` 或 `trace` 时，`verbose_logging` 自动设为 `true`
+
+```rust
+let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
+```
+
+### 新增入口点时的要求
+
+1. 必须支持 `RUST_LOG` 环境变量优先
+2. 如果有命令行参数，作为 `RUST_LOG` 未设置时的回退
+3. 如果需要传递 `verbose_logging`，必须根据日志级别正确设置
+4. 使用 `bifrost_core::init_logging()` 统一初始化（已支持 RUST_LOG 回退）
+
+### 关键文件位置
+
+- 日志初始化：`crates/bifrost-core/src/logging.rs`
+- CLI 入口：`crates/bifrost-cli/src/main.rs`
+- GUI 入口：`crates/bifrost-gui/src/main.rs`
+- E2E 入口：`crates/bifrost-e2e/src/main.rs`
+- ProxyConfig 定义：`crates/bifrost-proxy/src/server.rs`
+
+### 日志要求
+
+- 所有日志输出必须符合 tracing 标准，包含 `target`、`level`、`message` 等字段
+- 所有日志级别必须根据 `RUST_LOG` 环境变量或 `--log-level` 参数进行控制
+- 所有日志输出必须包含 `file`、`line`、`module` 等字段，方便定位问题
+- 开发新需求时务必添加详细的日志，方便调试和问题定位

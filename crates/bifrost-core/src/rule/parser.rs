@@ -69,6 +69,22 @@ impl RuleParser {
     pub fn parse_rules(&self, text: &str) -> Result<Vec<Rule>> {
         parse_rules_with_values(text, &self.values)
     }
+
+    pub fn parse_rules_with_inline_values(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<Rule>, HashMap<String, String>)> {
+        let mut merged_values = self.values.clone();
+        let text = extract_markdown_value_blocks(text, &mut merged_values);
+
+        let rules = parse_rules_with_values(&text, &merged_values)?;
+        let inline_values: HashMap<String, String> = merged_values
+            .into_iter()
+            .filter(|(k, _)| !self.values.contains_key(k))
+            .collect();
+
+        Ok((rules, inline_values))
+    }
 }
 
 impl Default for RuleParser {
