@@ -13,7 +13,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 
@@ -101,11 +101,21 @@ pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
         || rules.css_body.is_some()
 }
 
+pub fn needs_request_body_processing(rules: &ResolvedRules) -> bool {
+    rules.req_body.is_some()
+        || rules.req_prepend.is_some()
+        || rules.req_append.is_some()
+        || !rules.req_replace.is_empty()
+        || rules.req_merge.is_some()
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_http_request(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     unsafe_ssl: bool,
+    max_body_buffer_size: usize,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -205,31 +215,60 @@ pub async fn handle_http_request(
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
 
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
-        .to_bytes();
+    let content_length = parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
 
-    let final_body = if let Some(ref new_body) = resolved_rules.req_body {
-        if verbose_logging {
-            info!(
-                "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
+    let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let req_body_too_large = content_length
+        .map(|len| len > max_body_buffer_size)
+        .unwrap_or(false);
+
+    let (body_bytes, final_body, req_body_rules_skipped) =
+        if needs_req_processing && req_body_too_large {
+            warn!(
+                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules",
                 ctx.id_str(),
-                body_bytes.len(),
-                new_body.len()
+                content_length.unwrap(),
+                max_body_buffer_size
             );
-        }
-        new_body.clone()
-    } else {
-        apply_body_rules(
-            body_bytes.clone(),
-            &resolved_rules,
-            Phase::Request,
-            verbose_logging,
-            ctx,
-        )
-    };
+            let bytes = body
+                .collect()
+                .await
+                .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
+                .to_bytes();
+            (bytes.clone(), bytes, true)
+        } else {
+            let bytes = body
+                .collect()
+                .await
+                .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
+                .to_bytes();
+
+            let processed = if let Some(ref new_body) = resolved_rules.req_body {
+                if verbose_logging {
+                    info!(
+                        "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
+                        ctx.id_str(),
+                        bytes.len(),
+                        new_body.len()
+                    );
+                }
+                new_body.clone()
+            } else {
+                apply_body_rules(
+                    bytes.clone(),
+                    &resolved_rules,
+                    Phase::Request,
+                    verbose_logging,
+                    ctx,
+                )
+            };
+            (bytes, processed, false)
+        };
+    let _ = req_body_rules_skipped;
 
     let dns_start = Instant::now();
     let (connect_host, dns_ms) = if !resolved_rules.dns_servers.is_empty() {
@@ -393,10 +432,31 @@ pub async fn handle_http_request(
             .map(|v| v.eq_ignore_ascii_case("websocket"))
             .unwrap_or(false);
 
-    if !needs_processing {
+    let res_content_length = res_parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
+
+    let res_body_too_large = res_content_length
+        .map(|len| len > max_body_buffer_size)
+        .unwrap_or(false);
+
+    let skip_body_processing = !needs_processing || res_body_too_large;
+
+    if needs_processing && res_body_too_large {
+        warn!(
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            ctx.id_str(),
+            res_content_length.unwrap(),
+            max_body_buffer_size
+        );
+    }
+
+    if skip_body_processing {
         let is_streaming = is_streaming_response(&res_parts);
         let is_sse = is_sse_response(&res_parts);
-        if verbose_logging {
+        if verbose_logging && !res_body_too_large {
             if is_sse {
                 info!(
                     "[{}] [SSE] detected SSE response, forwarding with event capture",

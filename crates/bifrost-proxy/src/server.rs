@@ -39,6 +39,7 @@ pub struct ProxyConfig {
     pub client_whitelist: Vec<String>,
     pub allow_lan: bool,
     pub unsafe_ssl: bool,
+    pub max_body_buffer_size: usize,
 }
 
 impl Default for ProxyConfig {
@@ -58,6 +59,7 @@ impl Default for ProxyConfig {
             client_whitelist: Vec::new(),
             allow_lan: false,
             unsafe_ssl: false,
+            max_body_buffer_size: 32 * 1024 * 1024, // 32MB
         }
     }
 }
@@ -469,6 +471,7 @@ async fn handle_request(
             rules,
             verbose_logging,
             proxy_config.unsafe_ssl,
+            proxy_config.max_body_buffer_size,
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),
@@ -640,6 +643,7 @@ mod tests {
             client_whitelist: vec!["192.168.1.0/24".to_string()],
             allow_lan: true,
             unsafe_ssl: false,
+            max_body_buffer_size: 32 * 1024 * 1024,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);

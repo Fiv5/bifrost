@@ -1,7 +1,10 @@
 use crate::protocol::Protocol;
 use crate::rule::filter::Filter;
+use lru::LruCache as LruCacheImpl;
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use super::context::RequestContext;
 use super::template::TemplateEngine;
@@ -86,52 +89,28 @@ impl ResolvedRules {
 }
 
 struct LruCache {
-    capacity: usize,
-    cache: HashMap<String, (ResolvedRules, u64)>,
-    counter: u64,
+    cache: LruCacheImpl<String, ResolvedRules>,
 }
 
 impl LruCache {
     fn new(capacity: usize) -> Self {
+        let cap = NonZeroUsize::new(capacity)
+            .unwrap_or(NonZeroUsize::new(DEFAULT_CACHE_CAPACITY).unwrap());
         Self {
-            capacity,
-            cache: HashMap::new(),
-            counter: 0,
+            cache: LruCacheImpl::new(cap),
         }
     }
 
     fn get(&mut self, key: &str) -> Option<ResolvedRules> {
-        if let Some((value, access_time)) = self.cache.get_mut(key) {
-            self.counter += 1;
-            *access_time = self.counter;
-            Some(value.clone())
-        } else {
-            None
-        }
+        self.cache.get(key).cloned()
     }
 
     fn insert(&mut self, key: String, value: ResolvedRules) {
-        if self.cache.len() >= self.capacity {
-            self.evict_lru();
-        }
-        self.counter += 1;
-        self.cache.insert(key, (value, self.counter));
-    }
-
-    fn evict_lru(&mut self) {
-        if let Some(lru_key) = self
-            .cache
-            .iter()
-            .min_by_key(|(_, (_, access_time))| access_time)
-            .map(|(k, _)| k.clone())
-        {
-            self.cache.remove(&lru_key);
-        }
+        self.cache.put(key, value);
     }
 
     fn clear(&mut self) {
         self.cache.clear();
-        self.counter = 0;
     }
 }
 
@@ -177,7 +156,7 @@ impl RulesResolver {
     }
 
     pub fn with_cache_capacity(self, capacity: usize) -> Self {
-        *self.cache.write().unwrap() = LruCache::new(capacity);
+        *self.cache.write() = LruCache::new(capacity);
         self
     }
 
@@ -202,19 +181,16 @@ impl RulesResolver {
     }
 
     pub fn clear_cache(&self) {
-        if let Ok(mut cache) = self.cache.write() {
-            cache.clear();
-        }
+        self.cache.write().clear();
     }
 
     pub fn resolve(&self, ctx: &RequestContext) -> ResolvedRules {
         let cache_key = format!("{}|{}|{}|{}", ctx.url, ctx.host, ctx.path, ctx.method);
 
         if self.cache_enabled {
-            if let Ok(mut cache) = self.cache.write() {
-                if let Some(cached) = cache.get(&cache_key) {
-                    return cached;
-                }
+            let mut cache = self.cache.write();
+            if let Some(cached) = cache.get(&cache_key) {
+                return cached;
             }
         }
         let mut result = ResolvedRules::new();
@@ -290,9 +266,7 @@ impl RulesResolver {
         }
 
         if self.cache_enabled {
-            if let Ok(mut cache) = self.cache.write() {
-                cache.insert(cache_key, result.clone());
-            }
+            self.cache.write().insert(cache_key, result.clone());
         }
 
         result

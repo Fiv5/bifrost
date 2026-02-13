@@ -32,6 +32,7 @@ impl Default for SystemProxyConfig {
 pub struct TrafficConfig {
     pub max_records: usize,
     pub max_body_memory_size: usize,
+    pub max_body_buffer_size: usize,
     pub temp_dir: PathBuf,
     pub file_retention_days: u64,
 }
@@ -40,7 +41,8 @@ impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             max_records: 5000,
-            max_body_memory_size: 2 * 1024 * 1024, // 2MB
+            max_body_memory_size: 2 * 1024 * 1024,  // 2MB
+            max_body_buffer_size: 32 * 1024 * 1024, // 32MB
             temp_dir: crate::data_dir().join("traffic"),
             file_retention_days: 7,
         }

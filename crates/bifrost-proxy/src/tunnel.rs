@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::body::{apply_body_rules, Phase};
 use crate::dns::DnsResolver;
-use crate::http::needs_body_processing;
+use crate::http::{needs_body_processing, needs_request_body_processing};
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
@@ -150,6 +150,7 @@ pub async fn handle_connect(
             rules,
             tls_config,
             verbose_logging,
+            proxy_config.max_body_buffer_size,
             ctx,
             admin_state,
         )
@@ -301,6 +302,7 @@ async fn handle_tls_interception(
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
+    max_body_buffer_size: usize,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
@@ -349,6 +351,7 @@ async fn handle_tls_interception(
             original_port,
             rules,
             verbose,
+            max_body_buffer_size,
             &req_id,
             admin_state.clone(),
         )
@@ -380,6 +383,7 @@ async fn tls_intercept_tunnel(
     original_port: u16,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
+    max_body_buffer_size: usize,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<()> {
@@ -415,6 +419,7 @@ async fn tls_intercept_tunnel(
                 admin_state,
                 rules,
                 verbose,
+                max_body_buffer_size,
             )
             .await
         }
@@ -463,6 +468,7 @@ async fn handle_intercepted_request_with_protocol(
     admin_state: Option<Arc<AdminState>>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
+    max_body_buffer_size: usize,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     if is_websocket_upgrade_request(&req) {
         return handle_intercepted_websocket(
@@ -665,6 +671,26 @@ async fn handle_intercepted_request_with_protocol(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let req_content_length = parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
+
+    let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let req_body_too_large = req_content_length
+        .map(|len| len > max_body_buffer_size)
+        .unwrap_or(false);
+
+    if needs_req_processing && req_body_too_large {
+        warn!(
+            "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules",
+            req_id,
+            req_content_length.unwrap(),
+            max_body_buffer_size
+        );
+    }
+
     let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes().to_vec(),
         Err(e) => {
@@ -857,7 +883,28 @@ async fn handle_intercepted_request_with_protocol(
             .map(|v| v.eq_ignore_ascii_case("websocket"))
             .unwrap_or(false);
 
-    if !needs_processing {
+    let res_content_length = res_parts
+        .headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
+
+    let res_body_too_large = res_content_length
+        .map(|len| len > max_body_buffer_size)
+        .unwrap_or(false);
+
+    let skip_body_processing = !needs_processing || res_body_too_large;
+
+    if needs_processing && res_body_too_large {
+        warn!(
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            req_id,
+            res_content_length.unwrap(),
+            max_body_buffer_size
+        );
+    }
+
+    if skip_body_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = req_id.to_string();
 
