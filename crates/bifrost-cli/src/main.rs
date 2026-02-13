@@ -98,6 +98,37 @@ value <ACTION>                    Manage values for variable expansion
   set <name> <value>                Set a value
   delete <name>                     Delete a value
   import <file>                     Import from file (.txt/.kv/.json)
+
+────────────────────────────────────────────────────────────────────────────
+ENVIRONMENT VARIABLES
+────────────────────────────────────────────────────────────────────────────
+
+BIFROST_DATA_DIR                  Custom data directory path
+                                  Default: ~/.bifrost (platform-specific)
+                                  Contains: config, rules, values, certs, logs
+                                  Example: BIFROST_DATA_DIR=/tmp/bifrost-test bifrost
+
+RUST_LOG                          Control logging output level and filters
+                                  Default: info (set via -l/--log-level)
+                                  Example: RUST_LOG=debug bifrost
+                                  Advanced: RUST_LOG=bifrost_proxy=debug,info
+
+────────────────────────────────────────────────────────────────────────────
+RULE TEMPLATE VARIABLES
+────────────────────────────────────────────────────────────────────────────
+
+Rules support variable expansion using ${...} syntax:
+
+  ${name}                         Expand to value stored via 'bifrost value set'
+  ${env.VAR_NAME}                 Expand to environment variable VAR_NAME
+
+Example rule with variables:
+  example.com host://${LOCAL_SERVER}
+  api.example.com reqHeaders://(Authorization: ${env.API_TOKEN})
+
+Manage values:
+  bifrost value set LOCAL_SERVER 127.0.0.1:3000
+  bifrost value list
 ")]
 struct Cli {
     #[command(subcommand)]
@@ -1242,23 +1273,101 @@ fn run_foreground(
     } else {
         &config.host
     };
-    println!("✓ Bifrost proxy running on {}:{}", config.host, config.port);
-    if let Some(socks5_port) = config.socks5_port {
-        println!("  SOCKS5: port {}", socks5_port);
-    } else {
-        println!("  SOCKS5: disabled");
-    }
-    println!("  PID: {}", pid);
-    if system_proxy_enabled {
-        println!("  System proxy: enabled (bypass: {})", system_proxy_bypass);
-    } else if enable_system_proxy {
-        println!("  System proxy: requested but not enabled");
-    } else {
-        println!("  System proxy: disabled");
-    }
-    println!("  Admin UI: http://{}:{}/", admin_host, config.port);
+
     println!();
+    println!("📡 NETWORK");
+    println!("   HTTP Proxy:    {}:{}", config.host, config.port);
+    if let Some(socks5_port) = config.socks5_port {
+        println!("   SOCKS5 Proxy:  {}:{}", config.host, socks5_port);
+    }
+    println!("   Admin UI:      http://{}:{}/", admin_host, config.port);
+
+    println!();
+    println!("🔒 TLS/HTTPS INTERCEPTION");
+    if config.enable_tls_interception {
+        println!("   Status:        enabled");
+        if !config.intercept_exclude.is_empty() {
+            println!("   Excluded:      {:?}", config.intercept_exclude);
+        }
+        if config.unsafe_ssl {
+            println!("   ⚠️  Upstream TLS verification: DISABLED (--unsafe-ssl)");
+        }
+    } else {
+        println!("   Status:        disabled (--no-intercept)");
+    }
+
+    println!();
+    println!("🔐 CA CERTIFICATE");
+    let cert_dir = bifrost_dir.join("certs");
+    let ca_cert_path = cert_dir.join("ca.crt");
+    if ca_cert_path.exists() {
+        let installer = CertInstaller::new(&ca_cert_path);
+        match installer.check_status() {
+            Ok(CertStatus::InstalledAndTrusted) => {
+                println!("   Status:        ✓ Installed and trusted");
+            }
+            Ok(CertStatus::InstalledNotTrusted) => {
+                println!("   Status:        ⚠ Installed but NOT trusted");
+                println!("   Action:        Run 'bifrost ca info' for details");
+            }
+            Ok(CertStatus::NotInstalled) => {
+                println!("   Status:        ✗ Not installed in system trust store");
+                println!("   Action:        Run 'bifrost ca info' to install");
+            }
+            Err(_) => {
+                println!("   Status:        ? Unable to check");
+            }
+        }
+        println!("   Certificate:   {}", ca_cert_path.display());
+    } else {
+        println!("   Status:        Not generated");
+    }
+
+    println!();
+    println!("🌐 SYSTEM PROXY");
+    if system_proxy_enabled {
+        println!("   Status:        ✓ Enabled");
+        println!("   Bypass:        {}", system_proxy_bypass);
+    } else if enable_system_proxy {
+        println!("   Status:        ⚠ Requested but not enabled");
+    } else {
+        println!("   Status:        Disabled");
+    }
+
+    println!();
+    println!("🛡️  ACCESS CONTROL");
+    println!("   Mode:          {}", config.access_mode);
+    if !config.client_whitelist.is_empty() {
+        println!("   Whitelist:     {:?}", config.client_whitelist);
+    }
+    println!(
+        "   LAN Access:    {}",
+        if config.allow_lan {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+
+    println!();
+    println!("📂 DATA DIRECTORY");
+    println!("   Path:          {}", bifrost_dir.display());
+    let custom_dir = std::env::var("BIFROST_DATA_DIR").ok();
+    if custom_dir.is_some() {
+        println!("   Source:        BIFROST_DATA_DIR environment variable");
+    } else {
+        println!("   Source:        Default (~/.bifrost)");
+    }
+
+    println!();
+    println!("⚙️  PROCESS");
+    println!("   PID:           {}", pid);
+    println!("   Platform:      {}", get_platform_name());
+
+    println!();
+    println!("────────────────────────────────────────────────────────────────────────");
     println!("Press Ctrl+C to stop");
+    println!("────────────────────────────────────────────────────────────────────────");
     println!();
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
