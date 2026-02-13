@@ -222,7 +222,7 @@ test_whitelist_mode_get_api() {
 
     local mode
     mode=$(echo "$response" | jq -r '.mode')
-    if [[ "$mode" != "open" && "$mode" != "whitelist" && "$mode" != "strict" ]]; then
+    if [[ "$mode" != "allow_all" && "$mode" != "local_only" && "$mode" != "whitelist" && "$mode" != "interactive" ]]; then
         log_fail "Invalid mode value: $mode"
         return 1
     fi
@@ -234,7 +234,7 @@ test_whitelist_mode_set_api() {
     save_whitelist_state
 
     local response
-    response=$(set_whitelist_mode "open")
+    response=$(set_whitelist_mode "allow_all")
 
     if [[ $? -ne 0 ]]; then
         log_fail "Failed to call set whitelist mode API"
@@ -247,7 +247,7 @@ test_whitelist_mode_set_api() {
     local mode
     mode=$(echo "$verify_response" | jq -r '.mode')
 
-    if ! assert_equals "open" "$mode" "Mode should be set to open"; then
+    if ! assert_equals "allow_all" "$mode" "Mode should be set to allow_all"; then
         restore_whitelist_state
         return 1
     fi
@@ -259,7 +259,7 @@ test_whitelist_mode_set_api() {
 test_whitelist_mode_values() {
     save_whitelist_state
 
-    local modes=("open" "whitelist")
+    local modes=("allow_all" "local_only" "whitelist")
     for mode in "${modes[@]}"; do
         set_whitelist_mode "$mode" > /dev/null 2>&1
         local verify_response
@@ -403,7 +403,7 @@ test_whitelist_structure() {
 
     local mode
     mode=$(echo "$response" | jq -r '.mode')
-    if [[ "$mode" != "open" && "$mode" != "whitelist" && "$mode" != "strict" ]]; then
+    if [[ "$mode" != "allow_all" && "$mode" != "local_only" && "$mode" != "whitelist" && "$mode" != "interactive" ]]; then
         log_fail "Invalid mode in whitelist structure: $mode"
         return 1
     fi

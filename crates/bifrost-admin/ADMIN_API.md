@@ -592,12 +592,12 @@ GET /api/whitelist
 }
 ```
 
-| 字段                | 类型     | 说明                            |
-| ------------------- | -------- | ------------------------------- |
-| mode                | string   | 访问模式: open/whitelist/strict |
-| allow_lan           | boolean  | 是否允许局域网访问              |
-| whitelist           | string[] | 永久白名单（IP 或 CIDR）        |
-| temporary_whitelist | string[] | 临时白名单（会话级）            |
+| 字段                | 类型     | 说明                                                 |
+| ------------------- | -------- | ---------------------------------------------------- |
+| mode                | string   | 访问模式: allow_all/local_only/whitelist/interactive |
+| allow_lan           | boolean  | 是否允许局域网访问                                   |
+| whitelist           | string[] | 永久白名单（IP 或 CIDR）                             |
+| temporary_whitelist | string[] | 临时白名单（会话级）                                 |
 
 ### 6.2 添加白名单
 

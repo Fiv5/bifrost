@@ -416,6 +416,8 @@ pub async fn handle_http_request(
 
             if is_websocket {
                 record.protocol = "ws".to_string();
+                record.set_websocket();
+                state.websocket_monitor.register_connection(&record_id);
             }
 
             if is_sse {
@@ -555,6 +557,8 @@ pub async fn handle_http_request(
 
         if is_websocket {
             record.protocol = "ws".to_string();
+            record.set_websocket();
+            state.websocket_monitor.register_connection(&ctx.id_str());
         }
 
         if let Some(ref body_store) = state.body_store {

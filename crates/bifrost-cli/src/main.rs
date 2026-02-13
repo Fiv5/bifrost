@@ -23,27 +23,107 @@ use tracing::info;
 #[derive(Parser)]
 #[command(name = "bifrost")]
 #[command(version = "1.0.0")]
-#[command(about = "High-performance HTTP proxy written in Rust", long_about = None)]
+#[command(about = "High-performance HTTP/HTTPS proxy written in Rust")]
+#[command(
+    long_about = "High-performance HTTP/HTTPS proxy written in Rust with TLS interception support.\n\n\
+Running 'bifrost' without a subcommand is equivalent to 'bifrost start'."
+)]
+#[command(after_help = "\
+EXAMPLES:
+    bifrost                      Start proxy with defaults (port 9900, TLS enabled)
+    bifrost -p 8080              Start proxy on port 8080
+    bifrost start --daemon       Start proxy as background daemon
+    bifrost start --no-intercept Start proxy without TLS interception
+    bifrost status               Show proxy status
+    bifrost stop                 Stop the running proxy
+
+DEFAULT BEHAVIOR:
+    When no subcommand is provided, bifrost starts in foreground mode with:
+      • HTTP proxy on 0.0.0.0:9900
+      • TLS/HTTPS interception enabled
+      • Access restricted to localhost only
+      • CA certificate auto-generated if missing
+
+────────────────────────────────────────────────────────────────────────────
+SUBCOMMAND REFERENCE
+────────────────────────────────────────────────────────────────────────────
+
+start [OPTIONS]                   Start the proxy server (default)
+  -d, --daemon                      Run as background daemon
+  --skip-cert-check                 Skip CA certificate check
+  --access-mode <MODE>              Access mode: local_only|whitelist|interactive|allow_all
+  --whitelist <IPS>                 Client IP whitelist (comma-separated, supports CIDR)
+  --allow-lan                       Allow LAN (private network) clients
+  --no-intercept                    Disable TLS/HTTPS interception
+  --intercept-exclude <DOMAINS>     Exclude domains from interception (wildcards supported)
+  --unsafe-ssl                      Skip upstream TLS verification (dangerous)
+  --rules <RULE>                    Proxy rule (can be repeated)
+  --rules-file <PATH>               Path to rules file
+  --system-proxy                    Enable system proxy
+  --proxy-bypass <LIST>             System proxy bypass list
+
+stop                              Stop the running proxy
+
+status                            Show proxy status
+
+rule <ACTION>                     Manage rules
+  list                              List all rules
+  add <name> [-c content|-f file]   Add a new rule
+  enable <name>                     Enable a rule
+  disable <name>                    Disable a rule
+  show <name>                       Show rule content
+  delete <name>                     Delete a rule
+
+ca <ACTION>                       Manage CA certificates
+  info                              Show CA certificate info
+  export [-o path]                  Export CA certificate
+  generate [-f]                     Generate CA certificate
+
+system-proxy <ACTION>             Manage system proxy
+  status                            Show system proxy status
+  enable [--host h] [--port p] [--bypass list]
+                                    Enable system proxy
+  disable                           Disable system proxy
+
+whitelist <ACTION>                Manage access control
+  list                              List whitelist entries
+  add <ip>                          Add IP/CIDR to whitelist
+  remove <ip>                       Remove IP/CIDR from whitelist
+  allow-lan <true|false>            Enable/disable LAN access
+  status                            Show access control settings
+
+value <ACTION>                    Manage values for variable expansion
+  list                              List all values
+  get <name>                        Get a value
+  set <name> <value>                Set a value
+  delete <name>                     Delete a value
+  import <file>                     Import from file (.txt/.kv/.json)
+")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(short, long, default_value = "9900")]
+    #[arg(short, long, default_value = "9900", help = "HTTP proxy port")]
     port: u16,
 
-    #[arg(short = 'H', long, default_value = "0.0.0.0")]
+    #[arg(short = 'H', long, default_value = "0.0.0.0", help = "Listen address")]
     host: String,
 
-    #[arg(long, help = "SOCKS5 proxy port")]
+    #[arg(long, help = "SOCKS5 proxy port (disabled by default)")]
     socks5_port: Option<u16>,
 
-    #[arg(short, long, default_value = "info")]
+    #[arg(
+        short,
+        long,
+        default_value = "info",
+        help = "Log level [trace|debug|info|warn|error]"
+    )]
     log_level: String,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    #[command(about = "Start the proxy server")]
+    #[command(about = "Start the proxy server (default when no subcommand provided)")]
     Start {
         #[arg(short, long, help = "Run as daemon")]
         daemon: bool,
@@ -187,7 +267,7 @@ enum WhitelistCommands {
     #[command(about = "Enable or disable LAN (private network) access")]
     AllowLan {
         #[arg(help = "Enable (true) or disable (false) LAN access")]
-        enable: bool,
+        enable: String,
     },
     #[command(about = "Show current access control settings")]
     Status,
@@ -236,6 +316,65 @@ enum ValueCommands {
         #[arg(help = "File path (supports .txt, .kv, .json)")]
         file: PathBuf,
     },
+}
+
+fn print_startup_help(port: u16) {
+    println!(
+        r#"
+╭────────────────────────────────────────────────────────────────────────╮
+│                       BIFROST PROXY COMMANDS                           │
+╰────────────────────────────────────────────────────────────────────────╯
+
+PROXY CONTROL
+  bifrost status                    Show proxy status
+  bifrost stop                      Stop the running proxy
+
+RULE MANAGEMENT
+  bifrost rule list                 List all rules
+  bifrost rule add <name>           Add a new rule
+    -c, --content <CONTENT>           Rule content (inline)
+    -f, --file <FILE>                 Rule file path
+  bifrost rule enable <name>        Enable a rule
+  bifrost rule disable <name>       Disable a rule
+  bifrost rule show <name>          Show rule content
+  bifrost rule delete <name>        Delete a rule
+
+CA CERTIFICATE
+  bifrost ca info                   Show CA certificate info
+  bifrost ca export                 Export CA certificate
+    -o, --output <PATH>               Output file path
+  bifrost ca generate               (Re)generate CA certificate
+    -f, --force                       Force regenerate
+
+SYSTEM PROXY
+  bifrost system-proxy status       Show system proxy status
+  bifrost system-proxy enable       Enable system proxy
+    --host <HOST>                     Proxy host (default: 127.0.0.1)
+    --port <PORT>                     Proxy port
+    --bypass <LIST>                   Bypass list (comma-separated)
+  bifrost system-proxy disable      Disable system proxy
+
+VALUES (Variable Expansion)
+  bifrost value list                List all values
+  bifrost value get <name>          Get a value
+  bifrost value set <name> <value>  Set a value
+  bifrost value delete <name>       Delete a value
+  bifrost value import <file>       Import from file (.txt/.kv/.json)
+
+ACCESS CONTROL
+  bifrost whitelist list            List whitelist entries
+  bifrost whitelist add <ip>        Add IP/CIDR to whitelist
+  bifrost whitelist remove <ip>     Remove IP/CIDR from whitelist
+  bifrost whitelist allow-lan <bool> Enable/disable LAN access
+  bifrost whitelist status          Show access control settings
+
+ADMIN UI
+  http://127.0.0.1:{port}/          Web-based admin interface
+
+Use 'bifrost <command> --help' for more details."#,
+        port = port
+    );
+    println!();
 }
 
 fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
@@ -1062,15 +1201,11 @@ fn run_foreground(
     let pid = std::process::id();
     write_pid(pid)?;
 
-    println!(
-        "Bifrost proxy server starting on {}:{}",
-        config.host, config.port
-    );
-    if let Some(socks5_port) = config.socks5_port {
-        println!("SOCKS5 proxy enabled on port {}", socks5_port);
-    }
-    println!("Press Ctrl+C to stop");
-    println!("PID: {}", pid);
+    print_startup_help(config.port);
+
+    println!("════════════════════════════════════════════════════════════════════════");
+    println!("                           SERVER STATUS");
+    println!("════════════════════════════════════════════════════════════════════════");
 
     let tls_config = load_tls_config(&config)?;
 
@@ -1081,6 +1216,7 @@ fn run_foreground(
         tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
     }
 
+    let mut system_proxy_enabled = false;
     if enable_system_proxy {
         let proxy_host = if config.host == "0.0.0.0" {
             "127.0.0.1".to_string()
@@ -1092,12 +1228,38 @@ fn run_foreground(
         {
             let msg = e.to_string();
             if msg.contains("RequiresAdmin") {
-                println!("System proxy requires administrator privileges; proxy will start without changing system proxy. You can toggle it later via CLI or Admin UI.");
+                println!("  ⚠ System proxy requires admin privileges (not enabled)");
             } else {
-                eprintln!("Failed to enable system proxy: {}", e);
+                eprintln!("  ✗ Failed to enable system proxy: {}", e);
             }
+        } else {
+            system_proxy_enabled = true;
         }
     }
+
+    let admin_host = if config.host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        &config.host
+    };
+    println!("✓ Bifrost proxy running on {}:{}", config.host, config.port);
+    if let Some(socks5_port) = config.socks5_port {
+        println!("  SOCKS5: port {}", socks5_port);
+    } else {
+        println!("  SOCKS5: disabled");
+    }
+    println!("  PID: {}", pid);
+    if system_proxy_enabled {
+        println!("  System proxy: enabled (bypass: {})", system_proxy_bypass);
+    } else if enable_system_proxy {
+        println!("  System proxy: requested but not enabled");
+    } else {
+        println!("  System proxy: disabled");
+    }
+    println!("  Admin UI: http://{}:{}/", admin_host, config.port);
+    println!();
+    println!("Press Ctrl+C to stop");
+    println!();
 
     let rt = tokio::runtime::Runtime::new().map_err(|e| {
         bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
@@ -1862,9 +2024,19 @@ fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Result<(
             }
         }
         WhitelistCommands::AllowLan { enable } => {
-            config.access.allow_lan = enable;
+            let enable_bool = match enable.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => true,
+                "false" | "0" | "no" | "off" => false,
+                _ => {
+                    return Err(bifrost_core::BifrostError::Config(format!(
+                        "Invalid value '{}'. Use 'true' or 'false'.",
+                        enable
+                    )));
+                }
+            };
+            config.access.allow_lan = enable_bool;
             save_config(&config)?;
-            if enable {
+            if enable_bool {
                 println!("LAN (private network) access enabled.");
             } else {
                 println!("LAN (private network) access disabled.");
