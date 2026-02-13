@@ -272,6 +272,11 @@ impl RulesResolver {
             }
 
             if Self::matches_any_filter(&rule.exclude_filters, ctx) {
+                tracing::debug!(
+                    "Rule '{}' excluded by excludeFilter (path='{}')",
+                    rule.pattern,
+                    ctx.path
+                );
                 continue;
             }
 

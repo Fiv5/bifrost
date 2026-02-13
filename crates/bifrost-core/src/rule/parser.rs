@@ -524,7 +524,10 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
             };
 
             if let Some(protocol) = Protocol::parse(proto_name) {
-                if (protocol == Protocol::Http || protocol == Protocol::Https)
+                if (protocol == Protocol::Http
+                    || protocol == Protocol::Https
+                    || protocol == Protocol::Ws
+                    || protocol == Protocol::Wss)
                     && !is_target_address(&value)
                 {
                     patterns.push(part.clone());

@@ -1,0 +1,403 @@
+#!/bin/bash
+#
+# nextoncall.bytedance.net 代理规则测试脚本
+#
+# 测试规则:
+# 1. https://nextoncall.bytedance.net/api/* -> 直接转发到原始服务 (excludeFilter 排除)
+# 2. https://nextoncall.bytedance.net/* -> http://localhost:8000/
+# 3. wss://nextoncall.bytedance.net/ -> ws://localhost:8000/
+#
+# 使用方式:
+#   ./test_nextoncall_rules.sh           # 运行完整测试
+#   ./test_nextoncall_rules.sh --manual  # 只启动服务，手动测试
+#
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+E2E_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
+PROXY_PORT="${PROXY_PORT:-9900}"
+MOCK_PORT="${MOCK_PORT:-8000}"
+BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-./.bifrost-nextoncall-test}"
+
+RULES_FILE="$E2E_DIR/rules/forwarding/nextoncall_rules.txt"
+MOCK_SERVER="$E2E_DIR/mock_servers/http_ws_echo_server.py"
+
+PROXY_PID=""
+MOCK_PID=""
+MANUAL_MODE=false
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[PASS]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[FAIL]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+cleanup() {
+    log_info "Cleaning up..."
+
+    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+        log_info "Stopping proxy server (PID: $PROXY_PID)"
+        kill "$PROXY_PID" 2>/dev/null || true
+        wait "$PROXY_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
+        log_info "Stopping mock server (PID: $MOCK_PID)"
+        kill "$MOCK_PID" 2>/dev/null || true
+        wait "$MOCK_PID" 2>/dev/null || true
+    fi
+
+    if [[ -d "$BIFROST_DATA_DIR" ]]; then
+        rm -rf "$BIFROST_DATA_DIR"
+    fi
+
+    log_info "Cleanup complete"
+}
+
+trap cleanup EXIT
+
+check_deps() {
+    log_info "Checking dependencies..."
+
+    if ! command -v curl &> /dev/null; then
+        log_error "curl is required but not installed"
+        exit 1
+    fi
+
+    if ! command -v python3 &> /dev/null; then
+        log_error "python3 is required but not installed"
+        exit 1
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        log_warn "jq is not installed, JSON parsing will be limited"
+    fi
+
+    if command -v websocat &> /dev/null; then
+        log_info "websocat found, WebSocket tests will be enabled"
+        HAS_WEBSOCAT=true
+    else
+        log_warn "websocat not found, WebSocket tests will be skipped"
+        log_warn "Install with: brew install websocat"
+        HAS_WEBSOCAT=false
+    fi
+
+    log_success "Dependencies check passed"
+}
+
+build_proxy() {
+    log_info "Building bifrost proxy..."
+    cd "$ROOT_DIR"
+
+    if ! cargo build --bin bifrost --release 2>&1; then
+        log_error "Failed to build bifrost"
+        exit 1
+    fi
+
+    log_success "Build completed"
+}
+
+start_mock_server() {
+    log_info "Starting mock HTTP+WS server on port $MOCK_PORT..."
+
+    python3 "$MOCK_SERVER" "$MOCK_PORT" &
+    MOCK_PID=$!
+
+    sleep 1
+
+    if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+        log_error "Failed to start mock server"
+        exit 1
+    fi
+
+    for i in {1..10}; do
+        if nc -z 127.0.0.1 "$MOCK_PORT" 2>/dev/null; then
+            log_success "Mock server started (PID: $MOCK_PID)"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    log_error "Mock server failed to start"
+    exit 1
+}
+
+start_proxy() {
+    log_info "Starting bifrost proxy on port $PROXY_PORT with debug logging..."
+
+    cd "$ROOT_DIR"
+
+    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+    RUST_LOG=debug \
+    cargo run --bin bifrost --release -- \
+        -p "$PROXY_PORT" \
+        -l debug \
+        start \
+        --unsafe-ssl \
+        --rules-file "$RULES_FILE" \
+        --skip-cert-check \
+        2>&1 &
+    PROXY_PID=$!
+
+    sleep 2
+
+    if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+        log_error "Failed to start proxy server"
+        exit 1
+    fi
+
+    for i in {1..20}; do
+        if nc -z "$PROXY_HOST" "$PROXY_PORT" 2>/dev/null; then
+            log_success "Proxy server started (PID: $PROXY_PID)"
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    log_error "Proxy server failed to start"
+    exit 1
+}
+
+print_test_header() {
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "🧪 TEST: $1"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
+test_http_root_forward() {
+    print_test_header "HTTPS root path -> localhost:8000"
+
+    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://nextoncall.bytedance.net/"
+    log_info "Expected: Request forwarded to mock server at 127.0.0.1:$MOCK_PORT"
+
+    local response
+    response=$(curl -s -x "http://$PROXY_HOST:$PROXY_PORT" \
+        -k \
+        --connect-timeout 10 \
+        --max-time 30 \
+        "https://nextoncall.bytedance.net/" 2>&1)
+
+    local exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "curl failed with exit code: $exit_code"
+        log_error "Response: $response"
+        return 1
+    fi
+
+    echo "Response:"
+    echo "$response" | head -50
+
+    if echo "$response" | grep -q "http_ws_echo_server"; then
+        log_success "Request was forwarded to mock server"
+        return 0
+    elif echo "$response" | grep -q "http_echo"; then
+        log_success "Request was forwarded to mock server"
+        return 0
+    else
+        log_warn "Response doesn't contain expected mock server signature"
+        log_warn "This might indicate the request was forwarded elsewhere or blocked"
+        return 1
+    fi
+}
+
+test_http_api_path() {
+    print_test_header "HTTPS /api/ path -> original service (excluded)"
+
+    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://nextoncall.bytedance.net/api/test"
+    log_info "Expected: Request NOT forwarded to mock server (excludeFilter should exclude /api/)"
+
+    local response
+    response=$(curl -s -x "http://$PROXY_HOST:$PROXY_PORT" \
+        -k \
+        --connect-timeout 10 \
+        --max-time 30 \
+        "https://nextoncall.bytedance.net/api/test" 2>&1)
+
+    local exit_code=$?
+
+    echo "Response (first 500 chars):"
+    echo "$response" | head -c 500
+    echo ""
+
+    if echo "$response" | grep -q "http_ws_echo_server"; then
+        log_warn "Request was forwarded to mock server - excludeFilter may not be working"
+        log_warn "Check proxy logs for rule matching details"
+        return 1
+    else
+        log_success "Request was NOT forwarded to mock server (as expected)"
+        log_info "The /api/ path was excluded by excludeFilter"
+        return 0
+    fi
+}
+
+test_websocket_forward() {
+    print_test_header "WSS -> ws://localhost:8000"
+
+    if [[ "$HAS_WEBSOCAT" != "true" ]]; then
+        log_warn "Skipping WebSocket test (websocat not installed)"
+        return 0
+    fi
+
+    log_info "Testing: websocat wss://nextoncall.bytedance.net/ via proxy"
+    log_info "Expected: WebSocket connection forwarded to mock server"
+
+    local response
+    response=$(echo '{"test": "hello"}' | timeout 10 websocat -v \
+        --ws-c-uri "wss://nextoncall.bytedance.net/" \
+        --proxy "http://$PROXY_HOST:$PROXY_PORT" \
+        -k \
+        "wss://nextoncall.bytedance.net/" 2>&1 || true)
+
+    echo "Response:"
+    echo "$response" | head -30
+
+    if echo "$response" | grep -q "connection_info\|echo\|http_ws_echo_server"; then
+        log_success "WebSocket connection was forwarded to mock server"
+        return 0
+    else
+        log_warn "WebSocket test result unclear"
+        log_warn "Check proxy logs for WebSocket handling details"
+        return 1
+    fi
+}
+
+run_manual_mode() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║              Manual Testing Mode                             ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║  Proxy:  http://$PROXY_HOST:$PROXY_PORT                               ║"
+    echo "║  Mock:   http://127.0.0.1:$MOCK_PORT                               ║"
+    echo "║  Log:    debug level (verbose)                               ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║  Test commands:                                              ║"
+    echo "║                                                              ║"
+    echo "║  # Test root path (should forward to mock server)            ║"
+    echo "║  curl -x http://$PROXY_HOST:$PROXY_PORT -k \\                         ║"
+    echo "║       https://nextoncall.bytedance.net/                      ║"
+    echo "║                                                              ║"
+    echo "║  # Test /api/ path (should NOT forward to mock server)       ║"
+    echo "║  curl -x http://$PROXY_HOST:$PROXY_PORT -k \\                         ║"
+    echo "║       https://nextoncall.bytedance.net/api/test              ║"
+    echo "║                                                              ║"
+    echo "║  # Test WebSocket (requires websocat)                        ║"
+    echo "║  echo 'hello' | websocat -v \\                                ║"
+    echo "║       --proxy http://$PROXY_HOST:$PROXY_PORT -k \\                    ║"
+    echo "║       wss://nextoncall.bytedance.net/                        ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║  Press Ctrl+C to stop                                        ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    wait
+}
+
+run_tests() {
+    local passed=0
+    local failed=0
+    local skipped=0
+
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║         nextoncall.bytedance.net Rules Test Suite            ║"
+    echo "╠══════════════════════════════════════════════════════════════╣"
+    echo "║  Proxy:  http://$PROXY_HOST:$PROXY_PORT                               ║"
+    echo "║  Mock:   http://127.0.0.1:$MOCK_PORT                               ║"
+    echo "║  Rules:  $RULES_FILE  ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    if test_http_root_forward; then
+        ((passed++))
+    else
+        ((failed++))
+    fi
+
+    if test_http_api_path; then
+        ((passed++))
+    else
+        ((failed++))
+    fi
+
+    if test_websocket_forward; then
+        ((passed++))
+    else
+        ((failed++))
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "📊 TEST SUMMARY"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "  ${GREEN}Passed:${NC}  $passed"
+    echo -e "  ${RED}Failed:${NC}  $failed"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    if [[ $failed -gt 0 ]]; then
+        return 1
+    fi
+    return 0
+}
+
+main() {
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║     nextoncall.bytedance.net Proxy Rules Test Script         ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    for arg in "$@"; do
+        case $arg in
+            --manual|-m)
+                MANUAL_MODE=true
+                ;;
+            --help|-h)
+                echo "Usage: $0 [OPTIONS]"
+                echo ""
+                echo "Options:"
+                echo "  --manual, -m    Start services for manual testing"
+                echo "  --help, -h      Show this help message"
+                echo ""
+                echo "Environment variables:"
+                echo "  PROXY_PORT      Proxy port (default: 9900)"
+                echo "  MOCK_PORT       Mock server port (default: 8000)"
+                exit 0
+                ;;
+        esac
+    done
+
+    check_deps
+    build_proxy
+    start_mock_server
+    start_proxy
+
+    if [[ "$MANUAL_MODE" == "true" ]]; then
+        run_manual_mode
+    else
+        run_tests
+    fi
+}
+
+main "$@"
