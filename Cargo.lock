@@ -557,6 +557,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "urlencoding",
 ]
 
 [[package]]
@@ -604,6 +605,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "urlencoding",
 ]
 
 [[package]]

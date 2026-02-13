@@ -1,0 +1,33 @@
+# Body 替换规则专项测试
+# 语法: reqReplace://from=to (Whistle 兼容格式)
+# 支持: & 连接多个替换规则, URL 编码特殊字符
+
+# ============================================================
+# 请求 Body 替换测试
+# ============================================================
+
+# BR-01: 简单字符串替换
+test-req-simple.local http://127.0.0.1:3000 reqReplace://OLD_REQ_MARKER=NEW_REQ_MARKER
+
+# BR-02: 多个替换规则 (& 连接)
+test-req-multi.local http://127.0.0.1:3000 reqReplace://AAA=XXX&BBB=YYY
+
+# BR-03: 删除内容 (替换为空)
+test-req-delete.local http://127.0.0.1:3000 reqReplace://DELETE_ME=
+
+# ============================================================
+# 响应 Body 替换测试
+# ============================================================
+
+# BR-04: 简单字符串替换
+test-res-simple.local http://127.0.0.1:3000 resReplace://OLD_RES_MARKER=NEW_RES_MARKER
+
+# BR-05: 多个替换规则 (& 连接)
+test-res-multi.local http://127.0.0.1:3000 resReplace://AAA=XXX&BBB=YYY
+
+# ============================================================
+# 请求 + 响应同时替换
+# ============================================================
+
+# BR-06: 双向替换
+test-both-replace.local http://127.0.0.1:3000 reqReplace://REQ_OLD=REQ_NEW resReplace://RES_OLD=RES_NEW

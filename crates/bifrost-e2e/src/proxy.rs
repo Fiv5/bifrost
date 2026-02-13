@@ -132,14 +132,12 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     result.res_body = Some(bytes::Bytes::from(value.to_string()));
                 }
                 Protocol::ReqReplace => {
-                    if let Some((from, to)) = parse_replace_value(value) {
-                        result.req_replace.push((from, to));
-                    }
+                    let pairs = parse_replace_value(value);
+                    result.req_replace.extend(pairs);
                 }
                 Protocol::ResReplace => {
-                    if let Some((from, to)) = parse_replace_value(value) {
-                        result.res_replace.push((from, to));
-                    }
+                    let pairs = parse_replace_value(value);
+                    result.res_replace.extend(pairs);
                 }
                 Protocol::Params => {
                     if let Ok(json_value) = serde_json::from_str(value) {
@@ -159,9 +157,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     }
                 }
                 Protocol::UrlReplace => {
-                    if let Some((from, to)) = parse_replace_value(value) {
-                        result.url_replace.push((from, to));
-                    }
+                    let pairs = parse_replace_value(value);
+                    result.url_replace.extend(pairs);
                 }
                 Protocol::ForwardedFor => {
                     result.forwarded_for = Some(value.to_string());
@@ -308,15 +305,32 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
-fn parse_replace_value(value: &str) -> Option<(String, String)> {
-    let parts: Vec<&str> = value.splitn(2, ' ').collect();
-    if parts.len() == 2 {
-        Some((parts[0].to_string(), parts[1].to_string()))
-    } else if parts.len() == 1 && !parts[0].is_empty() {
-        Some((parts[0].to_string(), String::new()))
-    } else {
-        None
+fn url_decode(s: &str) -> String {
+    urlencoding::decode(s)
+        .unwrap_or(std::borrow::Cow::Borrowed(s))
+        .into_owned()
+}
+
+fn parse_replace_value(value: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+
+    for pair in value.split('&') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+
+        if let Some((from, to)) = pair.split_once('=') {
+            let from = url_decode(from);
+            let to = url_decode(to);
+            result.push((from, to));
+        } else {
+            let from = url_decode(pair);
+            result.push((from, String::new()));
+        }
     }
+
+    result
 }
 
 pub struct ProxyInstance {

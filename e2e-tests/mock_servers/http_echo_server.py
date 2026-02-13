@@ -166,13 +166,47 @@ body {{ color: #333; }}
                 return None
         return None
 
+    def _handle_large_response(self):
+        """处理大响应体请求 /large-response?size=BYTES&marker=MARKER"""
+        parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+        
+        size = int(query_params.get('size', ['1024'])[0])
+        marker = query_params.get('marker', ['MARKER'])[0]
+        
+        print(f"  -> Generating large response: size={size}, marker={marker}")
+        
+        marker_len = len(marker)
+        if size < marker_len * 2:
+            size = marker_len * 2
+        
+        padding_size = size - marker_len * 2
+        body = marker + ('X' * padding_size) + marker
+        
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Echo-Server', 'bifrost-test')
+        self.send_header('X-Response-Size', str(size))
+        self.send_header('X-Response-Marker', marker)
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+        self.wfile.write(body.encode('utf-8'))
+        
+        print(f"  -> Sent large response: {len(body)} bytes")
+
     def do_GET(self):
         """处理 GET 请求"""
         self._log_request_start("GET")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
-        self._send_response()
+        
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/large-response':
+            self._handle_large_response()
+        else:
+            self._send_response()
 
     def do_POST(self):
         """处理 POST 请求"""
