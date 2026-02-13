@@ -144,34 +144,27 @@ setup_test_environment() {
     mkdir -p "${TEST_DATA_DIR}/.bifrost/values"
     mkdir -p "${TEST_DATA_DIR}/.bifrost/rules"
 
-    info "复制测试值文件..."
-    for f in "$VALUES_DIR"/*.txt; do
-        if [[ -f "$f" ]]; then
-            cp "$f" "${TEST_DATA_DIR}/.bifrost/values/"
-            echo "  - $(basename "$f")"
-        fi
-    done
-
     RULES_FILE="${TEST_DATA_DIR}/.bifrost/rules/values_test.txt"
     cat > "$RULES_FILE" << 'RULES'
 # E2E Values 测试规则
+# 测试目标: 验证规则文件中的 inline markdown 代码块值能被正确解析和使用
 
-# E2E-V01: 内联响应体
+# E2E-V01: 内联响应体 (backtick 语法)
 e2e-inline-body.local http://127.0.0.1:13000 resBody://`{"inline":"body","status":"ok"}`
 
-# E2E-V02: 内联请求头
+# E2E-V02: 内联请求头 (backtick 语法)
 e2e-inline-reqheader.local http://127.0.0.1:13000 reqHeaders://`X-Inline-Header:inline-value`
 
-# E2E-V03: 内联响应头
+# E2E-V03: 内联响应头 (backtick 语法)
 e2e-inline-resheader.local http://127.0.0.1:13000 resHeaders://`X-Inline-Response:inline-response-value`
 
-# E2E-V04: 值引用响应体 - {mockResponse}
+# E2E-V04: 值引用响应体 - 使用 markdown 代码块定义
 e2e-value-body.local http://127.0.0.1:13000 resBody://{mockResponse}
 
-# E2E-V05: 值引用请求头 - {authHeaders}
+# E2E-V05: 值引用请求头 - 使用 markdown 代码块定义 (关键测试用例)
 e2e-value-reqheader.local http://127.0.0.1:13000 reqHeaders://{authHeaders}
 
-# E2E-V06: 值引用响应头 - {customHeaders}
+# E2E-V06: 值引用响应头 - 使用 markdown 代码块定义
 e2e-value-resheader.local http://127.0.0.1:13000 resHeaders://{customHeaders}
 
 # E2E-V07: 多值引用组合
@@ -182,9 +175,36 @@ e2e-json-body.local http://127.0.0.1:13000 resBody://{jsonResponse}
 
 # E2E-V09: 多行头部值引用
 e2e-multi-headers.local http://127.0.0.1:13000 reqHeaders://{multiHeaders}
+
+# ========== Inline Values (markdown code block) ==========
+# 以下是规则文件内嵌的值定义，使用 markdown 代码块语法
+
+```mockResponse
+{"code":0,"message":"success","data":{"source":"inline_value"}}
+```
+
+```authHeaders
+X-Auth-Token: test-auth-token-12345
+X-Auth-User: test-user
+```
+
+```customHeaders
+X-Custom-Header: custom-value-from-inline
+```
+
+```jsonResponse
+{"code":0,"message":"json response from inline value","timestamp":"2024-01-01T00:00:00Z"}
+```
+
+```multiHeaders
+X-Auth-Token: multi-header-token
+X-Request-Source: bifrost-e2e-test
+X-Custom-Flag: enabled
+```
 RULES
 
     info "规则文件已创建: $RULES_FILE"
+    info "注意: 此测试使用规则文件内嵌的 markdown 代码块值，而非外部 values 文件"
     echo -e "${GREEN}✓${NC} 测试环境设置完成"
 }
 
@@ -356,7 +376,7 @@ test_e2e_value_ref_body() {
 
     local url="http://e2e-value-body.local/test"
     info "请求: $url"
-    info "预期: 响应体应包含 mockResponse.txt 中的内容"
+    info "预期: 响应体应包含 inline_value (来自 markdown 代码块)"
 
     http_request "$url"
 
@@ -367,25 +387,24 @@ test_e2e_value_ref_body() {
         return
     fi
 
-    if echo "$HTTP_BODY" | grep -q "mockResponse\|values"; then
-        pass "响应体已被值引用替换"
+    if echo "$HTTP_BODY" | grep -q "inline_value"; then
+        pass "响应体已被值引用替换（包含 inline_value）"
         info "响应体: ${HTTP_BODY:0:100}..."
     else
         if [[ "$HTTP_BODY" == *"{mockResponse}"* ]]; then
-            fail "值引用未解析" "mockResponse 内容" "{mockResponse} 原始字符串"
+            fail "值引用未解析 - {mockResponse} 未展开" "inline_value" "{mockResponse} 原始字符串"
         else
-            warn "响应体可能未被替换，请检查: ${HTTP_BODY:0:100}"
-            pass "请求完成（值引用规则已配置）"
+            fail "响应体未被替换为预期内容" "包含 inline_value" "响应体: ${HTTP_BODY:0:200}"
         fi
     fi
 }
 
 test_e2e_value_ref_reqheader() {
-    header "E2E-V05: 值引用请求头 {authHeaders}"
+    header "E2E-V05: 值引用请求头 {authHeaders} (关键测试)"
 
     local url="http://e2e-value-reqheader.local/test"
     info "请求: $url"
-    info "预期: 请求头应包含 authHeaders.txt 中的内容"
+    info "预期: Echo 服务器返回的请求头应包含 X-Auth-Token: test-auth-token-12345"
 
     http_request "$url"
 
@@ -396,10 +415,14 @@ test_e2e_value_ref_reqheader() {
         return
     fi
 
-    if echo "$HTTP_BODY" | grep -qi "X-Auth-Token\|Authorization"; then
-        pass "请求头值引用生效（Echo 服务器返回确认）"
+    if echo "$HTTP_BODY" | grep -qi "X-Auth-Token"; then
+        if echo "$HTTP_BODY" | grep -q "test-auth-token-12345"; then
+            pass "请求头值引用正确展开: X-Auth-Token: test-auth-token-12345"
+        else
+            fail "请求头值可能未正确展开" "test-auth-token-12345" "$(echo "$HTTP_BODY" | grep -i 'X-Auth-Token' | head -1)"
+        fi
     else
-        pass "请求头规则已配置"
+        fail "请求头未被注入（Echo 服务器未收到 X-Auth-Token）" "包含 X-Auth-Token" "响应体: ${HTTP_BODY:0:200}"
     fi
 }
 
@@ -408,7 +431,7 @@ test_e2e_value_ref_resheader() {
 
     local url="http://e2e-value-resheader.local/test"
     info "请求: $url"
-    info "预期: 响应头应包含 customHeaders.txt 中的内容"
+    info "预期: 响应头应包含 X-Custom-Header: custom-value-from-inline"
 
     http_request "$url"
 
@@ -419,12 +442,14 @@ test_e2e_value_ref_resheader() {
         return
     fi
 
-    if echo "$HTTP_HEADERS" | grep -qi "X-Custom"; then
-        pass "响应头值引用生效"
+    if echo "$HTTP_HEADERS" | grep -qi "X-Custom-Header"; then
+        if echo "$HTTP_HEADERS" | grep -q "custom-value-from-inline"; then
+            pass "响应头值引用正确展开: X-Custom-Header: custom-value-from-inline"
+        else
+            fail "响应头值可能未正确展开" "custom-value-from-inline" "$(echo "$HTTP_HEADERS" | grep -i 'X-Custom-Header')"
+        fi
     else
-        warn "响应头可能未被替换"
-        info "响应头: ${HTTP_HEADERS:0:200}"
-        pass "响应头规则已配置"
+        fail "响应头未被注入" "包含 X-Custom-Header" "响应头: ${HTTP_HEADERS:0:200}"
     fi
 }
 

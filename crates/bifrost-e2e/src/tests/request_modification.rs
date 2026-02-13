@@ -2,6 +2,7 @@ use crate::curl::CurlCommand;
 use crate::mock::EnhancedMockServer;
 use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
+use std::collections::HashMap;
 use std::time::Duration;
 
 pub fn get_all_tests() -> Vec<TestCase> {
@@ -23,6 +24,18 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "ReqHeaders protocol: later rule overrides earlier",
             "request_modification",
             test_req_headers_override,
+        ),
+        TestCase::standalone(
+            "req_headers_value_ref",
+            "ReqHeaders protocol: value reference {name} expansion",
+            "request_modification",
+            test_req_headers_value_ref,
+        ),
+        TestCase::standalone(
+            "req_headers_inline_markdown",
+            "ReqHeaders protocol: inline markdown code block values",
+            "request_modification",
+            test_req_headers_inline_markdown,
         ),
         TestCase::standalone(
             "req_cookies_add",
@@ -170,6 +183,83 @@ async fn test_req_headers_override() -> Result<(), String> {
 
     result.assert_success()?;
     mock.assert_header_received("x-override", "second")?;
+
+    Ok(())
+}
+
+async fn test_req_headers_value_ref() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+
+    let mut values = HashMap::new();
+    values.insert(
+        "customHeaders".to_string(),
+        "X-Custom-Token=secret-12345".to_string(),
+    );
+
+    let _proxy = ProxyInstance::start_with_values(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            "test.local reqHeaders://{customHeaders}",
+        ],
+        values,
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_received("x-custom-token", "secret-12345")?;
+
+    Ok(())
+}
+
+async fn test_req_headers_inline_markdown() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+
+    let rules_text = format!(
+        r#"
+test.local host://127.0.0.1:{}
+test.local reqHeaders://{{ppeHeaders}}
+
+```ppeHeaders
+X-Use-PPE: 1
+X-TT-Env: ppe_test_env
+```
+"#,
+        mock.port
+    );
+
+    let _proxy = ProxyInstance::start_with_rules_text(port, &rules_text)
+        .await
+        .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_header_received("x-use-ppe", "1")?;
+    mock.assert_header_received("x-tt-env", "ppe_test_env")?;
 
     Ok(())
 }
@@ -470,6 +560,18 @@ mod tests {
     #[tokio::test]
     async fn test_headers_override() {
         let result = test_req_headers_override().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_headers_value_ref() {
+        let result = test_req_headers_value_ref().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_headers_inline_markdown() {
+        let result = test_req_headers_inline_markdown().await;
         assert!(result.is_ok(), "Test failed: {:?}", result.err());
     }
 

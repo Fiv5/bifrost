@@ -1,10 +1,11 @@
 use bifrost_core::{
-    parse_rules, Protocol, RequestContext, Rule, RulesResolver as CoreRulesResolver,
+    parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
 };
 use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait,
 };
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -266,14 +267,33 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
     };
 
     let mut headers = Vec::new();
-    for part in content.split(',') {
+
+    let is_multiline = content.contains('\n');
+    let parts: Vec<&str> = if is_multiline {
+        content.lines().collect()
+    } else {
+        content.split(',').collect()
+    };
+
+    for part in parts {
         let part = part.trim();
-        let separator = if use_colon { ':' } else { '=' };
+        if part.is_empty() {
+            continue;
+        }
+        let separator = if use_colon || is_multiline { ':' } else { '=' };
         if let Some(pos) = part.find(separator) {
             let key = part[..pos].trim().to_string();
             let val = part[pos + 1..].trim().to_string();
             if !key.is_empty() {
                 headers.push((key, val));
+            }
+        } else if !use_colon && !is_multiline {
+            if let Some(pos) = part.find('=') {
+                let key = part[..pos].trim().to_string();
+                let val = part[pos + 1..].trim().to_string();
+                if !key.is_empty() {
+                    headers.push((key, val));
+                }
             }
         }
     }
@@ -306,6 +326,14 @@ impl ProxyInstance {
         port: u16,
         rules: Vec<&str>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::start_with_values(port, rules, HashMap::new()).await
+    }
+
+    pub async fn start_with_values(
+        port: u16,
+        rules: Vec<&str>,
+        values: HashMap<String, String>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let parsed_rules: Vec<Rule> = rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())
@@ -313,7 +341,63 @@ impl ProxyInstance {
             .collect();
 
         let resolver = Arc::new(RulesResolverAdapter {
-            inner: CoreRulesResolver::new(parsed_rules),
+            inner: CoreRulesResolver::new(parsed_rules).with_values(values),
+        });
+        let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let config = ProxyConfig {
+            port,
+            host: "127.0.0.1".to_string(),
+            enable_tls_interception: false,
+            intercept_exclude: Vec::new(),
+            timeout_secs: 30,
+            socks5_port: None,
+            socks5_auth_required: false,
+            socks5_username: None,
+            socks5_password: None,
+            verbose_logging: true,
+            access_mode: bifrost_proxy::AccessMode::AllowAll,
+            client_whitelist: Vec::new(),
+            allow_lan: true,
+            unsafe_ssl: false,
+        };
+
+        let server = ProxyServer::new(config).with_rules(resolver);
+
+        tokio::spawn(async move {
+            tokio::select! {
+                result = server.run() => {
+                    if let Err(e) = result {
+                        tracing::error!("Proxy server error: {}", e);
+                    }
+                }
+                _ = shutdown_rx => {
+                    tracing::info!("Proxy server shutting down");
+                }
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        Ok(Self {
+            addr,
+            shutdown_tx: Some(shutdown_tx),
+        })
+    }
+
+    pub async fn start_with_rules_text(
+        port: u16,
+        rules_text: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let parser = RuleParser::new();
+        let (rules, inline_values) = parser
+            .parse_rules_with_inline_values(rules_text)
+            .map_err(|e| format!("Failed to parse rules: {}", e))?;
+
+        let resolver = Arc::new(RulesResolverAdapter {
+            inner: CoreRulesResolver::new(rules).with_values(inline_values),
         });
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
 
