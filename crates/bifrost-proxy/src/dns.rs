@@ -1,13 +1,172 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bifrost_core::{BifrostError, Result};
 use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
 use tokio::sync::RwLock;
 use tracing::{debug, info, instrument, warn};
+
+const DEFAULT_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_CACHE_CAPACITY: usize = 1000;
+
+#[derive(Debug, Clone)]
+struct DnsCacheEntry {
+    ip: IpAddr,
+    expires_at: Instant,
+}
+
+impl DnsCacheEntry {
+    fn new(ip: IpAddr, ttl: Duration) -> Self {
+        Self {
+            ip,
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+}
+
+pub struct DnsCache {
+    entries: RwLock<HashMap<String, DnsCacheEntry>>,
+    ttl: Duration,
+    capacity: usize,
+}
+
+impl DnsCache {
+    pub fn new(ttl_secs: u64, capacity: usize) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl: Duration::from_secs(ttl_secs),
+            capacity,
+        }
+    }
+
+    fn make_key(host: &str, server: &str) -> String {
+        format!("{}@{}", host, server)
+    }
+
+    pub async fn get(&self, host: &str, server: &str) -> Option<IpAddr> {
+        let key = Self::make_key(host, server);
+        let entries = self.entries.read().await;
+
+        if let Some(entry) = entries.get(&key) {
+            if !entry.is_expired() {
+                debug!(
+                    target: "bifrost_proxy::dns",
+                    host = %host,
+                    server = %server,
+                    ip = %entry.ip,
+                    "DNS cache hit"
+                );
+                return Some(entry.ip);
+            }
+        }
+        None
+    }
+
+    pub async fn put(&self, host: &str, server: &str, ip: IpAddr) {
+        let key = Self::make_key(host, server);
+        let entry = DnsCacheEntry::new(ip, self.ttl);
+
+        let mut entries = self.entries.write().await;
+
+        if entries.len() >= self.capacity && !entries.contains_key(&key) {
+            self.evict_expired_or_oldest(&mut entries);
+        }
+
+        entries.insert(key, entry);
+
+        debug!(
+            target: "bifrost_proxy::dns",
+            host = %host,
+            server = %server,
+            ip = %ip,
+            ttl_secs = self.ttl.as_secs(),
+            "DNS cache entry added"
+        );
+    }
+
+    fn evict_expired_or_oldest(&self, entries: &mut HashMap<String, DnsCacheEntry>) {
+        let expired_keys: Vec<String> = entries
+            .iter()
+            .filter(|(_, v)| v.is_expired())
+            .map(|(k, _)| k.clone())
+            .collect();
+
+        if !expired_keys.is_empty() {
+            for key in expired_keys {
+                entries.remove(&key);
+            }
+            debug!(
+                target: "bifrost_proxy::dns",
+                "Evicted expired DNS cache entries"
+            );
+            return;
+        }
+
+        if let Some((oldest_key, _)) = entries
+            .iter()
+            .min_by_key(|(_, v)| v.expires_at)
+            .map(|(k, v)| (k.clone(), v.clone()))
+        {
+            entries.remove(&oldest_key);
+            debug!(
+                target: "bifrost_proxy::dns",
+                key = %oldest_key,
+                "Evicted oldest DNS cache entry"
+            );
+        }
+    }
+
+    pub async fn clear(&self) {
+        let mut entries = self.entries.write().await;
+        entries.clear();
+        debug!(
+            target: "bifrost_proxy::dns",
+            "DNS cache cleared"
+        );
+    }
+
+    pub async fn len(&self) -> usize {
+        self.entries.read().await.len()
+    }
+
+    pub async fn is_empty(&self) -> bool {
+        self.entries.read().await.is_empty()
+    }
+
+    pub async fn stats(&self) -> DnsCacheStats {
+        let entries = self.entries.read().await;
+        let total = entries.len();
+        let expired = entries.values().filter(|e| e.is_expired()).count();
+        DnsCacheStats {
+            total_entries: total,
+            expired_entries: expired,
+            capacity: self.capacity,
+            ttl_secs: self.ttl.as_secs(),
+        }
+    }
+}
+
+impl Default for DnsCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_CACHE_TTL_SECS, DEFAULT_CACHE_CAPACITY)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DnsCacheStats {
+    pub total_entries: usize,
+    pub expired_entries: usize,
+    pub capacity: usize,
+    pub ttl_secs: u64,
+}
 
 #[derive(Debug, Clone)]
 pub enum DnsServerType {
@@ -72,7 +231,8 @@ impl DnsServerType {
 
 pub struct DnsResolver {
     system_resolver: TokioAsyncResolver,
-    custom_resolvers: RwLock<std::collections::HashMap<String, Arc<TokioAsyncResolver>>>,
+    custom_resolvers: RwLock<HashMap<String, Arc<TokioAsyncResolver>>>,
+    cache: DnsCache,
     timeout: Duration,
     verbose_logging: bool,
 }
@@ -84,7 +244,8 @@ impl DnsResolver {
 
         Self {
             system_resolver,
-            custom_resolvers: RwLock::new(std::collections::HashMap::new()),
+            custom_resolvers: RwLock::new(HashMap::new()),
+            cache: DnsCache::default(),
             timeout: Duration::from_secs(5),
             verbose_logging,
         }
@@ -93,6 +254,19 @@ impl DnsResolver {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    pub fn with_cache_config(mut self, ttl_secs: u64, capacity: usize) -> Self {
+        self.cache = DnsCache::new(ttl_secs, capacity);
+        self
+    }
+
+    pub async fn cache_stats(&self) -> DnsCacheStats {
+        self.cache.stats().await
+    }
+
+    pub async fn clear_cache(&self) {
+        self.cache.clear().await;
     }
 
     #[instrument(skip(self), fields(host = %host, servers = ?dns_servers))]
@@ -113,6 +287,11 @@ impl DnsResolver {
                 "No custom DNS servers configured, using system resolver"
             );
             return Ok(None);
+        }
+
+        let servers_key = dns_servers.join(",");
+        if let Some(cached_ip) = self.cache.get(host, &servers_key).await {
+            return Ok(Some(cached_ip));
         }
 
         if self.verbose_logging {
@@ -148,6 +327,7 @@ impl DnsResolver {
                             resolved_ip = %ip,
                             "DNS resolution successful"
                         );
+                        self.cache.put(host, &servers_key, ip).await;
                         return Ok(Some(ip));
                     }
                     Err(e) => {
@@ -392,5 +572,101 @@ mod tests {
         let resolver = DnsResolver::new(false);
         let result = resolver.resolve("example.com", &[]).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dns_cache_basic() {
+        let cache = DnsCache::new(60, 100);
+        let ip = IpAddr::from_str("1.2.3.4").unwrap();
+
+        assert!(cache.get("example.com", "8.8.8.8").await.is_none());
+
+        cache.put("example.com", "8.8.8.8", ip).await;
+
+        let cached = cache.get("example.com", "8.8.8.8").await;
+        assert_eq!(cached, Some(ip));
+
+        assert!(cache.get("example.com", "1.1.1.1").await.is_none());
+        assert!(cache.get("other.com", "8.8.8.8").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dns_cache_expiry() {
+        let cache = DnsCache::new(1, 100);
+        let ip = IpAddr::from_str("1.2.3.4").unwrap();
+
+        cache.put("example.com", "8.8.8.8", ip).await;
+        assert!(cache.get("example.com", "8.8.8.8").await.is_some());
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        assert!(cache.get("example.com", "8.8.8.8").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dns_cache_capacity() {
+        let cache = DnsCache::new(60, 3);
+
+        cache
+            .put("a.com", "dns", IpAddr::from_str("1.1.1.1").unwrap())
+            .await;
+        cache
+            .put("b.com", "dns", IpAddr::from_str("2.2.2.2").unwrap())
+            .await;
+        cache
+            .put("c.com", "dns", IpAddr::from_str("3.3.3.3").unwrap())
+            .await;
+
+        assert_eq!(cache.len().await, 3);
+
+        cache
+            .put("d.com", "dns", IpAddr::from_str("4.4.4.4").unwrap())
+            .await;
+
+        assert!(cache.len().await <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_dns_cache_stats() {
+        let cache = DnsCache::new(60, 100);
+
+        cache
+            .put("a.com", "dns", IpAddr::from_str("1.1.1.1").unwrap())
+            .await;
+        cache
+            .put("b.com", "dns", IpAddr::from_str("2.2.2.2").unwrap())
+            .await;
+
+        let stats = cache.stats().await;
+        assert_eq!(stats.total_entries, 2);
+        assert_eq!(stats.capacity, 100);
+        assert_eq!(stats.ttl_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn test_dns_cache_clear() {
+        let cache = DnsCache::new(60, 100);
+
+        cache
+            .put("a.com", "dns", IpAddr::from_str("1.1.1.1").unwrap())
+            .await;
+        cache
+            .put("b.com", "dns", IpAddr::from_str("2.2.2.2").unwrap())
+            .await;
+
+        assert_eq!(cache.len().await, 2);
+
+        cache.clear().await;
+
+        assert_eq!(cache.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_resolver_with_cache_config() {
+        let resolver = DnsResolver::new(false).with_cache_config(120, 500);
+
+        let stats = resolver.cache_stats().await;
+        assert_eq!(stats.ttl_secs, 120);
+        assert_eq!(stats.capacity, 500);
     }
 }
