@@ -1,6 +1,6 @@
 # Bifrost
 
-Bifrost 是一个用 Rust 编写的高性能 HTTP/HTTPS/SOCKS5 代理服务器，灵感来源于 Whistle。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
+Bifrost 是一个用 Rust 编写的高性能 HTTP/HTTPS/SOCKS5 代理服务器，灵感来源于 (Whistle)[https://github.com/avwo/whistle]。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
 
 ## 特性
 
@@ -470,6 +470,12 @@ example.com reqDelay://1000
 example.com resDelay://500
 example.com resSpeed://10
 
+# DNS 解析
+
+example.com dns://8.8.8.8
+\*.internal.corp dns://192.168.1.1:53
+api.service.com dns://8.8.8.8,8.8.4.4
+
 # 过滤和控制
 
 example.com enable://
@@ -484,6 +490,7 @@ example.com filter://keyword
 | 分类     | 协议                                                                                                                                                                                                 |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 路由     | `host`, `proxy`, `pac`, `internal-proxy`, `https2http-proxy`, `http2https-proxy`                                                                                                                     |
+| DNS      | `dns`                                                                                                                                                                                                |
 | 控制     | `filter`, `ignore`, `enable`, `disable`, `delete`, `G`, `style`                                                                                                                                      |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
 | 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`                      |

@@ -1,5 +1,6 @@
 pub mod body_manipulation;
 pub mod curl_mock;
+pub mod dns;
 pub mod filters;
 pub mod https;
 pub mod matchers;
@@ -35,5 +36,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(url_manipulation::get_all_tests());
     tests.extend(status_redirect::get_all_tests());
     tests.extend(filters::get_all_tests());
+    tests.extend(dns::get_all_tests());
     tests
 }

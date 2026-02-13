@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
+use crate::dns::DnsResolver;
 use crate::http::handle_http_request;
 use crate::logging::RequestContext;
 use crate::tunnel::handle_connect;
@@ -135,6 +136,8 @@ pub struct ResolvedRules {
     pub css_append: Option<String>,
     pub css_prepend: Option<String>,
     pub css_body: Option<String>,
+
+    pub dns_servers: Vec<String>,
 }
 
 pub trait RulesResolver: Send + Sync {
@@ -186,6 +189,7 @@ pub struct ProxyServer {
     admin_state: Option<Arc<AdminState>>,
     admin_security_config: AdminSecurityConfig,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    dns_resolver: Arc<DnsResolver>,
 }
 
 impl ProxyServer {
@@ -196,6 +200,7 @@ impl ProxyServer {
             whitelist: config.client_whitelist.clone(),
             allow_lan: config.allow_lan,
         };
+        let dns_resolver = Arc::new(DnsResolver::new(config.verbose_logging));
         Self {
             config,
             rules: Arc::new(NoOpRulesResolver),
@@ -203,6 +208,7 @@ impl ProxyServer {
             admin_state: None,
             admin_security_config,
             access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
+            dns_resolver,
         }
     }
 
@@ -317,6 +323,7 @@ impl ProxyServer {
             let proxy_config = self.config.clone();
             let admin_state = self.admin_state.clone();
             let admin_security_config = self.admin_security_config.clone();
+            let dns_resolver = Arc::clone(&self.dns_resolver);
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
@@ -327,6 +334,7 @@ impl ProxyServer {
                     let proxy_config = proxy_config.clone();
                     let admin_state = admin_state.clone();
                     let admin_security_config = admin_security_config.clone();
+                    let dns_resolver = Arc::clone(&dns_resolver);
                     async move {
                         handle_request(
                             req,
@@ -336,6 +344,7 @@ impl ProxyServer {
                             proxy_config,
                             admin_state,
                             admin_security_config,
+                            dns_resolver,
                         )
                         .await
                     }
@@ -364,6 +373,7 @@ async fn handle_request(
     proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
     admin_security_config: AdminSecurityConfig,
+    dns_resolver: Arc<DnsResolver>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let ctx = RequestContext::new();
     let method = req.method().clone();
@@ -433,7 +443,8 @@ async fn handle_request(
             &proxy_config,
             verbose_logging,
             &ctx,
-            admin_state,
+            admin_state.clone(),
+            Some(dns_resolver),
         )
         .await
         {
@@ -460,6 +471,7 @@ async fn handle_request(
             proxy_config.unsafe_ssl,
             &ctx,
             admin_state.clone(),
+            Some(dns_resolver),
         )
         .await
         {

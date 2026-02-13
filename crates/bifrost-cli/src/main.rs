@@ -1185,6 +1185,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                         result.res_speed = Some(speed);
                     }
                 }
+                Protocol::Dns => {
+                    result.dns_servers.push(value.to_string());
+                }
                 _ => {}
             }
         }

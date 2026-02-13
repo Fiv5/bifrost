@@ -15,6 +15,8 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info};
 
+use crate::dns::DnsResolver;
+
 use crate::body::{apply_body_rules, apply_content_injection, Phase};
 use crate::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::mock::{generate_mock_response, should_intercept_response};
@@ -106,6 +108,7 @@ pub async fn handle_http_request(
     unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let method = req.method().to_string();
@@ -228,11 +231,62 @@ pub async fn handle_http_request(
         )
     };
 
+    let dns_start = Instant::now();
+    let (connect_host, dns_ms) = if !resolved_rules.dns_servers.is_empty() {
+        if let Some(ref resolver) = dns_resolver {
+            if verbose_logging {
+                info!(
+                    "[{}] [DNS] resolving {} with custom servers: {:?}",
+                    ctx.id_str(),
+                    host,
+                    resolved_rules.dns_servers
+                );
+            }
+            match resolver.resolve(&host, &resolved_rules.dns_servers).await {
+                Ok(Some(ip)) => {
+                    let elapsed = dns_start.elapsed().as_millis() as u64;
+                    if verbose_logging {
+                        info!(
+                            "[{}] [DNS] resolved {} -> {} ({}ms)",
+                            ctx.id_str(),
+                            host,
+                            ip,
+                            elapsed
+                        );
+                    }
+                    (ip.to_string(), Some(elapsed))
+                }
+                Ok(None) => {
+                    debug!(
+                        "[{}] [DNS] custom DNS returned None, using original host",
+                        ctx.id_str()
+                    );
+                    (host.clone(), None)
+                }
+                Err(e) => {
+                    debug!(
+                        "[{}] [DNS] custom DNS failed: {}, using original host",
+                        ctx.id_str(),
+                        e
+                    );
+                    (host.clone(), None)
+                }
+            }
+        } else {
+            (host.clone(), None)
+        }
+    } else {
+        (host.clone(), None)
+    };
+
     let connect_start = Instant::now();
-    let stream = TcpStream::connect(format!("{}:{}", host, port))
+    let stream = TcpStream::connect(format!("{}:{}", connect_host, port))
         .await
         .map_err(|e| {
-            BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
+            BifrostError::Network(format!(
+                "Failed to connect to {}:{}: {}",
+                connect_host, port, e
+            ))
         })?;
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
@@ -383,7 +437,7 @@ pub async fn handle_http_request(
             record.response_size = 0;
             record.duration_ms = total_ms;
             record.timing = Some(RequestTiming {
-                dns_ms: None,
+                dns_ms,
                 connect_ms: Some(tcp_connect_ms),
                 tls_ms,
                 send_ms: None,
@@ -527,7 +581,7 @@ pub async fn handle_http_request(
         record.response_size = final_res_body.len();
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
-            dns_ms: None,
+            dns_ms,
             connect_ms: Some(tcp_connect_ms),
             tls_ms,
             send_ms: None,

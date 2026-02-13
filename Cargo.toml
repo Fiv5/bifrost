@@ -17,7 +17,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Bifrost Team"]
+authors = ["EdenLiu <hxfdarling@icloud.com>"]
 license = "MIT"
 
 [workspace.dependencies]

@@ -1,4 +1,5 @@
 mod body;
+pub mod dns;
 mod http;
 mod logging;
 mod mock;
@@ -13,6 +14,7 @@ mod url;
 mod websocket;
 
 pub use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
+pub use dns::DnsResolver;
 pub use http::*;
 pub use logging::*;
 pub use protocol::{

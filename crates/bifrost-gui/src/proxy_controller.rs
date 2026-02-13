@@ -88,6 +88,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::File => {
                     result.mock_file = Some(value.to_string());
                 }
+                Protocol::Dns => {
+                    result.dns_servers.push(value.to_string());
+                }
                 _ => {}
             }
         }

@@ -23,6 +23,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::body::{apply_body_rules, Phase};
+use crate::dns::DnsResolver;
 use crate::http::needs_body_processing;
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
@@ -104,6 +105,7 @@ pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_connect(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
@@ -112,6 +114,7 @@ pub async fn handle_connect(
     verbose_logging: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let authority = uri
@@ -199,12 +202,46 @@ pub async fn handle_connect(
         );
     }
 
-    let target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
+    let connect_host = if !resolved_rules.dns_servers.is_empty() {
+        if let Some(ref resolver) = dns_resolver {
+            if verbose_logging {
+                info!(
+                    "[{}] [DNS] resolving {} with custom servers: {:?}",
+                    ctx.id_str(),
+                    target_host,
+                    resolved_rules.dns_servers
+                );
+            }
+            match resolver
+                .resolve(&target_host, &resolved_rules.dns_servers)
+                .await
+            {
+                Ok(Some(ip)) => {
+                    if verbose_logging {
+                        info!(
+                            "[{}] [DNS] resolved {} -> {}",
+                            ctx.id_str(),
+                            target_host,
+                            ip
+                        );
+                    }
+                    ip.to_string()
+                }
+                Ok(None) | Err(_) => target_host.clone(),
+            }
+        } else {
+            target_host.clone()
+        }
+    } else {
+        target_host.clone()
+    };
+
+    let target_stream = TcpStream::connect(format!("{}:{}", connect_host, target_port))
         .await
         .map_err(|e| {
             BifrostError::Network(format!(
                 "Failed to connect to {}:{}: {}",
-                target_host, target_port, e
+                connect_host, target_port, e
             ))
         })?;
 

@@ -104,6 +104,9 @@ pub enum Protocol {
     // 高级功能
     SniCallback,
     Cipher,
+
+    // DNS 解析
+    Dns,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,6 +310,7 @@ impl Protocol {
             "jsPrepend" => Some(Protocol::JsPrepend),
             "cipher" => Some(Protocol::Cipher),
             "sniCallback" => Some(Protocol::SniCallback),
+            "dns" => Some(Protocol::Dns),
             _ => None,
         }
     }
@@ -397,6 +401,7 @@ impl Protocol {
             Protocol::JsPrepend => "jsPrepend",
             Protocol::Cipher => "cipher",
             Protocol::SniCallback => "sniCallback",
+            Protocol::Dns => "dns",
         }
     }
 
@@ -464,7 +469,8 @@ impl Protocol {
             | Protocol::Referer
             | Protocol::UrlParams
             | Protocol::Params
-            | Protocol::RulesFile => ProtocolCategory::Request,
+            | Protocol::RulesFile
+            | Protocol::Dns => ProtocolCategory::Request,
 
             Protocol::Host
             | Protocol::XHost
@@ -537,7 +543,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 78] = [
+pub const ALL_PROTOCOLS: [Protocol; 79] = [
     Protocol::G,
     Protocol::Style,
     Protocol::Host,
@@ -616,6 +622,7 @@ pub const ALL_PROTOCOLS: [Protocol; 78] = [
     Protocol::JsPrepend,
     Protocol::Cipher,
     Protocol::SniCallback,
+    Protocol::Dns,
 ];
 
 #[cfg(test)]
@@ -624,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 78);
+        assert_eq!(ALL_PROTOCOLS.len(), 79);
     }
 
     #[test]
@@ -708,6 +715,7 @@ mod tests {
             "jsPrepend",
             "cipher",
             "sniCallback",
+            "dns",
         ];
 
         for name in &protocol_names {
@@ -715,7 +723,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 78);
+        assert_eq!(protocol_names.len(), 79);
     }
 
     #[test]
@@ -970,7 +978,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 78);
+        assert_eq!(all.len(), 79);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
