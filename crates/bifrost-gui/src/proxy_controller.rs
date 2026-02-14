@@ -345,10 +345,6 @@ async fn run_proxy_server(
         client_whitelist: Vec::new(),
         allow_lan: settings.allow_lan,
         enable_tls_interception: settings.enable_tls_interception,
-        intercept_mode: match settings.intercept_mode {
-            crate::state::TlsInterceptMode::Blacklist => bifrost_proxy::TlsInterceptMode::Blacklist,
-            crate::state::TlsInterceptMode::Whitelist => bifrost_proxy::TlsInterceptMode::Whitelist,
-        },
         intercept_exclude: settings.intercept_exclude.clone(),
         intercept_include: settings.intercept_include.clone(),
         unsafe_ssl: settings.unsafe_ssl,

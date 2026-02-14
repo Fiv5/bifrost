@@ -24,33 +24,22 @@ use crate::http::handle_http_request;
 use crate::logging::RequestContext;
 use crate::tunnel::handle_connect;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TlsInterceptMode {
-    #[default]
-    Blacklist,
-    Whitelist,
+#[derive(Debug, Clone)]
+pub struct TlsInterceptConfig {
+    pub enable_tls_interception: bool,
+    pub intercept_exclude: Vec<String>,
+    pub intercept_include: Vec<String>,
+    pub unsafe_ssl: bool,
 }
 
-impl std::fmt::Display for TlsInterceptMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TlsInterceptMode::Blacklist => write!(f, "blacklist"),
-            TlsInterceptMode::Whitelist => write!(f, "whitelist"),
-        }
-    }
-}
-
-impl std::str::FromStr for TlsInterceptMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "blacklist" => Ok(TlsInterceptMode::Blacklist),
-            "whitelist" => Ok(TlsInterceptMode::Whitelist),
-            _ => Err(format!("Invalid TLS intercept mode: {}", s)),
+impl TlsInterceptConfig {
+    pub fn from_proxy_config(config: &ProxyConfig) -> Self {
+        Self {
+            enable_tls_interception: config.enable_tls_interception,
+            intercept_exclude: config.intercept_exclude.clone(),
+            intercept_include: config.intercept_include.clone(),
+            unsafe_ssl: config.unsafe_ssl,
         }
     }
 }
@@ -60,7 +49,6 @@ pub struct ProxyConfig {
     pub port: u16,
     pub host: String,
     pub enable_tls_interception: bool,
-    pub intercept_mode: TlsInterceptMode,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub timeout_secs: u64,
@@ -82,7 +70,6 @@ impl Default for ProxyConfig {
             port: 9900,
             host: "127.0.0.1".to_string(),
             enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::default(),
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
             timeout_secs: 30,
@@ -495,10 +482,23 @@ async fn handle_request(
     }
 
     if method == Method::CONNECT {
+        let tls_intercept_config = if let Some(ref state) = admin_state {
+            let runtime_config = state.runtime_config.read().await;
+            TlsInterceptConfig {
+                enable_tls_interception: runtime_config.enable_tls_interception,
+                intercept_exclude: runtime_config.intercept_exclude.clone(),
+                intercept_include: runtime_config.intercept_include.clone(),
+                unsafe_ssl: runtime_config.unsafe_ssl,
+            }
+        } else {
+            TlsInterceptConfig::from_proxy_config(&proxy_config)
+        };
+
         match handle_connect(
             req,
             rules,
             tls_config,
+            &tls_intercept_config,
             &proxy_config,
             verbose_logging,
             &ctx,
@@ -523,11 +523,17 @@ async fn handle_request(
             }
         }
     } else {
+        let unsafe_ssl = if let Some(ref state) = admin_state {
+            state.runtime_config.read().await.unsafe_ssl
+        } else {
+            proxy_config.unsafe_ssl
+        };
+
         match handle_http_request(
             req,
             rules,
             verbose_logging,
-            proxy_config.unsafe_ssl,
+            unsafe_ssl,
             proxy_config.max_body_buffer_size,
             &ctx,
             admin_state.clone(),
@@ -646,7 +652,6 @@ mod tests {
         assert_eq!(config.port, 9900);
         assert_eq!(config.host, "127.0.0.1");
         assert!(config.enable_tls_interception);
-        assert_eq!(config.intercept_mode, TlsInterceptMode::Blacklist);
         assert!(config.intercept_exclude.is_empty());
         assert!(config.intercept_include.is_empty());
         assert_eq!(config.timeout_secs, 30);
@@ -654,25 +659,6 @@ mod tests {
         assert!(!config.socks5_auth_required);
         assert!(config.socks5_username.is_none());
         assert!(config.socks5_password.is_none());
-    }
-
-    #[test]
-    fn test_tls_intercept_mode() {
-        assert_eq!(TlsInterceptMode::default(), TlsInterceptMode::Blacklist);
-        assert_eq!(format!("{}", TlsInterceptMode::Blacklist), "blacklist");
-        assert_eq!(format!("{}", TlsInterceptMode::Whitelist), "whitelist");
-
-        let mode: TlsInterceptMode = "blacklist".parse().unwrap();
-        assert_eq!(mode, TlsInterceptMode::Blacklist);
-
-        let mode: TlsInterceptMode = "whitelist".parse().unwrap();
-        assert_eq!(mode, TlsInterceptMode::Whitelist);
-
-        let mode: TlsInterceptMode = "WHITELIST".parse().unwrap();
-        assert_eq!(mode, TlsInterceptMode::Whitelist);
-
-        let result: std::result::Result<TlsInterceptMode, String> = "invalid".parse();
-        assert!(result.is_err());
     }
 
     #[test]
@@ -711,7 +697,6 @@ mod tests {
             port: 9000,
             host: "0.0.0.0".to_string(),
             enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Whitelist,
             intercept_exclude: vec!["*.example.com".to_string()],
             intercept_include: vec!["*.api.com".to_string()],
             timeout_secs: 60,
@@ -730,7 +715,6 @@ mod tests {
         assert_eq!(server.config().port, 9000);
         assert_eq!(server.config().host, "0.0.0.0");
         assert!(server.config().enable_tls_interception);
-        assert_eq!(server.config().intercept_mode, TlsInterceptMode::Whitelist);
         assert_eq!(server.config().socks5_port, Some(1080));
         assert!(server.config().socks5_auth_required);
         assert!(server.config().verbose_logging);

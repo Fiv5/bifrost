@@ -65,7 +65,7 @@ run_test() {
 
 test_get_default_tls_config() {
     local response
-    response=$(admin_get "/config/tls")
+    response=$(admin_get "/api/config/tls")
 
     assert_json_field "$response" ".enable_tls_interception" "true" "TLS interception should be enabled by default" || return 1
     assert_json_field "$response" ".intercept_mode" "blacklist" "Default mode should be blacklist" || return 1
@@ -75,7 +75,7 @@ test_get_default_tls_config() {
 
 test_switch_to_whitelist_mode() {
     local response
-    response=$(admin_put "/config/tls" '{"intercept_mode": "whitelist"}')
+    response=$(admin_put "/api/config/tls" '{"intercept_mode": "whitelist"}')
 
     assert_json_field "$response" ".intercept_mode" "whitelist" "Mode should be whitelist after update" || return 1
 
@@ -84,7 +84,7 @@ test_switch_to_whitelist_mode() {
 
 test_switch_back_to_blacklist_mode() {
     local response
-    response=$(admin_put "/config/tls" '{"intercept_mode": "blacklist"}')
+    response=$(admin_put "/api/config/tls" '{"intercept_mode": "blacklist"}')
 
     assert_json_field "$response" ".intercept_mode" "blacklist" "Mode should be blacklist after update" || return 1
 
@@ -92,10 +92,10 @@ test_switch_back_to_blacklist_mode() {
 }
 
 test_update_include_list() {
-    admin_put "/config/tls" '{"intercept_mode": "whitelist"}' > /dev/null
+    admin_put "/api/config/tls" '{"intercept_mode": "whitelist"}' > /dev/null
 
     local response
-    response=$(admin_put "/config/tls" '{"intercept_include": ["*.api.example.com", "test.local"]}')
+    response=$(admin_put "/api/config/tls" '{"intercept_include": ["*.api.example.com", "test.local"]}')
 
     local include_list
     include_list=$(echo "$response" | jq -r '.intercept_include | length')
@@ -109,10 +109,10 @@ test_update_include_list() {
 }
 
 test_update_exclude_list() {
-    admin_put "/config/tls" '{"intercept_mode": "blacklist"}' > /dev/null
+    admin_put "/api/config/tls" '{"intercept_mode": "blacklist"}' > /dev/null
 
     local response
-    response=$(admin_put "/config/tls" '{"intercept_exclude": ["*.apple.com", "*.microsoft.com", "localhost"]}')
+    response=$(admin_put "/api/config/tls" '{"intercept_exclude": ["*.apple.com", "*.microsoft.com", "localhost"]}')
 
     local exclude_list
     exclude_list=$(echo "$response" | jq -r '.intercept_exclude | length')
@@ -127,7 +127,7 @@ test_update_exclude_list() {
 
 test_batch_update_mode_and_list() {
     local response
-    response=$(admin_put "/config/tls" '{
+    response=$(admin_put "/api/config/tls" '{
         "intercept_mode": "whitelist",
         "intercept_include": ["*.secure.com"],
         "enable_tls_interception": true
@@ -149,7 +149,7 @@ test_batch_update_mode_and_list() {
 
 test_disable_tls_interception() {
     local response
-    response=$(admin_put "/config/tls" '{"enable_tls_interception": false}')
+    response=$(admin_put "/api/config/tls" '{"enable_tls_interception": false}')
 
     assert_json_field "$response" ".enable_tls_interception" "false" "TLS interception should be disabled" || return 1
 
@@ -158,7 +158,7 @@ test_disable_tls_interception() {
 
 test_reenable_tls_interception() {
     local response
-    response=$(admin_put "/config/tls" '{"enable_tls_interception": true}')
+    response=$(admin_put "/api/config/tls" '{"enable_tls_interception": true}')
 
     assert_json_field "$response" ".enable_tls_interception" "true" "TLS interception should be re-enabled" || return 1
 
@@ -166,7 +166,7 @@ test_reenable_tls_interception() {
 }
 
 cleanup_tls_config() {
-    admin_put "/config/tls" '{
+    admin_put "/api/config/tls" '{
         "enable_tls_interception": true,
         "intercept_mode": "blacklist",
         "intercept_exclude": [],

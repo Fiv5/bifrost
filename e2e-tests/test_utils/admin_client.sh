@@ -374,3 +374,21 @@ get_metrics_history() {
     local limit="${1:-100}"
     admin_get "/api/metrics/history?limit=${limit}"
 }
+
+get_tls_config() {
+    admin_get "/api/config/tls"
+}
+
+update_tls_config() {
+    local data="$1"
+    admin_put "/api/config/tls" "$data"
+}
+
+set_unsafe_ssl() {
+    local unsafe_ssl="$1"
+    admin_put "/api/config/tls" "{\"unsafe_ssl\":${unsafe_ssl}}"
+}
+
+get_unsafe_ssl() {
+    admin_get "/api/config/tls" | jq -r '.unsafe_ssl'
+}

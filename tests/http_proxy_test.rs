@@ -287,7 +287,6 @@ fn test_proxy_config_custom() {
         port: 9000,
         host: "0.0.0.0".to_string(),
         enable_tls_interception: true,
-        intercept_mode: bifrost_proxy::TlsInterceptMode::default(),
         intercept_exclude: vec!["*.internal.com".to_string()],
         intercept_include: vec![],
         timeout_secs: 60,

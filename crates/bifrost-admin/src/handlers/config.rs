@@ -2,12 +2,11 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
-use crate::state::{SharedAdminState, TlsInterceptMode};
+use crate::state::SharedAdminState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
     pub enable_tls_interception: bool,
-    pub intercept_mode: TlsInterceptMode,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
@@ -23,7 +22,6 @@ pub struct ProxySettingsResponse {
 #[derive(Deserialize)]
 pub struct UpdateTlsConfigRequest {
     pub enable_tls_interception: Option<bool>,
-    pub intercept_mode: Option<TlsInterceptMode>,
     pub intercept_exclude: Option<Vec<String>>,
     pub intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
@@ -56,7 +54,6 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
     let response = ProxySettingsResponse {
         tls: TlsConfig {
             enable_tls_interception: runtime_config.enable_tls_interception,
-            intercept_mode: runtime_config.intercept_mode,
             intercept_exclude: runtime_config.intercept_exclude.clone(),
             intercept_include: runtime_config.intercept_include.clone(),
             unsafe_ssl: runtime_config.unsafe_ssl,
@@ -73,7 +70,6 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
 
     let tls_config = TlsConfig {
         enable_tls_interception: runtime_config.enable_tls_interception,
-        intercept_mode: runtime_config.intercept_mode,
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
@@ -107,10 +103,6 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
             runtime_config.enable_tls_interception = enable;
         }
 
-        if let Some(mode) = request.intercept_mode {
-            runtime_config.intercept_mode = mode;
-        }
-
         if let Some(exclude) = request.intercept_exclude {
             runtime_config.intercept_exclude = exclude;
         }
@@ -127,7 +119,6 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
     let runtime_config = state.runtime_config.read().await;
     let tls_config = TlsConfig {
         enable_tls_interception: runtime_config.enable_tls_interception,
-        intercept_mode: runtime_config.intercept_mode,
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,

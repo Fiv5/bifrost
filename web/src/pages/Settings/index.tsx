@@ -77,6 +77,7 @@ export default function Settings() {
   const [tlsLoading, setTlsLoading] = useState(false);
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
   const [newExcludePattern, setNewExcludePattern] = useState("");
+  const [newIncludePattern, setNewIncludePattern] = useState("");
 
   const fetchSystemProxy = async () => {
     try {
@@ -192,6 +193,48 @@ export default function Settings() {
       const result = await updateTlsConfig({ intercept_exclude: newList });
       setTlsConfig(result);
       message.success(`Removed ${pattern} from exclude list`);
+    } catch {
+      message.error("Failed to remove pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleAddIncludePattern = async () => {
+    if (!newIncludePattern.trim()) {
+      message.warning("Please enter a pattern");
+      return;
+    }
+
+    const pattern = newIncludePattern.trim();
+    if (tlsConfig?.intercept_include.includes(pattern)) {
+      message.warning("Pattern already exists");
+      return;
+    }
+
+    setTlsLoading(true);
+    try {
+      const newList = [...(tlsConfig?.intercept_include || []), pattern];
+      const result = await updateTlsConfig({ intercept_include: newList });
+      setTlsConfig(result);
+      setNewIncludePattern("");
+      message.success(`Added ${pattern} to include list`);
+    } catch {
+      message.error("Failed to add pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleRemoveIncludePattern = async (pattern: string) => {
+    setTlsLoading(true);
+    try {
+      const newList = (tlsConfig?.intercept_include || []).filter(
+        (p) => p !== pattern,
+      );
+      const result = await updateTlsConfig({ intercept_include: newList });
+      setTlsConfig(result);
+      message.success(`Removed ${pattern} from include list`);
     } catch {
       message.error("Failed to remove pattern");
     } finally {
@@ -505,7 +548,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   type="secondary"
                   style={{ display: "block", marginBottom: 8, fontSize: 12 }}
                 >
-                  Domains matching these patterns will bypass HTTPS interception
+                  Domains matching these patterns will NOT be intercepted (passthrough mode). Has higher priority than global switch. Useful for certificate pinning sites.
                 </Text>
                 <div style={{ maxHeight: 200, overflowY: "auto" }}>
                   {tlsConfig?.intercept_exclude.length === 0 ? (
@@ -517,6 +560,65 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           key={pattern}
                           closable
                           onClose={() => handleRemoveExcludePattern(pattern)}
+                        >
+                          {pattern}
+                        </Tag>
+                      ))}
+                    </Space>
+                  )}
+                </div>
+              </Card>
+            </Col>
+
+            <Col xs={24} lg={12}>
+              <Card
+                title={
+                  <Space>
+                    <LockOutlined />
+                    <span>Force Intercept Patterns</span>
+                    <Tag color="orange">{tlsConfig?.intercept_include.length || 0}</Tag>
+                  </Space>
+                }
+                size="small"
+                extra={
+                  <Space.Compact>
+                    <Input
+                      placeholder="*.api.example.com"
+                      value={newIncludePattern}
+                      onChange={(e) => setNewIncludePattern(e.target.value)}
+                      onPressEnter={handleAddIncludePattern}
+                      style={{ width: 150 }}
+                      size="small"
+                    />
+                    <Button
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      onClick={handleAddIncludePattern}
+                      size="small"
+                      loading={tlsLoading}
+                    >
+                      Add
+                    </Button>
+                  </Space.Compact>
+                }
+              >
+                <Text
+                  type="secondary"
+                  style={{ display: "block", marginBottom: 8, fontSize: 12 }}
+                >
+                  Domains matching these patterns will ALWAYS be intercepted, even when global interception is disabled. Has highest priority.
+                </Text>
+                <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                  {tlsConfig?.intercept_include.length === 0 ? (
+                    <Text type="secondary">No force intercept patterns configured</Text>
+                  ) : (
+                    <Space wrap>
+                      {tlsConfig?.intercept_include.map((pattern) => (
+                        <Tag
+                          key={pattern}
+                          color="orange"
+                          closable
+                          onClose={() => handleRemoveIncludePattern(pattern)}
                         >
                           {pattern}
                         </Tag>

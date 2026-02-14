@@ -34,30 +34,12 @@ pub enum TrafficDetailTab {
     Raw,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TlsInterceptMode {
-    #[default]
-    Blacklist,
-    Whitelist,
-}
-
-impl std::fmt::Display for TlsInterceptMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TlsInterceptMode::Blacklist => write!(f, "blacklist"),
-            TlsInterceptMode::Whitelist => write!(f, "whitelist"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySettings {
     pub port: u16,
     pub host: String,
     pub socks5_port: Option<u16>,
     pub enable_tls_interception: bool,
-    pub intercept_mode: TlsInterceptMode,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
@@ -71,7 +53,6 @@ impl Default for ProxySettings {
             host: "0.0.0.0".to_string(),
             socks5_port: None,
             enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::default(),
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
             unsafe_ssl: false,

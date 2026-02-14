@@ -30,7 +30,7 @@ use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
 use crate::server::{
     empty_body, full_body, BoxBody, ProxyConfig, ResolvedRules, RulesResolver, TlsConfig,
-    TlsInterceptMode,
+    TlsInterceptConfig,
 };
 use crate::tee::create_tee_body_with_store;
 
@@ -113,6 +113,7 @@ pub async fn handle_connect(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
+    tls_intercept_config: &TlsInterceptConfig,
     proxy_config: &ProxyConfig,
     verbose_logging: bool,
     ctx: &RequestContext,
@@ -141,17 +142,16 @@ pub async fn handle_connect(
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
-    let intercept = should_intercept_tls(&host, proxy_config, &tls_config, &resolved_rules);
+    let intercept = should_intercept_tls(&host, tls_intercept_config, &tls_config, &resolved_rules);
 
     if intercept {
         if verbose_logging {
             let reason = if resolved_rules.tls_intercept.is_some() {
                 "rule override"
+            } else if is_domain_included(&host, &tls_intercept_config.intercept_include) {
+                "in include list (force intercept)"
             } else {
-                match proxy_config.intercept_mode {
-                    TlsInterceptMode::Blacklist => "blacklist mode (not excluded)",
-                    TlsInterceptMode::Whitelist => "whitelist mode (included)",
-                }
+                "global interception enabled (not excluded)"
             };
             debug!(
                 "[{}] TLS interception enabled for {} ({})",
@@ -168,21 +168,18 @@ pub async fn handle_connect(
             tls_config,
             verbose_logging,
             proxy_config.max_body_buffer_size,
+            tls_intercept_config.unsafe_ssl,
             ctx,
             admin_state,
         )
         .await;
-    } else if proxy_config.enable_tls_interception
-        && tls_config.ca_cert.is_some()
-        && verbose_logging
-    {
+    } else if tls_config.ca_cert.is_some() && verbose_logging {
         let reason = if let Some(false) = resolved_rules.tls_intercept {
             "rule override (passthrough)"
+        } else if is_domain_excluded(&host, &tls_intercept_config.intercept_exclude) {
+            "in exclude list"
         } else {
-            match proxy_config.intercept_mode {
-                TlsInterceptMode::Blacklist => "domain excluded",
-                TlsInterceptMode::Whitelist => "domain not in whitelist",
-            }
+            "global interception disabled"
         };
         debug!(
             "[{}] TLS interception skipped for {} ({})",
@@ -326,6 +323,7 @@ async fn handle_tls_interception(
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
@@ -375,6 +373,7 @@ async fn handle_tls_interception(
             rules,
             verbose,
             max_body_buffer_size,
+            unsafe_ssl,
             &req_id,
             admin_state.clone(),
         )
@@ -407,6 +406,7 @@ async fn tls_intercept_tunnel(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<()> {
@@ -443,6 +443,7 @@ async fn tls_intercept_tunnel(
                 rules,
                 verbose,
                 max_body_buffer_size,
+                unsafe_ssl,
             )
             .await
         }
@@ -492,6 +493,7 @@ async fn handle_intercepted_request_with_protocol(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    unsafe_ssl: bool,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     if is_websocket_upgrade_request(&req) {
         return handle_intercepted_websocket(
@@ -845,7 +847,7 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
-    let client = get_https_pooled_client();
+    let client = get_https_client(unsafe_ssl);
     let send_start = Instant::now();
     let response = match client.request(outgoing_req).await {
         Ok(r) => r,
@@ -1853,7 +1855,7 @@ fn is_domain_included(host: &str, include_list: &[String]) -> bool {
 
 pub fn should_intercept_tls(
     host: &str,
-    proxy_config: &ProxyConfig,
+    tls_intercept_config: &TlsInterceptConfig,
     tls_config: &TlsConfig,
     resolved_rules: &ResolvedRules,
 ) -> bool {
@@ -1865,14 +1867,15 @@ pub fn should_intercept_tls(
         return rule_intercept;
     }
 
-    if !proxy_config.enable_tls_interception {
+    if is_domain_included(host, &tls_intercept_config.intercept_include) {
+        return true;
+    }
+
+    if is_domain_excluded(host, &tls_intercept_config.intercept_exclude) {
         return false;
     }
 
-    match proxy_config.intercept_mode {
-        TlsInterceptMode::Blacklist => !is_domain_excluded(host, &proxy_config.intercept_exclude),
-        TlsInterceptMode::Whitelist => is_domain_included(host, &proxy_config.intercept_include),
-    }
+    tls_intercept_config.enable_tls_interception
 }
 
 pub fn parse_connect_authority(authority: &str) -> Result<(String, u16)> {
@@ -2072,14 +2075,31 @@ mod tests {
         }
     }
 
+    fn make_tls_intercept_config(
+        enable: bool,
+        exclude: Vec<String>,
+        include: Vec<String>,
+    ) -> TlsInterceptConfig {
+        TlsInterceptConfig {
+            enable_tls_interception: enable,
+            intercept_exclude: exclude,
+            intercept_include: include,
+            unsafe_ssl: false,
+        }
+    }
+
     #[test]
     fn test_should_intercept_no_ca_cert() {
-        let proxy_config = ProxyConfig::default();
+        let tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
         let tls_config = make_tls_config_without_ca();
         let resolved_rules = ResolvedRules::default();
 
-        let result =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
+        let result = should_intercept_tls(
+            "example.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(
             !result,
             "Should NOT intercept when CA cert is not available"
@@ -2088,129 +2108,141 @@ mod tests {
     }
 
     #[test]
-    fn test_should_intercept_blacklist_mode_default() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Blacklist,
-            intercept_exclude: vec![],
-            ..Default::default()
-        };
+    fn test_should_intercept_enabled_default() {
+        let tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules::default();
 
-        let result =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
-        assert!(
-            result,
-            "Should intercept in blacklist mode with empty exclude list"
+        let result = should_intercept_tls(
+            "example.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
         );
-        println!("✓ Blacklist mode (empty exclude): intercept={}", result);
+        assert!(result, "Should intercept when enabled with empty lists");
+        println!("✓ Enabled (empty lists): intercept={}", result);
     }
 
     #[test]
-    fn test_should_intercept_blacklist_mode_excluded() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Blacklist,
-            intercept_exclude: vec!["*.apple.com".to_string(), "example.com".to_string()],
-            ..Default::default()
-        };
+    fn test_should_intercept_excluded_domains() {
+        let tls_intercept_config = make_tls_intercept_config(
+            true,
+            vec!["*.apple.com".to_string(), "example.com".to_string()],
+            vec![],
+        );
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules::default();
 
-        let result1 =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
+        let result1 = should_intercept_tls(
+            "example.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(!result1, "Should NOT intercept excluded domain");
-        println!(
-            "✓ Blacklist mode (example.com excluded): intercept={}",
-            result1
-        );
+        println!("✓ Excluded (example.com): intercept={}", result1);
 
-        let result2 =
-            should_intercept_tls("api.apple.com", &proxy_config, &tls_config, &resolved_rules);
+        let result2 = should_intercept_tls(
+            "api.apple.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(!result2, "Should NOT intercept wildcard excluded domain");
-        println!(
-            "✓ Blacklist mode (*.apple.com excluded): intercept={}",
-            result2
-        );
+        println!("✓ Excluded (*.apple.com): intercept={}", result2);
 
-        let result3 =
-            should_intercept_tls("other.com", &proxy_config, &tls_config, &resolved_rules);
+        let result3 = should_intercept_tls(
+            "other.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(result3, "Should intercept non-excluded domain");
-        println!(
-            "✓ Blacklist mode (other.com not excluded): intercept={}",
-            result3
-        );
+        println!("✓ Not excluded (other.com): intercept={}", result3);
     }
 
     #[test]
-    fn test_should_intercept_whitelist_mode_empty() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Whitelist,
-            intercept_include: vec![],
-            ..Default::default()
-        };
+    fn test_should_intercept_include_force_intercept() {
+        let tls_intercept_config = make_tls_intercept_config(
+            false,
+            vec![],
+            vec!["*.api.example.com".to_string(), "secure.local".to_string()],
+        );
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules::default();
 
-        let result =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
+        let result1 = should_intercept_tls(
+            "secure.local",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(
-            !result,
-            "Should NOT intercept in whitelist mode with empty include list"
+            result1,
+            "Should intercept included domain even when globally disabled"
         );
-        println!("✓ Whitelist mode (empty include): intercept={}", result);
-    }
-
-    #[test]
-    fn test_should_intercept_whitelist_mode_included() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Whitelist,
-            intercept_include: vec!["*.api.example.com".to_string(), "secure.local".to_string()],
-            ..Default::default()
-        };
-        let tls_config = make_tls_config_with_ca();
-        let resolved_rules = ResolvedRules::default();
-
-        let result1 =
-            should_intercept_tls("secure.local", &proxy_config, &tls_config, &resolved_rules);
-        assert!(result1, "Should intercept whitelisted domain");
         println!(
-            "✓ Whitelist mode (secure.local included): intercept={}",
+            "✓ Included (secure.local, global disabled): intercept={}",
             result1
         );
 
         let result2 = should_intercept_tls(
             "test.api.example.com",
-            &proxy_config,
+            &tls_intercept_config,
             &tls_config,
             &resolved_rules,
         );
-        assert!(result2, "Should intercept wildcard whitelisted domain");
+        assert!(
+            result2,
+            "Should intercept wildcard included domain even when globally disabled"
+        );
         println!(
-            "✓ Whitelist mode (*.api.example.com included): intercept={}",
+            "✓ Included (*.api.example.com, global disabled): intercept={}",
             result2
         );
 
-        let result3 =
-            should_intercept_tls("other.com", &proxy_config, &tls_config, &resolved_rules);
-        assert!(!result3, "Should NOT intercept non-whitelisted domain");
+        let result3 = should_intercept_tls(
+            "other.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result3,
+            "Should NOT intercept non-included domain when globally disabled"
+        );
         println!(
-            "✓ Whitelist mode (other.com not included): intercept={}",
+            "✓ Not included (other.com, global disabled): intercept={}",
             result3
         );
     }
 
     #[test]
+    fn test_should_intercept_include_has_highest_priority() {
+        let tls_intercept_config = make_tls_intercept_config(
+            true,
+            vec!["secure.local".to_string()],
+            vec!["secure.local".to_string()],
+        );
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls(
+            "secure.local",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Include list should have higher priority than exclude list"
+        );
+        println!("✓ Include > Exclude priority: intercept={}", result);
+    }
+
+    #[test]
     fn test_should_intercept_rule_override_intercept() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Whitelist,
-            intercept_include: vec![],
-            ..Default::default()
-        };
+        let tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules {
             tls_intercept: Some(true),
@@ -2219,7 +2251,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "any.domain.com",
-            &proxy_config,
+            &tls_intercept_config,
             &tls_config,
             &resolved_rules,
         );
@@ -2232,12 +2264,7 @@ mod tests {
 
     #[test]
     fn test_should_intercept_rule_override_passthrough() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: true,
-            intercept_mode: TlsInterceptMode::Blacklist,
-            intercept_exclude: vec![],
-            ..Default::default()
-        };
+        let tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules {
             tls_intercept: Some(false),
@@ -2246,7 +2273,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "any.domain.com",
-            &proxy_config,
+            &tls_intercept_config,
             &tls_config,
             &resolved_rules,
         );
@@ -2259,35 +2286,35 @@ mod tests {
 
     #[test]
     fn test_should_intercept_disabled_globally() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: false,
-            intercept_mode: TlsInterceptMode::Blacklist,
-            ..Default::default()
-        };
+        let tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules::default();
 
-        let result =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
+        let result = should_intercept_tls(
+            "example.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(!result, "Should NOT intercept when globally disabled");
         println!("✓ Global disabled: intercept={}", result);
     }
 
     #[test]
     fn test_should_intercept_rule_overrides_global_disable() {
-        let proxy_config = ProxyConfig {
-            enable_tls_interception: false,
-            intercept_mode: TlsInterceptMode::Blacklist,
-            ..Default::default()
-        };
+        let tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules {
             tls_intercept: Some(true),
             ..Default::default()
         };
 
-        let result =
-            should_intercept_tls("example.com", &proxy_config, &tls_config, &resolved_rules);
+        let result = should_intercept_tls(
+            "example.com",
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
         assert!(
             result,
             "Rule override should work even when globally disabled"

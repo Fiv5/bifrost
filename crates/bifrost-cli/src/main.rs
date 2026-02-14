@@ -8,7 +8,7 @@ use bifrost_core::{
 };
 use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
-    RulesResolver as ProxyRulesResolverTrait, TlsConfig, TlsInterceptMode,
+    RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
 use bifrost_storage::{BifrostConfig, RuleFile, RulesStorage, StateManager, ValuesStorage};
 use bifrost_tls::{
@@ -34,6 +34,10 @@ EXAMPLES:
     bifrost -p 8080              Start proxy on port 8080
     bifrost start --daemon       Start proxy as background daemon
     bifrost start --no-intercept Start proxy without TLS interception
+    bifrost start --intercept-exclude '*.apple.com,*.microsoft.com'
+                                 Exclude domains from TLS interception
+    bifrost start --intercept-include '*.api.local'
+                                 Force intercept specific domains (works even with --no-intercept)
     bifrost status               Show proxy status
     bifrost stop                 Stop the running proxy
 
@@ -55,14 +59,18 @@ start [OPTIONS]                   Start the proxy server (default)
   --whitelist <IPS>                 Client IP whitelist (comma-separated, supports CIDR)
   --allow-lan                       Allow LAN (private network) clients
   --no-intercept                    Disable TLS/HTTPS interception
-  --intercept-mode <MODE>           TLS interception mode: blacklist (default) or whitelist
-  --intercept-exclude <DOMAINS>     Exclude domains from interception (blacklist mode)
-  --intercept-include <DOMAINS>     Include domains for interception (whitelist mode)
+  --intercept-exclude <DOMAINS>     Exclude domains from interception (supports wildcards)
+  --intercept-include <DOMAINS>     Force intercept domains (highest priority, overrides --no-intercept)
   --unsafe-ssl                      Skip upstream TLS verification (dangerous)
   --rules <RULE>                    Proxy rule (can be repeated)
   --rules-file <PATH>               Path to rules file
   --system-proxy                    Enable system proxy
   --proxy-bypass <LIST>             System proxy bypass list
+
+  TLS Interception Priority (highest to lowest):
+    1. --intercept-include: Always intercept matched domains
+    2. --intercept-exclude: Never intercept matched domains
+    3. --no-intercept flag: Global switch (default: enabled)
 
 stop                              Stop the running proxy
 
@@ -176,16 +184,14 @@ enum Commands {
         allow_lan: bool,
         #[arg(long, help = "Disable TLS/HTTPS interception (default: enabled)")]
         no_intercept: bool,
-        #[arg(long, help = "TLS interception mode: blacklist (default) or whitelist")]
-        intercept_mode: Option<String>,
         #[arg(
             long,
-            help = "Domains to exclude from TLS interception (comma-separated, supports wildcards like *.example.com)"
+            help = "Domains to exclude from TLS interception (comma-separated, supports wildcards like *.example.com). Has higher priority than global switch."
         )]
         intercept_exclude: Option<String>,
         #[arg(
             long,
-            help = "Domains to include for TLS interception in whitelist mode (comma-separated, supports wildcards)"
+            help = "Domains to force TLS interception (comma-separated, supports wildcards). Has highest priority, works even when interception is disabled."
         )]
         intercept_include: Option<String>,
         #[arg(
@@ -492,7 +498,6 @@ fn main() {
             ref whitelist,
             allow_lan,
             no_intercept,
-            ref intercept_mode,
             ref intercept_exclude,
             ref intercept_include,
             unsafe_ssl,
@@ -508,7 +513,6 @@ fn main() {
             whitelist.clone(),
             allow_lan,
             no_intercept,
-            intercept_mode.clone(),
             intercept_exclude.clone(),
             intercept_include.clone(),
             unsafe_ssl,
@@ -536,7 +540,6 @@ fn main() {
             false,
             None,
             None,
-            None,
             false,
             vec![],
             None,
@@ -560,7 +563,6 @@ fn run_start(
     whitelist: Option<String>,
     allow_lan: bool,
     no_intercept: bool,
-    intercept_mode: Option<String>,
     intercept_exclude: Option<String>,
     intercept_include: Option<String>,
     unsafe_ssl: bool,
@@ -616,18 +618,6 @@ fn run_start(
 
     let enable_tls_interception = !no_intercept;
 
-    let parsed_intercept_mode: TlsInterceptMode = match intercept_mode {
-        Some(mode) => mode.parse().unwrap_or_default(),
-        None => {
-            let config = load_config();
-            config
-                .intercept_mode
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or_default()
-        }
-    };
-
     let exclude_list: Vec<String> = match intercept_exclude {
         Some(list) => list
             .split(',')
@@ -661,7 +651,6 @@ fn run_start(
         client_whitelist,
         allow_lan: allow_lan_final,
         enable_tls_interception,
-        intercept_mode: parsed_intercept_mode,
         intercept_exclude: exclude_list.clone(),
         intercept_include: include_list.clone(),
         unsafe_ssl,
@@ -677,26 +666,15 @@ fn run_start(
         println!("LAN (private network) access: enabled");
     }
     if enable_tls_interception {
-        println!(
-            "TLS interception: enabled (mode: {})",
-            parsed_intercept_mode
-        );
-        match parsed_intercept_mode {
-            TlsInterceptMode::Blacklist => {
-                if !exclude_list.is_empty() {
-                    println!("  Excluded domains: {:?}", exclude_list);
-                }
-            }
-            TlsInterceptMode::Whitelist => {
-                if include_list.is_empty() {
-                    println!("  ⚠️  WARNING: Whitelist mode enabled but no domains specified");
-                } else {
-                    println!("  Included domains: {:?}", include_list);
-                }
-            }
+        println!("TLS interception: enabled");
+        if !exclude_list.is_empty() {
+            println!("  Excluded domains: {:?}", exclude_list);
         }
     } else {
         println!("TLS interception: disabled");
+    }
+    if !include_list.is_empty() {
+        println!("  Force intercept domains: {:?}", include_list);
     }
     if unsafe_ssl {
         println!("⚠️  WARNING: Upstream TLS certificate verification is DISABLED (--unsafe-ssl)");
