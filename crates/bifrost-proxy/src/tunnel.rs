@@ -277,6 +277,7 @@ pub async fn handle_connect(
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
+    let client_ip = ctx.client_ip.clone();
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
@@ -287,6 +288,18 @@ pub async fn handle_connect(
 
         let conn_info = ConnectionInfo::new(req_id.clone(), host.clone(), port, false, cancel_tx);
         state.connection_registry.register(conn_info);
+
+        let mut record = TrafficRecord::new(
+            req_id.clone(),
+            "CONNECT".to_string(),
+            format!("tunnel://{}:{}", host, port),
+        );
+        record.status = 200;
+        record.protocol = "tunnel".to_string();
+        record.host = host.clone();
+        record.is_tunnel = true;
+        record.client_ip = client_ip;
+        state.traffic_recorder.record(record);
     }
 
     let host_for_unregister = host.clone();
