@@ -1,4 +1,5 @@
 mod body_store;
+pub mod connection_registry;
 mod handlers;
 mod metrics;
 mod router;
@@ -9,6 +10,9 @@ mod traffic;
 pub mod websocket_monitor;
 
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
+pub use connection_registry::{
+    ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
+};
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,

@@ -64,6 +64,7 @@ pub struct BifrostConfig {
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub system_proxy: SystemProxyConfig,
+    pub disconnect_on_config_change: bool,
 }
 
 impl Default for BifrostConfig {
@@ -82,6 +83,7 @@ impl Default for BifrostConfig {
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
             system_proxy: SystemProxyConfig::default(),
+            disconnect_on_config_change: true,
         }
     }
 }

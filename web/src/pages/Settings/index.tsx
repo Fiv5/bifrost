@@ -60,7 +60,12 @@ import {
   updateTlsConfig,
   type TlsConfig,
 } from "../../api/config";
-import { getCertInfo, getCertDownloadUrl, getCertQRCodeUrl, type CertInfo } from "../../api/cert";
+import {
+  getCertInfo,
+  getCertDownloadUrl,
+  getCertQRCodeUrl,
+  type CertInfo,
+} from "../../api/cert";
 import type { PendingAuth, TrafficTypeMetrics } from "../../types";
 
 const { Text, Paragraph } = Typography;
@@ -150,6 +155,25 @@ export default function Settings() {
         enabled
           ? "Certificate verification disabled"
           : "Certificate verification enabled",
+      );
+    } catch {
+      message.error("Failed to update TLS config");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleDisconnectOnConfigChangeToggle = async (enabled: boolean) => {
+    setTlsLoading(true);
+    try {
+      const result = await updateTlsConfig({
+        disconnect_on_config_change: enabled,
+      });
+      setTlsConfig(result);
+      message.success(
+        enabled
+          ? "Auto-disconnect on config change enabled"
+          : "Auto-disconnect on config change disabled",
       );
     } catch {
       message.error("Failed to update TLS config");
@@ -508,6 +532,27 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       style={{ marginTop: 8 }}
                     />
                   )}
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col>
+                      <Tooltip title="Automatically disconnect affected connections when TLS config changes">
+                        <Text>Auto-disconnect on Config Change</Text>
+                      </Tooltip>
+                    </Col>
+                    <Col>
+                      <Switch
+                        checked={tlsConfig?.disconnect_on_config_change}
+                        loading={tlsLoading}
+                        onChange={handleDisconnectOnConfigChangeToggle}
+                      />
+                    </Col>
+                  </Row>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    When enabled, existing connections will be closed when TLS
+                    settings change.
+                  </Text>
                 </Space>
               </Card>
             </Col>
@@ -548,7 +593,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   type="secondary"
                   style={{ display: "block", marginBottom: 8, fontSize: 12 }}
                 >
-                  Domains matching these patterns will NOT be intercepted (passthrough mode). Has higher priority than global switch. Useful for certificate pinning sites.
+                  Domains matching these patterns will NOT be intercepted
+                  (passthrough mode). Has higher priority than global switch.
+                  Useful for certificate pinning sites.
                 </Text>
                 <div style={{ maxHeight: 200, overflowY: "auto" }}>
                   {tlsConfig?.intercept_exclude.length === 0 ? (
@@ -576,7 +623,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   <Space>
                     <LockOutlined />
                     <span>Force Intercept Patterns</span>
-                    <Tag color="orange">{tlsConfig?.intercept_include.length || 0}</Tag>
+                    <Tag color="orange">
+                      {tlsConfig?.intercept_include.length || 0}
+                    </Tag>
                   </Space>
                 }
                 size="small"
@@ -606,11 +655,15 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   type="secondary"
                   style={{ display: "block", marginBottom: 8, fontSize: 12 }}
                 >
-                  Domains matching these patterns will ALWAYS be intercepted, even when global interception is disabled. Has highest priority.
+                  Domains matching these patterns will ALWAYS be intercepted,
+                  even when global interception is disabled. Has highest
+                  priority.
                 </Text>
                 <div style={{ maxHeight: 200, overflowY: "auto" }}>
                   {tlsConfig?.intercept_include.length === 0 ? (
-                    <Text type="secondary">No force intercept patterns configured</Text>
+                    <Text type="secondary">
+                      No force intercept patterns configured
+                    </Text>
                   ) : (
                     <Space wrap>
                       {tlsConfig?.intercept_include.map((pattern) => (

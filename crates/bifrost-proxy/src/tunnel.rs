@@ -2,7 +2,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, FrameDirection, FrameType, RequestTiming, TrafficRecord, TrafficType,
+    AdminState, ConnectionInfo, FrameDirection, FrameType, RequestTiming, TrafficRecord,
+    TrafficType,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -16,6 +17,7 @@ use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio_rustls::rustls::server::ResolvesServerCert;
 use tokio_rustls::rustls::sign::CertifiedKey;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -275,29 +277,48 @@ pub async fn handle_connect(
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
             .increment_connections_by_type(TrafficType::Tunnel);
+
+        let conn_info = ConnectionInfo::new(req_id.clone(), host.clone(), port, false, cancel_tx);
+        state.connection_registry.register(conn_info);
     }
+
+    let host_for_unregister = host.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                let result = tunnel_bidirectional(
+                let result = tunnel_bidirectional_with_cancel(
                     upgraded,
                     target_stream,
                     verbose,
                     &req_id,
                     admin_state.as_ref(),
+                    cancel_rx,
                 )
                 .await;
                 if let Some(ref state) = admin_state {
                     state
                         .metrics_collector
                         .decrement_connections_by_type(TrafficType::Tunnel);
+                    state.connection_registry.unregister(&req_id);
                 }
-                if let Err(e) = result {
-                    error!("[{}] Tunnel error: {}", req_id, e);
+                match result {
+                    Ok(cancelled) if cancelled => {
+                        info!(
+                            "[{}] Tunnel {}:{} closed due to config change",
+                            req_id, host_for_unregister, port
+                        );
+                    }
+                    Err(e) => {
+                        error!("[{}] Tunnel error: {}", req_id, e);
+                    }
+                    _ => {}
                 }
             }
             Err(e) => {
@@ -305,6 +326,7 @@ pub async fn handle_connect(
                     state
                         .metrics_collector
                         .decrement_connections_by_type(TrafficType::Tunnel);
+                    state.connection_registry.unregister(&req_id);
                 }
                 error!("[{}] Upgrade error: {}", req_id, e);
             }
@@ -343,14 +365,26 @@ async fn handle_tls_interception(
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
-    let original_host = original_host.to_string();
+    let original_host_owned = original_host.to_string();
+
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
             .increment_connections_by_type(TrafficType::Https);
+
+        let conn_info = ConnectionInfo::new(
+            req_id.clone(),
+            original_host_owned.clone(),
+            original_port,
+            true,
+            cancel_tx,
+        );
+        state.connection_registry.register(conn_info);
     }
 
+    let host_for_log = original_host_owned.clone();
     tokio::spawn(async move {
         let upgraded = match hyper::upgrade::on(req).await {
             Ok(u) => u,
@@ -359,16 +393,17 @@ async fn handle_tls_interception(
                     state
                         .metrics_collector
                         .decrement_connections_by_type(TrafficType::Https);
+                    state.connection_registry.unregister(&req_id);
                 }
                 error!("[{}] TLS interception upgrade error: {}", req_id, e);
                 return;
             }
         };
 
-        let result = tls_intercept_tunnel(
+        let result = tls_intercept_tunnel_with_cancel(
             upgraded,
             server_config,
-            &original_host,
+            &original_host_owned,
             original_port,
             rules,
             verbose,
@@ -376,6 +411,7 @@ async fn handle_tls_interception(
             unsafe_ssl,
             &req_id,
             admin_state.clone(),
+            cancel_rx,
         )
         .await;
 
@@ -383,14 +419,24 @@ async fn handle_tls_interception(
             state
                 .metrics_collector
                 .decrement_connections_by_type(TrafficType::Https);
+            state.connection_registry.unregister(&req_id);
         }
 
-        if let Err(e) = result {
-            if verbose {
-                warn!("[{}] TLS interception error: {}", req_id, e);
-            } else {
-                debug!("TLS interception error: {}", e);
+        match result {
+            Ok(cancelled) if cancelled => {
+                info!(
+                    "[{}] TLS intercept tunnel {}:{} closed due to config change",
+                    req_id, host_for_log, original_port
+                );
             }
+            Err(e) => {
+                if verbose {
+                    warn!("[{}] TLS interception error: {}", req_id, e);
+                } else {
+                    debug!("TLS interception error: {}", e);
+                }
+            }
+            _ => {}
         }
     });
 
@@ -398,6 +444,7 @@ async fn handle_tls_interception(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 async fn tls_intercept_tunnel(
     upgraded: Upgraded,
     server_config: ServerConfig,
@@ -465,6 +512,86 @@ async fn tls_intercept_tunnel(
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn tls_intercept_tunnel_with_cancel(
+    upgraded: Upgraded,
+    server_config: ServerConfig,
+    original_host: &str,
+    original_port: u16,
+    rules: Arc<dyn RulesResolver>,
+    verbose_logging: bool,
+    max_body_buffer_size: usize,
+    unsafe_ssl: bool,
+    req_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+    cancel_rx: oneshot::Receiver<()>,
+) -> Result<bool> {
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let client_tls = acceptor
+        .accept(TokioIo::new(upgraded))
+        .await
+        .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+
+    if verbose_logging {
+        debug!("[{}] TLS handshake with client completed", req_id);
+    }
+
+    let original_host_for_requests = original_host.to_string();
+    let original_port_for_requests = original_port;
+    let req_id_owned = req_id.to_string();
+    let admin_state_clone = admin_state.clone();
+    let rules_clone = rules.clone();
+    let verbose = verbose_logging;
+
+    let service = service_fn(move |req: Request<Incoming>| {
+        let original_host = original_host_for_requests.clone();
+        let original_port = original_port_for_requests;
+        let req_id = req_id_owned.clone();
+        let admin_state = admin_state_clone.clone();
+        let rules = rules_clone.clone();
+        async move {
+            handle_intercepted_request_with_protocol(
+                req,
+                &original_host,
+                original_port,
+                &req_id,
+                admin_state,
+                rules,
+                verbose,
+                max_body_buffer_size,
+                unsafe_ssl,
+            )
+            .await
+        }
+    });
+
+    let (client_read, client_write) = tokio::io::split(client_tls);
+    let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
+
+    let conn = ServerBuilder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(client_io, service)
+        .with_upgrades();
+
+    tokio::select! {
+        result = conn => {
+            if let Err(e) = result {
+                if verbose_logging {
+                    debug!("[{}] HTTP connection ended: {}", req_id, e);
+                }
+            }
+            Ok(false)
+        }
+        _ = cancel_rx => {
+            if verbose_logging {
+                debug!("[{}] TLS intercept tunnel cancelled by config change", req_id);
+            }
+            Ok(true)
+        }
+    }
 }
 
 fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
@@ -1817,6 +1944,99 @@ pub async fn tunnel_bidirectional(
             } else {
                 Err(BifrostError::Network(format!("Tunnel error: {}", e)))
             }
+        }
+    }
+}
+
+pub async fn tunnel_bidirectional_with_cancel(
+    upgraded: Upgraded,
+    target: TcpStream,
+    verbose_logging: bool,
+    req_id: &str,
+    admin_state: Option<&Arc<AdminState>>,
+    cancel_rx: oneshot::Receiver<()>,
+) -> Result<bool> {
+    let client = TokioIo::new(upgraded);
+    let (mut target_read, mut target_write) = target.into_split();
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut client_read = client_read;
+    let mut client_write = client_write;
+
+    let admin_state_clone = admin_state.cloned();
+    let admin_state_clone2 = admin_state.cloned();
+
+    let client_to_target = async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            target_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state_clone {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
+            }
+        }
+        target_write.shutdown().await?;
+        Ok::<_, std::io::Error>(())
+    };
+
+    let target_to_client = async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            let n = target_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&buf[..n]).await?;
+
+            if let Some(ref state) = admin_state_clone2 {
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    };
+
+    let bidirectional = async { tokio::try_join!(client_to_target, target_to_client) };
+
+    tokio::select! {
+        result = bidirectional => {
+            match result {
+                Ok(_) => {
+                    if verbose_logging {
+                        debug!("[{}] Tunnel closed normally", req_id);
+                    } else {
+                        debug!("Tunnel closed normally");
+                    }
+                    Ok(false)
+                }
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::ConnectionReset
+                        || e.kind() == std::io::ErrorKind::BrokenPipe
+                    {
+                        if verbose_logging {
+                            debug!("[{}] Tunnel closed: {}", req_id, e);
+                        } else {
+                            debug!("Tunnel closed: {}", e);
+                        }
+                        Ok(false)
+                    } else {
+                        Err(BifrostError::Network(format!("Tunnel error: {}", e)))
+                    }
+                }
+            }
+        }
+        _ = cancel_rx => {
+            if verbose_logging {
+                debug!("[{}] Tunnel cancelled by config change", req_id);
+            }
+            Ok(true)
         }
     }
 }

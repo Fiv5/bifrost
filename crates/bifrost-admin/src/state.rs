@@ -7,6 +7,7 @@ use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
 use crate::body_store::SharedBodyStore;
+use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
@@ -22,6 +23,7 @@ pub struct RuntimeConfig {
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
+    pub disconnect_on_config_change: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -31,6 +33,7 @@ impl Default for RuntimeConfig {
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
             unsafe_ssl: false,
+            disconnect_on_config_change: true,
         }
     }
 }
@@ -48,6 +51,7 @@ pub struct AdminState {
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub websocket_monitor: SharedWebSocketMonitor,
     pub runtime_config: SharedRuntimeConfig,
+    pub connection_registry: SharedConnectionRegistry,
 }
 
 impl AdminState {
@@ -65,6 +69,7 @@ impl AdminState {
             system_proxy_manager: None,
             websocket_monitor: Arc::new(WebSocketMonitor::new()),
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
+            connection_registry: Arc::new(ConnectionRegistry::default()),
         }
     }
 
@@ -120,6 +125,16 @@ impl AdminState {
 
     pub fn with_runtime_config_shared(mut self, config: SharedRuntimeConfig) -> Self {
         self.runtime_config = config;
+        self
+    }
+
+    pub fn with_connection_registry(mut self, registry: ConnectionRegistry) -> Self {
+        self.connection_registry = Arc::new(registry);
+        self
+    }
+
+    pub fn with_connection_registry_shared(mut self, registry: SharedConnectionRegistry) -> Self {
+        self.connection_registry = registry;
         self
     }
 }

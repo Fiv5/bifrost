@@ -274,6 +274,11 @@ impl ProxyServer {
         self
     }
 
+    pub fn with_admin_state_shared(mut self, admin_state: Arc<AdminState>) -> Self {
+        self.admin_state = Some(admin_state);
+        self
+    }
+
     pub fn config(&self) -> &ProxyConfig {
         &self.config
     }

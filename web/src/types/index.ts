@@ -182,6 +182,7 @@ export interface TlsConfig {
   intercept_exclude: string[];
   intercept_include: string[];
   unsafe_ssl: boolean;
+  disconnect_on_config_change: boolean;
 }
 
 export interface ProxySettings {

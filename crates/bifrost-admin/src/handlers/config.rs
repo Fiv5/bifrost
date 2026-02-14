@@ -10,6 +10,7 @@ pub struct TlsConfig {
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
+    pub disconnect_on_config_change: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +26,7 @@ pub struct UpdateTlsConfigRequest {
     pub intercept_exclude: Option<Vec<String>>,
     pub intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
+    pub disconnect_on_config_change: Option<bool>,
 }
 
 pub async fn handle_config(
@@ -57,6 +59,7 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
             intercept_exclude: runtime_config.intercept_exclude.clone(),
             intercept_include: runtime_config.intercept_include.clone(),
             unsafe_ssl: runtime_config.unsafe_ssl,
+            disconnect_on_config_change: runtime_config.disconnect_on_config_change,
         },
         port: state.port,
         host: "127.0.0.1".to_string(),
@@ -73,6 +76,7 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
+        disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };
 
     json_response(&tls_config)
@@ -96,23 +100,113 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
     };
 
+    let old_config = {
+        let config = state.runtime_config.read().await;
+        config.clone()
+    };
+
+    let mut affected_patterns: Vec<String> = Vec::new();
+    let mut global_changed = false;
+
     {
         let mut runtime_config = state.runtime_config.write().await;
 
         if let Some(enable) = request.enable_tls_interception {
+            if enable != runtime_config.enable_tls_interception {
+                global_changed = true;
+                tracing::info!(
+                    "TLS config changed: enable_tls_interception: {} -> {}",
+                    runtime_config.enable_tls_interception,
+                    enable
+                );
+            }
             runtime_config.enable_tls_interception = enable;
         }
 
-        if let Some(exclude) = request.intercept_exclude {
-            runtime_config.intercept_exclude = exclude;
+        if let Some(ref exclude) = request.intercept_exclude {
+            let added: Vec<_> = exclude
+                .iter()
+                .filter(|p| !old_config.intercept_exclude.contains(p))
+                .cloned()
+                .collect();
+            let removed: Vec<_> = old_config
+                .intercept_exclude
+                .iter()
+                .filter(|p| !exclude.contains(p))
+                .cloned()
+                .collect();
+
+            if !added.is_empty() || !removed.is_empty() {
+                tracing::info!(
+                    "TLS config changed: intercept_exclude added={:?}, removed={:?}",
+                    added,
+                    removed
+                );
+                affected_patterns.extend(added);
+                affected_patterns.extend(removed);
+            }
+            runtime_config.intercept_exclude = exclude.clone();
         }
 
-        if let Some(include) = request.intercept_include {
-            runtime_config.intercept_include = include;
+        if let Some(ref include) = request.intercept_include {
+            let added: Vec<_> = include
+                .iter()
+                .filter(|p| !old_config.intercept_include.contains(p))
+                .cloned()
+                .collect();
+            let removed: Vec<_> = old_config
+                .intercept_include
+                .iter()
+                .filter(|p| !include.contains(p))
+                .cloned()
+                .collect();
+
+            if !added.is_empty() || !removed.is_empty() {
+                tracing::info!(
+                    "TLS config changed: intercept_include added={:?}, removed={:?}",
+                    added,
+                    removed
+                );
+                affected_patterns.extend(added);
+                affected_patterns.extend(removed);
+            }
+            runtime_config.intercept_include = include.clone();
         }
 
         if let Some(unsafe_ssl) = request.unsafe_ssl {
             runtime_config.unsafe_ssl = unsafe_ssl;
+        }
+
+        if let Some(disconnect_on_change) = request.disconnect_on_config_change {
+            runtime_config.disconnect_on_config_change = disconnect_on_change;
+            tracing::info!(
+                "TLS config changed: disconnect_on_config_change = {}",
+                disconnect_on_change
+            );
+        }
+    }
+
+    if global_changed {
+        let new_enabled = state.runtime_config.read().await.enable_tls_interception;
+        let disconnected = state
+            .connection_registry
+            .disconnect_all_with_mode(!new_enabled);
+        if !disconnected.is_empty() {
+            tracing::info!(
+                "Global TLS switch change disconnected {} connections",
+                disconnected.len()
+            );
+        }
+    } else if !affected_patterns.is_empty() {
+        let disconnected = state
+            .connection_registry
+            .disconnect_by_host_pattern(&affected_patterns);
+        if !disconnected.is_empty() {
+            tracing::info!(
+                "TLS pattern change disconnected {} connections matching {:?}",
+                disconnected.len(),
+                affected_patterns
+            );
         }
     }
 
@@ -122,6 +216,7 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
+        disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };
 
     json_response(&tls_config)

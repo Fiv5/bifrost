@@ -62,6 +62,7 @@ start [OPTIONS]                   Start the proxy server (default)
   --intercept-exclude <DOMAINS>     Exclude domains from interception (supports wildcards)
   --intercept-include <DOMAINS>     Force intercept domains (highest priority, overrides --no-intercept)
   --unsafe-ssl                      Skip upstream TLS verification (dangerous)
+  --no-disconnect-on-config-change  Disable auto-disconnect when TLS config changes
   --rules <RULE>                    Proxy rule (can be repeated)
   --rules-file <PATH>               Path to rules file
   --system-proxy                    Enable system proxy
@@ -199,6 +200,11 @@ enum Commands {
             help = "Skip upstream server TLS certificate verification (dangerous, for testing only)"
         )]
         unsafe_ssl: bool,
+        #[arg(
+            long,
+            help = "Disable automatic disconnect of affected connections when TLS config changes"
+        )]
+        no_disconnect_on_config_change: bool,
         #[arg(
             long,
             help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000'). Can be specified multiple times."
@@ -417,15 +423,20 @@ ACCESS CONTROL
 TLS INTERCEPTION CONTROL
   Start options:
     --no-intercept                    Disable TLS/HTTPS interception completely
-    --intercept-mode blacklist        Intercept all except excluded domains (default)
-    --intercept-mode whitelist        Only intercept included domains
-    --intercept-exclude <DOMAINS>     Domains to skip (blacklist mode, comma-separated)
-    --intercept-include <DOMAINS>     Domains to intercept (whitelist mode, comma-separated)
+    --intercept-exclude <DOMAINS>     Domains to skip interception (comma-separated)
+    --intercept-include <DOMAINS>     Force intercept domains (highest priority, comma-separated)
     --unsafe-ssl                      Skip upstream TLS cert verification (dangerous)
+    --no-disconnect-on-config-change  Disable auto-disconnect when TLS config changes
 
   Rule-based TLS control (highest priority):
     example.com tlsIntercept://       Force TLS interception for matching domain
     example.com tlsPassthrough://     Force TLS passthrough for matching domain
+
+  TLS Interception Priority (highest to lowest):
+    1. Rule-based (tlsIntercept://, tlsPassthrough://)
+    2. --intercept-include: Always intercept matched domains
+    3. --intercept-exclude: Never intercept matched domains
+    4. --no-intercept flag: Global switch (default: enabled)
 
 ADMIN UI
   http://127.0.0.1:{port}/          Web-based admin interface
@@ -501,6 +512,7 @@ fn main() {
             ref intercept_exclude,
             ref intercept_include,
             unsafe_ssl,
+            no_disconnect_on_config_change,
             ref rules,
             ref rules_file,
             system_proxy,
@@ -516,6 +528,7 @@ fn main() {
             intercept_exclude.clone(),
             intercept_include.clone(),
             unsafe_ssl,
+            no_disconnect_on_config_change,
             rules.clone(),
             rules_file.clone(),
             system_proxy,
@@ -540,6 +553,7 @@ fn main() {
             false,
             None,
             None,
+            false,
             false,
             vec![],
             None,
@@ -566,6 +580,7 @@ fn run_start(
     intercept_exclude: Option<String>,
     intercept_include: Option<String>,
     unsafe_ssl: bool,
+    no_disconnect_on_config_change: bool,
     rules: Vec<String>,
     rules_file: Option<PathBuf>,
     system_proxy: bool,
@@ -760,6 +775,7 @@ fn run_start(
             all_values,
             enable_system_proxy,
             system_proxy_bypass,
+            no_disconnect_on_config_change,
         )?;
     }
 
@@ -1387,6 +1403,7 @@ fn run_foreground(
     cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
+    no_disconnect_on_config_change: bool,
 ) -> bifrost_core::Result<()> {
     let pid = std::process::id();
     write_pid(pid)?;
@@ -1600,7 +1617,20 @@ fn run_foreground(
             .map(|p| p.join("certs").join("ca.crt"))
             .ok();
 
-        let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
+        let runtime_config = bifrost_admin::RuntimeConfig {
+            enable_tls_interception: config.enable_tls_interception,
+            intercept_exclude: config.intercept_exclude.clone(),
+            intercept_include: config.intercept_include.clone(),
+            unsafe_ssl: config.unsafe_ssl,
+            disconnect_on_config_change: !no_disconnect_on_config_change,
+        };
+        let connection_registry =
+            bifrost_admin::ConnectionRegistry::new(!no_disconnect_on_config_change);
+
+        let mut admin_state = AdminState::new(config.port)
+            .with_body_store(body_store)
+            .with_runtime_config(runtime_config)
+            .with_connection_registry(connection_registry);
         if let Some(vs) = values_storage {
             admin_state = admin_state.with_values_storage(vs);
         }

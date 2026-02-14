@@ -28,6 +28,7 @@ url = "2"
 qrcode = "0.14"
 base64 = "0.22"
 regex = "1"
+dashmap = "6"
 
 [dev-dependencies]
 tokio-test = "0.4"

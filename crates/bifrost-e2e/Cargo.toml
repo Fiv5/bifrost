@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
+bifrost-admin = { path = "../bifrost-admin" }
+bifrost-tls = { path = "../bifrost-tls" }
 
 tokio = { workspace = true, features = [
   "full",

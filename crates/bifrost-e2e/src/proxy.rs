@@ -1,10 +1,12 @@
+use bifrost_admin::{AdminState, ConnectionRegistry, RuntimeConfig};
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
 };
 use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
-    RulesResolver as ProxyRulesResolverTrait,
+    RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
+use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -534,6 +536,108 @@ impl ProxyInstance {
             addr,
             shutdown_tx: Some(shutdown_tx),
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_admin(
+        port: u16,
+        rules: Vec<&str>,
+        enable_tls_interception: bool,
+        unsafe_ssl: bool,
+    ) -> Result<(Self, Arc<AdminState>), Box<dyn std::error::Error + Send + Sync>> {
+        let parsed_rules: Vec<Rule> = rules
+            .iter()
+            .filter_map(|r| parse_rules(r).ok())
+            .flatten()
+            .collect();
+
+        let resolver = Arc::new(RulesResolverAdapter {
+            inner: CoreRulesResolver::new(parsed_rules).with_values(HashMap::new()),
+        });
+        let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let config = ProxyConfig {
+            port,
+            host: "127.0.0.1".to_string(),
+            enable_tls_interception,
+            intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
+            timeout_secs: 30,
+            socks5_port: None,
+            socks5_auth_required: false,
+            socks5_username: None,
+            socks5_password: None,
+            verbose_logging: true,
+            access_mode: bifrost_proxy::AccessMode::AllowAll,
+            client_whitelist: Vec::new(),
+            allow_lan: true,
+            unsafe_ssl,
+            max_body_buffer_size: 32 * 1024 * 1024,
+        };
+
+        let tls_config = if enable_tls_interception {
+            init_crypto_provider();
+            let ca = generate_root_ca().map_err(|e| format!("Failed to generate CA: {}", e))?;
+            let ca_cert = ca
+                .certificate_der()
+                .map_err(|e| format!("Failed to get CA cert: {}", e))?;
+            let ca_key = ca.private_key_der();
+            let cert_generator = Arc::new(DynamicCertGenerator::new(Arc::new(ca)));
+            Arc::new(TlsConfig {
+                ca_cert: Some(ca_cert.to_vec()),
+                ca_key: Some(ca_key.secret_der().to_vec()),
+                cert_generator: Some(cert_generator),
+                sni_resolver: None,
+            })
+        } else {
+            Arc::new(TlsConfig::default())
+        };
+
+        let runtime_config = RuntimeConfig {
+            enable_tls_interception,
+            intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
+            unsafe_ssl,
+            disconnect_on_config_change: true,
+        };
+
+        let connection_registry = ConnectionRegistry::new(true);
+
+        let admin_state = AdminState::new(port)
+            .with_runtime_config(runtime_config)
+            .with_connection_registry(connection_registry);
+
+        let admin_state_arc = Arc::new(admin_state);
+
+        let server = ProxyServer::new(config)
+            .with_rules(resolver)
+            .with_tls_config(tls_config)
+            .with_admin_state_shared(admin_state_arc.clone());
+
+        tokio::spawn(async move {
+            tokio::select! {
+                result = server.run() => {
+                    if let Err(e) = result {
+                        tracing::error!("Proxy server error: {}", e);
+                    }
+                }
+                _ = shutdown_rx => {
+                    tracing::info!("Proxy server shutting down");
+                }
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        Ok((
+            Self {
+                addr,
+                shutdown_tx: Some(shutdown_tx),
+            },
+            admin_state_arc,
+        ))
     }
 
     pub fn addr(&self) -> SocketAddr {
