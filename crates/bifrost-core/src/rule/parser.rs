@@ -1164,4 +1164,39 @@ new_value
         extract_markdown_value_blocks(text, &mut values);
         assert_eq!(values.get("existing"), Some(&"new_value".to_string()));
     }
+
+    #[test]
+    fn test_parse_paren_content_with_space() {
+        let rules = parse_line("example.com reqHeaders://(X-Custom: value)").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].protocol, Protocol::ReqHeaders);
+        assert_eq!(rules[0].value, "(X-Custom: value)");
+    }
+
+    #[test]
+    fn test_parse_multiple_protocols_with_paren_content() {
+        let rules =
+            parse_line("*.api.test tlsIntercept:// reqHeaders://(X-Intercepted: true)").unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].protocol, Protocol::TlsIntercept);
+        assert_eq!(rules[1].protocol, Protocol::ReqHeaders);
+        assert_eq!(rules[1].value, "(X-Intercepted: true)");
+    }
+
+    #[test]
+    fn test_split_rule_parts_preserves_paren_content() {
+        let parts = split_rule_parts("example.com reqHeaders://(X-Header: with space)");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], "example.com");
+        assert_eq!(parts[1], "reqHeaders://(X-Header: with space)");
+    }
+
+    #[test]
+    fn test_split_rule_parts_multiple_protocols_with_paren() {
+        let parts = split_rule_parts("*.test tlsIntercept:// reqHeaders://(Auth: Bearer token)");
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "*.test");
+        assert_eq!(parts[1], "tlsIntercept://");
+        assert_eq!(parts[2], "reqHeaders://(Auth: Bearer token)");
+    }
 }

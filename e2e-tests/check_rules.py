@@ -42,6 +42,7 @@ class RuleError:
 
 SIMPLE_OPERATOR_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\S+)')
 OPERATOR_WITH_TRAILING_SPACE_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\s+)')
+PAREN_CONTENT_PATTERN = re.compile(r'([a-zA-Z][a-zA-Z0-9]*):\/\/(\([^)]*\))')
 
 LINE_BLOCK_START_PATTERN = re.compile(r'^line`')
 LINE_BLOCK_END_PATTERN = re.compile(r'^`$')
@@ -54,8 +55,14 @@ def check_value_has_space(value: str) -> Tuple[bool, Optional[str]]:
     检查操作符值是否合法（不含空格）
 
     返回: (is_valid, error_message)
+
+    特殊情况:
+    - 括号内容 (xxx) 中的空格是合法的
     """
     if not value:
+        return True, None
+
+    if value.startswith('(') and value.endswith(')'):
         return True, None
 
     if ' ' in value:
@@ -101,10 +108,17 @@ def check_operator_trailing_space(line: str) -> List[Tuple[str, str]]:
     检查操作符后是否紧跟空格 (xxx:// 后面有空格)
 
     返回: [(operator, error_marker), ...] 其中 error_marker 为空字符串表示 :// 后有空格
+
+    注意: 如果空格后跟另一个操作符 (如 tlsIntercept:// reqHeaders://...)，
+          则不认为是错误（多操作符语法）
     """
     results = []
     for m in OPERATOR_WITH_TRAILING_SPACE_PATTERN.finditer(line):
-        results.append((m.group(1), ''))
+        operator = m.group(1)
+        rest_of_line = line[m.end():]
+        if rest_of_line and SIMPLE_OPERATOR_PATTERN.match(rest_of_line):
+            continue
+        results.append((operator, ''))
     return results
 
 
@@ -113,10 +127,26 @@ def parse_rule_line(line: str) -> List[Tuple[str, str]]:
     解析规则行，提取所有 operator://value 对
 
     返回: [(operator, value), ...]
+
+    特殊处理:
+    1. 括号内容 protocol://(content with spaces) - 括号内的空格是合法的
     """
     results = []
-    for m in SIMPLE_OPERATOR_PATTERN.finditer(line):
+    processed_ranges = []
+
+    for m in PAREN_CONTENT_PATTERN.finditer(line):
         results.append((m.group(1), m.group(2)))
+        processed_ranges.append((m.start(), m.end()))
+
+    for m in SIMPLE_OPERATOR_PATTERN.finditer(line):
+        start, end = m.start(), m.end()
+        is_overlapping = any(
+            (start >= pr_start and start < pr_end) or (end > pr_start and end <= pr_end)
+            for pr_start, pr_end in processed_ranges
+        )
+        if not is_overlapping:
+            results.append((m.group(1), m.group(2)))
+
     return results
 
 

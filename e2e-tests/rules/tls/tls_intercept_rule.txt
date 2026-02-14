@@ -8,12 +8,7 @@
 *.passthrough.test tlsPassthrough://
 
 # 组合规则 - 解包后修改请求头
-*.api.test tlsIntercept://
-*.api.test reqHeaders://{intercepted_header}
+*.api.test tlsIntercept:// reqHeaders://(X-Intercepted: true)
 
 # 组合规则 - 透传模式，不会修改请求
 *.direct.test tlsPassthrough://
-
-```intercepted_header
-X-Intercepted: true
-```
