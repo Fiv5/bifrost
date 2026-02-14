@@ -32,6 +32,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             test_res_cookies_set,
         ),
         TestCase::standalone(
+            "res_cookies_with_attrs",
+            "ResCookies protocol: with advanced attributes",
+            "response_modification",
+            test_res_cookies_with_attrs,
+        ),
+        TestCase::standalone(
             "res_cors_all",
             "ResCors protocol: allow all origins",
             "response_modification",
@@ -42,6 +48,18 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "ResCors protocol: allow specific origin",
             "response_modification",
             test_res_cors_specific,
+        ),
+        TestCase::standalone(
+            "res_cors_json_config",
+            "ResCors protocol: JSON config with custom settings",
+            "response_modification",
+            test_res_cors_json_config,
+        ),
+        TestCase::standalone(
+            "res_cors_max_age",
+            "ResCors protocol: with max-age setting",
+            "response_modification",
+            test_res_cors_max_age,
         ),
         TestCase::standalone(
             "res_type_json",
@@ -221,6 +239,42 @@ async fn test_res_cookies_set() -> Result<(), String> {
     Ok(())
 }
 
+async fn test_res_cookies_with_attrs() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "ok");
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let cookie_config =
+        r#"{"auth_token":{"value":"xyz789","maxAge":3600,"secure":true,"httpOnly":true}}"#;
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            &format!("test.local resCookies://{}", cookie_config),
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_header_contains("set-cookie", "auth_token=xyz789")?;
+    result.assert_header_contains("set-cookie", "Max-Age=3600")?;
+    result.assert_header_contains("set-cookie", "Secure")?;
+    result.assert_header_contains("set-cookie", "HttpOnly")?;
+
+    Ok(())
+}
+
 async fn test_res_cors_all() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
     mock.set_response(200, "ok");
@@ -281,6 +335,74 @@ async fn test_res_cors_specific() -> Result<(), String> {
 
     result.assert_success()?;
     result.assert_header_contains("access-control-allow-origin", "allowed.example.com")?;
+
+    Ok(())
+}
+
+async fn test_res_cors_json_config() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "ok");
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let cors_config = r#"{"origin":"https://custom.example.com","methods":"GET,POST","headers":"X-Custom-Header"}"#;
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            &format!("test.local resCors://{}", cors_config),
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .header("Origin", "https://custom.example.com")
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_header_contains("access-control-allow-origin", "custom.example.com")?;
+    result.assert_header_contains("access-control-allow-methods", "GET,POST")?;
+    result.assert_header_contains("access-control-allow-headers", "X-Custom-Header")?;
+
+    Ok(())
+}
+
+async fn test_res_cors_max_age() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "ok");
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let cors_config = r#"{"origin":"*","maxAge":86400}"#;
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![
+            &format!("test.local host://127.0.0.1:{}", mock.port),
+            &format!("test.local resCors://{}", cors_config),
+        ],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/api",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_header_contains("access-control-allow-origin", "*")?;
+    result.assert_header_contains("access-control-max-age", "86400")?;
 
     Ok(())
 }

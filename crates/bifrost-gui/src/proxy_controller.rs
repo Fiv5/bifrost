@@ -82,8 +82,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::Ignore => {
                     result.ignored = true;
                 }
+                Protocol::ReqCors => {
+                    result.req_cors = bifrost_proxy::CorsConfig::enable_all();
+                }
                 Protocol::ResCors => {
-                    result.enable_cors = true;
+                    result.res_cors = bifrost_proxy::CorsConfig::enable_all();
                 }
                 Protocol::File => {
                     result.mock_file = Some(value.to_string());

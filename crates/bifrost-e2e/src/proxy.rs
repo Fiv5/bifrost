@@ -81,11 +81,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     }
                 }
                 Protocol::ResCookies => {
-                    if let Some(cookies) = parse_header_value(value) {
-                        for (k, v) in cookies {
-                            result.res_cookies.push((k, v));
-                        }
-                    }
+                    let parsed_cookies = parse_res_cookies_value(value);
+                    result.res_cookies.extend(parsed_cookies);
                 }
                 Protocol::StatusCode => {
                     if let Ok(code) = value.parse::<u16>() {
@@ -106,8 +103,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::Referer => {
                     result.referer = Some(value.to_string());
                 }
+                Protocol::ReqCors => {
+                    result.req_cors = parse_cors_config(value);
+                }
                 Protocol::ResCors => {
-                    result.enable_cors = true;
+                    result.res_cors = parse_cors_config(value);
                 }
                 Protocol::Proxy => {
                     result.proxy = Some(value.to_string());
@@ -362,6 +362,116 @@ fn parse_regex_pattern(s: &str) -> Option<(regex::Regex, bool)> {
         Ok(re) => Some((re, global)),
         Err(_) => None,
     }
+}
+
+fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
+    let value = value.trim();
+    if value.is_empty() || value == "*" || value.eq_ignore_ascii_case("enable") {
+        return bifrost_proxy::CorsConfig::enable_all();
+    }
+
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(value) {
+        let mut cors = bifrost_proxy::CorsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        if let Some(origin) = json_value.get("origin").and_then(|v| v.as_str()) {
+            cors.origin = Some(origin.to_string());
+        }
+        if let Some(methods) = json_value.get("methods").and_then(|v| v.as_str()) {
+            cors.methods = Some(methods.to_string());
+        }
+        if let Some(headers) = json_value.get("headers").and_then(|v| v.as_str()) {
+            cors.headers = Some(headers.to_string());
+        }
+        if let Some(expose) = json_value
+            .get("expose")
+            .or_else(|| json_value.get("exposeHeaders"))
+            .and_then(|v| v.as_str())
+        {
+            cors.expose_headers = Some(expose.to_string());
+        }
+        if let Some(creds) = json_value.get("credentials").and_then(|v| v.as_bool()) {
+            cors.credentials = Some(creds);
+        }
+        if let Some(max_age) = json_value
+            .get("maxAge")
+            .or_else(|| json_value.get("maxage"))
+        {
+            if let Some(age) = max_age.as_u64() {
+                cors.max_age = Some(age);
+            } else if let Some(age_str) = max_age.as_str() {
+                if let Ok(age) = age_str.parse::<u64>() {
+                    cors.max_age = Some(age);
+                }
+            }
+        }
+
+        return cors;
+    }
+
+    bifrost_proxy::CorsConfig::enable_all()
+}
+
+fn parse_res_cookies_value(value: &str) -> Vec<(String, bifrost_proxy::ResCookieValue)> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(value) {
+        if let Some(obj) = json.as_object() {
+            return obj
+                .iter()
+                .filter_map(|(name, val)| {
+                    let cookie_value = if val.is_string() {
+                        bifrost_proxy::ResCookieValue::simple(
+                            val.as_str().unwrap_or("").to_string(),
+                        )
+                    } else if let Some(obj) = val.as_object() {
+                        bifrost_proxy::ResCookieValue {
+                            value: obj
+                                .get("value")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            max_age: obj
+                                .get("maxAge")
+                                .or_else(|| obj.get("Max-Age"))
+                                .or_else(|| obj.get("max_age"))
+                                .and_then(|v| v.as_i64()),
+                            path: obj.get("path").and_then(|v| v.as_str()).map(String::from),
+                            domain: obj.get("domain").and_then(|v| v.as_str()).map(String::from),
+                            secure: obj.get("secure").and_then(|v| v.as_bool()).unwrap_or(false),
+                            http_only: obj
+                                .get("httpOnly")
+                                .or_else(|| obj.get("http_only"))
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            same_site: obj
+                                .get("sameSite")
+                                .or_else(|| obj.get("same_site"))
+                                .and_then(|v| v.as_str())
+                                .map(String::from),
+                        }
+                    } else {
+                        return None;
+                    };
+                    Some((name.clone(), cookie_value))
+                })
+                .collect();
+        }
+    }
+
+    if let Some(headers) = parse_header_value(value) {
+        return headers
+            .into_iter()
+            .map(|(k, v)| (k, bifrost_proxy::ResCookieValue::simple(v)))
+            .collect();
+    }
+
+    Vec::new()
 }
 
 fn parse_replace_value(value: &str) -> ParsedReplaceRules {

@@ -115,6 +115,129 @@ impl std::fmt::Debug for RegexReplace {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResCookieValue {
+    pub value: String,
+    pub max_age: Option<i64>,
+    pub path: Option<String>,
+    pub domain: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+}
+
+impl std::fmt::Display for ResCookieValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+impl ResCookieValue {
+    pub fn simple(value: String) -> Self {
+        Self {
+            value,
+            max_age: None,
+            path: None,
+            domain: None,
+            secure: false,
+            http_only: false,
+            same_site: None,
+        }
+    }
+
+    pub fn to_set_cookie_string(&self, name: &str) -> String {
+        let escaped_name = escape_cookie_name(name);
+        let escaped_value = escape_cookie_value(&self.value);
+        let mut parts = vec![format!("{}={}", escaped_name, escaped_value)];
+
+        if let Some(max_age) = self.max_age {
+            parts.push(format!("Max-Age={}", max_age));
+            let expires = chrono::Utc::now() + chrono::Duration::seconds(max_age);
+            parts.push(format!(
+                "Expires={}",
+                expires.format("%a, %d %b %Y %H:%M:%S GMT")
+            ));
+        }
+        if let Some(ref path) = self.path {
+            parts.push(format!("Path={}", path));
+        }
+        if let Some(ref domain) = self.domain {
+            parts.push(format!("Domain={}", domain));
+        }
+        if self.secure {
+            parts.push("Secure".to_string());
+        }
+        if self.http_only {
+            parts.push("HttpOnly".to_string());
+        }
+        if let Some(ref same_site) = self.same_site {
+            parts.push(format!("SameSite={}", same_site));
+        }
+
+        parts.join("; ")
+    }
+}
+
+fn escape_cookie_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.~!$&'()*+,;=".contains(c) {
+                c.to_string()
+            } else {
+                format!("%{:02X}", c as u32)
+            }
+        })
+        .collect()
+}
+
+fn escape_cookie_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii()
+                && !c.is_ascii_control()
+                && c != '"'
+                && c != ','
+                && c != ';'
+                && c != '\\'
+            {
+                c.to_string()
+            } else {
+                format!("%{:02X}", c as u32)
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CorsConfig {
+    pub enabled: bool,
+    pub origin: Option<String>,
+    pub methods: Option<String>,
+    pub headers: Option<String>,
+    pub expose_headers: Option<String>,
+    pub credentials: Option<bool>,
+    pub max_age: Option<u64>,
+}
+
+impl CorsConfig {
+    pub fn enable_all() -> Self {
+        Self {
+            enabled: true,
+            origin: Some("*".to_string()),
+            methods: None,
+            headers: None,
+            expose_headers: None,
+            credentials: Some(true),
+            max_age: None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedRules {
     pub host: Option<String>,
@@ -125,14 +248,17 @@ pub struct ResolvedRules {
     pub req_body: Option<Bytes>,
     pub res_body: Option<Bytes>,
     pub req_cookies: Vec<(String, String)>,
-    pub res_cookies: Vec<(String, String)>,
+    pub res_cookies: Vec<(String, ResCookieValue)>,
+    pub req_del_cookies: Vec<String>,
+    pub res_del_cookies: Vec<String>,
     pub req_delay: Option<u64>,
     pub res_delay: Option<u64>,
     pub status_code: Option<u16>,
     pub method: Option<String>,
     pub ua: Option<String>,
     pub referer: Option<String>,
-    pub enable_cors: bool,
+    pub req_cors: CorsConfig,
+    pub res_cors: CorsConfig,
     pub rules: Vec<RuleValue>,
 
     pub req_prepend: Option<Bytes>,
@@ -676,7 +802,8 @@ mod tests {
         assert!(rules.req_body.is_none());
         assert!(rules.res_body.is_none());
         assert!(rules.status_code.is_none());
-        assert!(!rules.enable_cors);
+        assert!(!rules.req_cors.is_enabled());
+        assert!(!rules.res_cors.is_enabled());
         assert!(rules.tls_intercept.is_none());
     }
 

@@ -131,8 +131,11 @@ pub fn format_rules_summary(rules: &ResolvedRules) -> String {
     if rules.referer.is_some() {
         parts.push("referer");
     }
-    if rules.enable_cors {
-        parts.push("cors");
+    if rules.req_cors.is_enabled() {
+        parts.push("req_cors");
+    }
+    if rules.res_cors.is_enabled() {
+        parts.push("res_cors");
     }
 
     if parts.is_empty() {
@@ -195,8 +198,11 @@ pub fn format_rules_detail(rules: &ResolvedRules) -> String {
     if let Some(ref referer) = rules.referer {
         lines.push(format!("  referer -> {}", referer));
     }
-    if rules.enable_cors {
-        lines.push("  cors: enabled".to_string());
+    if rules.req_cors.is_enabled() {
+        lines.push("  req_cors: enabled".to_string());
+    }
+    if rules.res_cors.is_enabled() {
+        lines.push("  res_cors: enabled".to_string());
     }
 
     if !rules.rules.is_empty() {
@@ -257,14 +263,15 @@ mod tests {
 
     #[test]
     fn test_format_rules_summary_with_rules() {
+        use crate::server::CorsConfig;
         let rules = ResolvedRules {
             host: Some("example.com".to_string()),
-            enable_cors: true,
+            res_cors: CorsConfig::enable_all(),
             ..Default::default()
         };
         let summary = format_rules_summary(&rules);
         assert!(summary.contains("host"));
-        assert!(summary.contains("cors"));
+        assert!(summary.contains("res_cors"));
     }
 
     #[test]
@@ -317,9 +324,13 @@ mod tests {
 
     #[test]
     fn test_format_rules_detail_with_cookies() {
+        use crate::server::ResCookieValue;
         let rules = ResolvedRules {
             req_cookies: vec![("session".to_string(), "abc123".to_string())],
-            res_cookies: vec![("token".to_string(), "xyz789".to_string())],
+            res_cookies: vec![(
+                "token".to_string(),
+                ResCookieValue::simple("xyz789".to_string()),
+            )],
             ..Default::default()
         };
         let detail = format_rules_detail(&rules);

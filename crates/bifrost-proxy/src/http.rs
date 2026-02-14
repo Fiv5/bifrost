@@ -260,10 +260,15 @@ pub async fn handle_http_request(
                 }
                 new_body.clone()
             } else {
+                let req_content_type = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok());
                 apply_body_rules(
                     bytes.clone(),
                     &resolved_rules,
                     Phase::Request,
+                    req_content_type,
                     verbose_logging,
                     ctx,
                 )
@@ -590,6 +595,7 @@ pub async fn handle_http_request(
             res_body_bytes.clone(),
             &resolved_rules,
             Phase::Response,
+            Some(&content_type),
             verbose_logging,
             ctx,
         );

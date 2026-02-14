@@ -11,13 +11,33 @@ pub enum Phase {
     Response,
 }
 
+fn is_binary_content_type(content_type: &str) -> bool {
+    let ct = content_type.to_lowercase();
+    ct.starts_with("image/")
+        || ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.starts_with("application/octet-stream")
+        || ct.starts_with("application/pdf")
+        || ct.starts_with("application/zip")
+        || ct.starts_with("application/gzip")
+        || ct.starts_with("application/x-tar")
+        || ct.starts_with("application/x-rar")
+        || ct.starts_with("application/x-7z")
+        || ct.starts_with("application/wasm")
+        || ct.starts_with("font/")
+        || ct.contains("protobuf")
+        || ct.contains("grpc")
+}
+
 pub fn apply_body_rules(
     body: Bytes,
     rules: &ResolvedRules,
     phase: Phase,
+    content_type: Option<&str>,
     verbose_logging: bool,
     ctx: &RequestContext,
 ) -> Bytes {
+    let skip_text_operations = content_type.map(is_binary_content_type).unwrap_or(false);
     let mut result = body;
 
     let (prepend, append, replace, replace_regex, merge, body_override) = match phase {
@@ -84,7 +104,7 @@ pub fn apply_body_rules(
         }
     }
 
-    if !replace.is_empty() {
+    if !replace.is_empty() && !skip_text_operations {
         let mut body_str = String::from_utf8_lossy(&result).into_owned();
         for (from, to) in replace {
             body_str = body_str.replace(from.as_str(), to.as_str());
@@ -98,9 +118,16 @@ pub fn apply_body_rules(
                 replace.len()
             );
         }
+    } else if !replace.is_empty() && skip_text_operations && verbose_logging {
+        debug!(
+            "[{}] [{:?}_REPLACE] skipped {} string replacements for binary content type",
+            ctx.id_str(),
+            phase,
+            replace.len()
+        );
     }
 
-    if !replace_regex.is_empty() {
+    if !replace_regex.is_empty() && !skip_text_operations {
         let mut body_str = String::from_utf8_lossy(&result).into_owned();
         for regex_rule in replace_regex {
             body_str = apply_regex_replace(&body_str, regex_rule);
@@ -114,6 +141,13 @@ pub fn apply_body_rules(
                 replace_regex.len()
             );
         }
+    } else if !replace_regex.is_empty() && skip_text_operations && verbose_logging {
+        debug!(
+            "[{}] [{:?}_REPLACE_REGEX] skipped {} regex replacements for binary content type",
+            ctx.id_str(),
+            phase,
+            replace_regex.len()
+        );
     }
 
     if let Some(merge_value) = merge {
@@ -184,6 +218,8 @@ pub fn apply_content_injection(
     body
 }
 
+const HTML_DOCTYPE: &str = "<!DOCTYPE html>";
+
 fn apply_html_injection(
     body: Bytes,
     rules: &ResolvedRules,
@@ -207,7 +243,18 @@ fn apply_html_injection(
     let mut html = String::from_utf8_lossy(&body).into_owned();
 
     if let Some(prepend_content) = prepend {
-        html = format!("{}{}", prepend_content, html);
+        let has_doctype = html.trim_start().to_lowercase().starts_with("<!doctype");
+        if has_doctype {
+            html = format!("{}{}", prepend_content, html);
+        } else {
+            html = format!("{}\n{}{}", HTML_DOCTYPE, prepend_content, html);
+            if verbose_logging {
+                debug!(
+                    "[{}] [HTML_PREPEND] added DOCTYPE automatically",
+                    ctx.id_str()
+                );
+            }
+        }
         if verbose_logging {
             debug!(
                 "[{}] [HTML_PREPEND] prepended {} chars",
@@ -339,7 +386,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_body_rules(body, &rules, Phase::Request, false, &mock_ctx());
+        let result = apply_body_rules(body, &rules, Phase::Request, None, false, &mock_ctx());
         assert_eq!(result, Bytes::from("prefix-original"));
     }
 
@@ -351,7 +398,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_body_rules(body, &rules, Phase::Request, false, &mock_ctx());
+        let result = apply_body_rules(body, &rules, Phase::Request, None, false, &mock_ctx());
         assert_eq!(result, Bytes::from("original-suffix"));
     }
 
@@ -363,7 +410,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_body_rules(body, &rules, Phase::Request, false, &mock_ctx());
+        let result = apply_body_rules(body, &rules, Phase::Request, None, false, &mock_ctx());
         assert_eq!(result, Bytes::from("hello rust"));
     }
 
@@ -375,7 +422,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_body_rules(body, &rules, Phase::Request, false, &mock_ctx());
+        let result = apply_body_rules(body, &rules, Phase::Request, None, false, &mock_ctx());
         let parsed: Value = serde_json::from_slice(&result).unwrap();
         assert_eq!(parsed["a"], 1);
         assert_eq!(parsed["b"], 3);
@@ -390,8 +437,27 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_body_rules(body, &rules, Phase::Request, false, &mock_ctx());
+        let result = apply_body_rules(body, &rules, Phase::Request, None, false, &mock_ctx());
         assert_eq!(result, Bytes::from("replaced"));
+    }
+
+    #[test]
+    fn test_skip_replace_for_binary() {
+        let body = Bytes::from("hello world");
+        let rules = ResolvedRules {
+            req_replace: vec![("world".to_string(), "rust".to_string())],
+            ..Default::default()
+        };
+
+        let result = apply_body_rules(
+            body,
+            &rules,
+            Phase::Request,
+            Some("image/png"),
+            false,
+            &mock_ctx(),
+        );
+        assert_eq!(result, Bytes::from("hello world"));
     }
 
     #[test]

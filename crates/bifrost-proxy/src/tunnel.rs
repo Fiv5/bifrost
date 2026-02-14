@@ -1193,10 +1193,15 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
+    let res_content_type = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
     let final_body = apply_body_rules(
         Bytes::from(res_body_bytes.clone()),
         &resolved_rules,
         Phase::Response,
+        res_content_type,
         verbose_logging,
         &ctx,
     );

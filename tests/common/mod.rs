@@ -101,8 +101,11 @@ impl RulesResolver for TestRulesResolver {
                     Protocol::Referer => {
                         resolved.referer = Some(rule.value.clone());
                     }
-                    Protocol::ReqCors | Protocol::ResCors => {
-                        resolved.enable_cors = true;
+                    Protocol::ReqCors => {
+                        resolved.req_cors = bifrost_proxy::CorsConfig::enable_all();
+                    }
+                    Protocol::ResCors => {
+                        resolved.res_cors = bifrost_proxy::CorsConfig::enable_all();
                     }
                     Protocol::ReqBody => {
                         resolved.req_body = Some(Bytes::from(rule.value.clone()));

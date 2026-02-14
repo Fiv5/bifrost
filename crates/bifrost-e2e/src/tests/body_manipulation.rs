@@ -103,6 +103,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "body",
             test_jsappend_code,
         ),
+        TestCase::standalone(
+            "body_replace_skip_binary",
+            "resReplace 跳过二进制类型内容",
+            "body",
+            test_replace_skip_binary,
+        ),
     ]
 }
 
@@ -584,5 +590,41 @@ async fn test_jsappend_code() -> Result<(), String> {
     result.assert_success()?;
     result.assert_body_contains("var app = {};")?;
     result.assert_body_contains(";console.log('loaded');")?;
+    Ok(())
+}
+
+async fn test_replace_skip_binary() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    let mut headers = HashMap::new();
+    headers.insert("Content-Type".to_string(), "image/png".to_string());
+    mock.set_response_with_headers(200, "PNG_IMAGE_DATA_hello_world", headers);
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![&format!(
+            "test.local host://127.0.0.1:{} resReplace://hello=replaced",
+            mock.port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://test.local/image.png",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_body_contains("hello_world")?;
+    if result.body.contains("replaced") {
+        return Err("Binary content should not be replaced".to_string());
+    }
+
     Ok(())
 }

@@ -4,7 +4,7 @@ use hyper::StatusCode;
 use tracing::info;
 
 use crate::logging::RequestContext;
-use crate::server::ResolvedRules;
+use crate::server::{CorsConfig, ResolvedRules};
 
 pub fn apply_res_rules(
     parts: &mut Parts,
@@ -15,9 +15,10 @@ pub fn apply_res_rules(
     apply_res_status(parts, rules, verbose_logging, ctx);
     apply_res_headers(parts, rules, verbose_logging, ctx);
     apply_res_cookies(parts, rules, verbose_logging, ctx);
+    apply_res_attachment(parts, rules, verbose_logging, ctx);
 
-    if rules.enable_cors {
-        apply_res_cors(parts, verbose_logging, ctx);
+    if rules.res_cors.is_enabled() {
+        apply_res_cors(parts, &rules.res_cors, ctx, verbose_logging);
     }
 }
 
@@ -156,11 +157,46 @@ fn apply_res_cookies(
     verbose_logging: bool,
     ctx: &RequestContext,
 ) {
-    for (name, value) in &rules.res_cookies {
-        let cookie_value = format!("{}={}", name, value);
-        if let Ok(header_value) = cookie_value.parse::<HeaderValue>() {
+    for del_name in &rules.res_del_cookies {
+        let prefix = format!("{}=", del_name);
+        let cookie_str = format!(
+            "{}=; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+            del_name
+        );
+        if let Ok(header_value) = cookie_str.parse::<HeaderValue>() {
             if verbose_logging {
-                info!("[{}] [RES_COOKIE] {} = \"{}\"", ctx.id_str(), name, value);
+                info!("[{}] [RES_COOKIE_DEL] {} : deleted", ctx.id_str(), del_name);
+            }
+            let mut to_remove = Vec::new();
+            for (idx, val) in parts
+                .headers
+                .get_all(hyper::header::SET_COOKIE)
+                .iter()
+                .enumerate()
+            {
+                if let Ok(s) = val.to_str() {
+                    if s.starts_with(&prefix) {
+                        to_remove.push(idx);
+                    }
+                }
+            }
+            parts
+                .headers
+                .append(hyper::header::SET_COOKIE, header_value);
+        }
+    }
+
+    for (name, cookie_value) in &rules.res_cookies {
+        let cookie_str = cookie_value.to_set_cookie_string(name);
+        if let Ok(header_value) = cookie_str.parse::<HeaderValue>() {
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_COOKIE] {} = \"{}\" ({})",
+                    ctx.id_str(),
+                    name,
+                    cookie_value.value,
+                    cookie_str
+                );
             }
             parts
                 .headers
@@ -169,30 +205,121 @@ fn apply_res_cookies(
     }
 }
 
-fn apply_res_cors(parts: &mut Parts, verbose_logging: bool, ctx: &RequestContext) {
-    if verbose_logging {
-        info!("[{}] [RES_CORS] enabled", ctx.id_str());
+fn apply_res_attachment(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref attachment) = rules.attachment {
+        let filename = if attachment.is_empty() {
+            extract_filename_from_url(&ctx.pathname)
+        } else {
+            attachment.clone()
+        };
+
+        let filename = encode_content_disposition_filename(&filename);
+        let header_value = format!("attachment; filename=\"{}\"", filename);
+
+        if let Ok(value) = header_value.parse::<HeaderValue>() {
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_ATTACHMENT] Content-Disposition: {}",
+                    ctx.id_str(),
+                    header_value
+                );
+            }
+            parts
+                .headers
+                .insert(hyper::header::CONTENT_DISPOSITION, value);
+        }
     }
-    parts.headers.insert(
-        hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        HeaderValue::from_static("*"),
-    );
-    parts.headers.insert(
-        hyper::header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS, PATCH"),
-    );
-    parts.headers.insert(
-        hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("*"),
-    );
-    parts.headers.insert(
-        hyper::header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
-        HeaderValue::from_static("true"),
-    );
-    parts.headers.insert(
-        hyper::header::ACCESS_CONTROL_EXPOSE_HEADERS,
-        HeaderValue::from_static("*"),
-    );
+}
+
+fn extract_filename_from_url(pathname: &str) -> String {
+    pathname
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty() && s.contains('.'))
+        .unwrap_or("download")
+        .to_string()
+}
+
+fn encode_content_disposition_filename(filename: &str) -> String {
+    filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                c.to_string()
+            } else if c.is_ascii() {
+                format!("%{:02X}", c as u32)
+            } else {
+                format!("%{:02X}", c as u32 & 0xFF)
+            }
+        })
+        .collect()
+}
+
+fn apply_res_cors(
+    parts: &mut Parts,
+    cors: &CorsConfig,
+    ctx: &RequestContext,
+    verbose_logging: bool,
+) {
+    if verbose_logging {
+        info!(
+            "[{}] [RES_CORS] enabled with config: {:?}",
+            ctx.id_str(),
+            cors
+        );
+    }
+
+    let origin = cors.origin.as_deref().unwrap_or("*");
+    if let Ok(header_value) = origin.parse::<HeaderValue>() {
+        parts
+            .headers
+            .insert(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, header_value);
+    }
+
+    let methods = cors
+        .methods
+        .as_deref()
+        .unwrap_or("GET, POST, PUT, DELETE, OPTIONS, PATCH");
+    if let Ok(header_value) = methods.parse::<HeaderValue>() {
+        parts
+            .headers
+            .insert(hyper::header::ACCESS_CONTROL_ALLOW_METHODS, header_value);
+    }
+
+    let headers = cors.headers.as_deref().unwrap_or("*");
+    if let Ok(header_value) = headers.parse::<HeaderValue>() {
+        parts
+            .headers
+            .insert(hyper::header::ACCESS_CONTROL_ALLOW_HEADERS, header_value);
+    }
+
+    let credentials = cors.credentials.unwrap_or(true);
+    if credentials {
+        parts.headers.insert(
+            hyper::header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+    }
+
+    let expose_headers = cors.expose_headers.as_deref().unwrap_or("*");
+    if let Ok(header_value) = expose_headers.parse::<HeaderValue>() {
+        parts
+            .headers
+            .insert(hyper::header::ACCESS_CONTROL_EXPOSE_HEADERS, header_value);
+    }
+
+    if let Some(max_age) = cors.max_age {
+        if let Ok(header_value) = max_age.to_string().parse::<HeaderValue>() {
+            parts
+                .headers
+                .insert(hyper::header::ACCESS_CONTROL_MAX_AGE, header_value);
+        }
+    }
 }
 
 pub fn parse_set_cookie(cookie_str: &str) -> Option<(String, String, SetCookieOptions)> {
@@ -339,12 +466,14 @@ mod tests {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
         let ctx = RequestContext::new();
-        rules
-            .res_cookies
-            .push(("session".to_string(), "abc123".to_string()));
-        rules
-            .res_cookies
-            .push(("user".to_string(), "test".to_string()));
+        rules.res_cookies.push((
+            "session".to_string(),
+            crate::server::ResCookieValue::simple("abc123".to_string()),
+        ));
+        rules.res_cookies.push((
+            "user".to_string(),
+            crate::server::ResCookieValue::simple("test".to_string()),
+        ));
 
         apply_res_rules(&mut parts, &rules, false, &ctx);
 
@@ -361,7 +490,7 @@ mod tests {
         let mut parts = create_test_parts();
         let mut rules = ResolvedRules::default();
         let ctx = RequestContext::new();
-        rules.enable_cors = true;
+        rules.res_cors = CorsConfig::enable_all();
 
         apply_res_rules(&mut parts, &rules, false, &ctx);
 
