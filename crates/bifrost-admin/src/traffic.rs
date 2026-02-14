@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -103,6 +104,8 @@ pub struct RequestTiming {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficRecord {
     pub id: String,
+    #[serde(default)]
+    pub sequence: u64,
     pub timestamp: u64,
     pub method: String,
     pub url: String,
@@ -164,6 +167,7 @@ impl TrafficRecord {
 
         Self {
             id,
+            sequence: 0,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             method,
             url,
@@ -207,6 +211,8 @@ impl TrafficRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficSummary {
     pub id: String,
+    #[serde(default)]
+    pub sequence: u64,
     pub timestamp: u64,
     pub method: String,
     pub url: String,
@@ -249,6 +255,7 @@ impl From<&TrafficRecord> for TrafficSummary {
 
         Self {
             id: record.id.clone(),
+            sequence: record.sequence,
             timestamp: record.timestamp,
             method: record.method.clone(),
             url: record.url.clone(),
@@ -276,6 +283,7 @@ pub struct TrafficRecorder {
     records: RwLock<VecDeque<TrafficRecord>>,
     max_records: usize,
     tx: broadcast::Sender<TrafficRecord>,
+    sequence: AtomicU64,
 }
 
 impl TrafficRecorder {
@@ -285,10 +293,14 @@ impl TrafficRecorder {
             records: RwLock::new(VecDeque::with_capacity(max_records)),
             max_records,
             tx,
+            sequence: AtomicU64::new(1),
         }
     }
 
-    pub fn record(&self, record: TrafficRecord) {
+    pub fn record(&self, mut record: TrafficRecord) {
+        let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
+        record.sequence = seq;
+
         let _ = self.tx.send(record.clone());
 
         let mut records = self.records.write();
@@ -335,6 +347,7 @@ impl TrafficRecorder {
 
     pub fn clear(&self) {
         self.records.write().clear();
+        self.sequence.store(1, Ordering::SeqCst);
     }
 
     pub fn count(&self) -> usize {
@@ -641,5 +654,70 @@ mod tests {
             ..Default::default()
         };
         assert!(filter.matches(&record));
+    }
+
+    #[test]
+    fn test_traffic_recorder_sequence() {
+        let recorder = TrafficRecorder::new(100);
+
+        for i in 0..3 {
+            let record = TrafficRecord::new(
+                format!("id-{}", i),
+                "GET".to_string(),
+                "https://example.com".to_string(),
+            );
+            recorder.record(record);
+        }
+
+        let record1 = recorder.get_by_id("id-0").unwrap();
+        let record2 = recorder.get_by_id("id-1").unwrap();
+        let record3 = recorder.get_by_id("id-2").unwrap();
+
+        assert_eq!(record1.sequence, 1);
+        assert_eq!(record2.sequence, 2);
+        assert_eq!(record3.sequence, 3);
+    }
+
+    #[test]
+    fn test_traffic_recorder_sequence_reset_on_clear() {
+        let recorder = TrafficRecorder::new(100);
+
+        for i in 0..3 {
+            let record = TrafficRecord::new(
+                format!("id-{}", i),
+                "GET".to_string(),
+                "https://example.com".to_string(),
+            );
+            recorder.record(record);
+        }
+
+        assert_eq!(recorder.get_by_id("id-2").unwrap().sequence, 3);
+
+        recorder.clear();
+
+        let record = TrafficRecord::new(
+            "new-id".to_string(),
+            "GET".to_string(),
+            "https://example.com".to_string(),
+        );
+        recorder.record(record);
+
+        assert_eq!(recorder.get_by_id("new-id").unwrap().sequence, 1);
+    }
+
+    #[test]
+    fn test_traffic_summary_includes_sequence() {
+        let recorder = TrafficRecorder::new(100);
+
+        let record = TrafficRecord::new(
+            "test-id".to_string(),
+            "GET".to_string(),
+            "https://example.com".to_string(),
+        );
+        recorder.record(record);
+
+        let summaries = recorder.get_all();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].sequence, 1);
     }
 }

@@ -25,6 +25,8 @@ export default function Traffic() {
     hasMore,
     toolbarFilters,
     filterConditions,
+    autoScroll,
+    newRecordsCount,
     fetchInitialData,
     startPolling,
     stopPolling,
@@ -33,6 +35,8 @@ export default function Traffic() {
     setToolbarFilters,
     setFilterConditions,
     setPaused,
+    setAutoScroll,
+    clearNewRecordsCount,
   } = useTrafficStore();
 
   const [selectedId, setSelectedId] = useState<string>();
@@ -114,6 +118,14 @@ export default function Traffic() {
     }
   }, [filterConditions, setFilterConditions]);
 
+  const handleScrollPositionChange = useCallback((isAtBottom: boolean) => {
+    setAutoScroll(isAtBottom);
+  }, [setAutoScroll]);
+
+  const handleScrollToBottom = useCallback(() => {
+    clearNewRecordsCount();
+  }, [clearNewRecordsCount]);
+
   const styles: Record<string, CSSProperties> = {
     container: {
       display: 'flex',
@@ -179,6 +191,10 @@ export default function Traffic() {
                 onSelect={handleSelect}
                 selectedId={selectedId}
                 hasMore={hasMore}
+                autoScroll={autoScroll}
+                onScrollPositionChange={handleScrollPositionChange}
+                newRecordsCount={newRecordsCount}
+                onScrollToBottom={handleScrollToBottom}
               />
             </div>
           }

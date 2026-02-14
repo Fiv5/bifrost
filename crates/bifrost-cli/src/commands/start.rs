@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bifrost_admin::{start_metrics_collector_task, AdminState, BodyStore};
+use bifrost_admin::{
+    start_metrics_collector_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
+};
 use bifrost_core::{Rule, RulesResolver as CoreRulesResolver};
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
 use bifrost_storage::{RulesStorage, ValuesStorage};
@@ -327,18 +329,15 @@ pub fn run_foreground(
     println!("   Admin UI:      http://{}:{}/", admin_host, config.port);
 
     println!();
-    println!("🔒 TLS/HTTPS INTERCEPTION");
-    if config.enable_tls_interception {
-        println!("   Status:        enabled");
-        if !config.intercept_exclude.is_empty() {
-            println!("   Excluded:      {:?}", config.intercept_exclude);
-        }
-        if config.unsafe_ssl {
-            println!("   ⚠️  Upstream TLS verification: DISABLED (--unsafe-ssl)");
-        }
-    } else {
-        println!("   Status:        disabled (--no-intercept)");
-    }
+    let tls_status = TlsStatusInfo {
+        enable_tls_interception: config.enable_tls_interception,
+        intercept_exclude: config.intercept_exclude.clone(),
+        intercept_include: config.intercept_include.clone(),
+        unsafe_ssl: config.unsafe_ssl,
+        disconnect_on_config_change: true,
+        active_connections: 0,
+    };
+    tls_status.print_status();
 
     println!();
     println!("🔐 CA CERTIFICATE");

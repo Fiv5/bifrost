@@ -192,17 +192,17 @@ pub fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
 }
 
 pub fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConfig>> {
-    if !config.enable_tls_interception {
-        return Ok(Arc::new(TlsConfig::default()));
-    }
-
     let cert_dir = get_bifrost_dir()?.join("certs");
     let ca_key_path = cert_dir.join("ca.key");
     let ca_cert_path = cert_dir.join("ca.crt");
 
     let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)?;
     if !ca_valid {
-        println!("TLS interception enabled but valid CA certificate not found.");
+        if config.enable_tls_interception {
+            println!("TLS interception enabled but valid CA certificate not found.");
+        } else {
+            println!("Preparing CA certificate for runtime TLS interception...");
+        }
         println!("Generating CA certificate...");
         std::fs::create_dir_all(&cert_dir)?;
         let ca = generate_root_ca()?;
@@ -217,7 +217,11 @@ pub fn load_tls_config(config: &ProxyConfig) -> bifrost_core::Result<Arc<TlsConf
     let sni_resolver = SniResolver::new(ca_arc.clone());
     let cert_generator = DynamicCertGenerator::new(ca_arc);
 
-    println!("✓ TLS interception enabled");
+    if config.enable_tls_interception {
+        println!("✓ TLS interception enabled");
+    } else {
+        println!("✓ CA certificate ready (TLS interception can be enabled at runtime)");
+    }
 
     Ok(Arc::new(TlsConfig {
         ca_cert: Some(ca_cert_bytes),

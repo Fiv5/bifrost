@@ -21,6 +21,7 @@ export interface MatchedRule {
 
 export interface TrafficSummary {
   id: string;
+  sequence: number;
   timestamp: number;
   method: string;
   url: string;

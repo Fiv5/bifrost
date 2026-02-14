@@ -1,7 +1,7 @@
-import { useRef, type CSSProperties } from "react";
+import { useRef, useEffect, useCallback, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Tag, Typography, Tooltip, Badge, Spin, theme } from "antd";
-import { ThunderboltOutlined } from "@ant-design/icons";
+import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 
 const { Text } = Typography;
@@ -13,9 +13,24 @@ interface VirtualTrafficTableProps {
   selectedId?: string;
   onLoadMore?: () => void;
   hasMore?: boolean;
+  autoScroll?: boolean;
+  onScrollPositionChange?: (isAtBottom: boolean) => void;
+  newRecordsCount?: number;
+  onScrollToBottom?: () => void;
 }
 
 const ROW_HEIGHT = 36;
+const SCROLL_THRESHOLD = 50;
+
+const getStatusDotColor = (status: number): string => {
+  if (status === 0) return "#d9d9d9";
+  if (status >= 100 && status < 200) return "#73d13d";
+  if (status >= 200 && status < 300) return "#52c41a";
+  if (status >= 300 && status < 400) return "#faad14";
+  if (status >= 400 && status < 500) return "#fa8c16";
+  if (status >= 500) return "#f5222d";
+  return "#d9d9d9";
+};
 
 const getStatusColor = (status: number) => {
   if (status >= 500) return "error";
@@ -46,6 +61,10 @@ const formatSize = (bytes: number) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 };
 
+const formatSequence = (seq: number): string => {
+  return seq.toString().padStart(4, '0');
+};
+
 interface ColumnDef {
   key: string;
   title: string;
@@ -56,21 +75,39 @@ interface ColumnDef {
 
 const columns: ColumnDef[] = [
   {
-    key: "has_rule_hit",
+    key: "sequence",
+    title: "#",
+    width: 50,
+    align: "right",
+    render: (record) => (
+      <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+        {formatSequence(record.sequence)}
+      </Text>
+    ),
+  },
+  {
+    key: "status_dot",
     title: "",
-    width: 28,
+    width: 24,
     align: "center",
     render: (record) => (
       <Tooltip
         title={
-          record.has_rule_hit
-            ? `${record.matched_rule_count} rule(s): ${record.matched_protocols?.join(", ") || ""}`
-            : "No rules matched"
+          record.status === 0
+            ? "Pending"
+            : record.has_rule_hit
+              ? `${record.status} - ${record.matched_rule_count} rule(s) matched`
+              : `Status: ${record.status}`
         }
       >
-        <Badge
-          status={record.has_rule_hit ? "success" : "default"}
-          style={{ cursor: "pointer" }}
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            backgroundColor: getStatusDotColor(record.status),
+            transition: "background-color 0.3s",
+          }}
         />
       </Tooltip>
     ),
@@ -217,24 +254,96 @@ export default function VirtualTrafficTable({
   selectedId,
   onLoadMore,
   hasMore,
+  autoScroll = true,
+  onScrollPositionChange,
+  newRecordsCount = 0,
+  onScrollToBottom,
 }: VirtualTrafficTableProps) {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
+  const prevDataLengthRef = useRef(data.length);
+  const isAtBottomRef = useRef(true);
+  const [showNewIndicator, setShowNewIndicator] = useState(false);
 
   const rowVirtualizer = useVirtualizer({
     count: data.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
+    getItemKey: (index) => data[index]?.id ?? index,
   });
 
-  const handleScroll = () => {
-    if (!parentRef.current || !onLoadMore || !hasMore) return;
+  const checkIsAtBottom = useCallback(() => {
+    if (!parentRef.current) return true;
     const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
-    if (scrollHeight - scrollTop - clientHeight < 200) {
-      onLoadMore();
+    return scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD;
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    if (!parentRef.current) return;
+
+    const isAtBottom = checkIsAtBottom();
+    
+    if (isAtBottomRef.current !== isAtBottom) {
+      isAtBottomRef.current = isAtBottom;
+      onScrollPositionChange?.(isAtBottom);
+      
+      if (isAtBottom) {
+        setShowNewIndicator(false);
+      }
     }
-  };
+
+    if (onLoadMore && hasMore) {
+      const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
+      if (scrollHeight - scrollTop - clientHeight < 200) {
+        onLoadMore();
+      }
+    }
+  }, [checkIsAtBottom, onScrollPositionChange, onLoadMore, hasMore]);
+
+  useEffect(() => {
+    const prevLength = prevDataLengthRef.current;
+    const currLength = data.length;
+
+    if (prevLength === 0 && currLength > 0) {
+      if (parentRef.current) {
+        parentRef.current.scrollTop = 0;
+      }
+      isAtBottomRef.current = true;
+    } else if (currLength > prevLength && prevLength > 0) {
+      if (autoScroll && isAtBottomRef.current) {
+        requestAnimationFrame(() => {
+          rowVirtualizer.scrollToIndex(currLength - 1, { align: 'end', behavior: 'smooth' });
+        });
+      } else if (!isAtBottomRef.current) {
+        setShowNewIndicator(true);
+      }
+    }
+
+    prevDataLengthRef.current = currLength;
+  }, [data.length, autoScroll, rowVirtualizer]);
+
+  useEffect(() => {
+    if (data.length === 0) {
+      prevDataLengthRef.current = 0;
+      isAtBottomRef.current = true;
+      setShowNewIndicator(false);
+    }
+  }, [data.length]);
+
+  useEffect(() => {
+    if (newRecordsCount > 0 && !isAtBottomRef.current) {
+      setShowNewIndicator(true);
+    } else if (newRecordsCount === 0 || isAtBottomRef.current) {
+      setShowNewIndicator(false);
+    }
+  }, [newRecordsCount]);
+
+  const handleScrollToBottomClick = useCallback(() => {
+    rowVirtualizer.scrollToIndex(data.length - 1, { align: 'end', behavior: 'smooth' });
+    setShowNewIndicator(false);
+    onScrollToBottom?.();
+  }, [rowVirtualizer, data.length, onScrollToBottom]);
 
   const styles: Record<string, CSSProperties> = {
     container: {
@@ -243,6 +352,7 @@ export default function VirtualTrafficTable({
       height: "100%",
       width: "100%",
       overflow: "hidden",
+      position: "relative",
     },
     header: {
       display: "flex",
@@ -272,17 +382,24 @@ export default function VirtualTrafficTable({
     virtualList: {
       width: "100%",
       position: "relative",
+      willChange: "transform",
+      contain: "strict",
     },
     row: {
       display: "flex",
       alignItems: "center",
       height: ROW_HEIGHT,
+      maxHeight: ROW_HEIGHT,
+      minHeight: ROW_HEIGHT,
+      boxSizing: "border-box",
       borderBottom: `1px solid ${token.colorBorderSecondary}`,
       cursor: "pointer",
       position: "absolute",
       top: 0,
       left: 0,
       width: "100%",
+      willChange: "transform",
+      contain: "layout style",
     },
     cell: {
       padding: "0 8px",
@@ -291,6 +408,9 @@ export default function VirtualTrafficTable({
       whiteSpace: "nowrap",
       display: "flex",
       alignItems: "center",
+      height: "100%",
+      maxHeight: ROW_HEIGHT,
+      lineHeight: `${ROW_HEIGHT - 2}px`,
     },
     loadingOverlay: {
       position: "absolute",
@@ -311,6 +431,24 @@ export default function VirtualTrafficTable({
       height: "100%",
       color: token.colorTextSecondary,
     },
+    newRecordsIndicator: {
+      position: "absolute",
+      bottom: 16,
+      left: "50%",
+      transform: "translateX(-50%)",
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "8px 16px",
+      backgroundColor: token.colorPrimary,
+      color: "#fff",
+      borderRadius: 20,
+      cursor: "pointer",
+      boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+      zIndex: 100,
+      animation: "slideUp 0.3s ease-out",
+      transition: "transform 0.2s, box-shadow 0.2s",
+    },
   };
 
   const getColumnStyle = (col: ColumnDef): CSSProperties => {
@@ -330,6 +468,28 @@ export default function VirtualTrafficTable({
 
   return (
     <div style={styles.container}>
+      <style>
+        {`
+          @keyframes slideUp {
+            from {
+              opacity: 0;
+              transform: translateX(-50%) translateY(20px);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(-50%) translateY(0);
+            }
+          }
+          @keyframes pulse {
+            0%, 100% {
+              transform: translateX(-50%) scale(1);
+            }
+            50% {
+              transform: translateX(-50%) scale(1.05);
+            }
+          }
+        `}
+      </style>
       <div style={styles.header}>
         {columns.map((col) => (
           <div
@@ -355,12 +515,15 @@ export default function VirtualTrafficTable({
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
               const record = data[virtualRow.index];
+              if (!record) return null;
               const isSelected = record.id === selectedId;
               return (
                 <div
-                  key={record.id}
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
                   style={{
                     ...styles.row,
+                    height: ROW_HEIGHT,
                     transform: `translateY(${virtualRow.start}px)`,
                     backgroundColor: isSelected
                       ? token.colorPrimaryBg
@@ -390,6 +553,21 @@ export default function VirtualTrafficTable({
           </div>
         )}
       </div>
+
+      {showNewIndicator && newRecordsCount > 0 && (
+        <div
+          style={{
+            ...styles.newRecordsIndicator,
+            animation: "slideUp 0.3s ease-out, pulse 2s ease-in-out infinite",
+          }}
+          onClick={handleScrollToBottomClick}
+        >
+          <Badge count={newRecordsCount} size="small" style={{ backgroundColor: '#fff', color: token.colorPrimary }}>
+            <span style={{ color: '#fff', fontSize: 13 }}>New Traffic</span>
+          </Badge>
+          <ArrowDownOutlined style={{ fontSize: 14 }} />
+        </div>
+      )}
     </div>
   );
 }

@@ -687,23 +687,19 @@ impl ProxyInstance {
             max_body_buffer_size: 32 * 1024 * 1024,
         };
 
-        let tls_config = if enable_tls_interception {
-            init_crypto_provider();
-            let ca = generate_root_ca().map_err(|e| format!("Failed to generate CA: {}", e))?;
-            let ca_cert = ca
-                .certificate_der()
-                .map_err(|e| format!("Failed to get CA cert: {}", e))?;
-            let ca_key = ca.private_key_der();
-            let cert_generator = Arc::new(DynamicCertGenerator::new(Arc::new(ca)));
-            Arc::new(TlsConfig {
-                ca_cert: Some(ca_cert.to_vec()),
-                ca_key: Some(ca_key.secret_der().to_vec()),
-                cert_generator: Some(cert_generator),
-                sni_resolver: None,
-            })
-        } else {
-            Arc::new(TlsConfig::default())
-        };
+        init_crypto_provider();
+        let ca = generate_root_ca().map_err(|e| format!("Failed to generate CA: {}", e))?;
+        let ca_cert = ca
+            .certificate_der()
+            .map_err(|e| format!("Failed to get CA cert: {}", e))?;
+        let ca_key = ca.private_key_der();
+        let cert_generator = Arc::new(DynamicCertGenerator::new(Arc::new(ca)));
+        let tls_config = Arc::new(TlsConfig {
+            ca_cert: Some(ca_cert.to_vec()),
+            ca_key: Some(ca_key.secret_der().to_vec()),
+            cert_generator: Some(cert_generator),
+            sni_resolver: None,
+        });
 
         let runtime_config = RuntimeConfig {
             enable_tls_interception,

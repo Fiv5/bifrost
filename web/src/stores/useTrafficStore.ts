@@ -18,6 +18,8 @@ interface TrafficState {
   polling: boolean;
   error: string | null;
   pollTimeoutId: number | null;
+  autoScroll: boolean;
+  newRecordsCount: number;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -28,6 +30,8 @@ interface TrafficState {
   setToolbarFilters: (filters: ToolbarFilters) => void;
   setFilterConditions: (conditions: FilterCondition[]) => void;
   setPaused: (paused: boolean) => void;
+  setAutoScroll: (autoScroll: boolean) => void;
+  clearNewRecordsCount: () => void;
   clearError: () => void;
   clearCurrentRecord: () => void;
 }
@@ -129,6 +133,8 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   polling: false,
   error: null,
   pollTimeoutId: null,
+  autoScroll: true,
+  newRecordsCount: 0,
 
   startPolling: () => {
     const state = get();
@@ -186,23 +192,23 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     try {
       const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
       const pendingIdsArray = Array.from(state.pendingIds);
-      
+
       const filter: TrafficUpdatesFilter = {
         ...toolbarFilter,
         after_id: state.lastId || undefined,
         pending_ids: pendingIdsArray.length > 0 ? pendingIdsArray.join(',') : undefined,
         limit: BATCH_LIMIT,
       };
-      
+
       const response = await api.getTrafficUpdates(filter);
 
       set((prevState) => {
         const recordsMap = new Map(prevState.records.map(r => [r.id, r]));
-        
+
         response.updated_records.forEach(r => {
           recordsMap.set(r.id, r);
         });
-        
+
         response.new_records.forEach(r => {
           if (!recordsMap.has(r.id)) {
             recordsMap.set(r.id, r);
@@ -210,13 +216,13 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         });
 
         const newPendingIds = new Set(prevState.pendingIds);
-        
+
         response.updated_records.forEach(r => {
           if (r.status !== 0) {
             newPendingIds.delete(r.id);
           }
         });
-        
+
         response.new_records.forEach(r => {
           if (r.status === 0) {
             newPendingIds.add(r.id);
@@ -224,10 +230,15 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         });
 
         const allRecords = Array.from(recordsMap.values());
-        allRecords.sort((a, b) => a.timestamp - b.timestamp);
+        allRecords.sort((a, b) => a.sequence - b.sequence);
 
         const lastRecord = response.new_records[response.new_records.length - 1];
         const newLastId = lastRecord?.id || prevState.lastId;
+
+        const newCount = response.new_records.length;
+        const updatedNewRecordsCount = prevState.autoScroll
+          ? 0
+          : prevState.newRecordsCount + newCount;
 
         return {
           records: allRecords,
@@ -235,6 +246,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
           hasMore: response.has_more,
           lastId: newLastId,
           pendingIds: newPendingIds,
+          newRecordsCount: updatedNewRecordsCount,
         };
       });
 
@@ -248,7 +260,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       }
     } catch (e) {
       set({ error: (e as Error).message });
-      
+
       const currentState = get();
       if (currentState.polling) {
         const timeoutId = window.setTimeout(() => {
@@ -264,14 +276,14 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     try {
       const record = await api.getTrafficDetail(id);
       set({ currentRecord: record, loading: false });
-      
+
       api.getRequestBody(id).then(body => {
         set({ requestBody: body });
-      }).catch(() => {});
-      
+      }).catch(() => { });
+
       api.getResponseBody(id).then(body => {
         set({ responseBody: body });
-      }).catch(() => {});
+      }).catch(() => { });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
     }
@@ -281,16 +293,16 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.clearTraffic();
-      set({ 
-        records: [], 
+      set({
+        records: [],
         serverTotal: 0,
         hasMore: false,
         lastId: null,
         pendingIds: new Set(),
-        currentRecord: null, 
+        currentRecord: null,
         requestBody: null,
         responseBody: null,
-        loading: false 
+        loading: false
       });
       return true;
     } catch (e) {
@@ -302,7 +314,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   setToolbarFilters: (filters: ToolbarFilters) => {
     const state = get();
     state.stopPolling();
-    set({ 
+    set({
       toolbarFilters: filters,
       records: [],
       lastId: null,
@@ -316,7 +328,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   setFilterConditions: (conditions: FilterCondition[]) => {
     const state = get();
     state.stopPolling();
-    set({ 
+    set({
       filterConditions: conditions,
       records: [],
       lastId: null,
@@ -336,11 +348,20 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
+  setAutoScroll: (autoScroll: boolean) => {
+    set({ autoScroll });
+    if (autoScroll) {
+      set({ newRecordsCount: 0 });
+    }
+  },
+
+  clearNewRecordsCount: () => set({ newRecordsCount: 0 }),
+
   clearError: () => set({ error: null }),
 
-  clearCurrentRecord: () => set({ 
-    currentRecord: null, 
-    requestBody: null, 
-    responseBody: null 
+  clearCurrentRecord: () => set({
+    currentRecord: null,
+    requestBody: null,
+    responseBody: null
   }),
 }));

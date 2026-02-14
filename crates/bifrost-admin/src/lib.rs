@@ -6,6 +6,7 @@ mod router;
 mod security;
 mod state;
 mod static_files;
+pub mod status_printer;
 mod traffic;
 pub mod websocket_monitor;
 

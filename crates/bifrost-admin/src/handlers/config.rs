@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
+use crate::status_printer::TlsStatusInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -186,28 +187,48 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
         }
     }
 
-    if global_changed {
-        let new_enabled = state.runtime_config.read().await.enable_tls_interception;
-        let disconnected = state
-            .connection_registry
-            .disconnect_all_with_mode(!new_enabled);
-        if !disconnected.is_empty() {
-            tracing::info!(
-                "Global TLS switch change disconnected {} connections",
-                disconnected.len()
-            );
+    let should_disconnect = state
+        .runtime_config
+        .read()
+        .await
+        .disconnect_on_config_change;
+
+    if should_disconnect {
+        if global_changed {
+            let new_enabled = state.runtime_config.read().await.enable_tls_interception;
+            let disconnected = state
+                .connection_registry
+                .disconnect_all_with_mode(!new_enabled);
+            if !disconnected.is_empty() {
+                tracing::info!(
+                    "Global TLS switch change disconnected {} connections",
+                    disconnected.len()
+                );
+            }
+        } else if !affected_patterns.is_empty() {
+            let disconnected = state
+                .connection_registry
+                .disconnect_by_host_pattern(&affected_patterns);
+            if !disconnected.is_empty() {
+                tracing::info!(
+                    "TLS pattern change disconnected {} connections matching {:?}",
+                    disconnected.len(),
+                    affected_patterns
+                );
+            }
         }
-    } else if !affected_patterns.is_empty() {
-        let disconnected = state
-            .connection_registry
-            .disconnect_by_host_pattern(&affected_patterns);
-        if !disconnected.is_empty() {
-            tracing::info!(
-                "TLS pattern change disconnected {} connections matching {:?}",
-                disconnected.len(),
-                affected_patterns
-            );
-        }
+    } else if global_changed || !affected_patterns.is_empty() {
+        tracing::info!(
+            "TLS config changed but disconnect_on_config_change is disabled, {} existing connections will continue with old config",
+            state.connection_registry.active_count()
+        );
+    }
+
+    if global_changed || !affected_patterns.is_empty() {
+        let config = state.runtime_config.read().await;
+        let status_info =
+            TlsStatusInfo::from_runtime_config(&config, state.connection_registry.active_count());
+        status_info.log_update_banner();
     }
 
     let runtime_config = state.runtime_config.read().await;
