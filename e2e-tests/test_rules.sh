@@ -167,22 +167,10 @@ build_proxy() {
 }
 
 setup_data_dir() {
-    mkdir -p "${TEST_DATA_DIR}"/{rules,plugins,certs}
-    mkdir -p "${TEST_DATA_DIR}/.bifrost/values"
+    mkdir -p "${TEST_DATA_DIR}"/{rules,plugins,certs,values,traffic,body_cache}
 
     if [[ -d "${SCRIPT_DIR}/values" ]]; then
-        cp -f "${SCRIPT_DIR}/values"/*.txt "${TEST_DATA_DIR}/.bifrost/values/" 2>/dev/null || true
-    fi
-
-    if [[ ! -f "${TEST_DATA_DIR}/config.toml" ]]; then
-        cat > "${TEST_DATA_DIR}/config.toml" << 'TOML'
-[access]
-mode = "local_only"
-whitelist = []
-allow_lan = false
-
-intercept_exclude = []
-TOML
+        cp -f "${SCRIPT_DIR}/values"/*.txt "${TEST_DATA_DIR}/values/" 2>/dev/null || true
     fi
 }
 
@@ -215,6 +203,15 @@ start_echo_servers() {
     fi
 }
 
+preprocess_rules_file() {
+    local original_file="$1"
+    local processed_file="${TEST_DATA_DIR}/processed_rules.txt"
+    
+    sed "s|__SCRIPT_DIR__|${SCRIPT_DIR}|g" "$original_file" > "$processed_file"
+    
+    echo "$processed_file"
+}
+
 start_proxy() {
     header "启动代理服务器"
 
@@ -233,6 +230,9 @@ start_proxy() {
     export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
     cd "$PROJECT_DIR"
     
+    local processed_rule_file
+    processed_rule_file=$(preprocess_rules_file "${RULE_FILE}")
+    
     # 组装可选系统代理参数
     local extra_flags=()
     if [[ "${ENABLE_SYSTEM_PROXY:-}" == "true" ]]; then
@@ -247,9 +247,9 @@ start_proxy() {
             echo -e "${RED}✗${NC} 二进制文件不存在或不可执行: $BIFROST_BIN"
             exit 1
         fi
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" "${extra_flags[@]}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" "$BIFROST_BIN" --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     else
-        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${RULE_FILE}" "${extra_flags[@]}" &
+        BIFROST_DATA_DIR="${TEST_DATA_DIR}" cargo run --release --bin bifrost -- --port "${PROXY_PORT}" start --skip-cert-check --unsafe-ssl --rules-file "${processed_rule_file}" "${extra_flags[@]}" &
     fi
     PROXY_PID=$!
 
