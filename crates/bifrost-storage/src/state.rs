@@ -17,6 +17,7 @@ impl RuntimeState {
     }
 }
 
+#[derive(Clone)]
 pub struct StateManager {
     state: RuntimeState,
     state_file: PathBuf,

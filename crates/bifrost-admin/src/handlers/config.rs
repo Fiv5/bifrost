@@ -1,3 +1,4 @@
+use bifrost_storage::TlsConfigUpdate;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +185,22 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
                 "TLS config changed: disconnect_on_config_change = {}",
                 disconnect_on_change
             );
+        }
+    }
+
+    if let Some(ref config_manager) = state.config_manager {
+        let update = TlsConfigUpdate {
+            enable_interception: request.enable_tls_interception,
+            intercept_exclude: request.intercept_exclude.clone(),
+            intercept_include: request.intercept_include.clone(),
+            unsafe_ssl: request.unsafe_ssl,
+            disconnect_on_change: request.disconnect_on_config_change,
+        };
+
+        if let Err(e) = config_manager.update_tls_config(update).await {
+            tracing::error!("Failed to persist TLS config: {}", e);
+        } else {
+            tracing::debug!("TLS config persisted to config.toml");
         }
     }
 

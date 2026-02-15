@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
-use bifrost_storage::{RulesStorage, ValuesStorage};
+use bifrost_storage::{ConfigManager, RulesStorage, SharedConfigManager, ValuesStorage};
 use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
@@ -38,6 +38,18 @@ impl Default for RuntimeConfig {
     }
 }
 
+impl RuntimeConfig {
+    pub fn from_tls_config(tls: &bifrost_storage::TlsConfig) -> Self {
+        Self {
+            enable_tls_interception: tls.enable_interception,
+            intercept_exclude: tls.intercept_exclude.clone(),
+            intercept_include: tls.intercept_include.clone(),
+            unsafe_ssl: tls.unsafe_ssl,
+            disconnect_on_config_change: tls.disconnect_on_change,
+        }
+    }
+}
+
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
     pub metrics_collector: SharedMetricsCollector,
@@ -52,6 +64,7 @@ pub struct AdminState {
     pub websocket_monitor: SharedWebSocketMonitor,
     pub runtime_config: SharedRuntimeConfig,
     pub connection_registry: SharedConnectionRegistry,
+    pub config_manager: Option<SharedConfigManager>,
 }
 
 impl AdminState {
@@ -70,6 +83,7 @@ impl AdminState {
             websocket_monitor: Arc::new(WebSocketMonitor::new()),
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
             connection_registry: Arc::new(ConnectionRegistry::default()),
+            config_manager: None,
         }
     }
 
@@ -135,6 +149,16 @@ impl AdminState {
 
     pub fn with_connection_registry_shared(mut self, registry: SharedConnectionRegistry) -> Self {
         self.connection_registry = registry;
+        self
+    }
+
+    pub fn with_config_manager(mut self, manager: ConfigManager) -> Self {
+        self.config_manager = Some(Arc::new(manager));
+        self
+    }
+
+    pub fn with_config_manager_shared(mut self, manager: SharedConfigManager) -> Self {
+        self.config_manager = Some(manager);
         self
     }
 }

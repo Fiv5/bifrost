@@ -1,11 +1,18 @@
+use bifrost_storage::{set_data_dir, ConfigManager};
+
 use crate::cli::{Cli, SystemProxyCommands};
-use crate::config::{get_bifrost_dir, load_config};
+use crate::config::get_bifrost_dir;
 
 pub fn handle_system_proxy_command(
     cli: &Cli,
     action: SystemProxyCommands,
 ) -> bifrost_core::Result<()> {
     let bifrost_dir = get_bifrost_dir()?;
+    set_data_dir(bifrost_dir.clone());
+
+    let config_manager = ConfigManager::new(bifrost_dir.clone())?;
+    let stored_config = futures::executor::block_on(config_manager.config());
+
     let mut manager = bifrost_core::SystemProxyManager::new(bifrost_dir.clone());
     match action {
         SystemProxyCommands::Status => {
@@ -33,10 +40,7 @@ pub fn handle_system_proxy_command(
             }
             let proxy_host = host.unwrap_or_else(|| "127.0.0.1".to_string());
             let proxy_port = port.unwrap_or(cli.port);
-            let bypass_str = bypass.unwrap_or_else(|| {
-                let cfg = load_config();
-                cfg.system_proxy.bypass
-            });
+            let bypass_str = bypass.unwrap_or_else(|| stored_config.system_proxy.bypass.clone());
             if let Err(e) = manager.enable(&proxy_host, proxy_port, Some(&bypass_str)) {
                 let msg = e.to_string();
                 if msg.contains("RequiresAdmin") {

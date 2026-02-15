@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
-use bifrost_storage::BifrostConfig;
-
 pub fn get_bifrost_dir() -> bifrost_core::Result<PathBuf> {
     Ok(bifrost_storage::data_dir())
 }
 
+#[deprecated(note = "Use ConfigManager::new() instead, which handles directory initialization")]
+#[allow(dead_code)]
 pub fn init_config_dir() -> bifrost_core::Result<()> {
+    use bifrost_storage::BifrostConfig;
     let bifrost_dir = get_bifrost_dir()?;
 
     let config_path = bifrost_dir.join("config.toml");
@@ -35,7 +36,10 @@ pub fn init_config_dir() -> bifrost_core::Result<()> {
     Ok(())
 }
 
-pub fn load_config() -> BifrostConfig {
+#[deprecated(note = "Use ConfigManager::config() instead")]
+#[allow(dead_code)]
+pub fn load_config() -> bifrost_storage::BifrostConfig {
+    use bifrost_storage::BifrostConfig;
     let config_path = get_bifrost_dir()
         .map(|p| p.join("config.toml"))
         .unwrap_or_default();
@@ -49,7 +53,9 @@ pub fn load_config() -> BifrostConfig {
     BifrostConfig::default()
 }
 
-pub fn save_config(config: &BifrostConfig) -> bifrost_core::Result<()> {
+#[deprecated(note = "Use ConfigManager::update_config() instead")]
+#[allow(dead_code)]
+pub fn save_config(config: &bifrost_storage::BifrostConfig) -> bifrost_core::Result<()> {
     let config_dir = get_bifrost_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("config.toml");

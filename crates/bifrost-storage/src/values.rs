@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use bifrost_core::{BifrostError, Result, ValueStore};
 
+#[derive(Clone)]
 pub struct ValuesStorage {
     base_dir: PathBuf,
     cache: HashMap<String, String>,

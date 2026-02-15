@@ -4,17 +4,18 @@ use std::sync::Arc;
 
 use bifrost_admin::{
     start_metrics_collector_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
+    RuntimeConfig,
 };
 use bifrost_core::{Rule, RulesResolver as CoreRulesResolver};
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
-use bifrost_storage::{RulesStorage, ValuesStorage};
+use bifrost_storage::{set_data_dir, ConfigManager};
 use bifrost_tls::{get_platform_name, CertInstaller, CertStatus};
 use parking_lot::RwLock as ParkingRwLock;
 use tracing::info;
 
 use crate::cli::Cli;
 use crate::commands::ca::{check_and_install_certificate, load_tls_config};
-use crate::config::{get_bifrost_dir, init_config_dir, load_config};
+use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, RulesResolverAdapter};
 use crate::process::{is_process_running, read_pid, remove_pid, write_pid};
@@ -51,38 +52,35 @@ pub fn run_start(
         check_and_install_certificate()?;
     }
 
-    init_config_dir()?;
+    let bifrost_dir = get_bifrost_dir()?;
+    set_data_dir(bifrost_dir.clone());
+
+    let config_manager = ConfigManager::new(bifrost_dir.clone())?;
+    let stored_config = futures::executor::block_on(config_manager.config());
 
     let parsed_access_mode = match &access_mode {
         Some(mode) => mode
             .parse::<AccessMode>()
             .map_err(bifrost_core::BifrostError::Config)?,
-        None => {
-            let config = load_config();
-            if config.access.mode.is_empty() {
-                AccessMode::LocalOnly
-            } else {
-                config.access.mode.parse().unwrap_or(AccessMode::LocalOnly)
-            }
-        }
+        None => stored_config.access.mode,
     };
 
     let client_whitelist: Vec<String> = match whitelist {
         Some(wl) => wl.split(',').map(|s| s.trim().to_string()).collect(),
-        None => {
-            let config = load_config();
-            config.access.whitelist
-        }
+        None => stored_config.access.whitelist.clone(),
     };
 
     let allow_lan_final = if allow_lan {
         true
     } else {
-        let config = load_config();
-        config.access.allow_lan
+        stored_config.access.allow_lan
     };
 
-    let enable_tls_interception = !no_intercept;
+    let enable_tls_interception = if no_intercept {
+        false
+    } else {
+        stored_config.tls.enable_interception
+    };
 
     let exclude_list: Vec<String> = match intercept_exclude {
         Some(list) => list
@@ -90,10 +88,7 @@ pub fn run_start(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
-        None => {
-            let config = load_config();
-            config.intercept_exclude.clone()
-        }
+        None => stored_config.tls.intercept_exclude.clone(),
     };
 
     let include_list: Vec<String> = match intercept_include {
@@ -102,10 +97,13 @@ pub fn run_start(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
-        None => {
-            let config = load_config();
-            config.intercept_include.clone()
-        }
+        None => stored_config.tls.intercept_include.clone(),
+    };
+
+    let unsafe_ssl_final = if unsafe_ssl {
+        true
+    } else {
+        stored_config.tls.unsafe_ssl
     };
 
     let verbose_logging = matches!(cli.log_level.as_str(), "debug" | "trace");
@@ -119,7 +117,7 @@ pub fn run_start(
         enable_tls_interception,
         intercept_exclude: exclude_list.clone(),
         intercept_include: include_list.clone(),
-        unsafe_ssl,
+        unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         ..Default::default()
     };
@@ -142,21 +140,12 @@ pub fn run_start(
     if !include_list.is_empty() {
         println!("  Force intercept domains: {:?}", include_list);
     }
-    if unsafe_ssl {
+    if unsafe_ssl_final {
         println!("⚠️  WARNING: Upstream TLS certificate verification is DISABLED (--unsafe-ssl)");
     }
 
-    let values_dir = get_bifrost_dir()
-        .map(|p| p.join("values"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
-    let early_values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
-    let early_values = early_values_storage
-        .as_ref()
-        .map(|s| {
-            use bifrost_core::ValueStore;
-            s.as_hashmap()
-        })
-        .unwrap_or_default();
+    let early_values = futures::executor::block_on(config_manager.values_as_hashmap());
+    let values_dir = stored_config.paths.values_dir.clone();
     if !early_values.is_empty() {
         println!(
             "Loaded {} values from {}",
@@ -185,14 +174,11 @@ pub fn run_start(
     let enable_system_proxy = if system_proxy {
         true
     } else {
-        let config = load_config();
-        config.system_proxy.enabled
+        stored_config.system_proxy.enabled
     };
 
-    let system_proxy_bypass = proxy_bypass.unwrap_or_else(|| {
-        let config = load_config();
-        config.system_proxy.bypass.clone()
-    });
+    let system_proxy_bypass =
+        proxy_bypass.unwrap_or_else(|| stored_config.system_proxy.bypass.clone());
 
     if enable_system_proxy {
         if bifrost_core::SystemProxyManager::is_supported() {
@@ -201,6 +187,12 @@ pub fn run_start(
             println!("⚠️  WARNING: System proxy is not supported on this platform");
         }
     }
+
+    let disconnect_on_config_change = if no_disconnect_on_config_change {
+        false
+    } else {
+        stored_config.tls.disconnect_on_change
+    };
 
     if daemon {
         #[cfg(unix)]
@@ -211,6 +203,7 @@ pub fn run_start(
                 all_values.clone(),
                 enable_system_proxy,
                 system_proxy_bypass.clone(),
+                config_manager,
             )?;
         }
         #[cfg(not(unix))]
@@ -226,20 +219,23 @@ pub fn run_start(
             all_values,
             enable_system_proxy,
             system_proxy_bypass,
-            no_disconnect_on_config_change,
+            disconnect_on_config_change,
+            config_manager,
         )?;
     }
 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_foreground(
     config: ProxyConfig,
     cli_rules: Vec<Rule>,
     cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
-    no_disconnect_on_config_change: bool,
+    disconnect_on_config_change: bool,
+    config_manager: ConfigManager,
 ) -> bifrost_core::Result<()> {
     let pid = std::process::id();
     write_pid(pid)?;
@@ -252,7 +248,7 @@ pub fn run_foreground(
 
     let tls_config = load_tls_config(&config)?;
 
-    let bifrost_dir = get_bifrost_dir()?;
+    let bifrost_dir = config_manager.data_dir().to_path_buf();
     let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
         bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
     ));
@@ -334,7 +330,7 @@ pub fn run_foreground(
         intercept_exclude: config.intercept_exclude.clone(),
         intercept_include: config.intercept_include.clone(),
         unsafe_ssl: config.unsafe_ssl,
-        disconnect_on_config_change: true,
+        disconnect_on_config_change,
         active_connections: 0,
     };
     tls_status.print_status();
@@ -418,62 +414,44 @@ pub fn run_foreground(
     })?;
 
     rt.block_on(async {
-        let body_temp_dir = get_bifrost_dir()
-            .map(|p| p.join("body_cache"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_body_cache"));
+        let body_temp_dir = bifrost_dir.join("body_cache");
         let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
             body_temp_dir,
             64 * 1024,
             7,
         )));
 
-        let values_dir = get_bifrost_dir()
-            .map(|p| p.join("values"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_values"));
-        let values_storage = ValuesStorage::with_dir(values_dir.clone()).ok();
-        let rules_dir = get_bifrost_dir()
-            .map(|p| p.join("rules"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_rules"));
-        let rules_storage = RulesStorage::with_dir(rules_dir).ok();
-        let mut values = values_storage
-            .as_ref()
-            .map(|s| {
-                use bifrost_core::ValueStore;
-                s.as_hashmap()
-            })
-            .unwrap_or_default();
+        let values_storage = config_manager.values_storage().await;
+        let rules_storage = config_manager.rules_storage().await;
+        let mut values = {
+            use bifrost_core::ValueStore;
+            values_storage.as_hashmap()
+        };
         for (k, v) in cli_values {
             values.entry(k).or_insert(v);
         }
 
-        let ca_cert_path = get_bifrost_dir()
-            .map(|p| p.join("certs").join("ca.crt"))
-            .ok();
+        let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 
-        let runtime_config = bifrost_admin::RuntimeConfig {
+        let runtime_config = RuntimeConfig {
             enable_tls_interception: config.enable_tls_interception,
             intercept_exclude: config.intercept_exclude.clone(),
             intercept_include: config.intercept_include.clone(),
             unsafe_ssl: config.unsafe_ssl,
-            disconnect_on_config_change: !no_disconnect_on_config_change,
+            disconnect_on_config_change,
         };
         let connection_registry =
-            bifrost_admin::ConnectionRegistry::new(!no_disconnect_on_config_change);
+            bifrost_admin::ConnectionRegistry::new(disconnect_on_config_change);
 
-        let mut admin_state = AdminState::new(config.port)
+        let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_runtime_config(runtime_config)
-            .with_connection_registry(connection_registry);
-        if let Some(vs) = values_storage {
-            admin_state = admin_state.with_values_storage(vs);
-        }
-        if let Some(rs) = rules_storage {
-            admin_state = admin_state.with_rules_storage(rs);
-        }
-        if let Some(cert_path) = ca_cert_path {
-            admin_state = admin_state.with_ca_cert_path(cert_path);
-        }
-        admin_state = admin_state.with_system_proxy_manager_shared(system_proxy_manager.clone());
+            .with_connection_registry(connection_registry)
+            .with_values_storage(values_storage)
+            .with_rules_storage(rules_storage)
+            .with_ca_cert_path(ca_cert_path)
+            .with_system_proxy_manager_shared(system_proxy_manager.clone())
+            .with_config_manager(config_manager);
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let mut server = ProxyServer::new(config)
@@ -518,13 +496,14 @@ pub fn run_daemon(
     cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
+    config_manager: ConfigManager,
 ) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
 
     use crate::process::get_pid_file;
 
-    let bifrost_dir = get_bifrost_dir()?;
+    let bifrost_dir = config_manager.data_dir().to_path_buf();
     std::fs::create_dir_all(&bifrost_dir)?;
 
     println!("Starting Bifrost proxy in daemon mode...");
@@ -638,33 +617,36 @@ pub fn run_daemon(
                     7,
                 )));
 
-                let values_dir = bifrost_dir.join("values");
-                let values_storage = ValuesStorage::with_dir(values_dir).ok();
-                let rules_dir = bifrost_dir.join("rules");
-                let rules_storage = RulesStorage::with_dir(rules_dir).ok();
-                let mut values = values_storage
-                    .as_ref()
-                    .map(|s| {
-                        use bifrost_core::ValueStore;
-                        s.as_hashmap()
-                    })
-                    .unwrap_or_default();
+                let values_storage = config_manager.values_storage().await;
+                let rules_storage = config_manager.rules_storage().await;
+                let mut values = {
+                    use bifrost_core::ValueStore;
+                    values_storage.as_hashmap()
+                };
                 for (k, v) in cli_values {
                     values.entry(k).or_insert(v);
                 }
 
                 let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 
-                let mut admin_state = AdminState::new(config.port).with_body_store(body_store);
-                if let Some(vs) = values_storage {
-                    admin_state = admin_state.with_values_storage(vs);
-                }
-                if let Some(rs) = rules_storage {
-                    admin_state = admin_state.with_rules_storage(rs);
-                }
-                admin_state = admin_state.with_ca_cert_path(ca_cert_path);
-                admin_state =
-                    admin_state.with_system_proxy_manager_shared(system_proxy_manager.clone());
+                let runtime_config = RuntimeConfig {
+                    enable_tls_interception: config.enable_tls_interception,
+                    intercept_exclude: config.intercept_exclude.clone(),
+                    intercept_include: config.intercept_include.clone(),
+                    unsafe_ssl: config.unsafe_ssl,
+                    disconnect_on_config_change: true,
+                };
+                let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
+
+                let admin_state = AdminState::new(config.port)
+                    .with_body_store(body_store)
+                    .with_runtime_config(runtime_config)
+                    .with_connection_registry(connection_registry)
+                    .with_values_storage(values_storage)
+                    .with_rules_storage(rules_storage)
+                    .with_ca_cert_path(ca_cert_path)
+                    .with_system_proxy_manager_shared(system_proxy_manager.clone())
+                    .with_config_manager(config_manager);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let mut server = ProxyServer::new(config)

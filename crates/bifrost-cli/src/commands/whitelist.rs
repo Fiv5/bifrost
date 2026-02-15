@@ -1,8 +1,15 @@
+use bifrost_core::AccessMode;
+use bifrost_storage::{set_data_dir, AccessConfigUpdate, ConfigManager};
+
 use crate::cli::WhitelistCommands;
-use crate::config::{load_config, save_config};
+use crate::config::get_bifrost_dir;
 
 pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Result<()> {
-    let mut config = load_config();
+    let bifrost_dir = get_bifrost_dir()?;
+    set_data_dir(bifrost_dir.clone());
+
+    let config_manager = ConfigManager::new(bifrost_dir)?;
+    let config = futures::executor::block_on(config_manager.config());
 
     match action {
         WhitelistCommands::List => {
@@ -43,8 +50,15 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
             if config.access.whitelist.contains(&ip_or_cidr) {
                 println!("'{}' is already in the whitelist.", ip_or_cidr);
             } else {
-                config.access.whitelist.push(ip_or_cidr.clone());
-                save_config(&config)?;
+                let mut new_whitelist = config.access.whitelist.clone();
+                new_whitelist.push(ip_or_cidr.clone());
+
+                let update = AccessConfigUpdate {
+                    whitelist: Some(new_whitelist),
+                    ..Default::default()
+                };
+                futures::executor::block_on(config_manager.update_access_config(update))?;
+
                 println!("Added '{}' to whitelist.", ip_or_cidr);
                 println!("Note: Restart the proxy server for changes to take effect.");
             }
@@ -56,8 +70,15 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
                 .iter()
                 .position(|x| x == &ip_or_cidr)
             {
-                config.access.whitelist.remove(pos);
-                save_config(&config)?;
+                let mut new_whitelist = config.access.whitelist.clone();
+                new_whitelist.remove(pos);
+
+                let update = AccessConfigUpdate {
+                    whitelist: Some(new_whitelist),
+                    ..Default::default()
+                };
+                futures::executor::block_on(config_manager.update_access_config(update))?;
+
                 println!("Removed '{}' from whitelist.", ip_or_cidr);
                 println!("Note: Restart the proxy server for changes to take effect.");
             } else {
@@ -75,8 +96,13 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
                     )));
                 }
             };
-            config.access.allow_lan = enable_bool;
-            save_config(&config)?;
+
+            let update = AccessConfigUpdate {
+                allow_lan: Some(enable_bool),
+                ..Default::default()
+            };
+            futures::executor::block_on(config_manager.update_access_config(update))?;
+
             if enable_bool {
                 println!("LAN (private network) access enabled.");
             } else {
@@ -87,14 +113,7 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
         WhitelistCommands::Status => {
             println!("Access Control Settings");
             println!("=======================");
-            println!(
-                "Mode: {}",
-                if config.access.mode.is_empty() {
-                    "local_only (default)"
-                } else {
-                    &config.access.mode
-                }
-            );
+            println!("Mode: {}", config.access.mode);
             println!(
                 "LAN access: {}",
                 if config.access.allow_lan {
@@ -112,10 +131,22 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
             }
             println!();
             println!("Access mode options:");
-            println!("  local_only  - Only allow connections from localhost (default)");
-            println!("  whitelist   - Allow localhost + whitelisted IPs/CIDRs");
-            println!("  interactive - Prompt for confirmation on unknown IPs");
-            println!("  allow_all   - Allow all connections (not recommended)");
+            println!(
+                "  {} - Only allow connections from localhost (default)",
+                AccessMode::LocalOnly
+            );
+            println!(
+                "  {} - Allow localhost + whitelisted IPs/CIDRs",
+                AccessMode::Whitelist
+            );
+            println!(
+                "  {} - Prompt for confirmation on unknown IPs",
+                AccessMode::Interactive
+            );
+            println!(
+                "  {} - Allow all connections (not recommended)",
+                AccessMode::AllowAll
+            );
         }
     }
 

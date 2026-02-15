@@ -30,6 +30,7 @@ impl RuleFile {
     }
 }
 
+#[derive(Clone)]
 pub struct RulesStorage {
     base_dir: PathBuf,
 }
