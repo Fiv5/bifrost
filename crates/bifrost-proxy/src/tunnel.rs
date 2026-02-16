@@ -987,14 +987,16 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
-    let connect_start = Instant::now();
-    let stream =
-        match TcpStream::connect(format!("{}:{}", actual_target_host, actual_target_port)).await {
-            Ok(s) => s,
+    let dns_start = Instant::now();
+    let resolved_addrs: Vec<std::net::SocketAddr> =
+        match tokio::net::lookup_host(format!("{}:{}", actual_target_host, actual_target_port))
+            .await
+        {
+            Ok(addrs) => addrs.collect(),
             Err(e) => {
                 error!(
-                    "[{}] Failed to connect to {}:{}: {}",
-                    req_id, actual_target_host, actual_target_port, e
+                    "[{}] DNS resolution failed for {}: {}",
+                    req_id, actual_target_host, e
                 );
                 return Ok(Response::builder()
                     .status(502)
@@ -1002,6 +1004,36 @@ async fn handle_intercepted_request_with_protocol(
                     .unwrap());
             }
         };
+    let dns_ms = dns_start.elapsed().as_millis() as u64;
+
+    let connect_addr = match resolved_addrs.first() {
+        Some(addr) => *addr,
+        None => {
+            error!(
+                "[{}] No addresses resolved for {}",
+                req_id, actual_target_host
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
+
+    let connect_start = Instant::now();
+    let stream = match TcpStream::connect(connect_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(
+                "[{}] Failed to connect to {}:{}: {}",
+                req_id, actual_target_host, actual_target_port, e
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
     let (response, tls_ms, wait_ms) = if actual_use_http {
@@ -1209,7 +1241,7 @@ async fn handle_intercepted_request_with_protocol(
             record.duration_ms = total_ms;
             record.host = original_host.to_string();
             record.timing = Some(RequestTiming {
-                dns_ms: None,
+                dns_ms: Some(dns_ms),
                 connect_ms: Some(tcp_connect_ms),
                 tls_ms,
                 send_ms: None,
@@ -1286,7 +1318,7 @@ async fn handle_intercepted_request_with_protocol(
         record.duration_ms = total_ms;
         record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
-            dns_ms: None,
+            dns_ms: Some(dns_ms),
             connect_ms: Some(tcp_connect_ms),
             tls_ms,
             send_ms: None,
