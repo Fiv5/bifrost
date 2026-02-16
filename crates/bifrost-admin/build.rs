@@ -49,11 +49,13 @@ fn main() {
         let output = Command::new(pnpm_cmd)
             .args(["install", "--frozen-lockfile"])
             .current_dir(&web_dir)
+            .env("COREPACK_ENABLE_STRICT", "0")
             .output()
             .or_else(|_| {
                 Command::new(pnpm_cmd)
                     .arg("install")
                     .current_dir(&web_dir)
+                    .env("COREPACK_ENABLE_STRICT", "0")
                     .output()
             })
             .expect("Failed to run pnpm install. Make sure pnpm is installed.");
@@ -82,6 +84,7 @@ fn main() {
     let output = Command::new(pnpm_cmd)
         .args(["run", "build"])
         .current_dir(&web_dir)
+        .env("COREPACK_ENABLE_STRICT", "0")
         .output()
         .expect("Failed to run pnpm run build");
 

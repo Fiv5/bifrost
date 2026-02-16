@@ -1,0 +1,124 @@
+import { type ReactNode, useCallback } from 'react';
+import { Typography, Space, Divider, theme } from 'antd';
+import { FilterOutlined } from '@ant-design/icons';
+import type {
+  SessionTargetSearchState,
+  DisplayFormat,
+  RecordContentType,
+} from '../../../types';
+import { Search } from '../Search';
+import { BodyTypeMenu } from '../panes/Body/BodyTypeMenu';
+
+const { Text } = Typography;
+
+interface TabConfig {
+  key: string;
+  label: string;
+  children: ReactNode;
+  enable?: boolean;
+}
+
+interface PanelProps {
+  name: 'Request' | 'Response';
+  tabs: TabConfig[];
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  searchValue: SessionTargetSearchState;
+  onSearch: (v: Partial<SessionTargetSearchState>) => void;
+  displayFormat?: DisplayFormat;
+  onDisplayFormatChange?: (format: string) => void;
+  contentType?: RecordContentType;
+}
+
+export const Panel = ({
+  name,
+  tabs,
+  activeTab,
+  onTabChange,
+  searchValue,
+  onSearch,
+  displayFormat,
+  onDisplayFormatChange,
+  contentType,
+}: PanelProps) => {
+  const { token } = theme.useToken();
+
+  const enabledTabs = tabs.filter((tab) => tab.enable !== false);
+  const activeTabConfig = enabledTabs.find((tab) => tab.key === activeTab);
+
+  const handleToggleSearch = useCallback(() => {
+    onSearch({ show: !searchValue.show });
+  }, [onSearch, searchValue.show]);
+
+  return (
+    <div
+      style={{
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '4px 0',
+          flexShrink: 0,
+        }}
+      >
+        <Space size="middle">
+          <Text strong style={{ fontSize: 14 }}>
+            {name}
+          </Text>
+          {enabledTabs.map((tab) => (
+            <Text
+              key={tab.key}
+              type={activeTab === tab.key ? undefined : 'secondary'}
+              style={{
+                cursor: 'pointer',
+                fontWeight: activeTab === tab.key ? 500 : 400,
+                color: activeTab === tab.key ? token.colorPrimary : undefined,
+              }}
+              onClick={() => onTabChange(tab.key)}
+            >
+              {tab.label}
+            </Text>
+          ))}
+        </Space>
+
+        <Space size="small">
+          {activeTab === 'Body' && displayFormat && onDisplayFormatChange && contentType && (
+            <BodyTypeMenu
+              value={displayFormat}
+              onChange={onDisplayFormatChange}
+              contentType={contentType}
+            />
+          )}
+          <FilterOutlined
+            onClick={handleToggleSearch}
+            style={{
+              cursor: 'pointer',
+              color: searchValue.show ? token.colorPrimary : token.colorTextSecondary,
+              fontSize: 14,
+            }}
+          />
+        </Space>
+      </div>
+
+      <Divider style={{ margin: '0 0 4px 0' }} />
+
+      <Search value={searchValue} onSearch={onSearch} />
+
+      <div
+        style={{
+          flex: 1,
+          overflow: 'auto',
+        }}
+      >
+        {activeTabConfig?.children}
+      </div>
+    </div>
+  );
+};

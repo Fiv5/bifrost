@@ -987,19 +987,130 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
-    let client = get_https_client(unsafe_ssl);
-    let send_start = Instant::now();
-    let response = match client.request(outgoing_req).await {
-        Ok(r) => r,
-        Err(e) => {
-            error!("[{}] Failed to send request: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
+    let connect_start = Instant::now();
+    let stream =
+        match TcpStream::connect(format!("{}:{}", actual_target_host, actual_target_port)).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to connect to {}:{}: {}",
+                    req_id, actual_target_host, actual_target_port, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+
+    let (response, tls_ms, wait_ms) = if actual_use_http {
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .handshake(io)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] HTTP handshake failed: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                error!("Connection failed: {:?}", err);
+            }
+        });
+
+        let send_start = Instant::now();
+        let response = match sender.send_request(outgoing_req).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] Failed to send request: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        (response, None, wait_ms)
+    } else {
+        let tls_start = Instant::now();
+        let tls_config = get_tls_client_config(unsafe_ssl);
+        let connector = tokio_rustls::TlsConnector::from(tls_config);
+
+        let server_name =
+            match tokio_rustls::rustls::pki_types::ServerName::try_from(actual_target_host.clone())
+            {
+                Ok(name) => name,
+                Err(_) => {
+                    error!(
+                        "[{}] Invalid server name for TLS: {}",
+                        req_id, actual_target_host
+                    );
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
+            };
+
+        let tls_stream = match connector.connect(server_name, stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("[{}] TLS handshake failed: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+        let tls_ms = tls_start.elapsed().as_millis() as u64;
+
+        let io = TokioIo::new(tls_stream);
+        let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .handshake(io)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] HTTP handshake failed: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                error!("Connection failed: {:?}", err);
+            }
+        });
+
+        let send_start = Instant::now();
+        let response = match sender.send_request(outgoing_req).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] Failed to send request: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        (response, Some(tls_ms), wait_ms)
     };
-    let wait_ms = send_start.elapsed().as_millis() as u64;
 
     let (mut res_parts, res_body) = response.into_parts();
 
@@ -1099,8 +1210,8 @@ async fn handle_intercepted_request_with_protocol(
             record.host = original_host.to_string();
             record.timing = Some(RequestTiming {
                 dns_ms: None,
-                connect_ms: None,
-                tls_ms: None,
+                connect_ms: Some(tcp_connect_ms),
+                tls_ms,
                 send_ms: None,
                 wait_ms: Some(wait_ms),
                 receive_ms: None,
@@ -1176,8 +1287,8 @@ async fn handle_intercepted_request_with_protocol(
         record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
             dns_ms: None,
-            connect_ms: None,
-            tls_ms: None,
+            connect_ms: Some(tcp_connect_ms),
+            tls_ms,
             send_ms: None,
             wait_ms: Some(wait_ms),
             receive_ms: Some(receive_ms),

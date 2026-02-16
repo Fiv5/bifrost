@@ -19,6 +19,27 @@ export interface MatchedRule {
   line?: number;
 }
 
+export interface RequestTiming {
+  dns_ms?: number;
+  connect_ms?: number;
+  tls_ms?: number;
+  send_ms?: number;
+  wait_ms?: number;
+  receive_ms?: number;
+  total_ms: number;
+}
+
+export interface SocketStatus {
+  is_open: boolean;
+  send_count: number;
+  receive_count: number;
+  send_bytes: number;
+  receive_bytes: number;
+  frame_count: number;
+  close_code?: number;
+  close_reason?: string;
+}
+
 export interface TrafficSummary {
   id: string;
   sequence: number;
@@ -37,6 +58,10 @@ export interface TrafficSummary {
   has_rule_hit: boolean;
   matched_rule_count: number;
   matched_protocols: string[];
+  is_websocket?: boolean;
+  is_sse?: boolean;
+  frame_count?: number;
+  socket_status?: SocketStatus | null;
 }
 
 export interface TrafficRecord extends TrafficSummary {
@@ -46,6 +71,32 @@ export interface TrafficRecord extends TrafficSummary {
   response_body: string | null;
   matched_rules: MatchedRule[] | null;
   request_content_type: string | null;
+  timing?: RequestTiming | null;
+  is_tunnel?: boolean;
+  last_frame_id?: number;
+}
+
+export type FrameDirection = 'send' | 'receive';
+
+export type FrameType = 'text' | 'binary' | 'ping' | 'pong' | 'close' | 'continuation' | 'sse';
+
+export interface WebSocketFrame {
+  frame_id: number;
+  timestamp: number;
+  direction: FrameDirection;
+  frame_type: FrameType;
+  payload_size: number;
+  payload_preview?: string;
+  is_masked: boolean;
+  is_fin: boolean;
+}
+
+export interface FramesResponse {
+  frames: WebSocketFrame[];
+  socket_status: SocketStatus | null;
+  last_frame_id: number;
+  has_more: boolean;
+  is_monitored: boolean;
 }
 
 export interface TrafficListResponse {
@@ -197,4 +248,37 @@ export interface CertInfo {
   local_ips: string[];
   download_urls: string[];
   qrcode_urls: string[];
+}
+
+export interface SessionTargetSearchState {
+  value?: string;
+  show?: boolean;
+  total?: number;
+  next?: number;
+  tab?: string;
+}
+
+export const DisplayFormat = {
+  HighLight: 'HighLight',
+  Hex: 'Hex',
+  Tree: 'Tree',
+  Media: 'Media',
+} as const;
+
+export type DisplayFormat = typeof DisplayFormat[keyof typeof DisplayFormat];
+
+export type RecordContentType =
+  | 'JSON'
+  | 'HTML'
+  | 'XML'
+  | 'JavaScript'
+  | 'CSS'
+  | 'Media'
+  | 'Other';
+
+export interface KeyValueItem {
+  key: string;
+  value?: string | number;
+  id?: string;
+  children?: KeyValueItem[];
 }

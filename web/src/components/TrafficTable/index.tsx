@@ -137,6 +137,7 @@ export default function TrafficTable({
       title: "Path",
       dataIndex: "path",
       key: "path",
+      width: 250,
       ellipsis: true,
       render: (path: string) => (
         <Tooltip title={path}>
@@ -224,7 +225,7 @@ export default function TrafficTable({
       loading={loading}
       pagination={false}
       size="small"
-      scroll={{ y: "calc(100vh - 150px)" }}
+      scroll={{ x: "max-content", y: "calc(100vh - 150px)" }}
       onRow={(record) => ({
         onClick: () => onSelect?.(record),
         style: {

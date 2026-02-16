@@ -22,6 +22,8 @@ import {
   Tag,
   Divider,
   Image,
+  Segmented,
+  theme,
 } from "antd";
 import {
   CopyOutlined,
@@ -42,6 +44,7 @@ import {
   QrcodeOutlined,
   ExclamationCircleOutlined,
   PlusOutlined,
+  BgColorsOutlined,
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import {
@@ -67,11 +70,17 @@ import {
   type CertInfo,
 } from "../../api/cert";
 import type { PendingAuth, TrafficTypeMetrics } from "../../types";
+import {
+  useThemeStore,
+  type ThemeMode,
+} from "../../stores/useThemeStore";
 
 const { Text, Paragraph } = Typography;
 
 export default function Settings() {
   const { overview, loading, error, fetchOverview } = useMetricsStore();
+  const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
+  const { token } = theme.useToken();
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
@@ -743,6 +752,52 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       ),
     },
     {
+      key: "appearance",
+      label: (
+        <span>
+          <BgColorsOutlined /> Appearance
+        </span>
+      ),
+      children: (
+        <Row gutter={[16, 16]}>
+          <Col xs={24} lg={12}>
+            <Card
+              title={
+                <Space>
+                  <BgColorsOutlined />
+                  <span>Theme</span>
+                </Space>
+              }
+              size="small"
+            >
+              <Space direction="vertical" style={{ width: "100%" }}>
+                <Row justify="space-between" align="middle">
+                  <Col>
+                    <Text>Color Mode</Text>
+                  </Col>
+                  <Col>
+                    <Segmented
+                      value={themeMode}
+                      onChange={(value) => setThemeMode(value as ThemeMode)}
+                      options={[
+                        { label: "Light", value: "light" },
+                        { label: "Dark", value: "dark" },
+                        { label: "System", value: "system" },
+                      ]}
+                    />
+                  </Col>
+                </Row>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Choose your preferred color theme. System mode will
+                  automatically follow your operating system settings.
+                </Text>
+              </Space>
+            </Card>
+          </Col>
+        </Row>
+      ),
+    },
+    {
       key: "certificate",
       label: (
         <span>
@@ -974,7 +1029,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 <Card
                   size="small"
                   bordered={false}
-                  style={{ background: "#fafafa" }}
+                  style={{ background: token.colorBgLayout }}
                 >
                   <Text strong>CPU Usage</Text>
                   <Progress
@@ -1000,7 +1055,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 <Card
                   size="small"
                   bordered={false}
-                  style={{ background: "#fafafa" }}
+                  style={{ background: token.colorBgLayout }}
                 >
                   <Text strong>Memory Usage</Text>
                   <Progress
@@ -1241,11 +1296,17 @@ function MetricsContent({
   formatBytes,
   formatBytesRate,
 }: MetricsContentProps) {
+  const { token } = theme.useToken();
+
   return (
     <>
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Active Connections"
               value={activeConnections}
@@ -1254,7 +1315,11 @@ function MetricsContent({
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Total Requests"
               value={totalRequests}
@@ -1263,7 +1328,11 @@ function MetricsContent({
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Current QPS"
               value={qps.toFixed(2)}
@@ -1277,7 +1346,11 @@ function MetricsContent({
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Recorded Traffic"
               value={recordedTraffic}
@@ -1289,11 +1362,15 @@ function MetricsContent({
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Upload Rate"
               value={formatBytesRate(bytesSentRate)}
-              prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+              prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
             />
             <Text type="secondary" style={{ fontSize: 12 }}>
               Max: {formatBytesRate(maxBytesSentRate)}
@@ -1301,11 +1378,15 @@ function MetricsContent({
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Download Rate"
               value={formatBytesRate(bytesReceivedRate)}
-              prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+              prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
             />
             <Text type="secondary" style={{ fontSize: 12 }}>
               Max: {formatBytesRate(maxBytesReceivedRate)}
@@ -1313,20 +1394,28 @@ function MetricsContent({
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Total Upload"
               value={formatBytes(bytesSent)}
-              prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+              prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
             <Statistic
               title="Total Download"
               value={formatBytes(bytesReceived)}
-              prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+              prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
             />
           </Card>
         </Col>
@@ -1341,6 +1430,7 @@ interface TrafficTypeContentProps {
 }
 
 function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
+  const { token } = theme.useToken();
   const data = metrics || {
     requests: 0,
     bytes_sent: 0,
@@ -1351,7 +1441,11 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
   return (
     <Row gutter={[16, 16]}>
       <Col xs={24} sm={12} lg={6}>
-        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+        <Card
+          size="small"
+          bordered={false}
+          style={{ background: token.colorBgLayout }}
+        >
           <Statistic
             title="Active Connections"
             value={data.active_connections}
@@ -1360,7 +1454,11 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
         </Card>
       </Col>
       <Col xs={24} sm={12} lg={6}>
-        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+        <Card
+          size="small"
+          bordered={false}
+          style={{ background: token.colorBgLayout }}
+        >
           <Statistic
             title="Total Requests"
             value={data.requests}
@@ -1369,20 +1467,28 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
         </Card>
       </Col>
       <Col xs={24} sm={12} lg={6}>
-        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+        <Card
+          size="small"
+          bordered={false}
+          style={{ background: token.colorBgLayout }}
+        >
           <Statistic
             title="Total Upload"
             value={formatBytes(data.bytes_sent)}
-            prefix={<CloudUploadOutlined style={{ color: "#52c41a" }} />}
+            prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
           />
         </Card>
       </Col>
       <Col xs={24} sm={12} lg={6}>
-        <Card size="small" bordered={false} style={{ background: "#fafafa" }}>
+        <Card
+          size="small"
+          bordered={false}
+          style={{ background: token.colorBgLayout }}
+        >
           <Statistic
             title="Total Download"
             value={formatBytes(data.bytes_received)}
-            prefix={<CloudDownloadOutlined style={{ color: "#1890ff" }} />}
+            prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
           />
         </Card>
       </Col>

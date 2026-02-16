@@ -1,16 +1,43 @@
-import { useMemo } from 'react';
-import { Descriptions, Tabs, Typography, Empty, theme, Tag, Card } from 'antd';
+import { useEffect, useMemo, useCallback } from 'react';
+import { Empty, Splitter } from 'antd';
 import type { CSSProperties } from 'react';
-import dayjs from 'dayjs';
-import type { TrafficRecord, MatchedRule } from '../../types';
-
-const { Text, Paragraph } = Typography;
+import type { TrafficRecord, DisplayFormat, RecordContentType } from '../../types';
+import { useTrafficDetailStore } from '../../stores/useTrafficDetailStore';
+import { getContentTypeFromHeader } from './helper/contentType';
+import { Header } from './Header';
+import { Panel } from './Panel';
+import { Overview } from './panes/Overview';
+import { HeaderView } from './panes/Header';
+import { Body } from './panes/Body';
+import { Raw } from './panes/Raw';
+import { CookieView } from './panes/Cookie';
+import { QueryView } from './panes/Query';
+import { Messages } from './panes/Messages';
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
   requestBody: string | null;
   responseBody: string | null;
 }
+
+const hasQueryParams = (url: string): boolean => {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.searchParams.toString().length > 0;
+  } catch {
+    return false;
+  }
+};
+
+const hasCookies = (headers: [string, string][] | null): boolean => {
+  if (!headers) return false;
+  return headers.some(([name]) => name.toLowerCase() === 'cookie');
+};
+
+const hasSetCookies = (headers: [string, string][] | null): boolean => {
+  if (!headers) return false;
+  return headers.some(([name]) => name.toLowerCase() === 'set-cookie');
+};
 
 const styles: Record<string, CSSProperties> = {
   container: {
@@ -24,236 +51,224 @@ const styles: Record<string, CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  summarySection: {
-    marginBottom: 16,
-  },
-  tabContent: {
+  splitterWrapper: {
     flex: 1,
-    overflow: 'auto',
+    overflow: 'hidden',
+    minHeight: 0,
   },
-  headerItem: {
-    fontFamily: 'monospace',
-    fontSize: 12,
-    lineHeight: 1.6,
-  },
-  bodyContent: {
-    fontFamily: 'monospace',
-    fontSize: 12,
-    margin: 0,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-all',
-    maxHeight: 400,
-    overflow: 'auto',
-    padding: 12,
-    borderRadius: 4,
-  },
-  rawContent: {
-    fontFamily: 'monospace',
-    fontSize: 11,
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-all',
-    maxHeight: 500,
-    overflow: 'auto',
-    padding: 12,
-    borderRadius: 4,
-  },
-  ruleCard: {
-    marginBottom: 12,
-  },
-  ruleRaw: {
-    fontFamily: 'monospace',
-    fontSize: 12,
-    padding: '8px 12px',
-    borderRadius: 4,
-    margin: '8px 0 0 0',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-all',
-  },
-  ruleField: {
-    marginBottom: 4,
+  panelWrapper: {
+    height: '100%',
+    padding: '0 8px',
+    overflow: 'hidden',
   },
 };
 
-function getStatusMessage(status: number): string {
-  const messages: Record<number, string> = {
-    100: 'Continue',
-    101: 'Switching Protocols',
-    200: 'OK',
-    201: 'Created',
-    202: 'Accepted',
-    204: 'No Content',
-    206: 'Partial Content',
-    301: 'Moved Permanently',
-    302: 'Found',
-    303: 'See Other',
-    304: 'Not Modified',
-    307: 'Temporary Redirect',
-    308: 'Permanent Redirect',
-    400: 'Bad Request',
-    401: 'Unauthorized',
-    403: 'Forbidden',
-    404: 'Not Found',
-    405: 'Method Not Allowed',
-    408: 'Request Timeout',
-    409: 'Conflict',
-    413: 'Payload Too Large',
-    414: 'URI Too Long',
-    415: 'Unsupported Media Type',
-    429: 'Too Many Requests',
-    500: 'Internal Server Error',
-    501: 'Not Implemented',
-    502: 'Bad Gateway',
-    503: 'Service Unavailable',
-    504: 'Gateway Timeout',
-  };
-  return messages[status] || '';
-}
+export default function TrafficDetail({
+  record,
+  requestBody,
+  responseBody,
+}: TrafficDetailProps) {
+  const {
+    requestSearch,
+    responseSearch,
+    requestDisplayFormat,
+    responseDisplayFormat,
+    requestTab,
+    responseTab,
+    setRequestSearch,
+    setResponseSearch,
+    setRequestDisplayFormat,
+    setResponseDisplayFormat,
+    setRequestTab,
+    setResponseTab,
+    reset,
+  } = useTrafficDetailStore();
 
-export default function TrafficDetail({ record, requestBody, responseBody }: TrafficDetailProps) {
-  const { token } = theme.useToken();
+  useEffect(() => {
+    reset();
+  }, [record?.id, reset]);
 
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return '-';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-    return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-  };
+  const requestContentType = useMemo<RecordContentType>(() => {
+    return getContentTypeFromHeader(record?.request_content_type);
+  }, [record?.request_content_type]);
 
-  const formatBody = (body: string | null) => {
-    if (!body) return <Text type="secondary">No body content</Text>;
+  const responseContentType = useMemo<RecordContentType>(() => {
+    return getContentTypeFromHeader(record?.content_type);
+  }, [record?.content_type]);
 
-    try {
-      const parsed = JSON.parse(body);
-      const formatted = JSON.stringify(parsed, null, 2);
-      return (
-        <pre style={{ ...styles.bodyContent, background: token.colorBgLayout }}>
-          {formatted}
-        </pre>
-      );
-    } catch {
-      return (
-        <pre style={{ ...styles.bodyContent, background: token.colorBgLayout }}>
-          {body}
-        </pre>
-      );
-    }
-  };
+  const handleRequestDisplayFormatChange = useCallback(
+    (format: string) => {
+      setRequestDisplayFormat(format as DisplayFormat);
+    },
+    [setRequestDisplayFormat]
+  );
 
-  const formatHeaders = (headers: [string, string][] | null) => {
-    if (!headers || headers.length === 0) {
-      return <Text type="secondary">No headers</Text>;
-    }
-    return (
-      <div style={styles.headerItem}>
-        {headers.map(([key, value], index) => (
-          <div key={index}>
-            <Text strong>{key}:</Text> <Text>{value}</Text>
-          </div>
-        ))}
-      </div>
-    );
-  };
+  const handleResponseDisplayFormatChange = useCallback(
+    (format: string) => {
+      setResponseDisplayFormat(format as DisplayFormat);
+    },
+    [setResponseDisplayFormat]
+  );
 
-  const buildRawRequest = useMemo(() => {
-    if (!record) return '';
-    const lines: string[] = [];
-    lines.push(`${record.method} ${record.path} ${record.protocol}`);
-    lines.push(`Host: ${record.host}`);
-    if (record.request_headers) {
-      record.request_headers.forEach(([key, value]) => {
-        if (key.toLowerCase() !== 'host') {
-          lines.push(`${key}: ${value}`);
-        }
-      });
-    }
-    lines.push('');
-    if (requestBody) {
-      lines.push(requestBody);
-    }
-    return lines.join('\n');
-  }, [record, requestBody]);
+  const requestTabs = useMemo(() => {
+    if (!record) return [];
 
-  const buildRawResponse = useMemo(() => {
-    if (!record) return '';
-    const lines: string[] = [];
-    lines.push(`${record.protocol} ${record.status} ${getStatusMessage(record.status)}`);
-    if (record.response_headers) {
-      record.response_headers.forEach(([key, value]) => {
-        lines.push(`${key}: ${value}`);
-      });
-    }
-    lines.push('');
-    if (responseBody) {
-      lines.push(responseBody);
-    }
-    return lines.join('\n');
-  }, [record, responseBody]);
+    return [
+      {
+        key: 'Overview',
+        label: 'Overview',
+        children: (
+          <Overview
+            record={record}
+            searchValue={requestSearch}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+      {
+        key: 'Header',
+        label: 'Header',
+        children: (
+          <HeaderView
+            headers={record.request_headers}
+            searchValue={requestSearch}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+      {
+        key: 'Cookie',
+        label: 'Cookie',
+        enable: hasCookies(record.request_headers),
+        children: (
+          <CookieView
+            headers={record.request_headers}
+            type="request"
+            searchValue={requestSearch}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+      {
+        key: 'Query',
+        label: 'Query',
+        enable: hasQueryParams(record.url),
+        children: (
+          <QueryView
+            url={record.url}
+            searchValue={requestSearch}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+      {
+        key: 'Body',
+        label: 'Body',
+        enable: !!requestBody,
+        children: (
+          <Body
+            data={requestBody}
+            contentType={requestContentType}
+            searchValue={requestSearch}
+            displayFormat={requestDisplayFormat}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+      {
+        key: 'Raw',
+        label: 'Raw',
+        children: (
+          <Raw
+            type="request"
+            method={record.method}
+            url={record.url}
+            protocol={record.protocol}
+            headers={record.request_headers}
+            body={requestBody}
+            searchValue={requestSearch}
+            onSearch={setRequestSearch}
+          />
+        ),
+      },
+    ];
+  }, [record, requestBody, requestSearch, setRequestSearch, requestContentType, requestDisplayFormat]);
 
-  const renderMatchedRules = (rules: MatchedRule[] | null) => {
-    if (!rules || rules.length === 0) {
-      return <Text type="secondary">No rules matched</Text>;
-    }
+  const responseTabs = useMemo(() => {
+    if (!record) return [];
 
-    return (
-      <div>
-        {rules.map((rule, index) => {
-          const source = rule.rule_name 
-            ? `${rule.rule_name}${rule.line ? `:${rule.line}` : ''}`
-            : 'Unknown';
-          
-          return (
-            <Card 
-              key={index} 
-              size="small" 
-              style={styles.ruleCard}
-              title={
-                <span>
-                  <Tag color="blue">#{index + 1}</Tag>
-                  <Text strong>{source}</Text>
-                </span>
-              }
-            >
-              <div style={styles.ruleField}>
-                <Text type="secondary">Protocol: </Text>
-                <Tag color="green">{rule.protocol}</Tag>
-              </div>
-              <div style={styles.ruleField}>
-                <Text type="secondary">Pattern: </Text>
-                <Text code>{rule.pattern}</Text>
-              </div>
-              <div style={styles.ruleField}>
-                <Text type="secondary">Value: </Text>
-                <Text code>{rule.value || '(empty)'}</Text>
-              </div>
-              {rule.raw && (
-                <div>
-                  <Text type="secondary">Raw Rule:</Text>
-                  <pre style={{ ...styles.ruleRaw, background: token.colorBgLayout }}>
-                    {rule.raw}
-                  </pre>
-                </div>
-              )}
-            </Card>
-          );
-        })}
-      </div>
-    );
-  };
+    const hasMessages = record.is_websocket || record.is_sse;
 
-  const requestOverview = useMemo(() => {
-    if (!record) return null;
-    return (
-      <Descriptions column={1} size="small" bordered>
-        <Descriptions.Item label="URL">{record.url}</Descriptions.Item>
-        <Descriptions.Item label="Method">{record.method}</Descriptions.Item>
-        <Descriptions.Item label="Protocol">{record.protocol}</Descriptions.Item>
-        <Descriptions.Item label="Host">{record.host}</Descriptions.Item>
-        <Descriptions.Item label="Path">{record.path}</Descriptions.Item>
-        <Descriptions.Item label="Request Size">{formatSize(record.request_size)}</Descriptions.Item>
-        <Descriptions.Item label="Time">{dayjs(record.timestamp).format('YYYY-MM-DD HH:mm:ss.SSS')}</Descriptions.Item>
-      </Descriptions>
-    );
-  }, [record]);
+    return [
+      {
+        key: 'Header',
+        label: 'Header',
+        children: (
+          <HeaderView
+            headers={record.response_headers}
+            searchValue={responseSearch}
+            onSearch={setResponseSearch}
+          />
+        ),
+      },
+      {
+        key: 'Set-Cookie',
+        label: 'Set-Cookie',
+        enable: hasSetCookies(record.response_headers),
+        children: (
+          <CookieView
+            headers={record.response_headers}
+            type="response"
+            searchValue={responseSearch}
+            onSearch={setResponseSearch}
+          />
+        ),
+      },
+      {
+        key: 'Messages',
+        label: `Messages${(record.frame_count ?? 0) > 0 ? ` (${record.frame_count})` : ''}`,
+        enable: hasMessages,
+        children: (
+          <Messages
+            recordId={record.id}
+            isWebSocket={record.is_websocket || false}
+            frameCount={record.frame_count ?? 0}
+            searchValue={responseSearch}
+            onSearch={setResponseSearch}
+          />
+        ),
+      },
+      {
+        key: 'Body',
+        label: 'Body',
+        enable: !!responseBody,
+        children: (
+          <Body
+            data={responseBody}
+            contentType={responseContentType}
+            searchValue={responseSearch}
+            displayFormat={responseDisplayFormat}
+            onSearch={setResponseSearch}
+          />
+        ),
+      },
+      {
+        key: 'Raw',
+        label: 'Raw',
+        children: (
+          <Raw
+            type="response"
+            protocol={record.protocol}
+            status={record.status}
+            headers={record.response_headers}
+            body={responseBody}
+            searchValue={responseSearch}
+            onSearch={setResponseSearch}
+          />
+        ),
+      },
+    ];
+  }, [record, responseBody, responseSearch, setResponseSearch, responseContentType, responseDisplayFormat]);
 
   if (!record) {
     return (
@@ -263,101 +278,43 @@ export default function TrafficDetail({ record, requestBody, responseBody }: Tra
     );
   }
 
-  const requestTabs = [
-    {
-      key: 'overview',
-      label: 'Overview',
-      children: requestOverview,
-    },
-    {
-      key: 'headers',
-      label: 'Headers',
-      children: formatHeaders(record.request_headers),
-    },
-    {
-      key: 'body',
-      label: 'Body',
-      children: formatBody(requestBody),
-    },
-    {
-      key: 'raw',
-      label: 'Raw',
-      children: (
-        <pre style={{ ...styles.rawContent, background: token.colorBgLayout }}>
-          {buildRawRequest}
-        </pre>
-      ),
-    },
-  ];
-
-  const responseTabs = [
-    {
-      key: 'headers',
-      label: 'Headers',
-      children: formatHeaders(record.response_headers),
-    },
-    {
-      key: 'body',
-      label: 'Body',
-      children: formatBody(responseBody),
-    },
-    {
-      key: 'raw',
-      label: 'Raw',
-      children: (
-        <pre style={{ ...styles.rawContent, background: token.colorBgLayout }}>
-          {buildRawResponse}
-        </pre>
-      ),
-    },
-  ];
-
-  const rulesCount = record.matched_rules?.length || 0;
-
-  const mainTabs = [
-    {
-      key: 'request',
-      label: 'Request',
-      children: <Tabs items={requestTabs} size="small" />,
-    },
-    {
-      key: 'response',
-      label: 'Response',
-      children: <Tabs items={responseTabs} size="small" />,
-    },
-    {
-      key: 'rules',
-      label: `Rules${rulesCount > 0 ? ` (${rulesCount})` : ''}`,
-      children: renderMatchedRules(record.matched_rules),
-    },
-  ];
-
   return (
     <div style={styles.container}>
-      <div style={styles.summarySection}>
-        <Descriptions column={2} size="small" bordered>
-          <Descriptions.Item label="Client">{record.client_ip || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Response Code">{record.status || '-'}</Descriptions.Item>
-          <Descriptions.Item label="URL" span={2}>
-            <Paragraph
-              style={{ margin: 0, maxWidth: '100%' }}
-              ellipsis={{ rows: 2, expandable: true }}
-            >
-              {record.url}
-            </Paragraph>
-          </Descriptions.Item>
-          <Descriptions.Item label="Response Status">{getStatusMessage(record.status)}</Descriptions.Item>
-          <Descriptions.Item label="Method">{record.method}</Descriptions.Item>
-          <Descriptions.Item label="HTTP Version">{record.protocol}</Descriptions.Item>
-          <Descriptions.Item label="Content Type">{record.content_type || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Size" span={2}>
-            Req: {formatSize(record.request_size)} / Res: {formatSize(record.response_size)}
-          </Descriptions.Item>
-        </Descriptions>
-      </div>
+      <Header record={record} />
 
-      <div style={styles.tabContent}>
-        <Tabs items={mainTabs} />
+      <div style={styles.splitterWrapper}>
+        <Splitter layout="vertical">
+          <Splitter.Panel min="20%" max="80%" defaultSize="50%">
+            <div style={styles.panelWrapper}>
+              <Panel
+                name="Request"
+                tabs={requestTabs}
+                activeTab={requestTab}
+                onTabChange={setRequestTab}
+                searchValue={requestSearch}
+                onSearch={setRequestSearch}
+                displayFormat={requestDisplayFormat}
+                onDisplayFormatChange={handleRequestDisplayFormatChange}
+                contentType={requestContentType}
+              />
+            </div>
+          </Splitter.Panel>
+          <Splitter.Panel>
+            <div style={styles.panelWrapper}>
+              <Panel
+                name="Response"
+                tabs={responseTabs}
+                activeTab={responseTab}
+                onTabChange={setResponseTab}
+                searchValue={responseSearch}
+                onSearch={setResponseSearch}
+                displayFormat={responseDisplayFormat}
+                onDisplayFormatChange={handleResponseDisplayFormatChange}
+                contentType={responseContentType}
+              />
+            </div>
+          </Splitter.Panel>
+        </Splitter>
       </div>
     </div>
   );

@@ -21,6 +21,7 @@ interface VirtualTrafficTableProps {
 
 const ROW_HEIGHT = 36;
 const SCROLL_THRESHOLD = 50;
+const TABLE_MIN_WIDTH = 1020;
 
 const getStatusDotColor = (status: number): string => {
   if (status === 0) return "#d9d9d9";
@@ -69,6 +70,7 @@ interface ColumnDef {
   key: string;
   title: string;
   width: number | string;
+  minWidth?: number;
   align?: "left" | "center" | "right";
   render: (record: TrafficSummary) => React.ReactNode;
 }
@@ -172,6 +174,7 @@ const columns: ColumnDef[] = [
     key: "path",
     title: "Path",
     width: "auto",
+    minWidth: 250,
     render: (record) => (
       <Tooltip title={record.path}>
         <Text style={{ fontSize: 12 }} ellipsis>
@@ -358,6 +361,7 @@ export default function VirtualTrafficTable({
       display: "flex",
       alignItems: "center",
       height: ROW_HEIGHT,
+      minWidth: TABLE_MIN_WIDTH,
       borderBottom: `1px solid ${token.colorBorderSecondary}`,
       backgroundColor: token.colorBgContainer,
       fontSize: 12,
@@ -378,9 +382,11 @@ export default function VirtualTrafficTable({
       flex: 1,
       overflow: "auto",
       position: "relative",
+      minWidth: 0,
     },
     virtualList: {
       width: "100%",
+      minWidth: TABLE_MIN_WIDTH,
       position: "relative",
       willChange: "transform",
       contain: "strict",
@@ -391,6 +397,7 @@ export default function VirtualTrafficTable({
       height: ROW_HEIGHT,
       maxHeight: ROW_HEIGHT,
       minHeight: ROW_HEIGHT,
+      minWidth: TABLE_MIN_WIDTH,
       boxSizing: "border-box",
       borderBottom: `1px solid ${token.colorBorderSecondary}`,
       cursor: "pointer",
@@ -453,9 +460,10 @@ export default function VirtualTrafficTable({
 
   const getColumnStyle = (col: ColumnDef): CSSProperties => {
     const width = typeof col.width === "number" ? col.width : undefined;
+    const minWidth = col.minWidth ?? width;
     return {
       width: width,
-      minWidth: width,
+      minWidth: minWidth,
       flex: col.width === "auto" ? 1 : undefined,
       justifyContent:
         col.align === "center"

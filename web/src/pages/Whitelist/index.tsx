@@ -213,7 +213,7 @@ export default function Whitelist() {
   }
 
   return (
-    <div>
+    <div style={{ padding: 16 }}>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
         <Col>
           <Space>
