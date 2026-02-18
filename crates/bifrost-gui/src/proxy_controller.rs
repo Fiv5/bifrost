@@ -418,6 +418,8 @@ async fn run_proxy_server(
         admin_state = admin_state.with_config_manager(cm.clone());
     }
 
+    let values_storage_for_watcher = admin_state.values_storage.clone();
+
     let server = ProxyServer::new(proxy_config)
         .with_tls_config(tls_config)
         .with_rules(resolver.clone())
@@ -428,8 +430,12 @@ async fn run_proxy_server(
         settings.host, settings.port
     );
 
-    let rules_watcher_task =
-        spawn_rules_watcher_task(config_manager, rules_storage, resolver.clone());
+    let rules_watcher_task = spawn_rules_watcher_task(
+        config_manager,
+        rules_storage,
+        values_storage_for_watcher,
+        resolver.clone(),
+    );
 
     tokio::select! {
         result = server.run() => {
@@ -533,9 +539,12 @@ fn load_all_rules(
     Ok(all_rules)
 }
 
+type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
+
 fn spawn_rules_watcher_task(
     config_manager: Option<ConfigManager>,
     rules_storage: RulesStorage,
+    values_storage: Option<SharedValuesStorage>,
     resolver: SharedDynamicRulesResolver,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -568,7 +577,13 @@ fn spawn_rules_watcher_task(
 
                         match load_all_rules(&rules_storage) {
                             Ok(new_rules) => {
-                                let new_values = config_manager.values_as_hashmap().await;
+                                let new_values = values_storage
+                                    .as_ref()
+                                    .map(|vs| {
+                                        use bifrost_core::ValueStore;
+                                        vs.read().as_hashmap()
+                                    })
+                                    .unwrap_or_default();
                                 resolver.update(new_rules, new_values);
                             }
                             Err(e) => {

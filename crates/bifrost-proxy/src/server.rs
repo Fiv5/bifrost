@@ -654,10 +654,13 @@ async fn handle_request(
             }
         }
     } else {
-        let unsafe_ssl = if let Some(ref state) = admin_state {
-            state.runtime_config.read().await.unsafe_ssl
+        let (unsafe_ssl, max_body_buffer_size) = if let Some(ref state) = admin_state {
+            (
+                state.runtime_config.read().await.unsafe_ssl,
+                state.get_max_body_buffer_size(),
+            )
         } else {
-            proxy_config.unsafe_ssl
+            (proxy_config.unsafe_ssl, proxy_config.max_body_buffer_size)
         };
 
         match handle_http_request(
@@ -665,7 +668,7 @@ async fn handle_request(
             rules,
             verbose_logging,
             unsafe_ssl,
-            proxy_config.max_body_buffer_size,
+            max_body_buffer_size,
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),

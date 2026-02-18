@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
@@ -65,7 +66,10 @@ pub struct AdminState {
     pub runtime_config: SharedRuntimeConfig,
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
+    pub max_body_buffer_size: AtomicUsize,
 }
+
+const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 32 * 1024 * 1024;
 
 impl AdminState {
     pub fn new(port: u16) -> Self {
@@ -84,6 +88,22 @@ impl AdminState {
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,
+            max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
+        }
+    }
+
+    pub fn get_max_body_buffer_size(&self) -> usize {
+        self.max_body_buffer_size.load(Ordering::Relaxed)
+    }
+
+    pub fn set_max_body_buffer_size(&self, size: usize) {
+        let old = self.max_body_buffer_size.swap(size, Ordering::SeqCst);
+        if old != size {
+            tracing::info!(
+                "AdminState config updated: max_body_buffer_size {} -> {}",
+                old,
+                size
+            );
         }
     }
 
@@ -159,6 +179,11 @@ impl AdminState {
 
     pub fn with_config_manager_shared(mut self, manager: SharedConfigManager) -> Self {
         self.config_manager = Some(manager);
+        self
+    }
+
+    pub fn with_max_body_buffer_size(self, size: usize) -> Self {
+        self.max_body_buffer_size.store(size, Ordering::SeqCst);
         self
     }
 }

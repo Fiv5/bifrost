@@ -211,6 +211,10 @@ async fn update_performance_config(
         body_store.write().update_config(body_store_update);
     }
 
+    if let Some(max_body_buffer_size) = request.max_body_buffer_size {
+        state.set_max_body_buffer_size(max_body_buffer_size);
+    }
+
     get_performance_config(state).await
 }
 

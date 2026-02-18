@@ -63,12 +63,7 @@ start_proxy() {
     log_info "Starting proxy server on port $PROXY_PORT..."
 
     mkdir -p "$DATA_DIR"
-    mkdir -p "$DATA_DIR/rules"
     export BIFROST_DATA_DIR="$DATA_DIR"
-
-    cat > "$DATA_DIR/rules/test-value-rule.txt" << 'EOF'
-httpbin.org/status/200 statusCode://{status_code}
-EOF
 
     RUST_LOG=info cargo run --bin bifrost -- \
         -p "$PROXY_PORT" \
@@ -100,6 +95,33 @@ EOF
     log_fail "Proxy server not responding after ${max_wait}s"
     cat "$DATA_DIR/proxy.log"
     return 1
+}
+
+setup_rule_with_value() {
+    log_info "Creating rule that uses a value variable..."
+    
+    local rule_content="httpbin.org/status/200 statusCode://{status_code}"
+    local response
+    response=$(create_rule "value-test-rule" "$rule_content" "true")
+    
+    if [[ $? -ne 0 ]]; then
+        log_fail "Failed to create rule via API"
+        return 1
+    fi
+    
+    local success
+    success=$(echo "$response" | jq -r '.success // empty')
+    
+    if [[ "$success" != "true" ]]; then
+        local error
+        error=$(echo "$response" | jq -r '.error // empty')
+        log_fail "Create rule failed: $error"
+        return 1
+    fi
+    
+    sleep 1
+    log_info "Rule created successfully"
+    return 0
 }
 
 TEST_VALUE_NAME="status_code"
@@ -221,6 +243,11 @@ main() {
 
     if ! start_proxy; then
         echo "Failed to start proxy server"
+        exit 1
+    fi
+
+    if ! setup_rule_with_value; then
+        echo "Failed to setup rule with value variable"
         exit 1
     fi
 

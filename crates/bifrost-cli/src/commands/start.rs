@@ -453,11 +453,16 @@ pub fn run_foreground(
             .with_rules_storage(rules_storage)
             .with_ca_cert_path(ca_cert_path)
             .with_system_proxy_manager_shared(system_proxy_manager.clone())
-            .with_config_manager(config_manager);
+            .with_config_manager(config_manager)
+            .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let rules_storage_for_resolver = admin_state.rules_storage.clone();
         let config_manager_for_resolver = admin_state.config_manager.clone();
+        let values_storage_for_resolver = admin_state
+            .values_storage
+            .clone()
+            .expect("values_storage should be set");
 
         let stored_rules = load_stored_rules(&rules_storage_for_resolver);
         let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
@@ -478,6 +483,7 @@ pub fn run_foreground(
         let rules_watcher_task = spawn_rules_watcher_task(
             config_manager_for_resolver,
             rules_storage_for_resolver,
+            values_storage_for_resolver,
             resolver.clone(),
         );
 
@@ -663,11 +669,16 @@ pub fn run_daemon(
                     .with_rules_storage(rules_storage)
                     .with_ca_cert_path(ca_cert_path)
                     .with_system_proxy_manager_shared(system_proxy_manager.clone())
-                    .with_config_manager(config_manager);
+                    .with_config_manager(config_manager)
+                    .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let rules_storage_for_resolver = admin_state.rules_storage.clone();
                 let config_manager_for_resolver = admin_state.config_manager.clone();
+                let values_storage_for_resolver = admin_state
+                    .values_storage
+                    .clone()
+                    .expect("values_storage should be set");
 
                 let stored_rules = load_stored_rules(&rules_storage_for_resolver);
                 let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
@@ -688,6 +699,7 @@ pub fn run_daemon(
                 let rules_watcher_task = spawn_rules_watcher_task(
                     config_manager_for_resolver,
                     rules_storage_for_resolver,
+                    values_storage_for_resolver,
                     resolver.clone(),
                 );
 
@@ -786,6 +798,7 @@ fn log_resolver_rules(resolver: &DynamicRulesResolver) {
 fn spawn_rules_watcher_task(
     config_manager: Option<Arc<ConfigManager>>,
     rules_storage: bifrost_storage::RulesStorage,
+    values_storage: bifrost_admin::SharedValuesStorage,
     resolver: SharedDynamicRulesResolver,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -817,7 +830,10 @@ fn spawn_rules_watcher_task(
                         );
 
                         let new_stored_rules = load_stored_rules(&rules_storage);
-                        let new_values = config_manager.values_as_hashmap().await;
+                        let new_values = {
+                            use bifrost_core::ValueStore;
+                            values_storage.read().as_hashmap()
+                        };
 
                         resolver.update_stored_rules(new_stored_rules, new_values);
                     }

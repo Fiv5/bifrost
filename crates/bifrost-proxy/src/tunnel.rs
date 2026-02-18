@@ -162,6 +162,10 @@ pub async fn handle_connect(
                 reason
             );
         }
+        let max_body_buffer_size = admin_state
+            .as_ref()
+            .map(|s| s.get_max_body_buffer_size())
+            .unwrap_or(proxy_config.max_body_buffer_size);
         return handle_tls_interception(
             req,
             &host,
@@ -169,7 +173,7 @@ pub async fn handle_connect(
             rules,
             tls_config,
             verbose_logging,
-            proxy_config.max_body_buffer_size,
+            max_body_buffer_size,
             tls_intercept_config.unsafe_ssl,
             ctx,
             admin_state,
