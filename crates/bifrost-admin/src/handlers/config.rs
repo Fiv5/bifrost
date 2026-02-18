@@ -3,7 +3,7 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
-use crate::body_store::BodyStoreStats;
+use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 
@@ -76,6 +76,12 @@ pub async fn handle_config(
             Method::PUT => update_performance_config(req, state).await,
             _ => method_not_allowed(),
         },
+        "/api/config/performance/clear-cache" | "/api/config/performance/clear-cache/" => {
+            match method {
+                Method::DELETE => clear_body_cache(state).await,
+                _ => method_not_allowed(),
+            }
+        }
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
 }
@@ -193,7 +199,52 @@ async fn update_performance_config(
         );
     }
 
+    if let Some(max_records) = request.max_records {
+        state.traffic_recorder.set_max_records(max_records);
+    }
+
+    if let Some(ref body_store) = state.body_store {
+        let body_store_update = BodyStoreConfigUpdate {
+            max_memory_size: request.max_body_memory_size,
+            retention_days: request.file_retention_days,
+        };
+        body_store.write().update_config(body_store_update);
+    }
+
     get_performance_config(state).await
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClearCacheResponse {
+    removed_files: usize,
+    message: String,
+}
+
+async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref body_store) = state.body_store else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Body store not available",
+        );
+    };
+
+    match body_store.write().clear() {
+        Ok(removed_count) => {
+            tracing::info!("Cleared {} body cache files", removed_count);
+            let response = ClearCacheResponse {
+                removed_files: removed_count,
+                message: format!("Successfully cleared {} cache files", removed_count),
+            };
+            json_response(&response)
+        }
+        Err(e) => {
+            tracing::error!("Failed to clear body cache: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to clear cache: {}", e),
+            )
+        }
+    }
 }
 
 async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

@@ -1,4 +1,4 @@
-import { get, put } from './client';
+import { get, put, del } from './client';
 
 export interface TlsConfig {
   enable_tls_interception: boolean;
@@ -67,4 +67,13 @@ export async function getPerformanceConfig(): Promise<PerformanceConfig> {
 
 export async function updatePerformanceConfig(config: UpdateTrafficConfigRequest): Promise<PerformanceConfig> {
   return put<PerformanceConfig>('/config/performance', config);
+}
+
+export interface ClearCacheResponse {
+  removed_files: number;
+  message: string;
+}
+
+export async function clearBodyCache(): Promise<ClearCacheResponse> {
+  return del<ClearCacheResponse>('/config/performance/clear-cache');
 }

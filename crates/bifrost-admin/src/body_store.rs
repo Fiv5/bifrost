@@ -33,6 +33,12 @@ pub struct BodyStore {
     retention_days: u64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct BodyStoreConfigUpdate {
+    pub max_memory_size: Option<usize>,
+    pub retention_days: Option<u64>,
+}
+
 impl BodyStore {
     pub fn new(temp_dir: PathBuf, max_memory_size: usize, retention_days: u64) -> Self {
         if !temp_dir.exists() {
@@ -42,6 +48,25 @@ impl BodyStore {
             temp_dir,
             max_memory_size,
             retention_days,
+        }
+    }
+
+    pub fn update_config(&mut self, update: BodyStoreConfigUpdate) {
+        if let Some(max_memory_size) = update.max_memory_size {
+            tracing::info!(
+                "BodyStore config updated: max_memory_size {} -> {}",
+                self.max_memory_size,
+                max_memory_size
+            );
+            self.max_memory_size = max_memory_size;
+        }
+        if let Some(retention_days) = update.retention_days {
+            tracing::info!(
+                "BodyStore config updated: retention_days {} -> {}",
+                self.retention_days,
+                retention_days
+            );
+            self.retention_days = retention_days;
         }
     }
 

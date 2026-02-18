@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -281,7 +281,7 @@ impl From<&TrafficRecord> for TrafficSummary {
 
 pub struct TrafficRecorder {
     records: RwLock<VecDeque<TrafficRecord>>,
-    max_records: usize,
+    max_records: AtomicUsize,
     tx: broadcast::Sender<TrafficRecord>,
     sequence: AtomicU64,
 }
@@ -291,9 +291,20 @@ impl TrafficRecorder {
         let (tx, _) = broadcast::channel(1000);
         Self {
             records: RwLock::new(VecDeque::with_capacity(max_records)),
-            max_records,
+            max_records: AtomicUsize::new(max_records),
             tx,
             sequence: AtomicU64::new(1),
+        }
+    }
+
+    pub fn set_max_records(&self, max_records: usize) {
+        let old = self.max_records.swap(max_records, Ordering::SeqCst);
+        if old != max_records {
+            tracing::info!(
+                "TrafficRecorder config updated: max_records {} -> {}",
+                old,
+                max_records
+            );
         }
     }
 
@@ -303,8 +314,9 @@ impl TrafficRecorder {
 
         let _ = self.tx.send(record.clone());
 
+        let max = self.max_records.load(Ordering::Relaxed);
         let mut records = self.records.write();
-        if records.len() >= self.max_records {
+        if records.len() >= max {
             records.pop_front();
         }
         records.push_back(record);

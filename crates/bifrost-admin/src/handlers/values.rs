@@ -1,3 +1,4 @@
+use bifrost_storage::ConfigChangeEvent;
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +57,7 @@ where
     if path_suffix.is_empty() || path_suffix == "/" {
         match *req.method() {
             Method::GET => list_values(storage),
-            Method::POST => create_value(req, storage).await,
+            Method::POST => create_value(req, storage, &state).await,
             _ => method_not_allowed(),
         }
     } else {
@@ -66,8 +67,8 @@ where
         }
         match *req.method() {
             Method::GET => get_value(name, storage),
-            Method::PUT => update_value(req, name, storage).await,
-            Method::DELETE => delete_value(name, storage),
+            Method::PUT => update_value(req, name, storage, &state).await,
+            Method::DELETE => delete_value(name, storage, &state),
             _ => method_not_allowed(),
         }
     }
@@ -111,6 +112,7 @@ fn get_value(name: &str, storage: &crate::state::SharedValuesStorage) -> Respons
 async fn create_value<B>(
     req: Request<B>,
     storage: &crate::state::SharedValuesStorage,
+    state: &SharedAdminState,
 ) -> Response<BoxBody>
 where
     B: hyper::body::Body + Send + 'static,
@@ -140,7 +142,11 @@ where
     }
 
     match guard.set_value(&request.name, &request.value) {
-        Ok(_) => success_response(&format!("Value '{}' created", request.name)),
+        Ok(_) => {
+            drop(guard);
+            notify_values_changed(state, &request.name);
+            success_response(&format!("Value '{}' created", request.name))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to create value: {}", e),
@@ -152,6 +158,7 @@ async fn update_value<B>(
     req: Request<B>,
     name: &str,
     storage: &crate::state::SharedValuesStorage,
+    state: &SharedAdminState,
 ) -> Response<BoxBody>
 where
     B: hyper::body::Body + Send + 'static,
@@ -176,8 +183,13 @@ where
         );
     }
 
+    let name_owned = name.to_string();
     match guard.set_value(name, &request.value) {
-        Ok(_) => success_response(&format!("Value '{}' updated", name)),
+        Ok(_) => {
+            drop(guard);
+            notify_values_changed(state, &name_owned);
+            success_response(&format!("Value '{}' updated", name_owned))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to update value: {}", e),
@@ -185,7 +197,11 @@ where
     }
 }
 
-fn delete_value(name: &str, storage: &crate::state::SharedValuesStorage) -> Response<BoxBody> {
+fn delete_value(
+    name: &str,
+    storage: &crate::state::SharedValuesStorage,
+    state: &SharedAdminState,
+) -> Response<BoxBody> {
     let mut guard = storage.write();
     if !guard.exists(name) {
         return error_response(
@@ -194,11 +210,44 @@ fn delete_value(name: &str, storage: &crate::state::SharedValuesStorage) -> Resp
         );
     }
 
+    let name_owned = name.to_string();
     match guard.remove_value(name) {
-        Ok(_) => success_response(&format!("Value '{}' deleted", name)),
+        Ok(_) => {
+            drop(guard);
+            notify_values_changed(state, &name_owned);
+            success_response(&format!("Value '{}' deleted", name_owned))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to delete value: {}", e),
         ),
+    }
+}
+
+fn notify_values_changed(state: &SharedAdminState, name: &str) {
+    if let Some(ref config_manager) = state.config_manager {
+        match config_manager.notify(ConfigChangeEvent::ValuesChanged(name.to_string())) {
+            Ok(count) => {
+                tracing::info!(
+                    target: "bifrost_admin::values",
+                    receivers = count,
+                    name = name,
+                    "notified values changed event"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::values",
+                    error = %e,
+                    name = name,
+                    "failed to notify values changed event (no receivers)"
+                );
+            }
+        }
+    } else {
+        tracing::warn!(
+            target: "bifrost_admin::values",
+            "config_manager is not available, cannot notify values changed"
+        );
     }
 }

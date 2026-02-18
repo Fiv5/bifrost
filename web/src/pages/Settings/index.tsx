@@ -50,6 +50,7 @@ import {
   ThunderboltOutlined,
   FolderOutlined,
   FileOutlined,
+  DeleteOutlined,
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import {
@@ -68,6 +69,7 @@ import {
   updateTlsConfig,
   getPerformanceConfig,
   updatePerformanceConfig,
+  clearBodyCache,
   type TlsConfig,
   type PerformanceConfig,
 } from "../../api/config";
@@ -97,7 +99,8 @@ export default function Settings() {
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
   const [newExcludePattern, setNewExcludePattern] = useState("");
   const [newIncludePattern, setNewIncludePattern] = useState("");
-  const [performanceConfig, setPerformanceConfig] = useState<PerformanceConfig | null>(null);
+  const [performanceConfig, setPerformanceConfig] =
+    useState<PerformanceConfig | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
 
   const fetchSystemProxy = async () => {
@@ -310,7 +313,9 @@ export default function Settings() {
   const handleUpdateMaxBodyMemorySize = async (value: number) => {
     setPerfLoading(true);
     try {
-      const result = await updatePerformanceConfig({ max_body_memory_size: value });
+      const result = await updatePerformanceConfig({
+        max_body_memory_size: value,
+      });
       setPerformanceConfig(result);
       message.success("Max body memory size updated");
     } catch {
@@ -323,7 +328,9 @@ export default function Settings() {
   const handleUpdateMaxBodyBufferSize = async (value: number) => {
     setPerfLoading(true);
     try {
-      const result = await updatePerformanceConfig({ max_body_buffer_size: value });
+      const result = await updatePerformanceConfig({
+        max_body_buffer_size: value,
+      });
       setPerformanceConfig(result);
       message.success("Max body buffer size updated");
     } catch {
@@ -336,11 +343,26 @@ export default function Settings() {
   const handleUpdateFileRetentionDays = async (value: number) => {
     setPerfLoading(true);
     try {
-      const result = await updatePerformanceConfig({ file_retention_days: value });
+      const result = await updatePerformanceConfig({
+        file_retention_days: value,
+      });
       setPerformanceConfig(result);
       message.success(`File retention updated to ${value} days`);
     } catch {
       message.error("Failed to update file retention days");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
+  const handleClearBodyCache = async () => {
+    setPerfLoading(true);
+    try {
+      const result = await clearBodyCache();
+      message.success(result.message);
+      fetchPerformanceConfig();
+    } catch {
+      message.error("Failed to clear body cache");
     } finally {
       setPerfLoading(false);
     }
@@ -660,7 +682,11 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 size="small"
                 loading={perfLoading && !performanceConfig}
               >
-                <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                <Space
+                  direction="vertical"
+                  style={{ width: "100%" }}
+                  size="middle"
+                >
                   <Row justify="space-between" align="middle">
                     <Col>
                       <Space direction="vertical" size={0}>
@@ -675,7 +701,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                         min={100}
                         max={100000}
                         value={performanceConfig?.traffic.max_records}
-                        onChange={(value) => value && handleUpdateMaxRecords(value)}
+                        onChange={(value) =>
+                          value && handleUpdateMaxRecords(value)
+                        }
                         style={{ width: 120 }}
                       />
                     </Col>
@@ -685,7 +713,11 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
 
                   <Row justify="space-between" align="middle">
                     <Col flex="1" style={{ marginRight: 16 }}>
-                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={0}
+                        style={{ width: "100%" }}
+                      >
                         <Text>Max Body Memory Size</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
                           Bodies larger than this will be stored to disk
@@ -694,15 +726,24 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           min={64 * 1024}
                           max={10 * 1024 * 1024}
                           step={64 * 1024}
-                          value={performanceConfig?.traffic.max_body_memory_size}
-                          onChange={(value) => handleUpdateMaxBodyMemorySize(value)}
-                          tooltip={{ formatter: (value) => value ? formatBytes(value) : "" }}
+                          value={
+                            performanceConfig?.traffic.max_body_memory_size
+                          }
+                          onChange={(value) =>
+                            handleUpdateMaxBodyMemorySize(value)
+                          }
+                          tooltip={{
+                            formatter: (value) =>
+                              value ? formatBytes(value) : "",
+                          }}
                         />
                       </Space>
                     </Col>
                     <Col>
                       <Text code>
-                        {formatBytes(performanceConfig?.traffic.max_body_memory_size || 0)}
+                        {formatBytes(
+                          performanceConfig?.traffic.max_body_memory_size || 0,
+                        )}
                       </Text>
                     </Col>
                   </Row>
@@ -711,24 +752,38 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
 
                   <Row justify="space-between" align="middle">
                     <Col flex="1" style={{ marginRight: 16 }}>
-                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={0}
+                        style={{ width: "100%" }}
+                      >
                         <Text>Max Body Buffer Size</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Maximum size of body to capture (larger bodies will be truncated)
+                          Maximum size of body to capture (larger bodies will be
+                          truncated)
                         </Text>
                         <Slider
                           min={1 * 1024 * 1024}
                           max={64 * 1024 * 1024}
                           step={1 * 1024 * 1024}
-                          value={performanceConfig?.traffic.max_body_buffer_size}
-                          onChange={(value) => handleUpdateMaxBodyBufferSize(value)}
-                          tooltip={{ formatter: (value) => value ? formatBytes(value) : "" }}
+                          value={
+                            performanceConfig?.traffic.max_body_buffer_size
+                          }
+                          onChange={(value) =>
+                            handleUpdateMaxBodyBufferSize(value)
+                          }
+                          tooltip={{
+                            formatter: (value) =>
+                              value ? formatBytes(value) : "",
+                          }}
                         />
                       </Space>
                     </Col>
                     <Col>
                       <Text code>
-                        {formatBytes(performanceConfig?.traffic.max_body_buffer_size || 0)}
+                        {formatBytes(
+                          performanceConfig?.traffic.max_body_buffer_size || 0,
+                        )}
                       </Text>
                     </Col>
                   </Row>
@@ -737,7 +792,11 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
 
                   <Row justify="space-between" align="middle">
                     <Col flex="1" style={{ marginRight: 16 }}>
-                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={0}
+                        style={{ width: "100%" }}
+                      >
                         <Text>File Retention Days</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
                           Number of days to keep body files on disk
@@ -747,14 +806,17 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           max={7}
                           step={1}
                           value={performanceConfig?.traffic.file_retention_days}
-                          onChange={(value) => handleUpdateFileRetentionDays(value)}
+                          onChange={(value) =>
+                            handleUpdateFileRetentionDays(value)
+                          }
                           marks={{ 1: "1d", 3: "3d", 5: "5d", 7: "7d" }}
                         />
                       </Space>
                     </Col>
                     <Col>
                       <Text code>
-                        {performanceConfig?.traffic.file_retention_days || 0} days
+                        {performanceConfig?.traffic.file_retention_days || 0}{" "}
+                        days
                       </Text>
                     </Col>
                   </Row>
@@ -767,25 +829,52 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                         bordered={false}
                         style={{ background: token.colorBgLayout }}
                       >
-                        <Row gutter={[16, 8]}>
-                          <Col xs={24}>
+                        <Row gutter={[16, 8]} align="middle">
+                          <Col flex="auto">
                             <Space>
                               <FolderOutlined />
                               <Text strong>File Storage Statistics</Text>
                             </Space>
                           </Col>
+                          <Col>
+                            <Popconfirm
+                              title="Clear all cache files?"
+                              description="This will delete all body files stored on disk."
+                              onConfirm={handleClearBodyCache}
+                              okText="Clear"
+                              cancelText="Cancel"
+                              okButtonProps={{ danger: true }}
+                            >
+                              <Button
+                                size="small"
+                                danger
+                                icon={<DeleteOutlined />}
+                                loading={perfLoading}
+                              >
+                                Clear Cache
+                              </Button>
+                            </Popconfirm>
+                          </Col>
+                        </Row>
+                        <Row gutter={[16, 8]} style={{ marginTop: 8 }}>
                           <Col xs={12}>
                             <Space>
                               <FileOutlined />
                               <Text type="secondary">Files:</Text>
-                              <Text>{performanceConfig.body_store_stats.file_count}</Text>
+                              <Text>
+                                {performanceConfig.body_store_stats.file_count}
+                              </Text>
                             </Space>
                           </Col>
                           <Col xs={12}>
                             <Space>
                               <DatabaseOutlined />
                               <Text type="secondary">Total Size:</Text>
-                              <Text>{formatBytes(performanceConfig.body_store_stats.total_size)}</Text>
+                              <Text>
+                                {formatBytes(
+                                  performanceConfig.body_store_stats.total_size,
+                                )}
+                              </Text>
                             </Space>
                           </Col>
                         </Row>
