@@ -24,6 +24,8 @@ import {
   Image,
   Segmented,
   theme,
+  InputNumber,
+  Slider,
 } from "antd";
 import {
   CopyOutlined,
@@ -45,6 +47,9 @@ import {
   ExclamationCircleOutlined,
   PlusOutlined,
   BgColorsOutlined,
+  ThunderboltOutlined,
+  FolderOutlined,
+  FileOutlined,
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import {
@@ -61,7 +66,10 @@ import {
 import {
   getTlsConfig,
   updateTlsConfig,
+  getPerformanceConfig,
+  updatePerformanceConfig,
   type TlsConfig,
+  type PerformanceConfig,
 } from "../../api/config";
 import {
   getCertInfo,
@@ -89,6 +97,8 @@ export default function Settings() {
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
   const [newExcludePattern, setNewExcludePattern] = useState("");
   const [newIncludePattern, setNewIncludePattern] = useState("");
+  const [performanceConfig, setPerformanceConfig] = useState<PerformanceConfig | null>(null);
+  const [perfLoading, setPerfLoading] = useState(false);
 
   const fetchSystemProxy = async () => {
     try {
@@ -117,6 +127,18 @@ export default function Settings() {
       setCertInfo(info);
     } catch {
       console.error("Failed to fetch cert info");
+    }
+  }, []);
+
+  const fetchPerformanceConfig = useCallback(async () => {
+    setPerfLoading(true);
+    try {
+      const config = await getPerformanceConfig();
+      setPerformanceConfig(config);
+    } catch {
+      console.error("Failed to fetch performance config");
+    } finally {
+      setPerfLoading(false);
     }
   }, []);
 
@@ -272,6 +294,58 @@ export default function Settings() {
     }
   };
 
+  const handleUpdateMaxRecords = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ max_records: value });
+      setPerformanceConfig(result);
+      message.success(`Max records updated to ${value}`);
+    } catch {
+      message.error("Failed to update max records");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
+  const handleUpdateMaxBodyMemorySize = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ max_body_memory_size: value });
+      setPerformanceConfig(result);
+      message.success("Max body memory size updated");
+    } catch {
+      message.error("Failed to update max body memory size");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
+  const handleUpdateMaxBodyBufferSize = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ max_body_buffer_size: value });
+      setPerformanceConfig(result);
+      message.success("Max body buffer size updated");
+    } catch {
+      message.error("Failed to update max body buffer size");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
+  const handleUpdateFileRetentionDays = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ file_retention_days: value });
+      setPerformanceConfig(result);
+      message.success(`File retention updated to ${value} days`);
+    } catch {
+      message.error("Failed to update file retention days");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
   const fetchPending = async () => {
     if (overview && overview.pending_authorizations > 0) {
       setPendingLoading(true);
@@ -293,9 +367,10 @@ export default function Settings() {
     fetchSystemProxy();
     fetchTlsConfig();
     fetchCertInfo();
+    fetchPerformanceConfig();
     const interval = setInterval(fetchOverview, 1000);
     return () => clearInterval(interval);
-  }, [fetchOverview, fetchTlsConfig, fetchCertInfo]);
+  }, [fetchOverview, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig]);
 
   useEffect(() => {
     fetchPending();
@@ -572,6 +647,153 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 handleAddExcludePattern={handleAddExcludePattern}
                 handleRemoveExcludePattern={handleRemoveExcludePattern}
               />
+            </Col>
+
+            <Col xs={24}>
+              <Card
+                title={
+                  <Space>
+                    <ThunderboltOutlined />
+                    <span>Performance</span>
+                  </Space>
+                }
+                size="small"
+                loading={perfLoading && !performanceConfig}
+              >
+                <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                  <Row justify="space-between" align="middle">
+                    <Col>
+                      <Space direction="vertical" size={0}>
+                        <Text>Max Records</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Maximum number of traffic records to keep in memory
+                        </Text>
+                      </Space>
+                    </Col>
+                    <Col>
+                      <InputNumber
+                        min={100}
+                        max={100000}
+                        value={performanceConfig?.traffic.max_records}
+                        onChange={(value) => value && handleUpdateMaxRecords(value)}
+                        style={{ width: 120 }}
+                      />
+                    </Col>
+                  </Row>
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col flex="1" style={{ marginRight: 16 }}>
+                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                        <Text>Max Body Memory Size</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Bodies larger than this will be stored to disk
+                        </Text>
+                        <Slider
+                          min={64 * 1024}
+                          max={10 * 1024 * 1024}
+                          step={64 * 1024}
+                          value={performanceConfig?.traffic.max_body_memory_size}
+                          onChange={(value) => handleUpdateMaxBodyMemorySize(value)}
+                          tooltip={{ formatter: (value) => value ? formatBytes(value) : "" }}
+                        />
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Text code>
+                        {formatBytes(performanceConfig?.traffic.max_body_memory_size || 0)}
+                      </Text>
+                    </Col>
+                  </Row>
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col flex="1" style={{ marginRight: 16 }}>
+                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                        <Text>Max Body Buffer Size</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Maximum size of body to capture (larger bodies will be truncated)
+                        </Text>
+                        <Slider
+                          min={1 * 1024 * 1024}
+                          max={64 * 1024 * 1024}
+                          step={1 * 1024 * 1024}
+                          value={performanceConfig?.traffic.max_body_buffer_size}
+                          onChange={(value) => handleUpdateMaxBodyBufferSize(value)}
+                          tooltip={{ formatter: (value) => value ? formatBytes(value) : "" }}
+                        />
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Text code>
+                        {formatBytes(performanceConfig?.traffic.max_body_buffer_size || 0)}
+                      </Text>
+                    </Col>
+                  </Row>
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col flex="1" style={{ marginRight: 16 }}>
+                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                        <Text>File Retention Days</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Number of days to keep body files on disk
+                        </Text>
+                        <Slider
+                          min={1}
+                          max={7}
+                          step={1}
+                          value={performanceConfig?.traffic.file_retention_days}
+                          onChange={(value) => handleUpdateFileRetentionDays(value)}
+                          marks={{ 1: "1d", 3: "3d", 5: "5d", 7: "7d" }}
+                        />
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Text code>
+                        {performanceConfig?.traffic.file_retention_days || 0} days
+                      </Text>
+                    </Col>
+                  </Row>
+
+                  {performanceConfig?.body_store_stats && (
+                    <>
+                      <Divider style={{ margin: "12px 0" }} />
+                      <Card
+                        size="small"
+                        bordered={false}
+                        style={{ background: token.colorBgLayout }}
+                      >
+                        <Row gutter={[16, 8]}>
+                          <Col xs={24}>
+                            <Space>
+                              <FolderOutlined />
+                              <Text strong>File Storage Statistics</Text>
+                            </Space>
+                          </Col>
+                          <Col xs={12}>
+                            <Space>
+                              <FileOutlined />
+                              <Text type="secondary">Files:</Text>
+                              <Text>{performanceConfig.body_store_stats.file_count}</Text>
+                            </Space>
+                          </Col>
+                          <Col xs={12}>
+                            <Space>
+                              <DatabaseOutlined />
+                              <Text type="secondary">Total Size:</Text>
+                              <Text>{formatBytes(performanceConfig.body_store_stats.total_size)}</Text>
+                            </Space>
+                          </Col>
+                        </Row>
+                      </Card>
+                    </>
+                  )}
+                </Space>
+              </Card>
             </Col>
           </Row>
         </div>

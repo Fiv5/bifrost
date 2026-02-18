@@ -144,6 +144,42 @@ impl BodyStore {
             let _ = fs::remove_file(path);
         }
     }
+
+    pub fn stats(&self) -> BodyStoreStats {
+        let mut file_count = 0;
+        let mut total_size = 0u64;
+
+        if self.temp_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&self.temp_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        file_count += 1;
+                        if let Ok(metadata) = entry.metadata() {
+                            total_size += metadata.len();
+                        }
+                    }
+                }
+            }
+        }
+
+        BodyStoreStats {
+            file_count,
+            total_size,
+            temp_dir: self.temp_dir.to_string_lossy().to_string(),
+            max_memory_size: self.max_memory_size,
+            retention_days: self.retention_days,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BodyStoreStats {
+    pub file_count: usize,
+    pub total_size: u64,
+    pub temp_dir: String,
+    pub max_memory_size: usize,
+    pub retention_days: u64,
 }
 
 pub type SharedBodyStore = Arc<RwLock<BodyStore>>;

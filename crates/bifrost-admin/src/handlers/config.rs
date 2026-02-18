@@ -1,8 +1,9 @@
-use bifrost_storage::TlsConfigUpdate;
+use bifrost_storage::{TlsConfigUpdate, TrafficConfigUpdate};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
+use crate::body_store::BodyStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 
@@ -31,6 +32,28 @@ pub struct UpdateTlsConfigRequest {
     pub disconnect_on_config_change: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficConfig {
+    pub max_records: usize,
+    pub max_body_memory_size: usize,
+    pub max_body_buffer_size: usize,
+    pub file_retention_days: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerformanceConfigResponse {
+    pub traffic: TrafficConfig,
+    pub body_store_stats: Option<BodyStoreStats>,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateTrafficConfigRequest {
+    pub max_records: Option<usize>,
+    pub max_body_memory_size: Option<usize>,
+    pub max_body_buffer_size: Option<usize>,
+    pub file_retention_days: Option<u64>,
+}
+
 pub async fn handle_config(
     req: Request<Incoming>,
     state: SharedAdminState,
@@ -46,6 +69,11 @@ pub async fn handle_config(
         "/api/config/tls" | "/api/config/tls/" => match method {
             Method::GET => get_tls_config(state).await,
             Method::PUT => update_tls_config(req, state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/performance" | "/api/config/performance/" => match method {
+            Method::GET => get_performance_config(state).await,
+            Method::PUT => update_performance_config(req, state).await,
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -82,6 +110,90 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
     };
 
     json_response(&tls_config)
+}
+
+async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
+    let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
+
+    let traffic_config = if let Some(ref config_manager) = state.config_manager {
+        let config = config_manager.config().await;
+        TrafficConfig {
+            max_records: config.traffic.max_records,
+            max_body_memory_size: config.traffic.max_body_memory_size,
+            max_body_buffer_size: config.traffic.max_body_buffer_size,
+            file_retention_days: config.traffic.file_retention_days,
+        }
+    } else {
+        TrafficConfig {
+            max_records: 5000,
+            max_body_memory_size: 2 * 1024 * 1024,
+            max_body_buffer_size: 32 * 1024 * 1024,
+            file_retention_days: 7,
+        }
+    };
+
+    let response = PerformanceConfigResponse {
+        traffic: traffic_config,
+        body_store_stats,
+    };
+
+    json_response(&response)
+}
+
+async fn update_performance_config(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: UpdateTrafficConfigRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    if let Some(days) = request.file_retention_days {
+        if days > 7 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "file_retention_days cannot exceed 7 days",
+            );
+        }
+    }
+
+    if let Some(ref config_manager) = state.config_manager {
+        let update = TrafficConfigUpdate {
+            max_records: request.max_records,
+            max_body_memory_size: request.max_body_memory_size,
+            max_body_buffer_size: request.max_body_buffer_size,
+            file_retention_days: request.file_retention_days,
+        };
+
+        if let Err(e) = config_manager.update_traffic_config(update).await {
+            tracing::error!("Failed to persist traffic config: {}", e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to save config: {}", e),
+            );
+        }
+        tracing::info!("Traffic config updated and persisted");
+    } else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Config manager not available",
+        );
+    }
+
+    get_performance_config(state).await
 }
 
 async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

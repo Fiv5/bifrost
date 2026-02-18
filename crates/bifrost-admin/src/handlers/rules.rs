@@ -1,4 +1,4 @@
-use bifrost_storage::RuleFile;
+use bifrost_storage::{ConfigChangeEvent, RuleFile};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -125,7 +125,10 @@ async fn create_rule(req: Request<Incoming>, state: SharedAdminState) -> Respons
         .with_enabled(request.enabled.unwrap_or(true));
 
     match state.rules_storage.save(&rule) {
-        Ok(_) => success_response(&format!("Rule '{}' created successfully", request.name)),
+        Ok(_) => {
+            notify_rules_changed(&state);
+            success_response(&format!("Rule '{}' created successfully", request.name))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to create rule: {}", e),
@@ -180,7 +183,10 @@ async fn update_rule(
     let rule = RuleFile::new(name, content).with_enabled(enabled);
 
     match state.rules_storage.save(&rule) {
-        Ok(_) => success_response(&format!("Rule '{}' updated successfully", name)),
+        Ok(_) => {
+            notify_rules_changed(&state);
+            success_response(&format!("Rule '{}' updated successfully", name))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to update rule: {}", e),
@@ -190,7 +196,10 @@ async fn update_rule(
 
 async fn delete_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
     match state.rules_storage.delete(name) {
-        Ok(_) => success_response(&format!("Rule '{}' deleted successfully", name)),
+        Ok(_) => {
+            notify_rules_changed(&state);
+            success_response(&format!("Rule '{}' deleted successfully", name))
+        }
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to delete rule: {}", e),
@@ -201,6 +210,7 @@ async fn delete_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
 async fn enable_rule(state: SharedAdminState, name: &str, enabled: bool) -> Response<BoxBody> {
     match state.rules_storage.set_enabled(name, enabled) {
         Ok(_) => {
+            notify_rules_changed(&state);
             let action = if enabled { "enabled" } else { "disabled" };
             success_response(&format!("Rule '{}' {} successfully", name, action))
         }
@@ -208,5 +218,31 @@ async fn enable_rule(state: SharedAdminState, name: &str, enabled: bool) -> Resp
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to update rule: {}", e),
         ),
+    }
+}
+
+fn notify_rules_changed(state: &SharedAdminState) {
+    if let Some(ref config_manager) = state.config_manager {
+        match config_manager.notify(ConfigChangeEvent::RulesChanged) {
+            Ok(count) => {
+                tracing::info!(
+                    target: "bifrost_admin::rules",
+                    receivers = count,
+                    "notified rules changed event"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::rules",
+                    error = %e,
+                    "failed to notify rules changed event (no receivers)"
+                );
+            }
+        }
+    } else {
+        tracing::warn!(
+            target: "bifrost_admin::rules",
+            "config_manager is not available, cannot notify rules changed"
+        );
     }
 }

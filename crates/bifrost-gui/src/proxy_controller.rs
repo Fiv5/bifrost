@@ -11,7 +11,7 @@ use bifrost_proxy::{
     AccessMode, ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
-use bifrost_storage::{RulesStorage, ValuesStorage};
+use bifrost_storage::{ConfigChangeEvent, ConfigManager, RulesStorage, ValuesStorage};
 use bifrost_tls::{
     ensure_valid_ca, generate_root_ca, load_root_ca, save_root_ca, CertInstaller, CertStatus,
     DynamicCertGenerator, SniResolver,
@@ -22,11 +22,31 @@ use tracing::{error, info, warn};
 
 use crate::state::{AppState, ProxySettings, ProxyStatus, RuleEntry, ValueEntry};
 
-struct RulesResolverAdapter {
-    inner: CoreRulesResolver,
+struct DynamicRulesResolver {
+    inner: ParkingRwLock<CoreRulesResolver>,
 }
 
-impl ProxyRulesResolverTrait for RulesResolverAdapter {
+impl DynamicRulesResolver {
+    fn new(rules: Vec<Rule>, values: HashMap<String, String>) -> Self {
+        let inner = CoreRulesResolver::new(rules).with_values(values);
+        Self {
+            inner: ParkingRwLock::new(inner),
+        }
+    }
+
+    fn update(&self, rules: Vec<Rule>, values: HashMap<String, String>) {
+        let new_resolver = CoreRulesResolver::new(rules).with_values(values);
+        let mut inner = self.inner.write();
+        *inner = new_resolver;
+
+        info!(
+            target: "bifrost_gui::rules",
+            "rules resolver updated with new rules"
+        );
+    }
+}
+
+impl ProxyRulesResolverTrait for DynamicRulesResolver {
     fn resolve_with_context(
         &self,
         url: &str,
@@ -40,7 +60,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
         ctx.req_headers = req_headers.clone();
         ctx.req_cookies = req_cookies.clone();
 
-        let core_result = self.inner.resolve(&ctx);
+        let inner = self.inner.read();
+        let core_result = inner.resolve(&ctx);
         let mut result = ProxyResolvedRules::default();
 
         for resolved_rule in &core_result.rules {
@@ -107,6 +128,8 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
         result
     }
 }
+
+type SharedDynamicRulesResolver = Arc<DynamicRulesResolver>;
 
 pub struct ProxyController {
     state: Arc<Mutex<AppState>>,
@@ -357,7 +380,8 @@ async fn run_proxy_server(
 
     let tls_config = load_tls_config(&proxy_config)?;
 
-    let rules = load_all_rules()?;
+    let rules_storage = RulesStorage::new()?;
+    let rules = load_all_rules(&rules_storage)?;
 
     let values_storage = ValuesStorage::new().ok();
     let values = values_storage
@@ -365,9 +389,7 @@ async fn run_proxy_server(
         .map(|s| s.as_hashmap())
         .unwrap_or_default();
 
-    let resolver = Arc::new(RulesResolverAdapter {
-        inner: CoreRulesResolver::new(rules).with_values(values),
-    });
+    let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(rules, values));
 
     let body_temp_dir = get_bifrost_dir()
         .map(|p| p.join("body_cache"))
@@ -382,6 +404,9 @@ async fn run_proxy_server(
         .map(|p| p.join("certs").join("ca.crt"))
         .ok();
 
+    let bifrost_dir = get_bifrost_dir()?;
+    let config_manager = ConfigManager::new(bifrost_dir.clone()).ok();
+
     let mut admin_state = AdminState::new(settings.port).with_body_store(body_store);
     if let Some(vs) = values_storage {
         admin_state = admin_state.with_values_storage(vs);
@@ -389,16 +414,22 @@ async fn run_proxy_server(
     if let Some(cert_path) = ca_cert_path {
         admin_state = admin_state.with_ca_cert_path(cert_path);
     }
+    if let Some(ref cm) = config_manager {
+        admin_state = admin_state.with_config_manager(cm.clone());
+    }
 
     let server = ProxyServer::new(proxy_config)
         .with_tls_config(tls_config)
-        .with_rules(resolver)
+        .with_rules(resolver.clone())
         .with_admin_state(admin_state);
 
     info!(
         "GUI: Proxy server starting on {}:{}",
         settings.host, settings.port
     );
+
+    let rules_watcher_task =
+        spawn_rules_watcher_task(config_manager, rules_storage, resolver.clone());
 
     tokio::select! {
         result = server.run() => {
@@ -412,6 +443,8 @@ async fn run_proxy_server(
             info!("GUI: Proxy server shutting down");
         }
     }
+
+    rules_watcher_task.abort();
 
     Ok(())
 }
@@ -453,20 +486,116 @@ fn load_tls_config(
     }))
 }
 
-fn load_all_rules() -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync>> {
-    let storage = RulesStorage::new()?;
+fn load_all_rules(
+    storage: &RulesStorage,
+) -> Result<Vec<Rule>, Box<dyn std::error::Error + Send + Sync>> {
     let names = storage.list()?;
     let mut all_rules = Vec::new();
 
     for name in names {
         if let Ok(rule_file) = storage.load(&name) {
             if rule_file.enabled {
-                if let Ok(parsed) = parse_rules(&rule_file.content) {
-                    all_rules.extend(parsed);
+                match parse_rules(&rule_file.content) {
+                    Ok(parsed) => {
+                        info!(
+                            target: "bifrost_gui::rules",
+                            file = %rule_file.name,
+                            enabled = rule_file.enabled,
+                            parsed_count = parsed.len(),
+                            "loaded rule file"
+                        );
+                        for mut rule in parsed {
+                            rule.file = Some(rule_file.name.clone());
+                            all_rules.push(rule);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "bifrost_gui::rules",
+                            file = %rule_file.name,
+                            error = %e,
+                            "failed to parse rule file"
+                        );
+                    }
                 }
             }
         }
     }
 
+    if !all_rules.is_empty() {
+        info!(
+            target: "bifrost_gui::rules",
+            total_rules = all_rules.len(),
+            "loaded rules from storage"
+        );
+    }
+
     Ok(all_rules)
+}
+
+fn spawn_rules_watcher_task(
+    config_manager: Option<ConfigManager>,
+    rules_storage: RulesStorage,
+    resolver: SharedDynamicRulesResolver,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(config_manager) = config_manager else {
+            warn!(
+                target: "bifrost_gui::rules",
+                "ConfigManager not available, rules hot-reload disabled"
+            );
+            return;
+        };
+
+        let mut receiver = config_manager.subscribe();
+        info!(
+            target: "bifrost_gui::rules",
+            "rules hot-reload watcher started"
+        );
+
+        loop {
+            match receiver.recv().await {
+                Ok(event) => {
+                    if matches!(
+                        event,
+                        ConfigChangeEvent::RulesChanged | ConfigChangeEvent::ValuesChanged(_)
+                    ) {
+                        info!(
+                            target: "bifrost_gui::rules",
+                            event = ?event,
+                            "config change event received, reloading rules"
+                        );
+
+                        match load_all_rules(&rules_storage) {
+                            Ok(new_rules) => {
+                                let new_values = config_manager.values_as_hashmap().await;
+                                resolver.update(new_rules, new_values);
+                            }
+                            Err(e) => {
+                                error!(
+                                    target: "bifrost_gui::rules",
+                                    error = %e,
+                                    "failed to reload rules"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    warn!(
+                        target: "bifrost_gui::rules",
+                        count = count,
+                        "rules watcher lagged, some events may have been missed"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    info!(
+                        target: "bifrost_gui::rules",
+                        "config change channel closed, stopping rules watcher"
+                    );
+                    break;
+                }
+            }
+        }
+    })
 }

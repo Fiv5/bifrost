@@ -224,6 +224,14 @@ pub struct SystemProxyConfigUpdate {
     pub auto_enable: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct TrafficConfigUpdate {
+    pub max_records: Option<usize>,
+    pub max_body_memory_size: Option<usize>,
+    pub max_body_buffer_size: Option<usize>,
+    pub file_retention_days: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

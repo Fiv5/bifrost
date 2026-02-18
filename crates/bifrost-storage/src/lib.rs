@@ -23,6 +23,6 @@ pub use state::{RuntimeState, StateManager};
 pub use unified_config::{
     AccessConfig as NewAccessConfig, AccessConfigUpdate, PathsConfig, ProxySettings, ServerConfig,
     SocksAuthConfig, SystemProxyConfig as NewSystemProxyConfig, SystemProxyConfigUpdate, TlsConfig,
-    TlsConfigUpdate, TrafficConfig as NewTrafficConfig, UnifiedConfig,
+    TlsConfigUpdate, TrafficConfig as NewTrafficConfig, TrafficConfigUpdate, UnifiedConfig,
 };
 pub use values::{ValueEntry, ValuesStorage};

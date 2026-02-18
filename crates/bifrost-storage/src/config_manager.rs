@@ -8,7 +8,8 @@ use tracing::info;
 use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
-    AccessConfigUpdate, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, UnifiedConfig,
+    AccessConfigUpdate, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig,
+    TrafficConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
 use crate::LegacyBifrostConfig;
@@ -144,6 +145,30 @@ impl ConfigManager {
         Ok(())
     }
 
+    pub async fn update_traffic_config(
+        &self,
+        update: TrafficConfigUpdate,
+    ) -> Result<TrafficConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(max_records) = update.max_records {
+            config.traffic.max_records = max_records;
+        }
+        if let Some(max_body_memory_size) = update.max_body_memory_size {
+            config.traffic.max_body_memory_size = max_body_memory_size;
+        }
+        if let Some(max_body_buffer_size) = update.max_body_buffer_size {
+            config.traffic.max_body_buffer_size = max_body_buffer_size;
+        }
+        if let Some(file_retention_days) = update.file_retention_days {
+            config.traffic.file_retention_days = file_retention_days;
+        }
+
+        self.save_config(&config)?;
+
+        Ok(config.traffic.clone())
+    }
+
     pub async fn save_rule(&self, rule: &RuleFile) -> Result<()> {
         let storage = self.rules_storage.write().await;
         storage.save(rule)?;
@@ -256,6 +281,13 @@ impl ConfigManager {
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConfigChangeEvent> {
         self.change_notifier.subscribe()
+    }
+
+    pub fn notify(
+        &self,
+        event: ConfigChangeEvent,
+    ) -> std::result::Result<usize, broadcast::error::SendError<ConfigChangeEvent>> {
+        self.change_notifier.send(event)
     }
 
     fn init_data_dir(dir: &Path) -> Result<()> {
