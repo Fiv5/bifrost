@@ -119,6 +119,7 @@ pub fn run_start(
         intercept_include: include_list.clone(),
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
+        max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
         ..Default::default()
     };
 
@@ -414,11 +415,12 @@ pub fn run_foreground(
     })?;
 
     rt.block_on(async {
+        let stored_config = config_manager.config().await;
         let body_temp_dir = bifrost_dir.join("body_cache");
         let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
             body_temp_dir,
-            64 * 1024,
-            7,
+            stored_config.traffic.max_body_memory_size,
+            stored_config.traffic.file_retention_days,
         )));
 
         let values_storage = config_manager.values_storage().await;
@@ -454,15 +456,86 @@ pub fn run_foreground(
             .with_config_manager(config_manager);
 
         let metrics_collector = admin_state.metrics_collector.clone();
+        let rules_storage_for_resolver = admin_state.rules_storage.clone();
         let mut server = ProxyServer::new(config)
             .with_tls_config(tls_config)
             .with_admin_state(admin_state);
 
-        if !cli_rules.is_empty() {
+        let mut all_rules = cli_rules;
+        match rules_storage_for_resolver.load_enabled() {
+            Ok(stored_rules) => {
+                let stored_count = stored_rules.len();
+                for rule_file in stored_rules {
+                    match bifrost_core::parse_rules(&rule_file.content) {
+                        Ok(parsed) => {
+                            tracing::info!(
+                                target: "bifrost_cli::rules",
+                                file = %rule_file.name,
+                                enabled = rule_file.enabled,
+                                parsed_count = parsed.len(),
+                                "loaded rule file"
+                            );
+                            for mut rule in parsed {
+                                rule.file = Some(rule_file.name.clone());
+                                all_rules.push(rule);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "bifrost_cli::rules",
+                                file = %rule_file.name,
+                                error = %e,
+                                "failed to parse rule file"
+                            );
+                        }
+                    }
+                }
+                if stored_count > 0 {
+                    tracing::info!(
+                        target: "bifrost_cli::rules",
+                        stored_files = stored_count,
+                        total_rules = all_rules.len(),
+                        "loaded rules from storage"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_cli::rules",
+                    error = %e,
+                    "failed to load rules from storage"
+                );
+            }
+        }
+
+        if !all_rules.is_empty() {
+            tracing::info!(
+                target: "bifrost_cli::rules",
+                total_rules = all_rules.len(),
+                "creating rules resolver"
+            );
+            for (idx, rule) in all_rules.iter().enumerate() {
+                tracing::debug!(
+                    target: "bifrost_cli::rules",
+                    index = idx + 1,
+                    pattern = %rule.pattern,
+                    protocol = %rule.protocol.to_str(),
+                    value = %rule.value,
+                    file = rule.file.as_deref().unwrap_or("<cli>"),
+                    line = rule.line.unwrap_or(0),
+                    disabled = rule.is_disabled(),
+                    "active rule"
+                );
+            }
             let resolver = Arc::new(RulesResolverAdapter {
-                inner: CoreRulesResolver::new(cli_rules).with_values(values),
+                inner: CoreRulesResolver::new(all_rules).with_values(values),
             });
             server = server.with_rules(resolver);
+        } else {
+            tracing::info!(
+                target: "bifrost_cli::rules",
+                "no rules loaded, proxy will forward all requests without modification"
+            );
         }
 
         let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
@@ -610,11 +683,12 @@ pub fn run_daemon(
             })?;
 
             rt.block_on(async {
+                let stored_config = config_manager.config().await;
                 let body_temp_dir = bifrost_dir.join("body_cache");
                 let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
                     body_temp_dir,
-                    64 * 1024,
-                    7,
+                    stored_config.traffic.max_body_memory_size,
+                    stored_config.traffic.file_retention_days,
                 )));
 
                 let values_storage = config_manager.values_storage().await;
@@ -649,13 +723,35 @@ pub fn run_daemon(
                     .with_config_manager(config_manager);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
+                let rules_storage_for_resolver = admin_state.rules_storage.clone();
                 let mut server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
                     .with_admin_state(admin_state);
 
-                if !cli_rules.is_empty() {
+                let mut all_rules = cli_rules;
+                match rules_storage_for_resolver.load_enabled() {
+                    Ok(stored_rules) => {
+                        for rule_file in stored_rules {
+                            if let Ok(parsed) = bifrost_core::parse_rules(&rule_file.content) {
+                                for mut rule in parsed {
+                                    rule.file = Some(rule_file.name.clone());
+                                    all_rules.push(rule);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "bifrost_cli::rules",
+                            error = %e,
+                            "failed to load rules from storage"
+                        );
+                    }
+                }
+
+                if !all_rules.is_empty() {
                     let resolver = Arc::new(RulesResolverAdapter {
-                        inner: CoreRulesResolver::new(cli_rules).with_values(values),
+                        inner: CoreRulesResolver::new(all_rules).with_values(values),
                     });
                     server = server.with_rules(resolver);
                 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback } from 'react';
-import { Empty, Splitter } from 'antd';
+import { Empty, Splitter, Spin } from 'antd';
 import type { CSSProperties } from 'react';
 import type { TrafficRecord, DisplayFormat, RecordContentType } from '../../types';
 import { useTrafficDetailStore } from '../../stores/useTrafficDetailStore';
@@ -18,6 +18,7 @@ interface TrafficDetailProps {
   record: TrafficRecord | null;
   requestBody: string | null;
   responseBody: string | null;
+  loading?: boolean;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -67,6 +68,7 @@ export default function TrafficDetail({
   record,
   requestBody,
   responseBody,
+  loading,
 }: TrafficDetailProps) {
   const {
     requestSearch,
@@ -271,6 +273,13 @@ export default function TrafficDetail({
   }, [record, responseBody, responseSearch, setResponseSearch, responseContentType, responseDisplayFormat]);
 
   if (!record) {
+    if (loading) {
+      return (
+        <div style={styles.emptyContainer}>
+          <Spin />
+        </div>
+      );
+    }
     return (
       <div style={styles.emptyContainer}>
         <Empty description="Select a request to view details" />

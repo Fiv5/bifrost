@@ -187,9 +187,23 @@ impl RulesResolver {
     pub fn resolve(&self, ctx: &RequestContext) -> ResolvedRules {
         let cache_key = format!("{}|{}|{}|{}", ctx.url, ctx.host, ctx.path, ctx.method);
 
+        tracing::trace!(
+            target: "bifrost_core::rules",
+            total_rules = self.rules.len(),
+            url = %ctx.url,
+            method = %ctx.method,
+            "starting rule resolution"
+        );
+
         if self.cache_enabled {
             let mut cache = self.cache.write();
             if let Some(cached) = cache.get(&cache_key) {
+                tracing::trace!(
+                    target: "bifrost_core::rules",
+                    url = %ctx.url,
+                    cached_rules = cached.rules.len(),
+                    "returning cached result"
+                );
                 return cached;
             }
         }
@@ -223,22 +237,28 @@ impl RulesResolver {
 
             let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
             tracing::trace!(
-                "Rule '{}' match result: {} (url={}, host={}, path={})",
-                rule.pattern,
-                match_result.matched,
-                ctx.url,
-                ctx.host,
-                ctx.path
+                target: "bifrost_core::rules",
+                pattern = %rule.pattern,
+                matched = match_result.matched,
+                url = %ctx.url,
+                host = %ctx.host,
+                path = %ctx.path,
+                file = rule.file.as_deref().unwrap_or("<unknown>"),
+                line = rule.line.unwrap_or(0),
+                "rule match attempt"
             );
             if !match_result.matched {
                 continue;
             }
-            tracing::debug!(
-                "Rule '{}' MATCHED! protocol={:?}, value='{}', raw='{}'",
-                rule.pattern,
-                rule.protocol,
-                rule.value,
-                rule.raw
+            tracing::info!(
+                target: "bifrost_core::rules",
+                pattern = %rule.pattern,
+                protocol = %rule.protocol.to_str(),
+                value = %rule.value,
+                raw = %rule.raw,
+                file = rule.file.as_deref().unwrap_or("<unknown>"),
+                line = rule.line.unwrap_or(0),
+                "rule MATCHED"
             );
 
             if !rule.include_filters.is_empty()
@@ -249,9 +269,10 @@ impl RulesResolver {
 
             if Self::matches_any_filter(&rule.exclude_filters, ctx) {
                 tracing::debug!(
-                    "Rule '{}' excluded by excludeFilter (path='{}')",
-                    rule.pattern,
-                    ctx.path
+                    target: "bifrost_core::rules",
+                    pattern = %rule.pattern,
+                    path = %ctx.path,
+                    "rule excluded by excludeFilter"
                 );
                 continue;
             }
@@ -268,6 +289,13 @@ impl RulesResolver {
         if self.cache_enabled {
             self.cache.write().insert(cache_key, result.clone());
         }
+
+        tracing::debug!(
+            target: "bifrost_core::rules",
+            url = %ctx.url,
+            matched_count = result.rules.len(),
+            "rule resolution completed"
+        );
 
         result
     }

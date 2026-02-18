@@ -70,10 +70,7 @@ import {
   type CertInfo,
 } from "../../api/cert";
 import type { PendingAuth, TrafficTypeMetrics } from "../../types";
-import {
-  useThemeStore,
-  type ThemeMode,
-} from "../../stores/useThemeStore";
+import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 
 const { Text, Paragraph } = Typography;
 
@@ -399,7 +396,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       children: (
         <div>
           <Row gutter={[16, 16]}>
-            <Col xs={24} lg={12}>
+            <Col xs={24}>
               <Card
                 title={
                   <Space>
@@ -435,7 +432,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
               </Card>
             </Col>
 
-            <Col xs={24} lg={12}>
+            <Col xs={24}>
               <Card
                 title={
                   <Space>
@@ -473,12 +470,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 </Descriptions>
               </Card>
             </Col>
-          </Row>
 
-          <Divider />
-
-          <Row gutter={[16, 16]}>
-            <Col xs={24} lg={12}>
+            <Col xs={24}>
               <Card
                 title={
                   <Space>
@@ -567,185 +560,18 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
             </Col>
 
             <Col xs={24}>
-              <Card
-                title={
-                  <Space>
-                    <SwapOutlined />
-                    <span>TLS Interception Patterns</span>
-                  </Space>
-                }
-                size="small"
-              >
-                <Text
-                  type="secondary"
-                  style={{ display: "block", marginBottom: 16, fontSize: 12 }}
-                >
-                  Configure domain-specific TLS interception behavior. Force
-                  Intercept has highest priority, followed by Passthrough.
-                </Text>
-                <Row gutter={24}>
-                  <Col xs={24} lg={12}>
-                    <div
-                      style={{
-                        padding: 16,
-                        background: "#f6ffed",
-                        borderRadius: 8,
-                        border: "1px solid #b7eb8f",
-                        height: "100%",
-                      }}
-                    >
-                      <Space
-                        style={{
-                          width: "100%",
-                          justifyContent: "space-between",
-                          marginBottom: 8,
-                        }}
-                      >
-                        <Space>
-                          <LockOutlined style={{ color: "#52c41a" }} />
-                          <Text strong style={{ color: "#389e0d" }}>
-                            Force Intercept
-                          </Text>
-                          <Tag color="green">
-                            {tlsConfig?.intercept_include.length || 0}
-                          </Tag>
-                        </Space>
-                      </Space>
-                      <Text
-                        type="secondary"
-                        style={{
-                          display: "block",
-                          marginBottom: 12,
-                          fontSize: 12,
-                        }}
-                      >
-                        Always intercept these domains, even when global
-                        interception is OFF. Highest priority.
-                      </Text>
-                      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
-                        <Input
-                          placeholder="*.api.example.com"
-                          value={newIncludePattern}
-                          onChange={(e) => setNewIncludePattern(e.target.value)}
-                          onPressEnter={handleAddIncludePattern}
-                          size="small"
-                        />
-                        <Button
-                          type="primary"
-                          icon={<PlusOutlined />}
-                          onClick={handleAddIncludePattern}
-                          size="small"
-                          loading={tlsLoading}
-                          style={{ background: "#52c41a", borderColor: "#52c41a" }}
-                        >
-                          Add
-                        </Button>
-                      </Space.Compact>
-                      <div style={{ maxHeight: 150, overflowY: "auto" }}>
-                        {tlsConfig?.intercept_include.length === 0 ? (
-                          <Text type="secondary">No patterns configured</Text>
-                        ) : (
-                          <Space wrap>
-                            {tlsConfig?.intercept_include.map((pattern) => (
-                              <Tag
-                                key={pattern}
-                                color="green"
-                                closable
-                                onClose={() =>
-                                  handleRemoveIncludePattern(pattern)
-                                }
-                              >
-                                {pattern}
-                              </Tag>
-                            ))}
-                          </Space>
-                        )}
-                      </div>
-                    </div>
-                  </Col>
-                  <Col xs={24} lg={12} style={{ marginTop: 0 }}>
-                    <div
-                      style={{
-                        padding: 16,
-                        background: "#fff7e6",
-                        borderRadius: 8,
-                        border: "1px solid #ffd591",
-                        height: "100%",
-                      }}
-                    >
-                      <Space
-                        style={{
-                          width: "100%",
-                          justifyContent: "space-between",
-                          marginBottom: 8,
-                        }}
-                      >
-                        <Space>
-                          <SafetyCertificateOutlined
-                            style={{ color: "#fa8c16" }}
-                          />
-                          <Text strong style={{ color: "#d46b08" }}>
-                            Passthrough (No Intercept)
-                          </Text>
-                          <Tag color="orange">
-                            {tlsConfig?.intercept_exclude.length || 0}
-                          </Tag>
-                        </Space>
-                      </Space>
-                      <Text
-                        type="secondary"
-                        style={{
-                          display: "block",
-                          marginBottom: 12,
-                          fontSize: 12,
-                        }}
-                      >
-                        Never intercept these domains, even when global
-                        interception is ON. For certificate pinning sites.
-                      </Text>
-                      <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
-                        <Input
-                          placeholder="*.apple.com"
-                          value={newExcludePattern}
-                          onChange={(e) => setNewExcludePattern(e.target.value)}
-                          onPressEnter={handleAddExcludePattern}
-                          size="small"
-                        />
-                        <Button
-                          type="primary"
-                          icon={<PlusOutlined />}
-                          onClick={handleAddExcludePattern}
-                          size="small"
-                          loading={tlsLoading}
-                          style={{ background: "#fa8c16", borderColor: "#fa8c16" }}
-                        >
-                          Add
-                        </Button>
-                      </Space.Compact>
-                      <div style={{ maxHeight: 150, overflowY: "auto" }}>
-                        {tlsConfig?.intercept_exclude.length === 0 ? (
-                          <Text type="secondary">No patterns configured</Text>
-                        ) : (
-                          <Space wrap>
-                            {tlsConfig?.intercept_exclude.map((pattern) => (
-                              <Tag
-                                key={pattern}
-                                color="orange"
-                                closable
-                                onClose={() =>
-                                  handleRemoveExcludePattern(pattern)
-                                }
-                              >
-                                {pattern}
-                              </Tag>
-                            ))}
-                          </Space>
-                        )}
-                      </div>
-                    </div>
-                  </Col>
-                </Row>
-              </Card>
+              <TlsInterceptionPatternsCard
+                tlsConfig={tlsConfig}
+                tlsLoading={tlsLoading}
+                newIncludePattern={newIncludePattern}
+                newExcludePattern={newExcludePattern}
+                setNewIncludePattern={setNewIncludePattern}
+                setNewExcludePattern={setNewExcludePattern}
+                handleAddIncludePattern={handleAddIncludePattern}
+                handleRemoveIncludePattern={handleRemoveIncludePattern}
+                handleAddExcludePattern={handleAddExcludePattern}
+                handleRemoveExcludePattern={handleRemoveExcludePattern}
+              />
             </Col>
           </Row>
         </div>
@@ -760,7 +586,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       ),
       children: (
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={12}>
+          <Col xs={24}>
             <Card
               title={
                 <Space>
@@ -806,7 +632,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       ),
       children: (
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={12}>
+          <Col xs={24}>
             <Card
               title={
                 <Space>
@@ -859,7 +685,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
             </Card>
           </Col>
 
-          <Col xs={24} lg={12}>
+          <Col xs={24}>
             <Card
               title={
                 <Space>
@@ -1120,7 +946,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       ),
       children: (
         <Row gutter={[16, 16]}>
-          <Col xs={24} lg={12}>
+          <Col xs={24}>
             <Card title="System Information" size="small">
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="Version">
@@ -1142,7 +968,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
             </Card>
           </Col>
 
-          <Col xs={24} lg={12}>
+          <Col xs={24}>
             <Card title="Usage Guide" size="small">
               <Descriptions column={1} size="small" bordered>
                 <Descriptions.Item label="Rule Syntax">
@@ -1370,7 +1196,9 @@ function MetricsContent({
             <Statistic
               title="Upload Rate"
               value={formatBytesRate(bytesSentRate)}
-              prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
+              prefix={
+                <CloudUploadOutlined style={{ color: token.colorSuccess }} />
+              }
             />
             <Text type="secondary" style={{ fontSize: 12 }}>
               Max: {formatBytesRate(maxBytesSentRate)}
@@ -1386,7 +1214,9 @@ function MetricsContent({
             <Statistic
               title="Download Rate"
               value={formatBytesRate(bytesReceivedRate)}
-              prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
+              prefix={
+                <CloudDownloadOutlined style={{ color: token.colorInfo }} />
+              }
             />
             <Text type="secondary" style={{ fontSize: 12 }}>
               Max: {formatBytesRate(maxBytesReceivedRate)}
@@ -1402,7 +1232,9 @@ function MetricsContent({
             <Statistic
               title="Total Upload"
               value={formatBytes(bytesSent)}
-              prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
+              prefix={
+                <CloudUploadOutlined style={{ color: token.colorSuccess }} />
+              }
             />
           </Card>
         </Col>
@@ -1415,7 +1247,9 @@ function MetricsContent({
             <Statistic
               title="Total Download"
               value={formatBytes(bytesReceived)}
-              prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
+              prefix={
+                <CloudDownloadOutlined style={{ color: token.colorInfo }} />
+              }
             />
           </Card>
         </Col>
@@ -1475,7 +1309,9 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
           <Statistic
             title="Total Upload"
             value={formatBytes(data.bytes_sent)}
-            prefix={<CloudUploadOutlined style={{ color: token.colorSuccess }} />}
+            prefix={
+              <CloudUploadOutlined style={{ color: token.colorSuccess }} />
+            }
           />
         </Card>
       </Col>
@@ -1488,10 +1324,222 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
           <Statistic
             title="Total Download"
             value={formatBytes(data.bytes_received)}
-            prefix={<CloudDownloadOutlined style={{ color: token.colorInfo }} />}
+            prefix={
+              <CloudDownloadOutlined style={{ color: token.colorInfo }} />
+            }
           />
         </Card>
       </Col>
     </Row>
+  );
+}
+
+interface TlsInterceptionPatternsCardProps {
+  tlsConfig: TlsConfig | null;
+  tlsLoading: boolean;
+  newIncludePattern: string;
+  newExcludePattern: string;
+  setNewIncludePattern: (pattern: string) => void;
+  setNewExcludePattern: (pattern: string) => void;
+  handleAddIncludePattern: () => void;
+  handleRemoveIncludePattern: (pattern: string) => void;
+  handleAddExcludePattern: () => void;
+  handleRemoveExcludePattern: (pattern: string) => void;
+}
+
+function TlsInterceptionPatternsCard({
+  tlsConfig,
+  tlsLoading,
+  newIncludePattern,
+  newExcludePattern,
+  setNewIncludePattern,
+  setNewExcludePattern,
+  handleAddIncludePattern,
+  handleRemoveIncludePattern,
+  handleAddExcludePattern,
+  handleRemoveExcludePattern,
+}: TlsInterceptionPatternsCardProps) {
+  const { token } = theme.useToken();
+
+  return (
+    <Card
+      title={
+        <Space>
+          <SwapOutlined />
+          <span>TLS Interception Patterns</span>
+        </Space>
+      }
+      size="small"
+    >
+      <Text
+        type="secondary"
+        style={{ display: "block", marginBottom: 16, fontSize: 12 }}
+      >
+        Configure domain-specific TLS interception behavior. Force Intercept has
+        highest priority, followed by Passthrough.
+      </Text>
+      <Row gutter={[16, 16]}>
+        <Col xs={24}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorSuccessBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorSuccessBorder}`,
+            }}
+          >
+            <Space
+              style={{
+                width: "100%",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <Space>
+                <LockOutlined style={{ color: token.colorSuccess }} />
+                <Text strong style={{ color: token.colorSuccessText }}>
+                  Force Intercept
+                </Text>
+                <Tag color="green">
+                  {tlsConfig?.intercept_include.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text
+              type="secondary"
+              style={{
+                display: "block",
+                marginBottom: 12,
+                fontSize: 12,
+              }}
+            >
+              Always intercept these domains, even when global interception is
+              OFF. Highest priority.
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="*.api.example.com"
+                value={newIncludePattern}
+                onChange={(e) => setNewIncludePattern(e.target.value)}
+                onPressEnter={handleAddIncludePattern}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddIncludePattern}
+                size="small"
+                loading={tlsLoading}
+                style={{
+                  background: token.colorSuccess,
+                  borderColor: token.colorSuccess,
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+              {tlsConfig?.intercept_include.length === 0 ? (
+                <Text type="secondary">No patterns configured</Text>
+              ) : (
+                <Space wrap>
+                  {tlsConfig?.intercept_include.map((pattern) => (
+                    <Tag
+                      key={pattern}
+                      color="green"
+                      closable
+                      onClose={() => handleRemoveIncludePattern(pattern)}
+                    >
+                      {pattern}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+        <Col xs={24}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorWarningBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorWarningBorder}`,
+            }}
+          >
+            <Space
+              style={{
+                width: "100%",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <Space>
+                <SafetyCertificateOutlined
+                  style={{ color: token.colorWarning }}
+                />
+                <Text strong style={{ color: token.colorWarningText }}>
+                  Passthrough (No Intercept)
+                </Text>
+                <Tag color="orange">
+                  {tlsConfig?.intercept_exclude.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text
+              type="secondary"
+              style={{
+                display: "block",
+                marginBottom: 12,
+                fontSize: 12,
+              }}
+            >
+              Never intercept these domains, even when global interception is
+              ON. For certificate pinning sites.
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="*.apple.com"
+                value={newExcludePattern}
+                onChange={(e) => setNewExcludePattern(e.target.value)}
+                onPressEnter={handleAddExcludePattern}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddExcludePattern}
+                size="small"
+                loading={tlsLoading}
+                style={{
+                  background: token.colorWarning,
+                  borderColor: token.colorWarning,
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+              {tlsConfig?.intercept_exclude.length === 0 ? (
+                <Text type="secondary">No patterns configured</Text>
+              ) : (
+                <Space wrap>
+                  {tlsConfig?.intercept_exclude.map((pattern) => (
+                    <Tag
+                      key={pattern}
+                      color="orange"
+                      closable
+                      onClose={() => handleRemoveExcludePattern(pattern)}
+                    >
+                      {pattern}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+      </Row>
+    </Card>
   );
 }

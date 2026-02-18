@@ -21,6 +21,7 @@ export default function Traffic() {
     requestBody,
     responseBody,
     loading,
+    detailLoading,
     paused,
     hasMore,
     toolbarFilters,
@@ -132,6 +133,7 @@ export default function Traffic() {
       flexDirection: 'column',
       height: '100%',
       overflow: 'hidden',
+      backgroundColor: token.colorBgContainer,
     },
     filterBarWrapper: {
       padding: '8px 16px',
@@ -141,6 +143,7 @@ export default function Traffic() {
     mainContent: {
       flex: 1,
       overflow: 'hidden',
+      backgroundColor: token.colorBgContainer,
     },
     tableWrapper: {
       height: '100%',
@@ -204,6 +207,7 @@ export default function Traffic() {
                 record={currentRecord}
                 requestBody={requestBody}
                 responseBody={responseBody}
+                loading={detailLoading}
               />
             </div>
           }

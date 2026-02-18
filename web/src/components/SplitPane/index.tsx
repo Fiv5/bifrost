@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { ReactNode, CSSProperties } from "react";
+import { theme } from "antd";
 
 interface SplitPaneProps {
   left: ReactNode;
@@ -9,36 +10,6 @@ interface SplitPaneProps {
   minRightWidth?: number;
 }
 
-const styles: Record<string, CSSProperties> = {
-  container: {
-    display: "flex",
-    width: "100%",
-    height: "100%",
-    overflow: "hidden",
-  },
-  leftPane: {
-    height: "100%",
-    overflow: "auto",
-    flexShrink: 0,
-  },
-  rightPane: {
-    flex: 1,
-    height: "100%",
-    overflow: "auto",
-    minWidth: 0,
-  },
-  divider: {
-    width: 4,
-    cursor: "col-resize",
-    backgroundColor: "#e8e8e8",
-    flexShrink: 0,
-    transition: "background-color 0.2s",
-  },
-  dividerHover: {
-    backgroundColor: "#1890ff",
-  },
-};
-
 export default function SplitPane({
   left,
   right,
@@ -46,10 +17,44 @@ export default function SplitPane({
   minLeftWidth = 200,
   minRightWidth = 300,
 }: SplitPaneProps) {
+  const { token } = theme.useToken();
   const containerRef = useRef<HTMLDivElement>(null);
   const [leftWidth, setLeftWidth] = useState<string>(defaultLeftWidth);
   const [isDragging, setIsDragging] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
+
+  const styles: Record<string, CSSProperties> = {
+    container: {
+      display: "flex",
+      width: "100%",
+      height: "100%",
+      overflow: "hidden",
+      backgroundColor: token.colorBgContainer,
+    },
+    leftPane: {
+      height: "100%",
+      overflow: "auto",
+      flexShrink: 0,
+      backgroundColor: token.colorBgContainer,
+    },
+    rightPane: {
+      flex: 1,
+      height: "100%",
+      overflow: "auto",
+      minWidth: 0,
+      backgroundColor: token.colorBgContainer,
+    },
+    divider: {
+      width: 4,
+      cursor: "col-resize",
+      backgroundColor: token.colorBorderSecondary,
+      flexShrink: 0,
+      transition: "background-color 0.2s",
+    },
+    dividerHover: {
+      backgroundColor: token.colorPrimary,
+    },
+  };
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

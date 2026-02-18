@@ -374,7 +374,7 @@ async fn run_proxy_server(
         .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_body_cache"));
     let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
         body_temp_dir,
-        64 * 1024,
+        2 * 1024 * 1024,
         7,
     )));
 

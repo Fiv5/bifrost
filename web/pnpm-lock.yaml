@@ -38,6 +38,9 @@ importers:
       mark.js:
         specifier: ^8.11.1
         version: 8.11.1
+      monaco-editor:
+        specifier: ^0.55.1
+        version: 0.55.1
       react:
         specifier: ^19.2.0
         version: 19.2.4

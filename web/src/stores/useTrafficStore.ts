@@ -15,6 +15,7 @@ interface TrafficState {
   filterConditions: FilterCondition[];
   paused: boolean;
   loading: boolean;
+  detailLoading: boolean;
   polling: boolean;
   error: string | null;
   pollTimeoutId: number | null;
@@ -130,6 +131,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   filterConditions: [],
   paused: false,
   loading: false,
+  detailLoading: false,
   polling: false,
   error: null,
   pollTimeoutId: null,
@@ -272,10 +274,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   },
 
   fetchTrafficDetail: async (id: string) => {
-    set({ loading: true, error: null, requestBody: null, responseBody: null });
+    set({ detailLoading: true, error: null, requestBody: null, responseBody: null });
     try {
       const record = await api.getTrafficDetail(id);
-      set({ currentRecord: record, loading: false });
+      set({ currentRecord: record, detailLoading: false });
 
       api.getRequestBody(id).then(body => {
         set({ requestBody: body });
@@ -285,7 +287,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         set({ responseBody: body });
       }).catch(() => { });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: (e as Error).message, detailLoading: false });
     }
   },
 

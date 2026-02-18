@@ -14,18 +14,41 @@ struct TeeBodyDropGuard {
     record_id: String,
     total_bytes: usize,
     finished: bool,
+    buffer: BytesMut,
+    max_body_size: usize,
 }
 
 impl Drop for TeeBodyDropGuard {
     fn drop(&mut self) {
         if !self.finished {
-            if let Some(ref state) = self.admin_state {
-                state
-                    .traffic_recorder
-                    .update_by_id(&self.record_id, |record| {
-                        record.response_size = self.total_bytes;
-                    });
-            }
+            self.store_body_and_update_record();
+        }
+    }
+}
+
+impl TeeBodyDropGuard {
+    fn store_body_and_update_record(&mut self) {
+        if let Some(ref state) = self.admin_state {
+            let response_body_ref = if !self.buffer.is_empty() {
+                if let Some(ref body_store) = state.body_store {
+                    let store = body_store.read();
+                    store.store(&self.record_id, "res", &self.buffer)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let total_bytes = self.total_bytes;
+            state
+                .traffic_recorder
+                .update_by_id(&self.record_id, move |record| {
+                    record.response_size = total_bytes;
+                    if response_body_ref.is_some() {
+                        record.response_body_ref = response_body_ref;
+                    }
+                });
         }
     }
 }
@@ -35,8 +58,16 @@ pub struct TeeBody {
     guard: TeeBodyDropGuard,
 }
 
+const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
+
 impl TeeBody {
-    pub fn new(inner: Incoming, admin_state: Option<Arc<AdminState>>, record_id: String) -> Self {
+    pub fn new(
+        inner: Incoming,
+        admin_state: Option<Arc<AdminState>>,
+        record_id: String,
+        max_body_size: Option<usize>,
+    ) -> Self {
+        let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
             inner,
             guard: TeeBodyDropGuard {
@@ -44,6 +75,8 @@ impl TeeBody {
                 record_id,
                 total_bytes: 0,
                 finished: false,
+                buffer: BytesMut::with_capacity(8192),
+                max_body_size: max_size,
             },
         }
     }
@@ -71,6 +104,10 @@ impl Body for TeeBody {
                     let len = data.len();
                     self.guard.total_bytes += len;
 
+                    if self.guard.buffer.len() + len <= self.guard.max_body_size {
+                        self.guard.buffer.extend_from_slice(data);
+                    }
+
                     if let Some(ref state) = self.guard.admin_state {
                         state.metrics_collector.add_bytes_received(len as u64);
                     }
@@ -79,24 +116,12 @@ impl Body for TeeBody {
             }
             Poll::Ready(Some(Err(e))) => {
                 self.guard.finished = true;
-                if let Some(ref state) = self.guard.admin_state {
-                    state
-                        .traffic_recorder
-                        .update_by_id(&self.guard.record_id, |record| {
-                            record.response_size = self.guard.total_bytes;
-                        });
-                }
+                self.guard.store_body_and_update_record();
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
                 self.guard.finished = true;
-                if let Some(ref state) = self.guard.admin_state {
-                    state
-                        .traffic_recorder
-                        .update_by_id(&self.guard.record_id, |record| {
-                            record.response_size = self.guard.total_bytes;
-                        });
-                }
+                self.guard.store_body_and_update_record();
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -116,8 +141,9 @@ pub fn create_tee_body_with_store(
     body: Incoming,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
+    max_body_size: Option<usize>,
 ) -> TeeBody {
-    TeeBody::new(body, admin_state, record_id)
+    TeeBody::new(body, admin_state, record_id, max_body_size)
 }
 
 struct SseTeeBodyDropGuard {

@@ -77,7 +77,47 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
         ctx.req_headers = req_headers.clone();
         ctx.req_cookies = req_cookies.clone();
 
+        tracing::debug!(
+            target: "bifrost_proxy::rules",
+            url = %url,
+            method = %method,
+            host = %ctx.host,
+            path = %ctx.path,
+            "resolving rules for request"
+        );
+
         let core_result = self.inner.resolve(&ctx);
+
+        if core_result.rules.is_empty() {
+            tracing::debug!(
+                target: "bifrost_proxy::rules",
+                url = %url,
+                "no rules matched"
+            );
+        } else {
+            tracing::info!(
+                target: "bifrost_proxy::rules",
+                url = %url,
+                matched_count = core_result.rules.len(),
+                "rules matched for request"
+            );
+            for (idx, resolved) in core_result.rules.iter().enumerate() {
+                let rule = &resolved.rule;
+                tracing::info!(
+                    target: "bifrost_proxy::rules",
+                    rule_index = idx + 1,
+                    pattern = %rule.pattern,
+                    protocol = %rule.protocol.to_str(),
+                    value = %resolved.resolved_value,
+                    raw = %rule.raw,
+                    file = rule.file.as_deref().unwrap_or("<cli>"),
+                    line = rule.line.unwrap_or(0),
+                    disabled = rule.is_disabled(),
+                    "matched rule detail"
+                );
+            }
+        }
+
         let mut result = ProxyResolvedRules::default();
 
         for resolved_rule in &core_result.rules {

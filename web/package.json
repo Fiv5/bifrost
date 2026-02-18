@@ -26,6 +26,7 @@
     "echarts-for-react": "^3.0.5",
     "highlight.js": "^11.11.1",
     "mark.js": "^8.11.1",
+    "monaco-editor": "^0.55.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-json-view-lite": "^2.5.0",

@@ -482,7 +482,6 @@ async fn tls_intercept_tunnel(
 
     let original_host_for_requests = original_host.to_string();
     let original_port_for_requests = original_port;
-    let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
     let rules_clone = rules.clone();
     let verbose = verbose_logging;
@@ -490,7 +489,7 @@ async fn tls_intercept_tunnel(
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
         let original_port = original_port_for_requests;
-        let req_id = req_id_owned.clone();
+        let req_id = crate::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
         async move {
@@ -553,7 +552,6 @@ async fn tls_intercept_tunnel_with_cancel(
 
     let original_host_for_requests = original_host.to_string();
     let original_port_for_requests = original_port;
-    let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
     let rules_clone = rules.clone();
     let verbose = verbose_logging;
@@ -561,7 +559,7 @@ async fn tls_intercept_tunnel_with_cancel(
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
         let original_port = original_port_for_requests;
-        let req_id = req_id_owned.clone();
+        let req_id = crate::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
         async move {
@@ -1271,7 +1269,12 @@ async fn handle_intercepted_request_with_protocol(
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
 
-        let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
+        let tee_body = create_tee_body_with_store(
+            res_body,
+            admin_state.clone(),
+            record_id,
+            Some(max_body_buffer_size),
+        );
         return Ok(Response::from_parts(res_parts, tee_body.boxed()));
     }
 

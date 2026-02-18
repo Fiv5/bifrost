@@ -560,7 +560,12 @@ pub async fn handle_http_request(
             let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
-            let tee_body = create_tee_body_with_store(res_body, admin_state.clone(), record_id);
+            let tee_body = create_tee_body_with_store(
+                res_body,
+                admin_state.clone(),
+                record_id,
+                Some(max_body_buffer_size),
+            );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
     }
@@ -853,7 +858,7 @@ async fn forward_without_rules(
         let tee_body = create_sse_tee_body(res_body, admin_state, record_id);
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
-        let tee_body = create_tee_body_with_store(res_body, admin_state, record_id);
+        let tee_body = create_tee_body_with_store(res_body, admin_state, record_id, None);
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     }
 }

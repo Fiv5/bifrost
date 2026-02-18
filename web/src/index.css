@@ -13,6 +13,12 @@ body {
 
 #root {
   min-height: 100vh;
+  background-color: #ffffff;
+}
+
+[data-theme="dark"] body,
+[data-theme="dark"] #root {
+  background-color: #141414;
 }
 
 ::-webkit-scrollbar {

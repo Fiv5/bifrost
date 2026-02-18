@@ -17,6 +17,7 @@ interface VirtualTrafficTableProps {
   onScrollPositionChange?: (isAtBottom: boolean) => void;
   newRecordsCount?: number;
   onScrollToBottom?: () => void;
+  onKeyboardNavigate?: (record: TrafficSummary) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -261,9 +262,11 @@ export default function VirtualTrafficTable({
   onScrollPositionChange,
   newRecordsCount = 0,
   onScrollToBottom,
+  onKeyboardNavigate,
 }: VirtualTrafficTableProps) {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const prevDataLengthRef = useRef(data.length);
   const isAtBottomRef = useRef(true);
   const [showNewIndicator, setShowNewIndicator] = useState(false);
@@ -348,6 +351,68 @@ export default function VirtualTrafficTable({
     onScrollToBottom?.();
   }, [rowVirtualizer, data.length, onScrollToBottom]);
 
+  const scrollToRow = useCallback((index: number) => {
+    if (!parentRef.current) return;
+    
+    const scrollTop = parentRef.current.scrollTop;
+    const clientHeight = parentRef.current.clientHeight;
+    const headerHeight = ROW_HEIGHT;
+    const rowTop = index * ROW_HEIGHT + headerHeight;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    const visibleTop = scrollTop + headerHeight;
+    const visibleBottom = scrollTop + clientHeight;
+
+    if (rowTop < visibleTop) {
+      rowVirtualizer.scrollToIndex(index, { align: 'start' });
+    } else if (rowBottom > visibleBottom) {
+      rowVirtualizer.scrollToIndex(index, { align: 'end' });
+    }
+  }, [rowVirtualizer]);
+
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (data.length === 0) return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+
+    e.preventDefault();
+
+    const currentIndex = selectedId 
+      ? data.findIndex(r => r.id === selectedId) 
+      : -1;
+
+    let nextIndex: number;
+
+    if (e.key === 'ArrowDown') {
+      if (currentIndex === -1 || currentIndex >= data.length - 1) {
+        nextIndex = 0;
+      } else {
+        nextIndex = currentIndex + 1;
+      }
+    } else {
+      if (currentIndex === -1 || currentIndex <= 0) {
+        nextIndex = data.length - 1;
+      } else {
+        nextIndex = currentIndex - 1;
+      }
+    }
+
+    const nextRecord = data[nextIndex];
+    if (nextRecord) {
+      onSelect?.(nextRecord);
+      onKeyboardNavigate?.(nextRecord);
+      scrollToRow(nextIndex);
+    }
+  }, [data, selectedId, onSelect, onKeyboardNavigate, scrollToRow]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    container.addEventListener('keydown', handleKeyDown);
+    return () => {
+      container.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleKeyDown]);
+
   const styles: Record<string, CSSProperties> = {
     container: {
       display: "flex",
@@ -356,6 +421,23 @@ export default function VirtualTrafficTable({
       width: "100%",
       overflow: "hidden",
       position: "relative",
+      backgroundColor: token.colorBgContainer,
+      outline: "none",
+    },
+    scrollContainer: {
+      flex: 1,
+      overflow: "auto",
+      position: "relative",
+      minWidth: 0,
+      backgroundColor: token.colorBgContainer,
+    },
+    tableInner: {
+      minWidth: TABLE_MIN_WIDTH,
+      display: "flex",
+      flexDirection: "column",
+      height: "fit-content",
+      minHeight: "100%",
+      backgroundColor: token.colorBgContainer,
     },
     header: {
       display: "flex",
@@ -369,7 +451,7 @@ export default function VirtualTrafficTable({
       color: token.colorTextSecondary,
       position: "sticky",
       top: 0,
-      zIndex: 1,
+      zIndex: 2,
       flexShrink: 0,
     },
     headerCell: {
@@ -378,18 +460,13 @@ export default function VirtualTrafficTable({
       textOverflow: "ellipsis",
       whiteSpace: "nowrap",
     },
-    scrollContainer: {
-      flex: 1,
-      overflow: "auto",
-      position: "relative",
-      minWidth: 0,
-    },
     virtualList: {
       width: "100%",
       minWidth: TABLE_MIN_WIDTH,
       position: "relative",
       willChange: "transform",
       contain: "strict",
+      backgroundColor: token.colorBgContainer,
     },
     row: {
       display: "flex",
@@ -461,10 +538,11 @@ export default function VirtualTrafficTable({
   const getColumnStyle = (col: ColumnDef): CSSProperties => {
     const width = typeof col.width === "number" ? col.width : undefined;
     const minWidth = col.minWidth ?? width;
+    const isAutoWidth = col.width === "auto";
     return {
       width: width,
       minWidth: minWidth,
-      flex: col.width === "auto" ? 1 : undefined,
+      flex: isAutoWidth ? 1 : `0 0 ${width}px`,
       justifyContent:
         col.align === "center"
           ? "center"
@@ -475,7 +553,7 @@ export default function VirtualTrafficTable({
   };
 
   return (
-    <div style={styles.container}>
+    <div ref={containerRef} style={styles.container} tabIndex={0}>
       <style>
         {`
           @keyframes slideUp {
@@ -498,68 +576,70 @@ export default function VirtualTrafficTable({
           }
         `}
       </style>
-      <div style={styles.header}>
-        {columns.map((col) => (
-          <div
-            key={col.key}
-            style={{ ...styles.headerCell, ...getColumnStyle(col) }}
-          >
-            {col.title}
-          </div>
-        ))}
-      </div>
-
       <div ref={parentRef} style={styles.scrollContainer} onScroll={handleScroll}>
-        {data.length === 0 ? (
-          <div style={styles.emptyState}>
-            {loading ? <Spin /> : "No traffic data"}
+        <div style={styles.tableInner}>
+          <div style={styles.header}>
+            {columns.map((col) => (
+              <div
+                key={col.key}
+                style={{ ...styles.headerCell, ...getColumnStyle(col) }}
+              >
+                {col.title}
+              </div>
+            ))}
           </div>
-        ) : (
-          <div
-            style={{
-              ...styles.virtualList,
-              height: `${rowVirtualizer.getTotalSize()}px`,
-            }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const record = data[virtualRow.index];
-              if (!record) return null;
-              const isSelected = record.id === selectedId;
-              return (
-                <div
-                  key={virtualRow.key}
-                  data-index={virtualRow.index}
-                  style={{
-                    ...styles.row,
-                    height: ROW_HEIGHT,
-                    transform: `translateY(${virtualRow.start}px)`,
-                    backgroundColor: isSelected
-                      ? token.colorPrimaryBg
-                      : virtualRow.index % 2 === 0
-                        ? token.colorBgContainer
-                        : token.colorFillQuaternary,
-                  }}
-                  onClick={() => onSelect?.(record)}
-                >
-                  {columns.map((col) => (
-                    <div
-                      key={col.key}
-                      style={{ ...styles.cell, ...getColumnStyle(col) }}
-                    >
-                      {col.render(record)}
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
 
-        {loading && data.length > 0 && (
-          <div style={styles.loadingOverlay}>
-            <Spin />
-          </div>
-        )}
+          {data.length === 0 ? (
+            <div style={styles.emptyState}>
+              {loading ? <Spin /> : "No traffic data"}
+            </div>
+          ) : (
+            <div
+              style={{
+                ...styles.virtualList,
+                height: `${rowVirtualizer.getTotalSize()}px`,
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const record = data[virtualRow.index];
+                if (!record) return null;
+                const isSelected = record.id === selectedId;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    style={{
+                      ...styles.row,
+                      height: ROW_HEIGHT,
+                      transform: `translateY(${virtualRow.start}px)`,
+                      backgroundColor: isSelected
+                        ? token.colorPrimaryBg
+                        : virtualRow.index % 2 === 0
+                          ? token.colorBgContainer
+                          : token.colorFillQuaternary,
+                    }}
+                    onClick={() => onSelect?.(record)}
+                  >
+                    {columns.map((col) => (
+                      <div
+                        key={col.key}
+                        style={{ ...styles.cell, ...getColumnStyle(col) }}
+                      >
+                        {col.render(record)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {loading && data.length > 0 && (
+            <div style={styles.loadingOverlay}>
+              <Spin />
+            </div>
+          )}
+        </div>
       </div>
 
       {showNewIndicator && newRecordsCount > 0 && (

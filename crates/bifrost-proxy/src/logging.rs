@@ -6,6 +6,11 @@ use crate::server::ResolvedRules;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+pub fn generate_request_id() -> String {
+    let id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("REQ-{:06}", id)
+}
+
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub id: u64,
@@ -208,7 +213,26 @@ pub fn format_rules_detail(rules: &ResolvedRules) -> String {
     if !rules.rules.is_empty() {
         lines.push(format!("  matched {} rule(s):", rules.rules.len()));
         for rule in &rules.rules {
-            lines.push(format!("    - {:?}: {}", rule.protocol, rule.value));
+            let source = rule
+                .rule_name
+                .as_ref()
+                .map(|f| {
+                    if let Some(line) = rule.line {
+                        format!("{}:{}", f, line)
+                    } else {
+                        f.clone()
+                    }
+                })
+                .unwrap_or_else(|| "<cli>".to_string());
+            let raw_display = rule
+                .raw
+                .as_ref()
+                .map(|r| format!(" (raw: {})", r))
+                .unwrap_or_default();
+            lines.push(format!(
+                "    [{}] {} {:?}://{}{}",
+                source, rule.pattern, rule.protocol, rule.value, raw_display
+            ));
         }
     }
 
