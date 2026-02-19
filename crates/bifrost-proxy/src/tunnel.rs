@@ -591,8 +591,10 @@ async fn tls_intercept_tunnel_with_cancel(
         .serve_connection(client_io, service)
         .with_upgrades();
 
+    tokio::pin!(conn);
+
     tokio::select! {
-        result = conn => {
+        result = conn.as_mut() => {
             if let Err(e) = result {
                 if verbose_logging {
                     debug!("[{}] HTTP connection ended: {}", req_id, e);
@@ -602,8 +604,10 @@ async fn tls_intercept_tunnel_with_cancel(
         }
         _ = cancel_rx => {
             if verbose_logging {
-                debug!("[{}] TLS intercept tunnel cancelled by config change", req_id);
+                debug!("[{}] TLS intercept tunnel cancelled by config change, initiating graceful shutdown", req_id);
             }
+            conn.as_mut().graceful_shutdown();
+            let _ = conn.await;
             Ok(true)
         }
     }
