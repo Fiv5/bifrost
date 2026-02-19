@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Table, Typography, Tag, theme, Button, Space, Tooltip, Empty } from 'antd';
+import { Table, Typography, Tag, theme, Button, Space, Tooltip, Empty, ConfigProvider } from 'antd';
 import type { TableProps } from 'antd';
 import {
   ArrowUpOutlined,
@@ -229,7 +229,16 @@ export const Messages = ({
         </Space>
       </div>
 
-      <div className="compact-messages-table">
+      <ConfigProvider
+        theme={{
+          components: {
+            Table: {
+              cellPaddingBlockSM: 2,
+              cellPaddingInlineSM: 4,
+            },
+          },
+        }}
+      >
         <Table<WebSocketFrame>
           dataSource={filteredFrames}
           columns={columns}
@@ -245,15 +254,9 @@ export const Messages = ({
             record.direction === 'send' ? 'frame-send' : 'frame-receive'
           }
         />
-      </div>
+      </ConfigProvider>
 
       <style>{`
-        .compact-messages-table .ant-table-small .ant-table-tbody > tr > td {
-          padding: 4px 8px;
-        }
-        .compact-messages-table .ant-table-small .ant-table-thead > tr > th {
-          padding: 4px 8px;
-        }
         .frame-send td:first-child {
           border-left: 3px solid #52c41a;
         }

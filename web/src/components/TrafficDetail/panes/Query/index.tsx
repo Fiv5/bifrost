@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { Table, Typography, theme } from 'antd';
+import { Table, Typography, theme, ConfigProvider } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { SessionTargetSearchState } from '../../../../types';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
@@ -85,25 +85,28 @@ export const QueryView = ({ url, searchValue, onSearch }: QueryViewProps) => {
   }
 
   return (
-    <div ref={tableRef} className="compact-table">
-      <Table
-        dataSource={filteredData}
-        columns={columns}
-        pagination={false}
-        size="small"
-        style={{
-          backgroundColor: token.colorBgLayout,
-          borderRadius: 4,
+    <div ref={tableRef}>
+      <ConfigProvider
+        theme={{
+          components: {
+            Table: {
+              cellPaddingBlockSM: 2,
+              cellPaddingInlineSM: 4,
+            },
+          },
         }}
-      />
-      <style>{`
-        .compact-table .ant-table-small .ant-table-tbody > tr > td {
-          padding: 4px 8px;
-        }
-        .compact-table .ant-table-small .ant-table-thead > tr > th {
-          padding: 4px 8px;
-        }
-      `}</style>
+      >
+        <Table
+          dataSource={filteredData}
+          columns={columns}
+          pagination={false}
+          size="small"
+          style={{
+            backgroundColor: token.colorBgLayout,
+            borderRadius: 4,
+          }}
+        />
+      </ConfigProvider>
     </div>
   );
 };

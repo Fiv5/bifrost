@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import { Descriptions, Typography, theme, Tag, Collapse } from 'antd';
+import { Descriptions, Typography, theme, Tag, Collapse, ConfigProvider } from 'antd';
 import dayjs from 'dayjs';
 import type { TrafficRecord, SessionTargetSearchState, MatchedRule, RequestTiming, SocketStatus } from '../../../../types';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
@@ -188,29 +188,35 @@ const SocketStatusCard = ({
         </Tag>
         <Tag color="blue">{isWebSocket ? 'WebSocket' : 'SSE'}</Tag>
       </div>
-      <Descriptions column={2} size="small" bordered>
-        <Descriptions.Item label="Send Count">{status.send_count}</Descriptions.Item>
-        <Descriptions.Item label="Receive Count">{status.receive_count}</Descriptions.Item>
-        <Descriptions.Item label="Send Bytes">{formatSize(status.send_bytes)}</Descriptions.Item>
-        <Descriptions.Item label="Receive Bytes">
-          {formatSize(status.receive_bytes)}
-        </Descriptions.Item>
-        <Descriptions.Item label="Frame Count">{status.frame_count}</Descriptions.Item>
-        {status.close_code !== undefined && (
-          <Descriptions.Item label="Close Code">{status.close_code}</Descriptions.Item>
-        )}
-        {status.close_reason && (
-          <Descriptions.Item label="Close Reason" span={2}>
-            {status.close_reason}
+      <ConfigProvider
+        theme={{
+          components: {
+            Descriptions: {
+              itemPaddingBottom: 4,
+              padding: 4,
+              paddingSM: 4,
+            },
+          },
+        }}
+      >
+        <Descriptions column={2} size="small" bordered>
+          <Descriptions.Item label="Send Count">{status.send_count}</Descriptions.Item>
+          <Descriptions.Item label="Receive Count">{status.receive_count}</Descriptions.Item>
+          <Descriptions.Item label="Send Bytes">{formatSize(status.send_bytes)}</Descriptions.Item>
+          <Descriptions.Item label="Receive Bytes">
+            {formatSize(status.receive_bytes)}
           </Descriptions.Item>
-        )}
-      </Descriptions>
-      <style>{`
-        .compact-socket-status .ant-descriptions-item-label,
-        .compact-socket-status .ant-descriptions-item-content {
-          padding: 4px 8px !important;
-        }
-      `}</style>
+          <Descriptions.Item label="Frame Count">{status.frame_count}</Descriptions.Item>
+          {status.close_code !== undefined && (
+            <Descriptions.Item label="Close Code">{status.close_code}</Descriptions.Item>
+          )}
+          {status.close_reason && (
+            <Descriptions.Item label="Close Reason" span={2}>
+              {status.close_reason}
+            </Descriptions.Item>
+          )}
+        </Descriptions>
+      </ConfigProvider>
     </div>
   );
 };
@@ -283,117 +289,122 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
   return (
-    <div ref={wrapperRef} className="compact-overview">
-      <Descriptions
-        column={1}
-        size="small"
-        bordered
-        style={{ marginBottom: 8 }}
-        labelStyle={{ width: 140, fontWeight: 500 }}
+    <div ref={wrapperRef}>
+      <ConfigProvider
+        theme={{
+          components: {
+            Descriptions: {
+              itemPaddingBottom: 6,
+              padding: 6,
+              paddingSM: 6,
+            },
+          },
+        }}
       >
-        <Descriptions.Item label="URL">
-          <Paragraph
-            style={{ margin: 0, maxWidth: '100%' }}
-            ellipsis={{ rows: 2, expandable: true }}
-            copyable
-          >
-            {record.url}
-          </Paragraph>
-        </Descriptions.Item>
-        <Descriptions.Item label="Method">
-          <Tag color="blue">{record.method}</Tag>
-          {connectionType && (
-            <Tag color="purple" style={{ marginLeft: 4 }}>
-              {connectionType}
-            </Tag>
-          )}
-        </Descriptions.Item>
-        <Descriptions.Item label="Status">
-          <Tag
-            color={record.status >= 400 ? 'red' : record.status >= 300 ? 'orange' : 'green'}
-          >
-            {record.status} {STATUS_CODES[record.status] || ''}
-          </Tag>
-        </Descriptions.Item>
-        <Descriptions.Item label="Protocol">{record.protocol}</Descriptions.Item>
-        <Descriptions.Item label="Host">{record.host}</Descriptions.Item>
-        <Descriptions.Item label="Path">{record.path}</Descriptions.Item>
-        <Descriptions.Item label="Content Type">{record.content_type || '-'}</Descriptions.Item>
-        <Descriptions.Item label="Client IP">{record.client_ip || '-'}</Descriptions.Item>
-      </Descriptions>
-
-      <Descriptions
-        title="Size"
-        column={2}
-        size="small"
-        bordered
-        style={{ marginBottom: 8 }}
-        labelStyle={{ width: 140, fontWeight: 500 }}
-      >
-        <Descriptions.Item label="Request Size">
-          {formatSize(record.request_size)}
-        </Descriptions.Item>
-        <Descriptions.Item label="Response Size">
-          {formatSize(record.response_size)}
-        </Descriptions.Item>
-        <Descriptions.Item label="Total Size">
-          {formatSize(record.request_size + record.response_size)}
-        </Descriptions.Item>
-        <Descriptions.Item label="Duration">
-          {record.duration_ms ? `${record.duration_ms}ms` : '-'}
-        </Descriptions.Item>
-      </Descriptions>
-
-      <Descriptions
-        title="Timeline"
-        column={2}
-        size="small"
-        bordered
-        style={{ marginBottom: 8 }}
-        labelStyle={{ width: 140, fontWeight: 500 }}
-      >
-        <Descriptions.Item label="Timestamp" span={2}>
-          {dayjs(record.timestamp).format('YYYY-MM-DD HH:mm:ss.SSS')}
-        </Descriptions.Item>
-        {record.timing && (
-          <>
-            {record.timing.dns_ms !== undefined && (
-              <Descriptions.Item label="DNS">{record.timing.dns_ms}ms</Descriptions.Item>
-            )}
-            {record.timing.connect_ms !== undefined && (
-              <Descriptions.Item label="Connect">{record.timing.connect_ms}ms</Descriptions.Item>
-            )}
-            {record.timing.tls_ms !== undefined && (
-              <Descriptions.Item label="TLS">{record.timing.tls_ms}ms</Descriptions.Item>
-            )}
-            {record.timing.send_ms !== undefined && (
-              <Descriptions.Item label="Send">{record.timing.send_ms}ms</Descriptions.Item>
-            )}
-            {record.timing.wait_ms !== undefined && (
-              <Descriptions.Item label="Wait (TTFB)">{record.timing.wait_ms}ms</Descriptions.Item>
-            )}
-            {record.timing.receive_ms !== undefined && (
-              <Descriptions.Item label="Receive">{record.timing.receive_ms}ms</Descriptions.Item>
-            )}
-          </>
-        )}
-      </Descriptions>
-
-      {collapseItems.length > 0 && (
-        <Collapse
-          items={collapseItems}
-          defaultActiveKey={['timing', 'socket', 'rules']}
+        <Descriptions
+          column={1}
           size="small"
-          style={{ marginTop: 8 }}
-        />
-      )}
+          bordered
+          style={{ marginBottom: 8 }}
+          labelStyle={{ width: 140, fontWeight: 500 }}
+        >
+          <Descriptions.Item label="URL">
+            <Paragraph
+              style={{ margin: 0, maxWidth: '100%' }}
+              ellipsis={{ rows: 2, expandable: true }}
+              copyable
+            >
+              {record.url}
+            </Paragraph>
+          </Descriptions.Item>
+          <Descriptions.Item label="Method">
+            <Tag color="blue">{record.method}</Tag>
+            {connectionType && (
+              <Tag color="purple" style={{ marginLeft: 4 }}>
+                {connectionType}
+              </Tag>
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="Status">
+            <Tag
+              color={record.status >= 400 ? 'red' : record.status >= 300 ? 'orange' : 'green'}
+            >
+              {record.status} {STATUS_CODES[record.status] || ''}
+            </Tag>
+          </Descriptions.Item>
+          <Descriptions.Item label="Protocol">{record.protocol}</Descriptions.Item>
+          <Descriptions.Item label="Host">{record.host}</Descriptions.Item>
+          <Descriptions.Item label="Path">{record.path}</Descriptions.Item>
+          <Descriptions.Item label="Content Type">{record.content_type || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Client IP">{record.client_ip || '-'}</Descriptions.Item>
+        </Descriptions>
 
-      <style>{`
-        .compact-overview .ant-descriptions-item-label,
-        .compact-overview .ant-descriptions-item-content {
-          padding: 6px 8px !important;
-        }
-      `}</style>
+        <Descriptions
+          title="Size"
+          column={2}
+          size="small"
+          bordered
+          style={{ marginBottom: 8 }}
+          labelStyle={{ width: 140, fontWeight: 500 }}
+        >
+          <Descriptions.Item label="Request Size">
+            {formatSize(record.request_size)}
+          </Descriptions.Item>
+          <Descriptions.Item label="Response Size">
+            {formatSize(record.response_size)}
+          </Descriptions.Item>
+          <Descriptions.Item label="Total Size">
+            {formatSize(record.request_size + record.response_size)}
+          </Descriptions.Item>
+          <Descriptions.Item label="Duration">
+            {record.duration_ms ? `${record.duration_ms}ms` : '-'}
+          </Descriptions.Item>
+        </Descriptions>
+
+        <Descriptions
+          title="Timeline"
+          column={2}
+          size="small"
+          bordered
+          style={{ marginBottom: 8 }}
+          labelStyle={{ width: 140, fontWeight: 500 }}
+        >
+          <Descriptions.Item label="Timestamp" span={2}>
+            {dayjs(record.timestamp).format('YYYY-MM-DD HH:mm:ss.SSS')}
+          </Descriptions.Item>
+          {record.timing && (
+            <>
+              {record.timing.dns_ms !== undefined && (
+                <Descriptions.Item label="DNS">{record.timing.dns_ms}ms</Descriptions.Item>
+              )}
+              {record.timing.connect_ms !== undefined && (
+                <Descriptions.Item label="Connect">{record.timing.connect_ms}ms</Descriptions.Item>
+              )}
+              {record.timing.tls_ms !== undefined && (
+                <Descriptions.Item label="TLS">{record.timing.tls_ms}ms</Descriptions.Item>
+              )}
+              {record.timing.send_ms !== undefined && (
+                <Descriptions.Item label="Send">{record.timing.send_ms}ms</Descriptions.Item>
+              )}
+              {record.timing.wait_ms !== undefined && (
+                <Descriptions.Item label="Wait (TTFB)">{record.timing.wait_ms}ms</Descriptions.Item>
+              )}
+              {record.timing.receive_ms !== undefined && (
+                <Descriptions.Item label="Receive">{record.timing.receive_ms}ms</Descriptions.Item>
+              )}
+            </>
+          )}
+        </Descriptions>
+
+        {collapseItems.length > 0 && (
+          <Collapse
+            items={collapseItems}
+            defaultActiveKey={['timing', 'socket', 'rules']}
+            size="small"
+            style={{ marginTop: 8 }}
+          />
+        )}
+      </ConfigProvider>
     </div>
   );
 };

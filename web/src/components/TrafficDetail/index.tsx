@@ -77,18 +77,38 @@ export default function TrafficDetail({
     responseDisplayFormat,
     requestTab,
     responseTab,
+    requestPreferredTab,
+    responsePreferredTab,
     setRequestSearch,
     setResponseSearch,
     setRequestDisplayFormat,
     setResponseDisplayFormat,
     setRequestTab,
     setResponseTab,
+    setRequestPreferredTab,
+    setResponsePreferredTab,
     reset,
   } = useTrafficDetailStore();
 
   useEffect(() => {
     reset();
   }, [record?.id, reset]);
+
+  const handleRequestTabChange = useCallback(
+    (tab: string) => {
+      setRequestTab(tab);
+      setRequestPreferredTab(tab);
+    },
+    [setRequestTab, setRequestPreferredTab]
+  );
+
+  const handleResponseTabChange = useCallback(
+    (tab: string) => {
+      setResponseTab(tab);
+      setResponsePreferredTab(tab);
+    },
+    [setResponseTab, setResponsePreferredTab]
+  );
 
   const requestContentType = useMemo<RecordContentType>(() => {
     return getContentTypeFromHeader(record?.request_content_type);
@@ -272,6 +292,51 @@ export default function TrafficDetail({
     ];
   }, [record, responseBody, responseSearch, setResponseSearch, responseContentType, responseDisplayFormat]);
 
+  useEffect(() => {
+    if (!record) return;
+
+    const requestEnabledTabs = requestTabs.filter((tab) => tab.enable !== false);
+    const responseEnabledTabs = responseTabs.filter((tab) => tab.enable !== false);
+
+    const calculateEffectiveTab = (
+      preferredTab: string | null,
+      enabledTabs: { key: string; enable?: boolean }[],
+      defaultTab: string
+    ): string => {
+      if (!preferredTab) return defaultTab;
+      const preferredTabEnabled = enabledTabs.some((tab) => tab.key === preferredTab);
+      return preferredTabEnabled ? preferredTab : enabledTabs[0]?.key ?? defaultTab;
+    };
+
+    const effectiveRequestTab = calculateEffectiveTab(
+      requestPreferredTab,
+      requestEnabledTabs,
+      'Overview'
+    );
+    const effectiveResponseTab = calculateEffectiveTab(
+      responsePreferredTab,
+      responseEnabledTabs,
+      'Header'
+    );
+
+    if (effectiveRequestTab !== requestTab) {
+      setRequestTab(effectiveRequestTab);
+    }
+    if (effectiveResponseTab !== responseTab) {
+      setResponseTab(effectiveResponseTab);
+    }
+  }, [
+    record?.id,
+    requestTabs,
+    responseTabs,
+    requestPreferredTab,
+    responsePreferredTab,
+    requestTab,
+    responseTab,
+    setRequestTab,
+    setResponseTab,
+  ]);
+
   if (!record) {
     if (loading) {
       return (
@@ -299,7 +364,7 @@ export default function TrafficDetail({
                 name="Request"
                 tabs={requestTabs}
                 activeTab={requestTab}
-                onTabChange={setRequestTab}
+                onTabChange={handleRequestTabChange}
                 searchValue={requestSearch}
                 onSearch={setRequestSearch}
                 displayFormat={requestDisplayFormat}
@@ -314,7 +379,7 @@ export default function TrafficDetail({
                 name="Response"
                 tabs={responseTabs}
                 activeTab={responseTab}
-                onTabChange={setResponseTab}
+                onTabChange={handleResponseTabChange}
                 searchValue={responseSearch}
                 onSearch={setResponseSearch}
                 displayFormat={responseDisplayFormat}

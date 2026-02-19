@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { Tree, Typography, theme } from 'antd';
+import { Tree, Typography, theme, ConfigProvider } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import type { SessionTargetSearchState } from '../../../../types';
 
@@ -154,30 +154,32 @@ export const TreeView = ({ data, searchValue }: TreeViewProps) => {
 
   return (
     <div
-      className="compact-tree-view"
       style={{
         padding: 4,
         backgroundColor: token.colorBgLayout,
         borderRadius: 4,
       }}
     >
-      <Tree
-        treeData={treeData}
-        expandedKeys={expandedKeys}
-        onExpand={onExpand}
-        showLine
-        selectable={false}
-        style={{ background: 'transparent' }}
-      />
-      <style>{`
-        .compact-tree-view .ant-tree .ant-tree-treenode {
-          padding: 0;
-        }
-        .compact-tree-view .ant-tree .ant-tree-node-content-wrapper {
-          line-height: 20px;
-          min-height: 20px;
-        }
-      `}</style>
+      <ConfigProvider
+        theme={{
+          components: {
+            Tree: {
+              titleHeight: 20,
+              nodeHoverBg: 'transparent',
+              nodeSelectedBg: 'transparent',
+            },
+          },
+        }}
+      >
+        <Tree
+          treeData={treeData}
+          expandedKeys={expandedKeys}
+          onExpand={onExpand}
+          showLine
+          selectable={false}
+          style={{ background: 'transparent' }}
+        />
+      </ConfigProvider>
     </div>
   );
 };
