@@ -10,7 +10,6 @@ import {
   Popconfirm,
   Row,
   Col,
-  Spin,
   Alert,
   Tooltip,
   Select,
@@ -196,10 +195,6 @@ export default function Whitelist() {
       ),
     },
   ];
-
-  if (loading && !status) {
-    return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  }
 
   if (!status) {
     return (

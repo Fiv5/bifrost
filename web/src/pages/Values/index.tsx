@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Table,
   Button,
@@ -10,7 +11,6 @@ import {
   Card,
   Row,
   Col,
-  Spin,
   Alert,
   Tooltip,
 } from 'antd';
@@ -25,27 +25,63 @@ import type { ColumnsType } from 'antd/es/table';
 import { useValuesStore } from '../../stores/useValuesStore';
 import type { ValueItem } from '../../api/values';
 
+const SEARCH_PARAM = 'q';
+
 export default function Values() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     values,
-    loading,
     error,
     fetchValues,
     createValue,
     updateValue,
     deleteValue,
     clearError,
+    searchText,
+    setSearchText,
   } = useValuesStore();
 
   const [modalVisible, setModalVisible] = useState(false);
   const [editMode, setEditMode] = useState<'create' | 'edit'>('create');
   const [editName, setEditName] = useState('');
   const [editValue, setEditValue] = useState('');
-  const [searchText, setSearchText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const initializedRef = useRef(false);
+  const isUpdatingUrlRef = useRef(false);
 
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    const searchFromUrl = searchParams.get(SEARCH_PARAM);
+    if (searchFromUrl) {
+      setSearchText(searchFromUrl);
+    }
+
     fetchValues();
-  }, [fetchValues]);
+  }, [searchParams, fetchValues, setSearchText]);
+
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    if (isUpdatingUrlRef.current) {
+      isUpdatingUrlRef.current = false;
+      return;
+    }
+
+    isUpdatingUrlRef.current = true;
+    setSearchParams(
+      (prev) => {
+        if (searchText) {
+          prev.set(SEARCH_PARAM, searchText);
+        } else {
+          prev.delete(SEARCH_PARAM);
+        }
+        return prev;
+      },
+      { replace: true }
+    );
+  }, [searchText, setSearchParams]);
 
   useEffect(() => {
     if (error) {
@@ -69,22 +105,27 @@ export default function Values() {
   };
 
   const handleSave = async () => {
-    if (editMode === 'create') {
-      if (!editName.trim()) {
-        message.error('Value name is required');
-        return;
+    setSaving(true);
+    try {
+      if (editMode === 'create') {
+        if (!editName.trim()) {
+          message.error('Value name is required');
+          return;
+        }
+        const success = await createValue(editName.trim(), editValue);
+        if (success) {
+          message.success('Value created successfully');
+          setModalVisible(false);
+        }
+      } else {
+        const success = await updateValue(editName, editValue);
+        if (success) {
+          message.success('Value updated successfully');
+          setModalVisible(false);
+        }
       }
-      const success = await createValue(editName.trim(), editValue);
-      if (success) {
-        message.success('Value created successfully');
-        setModalVisible(false);
-      }
-    } else {
-      const success = await updateValue(editName, editValue);
-      if (success) {
-        message.success('Value updated successfully');
-        setModalVisible(false);
-      }
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -180,10 +221,6 @@ export default function Values() {
     },
   ];
 
-  if (loading && values.length === 0) {
-    return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;
-  }
-
   return (
     <div style={{ padding: 16 }}>
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
@@ -226,7 +263,6 @@ export default function Values() {
           columns={columns}
           dataSource={filteredValues}
           rowKey="name"
-          loading={loading}
           pagination={filteredValues.length > 20 ? { pageSize: 20 } : false}
           size="middle"
         />
@@ -240,7 +276,7 @@ export default function Values() {
         width={600}
         okText="Save"
         cancelText="Cancel"
-        confirmLoading={loading}
+        confirmLoading={saving}
       >
         {editMode === 'create' && (
           <Input

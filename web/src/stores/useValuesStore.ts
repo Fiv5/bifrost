@@ -6,17 +6,20 @@ interface ValuesState {
   values: ValueItem[];
   loading: boolean;
   error: string | null;
+  searchText: string;
   fetchValues: () => Promise<void>;
   createValue: (name: string, value: string) => Promise<boolean>;
   updateValue: (name: string, value: string) => Promise<boolean>;
   deleteValue: (name: string) => Promise<boolean>;
   clearError: () => void;
+  setSearchText: (text: string) => void;
 }
 
 export const useValuesStore = create<ValuesState>((set, get) => ({
   values: [],
   loading: false,
   error: null,
+  searchText: '',
 
   fetchValues: async () => {
     set({ loading: true, error: null });
@@ -65,4 +68,6 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  setSearchText: (text: string) => set({ searchText: text }),
 }));

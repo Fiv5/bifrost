@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, type CSSProperties } from "react";
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
 import { useTrafficStore } from "../../stores/useTrafficStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
@@ -6,21 +7,57 @@ import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
 import SplitPane from "../../components/SplitPane";
-import type { TrafficSummary, FilterCondition } from "../../types";
+import type { TrafficSummary, FilterCondition, ToolbarFilters } from "../../types";
 import {
   getSystemProxyStatus,
   setSystemProxy,
   type SystemProxyStatus,
 } from "../../api/proxy";
 
+const FILTER_PARAM = "filter";
+const TOOLBAR_PARAM = "toolbar";
+
+const serializeFilters = (filters: FilterCondition[]): string => {
+  if (filters.length === 0) return "";
+  return btoa(JSON.stringify(filters));
+};
+
+const deserializeFilters = (str: string): FilterCondition[] => {
+  if (!str) return [];
+  try {
+    return JSON.parse(atob(str));
+  } catch {
+    return [];
+  }
+};
+
+const serializeToolbar = (toolbar: ToolbarFilters): string => {
+  const hasFilters = 
+    toolbar.rule.length > 0 || 
+    toolbar.protocol.length > 0 || 
+    toolbar.type.length > 0 || 
+    toolbar.status.length > 0;
+  if (!hasFilters) return "";
+  return btoa(JSON.stringify(toolbar));
+};
+
+const deserializeToolbar = (str: string): ToolbarFilters | null => {
+  if (!str) return null;
+  try {
+    return JSON.parse(atob(str));
+  } catch {
+    return null;
+  }
+};
+
 export default function Traffic() {
   const { token } = theme.useToken();
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     records,
     currentRecord,
     requestBody,
     responseBody,
-    loading,
     detailLoading,
     paused,
     hasMore,
@@ -38,14 +75,18 @@ export default function Traffic() {
     setPaused,
     setAutoScroll,
     clearNewRecordsCount,
+    initFromUrl,
   } = useTrafficStore();
 
   const [selectedId, setSelectedId] = useState<string>();
-  const [showFilterBar, setShowFilterBar] = useState(false);
+  const [showFilterBar] = useState(true);
   const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
     null
   );
   const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+  
+  const initializedRef = useRef(false);
+  const isUpdatingUrlRef = useRef(false);
 
   const fetchSystemProxy = useCallback(async () => {
     try {
@@ -75,14 +116,59 @@ export default function Traffic() {
   );
 
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    const filterParam = searchParams.get(FILTER_PARAM);
+    const toolbarParam = searchParams.get(TOOLBAR_PARAM);
+    
+    const filtersFromUrl = deserializeFilters(filterParam || "");
+    const toolbarFromUrl = deserializeToolbar(toolbarParam || "");
+    
+    if (filtersFromUrl.length > 0 || toolbarFromUrl) {
+      initFromUrl(filtersFromUrl, toolbarFromUrl);
+    }
+
     fetchInitialData().then(() => {
       startPolling();
     });
     fetchSystemProxy();
+    
     return () => {
       stopPolling();
     };
-  }, [fetchInitialData, startPolling, stopPolling, fetchSystemProxy]);
+  }, [searchParams, fetchInitialData, startPolling, stopPolling, fetchSystemProxy, initFromUrl]);
+
+  useEffect(() => {
+    if (!initializedRef.current) return;
+    if (isUpdatingUrlRef.current) {
+      isUpdatingUrlRef.current = false;
+      return;
+    }
+    
+    isUpdatingUrlRef.current = true;
+    setSearchParams(
+      (prev) => {
+        const filterStr = serializeFilters(filterConditions);
+        const toolbarStr = serializeToolbar(toolbarFilters);
+        
+        if (filterStr) {
+          prev.set(FILTER_PARAM, filterStr);
+        } else {
+          prev.delete(FILTER_PARAM);
+        }
+        
+        if (toolbarStr) {
+          prev.set(TOOLBAR_PARAM, toolbarStr);
+        } else {
+          prev.delete(TOOLBAR_PARAM);
+        }
+        
+        return prev;
+      },
+      { replace: true }
+    );
+  }, [filterConditions, toolbarFilters, setSearchParams]);
 
   const handleSelect = useCallback(async (record: TrafficSummary) => {
     setSelectedId(record.id);
@@ -103,7 +189,6 @@ export default function Traffic() {
 
   const handleFilterConditionsChange = useCallback((conditions: FilterCondition[]) => {
     setFilterConditions(conditions);
-    setShowFilterBar(conditions.length > 0);
   }, [setFilterConditions]);
 
   const handleAddFilter = useCallback(() => {
@@ -115,7 +200,6 @@ export default function Traffic() {
         value: '',
       };
       setFilterConditions([newCondition]);
-      setShowFilterBar(true);
     }
   }, [filterConditions, setFilterConditions]);
 
@@ -190,7 +274,6 @@ export default function Traffic() {
             <div style={styles.tableWrapper}>
               <VirtualTrafficTable
                 data={records}
-                loading={loading}
                 onSelect={handleSelect}
                 selectedId={selectedId}
                 hasMore={hasMore}

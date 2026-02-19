@@ -714,8 +714,7 @@ reqHeaders://{test=1}"#;
 
     #[test]
     fn test_parse_identical_url_rule() {
-        let rules =
-            parse_line("https://example.com/api/ https://example.com/api/").unwrap();
+        let rules = parse_line("https://example.com/api/ https://example.com/api/").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "https://example.com/api/");
         assert_eq!(rules[0].protocol, Protocol::Ignore);
@@ -723,10 +722,33 @@ reqHeaders://{test=1}"#;
 
     #[test]
     fn test_parse_identical_url_rule_without_trailing_slash() {
-        let rules =
-            parse_line("https://example.com/api https://example.com/api").unwrap();
+        let rules = parse_line("https://example.com/api https://example.com/api").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "https://example.com/api");
+        assert_eq!(rules[0].protocol, Protocol::Ignore);
+    }
+
+    #[test]
+    fn test_parse_identical_http_url_rule() {
+        let rules = parse_line("http://example.com/api http://example.com/api").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://example.com/api");
+        assert_eq!(rules[0].protocol, Protocol::Ignore);
+    }
+
+    #[test]
+    fn test_parse_identical_ws_url_rule() {
+        let rules = parse_line("ws://example.com/socket ws://example.com/socket").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "ws://example.com/socket");
+        assert_eq!(rules[0].protocol, Protocol::Ignore);
+    }
+
+    #[test]
+    fn test_parse_identical_wss_url_rule() {
+        let rules = parse_line("wss://example.com/socket wss://example.com/socket").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "wss://example.com/socket");
         assert_eq!(rules[0].protocol, Protocol::Ignore);
     }
 

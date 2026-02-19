@@ -7,6 +7,7 @@ import RuleEditor from './RuleEditor';
 import { useRulesStore } from '../../stores/useRulesStore';
 
 const RULE_PARAM = 'rule';
+const SEARCH_PARAM = 'q';
 
 export default function Rules() {
   const { token } = theme.useToken();
@@ -16,8 +17,10 @@ export default function Rules() {
     clearError,
     rules,
     selectedRuleName,
+    searchKeyword,
     selectRule,
     fetchRules,
+    setSearchKeyword,
   } = useRulesStore();
 
   const initializedRef = useRef(false);
@@ -32,6 +35,12 @@ export default function Rules() {
     if (initializedRef.current) return;
 
     const ruleFromUrl = searchParams.get(RULE_PARAM);
+    const searchFromUrl = searchParams.get(SEARCH_PARAM);
+    
+    if (searchFromUrl) {
+      setSearchKeyword(searchFromUrl);
+    }
+    
     if (ruleFromUrl) {
       const exists = rules.some((r) => r.name === ruleFromUrl);
       if (exists) {
@@ -59,7 +68,7 @@ export default function Rules() {
       );
     }
     initializedRef.current = true;
-  }, [rules, searchParams, selectRule, setSearchParams]);
+  }, [rules, searchParams, selectRule, setSearchParams, setSearchKeyword]);
 
   useEffect(() => {
     if (!initializedRef.current) return;
@@ -67,19 +76,27 @@ export default function Rules() {
       isUpdatingUrlRef.current = false;
       return;
     }
-    if (!selectedRuleName) return;
-
-    const currentUrlParam = searchParams.get(RULE_PARAM);
-    if (currentUrlParam !== selectedRuleName) {
-      setSearchParams(
-        (prev) => {
+    
+    isUpdatingUrlRef.current = true;
+    setSearchParams(
+      (prev) => {
+        if (selectedRuleName) {
           prev.set(RULE_PARAM, selectedRuleName);
-          return prev;
-        },
-        { replace: true }
-      );
-    }
-  }, [selectedRuleName, searchParams, setSearchParams]);
+        } else {
+          prev.delete(RULE_PARAM);
+        }
+        
+        if (searchKeyword) {
+          prev.set(SEARCH_PARAM, searchKeyword);
+        } else {
+          prev.delete(SEARCH_PARAM);
+        }
+        
+        return prev;
+      },
+      { replace: true }
+    );
+  }, [selectedRuleName, searchKeyword, setSearchParams]);
 
   useEffect(() => {
     if (error) {

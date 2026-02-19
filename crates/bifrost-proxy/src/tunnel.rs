@@ -2,8 +2,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, ConnectionInfo, FrameDirection, FrameType, RequestTiming, TrafficRecord,
-    TrafficType,
+    AdminState, ConnectionInfo, FrameDirection, FrameType, MatchedRule, RequestTiming,
+    TrafficRecord, TrafficType,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -1280,6 +1280,26 @@ async fn handle_intercepted_request_with_protocol(
                 record.protocol = "wss".to_string();
             }
 
+            record.has_rule_hit = has_rules;
+            record.matched_rules = if resolved_rules.rules.is_empty() {
+                None
+            } else {
+                Some(
+                    resolved_rules
+                        .rules
+                        .iter()
+                        .map(|r| MatchedRule {
+                            pattern: r.pattern.clone(),
+                            protocol: format!("{:?}", r.protocol),
+                            value: r.value.clone(),
+                            rule_name: r.rule_name.clone(),
+                            raw: r.raw.clone(),
+                            line: r.line,
+                        })
+                        .collect(),
+                )
+            };
+
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
                 record.request_body_ref = store.store(&record_id, "req", &body_bytes);
@@ -1361,6 +1381,26 @@ async fn handle_intercepted_request_with_protocol(
         if is_websocket {
             record.protocol = "wss".to_string();
         }
+
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
@@ -1470,6 +1510,11 @@ async fn handle_intercepted_websocket(
         &incoming_headers,
         &incoming_cookies,
     );
+
+    let has_rules = !resolved_rules.rules.is_empty()
+        || resolved_rules.host.is_some()
+        || !resolved_rules.req_headers.is_empty()
+        || !resolved_rules.res_headers.is_empty();
 
     let (target_host, target_port, use_http) = if resolved_rules.ignored {
         debug!(
@@ -1628,6 +1673,26 @@ async fn handle_intercepted_websocket(
         );
         record.host = original_host.to_string();
         record.set_websocket();
+
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
 
         state.websocket_monitor.register_connection(req_id);
         state.traffic_recorder.record(record);

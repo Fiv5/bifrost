@@ -26,6 +26,7 @@ interface TrafficState {
   stopPolling: () => void;
   fetchUpdates: () => Promise<void>;
   fetchInitialData: () => Promise<void>;
+  fetchInitialDataWithTransition: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
   clearTraffic: () => Promise<boolean>;
   setToolbarFilters: (filters: ToolbarFilters) => void;
@@ -35,6 +36,7 @@ interface TrafficState {
   clearNewRecordsCount: () => void;
   clearError: () => void;
   clearCurrentRecord: () => void;
+  initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => void;
 }
 
 const POLL_INTERVAL = 1000;
@@ -187,6 +189,38 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
+  fetchInitialDataWithTransition: async () => {
+    set({ error: null });
+    try {
+      const state = get();
+      const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
+      const filter: TrafficUpdatesFilter = {
+        ...toolbarFilter,
+        limit: BATCH_LIMIT,
+      };
+      const response = await api.getTrafficUpdates(filter);
+
+      const newPendingIds = new Set<string>();
+      response.new_records.forEach(r => {
+        if (r.status === 0) {
+          newPendingIds.add(r.id);
+        }
+      });
+
+      const lastRecord = response.new_records[response.new_records.length - 1];
+
+      set({
+        records: response.new_records,
+        serverTotal: response.server_total,
+        hasMore: response.has_more,
+        lastId: lastRecord?.id || null,
+        pendingIds: newPendingIds,
+      });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
   fetchUpdates: async () => {
     const state = get();
     if (state.paused || !state.polling) return;
@@ -318,11 +352,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     state.stopPolling();
     set({
       toolbarFilters: filters,
-      records: [],
       lastId: null,
       pendingIds: new Set(),
     });
-    get().fetchInitialData().then(() => {
+    get().fetchInitialDataWithTransition().then(() => {
       get().startPolling();
     });
   },
@@ -332,11 +365,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     state.stopPolling();
     set({
       filterConditions: conditions,
-      records: [],
       lastId: null,
       pendingIds: new Set(),
     });
-    get().fetchInitialData().then(() => {
+    get().fetchInitialDataWithTransition().then(() => {
       get().startPolling();
     });
   },
@@ -366,4 +398,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     requestBody: null,
     responseBody: null
   }),
+
+  initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => {
+    set({
+      filterConditions: filters,
+      toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [] },
+    });
+  },
 }));

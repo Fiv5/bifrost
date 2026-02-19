@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Tag, Typography, Tooltip, Badge, Spin, theme } from "antd";
+import { Tag, Typography, Tooltip, Badge, theme } from "antd";
 import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 
@@ -8,7 +8,6 @@ const { Text } = Typography;
 
 interface VirtualTrafficTableProps {
   data: TrafficSummary[];
-  loading?: boolean;
   onSelect?: (record: TrafficSummary) => void;
   selectedId?: string;
   onLoadMore?: () => void;
@@ -253,7 +252,6 @@ const columns: ColumnDef[] = [
 
 export default function VirtualTrafficTable({
   data,
-  loading,
   onSelect,
   selectedId,
   onLoadMore,
@@ -496,18 +494,6 @@ export default function VirtualTrafficTable({
       maxHeight: ROW_HEIGHT,
       lineHeight: `${ROW_HEIGHT - 2}px`,
     },
-    loadingOverlay: {
-      position: "absolute",
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: "rgba(255, 255, 255, 0.7)",
-      zIndex: 10,
-    },
     emptyState: {
       display: "flex",
       alignItems: "center",
@@ -590,9 +576,7 @@ export default function VirtualTrafficTable({
           </div>
 
           {data.length === 0 ? (
-            <div style={styles.emptyState}>
-              {loading ? <Spin /> : "No traffic data"}
-            </div>
+            <div style={styles.emptyState}>No traffic data</div>
           ) : (
             <div
               style={{
@@ -631,12 +615,6 @@ export default function VirtualTrafficTable({
                   </div>
                 );
               })}
-            </div>
-          )}
-
-          {loading && data.length > 0 && (
-            <div style={styles.loadingOverlay}>
-              <Spin />
             </div>
           )}
         </div>

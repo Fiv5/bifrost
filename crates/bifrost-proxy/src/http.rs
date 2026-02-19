@@ -158,7 +158,7 @@ pub async fn handle_http_request(
         if verbose_logging {
             info!("[{}] [IGNORED] request ignored by rule", ctx.id_str());
         }
-        return forward_without_rules(req, admin_state).await;
+        return forward_without_rules(req, admin_state, &resolved_rules, has_rules).await;
     }
 
     if let Some(mock_response) =
@@ -709,6 +709,8 @@ pub async fn handle_http_request(
 async fn forward_without_rules(
     req: Request<Incoming>,
     admin_state: Option<Arc<AdminState>>,
+    resolved_rules: &ResolvedRules,
+    has_rules: bool,
 ) -> Result<Response<BoxBody>> {
     let start_time = Instant::now();
     let method = req.method().to_string();
@@ -835,8 +837,25 @@ async fn forward_without_rules(
         });
         record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(res_headers);
-        record.has_rule_hit = false;
-        record.matched_rules = None;
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
         record.request_content_type = req_headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
