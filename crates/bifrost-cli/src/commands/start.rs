@@ -463,6 +463,8 @@ pub fn run_foreground(
             .values_storage
             .clone()
             .expect("values_storage should be set");
+        let connection_registry_for_resolver = admin_state.connection_registry.clone();
+        let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
         let stored_rules = load_stored_rules(&rules_storage_for_resolver);
         let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
@@ -485,6 +487,8 @@ pub fn run_foreground(
             rules_storage_for_resolver,
             values_storage_for_resolver,
             resolver.clone(),
+            connection_registry_for_resolver,
+            runtime_config_for_resolver,
         );
 
         tokio::select! {
@@ -679,6 +683,8 @@ pub fn run_daemon(
                     .values_storage
                     .clone()
                     .expect("values_storage should be set");
+                let connection_registry_for_resolver = admin_state.connection_registry.clone();
+                let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
                 let stored_rules = load_stored_rules(&rules_storage_for_resolver);
                 let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
@@ -701,6 +707,8 @@ pub fn run_daemon(
                     rules_storage_for_resolver,
                     values_storage_for_resolver,
                     resolver.clone(),
+                    connection_registry_for_resolver,
+                    runtime_config_for_resolver,
                 );
 
                 if let Err(e) = server.run().await {
@@ -800,6 +808,8 @@ fn spawn_rules_watcher_task(
     rules_storage: bifrost_storage::RulesStorage,
     values_storage: bifrost_admin::SharedValuesStorage,
     resolver: SharedDynamicRulesResolver,
+    connection_registry: bifrost_admin::SharedConnectionRegistry,
+    runtime_config: bifrost_admin::SharedRuntimeConfig,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let Some(config_manager) = config_manager else {
@@ -836,6 +846,24 @@ fn spawn_rules_watcher_task(
                         };
 
                         resolver.update_stored_rules(new_stored_rules, new_values);
+
+                        if matches!(event, ConfigChangeEvent::RulesChanged) {
+                            let should_disconnect = {
+                                let config = runtime_config.read().await;
+                                config.disconnect_on_config_change
+                            };
+                            if should_disconnect {
+                                let disconnected =
+                                    connection_registry.disconnect_all_with_mode(false);
+                                if !disconnected.is_empty() {
+                                    tracing::info!(
+                                        target: "bifrost_cli::rules",
+                                        count = disconnected.len(),
+                                        "disconnected non-intercept connections due to rules change"
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
