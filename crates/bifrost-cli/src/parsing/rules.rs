@@ -102,6 +102,29 @@ impl DynamicRulesResolver {
     pub fn cli_rules(&self) -> &[Rule] {
         &self.cli_rules
     }
+
+    pub fn get_tls_rule_patterns(&self) -> (Vec<String>, Vec<String>) {
+        let inner = self.inner.read();
+        let mut intercept_patterns = Vec::new();
+        let mut passthrough_patterns = Vec::new();
+
+        for rule in inner.rules() {
+            if rule.is_disabled() {
+                continue;
+            }
+            match rule.protocol {
+                Protocol::TlsIntercept => {
+                    intercept_patterns.push(rule.pattern.clone());
+                }
+                Protocol::TlsPassthrough => {
+                    passthrough_patterns.push(rule.pattern.clone());
+                }
+                _ => {}
+            }
+        }
+
+        (intercept_patterns, passthrough_patterns)
+    }
 }
 
 impl ProxyRulesResolverTrait for DynamicRulesResolver {

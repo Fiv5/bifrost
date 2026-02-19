@@ -185,6 +185,17 @@ impl ConnectionRegistry {
         self.disconnect_affected(|info| is_domain_matched(&info.host, patterns))
     }
 
+    pub fn disconnect_by_host_pattern_with_mode(
+        &self,
+        pattern: &str,
+        intercept_mode: bool,
+    ) -> Vec<String> {
+        self.disconnect_affected(|info| {
+            info.intercept_mode == intercept_mode
+                && is_domain_matched(&info.host, &[pattern.to_string()])
+        })
+    }
+
     pub fn disconnect_all_with_mode(&self, intercept_mode: bool) -> Vec<String> {
         self.disconnect_affected(|info| info.intercept_mode == intercept_mode)
     }

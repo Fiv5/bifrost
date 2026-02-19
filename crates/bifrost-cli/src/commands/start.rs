@@ -853,13 +853,46 @@ fn spawn_rules_watcher_task(
                                 config.disconnect_on_config_change
                             };
                             if should_disconnect {
-                                let disconnected =
-                                    connection_registry.disconnect_all_with_mode(false);
-                                if !disconnected.is_empty() {
+                                let (intercept_patterns, passthrough_patterns) =
+                                    resolver.get_tls_rule_patterns();
+
+                                let mut total_disconnected = 0;
+
+                                for pattern in &intercept_patterns {
+                                    let disconnected = connection_registry
+                                        .disconnect_by_host_pattern_with_mode(pattern, false);
+                                    if !disconnected.is_empty() {
+                                        tracing::info!(
+                                            target: "bifrost_cli::rules",
+                                            pattern = %pattern,
+                                            count = disconnected.len(),
+                                            "disconnected passthrough connections for tlsIntercept rule"
+                                        );
+                                        total_disconnected += disconnected.len();
+                                    }
+                                }
+
+                                for pattern in &passthrough_patterns {
+                                    let disconnected = connection_registry
+                                        .disconnect_by_host_pattern_with_mode(pattern, true);
+                                    if !disconnected.is_empty() {
+                                        tracing::info!(
+                                            target: "bifrost_cli::rules",
+                                            pattern = %pattern,
+                                            count = disconnected.len(),
+                                            "disconnected intercept connections for tlsPassthrough rule"
+                                        );
+                                        total_disconnected += disconnected.len();
+                                    }
+                                }
+
+                                if total_disconnected > 0 {
                                     tracing::info!(
                                         target: "bifrost_cli::rules",
-                                        count = disconnected.len(),
-                                        "disconnected non-intercept connections due to rules change"
+                                        total = total_disconnected,
+                                        intercept_rules = intercept_patterns.len(),
+                                        passthrough_rules = passthrough_patterns.len(),
+                                        "rules change: disconnected affected connections"
                                     );
                                 }
                             }
