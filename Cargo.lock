@@ -682,6 +682,7 @@ dependencies = [
  "bifrost-core",
  "bifrost-storage",
  "bifrost-tls",
+ "brotli",
  "bytes",
  "chrono",
  "flate2",
@@ -709,6 +710,7 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+ "zstd",
 ]
 
 [[package]]

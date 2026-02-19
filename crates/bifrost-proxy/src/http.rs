@@ -18,6 +18,7 @@ use tracing::{debug, error, info, warn};
 use crate::dns::DnsResolver;
 
 use crate::body::{apply_body_rules, apply_content_injection, Phase};
+use crate::decompress::{decompress_body, get_content_encoding};
 use crate::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
@@ -214,6 +215,8 @@ pub async fn handle_http_request(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
+
+    let req_content_encoding = get_content_encoding(&req_headers);
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
 
@@ -427,6 +430,8 @@ pub async fn handle_http_request(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let res_content_encoding = get_content_encoding(&res_headers);
+
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
 
     let needs_processing = needs_body_processing(&resolved_rules);
@@ -550,7 +555,10 @@ pub async fn handle_http_request(
 
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
-                record.request_body_ref = store.store(&record_id, "req", &body_bytes);
+                let decompressed_req_body =
+                    decompress_body(&body_bytes, req_content_encoding.as_deref());
+                record.request_body_ref =
+                    store.store(&record_id, "req", decompressed_req_body.as_ref());
             }
 
             state.traffic_recorder.record(record);
@@ -565,6 +573,7 @@ pub async fn handle_http_request(
                 admin_state.clone(),
                 record_id,
                 Some(max_body_buffer_size),
+                res_content_encoding.clone(),
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
@@ -696,8 +705,16 @@ pub async fn handle_http_request(
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-            record.request_body_ref = store.store(&ctx.id_str(), "req", &body_bytes);
-            record.response_body_ref = store.store(&ctx.id_str(), "res", &res_body_bytes);
+
+            let decompressed_req_body =
+                decompress_body(&body_bytes, req_content_encoding.as_deref());
+            record.request_body_ref =
+                store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref());
+
+            let decompressed_res_body =
+                decompress_body(&res_body_bytes, res_content_encoding.as_deref());
+            record.response_body_ref =
+                store.store(&ctx.id_str(), "res", decompressed_res_body.as_ref());
         }
 
         state.traffic_recorder.record(record);
@@ -753,6 +770,8 @@ async fn forward_without_rules(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let req_content_encoding = get_content_encoding(&req_headers);
+
     let path = parts
         .uri
         .path_and_query()
@@ -798,6 +817,8 @@ async fn forward_without_rules(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
+
+    let res_content_encoding = get_content_encoding(&res_headers);
 
     let total_ms = start_time.elapsed().as_millis() as u64;
     let record_id = format!(
@@ -863,7 +884,10 @@ async fn forward_without_rules(
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-            record.request_body_ref = store.store(&record_id, "req", &body_bytes);
+            let decompressed_req_body =
+                decompress_body(&body_bytes, req_content_encoding.as_deref());
+            record.request_body_ref =
+                store.store(&record_id, "req", decompressed_req_body.as_ref());
         }
 
         if is_sse_response(&res_parts) {
@@ -877,7 +901,13 @@ async fn forward_without_rules(
         let tee_body = create_sse_tee_body(res_body, admin_state, record_id);
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
-        let tee_body = create_tee_body_with_store(res_body, admin_state, record_id, None);
+        let tee_body = create_tee_body_with_store(
+            res_body,
+            admin_state,
+            record_id,
+            None,
+            res_content_encoding,
+        );
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     }
 }

@@ -1,4 +1,5 @@
 mod body;
+mod decompress;
 pub mod dns;
 mod http;
 mod logging;
@@ -12,6 +13,8 @@ mod tee;
 mod tunnel;
 mod url;
 mod websocket;
+
+pub use decompress::{decompress_body, get_content_encoding};
 
 pub use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 pub use dns::DnsResolver;

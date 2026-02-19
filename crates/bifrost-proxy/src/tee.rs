@@ -7,6 +7,7 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
 
+use crate::decompress::decompress_body;
 use crate::server::BoxBody;
 
 struct TeeBodyDropGuard {
@@ -16,6 +17,7 @@ struct TeeBodyDropGuard {
     finished: bool,
     buffer: BytesMut,
     max_body_size: usize,
+    content_encoding: Option<String>,
 }
 
 impl Drop for TeeBodyDropGuard {
@@ -32,7 +34,9 @@ impl TeeBodyDropGuard {
             let response_body_ref = if !self.buffer.is_empty() {
                 if let Some(ref body_store) = state.body_store {
                     let store = body_store.read();
-                    store.store(&self.record_id, "res", &self.buffer)
+                    let decompressed =
+                        decompress_body(&self.buffer, self.content_encoding.as_deref());
+                    store.store(&self.record_id, "res", decompressed.as_ref())
                 } else {
                     None
                 }
@@ -66,6 +70,7 @@ impl TeeBody {
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         max_body_size: Option<usize>,
+        content_encoding: Option<String>,
     ) -> Self {
         let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
@@ -77,6 +82,7 @@ impl TeeBody {
                 finished: false,
                 buffer: BytesMut::with_capacity(8192),
                 max_body_size: max_size,
+                content_encoding,
             },
         }
     }
@@ -142,8 +148,9 @@ pub fn create_tee_body_with_store(
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     max_body_size: Option<usize>,
+    content_encoding: Option<String>,
 ) -> TeeBody {
-    TeeBody::new(body, admin_state, record_id, max_body_size)
+    TeeBody::new(body, admin_state, record_id, max_body_size, content_encoding)
 }
 
 struct SseTeeBodyDropGuard {

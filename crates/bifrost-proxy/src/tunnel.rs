@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 use crate::body::{apply_body_rules, Phase};
 use crate::dns::DnsResolver;
 use crate::http::{needs_body_processing, needs_request_body_processing};
+use crate::decompress::get_content_encoding;
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
@@ -856,6 +857,8 @@ async fn handle_intercepted_request_with_protocol(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let req_content_encoding = get_content_encoding(&req_headers);
+
     let req_content_length = parts
         .headers
         .get(hyper::header::CONTENT_LENGTH)
@@ -1199,6 +1202,8 @@ async fn handle_intercepted_request_with_protocol(
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let res_content_encoding = get_content_encoding(&res_headers);
+
     let ctx = RequestContext::new()
         .with_request_info(
             original_uri.clone(),
@@ -1310,7 +1315,10 @@ async fn handle_intercepted_request_with_protocol(
 
             if let Some(ref body_store) = state.body_store {
                 let store = body_store.read();
-                record.request_body_ref = store.store(&record_id, "req", &body_bytes);
+                let decompressed_req_body =
+                    crate::decompress::decompress_body(&body_bytes, req_content_encoding.as_deref());
+                record.request_body_ref =
+                    store.store(&record_id, "req", decompressed_req_body.as_ref());
             }
 
             state.traffic_recorder.record(record);
@@ -1328,6 +1336,7 @@ async fn handle_intercepted_request_with_protocol(
             admin_state.clone(),
             record_id,
             Some(max_body_buffer_size),
+            res_content_encoding.clone(),
         );
         return Ok(Response::from_parts(res_parts, tee_body.boxed()));
     }
@@ -1412,8 +1421,18 @@ async fn handle_intercepted_request_with_protocol(
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-            record.request_body_ref = store.store(req_id, "req", &body_bytes);
-            record.response_body_ref = store.store(req_id, "res", &res_body_bytes);
+
+            let decompressed_req_body = crate::decompress::decompress_body(
+                &body_bytes,
+                req_content_encoding.as_deref(),
+            );
+            record.request_body_ref = store.store(req_id, "req", decompressed_req_body.as_ref());
+
+            let decompressed_res_body = crate::decompress::decompress_body(
+                &res_body_bytes,
+                res_content_encoding.as_deref(),
+            );
+            record.response_body_ref = store.store(req_id, "res", decompressed_res_body.as_ref());
         }
 
         state.traffic_recorder.record(record);
