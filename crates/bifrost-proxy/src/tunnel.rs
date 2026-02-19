@@ -205,23 +205,27 @@ pub async fn handle_connect(
     }
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
-        let parts: Vec<&str> = host_rule.split(':').collect();
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let parts: Vec<&str> = host_rule_clean.split(':').collect();
         let h = parts[0].to_string();
         let p = if parts.len() > 1 {
             parts[1].parse().unwrap_or(port)
         } else {
-            port
+            match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+                _ => port,
+            }
         };
-        if verbose_logging {
-            info!(
-                "[{}] CONNECT tunnel target redirected: {}:{} -> {}:{}",
-                ctx.id_str(),
-                host,
-                port,
-                h,
-                p
-            );
-        }
+        debug!(
+            "[{}] CONNECT tunnel target redirected: {}:{} -> {}:{} (protocol={:?})",
+            ctx.id_str(),
+            host,
+            port,
+            h,
+            p,
+            resolved_rules.host_protocol
+        );
         (h, p)
     } else {
         (host.clone(), port)
