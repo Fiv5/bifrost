@@ -199,8 +199,10 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             | Protocol::Https
             | Protocol::Ws
             | Protocol::Wss => {
-                result.host = Some(value.to_string());
-                result.host_protocol = Some(protocol);
+                if !result.ignored {
+                    result.host = Some(value.to_string());
+                    result.host_protocol = Some(protocol);
+                }
             }
             Protocol::Redirect => {
                 result.redirect = Some(value.to_string());

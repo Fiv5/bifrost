@@ -726,28 +726,38 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let (actual_target_host, actual_target_port, actual_use_http) =
-        if let Some(ref host_rule) = resolved_rules.host {
-            let parts: Vec<&str> = host_rule.split(':').collect();
-            let h = parts[0].to_string();
-            let p = if parts.len() > 1 {
-                parts[1].parse().unwrap_or(original_port)
-            } else {
-                match resolved_rules.host_protocol {
-                    Some(Protocol::Http) | Some(Protocol::Ws) => 80,
-                    Some(Protocol::Https) | Some(Protocol::Wss) => 443,
-                    _ => original_port,
-                }
-            };
-            let use_http_override = match resolved_rules.host_protocol {
-                Some(Protocol::Http) | Some(Protocol::Ws) => true,
-                Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
-                _ => false,
-            };
-            (h, p, use_http_override)
+    let (actual_target_host, actual_target_port, actual_use_http) = if resolved_rules.ignored {
+        debug!(
+            "[{}] Ignore rule applied: request will be forwarded to original target {}:{}",
+            req_id, original_host, original_port
+        );
+        (original_host.to_string(), original_port, false)
+    } else if let Some(ref host_rule) = resolved_rules.host {
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let parts: Vec<&str> = host_rule_clean.split(':').collect();
+        let h = parts[0].to_string();
+        let p = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(original_port)
         } else {
-            (original_host.to_string(), original_port, false)
+            match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+                _ => original_port,
+            }
         };
+        let use_http_override = match resolved_rules.host_protocol {
+            Some(Protocol::Http) | Some(Protocol::Ws) => true,
+            Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
+            _ => false,
+        };
+        debug!(
+                "[{}] Host rule applied: original={}:{} -> target={}:{}, host_protocol={:?}, use_http={}",
+                req_id, original_host, original_port, h, p, resolved_rules.host_protocol, use_http_override
+            );
+        (h, p, use_http_override)
+    } else {
+        (original_host.to_string(), original_port, false)
+    };
 
     let target_uri = if actual_use_http {
         if actual_target_port == 80 {
@@ -1023,12 +1033,24 @@ async fn handle_intercepted_request_with_protocol(
     };
 
     let connect_start = Instant::now();
+    debug!(
+        "[{}] Connecting to target: {}:{} (resolved to {})",
+        req_id, actual_target_host, actual_target_port, connect_addr
+    );
     let stream = match TcpStream::connect(connect_addr).await {
-        Ok(s) => s,
+        Ok(s) => {
+            debug!(
+                "[{}] TCP connection established to {} in {}ms",
+                req_id,
+                connect_addr,
+                connect_start.elapsed().as_millis()
+            );
+            s
+        }
         Err(e) => {
             error!(
-                "[{}] Failed to connect to {}:{}: {}",
-                req_id, actual_target_host, actual_target_port, e
+                "[{}] Failed to connect to {}:{} ({}): {}",
+                req_id, actual_target_host, actual_target_port, connect_addr, e
             );
             return Ok(Response::builder()
                 .status(502)
@@ -1449,8 +1471,15 @@ async fn handle_intercepted_websocket(
         &incoming_cookies,
     );
 
-    let (target_host, target_port, use_http) = if let Some(ref host_rule) = resolved_rules.host {
-        let parts: Vec<&str> = host_rule.split(':').collect();
+    let (target_host, target_port, use_http) = if resolved_rules.ignored {
+        debug!(
+            "[{}] [WS] Ignore rule applied: WebSocket will be forwarded to original target {}:{}",
+            req_id, original_host, original_port
+        );
+        (original_host.to_string(), original_port, false)
+    } else if let Some(ref host_rule) = resolved_rules.host {
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let parts: Vec<&str> = host_rule_clean.split(':').collect();
         let h = parts[0].to_string();
         let p = if parts.len() > 1 {
             parts[1].parse().unwrap_or(original_port)

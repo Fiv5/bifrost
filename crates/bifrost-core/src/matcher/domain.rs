@@ -190,9 +190,13 @@ impl DomainMatcher {
         match &self.path_pattern {
             None => true,
             Some(PathPattern::Exact(expected)) => {
-                path == expected
-                    || path.starts_with(&format!("{}?", expected))
-                    || path.starts_with(&format!("{}/", expected))
+                if expected.ends_with('/') {
+                    path == expected || path.starts_with(expected)
+                } else {
+                    path == expected
+                        || path.starts_with(&format!("{}?", expected))
+                        || path.starts_with(&format!("{}/", expected))
+                }
             }
             Some(PathPattern::Prefix(prefix)) => path.starts_with(prefix),
         }

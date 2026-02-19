@@ -530,7 +530,23 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                     || protocol == Protocol::Wss)
                     && !is_target_address(&value)
                 {
-                    patterns.push(part.clone());
+                    let reconstructed_url = format!("{}://{}", proto_name.to_lowercase(), value);
+                    if patterns.iter().any(|p: &String| {
+                        let pattern_url = if p.starts_with("http://")
+                            || p.starts_with("https://")
+                            || p.starts_with("ws://")
+                            || p.starts_with("wss://")
+                        {
+                            p.clone()
+                        } else {
+                            format!("{}://{}", proto_name.to_lowercase(), p)
+                        };
+                        pattern_url == reconstructed_url
+                    }) {
+                        protocol_values.push((Protocol::Ignore, String::new()));
+                    } else {
+                        patterns.push(part.clone());
+                    }
                 } else {
                     protocol_values.push((protocol, value));
                 }
@@ -694,6 +710,14 @@ reqHeaders://{test=1}"#;
         let rules = parse_line("192.168.1.1 ignore://").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "192.168.1.1");
+    }
+
+    #[test]
+    fn test_parse_identical_url_rule() {
+        let rules = parse_line("https://example.com/api/ https://example.com/api/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api/");
+        assert_eq!(rules[0].protocol, Protocol::Ignore);
     }
 
     #[test]
