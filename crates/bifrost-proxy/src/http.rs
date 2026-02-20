@@ -706,6 +706,12 @@ pub async fn handle_http_request(
             state.websocket_monitor.register_connection(&ctx.id_str());
         }
 
+        let is_sse = is_sse_response(&res_parts);
+        if is_sse {
+            record.set_sse();
+            state.websocket_monitor.register_connection(&ctx.id_str());
+        }
+
         record.request_body_ref = store_request_body(
             &admin_state,
             &ctx.id_str(),
@@ -723,6 +729,16 @@ pub async fn handle_http_request(
         }
 
         state.record_traffic(record);
+
+        if is_sse {
+            parse_and_record_sse_events(&final_res_body, &ctx.id_str(), state);
+            state.websocket_monitor.set_connection_closed(
+                &ctx.id_str(),
+                None,
+                Some("SSE stream completed".to_string()),
+                state.frame_store.as_ref(),
+            );
+        }
     }
 
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
@@ -1273,6 +1289,42 @@ pub fn get_request_url(req: &Request<Incoming>) -> String {
             host,
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         )
+    }
+}
+
+fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &AdminState) {
+    let body_str = match std::str::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    let mut current_event = String::new();
+    for line in body_str.lines() {
+        if line.is_empty() {
+            if !current_event.is_empty() {
+                state.websocket_monitor.record_sse_event(
+                    connection_id,
+                    current_event.as_bytes(),
+                    state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
+                );
+                current_event.clear();
+            }
+        } else {
+            if !current_event.is_empty() {
+                current_event.push('\n');
+            }
+            current_event.push_str(line);
+        }
+    }
+
+    if !current_event.is_empty() {
+        state.websocket_monitor.record_sse_event(
+            connection_id,
+            current_event.as_bytes(),
+            state.body_store.as_ref(),
+            state.frame_store.as_ref(),
+        );
     }
 }
 

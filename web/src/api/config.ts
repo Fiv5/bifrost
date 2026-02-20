@@ -49,9 +49,31 @@ export interface BodyStoreStats {
   retention_days: number;
 }
 
+export interface TrafficStoreStats {
+  record_count: number;
+  file_size: number;
+  total_records_processed: number;
+  last_sequence: number;
+  oldest_record_timestamp: number | null;
+  newest_record_timestamp: number | null;
+  traffic_dir: string;
+  max_records: number;
+  retention_hours: number;
+  pending_writes: number;
+}
+
+export interface FrameStoreStats {
+  connection_count: number;
+  total_size: number;
+  frames_dir: string;
+  retention_hours: number;
+}
+
 export interface PerformanceConfig {
   traffic: TrafficConfig;
   body_store_stats: BodyStoreStats | null;
+  traffic_store_stats: TrafficStoreStats | null;
+  frame_store_stats: FrameStoreStats | null;
 }
 
 export interface UpdateTrafficConfigRequest {

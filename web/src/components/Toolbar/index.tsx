@@ -43,9 +43,7 @@ export default function Toolbar({
 
   const handleTagClick = (group: keyof ToolbarFilters, tag: string) => {
     const currentTags = filters[group];
-    const newTags = currentTags.includes(tag)
-      ? currentTags.filter((t) => t !== tag)
-      : [...currentTags, tag];
+    const newTags = currentTags.includes(tag) ? [] : [tag];
     onFilterChange({ ...filters, [group]: newTags });
   };
 

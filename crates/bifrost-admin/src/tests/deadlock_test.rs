@@ -123,10 +123,7 @@ mod deadlock_tests {
         })
         .await;
 
-        assert!(
-            result.is_ok(),
-            "Frame store operations should not deadlock"
-        );
+        assert!(result.is_ok(), "Frame store operations should not deadlock");
         cleanup_temp_dir(&dir);
     }
 
@@ -165,10 +162,7 @@ mod deadlock_tests {
         })
         .await;
 
-        assert!(
-            result.is_ok(),
-            "Body store operations should not deadlock"
-        );
+        assert!(result.is_ok(), "Body store operations should not deadlock");
         cleanup_temp_dir(&dir);
     }
 

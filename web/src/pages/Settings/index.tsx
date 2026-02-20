@@ -829,7 +829,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     </Col>
                   </Row>
 
-                  {performanceConfig?.body_store_stats && (
+                  {(performanceConfig?.body_store_stats ||
+                    performanceConfig?.traffic_store_stats ||
+                    performanceConfig?.frame_store_stats) && (
                     <>
                       <Divider style={{ margin: "12px 0" }} />
                       <Card
@@ -847,7 +849,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           <Col>
                             <Popconfirm
                               title="Clear all cache files?"
-                              description="This will delete all body files stored on disk."
+                              description="This will delete all cached data including body files, traffic records, and WebSocket frames."
                               onConfirm={handleClearBodyCache}
                               okText="Clear"
                               cancelText="Cancel"
@@ -864,23 +866,84 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                             </Popconfirm>
                           </Col>
                         </Row>
-                        <Row gutter={[16, 8]} style={{ marginTop: 8 }}>
-                          <Col xs={12}>
-                            <Space>
-                              <FileOutlined />
-                              <Text type="secondary">Files:</Text>
-                              <Text>
-                                {performanceConfig.body_store_stats.file_count}
+                        <Row gutter={[16, 8]} style={{ marginTop: 12 }}>
+                          <Col xs={8}>
+                            <Space direction="vertical" size={0}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                Body Cache
+                              </Text>
+                              <Space>
+                                <FileOutlined />
+                                <Text>
+                                  {performanceConfig.body_store_stats
+                                    ?.file_count ?? 0}{" "}
+                                  files
+                                </Text>
+                              </Space>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {formatBytes(
+                                  performanceConfig.body_store_stats
+                                    ?.total_size ?? 0,
+                                )}
                               </Text>
                             </Space>
                           </Col>
-                          <Col xs={12}>
-                            <Space>
-                              <DatabaseOutlined />
-                              <Text type="secondary">Total Size:</Text>
-                              <Text>
+                          <Col xs={8}>
+                            <Space direction="vertical" size={0}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                Traffic Records
+                              </Text>
+                              <Space>
+                                <DatabaseOutlined />
+                                <Text>
+                                  {performanceConfig.traffic_store_stats
+                                    ?.record_count ?? 0}{" "}
+                                  records
+                                </Text>
+                              </Space>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
                                 {formatBytes(
-                                  performanceConfig.body_store_stats.total_size,
+                                  performanceConfig.traffic_store_stats
+                                    ?.file_size ?? 0,
+                                )}
+                              </Text>
+                            </Space>
+                          </Col>
+                          <Col xs={8}>
+                            <Space direction="vertical" size={0}>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                WebSocket Frames
+                              </Text>
+                              <Space>
+                                <SwapOutlined />
+                                <Text>
+                                  {performanceConfig.frame_store_stats
+                                    ?.connection_count ?? 0}{" "}
+                                  connections
+                                </Text>
+                              </Space>
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {formatBytes(
+                                  performanceConfig.frame_store_stats
+                                    ?.total_size ?? 0,
+                                )}
+                              </Text>
+                            </Space>
+                          </Col>
+                        </Row>
+                        <Divider style={{ margin: "8px 0" }} />
+                        <Row>
+                          <Col>
+                            <Space>
+                              <Text type="secondary">Total Storage:</Text>
+                              <Text strong>
+                                {formatBytes(
+                                  (performanceConfig.body_store_stats
+                                    ?.total_size ?? 0) +
+                                    (performanceConfig.traffic_store_stats
+                                      ?.file_size ?? 0) +
+                                    (performanceConfig.frame_store_stats
+                                      ?.total_size ?? 0),
                                 )}
                               </Text>
                             </Space>

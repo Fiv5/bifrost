@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
+use crate::frame_store::FrameStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::traffic_store::TrafficStoreStats;
@@ -46,6 +47,7 @@ pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
     pub traffic_store_stats: Option<TrafficStoreStats>,
+    pub frame_store_stats: Option<FrameStoreStats>,
 }
 
 #[derive(Deserialize)]
@@ -123,6 +125,7 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
 async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
     let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
+    let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
 
     let traffic_config = if let Some(ref config_manager) = state.config_manager {
         let config = config_manager.config().await;
@@ -145,6 +148,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         traffic: traffic_config,
         body_store_stats,
         traffic_store_stats,
+        frame_store_stats,
     };
 
     json_response(&response)
@@ -239,12 +243,14 @@ async fn update_performance_config(
 struct ClearCacheResponse {
     body_cache_removed: usize,
     traffic_cache_removed: usize,
+    frame_cache_removed: usize,
     message: String,
 }
 
 async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
     let mut body_removed = 0usize;
     let mut traffic_removed = 0usize;
+    let mut frame_removed = 0usize;
     let mut errors = Vec::new();
 
     if let Some(ref body_store) = state.body_store {
@@ -267,6 +273,19 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         tracing::info!("Cleared traffic store records");
     }
 
+    if let Some(ref frame_store) = state.frame_store {
+        match frame_store.clear() {
+            Ok(count) => {
+                frame_removed = count;
+                tracing::info!("Cleared {} frame store files", count);
+            }
+            Err(e) => {
+                tracing::error!("Failed to clear frame store: {}", e);
+                errors.push(format!("frame store: {}", e));
+            }
+        }
+    }
+
     if !errors.is_empty() {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -277,9 +296,10 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
     let response = ClearCacheResponse {
         body_cache_removed: body_removed,
         traffic_cache_removed: traffic_removed,
+        frame_cache_removed: frame_removed,
         message: format!(
-            "Successfully cleared {} body cache files and traffic records",
-            body_removed
+            "Successfully cleared {} body cache files, {} traffic records, and {} frame files",
+            body_removed, traffic_removed, frame_removed
         ),
     };
     json_response(&response)
