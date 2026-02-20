@@ -188,6 +188,32 @@ export default function TrafficTable({
       ),
     },
     {
+      title: "Start Time",
+      dataIndex: "start_time",
+      key: "start_time",
+      width: 160,
+      render: (time: string) => (
+        <Tooltip title={time}>
+          <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+            {time || "-"}
+          </Text>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "End Time",
+      dataIndex: "end_time",
+      key: "end_time",
+      width: 160,
+      render: (time: string | null) => (
+        <Tooltip title={time || "-"}>
+          <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+            {time || "-"}
+          </Text>
+        </Tooltip>
+      ),
+    },
+    {
       title: "Rules",
       dataIndex: "has_rule_hit",
       key: "rules",

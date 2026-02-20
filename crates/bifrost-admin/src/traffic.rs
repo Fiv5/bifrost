@@ -236,6 +236,20 @@ pub struct TrafficSummary {
     pub frame_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_status: Option<SocketStatus>,
+    pub start_time: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_time: Option<String>,
+}
+
+fn format_timestamp_ms(timestamp_ms: u64) -> String {
+    use chrono::{Local, TimeZone};
+    let secs = (timestamp_ms / 1000) as i64;
+    let nanos = ((timestamp_ms % 1000) * 1_000_000) as u32;
+    Local
+        .timestamp_opt(secs, nanos)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 impl From<&TrafficRecord> for TrafficSummary {
@@ -251,6 +265,13 @@ impl From<&TrafficRecord> for TrafficSummary {
             (rules.len(), protocols)
         } else {
             (0, Vec::new())
+        };
+
+        let start_time = format_timestamp_ms(record.timestamp);
+        let end_time = if record.duration_ms > 0 {
+            Some(format_timestamp_ms(record.timestamp + record.duration_ms))
+        } else {
+            None
         };
 
         Self {
@@ -275,6 +296,8 @@ impl From<&TrafficRecord> for TrafficSummary {
             is_sse: record.is_sse,
             frame_count: record.frame_count,
             socket_status: record.socket_status.clone(),
+            start_time,
+            end_time,
         }
     }
 }

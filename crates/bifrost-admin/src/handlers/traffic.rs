@@ -246,15 +246,23 @@ async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
     state.traffic_recorder.clear();
 
     if let Some(ref body_store) = state.body_store {
-        if let Err(e) = body_store.write().clear() {
-            tracing::warn!("Failed to clear body store: {}", e);
-        }
+        let body_store_clone = body_store.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = body_store_clone.write().clear() {
+                tracing::warn!("Failed to clear body store: {}", e);
+            }
+        })
+        .await;
     }
 
     if let Some(ref frame_store) = state.frame_store {
-        if let Err(e) = frame_store.clear() {
-            tracing::warn!("Failed to clear frame store: {}", e);
-        }
+        let frame_store_clone = frame_store.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = frame_store_clone.clear() {
+                tracing::warn!("Failed to clear frame store: {}", e);
+            }
+        })
+        .await;
     }
 
     state.websocket_monitor.clear();
@@ -272,7 +280,7 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
     match record {
         Some(record) => {
             if let Some(body_ref) = &record.request_body_ref {
-                get_body_content(&state, body_ref)
+                get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({
                     "success": true,
@@ -297,7 +305,7 @@ async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBod
     match record {
         Some(record) => {
             if let Some(body_ref) = &record.response_body_ref {
-                get_body_content(&state, body_ref)
+                get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({
                     "success": true,
@@ -312,7 +320,7 @@ async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBod
     }
 }
 
-fn get_body_content(state: &SharedAdminState, body_ref: &BodyRef) -> Response<BoxBody> {
+async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) -> Response<BoxBody> {
     match body_ref {
         BodyRef::Inline { data } => json_response(&serde_json::json!({
             "success": true,
@@ -320,15 +328,26 @@ fn get_body_content(state: &SharedAdminState, body_ref: &BodyRef) -> Response<Bo
         })),
         BodyRef::File { path, size } => {
             if let Some(ref body_store) = state.body_store {
-                let store = body_store.read();
-                match store.load(body_ref) {
-                    Some(data) => json_response(&serde_json::json!({
+                let body_store_clone = body_store.clone();
+                let body_ref_clone = body_ref.clone();
+                let path_clone = path.clone();
+
+                let data = tokio::task::spawn_blocking(move || {
+                    let store = body_store_clone.read();
+                    store.load(&body_ref_clone)
+                })
+                .await
+                .ok()
+                .flatten();
+
+                match data {
+                    Some(content) => json_response(&serde_json::json!({
                         "success": true,
-                        "data": data
+                        "data": content
                     })),
                     None => error_response(
                         StatusCode::NOT_FOUND,
-                        &format!("Body file not found: {}", path),
+                        &format!("Body file not found: {}", path_clone),
                     ),
                 }
             } else {

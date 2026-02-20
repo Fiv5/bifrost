@@ -12,6 +12,9 @@ mod traffic;
 mod traffic_store;
 pub mod websocket_monitor;
 
+#[cfg(test)]
+mod tests;
+
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,

@@ -21,7 +21,7 @@ interface VirtualTrafficTableProps {
 
 const ROW_HEIGHT = 36;
 const SCROLL_THRESHOLD = 50;
-const TABLE_MIN_WIDTH = 1020;
+const TABLE_MIN_WIDTH = 1340;
 
 const getStatusDotColor = (status: number): string => {
   if (status === 0) return "#d9d9d9";
@@ -219,6 +219,30 @@ const columns: ColumnDef[] = [
       >
         {record.duration_ms > 0 ? `${record.duration_ms}ms` : "-"}
       </Text>
+    ),
+  },
+  {
+    key: "start_time",
+    title: "Start Time",
+    width: 160,
+    render: (record) => (
+      <Tooltip title={record.start_time}>
+        <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+          {record.start_time || "-"}
+        </Text>
+      </Tooltip>
+    ),
+  },
+  {
+    key: "end_time",
+    title: "End Time",
+    width: 160,
+    render: (record) => (
+      <Tooltip title={record.end_time || "-"}>
+        <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+          {record.end_time || "-"}
+        </Text>
+      </Tooltip>
     ),
   },
   {

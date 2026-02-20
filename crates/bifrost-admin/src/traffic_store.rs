@@ -206,6 +206,12 @@ impl TrafficStore {
 
         let loaded_count = loaded_records.len();
         let need_rewrite = loaded_count > 0 || skipped_count > 0;
+        let (oldest_ts, newest_ts) = {
+            let first_ts = loaded_records.front().map(|r| r.timestamp);
+            let last_ts = loaded_records.back().map(|r| r.timestamp);
+            (first_ts, last_ts)
+        };
+
         *self.records.write() = loaded_records;
 
         self.sequence.store(max_sequence + 1, Ordering::SeqCst);
@@ -216,13 +222,8 @@ impl TrafficStore {
             metadata.total_records = loaded_count as u64;
             metadata.updated_at = now;
             if loaded_count > 0 {
-                let records = self.records.read();
-                if let Some(first) = records.front() {
-                    metadata.oldest_record_timestamp = Some(first.timestamp);
-                }
-                if let Some(last) = records.back() {
-                    metadata.newest_record_timestamp = Some(last.timestamp);
-                }
+                metadata.oldest_record_timestamp = oldest_ts;
+                metadata.newest_record_timestamp = newest_ts;
             }
         }
 
@@ -251,11 +252,12 @@ impl TrafficStore {
     }
 
     fn save_metadata_internal(&self) {
-        let metadata = self.metadata.read().clone();
+        let metadata_snapshot = self.metadata.read().clone();
+
         let path = self.metadata_file_path();
         let temp_path = self.traffic_dir.join("metadata.json.tmp");
 
-        if let Ok(content) = serde_json::to_string_pretty(&metadata) {
+        if let Ok(content) = serde_json::to_string_pretty(&metadata_snapshot) {
             if fs::write(&temp_path, &content).is_ok() {
                 if let Err(e) = fs::rename(&temp_path, &path) {
                     tracing::error!("[TRAFFIC_STORE] Failed to rename metadata file: {}", e);
@@ -308,20 +310,19 @@ impl TrafficStore {
             return;
         }
 
-        let current_records = self.records.read();
-        let valid_ids: std::collections::HashSet<&str> =
-            current_records.iter().map(|r| r.id.as_str()).collect();
+        let valid_ids: std::collections::HashSet<String> = {
+            let current_records = self.records.read();
+            current_records.iter().map(|r| r.id.clone()).collect()
+        };
 
         let filtered_records: Vec<&TrafficRecord> = records_to_write
             .iter()
-            .filter(|r| valid_ids.contains(r.id.as_str()))
+            .filter(|r| valid_ids.contains(&r.id))
             .collect();
 
         if filtered_records.is_empty() {
             return;
         }
-
-        drop(current_records);
 
         let path = self.records_file_path();
         let file = match OpenOptions::new().create(true).append(true).open(&path) {
@@ -361,7 +362,8 @@ impl TrafficStore {
     }
 
     fn rewrite_records_file_internal(&self) {
-        let records = self.records.read();
+        let records_snapshot: Vec<TrafficRecord> = self.records.read().iter().cloned().collect();
+
         let path = self.records_file_path();
         let temp_path = self.traffic_dir.join("records.jsonl.tmp");
 
@@ -374,7 +376,7 @@ impl TrafficStore {
         };
 
         let mut writer = BufWriter::new(file);
-        for record in records.iter() {
+        for record in &records_snapshot {
             if let Ok(json) = serde_json::to_string(record) {
                 let _ = writeln!(writer, "{}", json);
             }

@@ -62,6 +62,8 @@ export interface TrafficSummary {
   is_sse?: boolean;
   frame_count?: number;
   socket_status?: SocketStatus | null;
+  start_time: string;
+  end_time?: string | null;
 }
 
 export interface TrafficRecord extends TrafficSummary {

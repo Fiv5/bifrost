@@ -1,14 +1,23 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Table, Typography, Tag, theme, Button, Space, Tooltip, Empty, ConfigProvider } from 'antd';
+import { Table, Typography, Tag, theme, Button, Space, Tooltip, Empty, ConfigProvider, Modal } from 'antd';
 import type { TableProps } from 'antd';
 import {
   ArrowUpOutlined,
   ArrowDownOutlined,
   ReloadOutlined,
+  CopyOutlined,
+  ExpandOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import hljs from 'highlight.js/lib/core';
+import json from 'highlight.js/lib/languages/json';
+import plaintext from 'highlight.js/lib/languages/plaintext';
+import 'highlight.js/styles/github.css';
 import type { WebSocketFrame, FrameDirection, FrameType, SessionTargetSearchState } from '../../../../types';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
+
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('plaintext', plaintext);
 
 const { Text } = Typography;
 
@@ -54,6 +63,34 @@ const DirectionIcon = ({ direction }: { direction: FrameDirection }) => {
   );
 };
 
+const formatJson = (text: string): { formatted: string; isJson: boolean } => {
+  try {
+    const parsed = JSON.parse(text);
+    return { formatted: JSON.stringify(parsed, null, 2), isJson: true };
+  } catch {
+    return { formatted: text, isJson: false };
+  }
+};
+
+const highlightContent = (text: string): string => {
+  const { formatted, isJson } = formatJson(text);
+  try {
+    const result = hljs.highlight(formatted, { language: isJson ? 'json' : 'plaintext' });
+    return result.value;
+  } catch {
+    return formatted;
+  }
+};
+
+const copyToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const Messages = ({
   recordId,
   isWebSocket,
@@ -67,6 +104,8 @@ export const Messages = ({
   const [lastFrameId, setLastFrameId] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
+  const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(null);
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
 
   const fetchFrames = useCallback(async (after?: number) => {
     setLoading(true);
@@ -174,6 +213,42 @@ export const Messages = ({
           <Text type="secondary">-</Text>
         ),
     },
+    {
+      title: '',
+      key: 'actions',
+      width: 70,
+      render: (_: unknown, record: WebSocketFrame) => (
+        <Space size={4}>
+          <Tooltip title="Copy">
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (record.payload_preview) {
+                  copyToClipboard(record.payload_preview);
+                }
+              }}
+              disabled={!record.payload_preview}
+            />
+          </Tooltip>
+          <Tooltip title="Expand">
+            <Button
+              type="text"
+              size="small"
+              icon={<ExpandOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedFrame(record);
+                setDetailModalOpen(true);
+              }}
+              disabled={!record.payload_preview}
+            />
+          </Tooltip>
+        </Space>
+      ),
+    },
   ];
 
   if (frameCount === 0) {
@@ -251,8 +326,16 @@ export const Messages = ({
             borderRadius: 4,
           }}
           rowClassName={(record) =>
-            record.direction === 'send' ? 'frame-send' : 'frame-receive'
+            `${record.direction === 'send' ? 'frame-send' : 'frame-receive'} message-row`
           }
+          onRow={(record) => ({
+            onClick: () => {
+              if (record.payload_preview) {
+                setSelectedFrame(record);
+                setDetailModalOpen(true);
+              }
+            },
+          })}
         />
       </ConfigProvider>
 
@@ -263,7 +346,77 @@ export const Messages = ({
         .frame-receive td:first-child {
           border-left: 3px solid #1890ff;
         }
+        .message-row {
+          cursor: pointer;
+        }
+        .message-row:hover {
+          background-color: ${token.colorBgTextHover};
+        }
       `}</style>
+
+      <Modal
+        title={
+          <Space>
+            <DirectionIcon direction={selectedFrame?.direction ?? 'receive'} />
+            <Tag color={getFrameTypeColor(selectedFrame?.frame_type ?? 'text')}>
+              {selectedFrame?.frame_type?.toUpperCase()}
+            </Tag>
+            <Text type="secondary">
+              #{selectedFrame?.frame_id} - {dayjs(selectedFrame?.timestamp).format('YYYY-MM-DD HH:mm:ss.SSS')}
+            </Text>
+          </Space>
+        }
+        open={detailModalOpen}
+        onCancel={() => {
+          setDetailModalOpen(false);
+          setSelectedFrame(null);
+        }}
+        footer={
+          <Space>
+            <Button
+              icon={<CopyOutlined />}
+              onClick={() => {
+                if (selectedFrame?.payload_preview) {
+                  const { formatted } = formatJson(selectedFrame.payload_preview);
+                  copyToClipboard(formatted);
+                }
+              }}
+            >
+              Copy
+            </Button>
+            <Button onClick={() => setDetailModalOpen(false)}>Close</Button>
+          </Space>
+        }
+        width={700}
+        styles={{
+          body: {
+            maxHeight: '60vh',
+            overflow: 'auto',
+          },
+        }}
+      >
+        {selectedFrame?.payload_preview && (
+          <pre
+            style={{
+              margin: 0,
+              padding: 12,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              backgroundColor: token.colorBgLayout,
+              borderRadius: 4,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              lineHeight: 1.5,
+            }}
+          >
+            <code
+              dangerouslySetInnerHTML={{
+                __html: highlightContent(selectedFrame.payload_preview),
+              }}
+            />
+          </pre>
+        )}
+      </Modal>
     </div>
   );
 };
