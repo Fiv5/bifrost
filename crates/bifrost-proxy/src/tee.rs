@@ -168,14 +168,20 @@ struct SseTeeBodyDropGuard {
 
 impl Drop for SseTeeBodyDropGuard {
     fn drop(&mut self) {
-        if !self.finished {
-            if let Some(ref state) = self.admin_state {
+        if let Some(ref state) = self.admin_state {
+            if !self.finished {
                 state
                     .traffic_recorder
                     .update_by_id(&self.record_id, |record| {
                         record.response_size = self.total_bytes;
                     });
             }
+            state.websocket_monitor.set_connection_closed(
+                &self.record_id,
+                None,
+                None,
+                state.frame_store.as_ref(),
+            );
         }
     }
 }

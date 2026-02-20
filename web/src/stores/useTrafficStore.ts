@@ -169,7 +169,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
       const newPendingIds = new Set<string>();
       response.new_records.forEach(r => {
-        if (r.status === 0) {
+        if (r.status === 0 || ((r.is_websocket || r.is_sse) && r.socket_status?.is_open)) {
           newPendingIds.add(r.id);
         }
       });
@@ -202,7 +202,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
       const newPendingIds = new Set<string>();
       response.new_records.forEach(r => {
-        if (r.status === 0) {
+        if (r.status === 0 || ((r.is_websocket || r.is_sse) && r.socket_status?.is_open)) {
           newPendingIds.add(r.id);
         }
       });
@@ -254,13 +254,15 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         const newPendingIds = new Set(prevState.pendingIds);
 
         response.updated_records.forEach(r => {
-          if (r.status !== 0) {
+          const isPending = r.status === 0 || ((r.is_websocket || r.is_sse) && r.socket_status?.is_open);
+          if (!isPending) {
             newPendingIds.delete(r.id);
           }
         });
 
         response.new_records.forEach(r => {
-          if (r.status === 0) {
+          const isPending = r.status === 0 || ((r.is_websocket || r.is_sse) && r.socket_status?.is_open);
+          if (isPending) {
             newPendingIds.add(r.id);
           }
         });
