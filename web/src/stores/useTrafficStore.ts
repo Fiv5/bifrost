@@ -81,6 +81,7 @@ const buildFilterFromToolbar = (toolbar: ToolbarFilters, conditions: FilterCondi
       'Font': 'font',
       'Doc': 'html',
       'Media': 'image',
+      'SSE': 'event-stream',
     };
     const types = toolbar.type.map(t => typeMap[t] || t.toLowerCase());
     if (types.length === 1) {
