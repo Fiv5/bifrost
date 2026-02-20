@@ -98,7 +98,7 @@ pub struct FrameEvent {
 }
 
 pub struct ConnectionFrameStore {
-    frames: VecDeque<WebSocketFrameRecord>,
+    pub(crate) frames: VecDeque<WebSocketFrameRecord>,
     max_frames: usize,
     frame_id_counter: AtomicU64,
     status: SocketStatus,
@@ -160,7 +160,7 @@ impl ConnectionFrameStore {
 }
 
 pub struct WebSocketMonitor {
-    connections: RwLock<HashMap<String, ConnectionFrameStore>>,
+    pub(crate) connections: RwLock<HashMap<String, ConnectionFrameStore>>,
     preview_limit: usize,
     sse_preview_limit: usize,
     max_frames_per_connection: usize,
@@ -513,6 +513,11 @@ impl WebSocketMonitor {
     pub fn cleanup_closed_connections(&self) {
         let mut connections = self.connections.write();
         connections.retain(|_, store| store.status.is_open);
+    }
+
+    pub fn clear(&self) {
+        self.connections.write().clear();
+        tracing::info!("[WEBSOCKET_MONITOR] Cleared all connections");
     }
 
     pub fn connection_count(&self) -> usize {

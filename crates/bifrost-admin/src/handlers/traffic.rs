@@ -244,7 +244,22 @@ async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
         traffic_store.clear();
     }
     state.traffic_recorder.clear();
-    success_response("Traffic records cleared successfully")
+
+    if let Some(ref body_store) = state.body_store {
+        if let Err(e) = body_store.write().clear() {
+            tracing::warn!("Failed to clear body store: {}", e);
+        }
+    }
+
+    if let Some(ref frame_store) = state.frame_store {
+        if let Err(e) = frame_store.clear() {
+            tracing::warn!("Failed to clear frame store: {}", e);
+        }
+    }
+
+    state.websocket_monitor.clear();
+
+    success_response("All traffic data cleared successfully")
 }
 
 async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {

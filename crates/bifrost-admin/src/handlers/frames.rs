@@ -59,31 +59,90 @@ pub async fn get_frames(
     let query = parse_frames_query(query_str);
     let monitor = &state.websocket_monitor;
 
-    let (frames, has_more, is_active) = monitor.get_frames_with_persistence(
-        connection_id,
-        query.after,
-        query.limit,
-        state.frame_store.as_ref(),
-    );
+    let conn_id = connection_id.to_string();
+    let frame_store = state.frame_store.clone();
+    let after = query.after;
+    let limit = query.limit;
+
+    let file_frames = if let Some(fs) = frame_store.as_ref() {
+        let fs = fs.clone();
+        let conn_id_clone = conn_id.clone();
+        match tokio::task::spawn_blocking(move || fs.load_frames(&conn_id_clone, after, limit))
+            .await
+        {
+            Ok(Ok((frames, _))) => frames,
+            Ok(Err(e)) => {
+                tracing::warn!("[FRAMES API] Failed to load frames from file: {}", e);
+                Vec::new()
+            }
+            Err(e) => {
+                tracing::warn!("[FRAMES API] spawn_blocking failed: {}", e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let (mem_frames, is_active) = {
+        let connections = monitor.connections.read();
+        if let Some(store) = connections.get(&conn_id) {
+            let frames: Vec<_> = if let Some(after_id) = after {
+                store
+                    .frames
+                    .iter()
+                    .filter(|f| f.frame_id > after_id)
+                    .cloned()
+                    .collect()
+            } else {
+                store.frames.iter().cloned().collect()
+            };
+            (frames, true)
+        } else {
+            (Vec::new(), false)
+        }
+    };
+
+    use std::collections::HashSet;
+    let mut seen_ids: HashSet<u64> = HashSet::new();
+    let mut all_frames = Vec::new();
+
+    for frame in file_frames {
+        if !seen_ids.contains(&frame.frame_id) {
+            seen_ids.insert(frame.frame_id);
+            all_frames.push(frame);
+        }
+    }
+
+    for frame in mem_frames {
+        if !seen_ids.contains(&frame.frame_id) {
+            seen_ids.insert(frame.frame_id);
+            all_frames.push(frame);
+        }
+    }
+
+    all_frames.sort_by_key(|f| f.frame_id);
+    let has_more = all_frames.len() > limit;
+    let frames: Vec<_> = all_frames.into_iter().take(limit).collect();
 
     let has_data = !frames.is_empty()
         || is_active
-        || monitor.has_persisted_frames(connection_id, state.frame_store.as_ref());
+        || monitor.has_persisted_frames(&conn_id, state.frame_store.as_ref());
 
     if has_data {
-        let socket_status = monitor.get_status(connection_id);
+        let socket_status = monitor.get_status(&conn_id);
         let last_frame_id = frames
             .last()
             .map(|f| f.frame_id)
-            .or_else(|| monitor.get_last_frame_id(connection_id))
+            .or_else(|| monitor.get_last_frame_id(&conn_id))
             .or_else(|| {
                 state
                     .frame_store
                     .as_ref()
-                    .and_then(|fs| fs.get_last_frame_id(connection_id))
+                    .and_then(|fs| fs.get_last_frame_id(&conn_id))
             })
             .unwrap_or(0);
-        let is_monitored = monitor.is_monitored(connection_id);
+        let is_monitored = monitor.is_monitored(&conn_id);
 
         let response = FramesResponse {
             frames,

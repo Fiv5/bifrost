@@ -130,30 +130,29 @@ impl FrameStore {
         writeln!(writer, "{}", json)?;
         writer.flush()?;
 
-        let mut cache = self.metadata_cache.write();
-        let metadata = cache.entry(connection_id.to_string()).or_insert_with(|| {
-            let meta_path = self.metadata_file_path(connection_id);
-            if let Ok(content) = fs::read_to_string(&meta_path) {
-                serde_json::from_str(&content)
-                    .unwrap_or_else(|_| FrameStoreMetadata::new(connection_id))
-            } else {
-                FrameStoreMetadata::new(connection_id)
-            }
-        });
+        let metadata_to_save = {
+            let mut cache = self.metadata_cache.write();
+            let metadata = cache.entry(connection_id.to_string()).or_insert_with(|| {
+                let meta_path = self.metadata_file_path(connection_id);
+                if let Ok(content) = fs::read_to_string(&meta_path) {
+                    serde_json::from_str(&content)
+                        .unwrap_or_else(|_| FrameStoreMetadata::new(connection_id))
+                } else {
+                    FrameStoreMetadata::new(connection_id)
+                }
+            });
 
-        metadata.frame_count += 1;
-        metadata.last_frame_id = frame.frame_id;
-        metadata.updated_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+            metadata.frame_count += 1;
+            metadata.last_frame_id = frame.frame_id;
+            metadata.updated_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
 
-        drop(cache);
+            metadata.clone()
+        };
 
-        let cache = self.metadata_cache.read();
-        if let Some(m) = cache.get(connection_id) {
-            self.save_metadata(m);
-        }
+        self.save_metadata(&metadata_to_save);
 
         Ok(())
     }
@@ -300,6 +299,28 @@ impl FrameStore {
 
     pub fn list_connections(&self) -> Vec<String> {
         self.metadata_cache.read().keys().cloned().collect()
+    }
+
+    pub fn clear(&self) -> std::io::Result<usize> {
+        let frames_dir = self.frames_dir();
+        let mut removed_count = 0;
+
+        if frames_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&frames_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && fs::remove_file(&path).is_ok() {
+                        removed_count += 1;
+                    }
+                }
+            }
+        }
+
+        self.metadata_cache.write().clear();
+
+        tracing::info!("[FRAME_STORE] Cleared {} frame files", removed_count);
+
+        Ok(removed_count)
     }
 
     pub fn stats(&self) -> FrameStoreStats {
