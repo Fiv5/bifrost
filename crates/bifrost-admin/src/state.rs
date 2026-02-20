@@ -120,6 +120,16 @@ impl AdminState {
         self.traffic_recorder.record(record);
     }
 
+    pub fn update_traffic_by_id<F>(&self, id: &str, updater: F)
+    where
+        F: Fn(&mut crate::traffic::TrafficRecord) + Clone,
+    {
+        if let Some(ref traffic_store) = self.traffic_store {
+            traffic_store.update_by_id(id, updater.clone());
+        }
+        self.traffic_recorder.update_by_id(id, updater);
+    }
+
     pub fn with_rules_storage(mut self, storage: RulesStorage) -> Self {
         self.rules_storage = storage;
         self

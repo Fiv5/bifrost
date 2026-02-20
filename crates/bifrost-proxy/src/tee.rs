@@ -45,14 +45,12 @@ impl TeeBodyDropGuard {
             };
 
             let total_bytes = self.total_bytes;
-            state
-                .traffic_recorder
-                .update_by_id(&self.record_id, move |record| {
-                    record.response_size = total_bytes;
-                    if response_body_ref.is_some() {
-                        record.response_body_ref = response_body_ref;
-                    }
-                });
+            state.update_traffic_by_id(&self.record_id, move |record| {
+                record.response_size = total_bytes;
+                if response_body_ref.is_some() {
+                    record.response_body_ref = response_body_ref.clone();
+                }
+            });
         }
     }
 }
@@ -170,11 +168,10 @@ impl Drop for SseTeeBodyDropGuard {
     fn drop(&mut self) {
         if let Some(ref state) = self.admin_state {
             if !self.finished {
-                state
-                    .traffic_recorder
-                    .update_by_id(&self.record_id, |record| {
-                        record.response_size = self.total_bytes;
-                    });
+                let total_bytes = self.total_bytes;
+                state.update_traffic_by_id(&self.record_id, move |record| {
+                    record.response_size = total_bytes;
+                });
             }
             state.websocket_monitor.set_connection_closed(
                 &self.record_id,
