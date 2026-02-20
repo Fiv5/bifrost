@@ -9,6 +9,7 @@ mod state;
 mod static_files;
 pub mod status_printer;
 mod traffic;
+mod traffic_store;
 pub mod websocket_monitor;
 
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
@@ -29,6 +30,9 @@ pub use state::{
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,
     TrafficRecorder,
+};
+pub use traffic_store::{
+    start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
 };
 pub use websocket_monitor::{SharedWebSocketMonitor, WebSocketFrameRecord, WebSocketMonitor};
 

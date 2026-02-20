@@ -718,12 +718,20 @@ impl ProxyInstance {
             7,
         )));
 
+        let traffic_dir = temp_dir.join("traffic");
+        let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
+            traffic_dir,
+            1000,
+            Some(24),
+        ));
+
         let frame_store = bifrost_admin::FrameStore::new(temp_dir, Some(24));
 
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_body_store(body_store)
+            .with_traffic_store_shared(traffic_store)
             .with_frame_store(frame_store);
 
         let admin_state_arc = Arc::new(admin_state);

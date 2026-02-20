@@ -4,7 +4,6 @@ import {
   GlobalOutlined,
   FileTextOutlined,
   SettingOutlined,
-  SafetyOutlined,
   DatabaseOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
@@ -19,7 +18,6 @@ const menuItems: MenuItem[] = [
   { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
-  { key: "/whitelist", icon: <SafetyOutlined />, label: "Whitelist" },
   { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
 ];
 

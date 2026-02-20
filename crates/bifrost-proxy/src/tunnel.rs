@@ -308,7 +308,7 @@ pub async fn handle_connect(
         record.host = host.clone();
         record.is_tunnel = true;
         record.client_ip = client_ip;
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     let host_for_unregister = host.clone();
@@ -1320,7 +1320,7 @@ async fn handle_intercepted_request_with_protocol(
                 req_content_encoding.as_deref(),
             );
 
-            state.traffic_recorder.record(record);
+            state.record_traffic(record);
         }
 
         if let Some(delay_ms) = resolved_rules.res_delay {
@@ -1435,7 +1435,7 @@ async fn handle_intercepted_request_with_protocol(
             record.response_body_ref = store.store(req_id, "res", decompressed_res_body.as_ref());
         }
 
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     if let Some(delay_ms) = resolved_rules.res_delay {
@@ -1722,7 +1722,7 @@ async fn handle_intercepted_websocket(
         };
 
         state.websocket_monitor.register_connection(req_id);
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     if verbose_logging {

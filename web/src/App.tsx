@@ -6,7 +6,6 @@ import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Settings from "./pages/Settings";
 import Values from "./pages/Values";
-import Whitelist from "./pages/Whitelist";
 import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
 
 export default function App() {
@@ -41,7 +40,6 @@ export default function App() {
             <Route path="traffic" element={<Traffic />} />
             <Route path="rules" element={<Rules />} />
             <Route path="values" element={<Values />} />
-            <Route path="whitelist" element={<Whitelist />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

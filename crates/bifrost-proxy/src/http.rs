@@ -564,7 +564,7 @@ pub async fn handle_http_request(
                 req_content_encoding.as_deref(),
             );
 
-            state.traffic_recorder.record(record);
+            state.record_traffic(record);
         }
 
         if is_sse {
@@ -722,7 +722,7 @@ pub async fn handle_http_request(
                 store.store(&ctx.id_str(), "res", decompressed_res_body.as_ref());
         }
 
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
@@ -898,7 +898,7 @@ async fn forward_without_rules(
             req_content_encoding.as_deref(),
         );
 
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     if is_sse_response(&res_parts) {
@@ -1111,7 +1111,7 @@ async fn handle_http_websocket(
         record.set_websocket();
 
         state.websocket_monitor.register_connection(&record_id);
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     let record_id_clone = record_id.clone();

@@ -137,7 +137,7 @@ pub async fn handle_websocket_upgrade(
         record.set_websocket();
 
         state.websocket_monitor.register_connection(&record_id);
-        state.traffic_recorder.record(record);
+        state.record_traffic(record);
     }
 
     let record_id_clone = record_id.clone();

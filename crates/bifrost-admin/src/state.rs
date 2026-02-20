@@ -12,6 +12,7 @@ use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
+use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
@@ -54,6 +55,7 @@ impl RuntimeConfig {
 
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
+    pub traffic_store: Option<SharedTrafficStore>,
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
     pub values_storage: Option<SharedValuesStorage>,
@@ -77,6 +79,7 @@ impl AdminState {
     pub fn new(port: u16) -> Self {
         Self {
             traffic_recorder: Arc::new(TrafficRecorder::default()),
+            traffic_store: None,
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
             values_storage: None,
@@ -110,6 +113,13 @@ impl AdminState {
         }
     }
 
+    pub fn record_traffic(&self, record: crate::traffic::TrafficRecord) {
+        if let Some(ref traffic_store) = self.traffic_store {
+            traffic_store.record(record.clone());
+        }
+        self.traffic_recorder.record(record);
+    }
+
     pub fn with_rules_storage(mut self, storage: RulesStorage) -> Self {
         self.rules_storage = storage;
         self
@@ -122,6 +132,16 @@ impl AdminState {
 
     pub fn with_traffic_recorder(mut self, recorder: TrafficRecorder) -> Self {
         self.traffic_recorder = Arc::new(recorder);
+        self
+    }
+
+    pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
+        self.traffic_store = Some(Arc::new(store));
+        self
+    }
+
+    pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
+        self.traffic_store = Some(store);
         self
     }
 

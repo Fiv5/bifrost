@@ -78,7 +78,11 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
     let query = req.uri().query().unwrap_or("");
     let filter = parse_traffic_filter(query);
 
-    let records = state.traffic_recorder.filter(&filter);
+    let records = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.filter(&filter)
+    } else {
+        state.traffic_recorder.filter(&filter)
+    };
 
     let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
 
@@ -115,10 +119,13 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
 
     let limit = params.limit.unwrap_or(100);
 
-    let (new_records, has_more) =
+    let (new_records, has_more) = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_after(params.after_id.as_deref(), &filter, limit)
+    } else {
         state
             .traffic_recorder
-            .get_after(params.after_id.as_deref(), &filter, limit);
+            .get_after(params.after_id.as_deref(), &filter, limit)
+    };
 
     let enrich_summary = |mut summary: crate::traffic::TrafficSummary| {
         if summary.is_sse || summary.is_websocket {
@@ -134,9 +141,12 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
 
     let updated_records = if !params.pending_ids.is_empty() {
         let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
-        state
-            .traffic_recorder
-            .get_by_ids(&ids)
+        let summaries = if let Some(ref traffic_store) = state.traffic_store {
+            traffic_store.get_by_ids(&ids)
+        } else {
+            state.traffic_recorder.get_by_ids(&ids)
+        };
+        summaries
             .into_iter()
             .map(|mut summary| {
                 if summary.is_sse || summary.is_websocket {
@@ -153,7 +163,11 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
         Vec::new()
     };
 
-    let server_total = state.traffic_recorder.total();
+    let server_total = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.total()
+    } else {
+        state.traffic_recorder.total()
+    };
 
     let response = serde_json::json!({
         "new_records": new_records,
@@ -201,7 +215,13 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
 }
 
 async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBody> {
-    match state.traffic_recorder.get_by_id(id) {
+    let record = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_by_id(id)
+    } else {
+        state.traffic_recorder.get_by_id(id)
+    };
+
+    match record {
         Some(mut record) => {
             if record.is_websocket || record.is_sse {
                 if let Some(status) = state.websocket_monitor.get_connection_status(&record.id) {
@@ -220,12 +240,21 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 }
 
 async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
+    if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.clear();
+    }
     state.traffic_recorder.clear();
     success_response("Traffic records cleared successfully")
 }
 
 async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
-    match state.traffic_recorder.get_by_id(id) {
+    let record = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_by_id(id)
+    } else {
+        state.traffic_recorder.get_by_id(id)
+    };
+
+    match record {
         Some(record) => {
             if let Some(body_ref) = &record.request_body_ref {
                 get_body_content(&state, body_ref)
@@ -244,7 +273,13 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
 }
 
 async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
-    match state.traffic_recorder.get_by_id(id) {
+    let record = if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_by_id(id)
+    } else {
+        state.traffic_recorder.get_by_id(id)
+    };
+
+    match record {
         Some(record) => {
             if let Some(body_ref) = &record.response_body_ref {
                 get_body_content(&state, body_ref)

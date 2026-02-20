@@ -6,6 +6,7 @@ use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
+use crate::traffic_store::TrafficStoreStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -44,6 +45,7 @@ pub struct TrafficConfig {
 pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
+    pub traffic_store_stats: Option<TrafficStoreStats>,
 }
 
 #[derive(Deserialize)]
@@ -120,6 +122,7 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
 
 async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
+    let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
 
     let traffic_config = if let Some(ref config_manager) = state.config_manager {
         let config = config_manager.config().await;
@@ -141,6 +144,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let response = PerformanceConfigResponse {
         traffic: traffic_config,
         body_store_stats,
+        traffic_store_stats,
     };
 
     json_response(&response)
@@ -201,6 +205,9 @@ async fn update_performance_config(
 
     if let Some(max_records) = request.max_records {
         state.traffic_recorder.set_max_records(max_records);
+        if let Some(ref traffic_store) = state.traffic_store {
+            traffic_store.set_max_records(max_records);
+        }
     }
 
     if let Some(ref body_store) = state.body_store {
@@ -209,6 +216,16 @@ async fn update_performance_config(
             retention_days: request.file_retention_days,
         };
         body_store.write().update_config(body_store_update);
+    }
+
+    if let Some(ref traffic_store) = state.traffic_store {
+        use crate::traffic_store::TrafficStoreConfigUpdate;
+        let retention_hours = request.file_retention_days.map(|d| d * 24);
+        let traffic_store_update = TrafficStoreConfigUpdate {
+            max_records: request.max_records,
+            retention_hours,
+        };
+        traffic_store.update_config(traffic_store_update);
     }
 
     if let Some(max_body_buffer_size) = request.max_body_buffer_size {
@@ -220,35 +237,52 @@ async fn update_performance_config(
 
 #[derive(Debug, Clone, Serialize)]
 struct ClearCacheResponse {
-    removed_files: usize,
+    body_cache_removed: usize,
+    traffic_cache_removed: usize,
     message: String,
 }
 
 async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
-    let Some(ref body_store) = state.body_store else {
-        return error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Body store not available",
-        );
-    };
+    let mut body_removed = 0usize;
+    let mut traffic_removed = 0usize;
+    let mut errors = Vec::new();
 
-    match body_store.write().clear() {
-        Ok(removed_count) => {
-            tracing::info!("Cleared {} body cache files", removed_count);
-            let response = ClearCacheResponse {
-                removed_files: removed_count,
-                message: format!("Successfully cleared {} cache files", removed_count),
-            };
-            json_response(&response)
-        }
-        Err(e) => {
-            tracing::error!("Failed to clear body cache: {}", e);
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("Failed to clear cache: {}", e),
-            )
+    if let Some(ref body_store) = state.body_store {
+        match body_store.write().clear() {
+            Ok(count) => {
+                body_removed = count;
+                tracing::info!("Cleared {} body cache files", count);
+            }
+            Err(e) => {
+                tracing::error!("Failed to clear body cache: {}", e);
+                errors.push(format!("body cache: {}", e));
+            }
         }
     }
+
+    if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.clear();
+        let stats = traffic_store.stats();
+        traffic_removed = stats.total_records_processed as usize;
+        tracing::info!("Cleared traffic store records");
+    }
+
+    if !errors.is_empty() {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Partial failure: {}", errors.join("; ")),
+        );
+    }
+
+    let response = ClearCacheResponse {
+        body_cache_removed: body_removed,
+        traffic_cache_removed: traffic_removed,
+        message: format!(
+            "Successfully cleared {} body cache files and traffic records",
+            body_removed
+        ),
+    };
+    json_response(&response)
 }
 
 async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

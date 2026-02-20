@@ -423,6 +423,13 @@ pub fn run_foreground(
             stored_config.traffic.file_retention_days,
         )));
 
+        let traffic_dir = bifrost_dir.join("traffic");
+        let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
+            traffic_dir,
+            stored_config.traffic.max_records,
+            Some(stored_config.traffic.file_retention_days * 24),
+        ));
+
         let frame_store = bifrost_admin::FrameStore::new(
             bifrost_dir.clone(),
             Some(stored_config.traffic.file_retention_days * 24),
@@ -452,6 +459,7 @@ pub fn run_foreground(
 
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
+            .with_traffic_store_shared(traffic_store.clone())
             .with_frame_store(frame_store)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -461,6 +469,8 @@ pub fn run_foreground(
             .with_system_proxy_manager_shared(system_proxy_manager.clone())
             .with_config_manager(config_manager)
             .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
+
+        bifrost_admin::start_traffic_cleanup_task(traffic_store);
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let rules_storage_for_resolver = admin_state.rules_storage.clone();
@@ -650,6 +660,13 @@ pub fn run_daemon(
                     stored_config.traffic.file_retention_days,
                 )));
 
+                let traffic_dir = bifrost_dir.join("traffic");
+                let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
+                    traffic_dir,
+                    stored_config.traffic.max_records,
+                    Some(stored_config.traffic.file_retention_days * 24),
+                ));
+
                 let frame_store = bifrost_admin::FrameStore::new(
                     bifrost_dir.clone(),
                     Some(stored_config.traffic.file_retention_days * 24),
@@ -678,6 +695,7 @@ pub fn run_daemon(
 
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
+                    .with_traffic_store_shared(traffic_store.clone())
                     .with_frame_store(frame_store)
                     .with_runtime_config(runtime_config)
                     .with_connection_registry(connection_registry)
@@ -687,6 +705,8 @@ pub fn run_daemon(
                     .with_system_proxy_manager_shared(system_proxy_manager.clone())
                     .with_config_manager(config_manager)
                     .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
+
+                bifrost_admin::start_traffic_cleanup_task(traffic_store);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let rules_storage_for_resolver = admin_state.rules_storage.clone();

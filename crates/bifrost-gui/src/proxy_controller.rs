@@ -399,6 +399,13 @@ async fn run_proxy_server(
         7,
     )));
 
+    let traffic_dir = bifrost_dir.join("traffic");
+    let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
+        traffic_dir,
+        5000,
+        Some(24 * 7),
+    ));
+
     let frame_store = bifrost_admin::FrameStore::new(bifrost_dir.clone(), Some(24 * 7));
 
     let ca_cert_path = get_bifrost_dir()
@@ -409,7 +416,10 @@ async fn run_proxy_server(
 
     let mut admin_state = AdminState::new(settings.port)
         .with_body_store(body_store)
+        .with_traffic_store_shared(traffic_store.clone())
         .with_frame_store(frame_store);
+
+    bifrost_admin::start_traffic_cleanup_task(traffic_store);
     if let Some(vs) = values_storage {
         admin_state = admin_state.with_values_storage(vs);
     }
