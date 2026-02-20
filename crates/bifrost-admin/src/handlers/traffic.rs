@@ -202,7 +202,16 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
 
 async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBody> {
     match state.traffic_recorder.get_by_id(id) {
-        Some(record) => json_response(&record),
+        Some(mut record) => {
+            if record.is_websocket || record.is_sse {
+                if let Some(status) = state.websocket_monitor.get_connection_status(&record.id) {
+                    record.frame_count = status.frame_count;
+                    record.last_frame_id = status.frame_count as u64;
+                    record.socket_status = Some(status);
+                }
+            }
+            json_response(&record)
+        }
         None => error_response(
             StatusCode::NOT_FOUND,
             &format!("Traffic record '{}' not found", id),

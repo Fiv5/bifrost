@@ -1,4 +1,4 @@
-use bifrost_admin::{AdminState, ConnectionRegistry, RuntimeConfig};
+use bifrost_admin::{AdminState, BodyStore, ConnectionRegistry, RuntimeConfig};
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
 };
@@ -711,9 +711,20 @@ impl ProxyInstance {
 
         let connection_registry = ConnectionRegistry::new(true);
 
+        let temp_dir = std::env::temp_dir().join(format!("bifrost_e2e_test_{}", port));
+        let body_store = Arc::new(parking_lot::RwLock::new(BodyStore::new(
+            temp_dir.clone(),
+            2 * 1024 * 1024,
+            7,
+        )));
+
+        let frame_store = bifrost_admin::FrameStore::new(temp_dir, Some(24));
+
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
-            .with_connection_registry(connection_registry);
+            .with_connection_registry(connection_registry)
+            .with_body_store(body_store)
+            .with_frame_store(frame_store);
 
         let admin_state_arc = Arc::new(admin_state);
 

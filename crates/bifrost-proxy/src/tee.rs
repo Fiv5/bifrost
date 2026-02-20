@@ -150,7 +150,13 @@ pub fn create_tee_body_with_store(
     max_body_size: Option<usize>,
     content_encoding: Option<String>,
 ) -> TeeBody {
-    TeeBody::new(body, admin_state, record_id, max_body_size, content_encoding)
+    TeeBody::new(
+        body,
+        admin_state,
+        record_id,
+        max_body_size,
+        content_encoding,
+    )
 }
 
 struct SseTeeBodyDropGuard {
@@ -218,6 +224,7 @@ impl SseTeeBody {
                         &self.guard.record_id,
                         event_bytes,
                         state.body_store.as_ref(),
+                        state.frame_store.as_ref(),
                     );
                 } else {
                     tracing::warn!("[SSE] No admin state for recording event");
@@ -278,6 +285,7 @@ impl Body for SseTeeBody {
                             &self.guard.record_id,
                             &self.buffer,
                             state.body_store.as_ref(),
+                            state.frame_store.as_ref(),
                         );
                     }
                     self.buffer.clear();
@@ -310,4 +318,26 @@ pub fn create_sse_tee_body(
     record_id: String,
 ) -> SseTeeBody {
     SseTeeBody::new(body, admin_state, record_id)
+}
+
+use bifrost_admin::BodyRef;
+
+pub fn store_request_body(
+    admin_state: &Option<Arc<AdminState>>,
+    record_id: &str,
+    body_data: &[u8],
+    content_encoding: Option<&str>,
+) -> Option<BodyRef> {
+    if body_data.is_empty() {
+        return None;
+    }
+
+    if let Some(ref state) = admin_state {
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            let decompressed = decompress_body(body_data, content_encoding);
+            return store.store(record_id, "req", decompressed.as_ref());
+        }
+    }
+    None
 }

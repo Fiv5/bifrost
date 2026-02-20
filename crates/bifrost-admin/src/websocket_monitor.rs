@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::body_store::{BodyRef, SharedBodyStore};
+use crate::frame_store::SharedFrameStore;
 use crate::traffic::{FrameDirection, FrameType, SocketStatus};
 
 const DEFAULT_PREVIEW_LIMIT: usize = 1024 * 1024; // 1MB for WebSocket
@@ -214,6 +215,7 @@ impl WebSocketMonitor {
         is_masked: bool,
         is_fin: bool,
         body_store: Option<&SharedBodyStore>,
+        frame_store: Option<&SharedFrameStore>,
     ) -> Option<WebSocketFrameRecord> {
         let mut connections = self.connections.write();
         let store = connections.get_mut(connection_id)?;
@@ -243,6 +245,17 @@ impl WebSocketMonitor {
         let frame_clone = frame.clone();
         store.add_frame(frame);
 
+        if let Some(fs) = frame_store {
+            if let Err(e) = fs.append_frame(connection_id, &frame_clone) {
+                tracing::warn!(
+                    "[WS_MONITOR] Failed to persist frame {} for {}: {}",
+                    frame_id,
+                    connection_id,
+                    e
+                );
+            }
+        }
+
         let event = FrameEvent {
             connection_id: connection_id.to_string(),
             frame: frame_clone.clone(),
@@ -258,6 +271,7 @@ impl WebSocketMonitor {
         connection_id: &str,
         payload: &[u8],
         body_store: Option<&SharedBodyStore>,
+        frame_store: Option<&SharedFrameStore>,
     ) -> Option<WebSocketFrameRecord> {
         let mut connections = self.connections.write();
         let store = connections.get_mut(connection_id)?;
@@ -276,6 +290,17 @@ impl WebSocketMonitor {
         let frame_clone = frame.clone();
         store.add_frame(frame);
 
+        if let Some(fs) = frame_store {
+            if let Err(e) = fs.append_frame(connection_id, &frame_clone) {
+                tracing::warn!(
+                    "[WS_MONITOR] Failed to persist SSE event {} for {}: {}",
+                    frame_id,
+                    connection_id,
+                    e
+                );
+            }
+        }
+
         let event = FrameEvent {
             connection_id: connection_id.to_string(),
             frame: frame_clone.clone(),
@@ -291,10 +316,14 @@ impl WebSocketMonitor {
         connection_id: &str,
         code: Option<u16>,
         reason: Option<String>,
+        frame_store: Option<&SharedFrameStore>,
     ) {
         let mut connections = self.connections.write();
         if let Some(store) = connections.get_mut(connection_id) {
             store.set_closed(code, reason);
+        }
+        if let Some(fs) = frame_store {
+            fs.mark_connection_closed(connection_id);
         }
     }
 
@@ -366,6 +395,84 @@ impl WebSocketMonitor {
         let result = frames.into_iter().take(limit).collect();
 
         Some((result, has_more))
+    }
+
+    pub fn get_frames_with_persistence(
+        &self,
+        connection_id: &str,
+        after_frame_id: Option<u64>,
+        limit: usize,
+        frame_store: Option<&SharedFrameStore>,
+    ) -> (Vec<WebSocketFrameRecord>, bool, bool) {
+        use std::collections::HashSet;
+
+        let mut all_frames = Vec::new();
+        let mut seen_ids: HashSet<u64> = HashSet::new();
+        let is_active = self.connections.read().contains_key(connection_id);
+
+        if let Some(fs) = frame_store {
+            match fs.load_frames(connection_id, after_frame_id, usize::MAX) {
+                Ok((file_frames, _)) => {
+                    for frame in file_frames {
+                        if !seen_ids.contains(&frame.frame_id) {
+                            seen_ids.insert(frame.frame_id);
+                            all_frames.push(frame);
+                        }
+                    }
+                    tracing::debug!(
+                        "[WS_MONITOR] Loaded {} frames from file for {}",
+                        all_frames.len(),
+                        connection_id
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[WS_MONITOR] Failed to load frames from file for {}: {}",
+                        connection_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        if let Some(store) = self.connections.read().get(connection_id) {
+            let mem_frames: Vec<_> = if let Some(after_id) = after_frame_id {
+                store
+                    .frames
+                    .iter()
+                    .filter(|f| f.frame_id > after_id)
+                    .cloned()
+                    .collect()
+            } else {
+                store.frames.iter().cloned().collect()
+            };
+
+            for frame in mem_frames {
+                if !seen_ids.contains(&frame.frame_id) {
+                    seen_ids.insert(frame.frame_id);
+                    all_frames.push(frame);
+                }
+            }
+        }
+
+        all_frames.sort_by_key(|f| f.frame_id);
+
+        let has_more = all_frames.len() > limit;
+        let result: Vec<_> = all_frames.into_iter().take(limit).collect();
+
+        (result, has_more, is_active)
+    }
+
+    pub fn has_persisted_frames(
+        &self,
+        connection_id: &str,
+        frame_store: Option<&SharedFrameStore>,
+    ) -> bool {
+        if let Some(fs) = frame_store {
+            fs.connection_exists(connection_id)
+        } else {
+            false
+        }
     }
 
     pub fn get_status(&self, connection_id: &str) -> Option<SocketStatus> {
@@ -454,6 +561,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         );
 
         assert!(frame.is_some());
@@ -477,6 +585,7 @@ mod tests {
                 format!("Message {}", i).as_bytes(),
                 true,
                 true,
+                None,
                 None,
             );
         }
@@ -515,6 +624,7 @@ mod tests {
             true,
             true,
             None,
+            None,
         );
         monitor.record_frame(
             "conn-1",
@@ -523,6 +633,7 @@ mod tests {
             b"response",
             false,
             true,
+            None,
             None,
         );
 
@@ -539,7 +650,12 @@ mod tests {
         let monitor = WebSocketMonitor::new();
         monitor.register_connection("conn-1");
 
-        monitor.set_connection_closed("conn-1", Some(1000), Some("Normal closure".to_string()));
+        monitor.set_connection_closed(
+            "conn-1",
+            Some(1000),
+            Some("Normal closure".to_string()),
+            None,
+        );
 
         let status = monitor.get_status("conn-1").unwrap();
         assert!(!status.is_open);

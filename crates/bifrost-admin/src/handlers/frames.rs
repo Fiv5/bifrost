@@ -59,28 +59,46 @@ pub async fn get_frames(
     let query = parse_frames_query(query_str);
     let monitor = &state.websocket_monitor;
 
-    let frames_result = monitor.get_frames(connection_id, query.after, query.limit);
+    let (frames, has_more, is_active) = monitor.get_frames_with_persistence(
+        connection_id,
+        query.after,
+        query.limit,
+        state.frame_store.as_ref(),
+    );
 
-    match frames_result {
-        Some((frames, has_more)) => {
-            let socket_status = monitor.get_status(connection_id);
-            let last_frame_id = monitor.get_last_frame_id(connection_id).unwrap_or(0);
-            let is_monitored = monitor.is_monitored(connection_id);
+    let has_data = !frames.is_empty()
+        || is_active
+        || monitor.has_persisted_frames(connection_id, state.frame_store.as_ref());
 
-            let response = FramesResponse {
-                frames,
-                socket_status,
-                last_frame_id,
-                has_more,
-                is_monitored,
-            };
+    if has_data {
+        let socket_status = monitor.get_status(connection_id);
+        let last_frame_id = frames
+            .last()
+            .map(|f| f.frame_id)
+            .or_else(|| monitor.get_last_frame_id(connection_id))
+            .or_else(|| {
+                state
+                    .frame_store
+                    .as_ref()
+                    .and_then(|fs| fs.get_last_frame_id(connection_id))
+            })
+            .unwrap_or(0);
+        let is_monitored = monitor.is_monitored(connection_id);
 
-            json_response(&response)
-        }
-        None => error_response(
+        let response = FramesResponse {
+            frames,
+            socket_status,
+            last_frame_id,
+            has_more,
+            is_monitored,
+        };
+
+        json_response(&response)
+    } else {
+        error_response(
             StatusCode::NOT_FOUND,
             &format!("Connection {} not found", connection_id),
-        ),
+        )
     }
 }
 

@@ -391,23 +391,25 @@ async fn run_proxy_server(
 
     let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(rules, values));
 
-    let body_temp_dir = get_bifrost_dir()
-        .map(|p| p.join("body_cache"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("bifrost_body_cache"));
+    let bifrost_dir = get_bifrost_dir()?;
+    let body_temp_dir = bifrost_dir.join("body_cache");
     let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
         body_temp_dir,
         2 * 1024 * 1024,
         7,
     )));
 
+    let frame_store = bifrost_admin::FrameStore::new(bifrost_dir.clone(), Some(24 * 7));
+
     let ca_cert_path = get_bifrost_dir()
         .map(|p| p.join("certs").join("ca.crt"))
         .ok();
 
-    let bifrost_dir = get_bifrost_dir()?;
     let config_manager = ConfigManager::new(bifrost_dir.clone()).ok();
 
-    let mut admin_state = AdminState::new(settings.port).with_body_store(body_store);
+    let mut admin_state = AdminState::new(settings.port)
+        .with_body_store(body_store)
+        .with_frame_store(frame_store);
     if let Some(vs) = values_storage {
         admin_state = admin_state.with_values_storage(vs);
     }

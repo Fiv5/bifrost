@@ -1,3 +1,4 @@
+pub mod body_cache;
 pub mod body_manipulation;
 pub mod curl_mock;
 pub mod dns;
@@ -43,5 +44,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(tls_intercept_mode::get_all_tests());
     tests.extend(tls_config_disconnect::get_all_tests());
     tests.extend(tls_switch_test::get_all_tests());
+    tests.extend(body_cache::get_all_tests());
     tests
 }

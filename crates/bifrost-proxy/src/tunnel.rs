@@ -25,9 +25,9 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::body::{apply_body_rules, Phase};
+use crate::decompress::get_content_encoding;
 use crate::dns::DnsResolver;
 use crate::http::{needs_body_processing, needs_request_body_processing};
-use crate::decompress::get_content_encoding;
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
@@ -35,7 +35,7 @@ use crate::server::{
     empty_body, full_body, BoxBody, ProxyConfig, ResolvedRules, RulesResolver, TlsConfig,
     TlsInterceptConfig,
 };
-use crate::tee::create_tee_body_with_store;
+use crate::tee::{create_tee_body_with_store, store_request_body};
 
 use futures_util::StreamExt;
 
@@ -1313,13 +1313,12 @@ async fn handle_intercepted_request_with_protocol(
                 )
             };
 
-            if let Some(ref body_store) = state.body_store {
-                let store = body_store.read();
-                let decompressed_req_body =
-                    crate::decompress::decompress_body(&body_bytes, req_content_encoding.as_deref());
-                record.request_body_ref =
-                    store.store(&record_id, "req", decompressed_req_body.as_ref());
-            }
+            record.request_body_ref = store_request_body(
+                &admin_state,
+                &record_id,
+                &body_bytes,
+                req_content_encoding.as_deref(),
+            );
 
             state.traffic_recorder.record(record);
         }
@@ -1419,14 +1418,15 @@ async fn handle_intercepted_request_with_protocol(
             )
         };
 
+        record.request_body_ref = store_request_body(
+            &admin_state,
+            req_id,
+            &body_bytes,
+            req_content_encoding.as_deref(),
+        );
+
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-
-            let decompressed_req_body = crate::decompress::decompress_body(
-                &body_bytes,
-                req_content_encoding.as_deref(),
-            );
-            record.request_body_ref = store.store(req_id, "req", decompressed_req_body.as_ref());
 
             let decompressed_res_body = crate::decompress::decompress_body(
                 &res_body_bytes,
@@ -1753,9 +1753,12 @@ async fn handle_intercepted_websocket(
                 }
 
                 if let Some(ref state) = admin_state_clone {
-                    state
-                        .websocket_monitor
-                        .set_connection_closed(&req_id_owned, None, None);
+                    state.websocket_monitor.set_connection_closed(
+                        &req_id_owned,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
                 }
             }
             Err(e) => {
@@ -1921,6 +1924,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -1930,6 +1934,7 @@ where
                         &record_id_owned,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }
@@ -1970,6 +1975,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -1979,6 +1985,7 @@ where
                         &record_id_owned2,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }

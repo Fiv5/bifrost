@@ -156,9 +156,12 @@ pub async fn handle_websocket_upgrade(
                 }
 
                 if let Some(ref state) = admin_state {
-                    state
-                        .websocket_monitor
-                        .set_connection_closed(&record_id_clone, None, None);
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_clone,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
                 }
             }
             Err(e) => {
@@ -317,6 +320,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -326,6 +330,7 @@ async fn websocket_bidirectional_with_capture(
                         &record_id_owned,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }
@@ -366,6 +371,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -375,6 +381,7 @@ async fn websocket_bidirectional_with_capture(
                         &record_id_owned2,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }
@@ -451,6 +458,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -460,6 +468,7 @@ where
                         &record_id_owned,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }
@@ -500,6 +509,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.frame_store.as_ref(),
                 );
 
                 if frame.opcode == Opcode::Close {
@@ -509,6 +519,7 @@ where
                         &record_id_owned2,
                         close_code,
                         close_reason,
+                        state.frame_store.as_ref(),
                     );
                 }
             }

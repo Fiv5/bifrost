@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 
 use crate::body_store::SharedBodyStore;
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
+use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
@@ -58,6 +59,7 @@ pub struct AdminState {
     pub values_storage: Option<SharedValuesStorage>,
     pub access_control: Option<SharedAccessControl>,
     pub body_store: Option<SharedBodyStore>,
+    pub frame_store: Option<SharedFrameStore>,
     pub start_time: u64,
     pub port: u16,
     pub ca_cert_path: Option<PathBuf>,
@@ -80,6 +82,7 @@ impl AdminState {
             values_storage: None,
             access_control: None,
             body_store: None,
+            frame_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
             ca_cert_path: None,
@@ -134,6 +137,16 @@ impl AdminState {
 
     pub fn with_body_store(mut self, body_store: SharedBodyStore) -> Self {
         self.body_store = Some(body_store);
+        self
+    }
+
+    pub fn with_frame_store(mut self, frame_store: FrameStore) -> Self {
+        self.frame_store = Some(Arc::new(frame_store));
+        self
+    }
+
+    pub fn with_frame_store_shared(mut self, frame_store: SharedFrameStore) -> Self {
+        self.frame_store = Some(frame_store);
         self
     }
 

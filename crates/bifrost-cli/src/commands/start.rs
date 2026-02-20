@@ -423,6 +423,11 @@ pub fn run_foreground(
             stored_config.traffic.file_retention_days,
         )));
 
+        let frame_store = bifrost_admin::FrameStore::new(
+            bifrost_dir.clone(),
+            Some(stored_config.traffic.file_retention_days * 24),
+        );
+
         let values_storage = config_manager.values_storage().await;
         let rules_storage = config_manager.rules_storage().await;
         let mut values = {
@@ -447,6 +452,7 @@ pub fn run_foreground(
 
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
+            .with_frame_store(frame_store)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_values_storage(values_storage)
@@ -644,6 +650,11 @@ pub fn run_daemon(
                     stored_config.traffic.file_retention_days,
                 )));
 
+                let frame_store = bifrost_admin::FrameStore::new(
+                    bifrost_dir.clone(),
+                    Some(stored_config.traffic.file_retention_days * 24),
+                );
+
                 let values_storage = config_manager.values_storage().await;
                 let rules_storage = config_manager.rules_storage().await;
                 let mut values = {
@@ -667,6 +678,7 @@ pub fn run_daemon(
 
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
+                    .with_frame_store(frame_store)
                     .with_runtime_config(runtime_config)
                     .with_connection_registry(connection_registry)
                     .with_values_storage(values_storage)

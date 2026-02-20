@@ -24,7 +24,7 @@ use crate::mock::{generate_mock_response, should_intercept_response};
 use crate::request::apply_req_rules;
 use crate::response::apply_res_rules;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
-use crate::tee::{create_sse_tee_body, create_tee_body_with_store};
+use crate::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
 use crate::tunnel::get_tls_client_config;
 use crate::url::apply_url_rules;
 
@@ -123,6 +123,10 @@ pub async fn handle_http_request(
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
+    if is_websocket_upgrade(&req) {
+        return handle_http_websocket(req, rules, ctx, admin_state).await;
+    }
+
     let uri = req.uri().clone();
     let method = req.method().to_string();
     let url = uri.to_string();
@@ -553,13 +557,12 @@ pub async fn handle_http_request(
                 record.set_sse();
             }
 
-            if let Some(ref body_store) = state.body_store {
-                let store = body_store.read();
-                let decompressed_req_body =
-                    decompress_body(&body_bytes, req_content_encoding.as_deref());
-                record.request_body_ref =
-                    store.store(&record_id, "req", decompressed_req_body.as_ref());
-            }
+            record.request_body_ref = store_request_body(
+                &admin_state,
+                &record_id,
+                &body_bytes,
+                req_content_encoding.as_deref(),
+            );
 
             state.traffic_recorder.record(record);
         }
@@ -703,13 +706,15 @@ pub async fn handle_http_request(
             state.websocket_monitor.register_connection(&ctx.id_str());
         }
 
+        record.request_body_ref = store_request_body(
+            &admin_state,
+            &ctx.id_str(),
+            &body_bytes,
+            req_content_encoding.as_deref(),
+        );
+
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-
-            let decompressed_req_body =
-                decompress_body(&body_bytes, req_content_encoding.as_deref());
-            record.request_body_ref =
-                store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref());
 
             let decompressed_res_body =
                 decompress_body(&res_body_bytes, res_content_encoding.as_deref());
@@ -882,17 +887,16 @@ async fn forward_without_rules(
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
 
-        if let Some(ref body_store) = state.body_store {
-            let store = body_store.read();
-            let decompressed_req_body =
-                decompress_body(&body_bytes, req_content_encoding.as_deref());
-            record.request_body_ref =
-                store.store(&record_id, "req", decompressed_req_body.as_ref());
-        }
-
         if is_sse_response(&res_parts) {
             record.set_sse();
         }
+
+        record.request_body_ref = store_request_body(
+            &admin_state,
+            &record_id,
+            &body_bytes,
+            req_content_encoding.as_deref(),
+        );
 
         state.traffic_recorder.record(record);
     }
@@ -969,6 +973,273 @@ fn get_default_port(host_protocol: &Option<Protocol>, is_https: bool) -> u16 {
         }
         _ => 80,
     }
+}
+
+async fn handle_http_websocket(
+    req: Request<Incoming>,
+    rules: Arc<dyn RulesResolver>,
+    ctx: &RequestContext,
+    admin_state: Option<Arc<AdminState>>,
+) -> Result<Response<BoxBody>> {
+    use crate::server::empty_body;
+    use crate::websocket::websocket_bidirectional_generic_with_capture;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let start_time = Instant::now();
+    let uri = req.uri().clone();
+    let url = uri.to_string();
+    let method = req.method().to_string();
+
+    let resolved_rules = rules.resolve(&url, "GET");
+    let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
+
+    let req_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    let host = uri
+        .host()
+        .or_else(|| {
+            req.headers()
+                .get(hyper::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(|h| h.split(':').next().unwrap_or(h))
+        })
+        .ok_or_else(|| BifrostError::Network("Missing host in WebSocket request".to_string()))?;
+
+    let port = uri.port_u16().unwrap_or(80);
+
+    let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
+        let parts: Vec<&str> = host_rule.split(':').collect();
+        let h = parts[0].to_string();
+        let p = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(port);
+        (h, p)
+    } else {
+        (host.to_string(), port)
+    };
+
+    debug!(
+        "[{}] WebSocket upgrade via HTTP proxy to {}:{}",
+        ctx.id_str(),
+        target_host,
+        target_port
+    );
+
+    let connect_start = Instant::now();
+    let mut target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
+        .await
+        .map_err(|e| {
+            BifrostError::Network(format!(
+                "Failed to connect to {}:{}: {}",
+                target_host, target_port, e
+            ))
+        })?;
+    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+
+    let upgrade_request = build_http_websocket_handshake(&req, &target_host, target_port)?;
+    target_stream
+        .write_all(upgrade_request.as_bytes())
+        .await
+        .map_err(|e| BifrostError::Network(format!("Failed to send WS handshake: {}", e)))?;
+
+    let mut response_buf = vec![0u8; 4096];
+    let n = target_stream.read(&mut response_buf).await.map_err(|e| {
+        BifrostError::Network(format!("Failed to read WS handshake response: {}", e))
+    })?;
+
+    let response_str = String::from_utf8_lossy(&response_buf[..n]);
+    if !response_str.contains("101") {
+        return Err(BifrostError::Network(format!(
+            "WebSocket handshake failed: {}",
+            response_str
+        )));
+    }
+
+    let (response_headers, sec_accept) = parse_websocket_response(&response_str);
+
+    let total_ms = start_time.elapsed().as_millis() as u64;
+    let record_id = ctx.id_str();
+
+    if let Some(ref state) = admin_state {
+        state
+            .metrics_collector
+            .increment_requests_by_type(bifrost_admin::TrafficType::Ws);
+
+        let ws_url = format!(
+            "ws://{}:{}{}",
+            target_host,
+            target_port,
+            uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+        );
+
+        let mut record = bifrost_admin::TrafficRecord::new(record_id.clone(), method, ws_url);
+        record.status = 101;
+        record.protocol = "ws".to_string();
+        record.duration_ms = total_ms;
+        record.timing = Some(bifrost_admin::RequestTiming {
+            dns_ms: None,
+            connect_ms: Some(tcp_connect_ms),
+            tls_ms: None,
+            send_ms: None,
+            wait_ms: Some(total_ms.saturating_sub(tcp_connect_ms)),
+            receive_ms: None,
+            total_ms,
+        });
+        record.request_headers = Some(req_headers);
+        record.response_headers = Some(response_headers.clone());
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| bifrost_admin::MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
+        record.set_websocket();
+
+        state.websocket_monitor.register_connection(&record_id);
+        state.traffic_recorder.record(record);
+    }
+
+    let record_id_clone = record_id.clone();
+    let admin_state_clone = admin_state.clone();
+    tokio::spawn(async move {
+        match hyper::upgrade::on(req).await {
+            Ok(upgraded) => {
+                if let Err(e) = websocket_bidirectional_generic_with_capture(
+                    upgraded,
+                    target_stream,
+                    &record_id_clone,
+                    admin_state_clone.clone(),
+                )
+                .await
+                {
+                    error!("[{}] WebSocket tunnel error: {}", record_id_clone, e);
+                }
+
+                if let Some(ref state) = admin_state_clone {
+                    state.websocket_monitor.set_connection_closed(
+                        &record_id_clone,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
+                }
+            }
+            Err(e) => {
+                error!("[{}] WebSocket upgrade error: {}", record_id_clone, e);
+            }
+        }
+    });
+
+    let mut response = Response::builder()
+        .status(101)
+        .header(hyper::header::UPGRADE, "websocket")
+        .header(hyper::header::CONNECTION, "Upgrade");
+
+    if let Some(accept) = sec_accept {
+        response = response.header("Sec-WebSocket-Accept", accept);
+    }
+
+    for (name, value) in response_headers {
+        if name.to_lowercase() != "upgrade"
+            && name.to_lowercase() != "connection"
+            && name.to_lowercase() != "sec-websocket-accept"
+        {
+            response = response.header(name, value);
+        }
+    }
+
+    Ok(response.body(empty_body()).unwrap())
+}
+
+fn build_http_websocket_handshake(
+    req: &Request<Incoming>,
+    target_host: &str,
+    target_port: u16,
+) -> Result<String> {
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let host_header = if target_port == 80 {
+        target_host.to_string()
+    } else {
+        format!("{}:{}", target_host, target_port)
+    };
+
+    let ws_key = req
+        .headers()
+        .get("Sec-WebSocket-Key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let ws_version = req
+        .headers()
+        .get("Sec-WebSocket-Version")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("13");
+
+    let mut handshake = format!(
+        "GET {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {}\r\n\
+         Sec-WebSocket-Version: {}\r\n",
+        path, host_header, ws_key, ws_version
+    );
+
+    if let Some(protocol) = req.headers().get("Sec-WebSocket-Protocol") {
+        if let Ok(protocol_str) = protocol.to_str() {
+            handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocol_str));
+        }
+    }
+
+    if let Some(extensions) = req.headers().get("Sec-WebSocket-Extensions") {
+        if let Ok(ext_str) = extensions.to_str() {
+            handshake.push_str(&format!("Sec-WebSocket-Extensions: {}\r\n", ext_str));
+        }
+    }
+
+    handshake.push_str("\r\n");
+    Ok(handshake)
+}
+
+fn parse_websocket_response(response_str: &str) -> (Vec<(String, String)>, Option<String>) {
+    let mut headers = Vec::new();
+    let mut sec_accept = None;
+
+    for line in response_str.lines().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim().to_string();
+            let value = value.trim().to_string();
+            if name.to_lowercase() == "sec-websocket-accept" {
+                sec_accept = Some(value.clone());
+            }
+            headers.push((name, value));
+        }
+    }
+
+    (headers, sec_accept)
 }
 
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {

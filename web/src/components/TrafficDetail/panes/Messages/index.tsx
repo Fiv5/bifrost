@@ -78,7 +78,7 @@ export const Messages = ({
       params.set('limit', '100');
 
       const response = await fetch(
-        `/api/traffic/${recordId}/frames?${params.toString()}`
+        `/_bifrost/api/traffic/${recordId}/frames?${params.toString()}`
       );
       if (!response.ok) {
         throw new Error('Failed to fetch frames');

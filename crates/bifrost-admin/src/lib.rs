@@ -1,5 +1,6 @@
 mod body_store;
 pub mod connection_registry;
+mod frame_store;
 mod handlers;
 mod metrics;
 mod router;
@@ -14,6 +15,7 @@ pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
 };
+pub use frame_store::{FrameStore, FrameStoreStats, SharedFrameStore};
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
