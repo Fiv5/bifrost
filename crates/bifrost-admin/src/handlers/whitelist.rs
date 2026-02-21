@@ -1,11 +1,14 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
@@ -61,6 +64,9 @@ pub async fn handle_whitelist_request(
             handle_remove_temporary(req, access_control).await
         }
         (&Method::GET, "/api/whitelist/pending") => handle_get_pending(access_control).await,
+        (&Method::GET, "/api/whitelist/pending/stream") => {
+            handle_pending_stream(access_control).await
+        }
         (&Method::POST, "/api/whitelist/pending/approve") => {
             handle_approve_pending(req, access_control).await
         }
@@ -330,6 +336,36 @@ async fn handle_get_pending(access_control: Arc<RwLock<ClientAccessControl>>) ->
     let ac = access_control.read().await;
     let pending = ac.get_pending_authorizations();
     json_response(&pending)
+}
+
+async fn handle_pending_stream(
+    access_control: Arc<RwLock<ClientAccessControl>>,
+) -> Response<BoxBody> {
+    let ac = access_control.read().await;
+    let receiver = ac.subscribe();
+    drop(ac);
+
+    let stream = BroadcastStream::new(receiver).filter_map(|result| match result {
+        Ok(event) => {
+            let data = serde_json::to_string(&event).ok()?;
+            let sse_data = format!("data: {}\n\n", data);
+            Some(sse_data)
+        }
+        Err(_) => None,
+    });
+
+    let body_stream = http_body_util::StreamBody::new(
+        stream.map(|s| Ok::<_, hyper::Error>(hyper::body::Frame::data(Bytes::from(s)))),
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(BoxBody::new(body_stream))
+        .unwrap()
 }
 
 async fn handle_approve_pending(

@@ -78,7 +78,7 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
 
             entry.requests += 1;
 
-            if record.is_websocket || record.is_sse {
+            if record.is_websocket || record.is_sse || record.is_tunnel {
                 if let Some(ref socket_status) = record.socket_status {
                     entry.bytes_sent += socket_status.send_bytes;
                     entry.bytes_received += socket_status.receive_bytes;

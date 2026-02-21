@@ -5,10 +5,10 @@ mod deadlock_tests {
     use tokio::time::timeout;
 
     use crate::body_store::BodyStore;
+    use crate::connection_monitor::{ConnectionMonitor, WebSocketFrameRecord};
     use crate::frame_store::FrameStore;
     use crate::traffic::{FrameDirection, FrameType, TrafficRecord};
     use crate::traffic_store::TrafficStore;
-    use crate::websocket_monitor::{WebSocketFrameRecord, WebSocketMonitor};
     use parking_lot::RwLock;
 
     fn create_temp_dir(name: &str) -> std::path::PathBuf {
@@ -167,8 +167,8 @@ mod deadlock_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn test_websocket_monitor_concurrent_access() {
-        let monitor = Arc::new(WebSocketMonitor::new());
+    async fn test_connection_monitor_concurrent_access() {
+        let monitor = Arc::new(ConnectionMonitor::new());
 
         let mut handles = vec![];
 
@@ -290,7 +290,7 @@ mod deadlock_tests {
         let traffic_store = Arc::new(TrafficStore::new(traffic_dir.clone(), 1000, None));
         let frame_store = Arc::new(FrameStore::new(frame_dir.clone(), None));
         let body_store = Arc::new(RwLock::new(BodyStore::new(body_dir.clone(), 100, 7)));
-        let monitor = Arc::new(WebSocketMonitor::new());
+        let monitor = Arc::new(ConnectionMonitor::new());
 
         let mut handles = vec![];
 

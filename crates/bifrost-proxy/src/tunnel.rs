@@ -333,6 +333,8 @@ pub async fn handle_connect(
         record.client_pid = client_pid;
         record.client_path = client_path;
         state.record_traffic(record);
+
+        state.connection_monitor.register_connection(&req_id);
     }
 
     let host_for_unregister = host.clone();
@@ -353,9 +355,22 @@ pub async fn handle_connect(
                         .metrics_collector
                         .decrement_connections_by_type(TrafficType::Tunnel);
                     state.connection_registry.unregister(&req_id);
+
+                    state.connection_monitor.set_connection_closed(
+                        &req_id,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
+
+                    if let Some(socket_status) = state.connection_monitor.get_status(&req_id) {
+                        state.update_traffic_by_id(&req_id, |record| {
+                            record.socket_status = Some(socket_status.clone());
+                        });
+                    }
                 }
                 match result {
-                    Ok(cancelled) if cancelled => {
+                    Ok(stats) if stats.cancelled => {
                         info!(
                             "[{}] Tunnel {}:{} closed due to config change",
                             req_id, host_for_unregister, port
@@ -1377,7 +1392,7 @@ async fn handle_intercepted_request_with_protocol(
 
             if is_sse {
                 record.set_sse();
-                state.websocket_monitor.register_connection(&record_id);
+                state.connection_monitor.register_connection(&record_id);
             }
 
             record.has_rule_hit = has_rules;
@@ -1496,7 +1511,7 @@ async fn handle_intercepted_request_with_protocol(
 
         if is_sse {
             record.set_sse();
-            state.websocket_monitor.register_connection(req_id);
+            state.connection_monitor.register_connection(req_id);
         }
 
         record.has_rule_hit = has_rules;
@@ -1540,7 +1555,7 @@ async fn handle_intercepted_request_with_protocol(
 
         if is_sse {
             parse_and_record_sse_events(&res_body_bytes, req_id, state);
-            state.websocket_monitor.set_connection_closed(
+            state.connection_monitor.set_connection_closed(
                 req_id,
                 None,
                 Some("SSE stream completed".to_string()),
@@ -1840,7 +1855,7 @@ async fn handle_intercepted_websocket(
             )
         };
 
-        state.websocket_monitor.register_connection(req_id);
+        state.connection_monitor.register_connection(req_id);
         state.record_traffic(record);
     }
 
@@ -1872,7 +1887,7 @@ async fn handle_intercepted_websocket(
                 }
 
                 if let Some(ref state) = admin_state_clone {
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &req_id_owned,
                         None,
                         None,
@@ -2035,7 +2050,7 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
@@ -2049,7 +2064,7 @@ where
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned,
                         close_code,
                         close_reason,
@@ -2086,7 +2101,7 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
@@ -2100,7 +2115,7 @@ where
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned2,
                         close_code,
                         close_reason,
@@ -2363,6 +2378,12 @@ pub async fn tunnel_bidirectional(
     }
 }
 
+pub struct TunnelStats {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub cancelled: bool,
+}
+
 pub async fn tunnel_bidirectional_with_cancel(
     upgraded: Upgraded,
     target: TcpStream,
@@ -2370,7 +2391,7 @@ pub async fn tunnel_bidirectional_with_cancel(
     req_id: &str,
     admin_state: Option<&Arc<AdminState>>,
     cancel_rx: oneshot::Receiver<()>,
-) -> Result<bool> {
+) -> Result<TunnelStats> {
     let client = TokioIo::new(upgraded);
     let (mut target_read, mut target_write) = target.into_split();
 
@@ -2380,42 +2401,58 @@ pub async fn tunnel_bidirectional_with_cancel(
 
     let admin_state_clone = admin_state.cloned();
     let admin_state_clone2 = admin_state.cloned();
+    let req_id_owned = req_id.to_string();
+    let req_id_owned2 = req_id.to_string();
 
     let client_to_target = async move {
         let mut buf = vec![0u8; 8192];
+        let mut total_sent: u64 = 0;
         loop {
             let n = client_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             target_write.write_all(&buf[..n]).await?;
+            total_sent += n as u64;
 
             if let Some(ref state) = admin_state_clone {
                 state
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_owned,
+                    FrameDirection::Send,
+                    n as u64,
+                );
             }
         }
         target_write.shutdown().await?;
-        Ok::<_, std::io::Error>(())
+        Ok::<_, std::io::Error>(total_sent)
     };
 
     let target_to_client = async move {
         let mut buf = vec![0u8; 8192];
+        let mut total_received: u64 = 0;
         loop {
             let n = target_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             client_write.write_all(&buf[..n]).await?;
+            total_received += n as u64;
 
             if let Some(ref state) = admin_state_clone2 {
                 state
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_owned2,
+                    FrameDirection::Receive,
+                    n as u64,
+                );
             }
         }
-        Ok::<_, std::io::Error>(())
+        Ok::<_, std::io::Error>(total_received)
     };
 
     let bidirectional = async { tokio::try_join!(client_to_target, target_to_client) };
@@ -2423,13 +2460,13 @@ pub async fn tunnel_bidirectional_with_cancel(
     tokio::select! {
         result = bidirectional => {
             match result {
-                Ok(_) => {
+                Ok((bytes_sent, bytes_received)) => {
                     if verbose_logging {
                         debug!("[{}] Tunnel closed normally", req_id);
                     } else {
                         debug!("Tunnel closed normally");
                     }
-                    Ok(false)
+                    Ok(TunnelStats { bytes_sent, bytes_received, cancelled: false })
                 }
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::ConnectionReset
@@ -2440,7 +2477,7 @@ pub async fn tunnel_bidirectional_with_cancel(
                         } else {
                             debug!("Tunnel closed: {}", e);
                         }
-                        Ok(false)
+                        Ok(TunnelStats { bytes_sent: 0, bytes_received: 0, cancelled: false })
                     } else {
                         Err(BifrostError::Network(format!("Tunnel error: {}", e)))
                     }
@@ -2451,7 +2488,7 @@ pub async fn tunnel_bidirectional_with_cancel(
             if verbose_logging {
                 debug!("[{}] Tunnel cancelled by config change", req_id);
             }
-            Ok(true)
+            Ok(TunnelStats { bytes_sent: 0, bytes_received: 0, cancelled: true })
         }
     }
 }

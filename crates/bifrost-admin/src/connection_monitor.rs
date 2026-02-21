@@ -159,7 +159,7 @@ impl ConnectionFrameStore {
     }
 }
 
-pub struct WebSocketMonitor {
+pub struct ConnectionMonitor {
     pub(crate) connections: RwLock<HashMap<String, ConnectionFrameStore>>,
     preview_limit: usize,
     sse_preview_limit: usize,
@@ -167,7 +167,7 @@ pub struct WebSocketMonitor {
     global_tx: broadcast::Sender<FrameEvent>,
 }
 
-impl WebSocketMonitor {
+impl ConnectionMonitor {
     pub fn new() -> Self {
         Self::with_config(
             DEFAULT_PREVIEW_LIMIT,
@@ -482,6 +482,28 @@ impl WebSocketMonitor {
             .map(|s| s.status.clone())
     }
 
+    pub fn update_traffic(
+        &self,
+        connection_id: &str,
+        direction: FrameDirection,
+        bytes: u64,
+    ) -> bool {
+        let mut connections = self.connections.write();
+        if let Some(store) = connections.get_mut(connection_id) {
+            match direction {
+                FrameDirection::Send => {
+                    store.status.send_bytes += bytes;
+                }
+                FrameDirection::Receive => {
+                    store.status.receive_bytes += bytes;
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get_last_frame_id(&self, connection_id: &str) -> Option<u64> {
         self.connections
             .read()
@@ -534,13 +556,13 @@ impl WebSocketMonitor {
     }
 }
 
-impl Default for WebSocketMonitor {
+impl Default for ConnectionMonitor {
     fn default() -> Self {
         Self::new()
     }
 }
 
-pub type SharedWebSocketMonitor = Arc<WebSocketMonitor>;
+pub type SharedConnectionMonitor = Arc<ConnectionMonitor>;
 
 #[cfg(test)]
 mod tests {
@@ -548,14 +570,14 @@ mod tests {
 
     #[test]
     fn test_register_connection() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
         assert_eq!(monitor.connection_count(), 1);
     }
 
     #[test]
     fn test_record_frame() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
 
         let frame = monitor.record_frame(
@@ -579,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_get_frames() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
 
         for i in 0..5 {
@@ -606,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_monitoring_state() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
 
         assert!(!monitor.is_monitored("conn-1"));
@@ -618,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_socket_status() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
 
         monitor.record_frame(
@@ -652,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_connection_closed() {
-        let monitor = WebSocketMonitor::new();
+        let monitor = ConnectionMonitor::new();
         monitor.register_connection("conn-1");
 
         monitor.set_connection_closed(

@@ -248,6 +248,8 @@ pub struct TrafficSummary {
     #[serde(default)]
     pub is_sse: bool,
     #[serde(default)]
+    pub is_tunnel: bool,
+    #[serde(default)]
     pub frame_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_status: Option<SocketStatus>,
@@ -312,6 +314,7 @@ impl From<&TrafficRecord> for TrafficSummary {
             matched_protocols,
             is_websocket: record.is_websocket,
             is_sse: record.is_sse,
+            is_tunnel: record.is_tunnel,
             frame_count: record.frame_count,
             socket_status: record.socket_status.clone(),
             start_time,

@@ -1,10 +1,12 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ipnet::IpNet;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +76,13 @@ pub struct PendingAuth {
     pub attempt_count: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingAuthEvent {
+    pub event_type: String,
+    pub pending_auth: PendingAuth,
+    pub total_pending: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct AccessControlConfig {
     pub mode: AccessMode,
@@ -98,6 +107,8 @@ pub struct ClientAccessControl {
     temporary_whitelist: RwLock<HashSet<IpAddr>>,
     session_denied: RwLock<HashSet<IpAddr>>,
     pending_authorization: RwLock<Vec<(IpAddr, u64, u32)>>,
+    event_sender: broadcast::Sender<PendingAuthEvent>,
+    generation: AtomicU64,
 }
 
 impl ClientAccessControl {
@@ -115,6 +126,8 @@ impl ClientAccessControl {
             }
         }
 
+        let (event_sender, _) = broadcast::channel(64);
+
         Self {
             mode: config.mode,
             whitelist,
@@ -122,10 +135,22 @@ impl ClientAccessControl {
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
+            event_sender,
+            generation: AtomicU64::new(1),
         }
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn increment_generation(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+
     pub fn with_mode(mode: AccessMode) -> Self {
+        let (event_sender, _) = broadcast::channel(64);
+
         Self {
             mode,
             whitelist: HashSet::new(),
@@ -133,7 +158,22 @@ impl ClientAccessControl {
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
+            event_sender,
+            generation: AtomicU64::new(1),
         }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<PendingAuthEvent> {
+        self.event_sender.subscribe()
+    }
+
+    fn broadcast_event(&self, event_type: &str, pending_auth: PendingAuth, total_pending: usize) {
+        let event = PendingAuthEvent {
+            event_type: event_type.to_string(),
+            pending_auth,
+            total_pending,
+        };
+        let _ = self.event_sender.send(event);
     }
 
     fn parse_ip_or_cidr(s: &str) -> Result<IpNet, String> {
@@ -265,6 +305,7 @@ impl ClientAccessControl {
     pub fn add_to_whitelist(&mut self, ip_or_cidr: &str) -> Result<(), String> {
         let ip_net = Self::parse_ip_or_cidr(ip_or_cidr)?;
         self.whitelist.insert(ip_net);
+        self.increment_generation();
         info!("Added {} to whitelist", ip_or_cidr);
         Ok(())
     }
@@ -273,6 +314,7 @@ impl ClientAccessControl {
         let ip_net = Self::parse_ip_or_cidr(ip_or_cidr)?;
         let removed = self.whitelist.remove(&ip_net);
         if removed {
+            self.increment_generation();
             info!("Removed {} from whitelist", ip_or_cidr);
         }
         Ok(removed)
@@ -281,17 +323,23 @@ impl ClientAccessControl {
     pub fn add_temporary(&self, ip: IpAddr) {
         let mut temp = self.temporary_whitelist.write().unwrap();
         temp.insert(ip);
+        self.increment_generation();
         info!("Added {} to temporary whitelist", ip);
     }
 
     pub fn remove_temporary(&self, ip: &IpAddr) -> bool {
         let mut temp = self.temporary_whitelist.write().unwrap();
-        temp.remove(ip)
+        let removed = temp.remove(ip);
+        if removed {
+            self.increment_generation();
+        }
+        removed
     }
 
     pub fn deny_session(&self, ip: IpAddr) {
         let mut denied = self.session_denied.write().unwrap();
         denied.insert(ip);
+        self.increment_generation();
         info!("Denied {} for this session", ip);
     }
 
@@ -315,6 +363,7 @@ impl ClientAccessControl {
 
     pub fn set_mode(&mut self, mode: AccessMode) {
         self.mode = mode;
+        self.increment_generation();
         info!("Access mode changed to: {}", mode);
     }
 
@@ -324,6 +373,7 @@ impl ClientAccessControl {
 
     pub fn set_allow_lan(&mut self, allow: bool) {
         self.allow_lan = allow;
+        self.increment_generation();
         info!("Allow LAN set to: {}", allow);
     }
 
@@ -335,11 +385,26 @@ impl ClientAccessControl {
 
         let mut pending = self.pending_authorization.write().unwrap();
 
-        if let Some(entry) = pending.iter_mut().find(|(addr, _, _)| *addr == ip) {
-            entry.2 += 1;
-        } else {
-            pending.push((ip, now, 1));
-            info!("Added {} to pending authorization", ip);
+        let (first_seen, attempt_count, is_new) =
+            if let Some(entry) = pending.iter_mut().find(|(addr, _, _)| *addr == ip) {
+                entry.2 += 1;
+                (entry.1, entry.2, false)
+            } else {
+                pending.push((ip, now, 1));
+                info!("Added {} to pending authorization", ip);
+                (now, 1, true)
+            };
+
+        let total_pending = pending.len();
+        drop(pending);
+
+        if is_new {
+            let pending_auth = PendingAuth {
+                ip: ip.to_string(),
+                first_seen,
+                attempt_count,
+            };
+            self.broadcast_event("new", pending_auth, total_pending);
         }
     }
 
@@ -362,13 +427,22 @@ impl ClientAccessControl {
 
     pub fn approve_pending(&self, ip: &IpAddr) -> bool {
         let mut pending = self.pending_authorization.write().unwrap();
-        let original_len = pending.len();
-        pending.retain(|(addr, _, _)| addr != ip);
+        let removed_entry = pending.iter().find(|(addr, _, _)| addr == ip).cloned();
 
-        if pending.len() < original_len {
+        if let Some((_, first_seen, attempt_count)) = removed_entry {
+            pending.retain(|(addr, _, _)| addr != ip);
+            let total_pending = pending.len();
             drop(pending);
+
             self.add_temporary(*ip);
             info!("Approved pending authorization for {}", ip);
+
+            let pending_auth = PendingAuth {
+                ip: ip.to_string(),
+                first_seen,
+                attempt_count,
+            };
+            self.broadcast_event("approved", pending_auth, total_pending);
             true
         } else {
             false
@@ -377,13 +451,22 @@ impl ClientAccessControl {
 
     pub fn reject_pending(&self, ip: &IpAddr) -> bool {
         let mut pending = self.pending_authorization.write().unwrap();
-        let original_len = pending.len();
-        pending.retain(|(addr, _, _)| addr != ip);
+        let removed_entry = pending.iter().find(|(addr, _, _)| addr == ip).cloned();
 
-        if pending.len() < original_len {
+        if let Some((_, first_seen, attempt_count)) = removed_entry {
+            pending.retain(|(addr, _, _)| addr != ip);
+            let total_pending = pending.len();
             drop(pending);
+
             self.deny_session(*ip);
             info!("Rejected pending authorization for {}", ip);
+
+            let pending_auth = PendingAuth {
+                ip: ip.to_string(),
+                first_seen,
+                attempt_count,
+            };
+            self.broadcast_event("rejected", pending_auth, total_pending);
             true
         } else {
             false

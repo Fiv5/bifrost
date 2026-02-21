@@ -554,7 +554,7 @@ pub async fn handle_http_request(
             if is_websocket {
                 record.protocol = "ws".to_string();
                 record.set_websocket();
-                state.websocket_monitor.register_connection(&record_id);
+                state.connection_monitor.register_connection(&record_id);
             }
 
             if is_sse {
@@ -711,13 +711,13 @@ pub async fn handle_http_request(
         if is_websocket {
             record.protocol = "ws".to_string();
             record.set_websocket();
-            state.websocket_monitor.register_connection(&ctx.id_str());
+            state.connection_monitor.register_connection(&ctx.id_str());
         }
 
         let is_sse = is_sse_response(&res_parts);
         if is_sse {
             record.set_sse();
-            state.websocket_monitor.register_connection(&ctx.id_str());
+            state.connection_monitor.register_connection(&ctx.id_str());
         }
 
         record.request_body_ref = store_request_body(
@@ -740,7 +740,7 @@ pub async fn handle_http_request(
 
         if is_sse {
             parse_and_record_sse_events(&final_res_body, &ctx.id_str(), state);
-            state.websocket_monitor.set_connection_closed(
+            state.connection_monitor.set_connection_closed(
                 &ctx.id_str(),
                 None,
                 Some("SSE stream completed".to_string()),
@@ -914,7 +914,7 @@ async fn forward_without_rules(
         let is_sse = is_sse_response(&res_parts);
         if is_sse {
             record.set_sse();
-            state.websocket_monitor.register_connection(&record_id);
+            state.connection_monitor.register_connection(&record_id);
         }
 
         record.request_body_ref = store_request_body(
@@ -1140,7 +1140,7 @@ async fn handle_http_websocket(
         record.client_path = ctx.client_path.clone();
         record.set_websocket();
 
-        state.websocket_monitor.register_connection(&record_id);
+        state.connection_monitor.register_connection(&record_id);
         state.record_traffic(record);
     }
 
@@ -1161,7 +1161,7 @@ async fn handle_http_websocket(
                 }
 
                 if let Some(ref state) = admin_state_clone {
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_clone,
                         None,
                         None,
@@ -1316,7 +1316,7 @@ pub fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &Adm
     for line in body_str.lines() {
         if line.is_empty() {
             if !current_event.is_empty() {
-                state.websocket_monitor.record_sse_event(
+                state.connection_monitor.record_sse_event(
                     connection_id,
                     current_event.as_bytes(),
                     state.body_store.as_ref(),
@@ -1333,7 +1333,7 @@ pub fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &Adm
     }
 
     if !current_event.is_empty() {
-        state.websocket_monitor.record_sse_event(
+        state.connection_monitor.record_sse_event(
             connection_id,
             current_event.as_bytes(),
             state.body_store.as_ref(),

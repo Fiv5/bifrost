@@ -9,12 +9,12 @@ use tokio::sync::RwLock;
 
 use crate::app_icon::SharedAppIconCache;
 use crate::body_store::SharedBodyStore;
+use crate::connection_monitor::{ConnectionMonitor, SharedConnectionMonitor};
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
-use crate::websocket_monitor::{SharedWebSocketMonitor, WebSocketMonitor};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -73,7 +73,7 @@ pub struct AdminState {
     pub port: u16,
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
-    pub websocket_monitor: SharedWebSocketMonitor,
+    pub connection_monitor: SharedConnectionMonitor,
     pub runtime_config: SharedRuntimeConfig,
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
@@ -98,7 +98,7 @@ impl AdminState {
             port,
             ca_cert_path: None,
             system_proxy_manager: None,
-            websocket_monitor: Arc::new(WebSocketMonitor::new()),
+            connection_monitor: Arc::new(ConnectionMonitor::new()),
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,

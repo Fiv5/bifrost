@@ -83,11 +83,22 @@ async fn download_ca_cert(state: SharedAdminState) -> Response<BoxBody> {
 }
 
 async fn get_cert_qrcode(req: Request<Incoming>, _state: SharedAdminState) -> Response<BoxBody> {
-    let host = req
-        .headers()
-        .get(hyper::header::HOST)
-        .and_then(|h| h.to_str().ok())
-        .unwrap_or("127.0.0.1");
+    let query = req.uri().query().unwrap_or("");
+    let ip_from_query = query.split('&').find_map(|pair| {
+        let mut parts = pair.split('=');
+        match (parts.next(), parts.next()) {
+            (Some("ip"), Some(value)) => Some(urlencoding::decode(value).ok()?.into_owned()),
+            _ => None,
+        }
+    });
+
+    let host = ip_from_query.unwrap_or_else(|| {
+        req.headers()
+            .get(hyper::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("127.0.0.1")
+            .to_string()
+    });
 
     let download_url = format!("http://{}/_bifrost/public/cert", host);
 
@@ -186,4 +197,66 @@ fn is_private_ip(ip: &IpAddr) -> bool {
         IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
         IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
+}
+
+pub async fn handle_proxy_public(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    path: &str,
+) -> Response<BoxBody> {
+    let method = req.method().clone();
+
+    match path {
+        "/public/proxy/qrcode" | "/public/proxy/qrcode/" => match method {
+            Method::GET => get_proxy_qrcode(req, state).await,
+            _ => method_not_allowed(),
+        },
+        _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
+    }
+}
+
+async fn get_proxy_qrcode(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    let query = req.uri().query().unwrap_or("");
+    let ip_from_query = query.split('&').find_map(|pair| {
+        let mut parts = pair.split('=');
+        match (parts.next(), parts.next()) {
+            (Some("ip"), Some(value)) => Some(urlencoding::decode(value).ok()?.into_owned()),
+            _ => None,
+        }
+    });
+
+    let host = ip_from_query.unwrap_or_else(|| {
+        req.headers()
+            .get(hyper::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(|h| h.split(':').next().unwrap_or(h))
+            .unwrap_or("127.0.0.1")
+            .to_string()
+    });
+
+    let proxy_address = format!("{}:{}", host, state.port);
+
+    let code = match QrCode::new(proxy_address.as_bytes()) {
+        Ok(code) => code,
+        Err(e) => {
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to generate QR code: {}", e),
+            );
+        }
+    };
+
+    let svg_string = code
+        .render()
+        .min_dimensions(200, 200)
+        .dark_color(svg::Color("#000000"))
+        .light_color(svg::Color("#ffffff"))
+        .build();
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "image/svg+xml")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(full_body(svg_string))
+        .unwrap()
 }

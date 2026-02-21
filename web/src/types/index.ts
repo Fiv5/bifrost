@@ -62,6 +62,7 @@ export interface TrafficSummary {
   matched_protocols: string[];
   is_websocket?: boolean;
   is_sse?: boolean;
+  is_tunnel?: boolean;
   frame_count?: number;
   socket_status?: SocketStatus | null;
   start_time: string;
@@ -76,7 +77,6 @@ export interface TrafficRecord extends TrafficSummary {
   matched_rules: MatchedRule[] | null;
   request_content_type: string | null;
   timing?: RequestTiming | null;
-  is_tunnel?: boolean;
   last_frame_id?: number;
 }
 

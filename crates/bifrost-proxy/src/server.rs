@@ -510,6 +510,11 @@ impl ProxyServer {
             let admin_state = self.admin_state.clone();
             let admin_security_config = self.admin_security_config.clone();
             let dns_resolver = Arc::clone(&self.dns_resolver);
+            let access_control = Arc::clone(&self.access_control);
+            let initial_generation = {
+                let ac = self.access_control.read().await;
+                ac.generation()
+            };
 
             tokio::spawn(async move {
                 let io = TokioIo::new(stream);
@@ -521,6 +526,7 @@ impl ProxyServer {
                     let admin_state = admin_state.clone();
                     let admin_security_config = admin_security_config.clone();
                     let dns_resolver = Arc::clone(&dns_resolver);
+                    let access_control = Arc::clone(&access_control);
                     async move {
                         handle_request(
                             req,
@@ -531,6 +537,8 @@ impl ProxyServer {
                             admin_state,
                             admin_security_config,
                             dns_resolver,
+                            access_control,
+                            initial_generation,
                         )
                         .await
                     }
@@ -560,6 +568,8 @@ async fn handle_request(
     admin_state: Option<Arc<AdminState>>,
     admin_security_config: AdminSecurityConfig,
     dns_resolver: Arc<DnsResolver>,
+    access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
+    initial_generation: u64,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let client_process = resolve_client_process(&peer_addr);
     let (client_app, client_pid, client_path) = client_process
@@ -592,6 +602,31 @@ async fn handle_request(
             "Received request: {} {} from {} ({})",
             method, uri, peer_addr, client_info
         );
+    }
+
+    let is_public_cert_path = path.starts_with(CERT_PUBLIC_PATH_PREFIX);
+    let is_loopback = peer_addr.ip().is_loopback();
+    if !is_public_cert_path && !is_loopback {
+        let ac = access_control.read().await;
+        let current_generation = ac.generation();
+        if current_generation != initial_generation {
+            let decision = ac.check_access(&peer_addr.ip());
+            drop(ac);
+            match decision {
+                AccessDecision::Allow => {}
+                AccessDecision::Deny | AccessDecision::Prompt(_) => {
+                    warn!(
+                        "[{}] Access denied for {} on existing connection (access control changed)",
+                        ctx.id_str(),
+                        peer_addr.ip()
+                    );
+                    return Ok(error_response(
+                        403,
+                        "Access denied - access control policy changed",
+                    ));
+                }
+            }
+        }
     }
 
     if path.starts_with(ADMIN_PATH_PREFIX) {

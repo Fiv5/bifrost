@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Card,
   Descriptions,
@@ -70,7 +71,10 @@ import { getAppMetrics } from "../../api/metrics";
 import {
   getSystemProxyStatus,
   setSystemProxy,
+  getProxyAddressInfo,
+  getProxyQRCodeUrl,
   type SystemProxyStatus,
+  type ProxyAddressInfo,
 } from "../../api/proxy";
 import {
   getTlsConfig,
@@ -87,17 +91,53 @@ import {
   getCertQRCodeUrl,
   type CertInfo,
 } from "../../api/cert";
-import type { PendingAuth, TrafficTypeMetrics, AccessMode, AppMetrics } from "../../types";
+import type {
+  PendingAuth,
+  TrafficTypeMetrics,
+  AccessMode,
+  AppMetrics,
+} from "../../types";
 import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import MetricsChart from "../../components/MetricsChart";
 
 const { Text, Paragraph } = Typography;
 
+const TAB_PARAM = "tab";
+const DEFAULT_TAB = "proxy";
+const VALID_TABS = [
+  "proxy",
+  "appearance",
+  "certificate",
+  "metrics",
+  "system",
+  "access",
+];
+
 export default function Settings() {
-  const { overview, history, loading, error, fetchOverview, fetchHistory } = useMetricsStore();
+  const { overview, history, loading, error, fetchOverview, fetchHistory } =
+    useMetricsStore();
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const { token } = theme.useToken();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const tabFromUrl = searchParams.get(TAB_PARAM);
+  const activeTab =
+    tabFromUrl && VALID_TABS.includes(tabFromUrl) ? tabFromUrl : DEFAULT_TAB;
+
+  const handleTabChange = useCallback(
+    (key: string) => {
+      setSearchParams(
+        (prev) => {
+          prev.set(TAB_PARAM, key);
+          return prev;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
   const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
@@ -116,6 +156,9 @@ export default function Settings() {
   const [perfLoading, setPerfLoading] = useState(false);
   const [appMetrics, setAppMetrics] = useState<AppMetrics[]>([]);
   const [appMetricsLoading, setAppMetricsLoading] = useState(false);
+  const [proxyAddressInfo, setProxyAddressInfo] =
+    useState<ProxyAddressInfo | null>(null);
+  const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
 
   const fetchSystemProxy = async () => {
     try {
@@ -170,6 +213,18 @@ export default function Settings() {
       setAppMetricsLoading(false);
     }
   }, []);
+
+  const fetchProxyAddressInfo = useCallback(async () => {
+    try {
+      const info = await getProxyAddressInfo();
+      setProxyAddressInfo(info);
+      if (info.addresses.length > 0 && !selectedProxyIp) {
+        setSelectedProxyIp(info.addresses[0].ip);
+      }
+    } catch {
+      console.error("Failed to fetch proxy address info");
+    }
+  }, [selectedProxyIp]);
 
   const handleSystemProxyToggle = async (enabled: boolean) => {
     setSystemProxyLoading(true);
@@ -502,6 +557,7 @@ export default function Settings() {
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchAppMetricsData();
+    fetchProxyAddressInfo();
     const interval = setInterval(fetchOverview, 1000);
     const historyInterval = setInterval(() => fetchHistory(3600), 5000);
     const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
@@ -510,12 +566,22 @@ export default function Settings() {
       clearInterval(historyInterval);
       clearInterval(appMetricsInterval);
     };
-  }, [fetchOverview, fetchHistory, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig, fetchAppMetricsData]);
+  }, [
+    fetchOverview,
+    fetchHistory,
+    fetchTlsConfig,
+    fetchCertInfo,
+    fetchPerformanceConfig,
+    fetchAppMetricsData,
+    fetchProxyAddressInfo,
+  ]);
 
   useEffect(() => {
     fetchPending();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overview?.pending_authorizations]);
+
+  const { fetchStatus: fetchWhitelistStatus } = useWhitelistStore();
 
   const handleApprove = async (ip: string) => {
     try {
@@ -523,6 +589,7 @@ export default function Settings() {
       message.success(`Approved ${ip}`);
       fetchOverview();
       fetchPending();
+      fetchWhitelistStatus();
     } catch {
       message.error(`Failed to approve ${ip}`);
     }
@@ -666,23 +733,93 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   </Button>
                 }
               >
-                <Descriptions column={1} size="small">
-                  <Descriptions.Item label="Port">
-                    <Text code>{overview?.server.port || 9900}</Text>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="HTTP/HTTPS Proxy">
-                    <Text code>127.0.0.1:{overview?.server.port || 9900}</Text>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Admin URL">
-                    <a
-                      href={overview?.server.admin_url}
-                      target="_blank"
-                      rel="noreferrer"
+                <Row gutter={16}>
+                  <Col flex="auto">
+                    <Descriptions column={1} size="small">
+                      <Descriptions.Item label="Port">
+                        <Text code>{overview?.server.port || 9900}</Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="Admin URL">
+                        <a
+                          href={overview?.server.admin_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {overview?.server.admin_url}
+                        </a>
+                      </Descriptions.Item>
+                    </Descriptions>
+                    {proxyAddressInfo &&
+                      proxyAddressInfo.addresses.length > 0 && (
+                        <>
+                          <Divider style={{ margin: "12px 0" }} />
+                          <Text
+                            type="secondary"
+                            style={{
+                              fontSize: 12,
+                              display: "block",
+                              marginBottom: 8,
+                            }}
+                          >
+                            Available Network Addresses (select for QR code)
+                          </Text>
+                          <Space wrap size={[8, 8]}>
+                            {proxyAddressInfo.addresses.map((addr) => (
+                              <Tag
+                                key={addr.ip}
+                                color={
+                                  selectedProxyIp === addr.ip
+                                    ? "blue"
+                                    : "default"
+                                }
+                                style={{ cursor: "pointer" }}
+                                onClick={() => setSelectedProxyIp(addr.ip)}
+                              >
+                                <Text
+                                  code
+                                  style={{
+                                    color:
+                                      selectedProxyIp === addr.ip
+                                        ? "#1890ff"
+                                        : undefined,
+                                  }}
+                                >
+                                  {addr.address}
+                                </Text>
+                              </Tag>
+                            ))}
+                          </Space>
+                        </>
+                      )}
+                  </Col>
+                  <Col>
+                    <Tooltip
+                      title={
+                        selectedProxyIp
+                          ? `Scan to connect: ${selectedProxyIp}:${overview?.server.port || 9900}`
+                          : "Scan with mobile device to configure proxy"
+                      }
                     >
-                      {overview?.server.admin_url}
-                    </a>
-                  </Descriptions.Item>
-                </Descriptions>
+                      <div style={{ textAlign: "center" }}>
+                        <Image
+                          src={getProxyQRCodeUrl(selectedProxyIp || undefined)}
+                          alt="Proxy QR Code"
+                          width={100}
+                          height={100}
+                          preview={{
+                            mask: <QrcodeOutlined style={{ fontSize: 20 }} />,
+                          }}
+                          fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
+                        />
+                        <div style={{ marginTop: 4 }}>
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            <QrcodeOutlined /> Scan to connect
+                          </Text>
+                        </div>
+                      </div>
+                    </Tooltip>
+                  </Col>
+                </Row>
               </Card>
             </Col>
 
@@ -1203,7 +1340,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 {certInfo?.available ? (
                   <>
                     <Image
-                      src={getCertQRCodeUrl()}
+                      src={getCertQRCodeUrl(selectedProxyIp || undefined)}
                       alt="Certificate QR Code"
                       width={180}
                       height={180}
@@ -1215,6 +1352,14 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     >
                       Scan with your mobile device to download and install the
                       CA certificate
+                      {selectedProxyIp && (
+                        <>
+                          <br />
+                          <Text code style={{ fontSize: 11 }}>
+                            {selectedProxyIp}
+                          </Text>
+                        </>
+                      )}
                     </Text>
                   </>
                 ) : (
@@ -1614,7 +1759,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         />
       )}
 
-      <Tabs defaultActiveKey="proxy" items={tabItems} />
+      <Tabs activeKey={activeTab} onChange={handleTabChange} items={tabItems} />
     </div>
   );
 }
@@ -1967,7 +2112,7 @@ function AppMetricsContent({
       bytes_sent: acc.bytes_sent + app.bytes_sent,
       bytes_received: acc.bytes_received + app.bytes_received,
     }),
-    { requests: 0, bytes_sent: 0, bytes_received: 0 }
+    { requests: 0, bytes_sent: 0, bytes_received: 0 },
   );
 
   return (
@@ -2007,14 +2152,22 @@ function AppMetricsContent({
           >
             <Statistic
               title="Total Traffic"
-              value={formatBytes(totalStats.bytes_sent + totalStats.bytes_received)}
+              value={formatBytes(
+                totalStats.bytes_sent + totalStats.bytes_received,
+              )}
               prefix={<SwapOutlined />}
             />
           </Card>
         </Col>
       </Row>
 
-      <div style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
+      <div
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          justifyContent: "flex-end",
+        }}
+      >
         <Button
           icon={<ReloadOutlined />}
           onClick={onRefresh}
@@ -2595,12 +2748,7 @@ function AccessControlTab() {
           cancelText="No"
         >
           <Tooltip title="Remove">
-            <Button
-              type="text"
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-            />
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
           </Tooltip>
         </Popconfirm>
       ),
@@ -2628,12 +2776,7 @@ function AccessControlTab() {
           cancelText="No"
         >
           <Tooltip title="Remove">
-            <Button
-              type="text"
-              size="small"
-              danger
-              icon={<DeleteOutlined />}
-            />
+            <Button type="text" size="small" danger icon={<DeleteOutlined />} />
           </Tooltip>
         </Popconfirm>
       ),
@@ -2744,9 +2887,7 @@ function AccessControlTab() {
             title={
               <Space>
                 <SafetyOutlined />
-                <span>
-                  Permanent Whitelist ({status.whitelist.length})
-                </span>
+                <span>Permanent Whitelist ({status.whitelist.length})</span>
               </Space>
             }
             size="small"

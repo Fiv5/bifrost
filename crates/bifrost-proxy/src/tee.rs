@@ -173,7 +173,7 @@ impl Drop for SseTeeBodyDropGuard {
                     record.response_size = total_bytes;
                 });
             }
-            state.websocket_monitor.set_connection_closed(
+            state.connection_monitor.set_connection_closed(
                 &self.record_id,
                 None,
                 None,
@@ -192,7 +192,7 @@ pub struct SseTeeBody {
 impl SseTeeBody {
     pub fn new(inner: Incoming, admin_state: Option<Arc<AdminState>>, record_id: String) -> Self {
         if let Some(ref state) = admin_state {
-            state.websocket_monitor.register_connection(&record_id);
+            state.connection_monitor.register_connection(&record_id);
         }
 
         Self {
@@ -223,7 +223,7 @@ impl SseTeeBody {
                         self.guard.record_id,
                         event_bytes.len()
                     );
-                    state.websocket_monitor.record_sse_event(
+                    state.connection_monitor.record_sse_event(
                         &self.guard.record_id,
                         event_bytes,
                         state.body_store.as_ref(),
@@ -284,7 +284,7 @@ impl Body for SseTeeBody {
                 self.guard.finished = true;
                 if !self.buffer.is_empty() {
                     if let Some(ref state) = self.guard.admin_state {
-                        state.websocket_monitor.record_sse_event(
+                        state.connection_monitor.record_sse_event(
                             &self.guard.record_id,
                             &self.buffer,
                             state.body_store.as_ref(),

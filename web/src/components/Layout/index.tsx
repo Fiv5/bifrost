@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Tooltip, theme } from "antd";
+import { Tooltip, theme, Badge } from "antd";
 import {
   GlobalOutlined,
   FileTextOutlined,
@@ -7,6 +7,8 @@ import {
   DatabaseOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
+import { useEffect } from "react";
+import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 
 interface MenuItem {
   key: string;
@@ -25,6 +27,22 @@ export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
+  const {
+    pendingCount,
+    startSSE,
+    stopSSE,
+    fetchPendingList,
+    requestNotificationPermission,
+  } = usePendingAuthStore();
+
+  useEffect(() => {
+    fetchPendingList();
+    startSSE();
+    requestNotificationPermission();
+    return () => {
+      stopSSE();
+    };
+  }, [fetchPendingList, startSSE, stopSSE, requestNotificationPermission]);
 
   const styles: Record<string, CSSProperties> = {
     layout: {
@@ -87,13 +105,32 @@ export default function AppLayout() {
     return location.pathname === key;
   };
 
+  const renderMenuIcon = (item: MenuItem) => {
+    if (item.key === "/settings" && pendingCount > 0) {
+      return (
+        <Badge count={pendingCount} size="small" offset={[4, -4]}>
+          {item.icon}
+        </Badge>
+      );
+    }
+    return item.icon;
+  };
+
   return (
     <div style={styles.layout}>
       <div style={styles.sidebar}>
         {menuItems.map((item) => {
           const active = isActive(item.key);
           return (
-            <Tooltip key={item.key} title={item.label} placement="right">
+            <Tooltip
+              key={item.key}
+              title={
+                item.key === "/settings" && pendingCount > 0
+                  ? `${item.label} (${pendingCount} pending)`
+                  : item.label
+              }
+              placement="right"
+            >
               <div
                 style={{
                   ...styles.menuItem,
@@ -102,7 +139,7 @@ export default function AppLayout() {
                 onClick={() => handleClick(item.key)}
               >
                 {active && <div style={styles.activeBorder as CSSProperties} />}
-                {item.icon}
+                {renderMenuIcon(item)}
               </div>
             </Tooltip>
           );

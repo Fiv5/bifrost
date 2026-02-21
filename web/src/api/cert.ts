@@ -15,7 +15,11 @@ export function getCertDownloadUrl(): string {
   return '/_bifrost/public/cert';
 }
 
-export function getCertQRCodeUrl(): string {
+export function getCertQRCodeUrl(ip?: string): string {
   const host = window.location.host;
-  return `http://${host}/_bifrost/public/cert/qrcode`;
+  const baseUrl = `http://${host}/_bifrost/public/cert/qrcode`;
+  if (ip) {
+    return `${baseUrl}?ip=${encodeURIComponent(ip)}`;
+  }
+  return baseUrl;
 }

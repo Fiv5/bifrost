@@ -52,3 +52,5 @@ export async function rejectPending(ip: string): Promise<{ success: boolean; mes
 export async function clearPendingAuthorizations(): Promise<{ success: boolean; message: string }> {
   return del('/whitelist/pending');
 }
+
+export const clearPending = clearPendingAuthorizations;

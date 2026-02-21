@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
-use crate::websocket_monitor::WebSocketFrameRecord;
+use crate::connection_monitor::WebSocketFrameRecord;
 
 const DEFAULT_RETENTION_HOURS: u64 = 24;
 const FRAMES_SUBDIR: &str = "frames";

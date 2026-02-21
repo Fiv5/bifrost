@@ -3,7 +3,7 @@ use tracing::debug;
 
 use crate::handlers::{
     app_icon::handle_app_icon,
-    cert::{handle_cert, handle_cert_public},
+    cert::{handle_cert, handle_cert_public, handle_proxy_public},
     config::handle_config,
     cors_preflight, error_response, frames,
     metrics::handle_metrics,
@@ -36,6 +36,10 @@ impl AdminRouter {
 
         if admin_path.starts_with("/public/cert") {
             return handle_cert_public(req, state, &admin_path).await;
+        }
+
+        if admin_path.starts_with("/public/proxy") {
+            return handle_proxy_public(req, state, &admin_path).await;
         }
 
         if admin_path.starts_with("/api/") {

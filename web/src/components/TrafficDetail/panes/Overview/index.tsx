@@ -274,12 +274,13 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
       });
     }
 
-    if ((record.is_websocket || record.is_sse) && record.socket_status) {
+    if ((record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status) {
+      const connectionType = record.is_websocket ? "WebSocket" : record.is_sse ? "SSE" : "Tunnel";
       items.push({
         key: "socket",
         label: (
           <Text strong>
-            {record.is_websocket ? "WebSocket" : "SSE"} Status
+            {connectionType} Status
             <Tag
               color={record.socket_status.is_open ? "green" : "default"}
               style={{ marginLeft: 8 }}

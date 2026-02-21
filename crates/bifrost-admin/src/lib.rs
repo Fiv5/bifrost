@@ -1,5 +1,6 @@
 mod app_icon;
 mod body_store;
+pub mod connection_monitor;
 pub mod connection_registry;
 mod frame_store;
 mod handlers;
@@ -11,13 +12,13 @@ mod static_files;
 pub mod status_printer;
 mod traffic;
 mod traffic_store;
-pub mod websocket_monitor;
 
 #[cfg(test)]
 mod tests;
 
 pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
+pub use connection_monitor::{ConnectionMonitor, SharedConnectionMonitor, WebSocketFrameRecord};
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
 };
@@ -39,7 +40,6 @@ pub use traffic::{
 pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
 };
-pub use websocket_monitor::{SharedWebSocketMonitor, WebSocketFrameRecord, WebSocketMonitor};
 
 pub const ADMIN_PATH_PREFIX: &str = "/_bifrost";
 pub const CERT_PUBLIC_PATH_PREFIX: &str = "/_bifrost/public/cert";

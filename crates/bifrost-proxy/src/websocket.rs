@@ -136,7 +136,7 @@ pub async fn handle_websocket_upgrade(
         };
         record.set_websocket();
 
-        state.websocket_monitor.register_connection(&record_id);
+        state.connection_monitor.register_connection(&record_id);
         state.record_traffic(record);
     }
 
@@ -156,7 +156,7 @@ pub async fn handle_websocket_upgrade(
                 }
 
                 if let Some(ref state) = admin_state {
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_clone,
                         None,
                         None,
@@ -312,7 +312,7 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
@@ -326,7 +326,7 @@ async fn websocket_bidirectional_with_capture(
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned,
                         close_code,
                         close_reason,
@@ -363,7 +363,7 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
@@ -377,7 +377,7 @@ async fn websocket_bidirectional_with_capture(
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned2,
                         close_code,
                         close_reason,
@@ -450,7 +450,7 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
@@ -464,7 +464,7 @@ where
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned,
                         close_code,
                         close_reason,
@@ -501,7 +501,7 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
-                state.websocket_monitor.record_frame(
+                state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
@@ -515,7 +515,7 @@ where
                 if frame.opcode == Opcode::Close {
                     let close_code = frame.close_code();
                     let close_reason = frame.close_reason().map(str::to_string);
-                    state.websocket_monitor.set_connection_closed(
+                    state.connection_monitor.set_connection_closed(
                         &record_id_owned2,
                         close_code,
                         close_reason,

@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +28,20 @@ struct SetSystemProxyRequest {
     bypass: Option<String>,
 }
 
+#[derive(Serialize)]
+struct ProxyAddressInfo {
+    port: u16,
+    local_ips: Vec<String>,
+    addresses: Vec<ProxyAddress>,
+}
+
+#[derive(Serialize)]
+struct ProxyAddress {
+    ip: String,
+    address: String,
+    qrcode_url: String,
+}
+
 pub async fn handle_proxy(
     req: Request<Incoming>,
     state: SharedAdminState,
@@ -41,6 +57,10 @@ pub async fn handle_proxy(
         },
         "/api/proxy/system/support" => match method {
             Method::GET => get_system_proxy_support().await,
+            _ => method_not_allowed(),
+        },
+        "/api/proxy/address" | "/api/proxy/address/" => match method {
+            Method::GET => get_proxy_address_info(state).await,
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -223,5 +243,72 @@ fn get_platform_name() -> String {
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         "Unknown".to_string()
+    }
+}
+
+async fn get_proxy_address_info(state: SharedAdminState) -> Response<BoxBody> {
+    let local_ips = get_local_ips();
+    let port = state.port;
+
+    let addresses: Vec<ProxyAddress> = local_ips
+        .iter()
+        .map(|ip| ProxyAddress {
+            ip: ip.clone(),
+            address: format!("{}:{}", ip, port),
+            qrcode_url: format!(
+                "/_bifrost/public/proxy/qrcode?ip={}",
+                urlencoding::encode(ip)
+            ),
+        })
+        .collect();
+
+    let info = ProxyAddressInfo {
+        port,
+        local_ips,
+        addresses,
+    };
+
+    json_response(&info)
+}
+
+fn get_local_ips() -> Vec<String> {
+    let mut ips = Vec::new();
+
+    if let Ok(interfaces) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if interfaces.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = interfaces.local_addr() {
+                ips.push(addr.ip().to_string());
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("hostname").arg("-I").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for ip_str in stdout.split_whitespace() {
+                    if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                        if is_private_ip(&ip) && !ips.contains(&ip.to_string()) {
+                            ips.push(ip.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ips.is_empty() {
+        ips.push("127.0.0.1".to_string());
+    }
+
+    ips
+}
+
+fn is_private_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+        IpAddr::V6(ipv6) => ipv6.is_loopback(),
     }
 }

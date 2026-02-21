@@ -7,9 +7,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use super::{error_response, full_body, json_response, BoxBody};
+use crate::connection_monitor::WebSocketFrameRecord;
 use crate::state::AdminState;
 use crate::traffic::SocketStatus;
-use crate::websocket_monitor::WebSocketFrameRecord;
 
 #[derive(Debug, Serialize)]
 struct FramesResponse {
@@ -57,7 +57,7 @@ pub async fn get_frames(
         connection_id
     );
     let query = parse_frames_query(query_str);
-    let monitor = &state.websocket_monitor;
+    let monitor = &state.connection_monitor;
 
     let conn_id = connection_id.to_string();
     let frame_store = state.frame_store.clone();
@@ -162,7 +162,7 @@ pub async fn get_frames(
 }
 
 pub async fn subscribe_frames(state: Arc<AdminState>, connection_id: &str) -> Response<BoxBody> {
-    let monitor = &state.websocket_monitor;
+    let monitor = &state.connection_monitor;
 
     if !monitor.start_monitoring(connection_id) {
         return error_response(
@@ -206,7 +206,7 @@ pub async fn subscribe_frames(state: Arc<AdminState>, connection_id: &str) -> Re
 }
 
 pub async fn unsubscribe_frames(state: Arc<AdminState>, connection_id: &str) -> Response<BoxBody> {
-    let monitor = &state.websocket_monitor;
+    let monitor = &state.connection_monitor;
 
     if monitor.stop_monitoring(connection_id) {
         let body = serde_json::json!({
@@ -242,7 +242,7 @@ struct WebSocketConnectionInfo {
 }
 
 pub async fn list_websocket_connections(state: Arc<AdminState>) -> Response<BoxBody> {
-    let monitor = &state.websocket_monitor;
+    let monitor = &state.connection_monitor;
     let connection_ids = monitor.active_connection_ids();
 
     let connections: Vec<WebSocketConnectionInfo> = connection_ids
@@ -268,7 +268,7 @@ pub async fn get_frame_detail(
     connection_id: &str,
     frame_id: u64,
 ) -> Response<BoxBody> {
-    let monitor = &state.websocket_monitor;
+    let monitor = &state.connection_monitor;
 
     let frames_result = monitor.get_frames(connection_id, None, usize::MAX);
 
