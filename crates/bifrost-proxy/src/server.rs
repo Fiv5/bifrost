@@ -31,6 +31,8 @@ pub struct TlsInterceptConfig {
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
+    pub app_intercept_exclude: Vec<String>,
+    pub app_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
 }
 
@@ -40,6 +42,8 @@ impl TlsInterceptConfig {
             enable_tls_interception: config.enable_tls_interception,
             intercept_exclude: config.intercept_exclude.clone(),
             intercept_include: config.intercept_include.clone(),
+            app_intercept_exclude: config.app_intercept_exclude.clone(),
+            app_intercept_include: config.app_intercept_include.clone(),
             unsafe_ssl: config.unsafe_ssl,
         }
     }
@@ -52,6 +56,8 @@ pub struct ProxyConfig {
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
+    pub app_intercept_exclude: Vec<String>,
+    pub app_intercept_include: Vec<String>,
     pub timeout_secs: u64,
     pub socks5_port: Option<u16>,
     pub socks5_auth_required: bool,
@@ -73,6 +79,8 @@ impl Default for ProxyConfig {
             enable_tls_interception: true,
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
             timeout_secs: 30,
             socks5_port: None,
             socks5_auth_required: false,
@@ -635,6 +643,8 @@ async fn handle_request(
                 enable_tls_interception: runtime_config.enable_tls_interception,
                 intercept_exclude: runtime_config.intercept_exclude.clone(),
                 intercept_include: runtime_config.intercept_include.clone(),
+                app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+                app_intercept_include: runtime_config.app_intercept_include.clone(),
                 unsafe_ssl: runtime_config.unsafe_ssl,
             }
         } else {
@@ -850,6 +860,8 @@ mod tests {
             enable_tls_interception: true,
             intercept_exclude: vec!["*.example.com".to_string()],
             intercept_include: vec!["*.api.com".to_string()],
+            app_intercept_exclude: vec![],
+            app_intercept_include: vec![],
             timeout_secs: 60,
             socks5_port: Some(1080),
             socks5_auth_required: true,

@@ -289,6 +289,8 @@ fn test_proxy_config_custom() {
         enable_tls_interception: true,
         intercept_exclude: vec!["*.internal.com".to_string()],
         intercept_include: vec![],
+        app_intercept_exclude: vec![],
+        app_intercept_include: vec![],
         timeout_secs: 60,
         socks5_port: Some(1080),
         socks5_auth_required: false,

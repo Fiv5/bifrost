@@ -238,6 +238,8 @@ export interface TlsConfig {
   enable_tls_interception: boolean;
   intercept_exclude: string[];
   intercept_include: string[];
+  app_intercept_exclude: string[];
+  app_intercept_include: string[];
   unsafe_ssl: boolean;
   disconnect_on_config_change: boolean;
 }

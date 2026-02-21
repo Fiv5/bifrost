@@ -25,6 +25,8 @@ pub struct RuntimeConfig {
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
+    pub app_intercept_exclude: Vec<String>,
+    pub app_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
 }
@@ -35,6 +37,8 @@ impl Default for RuntimeConfig {
             enable_tls_interception: true,
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
             unsafe_ssl: false,
             disconnect_on_config_change: true,
         }
@@ -47,6 +51,8 @@ impl RuntimeConfig {
             enable_tls_interception: tls.enable_interception,
             intercept_exclude: tls.intercept_exclude.clone(),
             intercept_include: tls.intercept_include.clone(),
+            app_intercept_exclude: tls.app_intercept_exclude.clone(),
+            app_intercept_include: tls.app_intercept_include.clone(),
             unsafe_ssl: tls.unsafe_ssl,
             disconnect_on_config_change: tls.disconnect_on_change,
         }

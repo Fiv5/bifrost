@@ -86,6 +86,12 @@ impl ConfigManager {
         if let Some(include) = update.intercept_include {
             config.tls.intercept_include = include;
         }
+        if let Some(app_exclude) = update.app_intercept_exclude {
+            config.tls.app_intercept_exclude = app_exclude;
+        }
+        if let Some(app_include) = update.app_intercept_include {
+            config.tls.app_intercept_include = app_include;
+        }
         if let Some(unsafe_ssl) = update.unsafe_ssl {
             config.tls.unsafe_ssl = unsafe_ssl;
         }
@@ -377,6 +383,8 @@ impl ConfigManager {
                 enable_interception: legacy.enable_tls_interception,
                 intercept_exclude: legacy.intercept_exclude.clone(),
                 intercept_include: legacy.intercept_include.clone(),
+                app_intercept_exclude: Vec::new(),
+                app_intercept_include: Vec::new(),
                 unsafe_ssl: false,
                 disconnect_on_change: legacy.disconnect_on_config_change,
             },

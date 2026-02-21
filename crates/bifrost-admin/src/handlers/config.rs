@@ -14,6 +14,8 @@ pub struct TlsConfig {
     pub enable_tls_interception: bool,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
+    pub app_intercept_exclude: Vec<String>,
+    pub app_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
 }
@@ -30,6 +32,8 @@ pub struct UpdateTlsConfigRequest {
     pub enable_tls_interception: Option<bool>,
     pub intercept_exclude: Option<Vec<String>>,
     pub intercept_include: Option<Vec<String>>,
+    pub app_intercept_exclude: Option<Vec<String>>,
+    pub app_intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
     pub disconnect_on_config_change: Option<bool>,
 }
@@ -98,6 +102,8 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
             enable_tls_interception: runtime_config.enable_tls_interception,
             intercept_exclude: runtime_config.intercept_exclude.clone(),
             intercept_include: runtime_config.intercept_include.clone(),
+            app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+            app_intercept_include: runtime_config.app_intercept_include.clone(),
             unsafe_ssl: runtime_config.unsafe_ssl,
             disconnect_on_config_change: runtime_config.disconnect_on_config_change,
         },
@@ -115,6 +121,8 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
         enable_tls_interception: runtime_config.enable_tls_interception,
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
+        app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+        app_intercept_include: runtime_config.app_intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
         disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };
@@ -399,6 +407,28 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
             runtime_config.intercept_include = include.clone();
         }
 
+        if let Some(ref app_exclude) = request.app_intercept_exclude {
+            if *app_exclude != old_config.app_intercept_exclude {
+                tracing::info!(
+                    "TLS config changed: app_intercept_exclude {:?} -> {:?}",
+                    old_config.app_intercept_exclude,
+                    app_exclude
+                );
+            }
+            runtime_config.app_intercept_exclude = app_exclude.clone();
+        }
+
+        if let Some(ref app_include) = request.app_intercept_include {
+            if *app_include != old_config.app_intercept_include {
+                tracing::info!(
+                    "TLS config changed: app_intercept_include {:?} -> {:?}",
+                    old_config.app_intercept_include,
+                    app_include
+                );
+            }
+            runtime_config.app_intercept_include = app_include.clone();
+        }
+
         if let Some(unsafe_ssl) = request.unsafe_ssl {
             runtime_config.unsafe_ssl = unsafe_ssl;
         }
@@ -417,6 +447,8 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
             enable_interception: request.enable_tls_interception,
             intercept_exclude: request.intercept_exclude.clone(),
             intercept_include: request.intercept_include.clone(),
+            app_intercept_exclude: request.app_intercept_exclude.clone(),
+            app_intercept_include: request.app_intercept_include.clone(),
             unsafe_ssl: request.unsafe_ssl,
             disconnect_on_change: request.disconnect_on_config_change,
         };
@@ -477,6 +509,8 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
         enable_tls_interception: runtime_config.enable_tls_interception,
         intercept_exclude: runtime_config.intercept_exclude.clone(),
         intercept_include: runtime_config.intercept_include.clone(),
+        app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+        app_intercept_include: runtime_config.app_intercept_include.clone(),
         unsafe_ssl: runtime_config.unsafe_ssl,
         disconnect_on_config_change: runtime_config.disconnect_on_config_change,
     };

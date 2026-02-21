@@ -179,6 +179,16 @@ pub enum Commands {
         intercept_include: Option<String>,
         #[arg(
             long,
+            help = "Applications to exclude from TLS interception (comma-separated, supports wildcards like *Safari). Traffic from these apps will not be intercepted."
+        )]
+        app_intercept_exclude: Option<String>,
+        #[arg(
+            long,
+            help = "Applications to force TLS interception (comma-separated, supports wildcards). Traffic from these apps will always be intercepted."
+        )]
+        app_intercept_include: Option<String>,
+        #[arg(
+            long,
             help = "Skip upstream server TLS certificate verification (dangerous, for testing only)"
         )]
         unsafe_ssl: bool,

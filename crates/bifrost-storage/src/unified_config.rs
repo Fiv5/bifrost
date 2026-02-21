@@ -64,6 +64,8 @@ pub struct TlsConfig {
     pub enable_interception: bool,
     pub intercept_exclude: Vec<String>,
     pub intercept_include: Vec<String>,
+    pub app_intercept_exclude: Vec<String>,
+    pub app_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_change: bool,
 }
@@ -74,6 +76,8 @@ impl Default for TlsConfig {
             enable_interception: true,
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
             unsafe_ssl: false,
             disconnect_on_change: true,
         }
@@ -206,6 +210,8 @@ pub struct TlsConfigUpdate {
     pub enable_interception: Option<bool>,
     pub intercept_exclude: Option<Vec<String>>,
     pub intercept_include: Option<Vec<String>>,
+    pub app_intercept_exclude: Option<Vec<String>>,
+    pub app_intercept_include: Option<Vec<String>>,
     pub unsafe_ssl: Option<bool>,
     pub disconnect_on_change: Option<bool>,
 }

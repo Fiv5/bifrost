@@ -191,7 +191,7 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
 
     for pair in query.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
-            let value = urlencoding::decode(value).unwrap_or_default();
+            let value = decode_query_value(value);
             match key {
                 "after_id" => {
                     if !value.is_empty() {
@@ -364,12 +364,19 @@ async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) ->
     }
 }
 
+fn decode_query_value(value: &str) -> String {
+    let value_with_spaces = value.replace('+', " ");
+    urlencoding::decode(&value_with_spaces)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn parse_traffic_filter(query: &str) -> TrafficFilter {
     let mut filter = TrafficFilter::default();
 
     for pair in query.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
-            let value = urlencoding::decode(value).unwrap_or_default();
+            let value = decode_query_value(value);
             match key {
                 "method" => filter.method = Some(value.to_string()),
                 "status" => filter.status = value.parse().ok(),

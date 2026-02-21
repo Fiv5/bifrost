@@ -147,12 +147,23 @@ pub async fn handle_connect(
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
-    let intercept = should_intercept_tls(&host, tls_intercept_config, &tls_config, &resolved_rules);
+    let intercept = should_intercept_tls(
+        &host,
+        ctx.client_app.as_deref(),
+        tls_intercept_config,
+        &tls_config,
+        &resolved_rules,
+    );
 
     if intercept {
         if verbose_logging {
             let reason = if resolved_rules.tls_intercept.is_some() {
                 "rule override"
+            } else if is_app_included(
+                ctx.client_app.as_deref(),
+                &tls_intercept_config.app_intercept_include,
+            ) {
+                "app in include list (force intercept)"
             } else if is_domain_included(&host, &tls_intercept_config.intercept_include) {
                 "in include list (force intercept)"
             } else {
@@ -185,6 +196,11 @@ pub async fn handle_connect(
     } else if tls_config.ca_cert.is_some() && verbose_logging {
         let reason = if let Some(false) = resolved_rules.tls_intercept {
             "rule override (passthrough)"
+        } else if is_app_excluded(
+            ctx.client_app.as_deref(),
+            &tls_intercept_config.app_intercept_exclude,
+        ) {
+            "app in exclude list"
         } else if is_domain_excluded(&host, &tls_intercept_config.intercept_exclude) {
             "in exclude list"
         } else {
@@ -2454,8 +2470,47 @@ fn is_domain_included(host: &str, include_list: &[String]) -> bool {
     is_domain_matched(host, include_list)
 }
 
+fn is_app_matched(client_app: Option<&str>, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+
+    let app = match client_app {
+        Some(a) if !a.is_empty() => a,
+        _ => return false,
+    };
+
+    let app_lower = app.to_lowercase();
+    for pattern in patterns {
+        let pattern_lower = pattern.to_lowercase();
+
+        if let Some(suffix) = pattern_lower.strip_prefix('*') {
+            if app_lower.ends_with(&suffix) {
+                return true;
+            }
+        } else if let Some(prefix) = pattern_lower.strip_suffix('*') {
+            if app_lower.starts_with(prefix) {
+                return true;
+            }
+        } else if app_lower == pattern_lower {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_app_excluded(client_app: Option<&str>, exclude_list: &[String]) -> bool {
+    is_app_matched(client_app, exclude_list)
+}
+
+fn is_app_included(client_app: Option<&str>, include_list: &[String]) -> bool {
+    is_app_matched(client_app, include_list)
+}
+
 pub fn should_intercept_tls(
     host: &str,
+    client_app: Option<&str>,
     tls_intercept_config: &TlsInterceptConfig,
     tls_config: &TlsConfig,
     resolved_rules: &ResolvedRules,
@@ -2466,6 +2521,14 @@ pub fn should_intercept_tls(
 
     if let Some(rule_intercept) = resolved_rules.tls_intercept {
         return rule_intercept;
+    }
+
+    if is_app_included(client_app, &tls_intercept_config.app_intercept_include) {
+        return true;
+    }
+
+    if is_app_excluded(client_app, &tls_intercept_config.app_intercept_exclude) {
+        return false;
     }
 
     if is_domain_included(host, &tls_intercept_config.intercept_include) {
@@ -2685,6 +2748,8 @@ mod tests {
             enable_tls_interception: enable,
             intercept_exclude: exclude,
             intercept_include: include,
+            app_intercept_exclude: vec![],
+            app_intercept_include: vec![],
             unsafe_ssl: false,
         }
     }
@@ -2697,6 +2762,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2716,6 +2782,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2736,6 +2803,7 @@ mod tests {
 
         let result1 = should_intercept_tls(
             "example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2745,6 +2813,7 @@ mod tests {
 
         let result2 = should_intercept_tls(
             "api.apple.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2754,6 +2823,7 @@ mod tests {
 
         let result3 = should_intercept_tls(
             "other.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2774,6 +2844,7 @@ mod tests {
 
         let result1 = should_intercept_tls(
             "secure.local",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2789,6 +2860,7 @@ mod tests {
 
         let result2 = should_intercept_tls(
             "test.api.example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2804,6 +2876,7 @@ mod tests {
 
         let result3 = should_intercept_tls(
             "other.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2830,6 +2903,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "secure.local",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2852,6 +2926,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "any.domain.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2874,6 +2949,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "any.domain.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2893,6 +2969,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2912,6 +2989,7 @@ mod tests {
 
         let result = should_intercept_tls(
             "example.com",
+            None,
             &tls_intercept_config,
             &tls_config,
             &resolved_rules,
@@ -2921,5 +2999,123 @@ mod tests {
             "Rule override should work even when globally disabled"
         );
         println!("✓ Rule override with global disabled: intercept={}", result);
+    }
+
+    #[test]
+    fn test_is_app_matched() {
+        let patterns = vec![
+            "Safari".to_string(),
+            "Chrome*".to_string(),
+            "*Firefox".to_string(),
+        ];
+        assert!(is_app_matched(Some("Safari"), &patterns));
+        assert!(is_app_matched(Some("safari"), &patterns));
+        assert!(is_app_matched(Some("Chrome"), &patterns));
+        assert!(is_app_matched(Some("Chrome Beta"), &patterns));
+        assert!(is_app_matched(Some("Firefox"), &patterns));
+        assert!(is_app_matched(Some("Mozilla Firefox"), &patterns));
+        assert!(!is_app_matched(Some("Edge"), &patterns));
+        assert!(!is_app_matched(None, &patterns));
+        assert!(!is_app_matched(Some(""), &patterns));
+    }
+
+    #[test]
+    fn test_should_intercept_app_exclude() {
+        let mut tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
+        tls_intercept_config.app_intercept_exclude = vec!["Safari".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result1 = should_intercept_tls(
+            "example.com",
+            Some("Safari"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(!result1, "Should NOT intercept traffic from excluded app");
+
+        let result2 = should_intercept_tls(
+            "example.com",
+            Some("Chrome"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(result2, "Should intercept traffic from non-excluded app");
+    }
+
+    #[test]
+    fn test_should_intercept_app_include() {
+        let mut tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
+        tls_intercept_config.app_intercept_include = vec!["Safari".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result1 = should_intercept_tls(
+            "example.com",
+            Some("Safari"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result1,
+            "Should intercept traffic from included app even when globally disabled"
+        );
+
+        let result2 = should_intercept_tls(
+            "example.com",
+            Some("Chrome"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result2,
+            "Should NOT intercept traffic from non-included app when globally disabled"
+        );
+    }
+
+    #[test]
+    fn test_should_intercept_app_include_has_higher_priority_than_app_exclude() {
+        let mut tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
+        tls_intercept_config.app_intercept_exclude = vec!["Safari".to_string()];
+        tls_intercept_config.app_intercept_include = vec!["Safari".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls(
+            "example.com",
+            Some("Safari"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "App include should have higher priority than app exclude"
+        );
+    }
+
+    #[test]
+    fn test_should_intercept_app_has_higher_priority_than_domain() {
+        let mut tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
+        tls_intercept_config.app_intercept_exclude = vec!["Safari".to_string()];
+        tls_intercept_config.intercept_include = vec!["example.com".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls(
+            "example.com",
+            Some("Safari"),
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "App exclude should have higher priority than domain include"
+        );
     }
 }

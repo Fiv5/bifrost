@@ -31,6 +31,8 @@ pub fn run_start(
     no_intercept: bool,
     intercept_exclude: Option<String>,
     intercept_include: Option<String>,
+    app_intercept_exclude: Option<String>,
+    app_intercept_include: Option<String>,
     unsafe_ssl: bool,
     no_disconnect_on_config_change: bool,
     rules: Vec<String>,
@@ -100,6 +102,24 @@ pub fn run_start(
         None => stored_config.tls.intercept_include.clone(),
     };
 
+    let app_exclude_list: Vec<String> = match app_intercept_exclude {
+        Some(list) => list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => stored_config.tls.app_intercept_exclude.clone(),
+    };
+
+    let app_include_list: Vec<String> = match app_intercept_include {
+        Some(list) => list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => stored_config.tls.app_intercept_include.clone(),
+    };
+
     let unsafe_ssl_final = if unsafe_ssl {
         true
     } else {
@@ -117,6 +137,8 @@ pub fn run_start(
         enable_tls_interception,
         intercept_exclude: exclude_list.clone(),
         intercept_include: include_list.clone(),
+        app_intercept_exclude: app_exclude_list.clone(),
+        app_intercept_include: app_include_list.clone(),
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
@@ -135,11 +157,17 @@ pub fn run_start(
         if !exclude_list.is_empty() {
             println!("  Excluded domains: {:?}", exclude_list);
         }
+        if !app_exclude_list.is_empty() {
+            println!("  Excluded apps: {:?}", app_exclude_list);
+        }
     } else {
         println!("TLS interception: disabled");
     }
     if !include_list.is_empty() {
         println!("  Force intercept domains: {:?}", include_list);
+    }
+    if !app_include_list.is_empty() {
+        println!("  Force intercept apps: {:?}", app_include_list);
     }
     if unsafe_ssl_final {
         println!("⚠️  WARNING: Upstream TLS certificate verification is DISABLED (--unsafe-ssl)");
@@ -330,6 +358,8 @@ pub fn run_foreground(
         enable_tls_interception: config.enable_tls_interception,
         intercept_exclude: config.intercept_exclude.clone(),
         intercept_include: config.intercept_include.clone(),
+        app_intercept_exclude: config.app_intercept_exclude.clone(),
+        app_intercept_include: config.app_intercept_include.clone(),
         unsafe_ssl: config.unsafe_ssl,
         disconnect_on_config_change,
         active_connections: 0,
@@ -451,6 +481,8 @@ pub fn run_foreground(
             enable_tls_interception: config.enable_tls_interception,
             intercept_exclude: config.intercept_exclude.clone(),
             intercept_include: config.intercept_include.clone(),
+            app_intercept_exclude: config.app_intercept_exclude.clone(),
+            app_intercept_include: config.app_intercept_include.clone(),
             unsafe_ssl: config.unsafe_ssl,
             disconnect_on_config_change,
         };
@@ -688,6 +720,8 @@ pub fn run_daemon(
                     enable_tls_interception: config.enable_tls_interception,
                     intercept_exclude: config.intercept_exclude.clone(),
                     intercept_include: config.intercept_include.clone(),
+                    app_intercept_exclude: config.app_intercept_exclude.clone(),
+                    app_intercept_include: config.app_intercept_include.clone(),
                     unsafe_ssl: config.unsafe_ssl,
                     disconnect_on_config_change: true,
                 };

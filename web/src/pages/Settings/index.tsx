@@ -107,6 +107,8 @@ export default function Settings() {
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
   const [newExcludePattern, setNewExcludePattern] = useState("");
   const [newIncludePattern, setNewIncludePattern] = useState("");
+  const [newAppExcludePattern, setNewAppExcludePattern] = useState("");
+  const [newAppIncludePattern, setNewAppIncludePattern] = useState("");
   const [performanceConfig, setPerformanceConfig] =
     useState<PerformanceConfig | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
@@ -298,6 +300,90 @@ export default function Settings() {
       const result = await updateTlsConfig({ intercept_include: newList });
       setTlsConfig(result);
       message.success(`Removed ${pattern} from include list`);
+    } catch {
+      message.error("Failed to remove pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleAddAppExcludePattern = async () => {
+    if (!newAppExcludePattern.trim()) {
+      message.warning("Please enter a pattern");
+      return;
+    }
+
+    const pattern = newAppExcludePattern.trim();
+    if (tlsConfig?.app_intercept_exclude.includes(pattern)) {
+      message.warning("Pattern already exists");
+      return;
+    }
+
+    setTlsLoading(true);
+    try {
+      const newList = [...(tlsConfig?.app_intercept_exclude || []), pattern];
+      const result = await updateTlsConfig({ app_intercept_exclude: newList });
+      setTlsConfig(result);
+      setNewAppExcludePattern("");
+      message.success(`Added ${pattern} to app exclude list`);
+    } catch {
+      message.error("Failed to add pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleRemoveAppExcludePattern = async (pattern: string) => {
+    setTlsLoading(true);
+    try {
+      const newList = (tlsConfig?.app_intercept_exclude || []).filter(
+        (p) => p !== pattern,
+      );
+      const result = await updateTlsConfig({ app_intercept_exclude: newList });
+      setTlsConfig(result);
+      message.success(`Removed ${pattern} from app exclude list`);
+    } catch {
+      message.error("Failed to remove pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleAddAppIncludePattern = async () => {
+    if (!newAppIncludePattern.trim()) {
+      message.warning("Please enter a pattern");
+      return;
+    }
+
+    const pattern = newAppIncludePattern.trim();
+    if (tlsConfig?.app_intercept_include.includes(pattern)) {
+      message.warning("Pattern already exists");
+      return;
+    }
+
+    setTlsLoading(true);
+    try {
+      const newList = [...(tlsConfig?.app_intercept_include || []), pattern];
+      const result = await updateTlsConfig({ app_intercept_include: newList });
+      setTlsConfig(result);
+      setNewAppIncludePattern("");
+      message.success(`Added ${pattern} to app include list`);
+    } catch {
+      message.error("Failed to add pattern");
+    } finally {
+      setTlsLoading(false);
+    }
+  };
+
+  const handleRemoveAppIncludePattern = async (pattern: string) => {
+    setTlsLoading(true);
+    try {
+      const newList = (tlsConfig?.app_intercept_include || []).filter(
+        (p) => p !== pattern,
+      );
+      const result = await updateTlsConfig({ app_intercept_include: newList });
+      setTlsConfig(result);
+      message.success(`Removed ${pattern} from app include list`);
     } catch {
       message.error("Failed to remove pattern");
     } finally {
@@ -670,12 +756,20 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 tlsLoading={tlsLoading}
                 newIncludePattern={newIncludePattern}
                 newExcludePattern={newExcludePattern}
+                newAppIncludePattern={newAppIncludePattern}
+                newAppExcludePattern={newAppExcludePattern}
                 setNewIncludePattern={setNewIncludePattern}
                 setNewExcludePattern={setNewExcludePattern}
+                setNewAppIncludePattern={setNewAppIncludePattern}
+                setNewAppExcludePattern={setNewAppExcludePattern}
                 handleAddIncludePattern={handleAddIncludePattern}
                 handleRemoveIncludePattern={handleRemoveIncludePattern}
                 handleAddExcludePattern={handleAddExcludePattern}
                 handleRemoveExcludePattern={handleRemoveExcludePattern}
+                handleAddAppIncludePattern={handleAddAppIncludePattern}
+                handleRemoveAppIncludePattern={handleRemoveAppIncludePattern}
+                handleAddAppExcludePattern={handleAddAppExcludePattern}
+                handleRemoveAppExcludePattern={handleRemoveAppExcludePattern}
               />
             </Col>
 
@@ -1730,12 +1824,20 @@ interface TlsInterceptionPatternsCardProps {
   tlsLoading: boolean;
   newIncludePattern: string;
   newExcludePattern: string;
+  newAppIncludePattern: string;
+  newAppExcludePattern: string;
   setNewIncludePattern: (pattern: string) => void;
   setNewExcludePattern: (pattern: string) => void;
+  setNewAppIncludePattern: (pattern: string) => void;
+  setNewAppExcludePattern: (pattern: string) => void;
   handleAddIncludePattern: () => void;
   handleRemoveIncludePattern: (pattern: string) => void;
   handleAddExcludePattern: () => void;
   handleRemoveExcludePattern: (pattern: string) => void;
+  handleAddAppIncludePattern: () => void;
+  handleRemoveAppIncludePattern: (pattern: string) => void;
+  handleAddAppExcludePattern: () => void;
+  handleRemoveAppExcludePattern: (pattern: string) => void;
 }
 
 function TlsInterceptionPatternsCard({
@@ -1743,12 +1845,20 @@ function TlsInterceptionPatternsCard({
   tlsLoading,
   newIncludePattern,
   newExcludePattern,
+  newAppIncludePattern,
+  newAppExcludePattern,
   setNewIncludePattern,
   setNewExcludePattern,
+  setNewAppIncludePattern,
+  setNewAppExcludePattern,
   handleAddIncludePattern,
   handleRemoveIncludePattern,
   handleAddExcludePattern,
   handleRemoveExcludePattern,
+  handleAddAppIncludePattern,
+  handleRemoveAppIncludePattern,
+  handleAddAppExcludePattern,
+  handleRemoveAppExcludePattern,
 }: TlsInterceptionPatternsCardProps) {
   const { token } = theme.useToken();
 
@@ -1766,8 +1876,9 @@ function TlsInterceptionPatternsCard({
         type="secondary"
         style={{ display: "block", marginBottom: 16, fontSize: 12 }}
       >
-        Configure domain-specific TLS interception behavior. Force Intercept has
-        highest priority, followed by Passthrough.
+        Configure TLS interception behavior by domain or application. Priority:
+        Rules &gt; App Include &gt; App Exclude &gt; Domain Include &gt; Domain
+        Exclude &gt; Global.
       </Text>
       <Row gutter={[16, 16]}>
         <Col xs={24}>
@@ -1921,6 +2032,173 @@ function TlsInterceptionPatternsCard({
                       color="orange"
                       closable
                       onClose={() => handleRemoveExcludePattern(pattern)}
+                    >
+                      {pattern}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+      </Row>
+      <Divider style={{ margin: "16px 0" }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Application-based Filtering
+        </Text>
+      </Divider>
+      <Row gutter={[16, 16]}>
+        <Col xs={24}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorSuccessBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorSuccessBorder}`,
+            }}
+          >
+            <Space
+              style={{
+                width: "100%",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <Space>
+                <LockOutlined style={{ color: token.colorSuccess }} />
+                <Text strong style={{ color: token.colorSuccessText }}>
+                  App Force Intercept
+                </Text>
+                <Tag color="green">
+                  {tlsConfig?.app_intercept_include.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text
+              type="secondary"
+              style={{
+                display: "block",
+                marginBottom: 12,
+                fontSize: 12,
+              }}
+            >
+              Always intercept traffic from these apps. Supports: exact match,
+              prefix* (starts with), *suffix (ends with).
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="Chrome*, *Browser, Postman"
+                value={newAppIncludePattern}
+                onChange={(e) => setNewAppIncludePattern(e.target.value)}
+                onPressEnter={handleAddAppIncludePattern}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddAppIncludePattern}
+                size="small"
+                loading={tlsLoading}
+                style={{
+                  background: token.colorSuccess,
+                  borderColor: token.colorSuccess,
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+              {tlsConfig?.app_intercept_include.length === 0 ? (
+                <Text type="secondary">No patterns configured</Text>
+              ) : (
+                <Space wrap>
+                  {tlsConfig?.app_intercept_include.map((pattern) => (
+                    <Tag
+                      key={pattern}
+                      color="green"
+                      closable
+                      onClose={() => handleRemoveAppIncludePattern(pattern)}
+                    >
+                      {pattern}
+                    </Tag>
+                  ))}
+                </Space>
+              )}
+            </div>
+          </div>
+        </Col>
+        <Col xs={24}>
+          <div
+            style={{
+              padding: 16,
+              background: token.colorWarningBg,
+              borderRadius: 8,
+              border: `1px solid ${token.colorWarningBorder}`,
+            }}
+          >
+            <Space
+              style={{
+                width: "100%",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <Space>
+                <SafetyCertificateOutlined
+                  style={{ color: token.colorWarning }}
+                />
+                <Text strong style={{ color: token.colorWarningText }}>
+                  App Passthrough
+                </Text>
+                <Tag color="orange">
+                  {tlsConfig?.app_intercept_exclude.length || 0}
+                </Tag>
+              </Space>
+            </Space>
+            <Text
+              type="secondary"
+              style={{
+                display: "block",
+                marginBottom: 12,
+                fontSize: 12,
+              }}
+            >
+              Never intercept traffic from these apps. Supports: exact match,
+              prefix* (starts with), *suffix (ends with).
+            </Text>
+            <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
+              <Input
+                placeholder="System*, *Agent, curl"
+                value={newAppExcludePattern}
+                onChange={(e) => setNewAppExcludePattern(e.target.value)}
+                onPressEnter={handleAddAppExcludePattern}
+                size="small"
+              />
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleAddAppExcludePattern}
+                size="small"
+                loading={tlsLoading}
+                style={{
+                  background: token.colorWarning,
+                  borderColor: token.colorWarning,
+                }}
+              >
+                Add
+              </Button>
+            </Space.Compact>
+            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+              {tlsConfig?.app_intercept_exclude.length === 0 ? (
+                <Text type="secondary">No patterns configured</Text>
+              ) : (
+                <Space wrap>
+                  {tlsConfig?.app_intercept_exclude.map((pattern) => (
+                    <Tag
+                      key={pattern}
+                      color="orange"
+                      closable
+                      onClose={() => handleRemoveAppExcludePattern(pattern)}
                     >
                       {pattern}
                     </Tag>
