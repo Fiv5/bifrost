@@ -77,8 +77,19 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
                 });
 
             entry.requests += 1;
-            entry.bytes_sent += record.request_size as u64;
-            entry.bytes_received += record.response_size as u64;
+
+            if record.is_websocket || record.is_sse {
+                if let Some(ref socket_status) = record.socket_status {
+                    entry.bytes_sent += socket_status.send_bytes;
+                    entry.bytes_received += socket_status.receive_bytes;
+                } else {
+                    entry.bytes_sent += record.request_size as u64;
+                    entry.bytes_received += record.response_size as u64;
+                }
+            } else {
+                entry.bytes_sent += record.request_size as u64;
+                entry.bytes_received += record.response_size as u64;
+            }
 
             match record.protocol.as_str() {
                 "http" => entry.http_requests += 1,
