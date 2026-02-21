@@ -382,8 +382,19 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           <Descriptions.Item label="Content Type">
             {record.content_type || "-"}
           </Descriptions.Item>
-          <Descriptions.Item label="Client IP">
-            {record.client_ip || "-"}
+          <Descriptions.Item label="Client">
+            {record.client_app ? (
+              <>
+                <Tag color="cyan">{record.client_app}</Tag>
+                {record.client_pid && (
+                  <Text type="secondary" style={{ marginLeft: 4 }}>
+                    (PID: {record.client_pid})
+                  </Text>
+                )}
+              </>
+            ) : (
+              record.client_ip || "-"
+            )}
           </Descriptions.Item>
         </Descriptions>
 

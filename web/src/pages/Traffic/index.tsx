@@ -84,6 +84,7 @@ export default function Traffic() {
     null
   );
   const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(false);
   
   const initializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
@@ -191,17 +192,9 @@ export default function Traffic() {
     setFilterConditions(conditions);
   }, [setFilterConditions]);
 
-  const handleAddFilter = useCallback(() => {
-    if (filterConditions.length === 0) {
-      const newCondition: FilterCondition = {
-        id: `filter_${Date.now()}`,
-        field: 'url',
-        operator: 'contains',
-        value: '',
-      };
-      setFilterConditions([newCondition]);
-    }
-  }, [filterConditions, setFilterConditions]);
+  const handleDetailPanelToggle = useCallback(() => {
+    setDetailPanelCollapsed(prev => !prev);
+  }, []);
 
   const handleScrollPositionChange = useCallback((isAtBottom: boolean) => {
     setAutoScroll(isAtBottom);
@@ -249,11 +242,12 @@ export default function Traffic() {
         onPauseToggle={handlePauseToggle}
         onClear={handleClear}
         onFilterChange={setToolbarFilters}
-        onAddFilter={handleAddFilter}
         systemProxyEnabled={systemProxy?.enabled}
         systemProxySupported={systemProxy?.supported}
         systemProxyLoading={systemProxyLoading}
         onSystemProxyToggle={handleSystemProxyToggle}
+        detailPanelCollapsed={detailPanelCollapsed}
+        onDetailPanelToggle={handleDetailPanelToggle}
       />
 
       {showFilterBar && (
@@ -266,35 +260,50 @@ export default function Traffic() {
       )}
 
       <div style={styles.mainContent}>
-        <SplitPane
-          defaultLeftWidth="55%"
-          minLeftWidth={400}
-          minRightWidth={350}
-          left={
-            <div style={styles.tableWrapper}>
-              <VirtualTrafficTable
-                data={records}
-                onSelect={handleSelect}
-                selectedId={selectedId}
-                hasMore={hasMore}
-                autoScroll={autoScroll}
-                onScrollPositionChange={handleScrollPositionChange}
-                newRecordsCount={newRecordsCount}
-                onScrollToBottom={handleScrollToBottom}
-              />
-            </div>
-          }
-          right={
-            <div style={styles.detailWrapper}>
-              <TrafficDetail
-                record={currentRecord}
-                requestBody={requestBody}
-                responseBody={responseBody}
-                loading={detailLoading}
-              />
-            </div>
-          }
-        />
+        {detailPanelCollapsed ? (
+          <div style={styles.tableWrapper}>
+            <VirtualTrafficTable
+              data={records}
+              onSelect={handleSelect}
+              selectedId={selectedId}
+              hasMore={hasMore}
+              autoScroll={autoScroll}
+              onScrollPositionChange={handleScrollPositionChange}
+              newRecordsCount={newRecordsCount}
+              onScrollToBottom={handleScrollToBottom}
+            />
+          </div>
+        ) : (
+          <SplitPane
+            defaultLeftWidth="55%"
+            minLeftWidth={400}
+            minRightWidth={350}
+            left={
+              <div style={styles.tableWrapper}>
+                <VirtualTrafficTable
+                  data={records}
+                  onSelect={handleSelect}
+                  selectedId={selectedId}
+                  hasMore={hasMore}
+                  autoScroll={autoScroll}
+                  onScrollPositionChange={handleScrollPositionChange}
+                  newRecordsCount={newRecordsCount}
+                  onScrollToBottom={handleScrollToBottom}
+                />
+              </div>
+            }
+            right={
+              <div style={styles.detailWrapper}>
+                <TrafficDetail
+                  record={currentRecord}
+                  requestBody={requestBody}
+                  responseBody={responseBody}
+                  loading={detailLoading}
+                />
+              </div>
+            }
+          />
+        )}
       </div>
     </div>
   );

@@ -546,6 +546,9 @@ pub async fn handle_http_request(
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.clone());
+            record.client_ip = ctx.client_ip.clone();
+            record.client_app = ctx.client_app.clone();
+            record.client_pid = ctx.client_pid;
 
             if is_websocket {
                 record.protocol = "ws".to_string();
@@ -699,6 +702,9 @@ pub async fn handle_http_request(
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
+        record.client_ip = ctx.client_ip.clone();
+        record.client_app = ctx.client_app.clone();
+        record.client_pid = ctx.client_pid;
 
         if is_websocket {
             record.protocol = "ws".to_string();
@@ -1126,6 +1132,9 @@ async fn handle_http_websocket(
                     .collect(),
             )
         };
+        record.client_ip = ctx.client_ip.clone();
+        record.client_app = ctx.client_app.clone();
+        record.client_pid = ctx.client_pid;
         record.set_websocket();
 
         state.websocket_monitor.register_connection(&record_id);

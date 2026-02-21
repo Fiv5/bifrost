@@ -24,6 +24,8 @@ pub struct RequestContext {
     pub pathname: String,
     pub search: String,
     pub client_ip: String,
+    pub client_app: Option<String>,
+    pub client_pid: Option<u32>,
 }
 
 impl RequestContext {
@@ -40,6 +42,8 @@ impl RequestContext {
             pathname: String::new(),
             search: String::new(),
             client_ip: String::new(),
+            client_app: None,
+            client_pid: None,
         }
     }
 
@@ -66,6 +70,12 @@ impl RequestContext {
         self.pathname = pathname;
         self.search = search;
         self.client_ip = client_ip;
+        self
+    }
+
+    pub fn with_client_process(mut self, app: Option<String>, pid: Option<u32>) -> Self {
+        self.client_app = app;
+        self.client_pid = pid;
         self
     }
 

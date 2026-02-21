@@ -149,14 +149,22 @@ const columns: ColumnDef[] = [
       ),
   },
   {
-    key: "client_ip",
+    key: "client",
     title: "Client",
-    width: 90,
-    render: (record) => (
-      <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
-        {record.client_ip || "-"}
-      </Text>
-    ),
+    width: 100,
+    render: (record) => {
+      const clientApp = record.client_app || "";
+      const clientIp = record.client_ip || "";
+      const display = clientApp || clientIp || "-";
+      const tooltip = clientApp ? `${clientApp} (PID: ${record.client_pid})` : clientIp || "-";
+      return (
+        <Tooltip title={tooltip}>
+          <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
+            {display}
+          </Text>
+        </Tooltip>
+      );
+    },
   },
   {
     key: "host",

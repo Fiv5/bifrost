@@ -22,6 +22,7 @@ use tracing::{debug, error, info, warn};
 use crate::dns::DnsResolver;
 use crate::http::handle_http_request;
 use crate::logging::RequestContext;
+use crate::process_info::resolve_client_process;
 use crate::tunnel::handle_connect;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
@@ -552,22 +553,37 @@ async fn handle_request(
     admin_security_config: AdminSecurityConfig,
     dns_resolver: Arc<DnsResolver>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
-    let ctx = RequestContext::new();
+    let client_process = resolve_client_process(&peer_addr);
+    let (client_app, client_pid) = client_process
+        .as_ref()
+        .map(|p| (Some(p.name.clone()), Some(p.pid)))
+        .unwrap_or((None, None));
+
+    let ctx = RequestContext::new().with_client_process(client_app, client_pid);
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
     let verbose_logging = proxy_config.verbose_logging;
 
+    let client_info = client_process
+        .as_ref()
+        .map(|p| p.name.as_str())
+        .unwrap_or_else(|| "unknown");
+
     if verbose_logging {
         info!(
-            "[{}] --> {} {} (from {})",
+            "[{}] --> {} {} (from {} - {})",
             ctx.id_str(),
             method,
             uri,
-            peer_addr
+            peer_addr,
+            client_info
         );
     } else {
-        debug!("Received request: {} {} from {}", method, uri, peer_addr);
+        debug!(
+            "Received request: {} {} from {} ({})",
+            method, uri, peer_addr, client_info
+        );
     }
 
     if path.starts_with(ADMIN_PATH_PREFIX) {

@@ -11,6 +11,8 @@ interface TrafficDetailState {
   responseTab: string;
   requestPreferredTab: string | null;
   responsePreferredTab: string | null;
+  requestCollapsed: boolean;
+  responseCollapsed: boolean;
 
   setRequestSearch: (v: Partial<SessionTargetSearchState>) => void;
   setResponseSearch: (v: Partial<SessionTargetSearchState>) => void;
@@ -20,6 +22,8 @@ interface TrafficDetailState {
   setResponseTab: (tab: string) => void;
   setRequestPreferredTab: (tab: string) => void;
   setResponsePreferredTab: (tab: string) => void;
+  setRequestCollapsed: (collapsed: boolean) => void;
+  setResponseCollapsed: (collapsed: boolean) => void;
   reset: () => void;
 }
 
@@ -39,6 +43,8 @@ export const useTrafficDetailStore = create<TrafficDetailState>((set) => ({
   responseTab: 'Header',
   requestPreferredTab: null,
   responsePreferredTab: null,
+  requestCollapsed: false,
+  responseCollapsed: false,
 
   setRequestSearch: (v) =>
     set((state) => ({
@@ -54,6 +60,8 @@ export const useTrafficDetailStore = create<TrafficDetailState>((set) => ({
   setResponseTab: (tab) => set({ responseTab: tab }),
   setRequestPreferredTab: (tab) => set({ requestPreferredTab: tab }),
   setResponsePreferredTab: (tab) => set({ responsePreferredTab: tab }),
+  setRequestCollapsed: (collapsed) => set({ requestCollapsed: collapsed }),
+  setResponseCollapsed: (collapsed) => set({ responseCollapsed: collapsed }),
   reset: () =>
     set({
       requestSearch: initialSearchState,

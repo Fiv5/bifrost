@@ -1,6 +1,6 @@
 import { type ReactNode, useCallback } from 'react';
 import { Typography, Space, Divider, theme } from 'antd';
-import { FilterOutlined } from '@ant-design/icons';
+import { FilterOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
 import type {
   SessionTargetSearchState,
   DisplayFormat,
@@ -28,6 +28,8 @@ interface PanelProps {
   displayFormat?: DisplayFormat;
   onDisplayFormatChange?: (format: string) => void;
   contentType?: RecordContentType;
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
 export const Panel = ({
@@ -40,6 +42,8 @@ export const Panel = ({
   displayFormat,
   onDisplayFormatChange,
   contentType,
+  collapsed = false,
+  onCollapsedChange,
 }: PanelProps) => {
   const { token } = theme.useToken();
 
@@ -49,6 +53,10 @@ export const Panel = ({
   const handleToggleSearch = useCallback(() => {
     onSearch({ show: !searchValue.show });
   }, [onSearch, searchValue.show]);
+
+  const handleToggleCollapsed = useCallback(() => {
+    onCollapsedChange?.(!collapsed);
+  }, [onCollapsedChange, collapsed]);
 
   return (
     <div
@@ -104,21 +112,44 @@ export const Panel = ({
               fontSize: 14,
             }}
           />
+          {collapsed ? (
+            <DownOutlined
+              onClick={handleToggleCollapsed}
+              style={{
+                cursor: 'pointer',
+                color: token.colorTextSecondary,
+                fontSize: 14,
+              }}
+            />
+          ) : (
+            <UpOutlined
+              onClick={handleToggleCollapsed}
+              style={{
+                cursor: 'pointer',
+                color: token.colorTextSecondary,
+                fontSize: 14,
+              }}
+            />
+          )}
         </Space>
       </div>
 
-      <Divider style={{ margin: '0 0 4px 0' }} />
+      {!collapsed && (
+        <>
+          <Divider style={{ margin: '0 0 4px 0' }} />
 
-      <Search value={searchValue} onSearch={onSearch} />
+          <Search value={searchValue} onSearch={onSearch} />
 
-      <div
-        style={{
-          flex: 1,
-          overflow: 'auto',
-        }}
-      >
-        {activeTabConfig?.children}
-      </div>
+          <div
+            style={{
+              flex: 1,
+              overflow: 'auto',
+            }}
+          >
+            {activeTabConfig?.children}
+          </div>
+        </>
+      )}
     </div>
   );
 };

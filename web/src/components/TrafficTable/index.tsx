@@ -111,15 +111,23 @@ export default function TrafficTable({
     },
     {
       title: "Client",
-      dataIndex: "client_ip",
-      key: "client_ip",
-      width: 90,
+      dataIndex: "client_app",
+      key: "client",
+      width: 100,
       ellipsis: true,
-      render: (ip: string) => (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {ip || "-"}
-        </Text>
-      ),
+      render: (_: string, record: TrafficSummary) => {
+        const clientApp = record.client_app || "";
+        const clientIp = record.client_ip || "";
+        const display = clientApp || clientIp || "-";
+        const tooltip = clientApp ? `${clientApp} (PID: ${record.client_pid})` : clientIp || "-";
+        return (
+          <Tooltip title={tooltip}>
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {display}
+            </Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: "Host",

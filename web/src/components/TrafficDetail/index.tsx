@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useCallback } from 'react';
-import { Empty, Splitter, Spin } from 'antd';
-import type { CSSProperties } from 'react';
-import type { TrafficRecord, DisplayFormat, RecordContentType } from '../../types';
-import { useTrafficDetailStore } from '../../stores/useTrafficDetailStore';
-import { getContentTypeFromHeader } from './helper/contentType';
-import { Header } from './Header';
-import { Panel } from './Panel';
-import { Overview } from './panes/Overview';
-import { HeaderView } from './panes/Header';
-import { Body } from './panes/Body';
-import { Raw } from './panes/Raw';
-import { CookieView } from './panes/Cookie';
-import { QueryView } from './panes/Query';
-import { Messages } from './panes/Messages';
+import { useEffect, useMemo, useCallback } from "react";
+import { Empty, Splitter, Spin } from "antd";
+import type { CSSProperties } from "react";
+import type {
+  TrafficRecord,
+  DisplayFormat,
+  RecordContentType,
+} from "../../types";
+import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
+import { getContentTypeFromHeader } from "./helper/contentType";
+import { Header } from "./Header";
+import { Panel } from "./Panel";
+import { Overview } from "./panes/Overview";
+import { HeaderView } from "./panes/Header";
+import { Body } from "./panes/Body";
+import { Raw } from "./panes/Raw";
+import { CookieView } from "./panes/Cookie";
+import { QueryView } from "./panes/Query";
+import { Messages } from "./panes/Messages";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -32,35 +36,56 @@ const hasQueryParams = (url: string): boolean => {
 
 const hasCookies = (headers: [string, string][] | null): boolean => {
   if (!headers) return false;
-  return headers.some(([name]) => name.toLowerCase() === 'cookie');
+  return headers.some(([name]) => name.toLowerCase() === "cookie");
 };
 
 const hasSetCookies = (headers: [string, string][] | null): boolean => {
   if (!headers) return false;
-  return headers.some(([name]) => name.toLowerCase() === 'set-cookie');
+  return headers.some(([name]) => name.toLowerCase() === "set-cookie");
 };
+
+const COLLAPSED_HEIGHT = 32;
 
 const styles: Record<string, CSSProperties> = {
   container: {
-    height: '100%',
-    display: 'flex',
-    flexDirection: 'column',
+    height: "100%",
+    display: "flex",
+    flexDirection: "column",
   },
   emptyContainer: {
-    height: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
   splitterWrapper: {
     flex: 1,
-    overflow: 'hidden',
+    overflow: "hidden",
     minHeight: 0,
   },
   panelWrapper: {
-    height: '100%',
-    padding: '0 8px',
-    overflow: 'hidden',
+    height: "100%",
+    padding: "0 8px",
+    overflow: "hidden",
+  },
+  flexPanelsWrapper: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden",
+    minHeight: 0,
+  },
+  collapsedPanel: {
+    height: COLLAPSED_HEIGHT,
+    flexShrink: 0,
+    padding: "0 8px",
+    overflow: "hidden",
+  },
+  expandedPanel: {
+    flex: 1,
+    minHeight: 0,
+    padding: "0 8px",
+    overflow: "hidden",
   },
 };
 
@@ -79,6 +104,8 @@ export default function TrafficDetail({
     responseTab,
     requestPreferredTab,
     responsePreferredTab,
+    requestCollapsed,
+    responseCollapsed,
     setRequestSearch,
     setResponseSearch,
     setRequestDisplayFormat,
@@ -87,6 +114,8 @@ export default function TrafficDetail({
     setResponseTab,
     setRequestPreferredTab,
     setResponsePreferredTab,
+    setRequestCollapsed,
+    setResponseCollapsed,
     reset,
   } = useTrafficDetailStore();
 
@@ -99,7 +128,7 @@ export default function TrafficDetail({
       setRequestTab(tab);
       setRequestPreferredTab(tab);
     },
-    [setRequestTab, setRequestPreferredTab]
+    [setRequestTab, setRequestPreferredTab],
   );
 
   const handleResponseTabChange = useCallback(
@@ -107,7 +136,7 @@ export default function TrafficDetail({
       setResponseTab(tab);
       setResponsePreferredTab(tab);
     },
-    [setResponseTab, setResponsePreferredTab]
+    [setResponseTab, setResponsePreferredTab],
   );
 
   const requestContentType = useMemo<RecordContentType>(() => {
@@ -122,14 +151,38 @@ export default function TrafficDetail({
     (format: string) => {
       setRequestDisplayFormat(format as DisplayFormat);
     },
-    [setRequestDisplayFormat]
+    [setRequestDisplayFormat],
   );
 
   const handleResponseDisplayFormatChange = useCallback(
     (format: string) => {
       setResponseDisplayFormat(format as DisplayFormat);
     },
-    [setResponseDisplayFormat]
+    [setResponseDisplayFormat],
+  );
+
+  const handleRequestCollapsedChange = useCallback(
+    (collapsed: boolean) => {
+      if (collapsed) {
+        setRequestCollapsed(true);
+        setResponseCollapsed(false);
+      } else {
+        setRequestCollapsed(false);
+      }
+    },
+    [setRequestCollapsed, setResponseCollapsed],
+  );
+
+  const handleResponseCollapsedChange = useCallback(
+    (collapsed: boolean) => {
+      if (collapsed) {
+        setResponseCollapsed(true);
+        setRequestCollapsed(false);
+      } else {
+        setResponseCollapsed(false);
+      }
+    },
+    [setRequestCollapsed, setResponseCollapsed],
   );
 
   const requestTabs = useMemo(() => {
@@ -137,8 +190,8 @@ export default function TrafficDetail({
 
     return [
       {
-        key: 'Overview',
-        label: 'Overview',
+        key: "Overview",
+        label: "Overview",
         children: (
           <Overview
             record={record}
@@ -148,8 +201,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Header',
-        label: 'Header',
+        key: "Header",
+        label: "Header",
         children: (
           <HeaderView
             headers={record.request_headers}
@@ -159,8 +212,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Cookie',
-        label: 'Cookie',
+        key: "Cookie",
+        label: "Cookie",
         enable: hasCookies(record.request_headers),
         children: (
           <CookieView
@@ -172,8 +225,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Query',
-        label: 'Query',
+        key: "Query",
+        label: "Query",
         enable: hasQueryParams(record.url),
         children: (
           <QueryView
@@ -184,8 +237,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Body',
-        label: 'Body',
+        key: "Body",
+        label: "Body",
         enable: !!requestBody,
         children: (
           <Body
@@ -198,8 +251,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Raw',
-        label: 'Raw',
+        key: "Raw",
+        label: "Raw",
         children: (
           <Raw
             type="request"
@@ -214,7 +267,14 @@ export default function TrafficDetail({
         ),
       },
     ];
-  }, [record, requestBody, requestSearch, setRequestSearch, requestContentType, requestDisplayFormat]);
+  }, [
+    record,
+    requestBody,
+    requestSearch,
+    setRequestSearch,
+    requestContentType,
+    requestDisplayFormat,
+  ]);
 
   const responseTabs = useMemo(() => {
     if (!record) return [];
@@ -223,8 +283,8 @@ export default function TrafficDetail({
 
     return [
       {
-        key: 'Header',
-        label: 'Header',
+        key: "Header",
+        label: "Header",
         children: (
           <HeaderView
             headers={record.response_headers}
@@ -234,8 +294,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Set-Cookie',
-        label: 'Set-Cookie',
+        key: "Set-Cookie",
+        label: "Set-Cookie",
         enable: hasSetCookies(record.response_headers),
         children: (
           <CookieView
@@ -247,8 +307,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Messages',
-        label: `Messages${(record.frame_count ?? 0) > 0 ? ` (${record.frame_count})` : ''}`,
+        key: "Messages",
+        label: `Messages${(record.frame_count ?? 0) > 0 ? ` (${record.frame_count})` : ""}`,
         enable: hasMessages,
         children: (
           <Messages
@@ -261,8 +321,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Body',
-        label: 'Body',
+        key: "Body",
+        label: "Body",
         enable: !!responseBody,
         children: (
           <Body
@@ -275,8 +335,8 @@ export default function TrafficDetail({
         ),
       },
       {
-        key: 'Raw',
-        label: 'Raw',
+        key: "Raw",
+        label: "Raw",
         children: (
           <Raw
             type="response"
@@ -290,33 +350,48 @@ export default function TrafficDetail({
         ),
       },
     ];
-  }, [record, responseBody, responseSearch, setResponseSearch, responseContentType, responseDisplayFormat]);
+  }, [
+    record,
+    responseBody,
+    responseSearch,
+    setResponseSearch,
+    responseContentType,
+    responseDisplayFormat,
+  ]);
 
   useEffect(() => {
     if (!record) return;
 
-    const requestEnabledTabs = requestTabs.filter((tab) => tab.enable !== false);
-    const responseEnabledTabs = responseTabs.filter((tab) => tab.enable !== false);
+    const requestEnabledTabs = requestTabs.filter(
+      (tab) => tab.enable !== false,
+    );
+    const responseEnabledTabs = responseTabs.filter(
+      (tab) => tab.enable !== false,
+    );
 
     const calculateEffectiveTab = (
       preferredTab: string | null,
       enabledTabs: { key: string; enable?: boolean }[],
-      defaultTab: string
+      defaultTab: string,
     ): string => {
       if (!preferredTab) return defaultTab;
-      const preferredTabEnabled = enabledTabs.some((tab) => tab.key === preferredTab);
-      return preferredTabEnabled ? preferredTab : enabledTabs[0]?.key ?? defaultTab;
+      const preferredTabEnabled = enabledTabs.some(
+        (tab) => tab.key === preferredTab,
+      );
+      return preferredTabEnabled
+        ? preferredTab
+        : (enabledTabs[0]?.key ?? defaultTab);
     };
 
     const effectiveRequestTab = calculateEffectiveTab(
       requestPreferredTab,
       requestEnabledTabs,
-      'Overview'
+      "Overview",
     );
     const effectiveResponseTab = calculateEffectiveTab(
       responsePreferredTab,
       responseEnabledTabs,
-      'Header'
+      "Header",
     );
 
     if (effectiveRequestTab !== requestTab) {
@@ -352,10 +427,55 @@ export default function TrafficDetail({
     );
   }
 
-  return (
-    <div style={styles.container}>
-      <Header record={record} />
+  const hasCollapsed = requestCollapsed || responseCollapsed;
 
+  const renderPanels = () => {
+    if (hasCollapsed) {
+      return (
+        <div style={styles.flexPanelsWrapper}>
+          <div
+            style={
+              requestCollapsed ? styles.collapsedPanel : styles.expandedPanel
+            }
+          >
+            <Panel
+              name="Request"
+              tabs={requestTabs}
+              activeTab={requestTab}
+              onTabChange={handleRequestTabChange}
+              searchValue={requestSearch}
+              onSearch={setRequestSearch}
+              displayFormat={requestDisplayFormat}
+              onDisplayFormatChange={handleRequestDisplayFormatChange}
+              contentType={requestContentType}
+              collapsed={requestCollapsed}
+              onCollapsedChange={handleRequestCollapsedChange}
+            />
+          </div>
+          <div
+            style={
+              responseCollapsed ? styles.collapsedPanel : styles.expandedPanel
+            }
+          >
+            <Panel
+              name="Response"
+              tabs={responseTabs}
+              activeTab={responseTab}
+              onTabChange={handleResponseTabChange}
+              searchValue={responseSearch}
+              onSearch={setResponseSearch}
+              displayFormat={responseDisplayFormat}
+              onDisplayFormatChange={handleResponseDisplayFormatChange}
+              contentType={responseContentType}
+              collapsed={responseCollapsed}
+              onCollapsedChange={handleResponseCollapsedChange}
+            />
+          </div>
+        </div>
+      );
+    }
+
+    return (
       <div style={styles.splitterWrapper}>
         <Splitter layout="vertical">
           <Splitter.Panel min="20%" max="80%" defaultSize="50%">
@@ -370,6 +490,8 @@ export default function TrafficDetail({
                 displayFormat={requestDisplayFormat}
                 onDisplayFormatChange={handleRequestDisplayFormatChange}
                 contentType={requestContentType}
+                collapsed={requestCollapsed}
+                onCollapsedChange={handleRequestCollapsedChange}
               />
             </div>
           </Splitter.Panel>
@@ -385,11 +507,20 @@ export default function TrafficDetail({
                 displayFormat={responseDisplayFormat}
                 onDisplayFormatChange={handleResponseDisplayFormatChange}
                 contentType={responseContentType}
+                collapsed={responseCollapsed}
+                onCollapsedChange={handleResponseCollapsedChange}
               />
             </div>
           </Splitter.Panel>
         </Splitter>
       </div>
+    );
+  };
+
+  return (
+    <div style={styles.container}>
+      <Header record={record} />
+      {renderPanels()}
     </div>
   );
 }

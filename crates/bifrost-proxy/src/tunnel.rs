@@ -27,7 +27,9 @@ use tracing::{debug, error, info, warn};
 use crate::body::{apply_body_rules, Phase};
 use crate::decompress::get_content_encoding;
 use crate::dns::DnsResolver;
-use crate::http::{needs_body_processing, needs_request_body_processing, parse_and_record_sse_events};
+use crate::http::{
+    needs_body_processing, needs_request_body_processing, parse_and_record_sse_events,
+};
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
@@ -287,6 +289,8 @@ pub async fn handle_connect(
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
     let client_ip = ctx.client_ip.clone();
+    let client_app = ctx.client_app.clone();
+    let client_pid = ctx.client_pid;
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
@@ -308,6 +312,8 @@ pub async fn handle_connect(
         record.host = host.clone();
         record.is_tunnel = true;
         record.client_ip = client_ip;
+        record.client_app = client_app;
+        record.client_pid = client_pid;
         state.record_traffic(record);
     }
 
@@ -388,6 +394,9 @@ async fn handle_tls_interception(
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
     let original_host_owned = original_host.to_string();
+    let client_ip = ctx.client_ip.clone();
+    let client_app = ctx.client_app.clone();
+    let client_pid = ctx.client_pid;
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
 
@@ -434,6 +443,9 @@ async fn handle_tls_interception(
             &req_id,
             admin_state.clone(),
             cancel_rx,
+            client_ip,
+            client_app,
+            client_pid,
         )
         .await;
 
@@ -478,6 +490,9 @@ async fn tls_intercept_tunnel(
     unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    client_ip: String,
+    client_app: Option<String>,
+    client_pid: Option<u32>,
 ) -> Result<()> {
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let client_tls = acceptor
@@ -494,6 +509,8 @@ async fn tls_intercept_tunnel(
     let admin_state_clone = admin_state.clone();
     let rules_clone = rules.clone();
     let verbose = verbose_logging;
+    let client_ip_clone = client_ip.clone();
+    let client_app_clone = client_app.clone();
 
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
@@ -501,6 +518,9 @@ async fn tls_intercept_tunnel(
         let req_id = crate::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
+        let client_ip = client_ip_clone.clone();
+        let client_app = client_app_clone.clone();
+        let client_pid = client_pid;
         async move {
             handle_intercepted_request_with_protocol(
                 req,
@@ -512,6 +532,9 @@ async fn tls_intercept_tunnel(
                 verbose,
                 max_body_buffer_size,
                 unsafe_ssl,
+                client_ip,
+                client_app,
+                client_pid,
             )
             .await
         }
@@ -548,6 +571,9 @@ async fn tls_intercept_tunnel_with_cancel(
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
     cancel_rx: oneshot::Receiver<()>,
+    client_ip: String,
+    client_app: Option<String>,
+    client_pid: Option<u32>,
 ) -> Result<bool> {
     let acceptor = TlsAcceptor::from(Arc::new(server_config));
     let client_tls = acceptor
@@ -564,6 +590,8 @@ async fn tls_intercept_tunnel_with_cancel(
     let admin_state_clone = admin_state.clone();
     let rules_clone = rules.clone();
     let verbose = verbose_logging;
+    let client_ip_clone = client_ip.clone();
+    let client_app_clone = client_app.clone();
 
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
@@ -571,6 +599,9 @@ async fn tls_intercept_tunnel_with_cancel(
         let req_id = crate::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
+        let client_ip = client_ip_clone.clone();
+        let client_app = client_app_clone.clone();
+        let client_pid = client_pid;
         async move {
             handle_intercepted_request_with_protocol(
                 req,
@@ -582,6 +613,9 @@ async fn tls_intercept_tunnel_with_cancel(
                 verbose,
                 max_body_buffer_size,
                 unsafe_ssl,
+                client_ip,
+                client_app,
+                client_pid,
             )
             .await
         }
@@ -645,6 +679,9 @@ async fn handle_intercepted_request_with_protocol(
     verbose_logging: bool,
     max_body_buffer_size: usize,
     unsafe_ssl: bool,
+    client_ip: String,
+    client_app: Option<String>,
+    client_pid: Option<u32>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     if is_websocket_upgrade_request(&req) {
         return handle_intercepted_websocket(
@@ -655,6 +692,9 @@ async fn handle_intercepted_request_with_protocol(
             admin_state,
             rules,
             verbose_logging,
+            client_ip,
+            client_app,
+            client_pid,
         )
         .await;
     }
@@ -1211,11 +1251,12 @@ async fn handle_intercepted_request_with_protocol(
             actual_target_host.clone(),
             path.to_string(),
             query_string.clone(),
-            "127.0.0.1".to_string(),
+            client_ip.clone(),
         )
         .with_headers(incoming_headers.clone())
         .with_cookies(incoming_cookies.clone())
-        .with_query_params(query_params.clone());
+        .with_query_params(query_params.clone())
+        .with_client_process(client_app.clone(), client_pid);
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, &ctx);
 
     let needs_processing = needs_body_processing(&resolved_rules);
@@ -1295,6 +1336,9 @@ async fn handle_intercepted_request_with_protocol(
             });
             record.request_headers = Some(req_headers);
             record.response_headers = Some(res_headers);
+            record.client_ip = client_ip.clone();
+            record.client_app = client_app.clone();
+            record.client_pid = client_pid;
 
             if is_websocket {
                 record.protocol = "wss".to_string();
@@ -1410,6 +1454,9 @@ async fn handle_intercepted_request_with_protocol(
         });
         record.request_headers = Some(req_headers);
         record.response_headers = Some(res_headers);
+        record.client_ip = client_ip.clone();
+        record.client_app = client_app.clone();
+        record.client_pid = client_pid;
 
         if is_websocket {
             record.protocol = "wss".to_string();
@@ -1521,6 +1568,9 @@ async fn handle_intercepted_websocket(
     admin_state: Option<Arc<AdminState>>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
+    client_ip: String,
+    client_app: Option<String>,
+    client_pid: Option<u32>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::TlsConnector;
@@ -1731,6 +1781,9 @@ async fn handle_intercepted_websocket(
                 .collect(),
         );
         record.host = original_host.to_string();
+        record.client_ip = client_ip.clone();
+        record.client_app = client_app.clone();
+        record.client_pid = client_pid;
         record.set_websocket();
 
         record.has_rule_hit = has_rules;

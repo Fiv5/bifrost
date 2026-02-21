@@ -55,6 +55,8 @@ export interface TrafficSummary {
   path: string;
   protocol: string;
   client_ip: string;
+  client_app?: string;
+  client_pid?: number;
   has_rule_hit: boolean;
   matched_rule_count: number;
   matched_protocols: string[];

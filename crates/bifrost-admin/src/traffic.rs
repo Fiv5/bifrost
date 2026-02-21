@@ -125,6 +125,10 @@ pub struct TrafficRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body_ref: Option<BodyRef>,
     pub client_ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_pid: Option<u32>,
     pub host: String,
     pub path: String,
     pub protocol: String,
@@ -182,6 +186,8 @@ impl TrafficRecord {
             request_body_ref: None,
             response_body_ref: None,
             client_ip: String::new(),
+            client_app: None,
+            client_pid: None,
             host,
             path,
             protocol,
@@ -225,6 +231,10 @@ pub struct TrafficSummary {
     pub path: String,
     pub protocol: String,
     pub client_ip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_app: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_pid: Option<u32>,
     pub has_rule_hit: bool,
     pub matched_rule_count: usize,
     pub matched_protocols: Vec<String>,
@@ -289,6 +299,8 @@ impl From<&TrafficRecord> for TrafficSummary {
             path: record.path.clone(),
             protocol: record.protocol.clone(),
             client_ip: record.client_ip.clone(),
+            client_app: record.client_app.clone(),
+            client_pid: record.client_pid,
             has_rule_hit: record.has_rule_hit,
             matched_rule_count,
             matched_protocols,
