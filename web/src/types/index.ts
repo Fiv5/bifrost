@@ -185,6 +185,19 @@ export interface MetricsSnapshot {
   wss: TrafficTypeMetrics;
 }
 
+export interface AppMetrics {
+  app_name: string;
+  requests: number;
+  active_connections: number;
+  bytes_sent: number;
+  bytes_received: number;
+  http_requests: number;
+  https_requests: number;
+  tunnel_requests: number;
+  ws_requests: number;
+  wss_requests: number;
+}
+
 export interface SystemInfo {
   version: string;
   rust_version: string;

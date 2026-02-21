@@ -1,3 +1,4 @@
+mod app_icon;
 mod body_store;
 pub mod connection_registry;
 mod frame_store;
@@ -15,6 +16,7 @@ pub mod websocket_monitor;
 #[cfg(test)]
 mod tests;
 
+pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,

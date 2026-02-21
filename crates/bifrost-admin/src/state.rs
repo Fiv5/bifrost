@@ -7,6 +7,7 @@ use bifrost_storage::{ConfigManager, RulesStorage, SharedConfigManager, ValuesSt
 use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
+use crate::app_icon::SharedAppIconCache;
 use crate::body_store::SharedBodyStore;
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
@@ -77,6 +78,7 @@ pub struct AdminState {
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
     pub max_body_buffer_size: AtomicUsize,
+    pub app_icon_cache: Option<SharedAppIconCache>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 32 * 1024 * 1024;
@@ -101,6 +103,7 @@ impl AdminState {
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,
             max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
+            app_icon_cache: None,
         }
     }
 
@@ -237,6 +240,11 @@ impl AdminState {
 
     pub fn with_max_body_buffer_size(self, size: usize) -> Self {
         self.max_body_buffer_size.store(size, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_app_icon_cache(mut self, cache: SharedAppIconCache) -> Self {
+        self.app_icon_cache = Some(cache);
         self
     }
 }

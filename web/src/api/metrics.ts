@@ -1,5 +1,5 @@
 import { get } from './client';
-import type { MetricsSnapshot, SystemOverview } from '../types';
+import type { MetricsSnapshot, SystemOverview, AppMetrics } from '../types';
 
 export async function getMetrics(): Promise<MetricsSnapshot> {
   return get<MetricsSnapshot>('/metrics');
@@ -12,4 +12,8 @@ export async function getMetricsHistory(limit?: number): Promise<MetricsSnapshot
 
 export async function getSystemOverview(): Promise<SystemOverview> {
   return get<SystemOverview>('/system/overview');
+}
+
+export async function getAppMetrics(): Promise<AppMetrics[]> {
+  return get<AppMetrics[]>('/metrics/apps');
 }

@@ -66,6 +66,7 @@ import {
   rejectPending,
   clearPendingAuthorizations,
 } from "../../api/whitelist";
+import { getAppMetrics } from "../../api/metrics";
 import {
   getSystemProxyStatus,
   setSystemProxy,
@@ -86,7 +87,7 @@ import {
   getCertQRCodeUrl,
   type CertInfo,
 } from "../../api/cert";
-import type { PendingAuth, TrafficTypeMetrics, AccessMode } from "../../types";
+import type { PendingAuth, TrafficTypeMetrics, AccessMode, AppMetrics } from "../../types";
 import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 
@@ -112,6 +113,8 @@ export default function Settings() {
   const [performanceConfig, setPerformanceConfig] =
     useState<PerformanceConfig | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
+  const [appMetrics, setAppMetrics] = useState<AppMetrics[]>([]);
+  const [appMetricsLoading, setAppMetricsLoading] = useState(false);
 
   const fetchSystemProxy = async () => {
     try {
@@ -152,6 +155,18 @@ export default function Settings() {
       console.error("Failed to fetch performance config");
     } finally {
       setPerfLoading(false);
+    }
+  }, []);
+
+  const fetchAppMetricsData = useCallback(async () => {
+    setAppMetricsLoading(true);
+    try {
+      const metrics = await getAppMetrics();
+      setAppMetrics(metrics);
+    } catch {
+      console.error("Failed to fetch app metrics");
+    } finally {
+      setAppMetricsLoading(false);
     }
   }, []);
 
@@ -484,9 +499,14 @@ export default function Settings() {
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
+    fetchAppMetricsData();
     const interval = setInterval(fetchOverview, 1000);
-    return () => clearInterval(interval);
-  }, [fetchOverview, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig]);
+    const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(appMetricsInterval);
+    };
+  }, [fetchOverview, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig, fetchAppMetricsData]);
 
   useEffect(() => {
     fetchPending();
@@ -1323,6 +1343,18 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     />
                   ),
                 },
+                {
+                  key: "apps",
+                  label: "Applications",
+                  children: (
+                    <AppMetricsContent
+                      appMetrics={appMetrics}
+                      loading={appMetricsLoading}
+                      formatBytes={formatBytes}
+                      onRefresh={fetchAppMetricsData}
+                    />
+                  ),
+                },
               ]}
             />
 
@@ -1816,6 +1848,177 @@ function TrafficTypeContent({ metrics, formatBytes }: TrafficTypeContentProps) {
         </Card>
       </Col>
     </Row>
+  );
+}
+
+interface AppMetricsContentProps {
+  appMetrics: AppMetrics[];
+  loading: boolean;
+  formatBytes: (bytes: number) => string;
+  onRefresh: () => void;
+}
+
+function AppMetricsContent({
+  appMetrics,
+  loading,
+  formatBytes,
+  onRefresh,
+}: AppMetricsContentProps) {
+  const { token } = theme.useToken();
+
+  const columns: ColumnsType<AppMetrics> = [
+    {
+      title: "Application",
+      dataIndex: "app_name",
+      key: "app_name",
+      fixed: "left" as const,
+      width: 200,
+      render: (name: string) => (
+        <Space>
+          <LaptopOutlined style={{ color: token.colorPrimary }} />
+          <Text strong>{name}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: "Requests",
+      dataIndex: "requests",
+      key: "requests",
+      width: 100,
+      sorter: (a, b) => a.requests - b.requests,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "Upload",
+      dataIndex: "bytes_sent",
+      key: "bytes_sent",
+      width: 100,
+      sorter: (a, b) => a.bytes_sent - b.bytes_sent,
+      render: (val: number) => formatBytes(val),
+    },
+    {
+      title: "Download",
+      dataIndex: "bytes_received",
+      key: "bytes_received",
+      width: 100,
+      sorter: (a, b) => a.bytes_received - b.bytes_received,
+      render: (val: number) => formatBytes(val),
+    },
+    {
+      title: "HTTP",
+      dataIndex: "http_requests",
+      key: "http_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "HTTPS",
+      dataIndex: "https_requests",
+      key: "https_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "Tunnel",
+      dataIndex: "tunnel_requests",
+      key: "tunnel_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "WS",
+      dataIndex: "ws_requests",
+      key: "ws_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "WSS",
+      dataIndex: "wss_requests",
+      key: "wss_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+  ];
+
+  const totalStats = appMetrics.reduce(
+    (acc, app) => ({
+      requests: acc.requests + app.requests,
+      bytes_sent: acc.bytes_sent + app.bytes_sent,
+      bytes_received: acc.bytes_received + app.bytes_received,
+    }),
+    { requests: 0, bytes_sent: 0, bytes_received: 0 }
+  );
+
+  return (
+    <div>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Applications"
+              value={appMetrics.length}
+              prefix={<LaptopOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Requests"
+              value={totalStats.requests.toLocaleString()}
+              prefix={<ApiOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Traffic"
+              value={formatBytes(totalStats.bytes_sent + totalStats.bytes_received)}
+              prefix={<SwapOutlined />}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <div style={{ marginBottom: 16, display: "flex", justifyContent: "flex-end" }}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={onRefresh}
+          loading={loading}
+          size="small"
+        >
+          Refresh
+        </Button>
+      </div>
+
+      <Table
+        columns={columns}
+        dataSource={appMetrics}
+        rowKey="app_name"
+        loading={loading}
+        size="small"
+        scroll={{ x: 900 }}
+        pagination={{
+          pageSize: 10,
+          showSizeChanger: true,
+          showTotal: (total) => `Total ${total} applications`,
+        }}
+      />
+    </div>
   );
 }
 

@@ -549,6 +549,7 @@ pub async fn handle_http_request(
             record.client_ip = ctx.client_ip.clone();
             record.client_app = ctx.client_app.clone();
             record.client_pid = ctx.client_pid;
+            record.client_path = ctx.client_path.clone();
 
             if is_websocket {
                 record.protocol = "ws".to_string();
@@ -705,6 +706,7 @@ pub async fn handle_http_request(
         record.client_ip = ctx.client_ip.clone();
         record.client_app = ctx.client_app.clone();
         record.client_pid = ctx.client_pid;
+        record.client_path = ctx.client_path.clone();
 
         if is_websocket {
             record.protocol = "ws".to_string();
@@ -1135,6 +1137,7 @@ async fn handle_http_websocket(
         record.client_ip = ctx.client_ip.clone();
         record.client_app = ctx.client_app.clone();
         record.client_pid = ctx.client_pid;
+        record.client_path = ctx.client_path.clone();
         record.set_websocket();
 
         state.websocket_monitor.register_connection(&record_id);

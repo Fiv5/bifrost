@@ -1,6 +1,8 @@
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use tracing::debug;
 
 use crate::handlers::{
+    app_icon::handle_app_icon,
     cert::{handle_cert, handle_cert_public},
     config::handle_config,
     cors_preflight, error_response, frames,
@@ -76,6 +78,9 @@ impl AdminRouter {
             handle_config(req, state, path).await
         } else if path.starts_with("/api/websocket/connections") {
             frames::list_websocket_connections(state).await
+        } else if path.starts_with("/api/app-icon/") {
+            debug!(path = %path, "Routing to app_icon handler");
+            handle_app_icon(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

@@ -1,8 +1,9 @@
 import { useRef, useEffect, useCallback, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Tag, Typography, Tooltip, Badge, theme } from "antd";
+import { Tag, Typography, Tooltip, Badge, theme, Space } from "antd";
 import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
+import AppIcon from "../AppIcon";
 
 const { Text } = Typography;
 
@@ -151,7 +152,7 @@ const columns: ColumnDef[] = [
   {
     key: "client",
     title: "Client",
-    width: 100,
+    width: 140,
     render: (record) => {
       const clientApp = record.client_app || "";
       const clientIp = record.client_ip || "";
@@ -159,9 +160,12 @@ const columns: ColumnDef[] = [
       const tooltip = clientApp ? `${clientApp} (PID: ${record.client_pid})` : clientIp || "-";
       return (
         <Tooltip title={tooltip}>
-          <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
-            {display}
-          </Text>
+          <Space size={4} style={{ display: "flex", alignItems: "center" }}>
+            {clientApp && <AppIcon appName={clientApp} size={16} />}
+            <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
+              {display}
+            </Text>
+          </Space>
         </Tooltip>
       );
     },

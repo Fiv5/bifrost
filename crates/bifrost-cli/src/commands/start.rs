@@ -489,6 +489,8 @@ pub fn run_foreground(
         let connection_registry =
             bifrost_admin::ConnectionRegistry::new(disconnect_on_config_change);
 
+        let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
+
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_traffic_store_shared(traffic_store.clone())
@@ -500,7 +502,8 @@ pub fn run_foreground(
             .with_ca_cert_path(ca_cert_path)
             .with_system_proxy_manager_shared(system_proxy_manager.clone())
             .with_config_manager(config_manager)
-            .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
+            .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+            .with_app_icon_cache(app_icon_cache);
 
         bifrost_admin::start_traffic_cleanup_task(traffic_store);
 
@@ -726,6 +729,7 @@ pub fn run_daemon(
                     disconnect_on_config_change: true,
                 };
                 let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
+                let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
@@ -738,7 +742,8 @@ pub fn run_daemon(
                     .with_ca_cert_path(ca_cert_path)
                     .with_system_proxy_manager_shared(system_proxy_manager.clone())
                     .with_config_manager(config_manager)
-                    .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size);
+                    .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+                    .with_app_icon_cache(app_icon_cache);
 
                 bifrost_admin::start_traffic_cleanup_task(traffic_store);
 

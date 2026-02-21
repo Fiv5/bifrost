@@ -562,12 +562,12 @@ async fn handle_request(
     dns_resolver: Arc<DnsResolver>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let client_process = resolve_client_process(&peer_addr);
-    let (client_app, client_pid) = client_process
+    let (client_app, client_pid, client_path) = client_process
         .as_ref()
-        .map(|p| (Some(p.name.clone()), Some(p.pid)))
-        .unwrap_or((None, None));
+        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+        .unwrap_or((None, None, None));
 
-    let ctx = RequestContext::new().with_client_process(client_app, client_pid);
+    let ctx = RequestContext::new().with_client_process(client_app, client_pid, client_path);
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
