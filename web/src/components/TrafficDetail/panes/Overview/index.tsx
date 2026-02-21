@@ -415,13 +415,19 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           labelStyle={{ width: 140, fontWeight: 500 }}
         >
           <Descriptions.Item label="Request Size">
-            {formatSize(record.request_size)}
+            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+              ? formatSize(record.socket_status.send_bytes)
+              : formatSize(record.request_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Response Size">
-            {formatSize(record.response_size)}
+            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+              ? formatSize(record.socket_status.receive_bytes)
+              : formatSize(record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Total Size">
-            {formatSize(record.request_size + record.response_size)}
+            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+              ? formatSize(record.socket_status.send_bytes + record.socket_status.receive_bytes)
+              : formatSize(record.request_size + record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Duration">
             {record.duration_ms ? `${record.duration_ms}ms` : "-"}

@@ -92,7 +92,7 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
         .skip(offset)
         .take(limit)
         .map(|mut summary| {
-            if summary.is_sse || summary.is_websocket {
+            if summary.is_sse || summary.is_websocket || summary.is_tunnel {
                 if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
                     summary.frame_count = status.frame_count;
                     summary.socket_status = Some(status);
@@ -128,7 +128,7 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
     };
 
     let enrich_summary = |mut summary: crate::traffic::TrafficSummary| {
-        if summary.is_sse || summary.is_websocket {
+        if summary.is_sse || summary.is_websocket || summary.is_tunnel {
             if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
                 summary.frame_count = status.frame_count;
                 summary.socket_status = Some(status);
@@ -149,7 +149,7 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
         summaries
             .into_iter()
             .map(|mut summary| {
-                if summary.is_sse || summary.is_websocket {
+                if summary.is_sse || summary.is_websocket || summary.is_tunnel {
                     if let Some(status) =
                         state.connection_monitor.get_connection_status(&summary.id)
                     {
@@ -224,7 +224,7 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 
     match record {
         Some(mut record) => {
-            if record.is_websocket || record.is_sse {
+            if record.is_websocket || record.is_sse || record.is_tunnel {
                 if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
                     record.frame_count = status.frame_count;
                     record.last_frame_id = status.frame_count as u64;

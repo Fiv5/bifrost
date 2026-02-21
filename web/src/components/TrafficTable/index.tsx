@@ -174,11 +174,16 @@ export default function TrafficTable({
       key: "response_size",
       width: 65,
       align: "right",
-      render: (size: number) => (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {formatSize(size)}
-        </Text>
-      ),
+      render: (_: number, record: TrafficSummary) => {
+        const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+          ? record.socket_status.send_bytes + record.socket_status.receive_bytes
+          : record.response_size;
+        return (
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {formatSize(size)}
+          </Text>
+        );
+      },
     },
     {
       title: "Time",

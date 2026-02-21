@@ -234,11 +234,16 @@ const columns: ColumnDef[] = [
     title: "Size",
     width: 65,
     align: "right",
-    render: (record) => (
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        {formatSize(record.response_size)}
-      </Text>
-    ),
+    render: (record) => {
+      const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+        ? record.socket_status.send_bytes + record.socket_status.receive_bytes
+        : record.response_size;
+      return (
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {formatSize(size)}
+        </Text>
+      );
+    },
   },
   {
     key: "duration_ms",
