@@ -1,10 +1,12 @@
-import { Select, Input, Button, Space } from "antd";
+import { Select, Input, Button, Space, AutoComplete } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
+import { useMemo } from "react";
 import type { FilterCondition } from "../../types";
 
 interface FilterBarProps {
   filters: FilterCondition[];
   onFiltersChange: (filters: FilterCondition[]) => void;
+  availableClientApps?: string[];
 }
 
 const fieldOptions = [
@@ -12,6 +14,7 @@ const fieldOptions = [
   { value: "host", label: "Host" },
   { value: "path", label: "Path" },
   { value: "method", label: "Method" },
+  { value: "client_app", label: "Client App" },
   { value: "request_header", label: "Request Header" },
   { value: "response_header", label: "Response Header" },
   { value: "request_body", label: "Request Body" },
@@ -52,6 +55,7 @@ const styles = {
 export default function FilterBar({
   filters,
   onFiltersChange,
+  availableClientApps = [],
 }: FilterBarProps) {
   const generateId = () =>
     `filter_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -80,6 +84,42 @@ export default function FilterBar({
     );
   };
 
+  const clientAppOptions = useMemo(() => {
+    return availableClientApps.map((app) => ({
+      value: app,
+      label: app,
+    }));
+  }, [availableClientApps]);
+
+  const renderValueInput = (filter: FilterCondition) => {
+    if (filter.field === "client_app") {
+      return (
+        <AutoComplete
+          value={filter.value}
+          options={clientAppOptions}
+          onChange={(value) => handleChange(filter.id, "value", value)}
+          style={styles.valueInput}
+          placeholder="Select or enter app name..."
+          size="small"
+          filterOption={(inputValue, option) =>
+            option?.value.toLowerCase().includes(inputValue.toLowerCase()) ?? false
+          }
+          allowClear
+        />
+      );
+    }
+
+    return (
+      <Input
+        value={filter.value}
+        onChange={(e) => handleChange(filter.id, "value", e.target.value)}
+        style={styles.valueInput}
+        placeholder="Enter value..."
+        size="small"
+      />
+    );
+  };
+
   return (
     <div style={styles.container}>
       {filters.map((filter, index) => (
@@ -100,13 +140,7 @@ export default function FilterBar({
             placeholder="Operator"
             size="small"
           />
-          <Input
-            value={filter.value}
-            onChange={(e) => handleChange(filter.id, "value", e.target.value)}
-            style={styles.valueInput}
-            placeholder="Enter value..."
-            size="small"
-          />
+          {renderValueInput(filter)}
           <Space size={4}>
             <Button
               type="text"

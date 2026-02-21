@@ -647,6 +647,10 @@ impl TrafficStore {
         self.records.read().len()
     }
 
+    pub fn current_sequence(&self) -> u64 {
+        self.sequence.load(Ordering::SeqCst)
+    }
+
     pub fn flush(&self) {
         self.flush_pending_writes();
         self.save_metadata_internal();

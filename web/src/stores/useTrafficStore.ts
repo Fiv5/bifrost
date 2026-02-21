@@ -115,6 +115,9 @@ const buildFilterFromToolbar = (toolbar: ToolbarFilters, conditions: FilterCondi
       case 'domain':
         filter.domain = value;
         break;
+      case 'client_app':
+        filter.client_app = value;
+        break;
     }
   });
 

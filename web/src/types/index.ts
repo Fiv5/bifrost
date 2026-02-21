@@ -139,6 +139,7 @@ export interface TrafficFilter {
   path_contains?: string;
   header_contains?: string;
   client_ip?: string;
+  client_app?: string;
 }
 
 export interface ToolbarFilters {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
 import { useTrafficStore } from "../../stores/useTrafficStore";
@@ -204,6 +204,16 @@ export default function Traffic() {
     clearNewRecordsCount();
   }, [clearNewRecordsCount]);
 
+  const availableClientApps = useMemo(() => {
+    const appSet = new Set<string>();
+    records.forEach((record) => {
+      if (record.client_app) {
+        appSet.add(record.client_app);
+      }
+    });
+    return Array.from(appSet).sort();
+  }, [records]);
+
   const styles: Record<string, CSSProperties> = {
     container: {
       display: 'flex',
@@ -255,6 +265,7 @@ export default function Traffic() {
           <FilterBar
             filters={filterConditions}
             onFiltersChange={handleFilterConditionsChange}
+            availableClientApps={availableClientApps}
           />
         </div>
       )}

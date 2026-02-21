@@ -146,11 +146,15 @@ impl AdminState {
     }
 
     pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
+        let sequence = store.current_sequence();
+        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(Arc::new(store));
         self
     }
 
     pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
+        let sequence = store.current_sequence();
+        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(store);
         self
     }

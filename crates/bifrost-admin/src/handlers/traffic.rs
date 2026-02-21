@@ -242,6 +242,8 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
     if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.clear();
+        let new_sequence = traffic_store.current_sequence();
+        state.traffic_recorder.set_initial_sequence(new_sequence);
     }
     state.traffic_recorder.clear();
 
@@ -385,6 +387,7 @@ fn parse_traffic_filter(query: &str) -> TrafficFilter {
                 "path_contains" | "path" => filter.path_contains = Some(value.to_string()),
                 "header_contains" | "header" => filter.header_contains = Some(value.to_string()),
                 "client_ip" => filter.client_ip = Some(value.to_string()),
+                "client_app" => filter.client_app = Some(value.to_string()),
                 _ => {}
             }
         }

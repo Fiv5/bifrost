@@ -271,7 +271,10 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         let stats = traffic_store.stats();
         traffic_removed = stats.total_records_processed as usize;
         tracing::info!("Cleared traffic store records");
+        let new_sequence = traffic_store.current_sequence();
+        state.traffic_recorder.set_initial_sequence(new_sequence);
     }
+    state.traffic_recorder.clear();
 
     if let Some(ref frame_store) = state.frame_store {
         match frame_store.clear() {

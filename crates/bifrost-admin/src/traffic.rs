@@ -343,6 +343,15 @@ impl TrafficRecorder {
         }
     }
 
+    pub fn set_initial_sequence(&self, sequence: u64) {
+        let old = self.sequence.swap(sequence, Ordering::SeqCst);
+        tracing::info!(
+            "TrafficRecorder sequence initialized: {} -> {}",
+            old,
+            sequence
+        );
+    }
+
     pub fn record(&self, mut record: TrafficRecord) {
         let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
         record.sequence = seq;
@@ -483,6 +492,7 @@ pub struct TrafficFilter {
     pub path_contains: Option<String>,
     pub header_contains: Option<String>,
     pub client_ip: Option<String>,
+    pub client_app: Option<String>,
 }
 
 impl TrafficFilter {
@@ -604,6 +614,16 @@ impl TrafficFilter {
 
         if let Some(ref client_ip) = self.client_ip {
             if !record.client_ip.contains(client_ip) {
+                return false;
+            }
+        }
+
+        if let Some(ref client_app) = self.client_app {
+            if let Some(ref app) = record.client_app {
+                if !app.to_lowercase().contains(&client_app.to_lowercase()) {
+                    return false;
+                }
+            } else {
                 return false;
             }
         }
