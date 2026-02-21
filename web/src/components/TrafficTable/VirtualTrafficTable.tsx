@@ -1,6 +1,12 @@
-import { useRef, useEffect, useCallback, useState, type CSSProperties } from "react";
+import {
+  useRef,
+  useEffect,
+  useCallback,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Tag, Typography, Tooltip, Badge, theme, Space } from "antd";
+import { Tag, Typography, Tooltip, Badge, theme } from "antd";
 import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 import AppIcon from "../AppIcon";
@@ -64,7 +70,7 @@ const formatSize = (bytes: number) => {
 };
 
 const formatSequence = (seq: number): string => {
-  return seq.toString().padStart(4, '0');
+  return seq.toString().padStart(4, "0");
 };
 
 interface ColumnDef {
@@ -130,7 +136,10 @@ const columns: ColumnDef[] = [
     title: "Method",
     width: 70,
     render: (record) => (
-      <Tag color={getMethodColor(record.method)} style={{ margin: 0, fontSize: 11 }}>
+      <Tag
+        color={getMethodColor(record.method)}
+        style={{ margin: 0, fontSize: 11 }}
+      >
         {record.method}
       </Tag>
     ),
@@ -142,7 +151,10 @@ const columns: ColumnDef[] = [
     align: "center",
     render: (record) =>
       record.status > 0 ? (
-        <Tag color={getStatusColor(record.status)} style={{ margin: 0, fontSize: 11 }}>
+        <Tag
+          color={getStatusColor(record.status)}
+          style={{ margin: 0, fontSize: 11 }}
+        >
           {record.status}
         </Tag>
       ) : (
@@ -156,16 +168,23 @@ const columns: ColumnDef[] = [
     render: (record) => {
       const clientApp = record.client_app || "";
       const clientIp = record.client_ip || "";
+      const hasApp = Boolean(clientApp);
       const display = clientApp || clientIp || "-";
-      const tooltip = clientApp ? `${clientApp} (PID: ${record.client_pid})` : clientIp || "-";
+      const tooltip = hasApp
+        ? `${clientApp} (PID: ${record.client_pid || "?"}, IP: ${clientIp || "?"})`
+        : clientIp || "-";
       return (
         <Tooltip title={tooltip}>
-          <Space size={4} style={{ display: "flex", alignItems: "center" }}>
-            {clientApp && <AppIcon appName={clientApp} size={16} />}
-            <Text type="secondary" style={{ fontSize: 11 }} ellipsis>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {hasApp && <AppIcon appName={clientApp} size={16} />}
+            <Text
+              type="secondary"
+              style={{ fontSize: 11, lineHeight: "16px" }}
+              ellipsis
+            >
               {display}
             </Text>
-          </Space>
+          </div>
         </Tooltip>
       );
     },
@@ -239,7 +258,10 @@ const columns: ColumnDef[] = [
     width: 160,
     render: (record) => (
       <Tooltip title={record.start_time}>
-        <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+        <Text
+          type="secondary"
+          style={{ fontSize: 11, fontFamily: "monospace" }}
+        >
           {record.start_time || "-"}
         </Text>
       </Tooltip>
@@ -251,7 +273,10 @@ const columns: ColumnDef[] = [
     width: 160,
     render: (record) => (
       <Tooltip title={record.end_time || "-"}>
-        <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+        <Text
+          type="secondary"
+          style={{ fontSize: 11, fontFamily: "monospace" }}
+        >
           {record.end_time || "-"}
         </Text>
       </Tooltip>
@@ -323,11 +348,11 @@ export default function VirtualTrafficTable({
     if (!parentRef.current) return;
 
     const isAtBottom = checkIsAtBottom();
-    
+
     if (isAtBottomRef.current !== isAtBottom) {
       isAtBottomRef.current = isAtBottom;
       onScrollPositionChange?.(isAtBottom);
-      
+
       if (isAtBottom) {
         setShowNewIndicator(false);
       }
@@ -353,7 +378,10 @@ export default function VirtualTrafficTable({
     } else if (currLength > prevLength && prevLength > 0) {
       if (autoScroll && isAtBottomRef.current) {
         requestAnimationFrame(() => {
-          rowVirtualizer.scrollToIndex(currLength - 1, { align: 'end', behavior: 'smooth' });
+          rowVirtualizer.scrollToIndex(currLength - 1, {
+            align: "end",
+            behavior: "smooth",
+          });
         });
       } else if (!isAtBottomRef.current) {
         setShowNewIndicator(true);
@@ -380,70 +408,79 @@ export default function VirtualTrafficTable({
   }, [newRecordsCount]);
 
   const handleScrollToBottomClick = useCallback(() => {
-    rowVirtualizer.scrollToIndex(data.length - 1, { align: 'end', behavior: 'smooth' });
+    rowVirtualizer.scrollToIndex(data.length - 1, {
+      align: "end",
+      behavior: "smooth",
+    });
     setShowNewIndicator(false);
     onScrollToBottom?.();
   }, [rowVirtualizer, data.length, onScrollToBottom]);
 
-  const scrollToRow = useCallback((index: number) => {
-    if (!parentRef.current) return;
-    
-    const scrollTop = parentRef.current.scrollTop;
-    const clientHeight = parentRef.current.clientHeight;
-    const headerHeight = ROW_HEIGHT;
-    const rowTop = index * ROW_HEIGHT + headerHeight;
-    const rowBottom = rowTop + ROW_HEIGHT;
-    const visibleTop = scrollTop + headerHeight;
-    const visibleBottom = scrollTop + clientHeight;
+  const scrollToRow = useCallback(
+    (index: number) => {
+      if (!parentRef.current) return;
 
-    if (rowTop < visibleTop) {
-      rowVirtualizer.scrollToIndex(index, { align: 'start' });
-    } else if (rowBottom > visibleBottom) {
-      rowVirtualizer.scrollToIndex(index, { align: 'end' });
-    }
-  }, [rowVirtualizer]);
+      const scrollTop = parentRef.current.scrollTop;
+      const clientHeight = parentRef.current.clientHeight;
+      const headerHeight = ROW_HEIGHT;
+      const rowTop = index * ROW_HEIGHT + headerHeight;
+      const rowBottom = rowTop + ROW_HEIGHT;
+      const visibleTop = scrollTop + headerHeight;
+      const visibleBottom = scrollTop + clientHeight;
 
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (data.length === 0) return;
-    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-
-    e.preventDefault();
-
-    const currentIndex = selectedId 
-      ? data.findIndex(r => r.id === selectedId) 
-      : -1;
-
-    let nextIndex: number;
-
-    if (e.key === 'ArrowDown') {
-      if (currentIndex === -1 || currentIndex >= data.length - 1) {
-        nextIndex = 0;
-      } else {
-        nextIndex = currentIndex + 1;
+      if (rowTop < visibleTop) {
+        rowVirtualizer.scrollToIndex(index, { align: "start" });
+      } else if (rowBottom > visibleBottom) {
+        rowVirtualizer.scrollToIndex(index, { align: "end" });
       }
-    } else {
-      if (currentIndex === -1 || currentIndex <= 0) {
-        nextIndex = data.length - 1;
-      } else {
-        nextIndex = currentIndex - 1;
-      }
-    }
+    },
+    [rowVirtualizer],
+  );
 
-    const nextRecord = data[nextIndex];
-    if (nextRecord) {
-      onSelect?.(nextRecord);
-      onKeyboardNavigate?.(nextRecord);
-      scrollToRow(nextIndex);
-    }
-  }, [data, selectedId, onSelect, onKeyboardNavigate, scrollToRow]);
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (data.length === 0) return;
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+
+      e.preventDefault();
+
+      const currentIndex = selectedId
+        ? data.findIndex((r) => r.id === selectedId)
+        : -1;
+
+      let nextIndex: number;
+
+      if (e.key === "ArrowDown") {
+        if (currentIndex === -1 || currentIndex >= data.length - 1) {
+          nextIndex = 0;
+        } else {
+          nextIndex = currentIndex + 1;
+        }
+      } else {
+        if (currentIndex === -1 || currentIndex <= 0) {
+          nextIndex = data.length - 1;
+        } else {
+          nextIndex = currentIndex - 1;
+        }
+      }
+
+      const nextRecord = data[nextIndex];
+      if (nextRecord) {
+        onSelect?.(nextRecord);
+        onKeyboardNavigate?.(nextRecord);
+        scrollToRow(nextIndex);
+      }
+    },
+    [data, selectedId, onSelect, onKeyboardNavigate, scrollToRow],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    container.addEventListener('keydown', handleKeyDown);
+    container.addEventListener("keydown", handleKeyDown);
     return () => {
-      container.removeEventListener('keydown', handleKeyDown);
+      container.removeEventListener("keydown", handleKeyDown);
     };
   }, [handleKeyDown]);
 
@@ -598,7 +635,11 @@ export default function VirtualTrafficTable({
           }
         `}
       </style>
-      <div ref={parentRef} style={styles.scrollContainer} onScroll={handleScroll}>
+      <div
+        ref={parentRef}
+        style={styles.scrollContainer}
+        onScroll={handleScroll}
+      >
         <div style={styles.tableInner}>
           <div style={styles.header}>
             {columns.map((col) => (
@@ -664,8 +705,12 @@ export default function VirtualTrafficTable({
           }}
           onClick={handleScrollToBottomClick}
         >
-          <Badge count={newRecordsCount} size="small" style={{ backgroundColor: '#fff', color: token.colorPrimary }}>
-            <span style={{ color: '#fff', fontSize: 13 }}>New Traffic</span>
+          <Badge
+            count={newRecordsCount}
+            size="small"
+            style={{ backgroundColor: "#fff", color: token.colorPrimary }}
+          >
+            <span style={{ color: "#fff", fontSize: 13 }}>New Traffic</span>
           </Badge>
           <ArrowDownOutlined style={{ fontSize: 14 }} />
         </div>

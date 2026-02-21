@@ -33,6 +33,14 @@ dashmap = "6"
 [target.'cfg(target_os = "macos")'.dependencies]
 icns = "0.3"
 plist = "1"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSData", "NSDictionary", "NSGeometry", "NSRange"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSImage", "NSBitmapImageRep"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+pelite = "0.10"
+ico = "0.3"
+image = { version = "0.25", default-features = false, features = ["ico", "png"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

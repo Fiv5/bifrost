@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
-import { useTrafficStore } from "../../stores/useTrafficStore";
+import { useTrafficStore, filterRecords } from "../../stores/useTrafficStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
@@ -204,6 +204,10 @@ export default function Traffic() {
     clearNewRecordsCount();
   }, [clearNewRecordsCount]);
 
+  const filteredRecords = useMemo(() => {
+    return filterRecords(records, toolbarFilters, filterConditions);
+  }, [records, toolbarFilters, filterConditions]);
+
   const availableClientApps = useMemo(() => {
     const appSet = new Set<string>();
     records.forEach((record) => {
@@ -274,7 +278,7 @@ export default function Traffic() {
         {detailPanelCollapsed ? (
           <div style={styles.tableWrapper}>
             <VirtualTrafficTable
-              data={records}
+              data={filteredRecords}
               onSelect={handleSelect}
               selectedId={selectedId}
               hasMore={hasMore}
@@ -292,7 +296,7 @@ export default function Traffic() {
             left={
               <div style={styles.tableWrapper}>
                 <VirtualTrafficTable
-                  data={records}
+                  data={filteredRecords}
                   onSelect={handleSelect}
                   selectedId={selectedId}
                   hasMore={hasMore}

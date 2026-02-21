@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TrafficSummary, TrafficRecord, TrafficFilter, ToolbarFilters, FilterCondition, TrafficUpdatesFilter } from '../types';
+import type { TrafficSummary, TrafficRecord, ToolbarFilters, FilterCondition, TrafficUpdatesFilter } from '../types';
 import * as api from '../api';
 
 interface TrafficState {
@@ -26,7 +26,6 @@ interface TrafficState {
   stopPolling: () => void;
   fetchUpdates: () => Promise<void>;
   fetchInitialData: () => Promise<void>;
-  fetchInitialDataWithTransition: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
   clearTraffic: () => Promise<boolean>;
   setToolbarFilters: (filters: ToolbarFilters) => void;
@@ -40,88 +39,124 @@ interface TrafficState {
 }
 
 const POLL_INTERVAL = 1000;
-const BATCH_LIMIT = 100;
+const BATCH_LIMIT = 500;
 
-const buildFilterFromToolbar = (toolbar: ToolbarFilters, conditions: FilterCondition[]): Partial<TrafficFilter> => {
-  const filter: Partial<TrafficFilter> = {};
+const contentTypeMap: Record<string, string[]> = {
+  'JSON': ['json', 'application/json'],
+  'Form': ['form', 'x-www-form-urlencoded', 'multipart/form-data'],
+  'XML': ['xml', 'application/xml', 'text/xml'],
+  'JS': ['javascript', 'text/javascript', 'application/javascript'],
+  'CSS': ['css', 'text/css'],
+  'Font': ['font', 'woff', 'woff2', 'ttf', 'otf', 'eot'],
+  'Doc': ['html', 'text/html'],
+  'Media': ['image', 'video', 'audio', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mp3', 'wav'],
+  'SSE': ['event-stream', 'text/event-stream'],
+};
 
-  if (toolbar.rule.includes('Hit Rule')) {
-    filter.has_rule_hit = true;
-  }
-
-  if (toolbar.protocol.length > 0) {
-    const protocols = toolbar.protocol.map(p => p.toLowerCase());
-    if (protocols.length === 1) {
-      filter.protocol = protocols[0];
+export const filterRecords = (
+  records: TrafficSummary[],
+  toolbar: ToolbarFilters,
+  conditions: FilterCondition[]
+): TrafficSummary[] => {
+  return records.filter(record => {
+    if (toolbar.rule.includes('Hit Rule') && !record.has_rule_hit) {
+      return false;
     }
-  }
 
-  if (toolbar.status.length > 0) {
-    const statusRanges: { min: number; max: number }[] = [];
-    toolbar.status.forEach(s => {
-      if (s === '1xx') statusRanges.push({ min: 100, max: 199 });
-      else if (s === '2xx') statusRanges.push({ min: 200, max: 299 });
-      else if (s === '3xx') statusRanges.push({ min: 300, max: 399 });
-      else if (s === '4xx') statusRanges.push({ min: 400, max: 499 });
-      else if (s === '5xx') statusRanges.push({ min: 500, max: 599 });
-    });
-    if (statusRanges.length === 1) {
-      filter.status_min = statusRanges[0].min;
-      filter.status_max = statusRanges[0].max;
+    if (toolbar.protocol.length > 0) {
+      const protocol = record.protocol?.toUpperCase() || '';
+      const matches = toolbar.protocol.some(p => {
+        const pUpper = p.toUpperCase();
+        if (pUpper === 'H2') return protocol.includes('HTTP/2');
+        if (pUpper === 'HTTP') return protocol === 'HTTP/1.0' || protocol === 'HTTP/1.1';
+        if (pUpper === 'HTTPS') return record.host?.startsWith('https:') || protocol.includes('HTTPS');
+        if (pUpper === 'WS') return record.is_websocket && !record.host?.startsWith('wss:');
+        if (pUpper === 'WSS') return record.is_websocket && record.host?.startsWith('wss:');
+        return false;
+      });
+      if (!matches) return false;
     }
-  }
 
-  if (toolbar.type.length > 0) {
-    const typeMap: Record<string, string> = {
-      'JSON': 'json',
-      'Form': 'form',
-      'XML': 'xml',
-      'JS': 'javascript',
-      'CSS': 'css',
-      'Font': 'font',
-      'Doc': 'html',
-      'Media': 'image',
-      'SSE': 'event-stream',
-    };
-    const types = toolbar.type.map(t => typeMap[t] || t.toLowerCase());
-    if (types.length === 1) {
-      filter.content_type = types[0];
+    if (toolbar.status.length > 0) {
+      const status = record.status;
+      const matches = toolbar.status.some(s => {
+        if (s === 'error') return status === 0 || status >= 500;
+        if (s === '1xx') return status >= 100 && status < 200;
+        if (s === '2xx') return status >= 200 && status < 300;
+        if (s === '3xx') return status >= 300 && status < 400;
+        if (s === '4xx') return status >= 400 && status < 500;
+        if (s === '5xx') return status >= 500 && status < 600;
+        return false;
+      });
+      if (!matches) return false;
     }
-  }
 
-  conditions.forEach(cond => {
-    if (!cond.value) return;
-    const value = cond.value;
-    switch (cond.field) {
-      case 'url':
-        filter.url_contains = value;
-        break;
-      case 'host':
-        filter.host = value;
-        break;
-      case 'path':
-        filter.path_contains = value;
-        break;
-      case 'method':
-        filter.method = value.toUpperCase();
-        break;
-      case 'content_type':
-        filter.content_type = value;
-        break;
-      case 'request_header':
-      case 'response_header':
-        filter.header_contains = value;
-        break;
-      case 'domain':
-        filter.domain = value;
-        break;
-      case 'client_app':
-        filter.client_app = value;
-        break;
+    if (toolbar.type.length > 0) {
+      const contentType = (record.content_type || '').toLowerCase();
+      const matches = toolbar.type.some(t => {
+        const patterns = contentTypeMap[t] || [t.toLowerCase()];
+        return patterns.some(pattern => contentType.includes(pattern));
+      });
+      if (!matches) return false;
     }
+
+    for (const cond of conditions) {
+      if (!cond.value) continue;
+
+      const value = cond.value;
+      let fieldValue = '';
+
+      switch (cond.field) {
+        case 'url':
+          fieldValue = `${record.host || ''}${record.path || ''}`;
+          break;
+        case 'host':
+          fieldValue = record.host || '';
+          break;
+        case 'path':
+          fieldValue = record.path || '';
+          break;
+        case 'method':
+          fieldValue = record.method || '';
+          break;
+        case 'content_type':
+          fieldValue = record.content_type || '';
+          break;
+        case 'client_app':
+          fieldValue = record.client_app || '';
+          break;
+        default:
+          continue;
+      }
+
+      let matches = false;
+      switch (cond.operator) {
+        case 'contains':
+          matches = fieldValue.toLowerCase().includes(value.toLowerCase());
+          break;
+        case 'equals':
+          matches = fieldValue.toLowerCase() === value.toLowerCase();
+          break;
+        case 'regex':
+          try {
+            const regex = new RegExp(value, 'i');
+            matches = regex.test(fieldValue);
+          } catch {
+            matches = false;
+          }
+          break;
+        case 'not_contains':
+          matches = !fieldValue.toLowerCase().includes(value.toLowerCase());
+          break;
+        default:
+          matches = fieldValue.toLowerCase().includes(value.toLowerCase());
+      }
+
+      if (!matches) return false;
+    }
+
+    return true;
   });
-
-  return filter;
 };
 
 export const useTrafficStore = create<TrafficState>((set, get) => ({
@@ -163,10 +198,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   fetchInitialData: async () => {
     set({ loading: true, error: null });
     try {
-      const state = get();
-      const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
       const filter: TrafficUpdatesFilter = {
-        ...toolbarFilter,
         limit: BATCH_LIMIT,
       };
       const response = await api.getTrafficUpdates(filter);
@@ -193,48 +225,14 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
-  fetchInitialDataWithTransition: async () => {
-    set({ error: null });
-    try {
-      const state = get();
-      const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
-      const filter: TrafficUpdatesFilter = {
-        ...toolbarFilter,
-        limit: BATCH_LIMIT,
-      };
-      const response = await api.getTrafficUpdates(filter);
-
-      const newPendingIds = new Set<string>();
-      response.new_records.forEach(r => {
-        if (r.status === 0 || ((r.is_websocket || r.is_sse) && r.socket_status?.is_open)) {
-          newPendingIds.add(r.id);
-        }
-      });
-
-      const lastRecord = response.new_records[response.new_records.length - 1];
-
-      set({
-        records: response.new_records,
-        serverTotal: response.server_total,
-        hasMore: response.has_more,
-        lastId: lastRecord?.id || null,
-        pendingIds: newPendingIds,
-      });
-    } catch (e) {
-      set({ error: (e as Error).message });
-    }
-  },
-
   fetchUpdates: async () => {
     const state = get();
     if (state.paused || !state.polling) return;
 
     try {
-      const toolbarFilter = buildFilterFromToolbar(state.toolbarFilters, state.filterConditions);
       const pendingIdsArray = Array.from(state.pendingIds);
 
       const filter: TrafficUpdatesFilter = {
-        ...toolbarFilter,
         after_id: state.lastId || undefined,
         pending_ids: pendingIdsArray.length > 0 ? pendingIdsArray.join(',') : undefined,
         limit: BATCH_LIMIT,
@@ -354,29 +352,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   },
 
   setToolbarFilters: (filters: ToolbarFilters) => {
-    const state = get();
-    state.stopPolling();
-    set({
-      toolbarFilters: filters,
-      lastId: null,
-      pendingIds: new Set(),
-    });
-    get().fetchInitialDataWithTransition().then(() => {
-      get().startPolling();
-    });
+    set({ toolbarFilters: filters });
   },
 
   setFilterConditions: (conditions: FilterCondition[]) => {
-    const state = get();
-    state.stopPolling();
-    set({
-      filterConditions: conditions,
-      lastId: null,
-      pendingIds: new Set(),
-    });
-    get().fetchInitialDataWithTransition().then(() => {
-      get().startPolling();
-    });
+    set({ filterConditions: conditions });
   },
 
   setPaused: (paused: boolean) => {

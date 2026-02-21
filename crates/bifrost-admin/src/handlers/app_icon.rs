@@ -63,11 +63,132 @@ fn get_app_path_from_traffic(state: &SharedAdminState, app_name: &str) -> Option
         for record in records.iter().rev() {
             if let Some(ref client_app) = record.client_app {
                 if client_app == app_name {
-                    return record.client_path.clone();
+                    if let Some(ref path) = record.client_path {
+                        return Some(path.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    search_app_bundle_by_name(app_name)
+}
+
+fn search_app_bundle_by_name(app_name: &str) -> Option<String> {
+    let normalized_variants = normalize_app_name(app_name);
+
+    debug!(
+        app_name = %app_name,
+        variants = ?normalized_variants,
+        "Searching for app bundle"
+    );
+
+    let search_dirs = get_app_search_dirs();
+
+    for dir in &search_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map(|e| e == "app").unwrap_or(false) {
+                    let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+                    if matches_app_name(file_name, &normalized_variants, app_name) {
+                        debug!(
+                            app_name = %app_name,
+                            found_path = %path.display(),
+                            "Found app bundle by name search"
+                        );
+                        return Some(path.to_string_lossy().into_owned());
+                    }
                 }
             }
         }
     }
 
     None
+}
+
+fn normalize_app_name(name: &str) -> Vec<String> {
+    let base = name
+        .replace(" Helper (Renderer)", "")
+        .replace(" Helper (GPU)", "")
+        .replace(" Helper (Plugin)", "")
+        .replace(" Helper EH", "")
+        .replace(" Helper NP", "")
+        .replace(" Helper", "")
+        .trim()
+        .to_string();
+
+    let mut variants = vec![base.clone()];
+
+    let without_browser = base
+        .replace(" Browser", "")
+        .replace(" browser", "")
+        .trim()
+        .to_string();
+    if without_browser != base && !without_browser.is_empty() {
+        variants.push(without_browser);
+    }
+
+    let words: Vec<&str> = base.split_whitespace().collect();
+    if words.len() > 1 {
+        variants.push(words[0].to_string());
+    }
+
+    variants
+}
+
+fn matches_app_name(
+    bundle_name: &str,
+    normalized_variants: &[String],
+    original_name: &str,
+) -> bool {
+    let bundle_lower = bundle_name.to_lowercase();
+    let original_lower = original_name.to_lowercase();
+
+    if bundle_lower == original_lower {
+        return true;
+    }
+
+    for variant in normalized_variants {
+        let variant_lower = variant.to_lowercase();
+
+        if bundle_lower == variant_lower {
+            return true;
+        }
+
+        if variant_lower.starts_with(&bundle_lower) || bundle_lower.starts_with(&variant_lower) {
+            return true;
+        }
+    }
+
+    let bundle_words: Vec<&str> = bundle_lower.split_whitespace().collect();
+    for variant in normalized_variants {
+        let variant_lower = variant.to_lowercase();
+        let variant_words: Vec<&str> = variant_lower.split_whitespace().collect();
+        if !bundle_words.is_empty()
+            && !variant_words.is_empty()
+            && bundle_words[0] == variant_words[0]
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn get_app_search_dirs() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let mut dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Applications/Utilities"),
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(PathBuf::from(&home).join("Applications"));
+    }
+
+    dirs
 }

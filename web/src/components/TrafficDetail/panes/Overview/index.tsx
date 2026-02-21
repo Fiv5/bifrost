@@ -16,6 +16,7 @@ import type {
   SocketStatus,
 } from "../../../../types";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
+import AppIcon from "../../../AppIcon";
 
 const { Text, Paragraph } = Typography;
 
@@ -384,14 +385,20 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           </Descriptions.Item>
           <Descriptions.Item label="Client">
             {record.client_app ? (
-              <>
-                <Tag color="cyan">{record.client_app}</Tag>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <AppIcon appName={record.client_app} size={18} />
+                <Tag color="cyan" style={{ margin: 0 }}>{record.client_app}</Tag>
                 {record.client_pid && (
-                  <Text type="secondary" style={{ marginLeft: 4 }}>
-                    (PID: {record.client_pid})
+                  <Text type="secondary">
+                    PID: {record.client_pid}
                   </Text>
                 )}
-              </>
+                {record.client_ip && (
+                  <Text type="secondary">
+                    IP: {record.client_ip}
+                  </Text>
+                )}
+              </div>
             ) : (
               record.client_ip || "-"
             )}
