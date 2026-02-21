@@ -6,7 +6,7 @@ use regex::Regex;
 
 use bifrost_admin::{
     is_cert_public_request, is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState,
-    ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
+    SharedPushManager, ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -368,6 +368,7 @@ pub struct ProxyServer {
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     admin_state: Option<Arc<AdminState>>,
+    push_manager: Option<SharedPushManager>,
     admin_security_config: AdminSecurityConfig,
     access_control: Arc<RwLock<ClientAccessControl>>,
     dns_resolver: Arc<DnsResolver>,
@@ -387,6 +388,7 @@ impl ProxyServer {
             rules: Arc::new(NoOpRulesResolver),
             tls_config: Arc::new(TlsConfig::default()),
             admin_state: None,
+            push_manager: None,
             admin_security_config,
             access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
             dns_resolver,
@@ -412,6 +414,15 @@ impl ProxyServer {
     pub fn with_admin_state_shared(mut self, admin_state: Arc<AdminState>) -> Self {
         self.admin_state = Some(admin_state);
         self
+    }
+
+    pub fn with_push_manager(mut self, push_manager: SharedPushManager) -> Self {
+        self.push_manager = Some(push_manager);
+        self
+    }
+
+    pub fn push_manager(&self) -> Option<&SharedPushManager> {
+        self.push_manager.as_ref()
     }
 
     pub fn config(&self) -> &ProxyConfig {
@@ -508,6 +519,7 @@ impl ProxyServer {
             let tls_config = Arc::clone(&self.tls_config);
             let proxy_config = self.config.clone();
             let admin_state = self.admin_state.clone();
+            let push_manager = self.push_manager.clone();
             let admin_security_config = self.admin_security_config.clone();
             let dns_resolver = Arc::clone(&self.dns_resolver);
             let access_control = Arc::clone(&self.access_control);
@@ -524,6 +536,7 @@ impl ProxyServer {
                     let tls_config = Arc::clone(&tls_config);
                     let proxy_config = proxy_config.clone();
                     let admin_state = admin_state.clone();
+                    let push_manager = push_manager.clone();
                     let admin_security_config = admin_security_config.clone();
                     let dns_resolver = Arc::clone(&dns_resolver);
                     let access_control = Arc::clone(&access_control);
@@ -535,6 +548,7 @@ impl ProxyServer {
                             tls_config,
                             proxy_config,
                             admin_state,
+                            push_manager,
                             admin_security_config,
                             dns_resolver,
                             access_control,
@@ -566,6 +580,7 @@ async fn handle_request(
     tls_config: Arc<TlsConfig>,
     proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
+    push_manager: Option<SharedPushManager>,
     admin_security_config: AdminSecurityConfig,
     dns_resolver: Arc<DnsResolver>,
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
@@ -639,7 +654,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state).await,
+                    AdminRouter::handle(req, state, push_manager).await,
                 ));
             } else if is_valid_admin_request(&req, peer_addr, &admin_security_config) {
                 debug!(
@@ -647,7 +662,7 @@ async fn handle_request(
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(
-                    AdminRouter::handle(req, state).await,
+                    AdminRouter::handle(req, state, push_manager).await,
                 ));
             } else {
                 warn!(

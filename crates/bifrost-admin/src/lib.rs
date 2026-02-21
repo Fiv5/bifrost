@@ -5,6 +5,7 @@ pub mod connection_registry;
 mod frame_store;
 mod handlers;
 mod metrics;
+pub mod push;
 mod router;
 mod security;
 mod state;
@@ -27,6 +28,7 @@ pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
 };
+pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
 pub use state::{

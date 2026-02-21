@@ -12,9 +12,11 @@ use crate::handlers::{
     system::handle_system,
     traffic::handle_traffic,
     values::handle_values,
+    websocket::handle_websocket_upgrade,
     whitelist::handle_whitelist_request,
     BoxBody,
 };
+use crate::push::SharedPushManager;
 use crate::state::SharedAdminState;
 use crate::static_files::serve_static_file;
 use crate::ADMIN_PATH_PREFIX;
@@ -22,7 +24,11 @@ use crate::ADMIN_PATH_PREFIX;
 pub struct AdminRouter;
 
 impl AdminRouter {
-    pub async fn handle(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    pub async fn handle(
+        req: Request<Incoming>,
+        state: SharedAdminState,
+        push_manager: Option<SharedPushManager>,
+    ) -> Response<BoxBody> {
         let path = req.uri().path().to_string();
 
         let admin_path = match path.strip_prefix(ADMIN_PATH_PREFIX) {
@@ -43,7 +49,7 @@ impl AdminRouter {
         }
 
         if admin_path.starts_with("/api/") {
-            Self::handle_api(req, state, &admin_path).await
+            Self::handle_api(req, state, push_manager, &admin_path).await
         } else {
             serve_static_file(&admin_path)
         }
@@ -52,6 +58,7 @@ impl AdminRouter {
     async fn handle_api(
         req: Request<Incoming>,
         state: SharedAdminState,
+        push_manager: Option<SharedPushManager>,
         path: &str,
     ) -> Response<BoxBody> {
         if path.starts_with("/api/rules") {
@@ -67,7 +74,13 @@ impl AdminRouter {
             handle_values(req, state, path_suffix).await
         } else if path.starts_with("/api/whitelist") {
             if let Some(access_control) = &state.access_control {
-                handle_whitelist_request(req, access_control.clone(), path).await
+                handle_whitelist_request(
+                    req,
+                    access_control.clone(),
+                    state.config_manager.clone(),
+                    path,
+                )
+                .await
             } else {
                 error_response(
                     StatusCode::SERVICE_UNAVAILABLE,
@@ -82,6 +95,15 @@ impl AdminRouter {
             handle_config(req, state, path).await
         } else if path.starts_with("/api/websocket/connections") {
             frames::list_websocket_connections(state).await
+        } else if path.starts_with("/api/push") {
+            if let Some(pm) = push_manager {
+                handle_websocket_upgrade(req, pm).await
+            } else {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Push manager not configured",
+                )
+            }
         } else if path.starts_with("/api/app-icon/") {
             debug!(path = %path, "Routing to app_icon handler");
             handle_app_icon(req, state, path).await

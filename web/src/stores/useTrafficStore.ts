@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { TrafficSummary, TrafficRecord, ToolbarFilters, FilterCondition, TrafficUpdatesFilter } from '../types';
 import * as api from '../api';
+import pushService, { type TrafficUpdatesData } from '../services/pushService';
 
 interface TrafficState {
   records: TrafficSummary[];
@@ -22,6 +23,8 @@ interface TrafficState {
   autoScroll: boolean;
   newRecordsCount: number;
   scrollTop: number;
+  usePush: boolean;
+  pushUnsubscribe: (() => void) | null;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -38,6 +41,9 @@ interface TrafficState {
   clearCurrentRecord: () => void;
   initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => void;
   setScrollTop: (scrollTop: number) => void;
+  handleTrafficPush: (data: TrafficUpdatesData) => void;
+  enablePush: () => void;
+  disablePush: () => void;
 }
 
 const POLL_INTERVAL = 1000;
@@ -184,13 +190,20 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   autoScroll: true,
   newRecordsCount: 0,
   scrollTop: 0,
+  usePush: true,
+  pushUnsubscribe: null,
 
   startPolling: () => {
     const state = get();
     if (state.polling) return;
 
     set({ polling: true });
-    get().fetchUpdates();
+
+    if (state.usePush) {
+      get().enablePush();
+    } else {
+      get().fetchUpdates();
+    }
   },
 
   stopPolling: () => {
@@ -198,7 +211,94 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     if (state.pollTimeoutId) {
       clearTimeout(state.pollTimeoutId);
     }
+    if (state.usePush) {
+      get().disablePush();
+    }
     set({ polling: false, pollTimeoutId: null });
+  },
+
+  enablePush: () => {
+    const state = get();
+    if (state.pushUnsubscribe) return;
+
+    const subscription = {
+      last_traffic_id: state.lastId || undefined,
+      pending_ids: Array.from(state.pendingIds),
+    };
+
+    pushService.connect(subscription);
+    const unsubscribe = pushService.onTrafficUpdates((data) => {
+      get().handleTrafficPush(data);
+    });
+    set({ pushUnsubscribe: unsubscribe });
+  },
+
+  disablePush: () => {
+    const state = get();
+    if (state.pushUnsubscribe) {
+      state.pushUnsubscribe();
+      set({ pushUnsubscribe: null });
+    }
+  },
+
+  handleTrafficPush: (data: TrafficUpdatesData) => {
+    const state = get();
+    if (state.paused) return;
+
+    set((prevState) => {
+      const recordsMap = new Map(prevState.records.map(r => [r.id, r]));
+
+      data.updated_records.forEach(r => {
+        recordsMap.set(r.id, r);
+      });
+
+      data.new_records.forEach(r => {
+        if (!recordsMap.has(r.id)) {
+          recordsMap.set(r.id, r);
+        }
+      });
+
+      const newPendingIds = new Set(prevState.pendingIds);
+
+      data.updated_records.forEach(r => {
+        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+        if (!isPending) {
+          newPendingIds.delete(r.id);
+        }
+      });
+
+      data.new_records.forEach(r => {
+        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+        if (isPending) {
+          newPendingIds.add(r.id);
+        }
+      });
+
+      const allRecords = Array.from(recordsMap.values());
+      allRecords.sort((a, b) => a.sequence - b.sequence);
+
+      const lastRecord = data.new_records[data.new_records.length - 1];
+      const newLastId = lastRecord?.id || prevState.lastId;
+
+      const newCount = data.new_records.length;
+      const updatedNewRecordsCount = prevState.autoScroll
+        ? 0
+        : prevState.newRecordsCount + newCount;
+
+      pushService.updateSubscription({
+        last_traffic_id: newLastId || undefined,
+        pending_ids: Array.from(newPendingIds),
+      });
+
+      return {
+        records: allRecords,
+        serverTotal: data.server_total,
+        hasMore: data.has_more,
+        lastId: newLastId,
+        pendingIds: newPendingIds,
+        newRecordsCount: updatedNewRecordsCount,
+      };
+    });
   },
 
   fetchInitialData: async () => {

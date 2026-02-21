@@ -35,8 +35,11 @@ SUBCOMMAND REFERENCE
 ────────────────────────────────────────────────────────────────────────────
 
 start [OPTIONS]                   Start the proxy server (default)
-  -d, --daemon                      Run as background daemon
-  --skip-cert-check                 Skip CA certificate check
+  -p, --port <PORT>                   HTTP proxy port (overrides global -p)
+  -H, --host <HOST>                   Listen address (overrides global -H)
+  --socks5-port <PORT>                SOCKS5 proxy port (overrides global --socks5-port)
+  -d, --daemon                        Run as background daemon
+  --skip-cert-check                   Skip CA certificate check
   --access-mode <MODE>              Access mode: local_only|whitelist|interactive|allow_all
   --whitelist <IPS>                 Client IP whitelist (comma-separated, supports CIDR)
   --allow-lan                       Allow LAN (private network) clients
@@ -149,6 +152,12 @@ pub struct Cli {
 pub enum Commands {
     #[command(about = "Start the proxy server (default when no subcommand provided)")]
     Start {
+        #[arg(short, long, help = "HTTP proxy port (overrides global -p)")]
+        port: Option<u16>,
+        #[arg(short = 'H', long, help = "Listen address (overrides global -H)")]
+        host: Option<String>,
+        #[arg(long, help = "SOCKS5 proxy port (overrides global --socks5-port)")]
+        socks5_port: Option<u16>,
         #[arg(short, long, help = "Run as daemon")]
         daemon: bool,
         #[arg(long, help = "Skip CA certificate installation check")]

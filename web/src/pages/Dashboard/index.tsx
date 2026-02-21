@@ -14,17 +14,40 @@ import MetricsChart from '../../components/MetricsChart';
 const { Text } = Typography;
 
 export default function Dashboard() {
-  const { overview, history, loading, error, fetchOverview, fetchHistory } = useMetricsStore();
+  const {
+    overview,
+    history,
+    loading,
+    error,
+    fetchOverview,
+    fetchHistory,
+    enablePush,
+    disablePush,
+    usePush,
+  } = useMetricsStore();
 
   useEffect(() => {
     fetchOverview();
     fetchHistory(60);
-    const interval = setInterval(() => {
-      fetchOverview();
-      fetchHistory(60);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [fetchOverview, fetchHistory]);
+
+    if (usePush) {
+      enablePush({
+        needOverview: true,
+        needMetrics: true,
+        needHistory: true,
+        historyLimit: 60,
+      });
+      return () => {
+        disablePush();
+      };
+    } else {
+      const interval = setInterval(() => {
+        fetchOverview();
+        fetchHistory(60);
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchOverview, fetchHistory, enablePush, disablePush, usePush]);
 
   if (loading && !overview) {
     return <Spin size="large" style={{ display: 'block', margin: '100px auto' }} />;

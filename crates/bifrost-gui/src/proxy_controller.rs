@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bifrost_admin::{AdminState, BodyStore};
+use bifrost_admin::{start_push_tasks, AdminState, BodyStore, PushManager};
 use bifrost_core::{
     parse_rules, system_proxy::SystemProxyManager, Protocol, RequestContext, Rule,
     RulesResolver as CoreRulesResolver, ValueStore,
@@ -432,10 +432,15 @@ async fn run_proxy_server(
 
     let values_storage_for_watcher = admin_state.values_storage.clone();
 
+    let admin_state_arc = Arc::new(admin_state);
+    let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+    let _push_tasks = start_push_tasks(push_manager.clone());
+
     let server = ProxyServer::new(proxy_config)
         .with_tls_config(tls_config)
         .with_rules(resolver.clone())
-        .with_admin_state(admin_state);
+        .with_admin_state_shared(admin_state_arc)
+        .with_push_manager(push_manager);
 
     info!(
         "GUI: Proxy server starting on {}:{}",

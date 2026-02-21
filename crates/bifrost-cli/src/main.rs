@@ -27,6 +27,9 @@ fn main() {
 
     let result = match cli.command {
         Some(Commands::Start {
+            port,
+            host,
+            socks5_port,
             daemon,
             skip_cert_check,
             ref access_mode,
@@ -43,25 +46,33 @@ fn main() {
             ref rules_file,
             system_proxy,
             ref proxy_bypass,
-        }) => run_start(
-            &cli,
-            daemon,
-            skip_cert_check,
-            access_mode.clone(),
-            whitelist.clone(),
-            allow_lan,
-            no_intercept,
-            intercept_exclude.clone(),
-            intercept_include.clone(),
-            app_intercept_exclude.clone(),
-            app_intercept_include.clone(),
-            unsafe_ssl,
-            no_disconnect_on_config_change,
-            rules.clone(),
-            rules_file.clone(),
-            system_proxy,
-            proxy_bypass.clone(),
-        ),
+        }) => {
+            let effective_port = port.unwrap_or(cli.port);
+            let effective_host = host.clone().unwrap_or_else(|| cli.host.clone());
+            let effective_socks5_port = socks5_port.or(cli.socks5_port);
+            run_start(
+                effective_port,
+                effective_host,
+                effective_socks5_port,
+                &cli.log_level,
+                daemon,
+                skip_cert_check,
+                access_mode.clone(),
+                whitelist.clone(),
+                allow_lan,
+                no_intercept,
+                intercept_exclude.clone(),
+                intercept_include.clone(),
+                app_intercept_exclude.clone(),
+                app_intercept_include.clone(),
+                unsafe_ssl,
+                no_disconnect_on_config_change,
+                rules.clone(),
+                rules_file.clone(),
+                system_proxy,
+                proxy_bypass.clone(),
+            )
+        }
         Some(Commands::Stop) => run_stop(),
         Some(Commands::Status) => run_status(),
         Some(Commands::Rule { action }) => handle_rule_command(action),
@@ -72,7 +83,10 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         None => run_start(
-            &cli,
+            cli.port,
+            cli.host.clone(),
+            cli.socks5_port,
+            &cli.log_level,
             false,
             false,
             None,

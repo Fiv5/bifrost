@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_admin::{
-    start_metrics_collector_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
-    RuntimeConfig,
+    start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
+    BodyStore, PushManager, RuntimeConfig,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -13,7 +13,6 @@ use bifrost_tls::{get_platform_name, CertInstaller, CertStatus};
 use parking_lot::RwLock as ParkingRwLock;
 use tracing::info;
 
-use crate::cli::Cli;
 use crate::commands::ca::{check_and_install_certificate, load_tls_config};
 use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
@@ -22,7 +21,10 @@ use crate::process::{is_process_running, read_pid, remove_pid, write_pid};
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
-    cli: &Cli,
+    port: u16,
+    host: String,
+    socks5_port: Option<u16>,
+    log_level: &str,
     daemon: bool,
     skip_cert_check: bool,
     access_mode: Option<String>,
@@ -126,11 +128,11 @@ pub fn run_start(
         stored_config.tls.unsafe_ssl
     };
 
-    let verbose_logging = matches!(cli.log_level.as_str(), "debug" | "trace");
+    let verbose_logging = matches!(log_level, "debug" | "trace");
     let proxy_config = ProxyConfig {
-        port: cli.port,
-        host: cli.host.clone(),
-        socks5_port: cli.socks5_port,
+        port,
+        host: host.clone(),
+        socks5_port,
         access_mode: parsed_access_mode,
         client_whitelist,
         allow_lan: allow_lan_final,
@@ -526,9 +528,14 @@ pub fn run_foreground(
 
         log_resolver_rules(&resolver);
 
+        let admin_state_arc = Arc::new(admin_state);
+        let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+        let _push_tasks = start_push_tasks(push_manager.clone());
+
         let server = ProxyServer::new(config)
             .with_tls_config(tls_config)
-            .with_admin_state(admin_state)
+            .with_admin_state_shared(admin_state_arc)
+            .with_push_manager(push_manager)
             .with_rules(resolver.clone());
 
         let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
@@ -766,9 +773,14 @@ pub fn run_daemon(
 
                 log_resolver_rules(&resolver);
 
+                let admin_state_arc = Arc::new(admin_state);
+                let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+                let _push_tasks = start_push_tasks(push_manager.clone());
+
                 let server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
-                    .with_admin_state(admin_state)
+                    .with_admin_state_shared(admin_state_arc)
+                    .with_push_manager(push_manager)
                     .with_rules(resolver.clone());
 
                 let _metrics_task = start_metrics_collector_task(metrics_collector, 1);

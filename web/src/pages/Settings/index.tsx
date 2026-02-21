@@ -549,23 +549,44 @@ export default function Settings() {
     }
   };
 
+  const { enablePush, disablePush, usePush } = useMetricsStore();
+
   useEffect(() => {
-    fetchOverview();
-    fetchHistory(3600);
     fetchSystemProxy();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
-    fetchAppMetricsData();
     fetchProxyAddressInfo();
-    const interval = setInterval(fetchOverview, 1000);
-    const historyInterval = setInterval(() => fetchHistory(3600), 5000);
-    const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
-    return () => {
-      clearInterval(interval);
-      clearInterval(historyInterval);
-      clearInterval(appMetricsInterval);
-    };
+
+    if (usePush) {
+      fetchOverview();
+      fetchHistory(3600);
+      fetchAppMetricsData();
+      enablePush({
+        needOverview: true,
+        needMetrics: true,
+        needHistory: true,
+        historyLimit: 3600,
+      });
+
+      const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+      return () => {
+        disablePush();
+        clearInterval(appMetricsInterval);
+      };
+    } else {
+      fetchOverview();
+      fetchHistory(3600);
+      fetchAppMetricsData();
+      const interval = setInterval(fetchOverview, 1000);
+      const historyInterval = setInterval(() => fetchHistory(3600), 5000);
+      const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+      return () => {
+        clearInterval(interval);
+        clearInterval(historyInterval);
+        clearInterval(appMetricsInterval);
+      };
+    }
   }, [
     fetchOverview,
     fetchHistory,
@@ -574,6 +595,9 @@ export default function Settings() {
     fetchPerformanceConfig,
     fetchAppMetricsData,
     fetchProxyAddressInfo,
+    enablePush,
+    disablePush,
+    usePush,
   ]);
 
   useEffect(() => {

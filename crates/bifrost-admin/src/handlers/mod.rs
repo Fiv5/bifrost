@@ -8,6 +8,7 @@ pub mod rules;
 pub mod system;
 pub mod traffic;
 pub mod values;
+pub mod websocket;
 pub mod whitelist;
 
 use bytes::Bytes;

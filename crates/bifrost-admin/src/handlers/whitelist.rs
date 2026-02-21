@@ -13,6 +13,7 @@ use tracing::info;
 
 use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
 use bifrost_core::{AccessMode, ClientAccessControl};
+use bifrost_storage::{AccessConfigUpdate, SharedConfigManager};
 
 #[derive(Serialize)]
 struct WhitelistResponse {
@@ -45,17 +46,22 @@ struct TemporaryWhitelistRequest {
 pub async fn handle_whitelist_request(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
     path: &str,
 ) -> Response<BoxBody> {
     match (req.method(), path) {
         (&Method::GET, "/api/whitelist") => handle_list(access_control).await,
-        (&Method::POST, "/api/whitelist") => handle_add(req, access_control).await,
-        (&Method::DELETE, "/api/whitelist") => handle_remove(req, access_control).await,
+        (&Method::POST, "/api/whitelist") => handle_add(req, access_control, config_manager).await,
+        (&Method::DELETE, "/api/whitelist") => {
+            handle_remove(req, access_control, config_manager).await
+        }
         (&Method::GET, "/api/whitelist/mode") => handle_get_mode(access_control).await,
-        (&Method::PUT, "/api/whitelist/mode") => handle_set_mode(req, access_control).await,
+        (&Method::PUT, "/api/whitelist/mode") => {
+            handle_set_mode(req, access_control, config_manager).await
+        }
         (&Method::GET, "/api/whitelist/allow-lan") => handle_get_allow_lan(access_control).await,
         (&Method::PUT, "/api/whitelist/allow-lan") => {
-            handle_set_allow_lan(req, access_control).await
+            handle_set_allow_lan(req, access_control, config_manager).await
         }
         (&Method::POST, "/api/whitelist/temporary") => {
             handle_add_temporary(req, access_control).await
@@ -96,6 +102,7 @@ async fn handle_list(access_control: Arc<RwLock<ClientAccessControl>>) -> Respon
 async fn handle_add(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -111,6 +118,19 @@ async fn handle_add(
     match ac.add_to_whitelist(&request.ip_or_cidr) {
         Ok(_) => {
             info!("Added {} to whitelist via API", request.ip_or_cidr);
+
+            if let Some(ref cm) = config_manager {
+                let whitelist = ac.whitelist_entries();
+                let update = AccessConfigUpdate {
+                    mode: None,
+                    whitelist: Some(whitelist),
+                    allow_lan: None,
+                };
+                if let Err(e) = cm.update_access_config(update).await {
+                    tracing::error!("Failed to persist whitelist: {}", e);
+                }
+            }
+
             let response = serde_json::json!({
                 "success": true,
                 "message": format!("Added {} to whitelist", request.ip_or_cidr)
@@ -129,6 +149,7 @@ async fn handle_add(
 async fn handle_remove(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -145,6 +166,19 @@ async fn handle_remove(
         Ok(removed) => {
             if removed {
                 info!("Removed {} from whitelist via API", request.ip_or_cidr);
+
+                if let Some(ref cm) = config_manager {
+                    let whitelist = ac.whitelist_entries();
+                    let update = AccessConfigUpdate {
+                        mode: None,
+                        whitelist: Some(whitelist),
+                        allow_lan: None,
+                    };
+                    if let Err(e) = cm.update_access_config(update).await {
+                        tracing::error!("Failed to persist whitelist removal: {}", e);
+                    }
+                }
+
                 let response = serde_json::json!({
                     "success": true,
                     "message": format!("Removed {} from whitelist", request.ip_or_cidr)
@@ -177,6 +211,7 @@ async fn handle_get_mode(access_control: Arc<RwLock<ClientAccessControl>>) -> Re
 async fn handle_set_mode(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -195,6 +230,19 @@ async fn handle_set_mode(
 
     let mut ac = access_control.write().await;
     ac.set_mode(mode);
+
+    if let Some(ref cm) = config_manager {
+        let update = AccessConfigUpdate {
+            mode: Some(mode),
+            whitelist: None,
+            allow_lan: None,
+        };
+        if let Err(e) = cm.update_access_config(update).await {
+            tracing::error!("Failed to persist access mode: {}", e);
+        } else {
+            info!("Access mode {} persisted to config", mode);
+        }
+    }
 
     let response = serde_json::json!({
         "success": true,
@@ -221,6 +269,7 @@ async fn handle_get_allow_lan(
 async fn handle_set_allow_lan(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -234,6 +283,22 @@ async fn handle_set_allow_lan(
 
     let mut ac = access_control.write().await;
     ac.set_allow_lan(request.allow_lan);
+
+    if let Some(ref cm) = config_manager {
+        let update = AccessConfigUpdate {
+            mode: None,
+            whitelist: None,
+            allow_lan: Some(request.allow_lan),
+        };
+        if let Err(e) = cm.update_access_config(update).await {
+            tracing::error!("Failed to persist allow_lan setting: {}", e);
+        } else {
+            info!(
+                "Allow LAN setting {} persisted to config",
+                request.allow_lan
+            );
+        }
+    }
 
     let response = serde_json::json!({
         "success": true,
