@@ -903,8 +903,10 @@ async fn forward_without_rules(
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
 
-        if is_sse_response(&res_parts) {
+        let is_sse = is_sse_response(&res_parts);
+        if is_sse {
             record.set_sse();
+            state.websocket_monitor.register_connection(&record_id);
         }
 
         record.request_body_ref = store_request_body(
@@ -918,7 +920,7 @@ async fn forward_without_rules(
     }
 
     if is_sse_response(&res_parts) {
-        let tee_body = create_sse_tee_body(res_body, admin_state, record_id);
+        let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
         let tee_body = create_tee_body_with_store(
@@ -1292,7 +1294,7 @@ pub fn get_request_url(req: &Request<Incoming>) -> String {
     }
 }
 
-fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &AdminState) {
+pub fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &AdminState) {
     let body_str = match std::str::from_utf8(body) {
         Ok(s) => s,
         Err(_) => return,

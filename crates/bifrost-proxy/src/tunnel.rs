@@ -27,7 +27,7 @@ use tracing::{debug, error, info, warn};
 use crate::body::{apply_body_rules, Phase};
 use crate::decompress::get_content_encoding;
 use crate::dns::DnsResolver;
-use crate::http::{needs_body_processing, needs_request_body_processing};
+use crate::http::{needs_body_processing, needs_request_body_processing, parse_and_record_sse_events};
 use crate::logging::{format_rules_summary, RequestContext};
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::response::apply_res_rules;
@@ -35,7 +35,7 @@ use crate::server::{
     empty_body, full_body, BoxBody, ProxyConfig, ResolvedRules, RulesResolver, TlsConfig,
     TlsInterceptConfig,
 };
-use crate::tee::{create_tee_body_with_store, store_request_body};
+use crate::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
 
 use futures_util::StreamExt;
 
@@ -1249,6 +1249,13 @@ async fn handle_intercepted_request_with_protocol(
         );
     }
 
+    let is_sse = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_lowercase().starts_with("text/event-stream"))
+        .unwrap_or(false);
+
     if skip_body_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = req_id.to_string();
@@ -1293,6 +1300,11 @@ async fn handle_intercepted_request_with_protocol(
                 record.protocol = "wss".to_string();
             }
 
+            if is_sse {
+                record.set_sse();
+                state.websocket_monitor.register_connection(&record_id);
+            }
+
             record.has_rule_hit = has_rules;
             record.matched_rules = if resolved_rules.rules.is_empty() {
                 None
@@ -1330,14 +1342,19 @@ async fn handle_intercepted_request_with_protocol(
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
 
-        let tee_body = create_tee_body_with_store(
-            res_body,
-            admin_state.clone(),
-            record_id,
-            Some(max_body_buffer_size),
-            res_content_encoding.clone(),
-        );
-        return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        if is_sse {
+            let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
+            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        } else {
+            let tee_body = create_tee_body_with_store(
+                res_body,
+                admin_state.clone(),
+                record_id,
+                Some(max_body_buffer_size),
+                res_content_encoding.clone(),
+            );
+            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+        }
     }
 
     let receive_start = Instant::now();
@@ -1398,6 +1415,11 @@ async fn handle_intercepted_request_with_protocol(
             record.protocol = "wss".to_string();
         }
 
+        if is_sse {
+            record.set_sse();
+            state.websocket_monitor.register_connection(req_id);
+        }
+
         record.has_rule_hit = has_rules;
         record.matched_rules = if resolved_rules.rules.is_empty() {
             None
@@ -1436,6 +1458,16 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         state.record_traffic(record);
+
+        if is_sse {
+            parse_and_record_sse_events(&res_body_bytes, req_id, state);
+            state.websocket_monitor.set_connection_closed(
+                req_id,
+                None,
+                Some("SSE stream completed".to_string()),
+                state.frame_store.as_ref(),
+            );
+        }
     }
 
     if let Some(delay_ms) = resolved_rules.res_delay {
