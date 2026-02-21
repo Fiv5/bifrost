@@ -28,7 +28,6 @@ print_error() {
 }
 
 INSTALL_DIR="${BIFROST_INSTALL_DIR:-$HOME/.local/bin}"
-BUILD_MODE="release"
 INSTALL_CLI=true
 INSTALL_GUI=false
 
@@ -38,7 +37,6 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --debug           Build in debug mode (default: release)"
     echo "  --gui             Also build and install bifrost-gui"
     echo "  --gui-only        Only build and install bifrost-gui"
     echo "  --dir <path>      Custom installation directory (default: ~/.local/bin)"
@@ -56,10 +54,6 @@ show_help() {
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --debug)
-            BUILD_MODE="debug"
-            shift
-            ;;
         --gui)
             INSTALL_GUI=true
             shift
@@ -91,36 +85,35 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
-print_step "Build mode: $BUILD_MODE"
 print_step "Install directory: $INSTALL_DIR"
 
 mkdir -p "$INSTALL_DIR"
 
-if [ "$BUILD_MODE" = "release" ]; then
-    CARGO_BUILD_FLAGS="--release"
-    TARGET_DIR="target/release"
-else
-    CARGO_BUILD_FLAGS=""
-    TARGET_DIR="target/debug"
-fi
+clear_xattr() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        xattr -c "$1" 2>/dev/null || true
+        xattr -d com.apple.provenance "$1" 2>/dev/null || true
+        xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+    fi
+}
 
 if [ "$INSTALL_CLI" = true ]; then
-    print_step "Building bifrost CLI..."
-    cargo build --bin bifrost $CARGO_BUILD_FLAGS
-
-    print_step "Installing bifrost to $INSTALL_DIR..."
-    cp "$TARGET_DIR/bifrost" "$INSTALL_DIR/bifrost"
-    chmod +x "$INSTALL_DIR/bifrost"
+    print_step "Building and installing bifrost CLI (release mode)..."
+    cargo install --path crates/bifrost-cli --root "$INSTALL_DIR" --force
+    clear_xattr "$INSTALL_DIR/bin/bifrost"
+    mv "$INSTALL_DIR/bin/bifrost" "$INSTALL_DIR/bifrost"
+    rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
+    rm -f "$INSTALL_DIR/.crates.toml" "$INSTALL_DIR/.crates2.json" 2>/dev/null || true
     print_success "bifrost CLI installed successfully"
 fi
 
 if [ "$INSTALL_GUI" = true ]; then
-    print_step "Building bifrost GUI..."
-    cargo build --bin bifrost-gui $CARGO_BUILD_FLAGS
-
-    print_step "Installing bifrost-gui to $INSTALL_DIR..."
-    cp "$TARGET_DIR/bifrost-gui" "$INSTALL_DIR/bifrost-gui"
-    chmod +x "$INSTALL_DIR/bifrost-gui"
+    print_step "Building and installing bifrost GUI (release mode)..."
+    cargo install --path crates/bifrost-gui --root "$INSTALL_DIR" --force
+    clear_xattr "$INSTALL_DIR/bin/bifrost-gui"
+    mv "$INSTALL_DIR/bin/bifrost-gui" "$INSTALL_DIR/bifrost-gui"
+    rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
+    rm -f "$INSTALL_DIR/.crates.toml" "$INSTALL_DIR/.crates2.json" 2>/dev/null || true
     print_success "bifrost-gui installed successfully"
 fi
 

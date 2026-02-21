@@ -90,11 +90,12 @@ import {
 import type { PendingAuth, TrafficTypeMetrics, AccessMode, AppMetrics } from "../../types";
 import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
+import MetricsChart from "../../components/MetricsChart";
 
 const { Text, Paragraph } = Typography;
 
 export default function Settings() {
-  const { overview, loading, error, fetchOverview } = useMetricsStore();
+  const { overview, history, loading, error, fetchOverview, fetchHistory } = useMetricsStore();
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const { token } = theme.useToken();
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
@@ -495,18 +496,21 @@ export default function Settings() {
 
   useEffect(() => {
     fetchOverview();
+    fetchHistory(3600);
     fetchSystemProxy();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchAppMetricsData();
     const interval = setInterval(fetchOverview, 1000);
+    const historyInterval = setInterval(() => fetchHistory(3600), 5000);
     const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
     return () => {
       clearInterval(interval);
+      clearInterval(historyInterval);
       clearInterval(appMetricsInterval);
     };
-  }, [fetchOverview, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig, fetchAppMetricsData]);
+  }, [fetchOverview, fetchHistory, fetchTlsConfig, fetchCertInfo, fetchPerformanceConfig, fetchAppMetricsData]);
 
   useEffect(() => {
     fetchPending();
@@ -1383,6 +1387,14 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           : "#87d068",
                     }}
                   />
+                  {history.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        Last Hour
+                      </Text>
+                      <MetricsChart data={history} type="cpu" height={120} />
+                    </div>
+                  )}
                 </Card>
               </Col>
               <Col xs={24} sm={12}>
@@ -1403,6 +1415,14 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       `${formatBytes(overview?.metrics.memory_used || 0)} / ${formatBytes(overview?.metrics.memory_total || 0)}`
                     }
                   />
+                  {history.length > 0 && (
+                    <div style={{ marginTop: 12 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        Last Hour
+                      </Text>
+                      <MetricsChart data={history} type="memory" height={120} />
+                    </div>
+                  )}
                 </Card>
               </Col>
             </Row>

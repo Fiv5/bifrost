@@ -65,6 +65,7 @@ export default function Traffic() {
     filterConditions,
     autoScroll,
     newRecordsCount,
+    scrollTop,
     fetchInitialData,
     startPolling,
     stopPolling,
@@ -76,6 +77,7 @@ export default function Traffic() {
     setAutoScroll,
     clearNewRecordsCount,
     initFromUrl,
+    setScrollTop,
   } = useTrafficStore();
 
   const [selectedId, setSelectedId] = useState<string>();
@@ -204,6 +206,10 @@ export default function Traffic() {
     clearNewRecordsCount();
   }, [clearNewRecordsCount]);
 
+  const handleScrollTopChange = useCallback((newScrollTop: number) => {
+    setScrollTop(newScrollTop);
+  }, [setScrollTop]);
+
   const filteredRecords = useMemo(() => {
     return filterRecords(records, toolbarFilters, filterConditions);
   }, [records, toolbarFilters, filterConditions]);
@@ -286,6 +292,8 @@ export default function Traffic() {
               onScrollPositionChange={handleScrollPositionChange}
               newRecordsCount={newRecordsCount}
               onScrollToBottom={handleScrollToBottom}
+              initialScrollTop={scrollTop}
+              onScrollTopChange={handleScrollTopChange}
             />
           </div>
         ) : (
@@ -304,6 +312,8 @@ export default function Traffic() {
                   onScrollPositionChange={handleScrollPositionChange}
                   newRecordsCount={newRecordsCount}
                   onScrollToBottom={handleScrollToBottom}
+                  initialScrollTop={scrollTop}
+                  onScrollTopChange={handleScrollTopChange}
                 />
               </div>
             }

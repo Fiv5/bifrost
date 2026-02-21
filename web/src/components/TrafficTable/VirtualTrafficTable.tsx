@@ -24,6 +24,8 @@ interface VirtualTrafficTableProps {
   newRecordsCount?: number;
   onScrollToBottom?: () => void;
   onKeyboardNavigate?: (record: TrafficSummary) => void;
+  initialScrollTop?: number;
+  onScrollTopChange?: (scrollTop: number) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -322,6 +324,8 @@ export default function VirtualTrafficTable({
   newRecordsCount = 0,
   onScrollToBottom,
   onKeyboardNavigate,
+  initialScrollTop = 0,
+  onScrollTopChange,
 }: VirtualTrafficTableProps) {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -329,6 +333,7 @@ export default function VirtualTrafficTable({
   const prevDataLengthRef = useRef(data.length);
   const isAtBottomRef = useRef(true);
   const [showNewIndicator, setShowNewIndicator] = useState(false);
+  const initialScrollRestoredRef = useRef(false);
 
   const rowVirtualizer = useVirtualizer({
     count: data.length,
@@ -347,6 +352,9 @@ export default function VirtualTrafficTable({
   const handleScroll = useCallback(() => {
     if (!parentRef.current) return;
 
+    const { scrollTop } = parentRef.current;
+    onScrollTopChange?.(scrollTop);
+
     const isAtBottom = checkIsAtBottom();
 
     if (isAtBottomRef.current !== isAtBottom) {
@@ -359,28 +367,33 @@ export default function VirtualTrafficTable({
     }
 
     if (onLoadMore && hasMore) {
-      const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
+      const { scrollHeight, clientHeight } = parentRef.current;
       if (scrollHeight - scrollTop - clientHeight < 200) {
         onLoadMore();
       }
     }
-  }, [checkIsAtBottom, onScrollPositionChange, onLoadMore, hasMore]);
+  }, [checkIsAtBottom, onScrollPositionChange, onLoadMore, hasMore, onScrollTopChange]);
 
   useEffect(() => {
+    if (!initialScrollRestoredRef.current && data.length > 0 && parentRef.current) {
+      initialScrollRestoredRef.current = true;
+      if (initialScrollTop > 0) {
+        parentRef.current.scrollTop = initialScrollTop;
+        isAtBottomRef.current = checkIsAtBottom();
+      }
+      prevDataLengthRef.current = data.length;
+      return;
+    }
+
     const prevLength = prevDataLengthRef.current;
     const currLength = data.length;
 
-    if (prevLength === 0 && currLength > 0) {
-      if (parentRef.current) {
-        parentRef.current.scrollTop = 0;
-      }
-      isAtBottomRef.current = true;
-    } else if (currLength > prevLength && prevLength > 0) {
+    if (currLength > prevLength && prevLength > 0) {
       if (autoScroll && isAtBottomRef.current) {
         requestAnimationFrame(() => {
           rowVirtualizer.scrollToIndex(currLength - 1, {
             align: "end",
-            behavior: "smooth",
+            behavior: "auto",
           });
         });
       } else if (!isAtBottomRef.current) {
@@ -389,7 +402,7 @@ export default function VirtualTrafficTable({
     }
 
     prevDataLengthRef.current = currLength;
-  }, [data.length, autoScroll, rowVirtualizer]);
+  }, [data.length, autoScroll, rowVirtualizer, initialScrollTop, checkIsAtBottom]);
 
   useEffect(() => {
     if (data.length === 0) {
@@ -417,7 +430,7 @@ export default function VirtualTrafficTable({
   }, [rowVirtualizer, data.length, onScrollToBottom]);
 
   const scrollToRow = useCallback(
-    (index: number) => {
+    (index: number, smooth: boolean = true) => {
       if (!parentRef.current) return;
 
       const scrollTop = parentRef.current.scrollTop;
@@ -428,10 +441,11 @@ export default function VirtualTrafficTable({
       const visibleTop = scrollTop + headerHeight;
       const visibleBottom = scrollTop + clientHeight;
 
+      const behavior = smooth ? "smooth" : "auto";
       if (rowTop < visibleTop) {
-        rowVirtualizer.scrollToIndex(index, { align: "start" });
+        rowVirtualizer.scrollToIndex(index, { align: "start", behavior });
       } else if (rowBottom > visibleBottom) {
-        rowVirtualizer.scrollToIndex(index, { align: "end" });
+        rowVirtualizer.scrollToIndex(index, { align: "end", behavior });
       }
     },
     [rowVirtualizer],

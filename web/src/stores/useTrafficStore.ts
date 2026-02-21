@@ -21,6 +21,7 @@ interface TrafficState {
   pollTimeoutId: number | null;
   autoScroll: boolean;
   newRecordsCount: number;
+  scrollTop: number;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -36,6 +37,7 @@ interface TrafficState {
   clearError: () => void;
   clearCurrentRecord: () => void;
   initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => void;
+  setScrollTop: (scrollTop: number) => void;
 }
 
 const POLL_INTERVAL = 1000;
@@ -178,6 +180,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   pollTimeoutId: null,
   autoScroll: true,
   newRecordsCount: 0,
+  scrollTop: 0,
 
   startPolling: () => {
     const state = get();
@@ -391,4 +394,6 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [] },
     });
   },
+
+  setScrollTop: (scrollTop: number) => set({ scrollTop }),
 }));

@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, trace, warn};
 
+const CACHE_VERSION: u32 = 2;
+
 pub struct AppIconCache {
     cache_dir: PathBuf,
     memory_cache: RwLock<HashMap<String, Option<Vec<u8>>>>,
@@ -11,15 +13,55 @@ pub struct AppIconCache {
 
 impl AppIconCache {
     pub fn new(data_dir: &Path) -> Self {
-        let cache_dir = data_dir.join("icons");
+        let cache_dir = data_dir.join("app_info");
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-            warn!(error = %e, "Failed to create icon cache directory");
+            warn!(error = %e, "Failed to create app_info cache directory");
         }
 
-        Self {
+        let cache = Self {
             cache_dir,
             memory_cache: RwLock::new(HashMap::new()),
+        };
+
+        cache.check_and_migrate_cache();
+
+        cache
+    }
+
+    fn check_and_migrate_cache(&self) {
+        let version_file = self.cache_dir.join(".cache_version");
+
+        let current_version = std::fs::read_to_string(&version_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+
+        if current_version < CACHE_VERSION {
+            info!(
+                old_version = current_version,
+                new_version = CACHE_VERSION,
+                "Cache version mismatch, clearing old cache"
+            );
+            self.clear_all_disk_cache();
+
+            if let Err(e) = std::fs::write(&version_file, CACHE_VERSION.to_string()) {
+                warn!(error = %e, "Failed to write cache version file");
+            }
         }
+    }
+
+    fn clear_all_disk_cache(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().map(|e| e == "png").unwrap_or(false) {
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        warn!(error = %e, path = %path.display(), "Failed to remove old cache file");
+                    }
+                }
+            }
+        }
+        info!("Old icon cache cleared");
     }
 
     pub fn get_icon(&self, app_name: &str, app_path: Option<&str>) -> Option<Vec<u8>> {
@@ -81,18 +123,7 @@ impl AppIconCache {
         let mut cache = self.memory_cache.write();
         cache.clear();
 
-        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
-            for entry in entries.flatten() {
-                if entry
-                    .path()
-                    .extension()
-                    .map(|e| e == "png")
-                    .unwrap_or(false)
-                {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
+        self.clear_all_disk_cache();
     }
 }
 
@@ -150,7 +181,15 @@ fn extract_icon_via_nsworkspace(app_path: &str) -> Option<Vec<u8>> {
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage, NSWorkspace};
     use objc2_foundation::{NSDictionary, NSRange, NSSize, NSString};
 
-    let path_str = NSString::from_str(app_path);
+    let icon_path = get_toplevel_app_bundle(app_path).unwrap_or_else(|| app_path.to_string());
+
+    debug!(
+        original_path = %app_path,
+        icon_path = %icon_path,
+        "Using path for icon extraction"
+    );
+
+    let path_str = NSString::from_str(&icon_path);
     let workspace = NSWorkspace::sharedWorkspace();
     let icon: Retained<NSImage> = workspace.iconForFile(&path_str);
 
@@ -186,6 +225,21 @@ fn extract_icon_via_nsworkspace(app_path: &str) -> Option<Vec<u8>> {
         png_data.getBytes_range(ptr, range);
     }
     Some(result)
+}
+
+#[cfg(target_os = "macos")]
+fn get_toplevel_app_bundle(path: &str) -> Option<String> {
+    let path = Path::new(path);
+
+    let mut toplevel_app: Option<PathBuf> = None;
+
+    for ancestor in path.ancestors() {
+        if ancestor.extension().map(|e| e == "app").unwrap_or(false) {
+            toplevel_app = Some(ancestor.to_path_buf());
+        }
+    }
+
+    toplevel_app.map(|p| p.to_string_lossy().into_owned())
 }
 
 #[cfg(target_os = "macos")]
