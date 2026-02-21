@@ -577,7 +577,9 @@ async fn handle_request(
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
         .unwrap_or((None, None, None));
 
-    let ctx = RequestContext::new().with_client_process(client_app, client_pid, client_path);
+    let ctx = RequestContext::new()
+        .with_client_process(client_app, client_pid, client_path)
+        .with_client_ip(peer_addr.ip().to_string());
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();

@@ -224,6 +224,16 @@ export default function Traffic() {
     return Array.from(appSet).sort();
   }, [records]);
 
+  const availableClientIps = useMemo(() => {
+    const ipSet = new Set<string>();
+    records.forEach((record) => {
+      if (record.client_ip) {
+        ipSet.add(record.client_ip);
+      }
+    });
+    return Array.from(ipSet).sort();
+  }, [records]);
+
   const styles: Record<string, CSSProperties> = {
     container: {
       display: 'flex',
@@ -276,6 +286,7 @@ export default function Traffic() {
             filters={filterConditions}
             onFiltersChange={handleFilterConditionsChange}
             availableClientApps={availableClientApps}
+            availableClientIps={availableClientIps}
           />
         </div>
       )}

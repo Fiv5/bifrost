@@ -7,6 +7,7 @@ interface FilterBarProps {
   filters: FilterCondition[];
   onFiltersChange: (filters: FilterCondition[]) => void;
   availableClientApps?: string[];
+  availableClientIps?: string[];
 }
 
 const fieldOptions = [
@@ -15,6 +16,7 @@ const fieldOptions = [
   { value: "path", label: "Path" },
   { value: "method", label: "Method" },
   { value: "client_app", label: "Client App" },
+  { value: "client_ip", label: "Client IP" },
   { value: "request_header", label: "Request Header" },
   { value: "response_header", label: "Response Header" },
   { value: "request_body", label: "Request Body" },
@@ -56,6 +58,7 @@ export default function FilterBar({
   filters,
   onFiltersChange,
   availableClientApps = [],
+  availableClientIps = [],
 }: FilterBarProps) {
   const generateId = () =>
     `filter_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -91,6 +94,13 @@ export default function FilterBar({
     }));
   }, [availableClientApps]);
 
+  const clientIpOptions = useMemo(() => {
+    return availableClientIps.map((ip) => ({
+      value: ip,
+      label: ip,
+    }));
+  }, [availableClientIps]);
+
   const renderValueInput = (filter: FilterCondition) => {
     if (filter.field === "client_app") {
       return (
@@ -100,6 +110,23 @@ export default function FilterBar({
           onChange={(value) => handleChange(filter.id, "value", value)}
           style={styles.valueInput}
           placeholder="Select or enter app name..."
+          size="small"
+          filterOption={(inputValue, option) =>
+            option?.value.toLowerCase().includes(inputValue.toLowerCase()) ?? false
+          }
+          allowClear
+        />
+      );
+    }
+
+    if (filter.field === "client_ip") {
+      return (
+        <AutoComplete
+          value={filter.value}
+          options={clientIpOptions}
+          onChange={(value) => handleChange(filter.id, "value", value)}
+          style={styles.valueInput}
+          placeholder="Select or enter IP address..."
           size="small"
           filterOption={(inputValue, option) =>
             option?.value.toLowerCase().includes(inputValue.toLowerCase()) ?? false

@@ -87,6 +87,11 @@ impl RequestContext {
         self
     }
 
+    pub fn with_client_ip(mut self, client_ip: String) -> Self {
+        self.client_ip = client_ip;
+        self
+    }
+
     pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
         self.req_headers = headers;
         self

@@ -127,6 +127,9 @@ export const filterRecords = (
         case 'client_app':
           fieldValue = record.client_app || '';
           break;
+        case 'client_ip':
+          fieldValue = record.client_ip || '';
+          break;
         default:
           continue;
       }
