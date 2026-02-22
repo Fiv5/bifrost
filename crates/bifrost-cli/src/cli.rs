@@ -146,6 +146,19 @@ pub struct Cli {
         help = "Log level [trace|debug|info|warn|error]"
     )]
     pub log_level: String,
+
+    #[arg(
+        long,
+        default_value = "console,file",
+        help = "Log output targets: console, file, or both (comma-separated)"
+    )]
+    pub log_output: String,
+
+    #[arg(long, help = "Log file directory (default: <data_dir>/logs)")]
+    pub log_dir: Option<PathBuf>,
+
+    #[arg(long, default_value = "7", help = "Number of days to retain log files")]
+    pub log_retention_days: u32,
 }
 
 #[derive(Subcommand)]

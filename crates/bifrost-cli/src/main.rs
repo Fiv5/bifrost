@@ -1,4 +1,5 @@
-use bifrost_core::init_logging;
+use bifrost_core::{init_logging_with_config, LogConfig, LogOutput};
+use bifrost_storage::data_dir;
 use bifrost_tls::init_crypto_provider;
 use clap::Parser;
 
@@ -20,10 +21,29 @@ fn main() {
 
     let cli = Cli::parse();
 
-    if let Err(e) = init_logging(&cli.log_level) {
-        eprintln!("Failed to initialize logging: {}", e);
-        std::process::exit(1);
-    }
+    let log_dir = cli
+        .log_dir
+        .clone()
+        .unwrap_or_else(|| data_dir().join("logs"));
+
+    let log_outputs = LogOutput::parse(&cli.log_output);
+    let log_outputs = if log_outputs.is_empty() {
+        vec![LogOutput::Console, LogOutput::File]
+    } else {
+        log_outputs
+    };
+
+    let log_config = LogConfig::new(cli.log_level.clone(), log_dir)
+        .with_outputs(log_outputs)
+        .with_retention_days(cli.log_retention_days);
+
+    let _log_guard = match init_logging_with_config(&log_config) {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("Failed to initialize logging: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     let result = match cli.command {
         Some(Commands::Start {

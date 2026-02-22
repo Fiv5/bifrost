@@ -17,9 +17,7 @@ pub enum TrafficCommand {
 impl std::fmt::Debug for TrafficCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TrafficCommand::Record(record) => {
-                f.debug_tuple("Record").field(&record.id).finish()
-            }
+            TrafficCommand::Record(record) => f.debug_tuple("Record").field(&record.id).finish(),
             TrafficCommand::Update { id, .. } => f
                 .debug_struct("Update")
                 .field("id", id)
