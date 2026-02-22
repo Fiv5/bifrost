@@ -572,7 +572,12 @@ pub async fn handle_http_request(
         }
 
         if is_sse {
-            let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
+            let tee_body = create_sse_tee_body(
+                res_body,
+                admin_state.clone(),
+                record_id,
+                Some(TrafficType::Http),
+            );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
             let tee_body = create_tee_body_with_store(
@@ -581,6 +586,7 @@ pub async fn handle_http_request(
                 record_id,
                 Some(max_body_buffer_size),
                 res_content_encoding.clone(),
+                Some(TrafficType::Http),
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
@@ -928,7 +934,12 @@ async fn forward_without_rules(
     }
 
     if is_sse_response(&res_parts) {
-        let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
+        let tee_body = create_sse_tee_body(
+            res_body,
+            admin_state.clone(),
+            record_id,
+            Some(TrafficType::Http),
+        );
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
         let tee_body = create_tee_body_with_store(
@@ -937,6 +948,7 @@ async fn forward_without_rules(
             record_id,
             None,
             res_content_encoding,
+            Some(TrafficType::Http),
         );
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     }

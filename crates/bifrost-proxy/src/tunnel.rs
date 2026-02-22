@@ -315,6 +315,9 @@ pub async fn handle_connect(
         state
             .metrics_collector
             .increment_connections_by_type(TrafficType::Tunnel);
+        state
+            .metrics_collector
+            .increment_requests_by_type(TrafficType::Tunnel);
 
         let conn_info = ConnectionInfo::new(req_id.clone(), host.clone(), port, false, cancel_tx);
         state.connection_registry.register(conn_info);
@@ -1345,13 +1348,13 @@ async fn handle_intercepted_request_with_protocol(
     if skip_body_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = req_id.to_string();
+        let traffic_type = if is_websocket {
+            TrafficType::Wss
+        } else {
+            TrafficType::Https
+        };
 
         if let Some(ref state) = admin_state {
-            let traffic_type = if is_websocket {
-                TrafficType::Wss
-            } else {
-                TrafficType::Https
-            };
             state
                 .metrics_collector
                 .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
@@ -1433,7 +1436,8 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         if is_sse {
-            let tee_body = create_sse_tee_body(res_body, admin_state.clone(), record_id);
+            let tee_body =
+                create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
             let tee_body = create_tee_body_with_store(
@@ -1442,6 +1446,7 @@ async fn handle_intercepted_request_with_protocol(
                 record_id,
                 Some(max_body_buffer_size),
                 res_content_encoding.clone(),
+                Some(traffic_type),
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }

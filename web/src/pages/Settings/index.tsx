@@ -101,18 +101,11 @@ import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import MetricsChart from "../../components/MetricsChart";
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 const TAB_PARAM = "tab";
 const DEFAULT_TAB = "proxy";
-const VALID_TABS = [
-  "proxy",
-  "appearance",
-  "certificate",
-  "metrics",
-  "system",
-  "access",
-];
+const VALID_TABS = ["proxy", "appearance", "certificate", "metrics", "access"];
 
 export default function Settings() {
   const { overview, history, loading, error, fetchOverview, fetchHistory } =
@@ -1234,6 +1227,28 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 </Space>
               </Card>
             </Col>
+
+            <Col xs={24}>
+              <Card title="System Information" size="small">
+                <Descriptions column={1} size="small">
+                  <Descriptions.Item label="Version">
+                    <Text code>v{overview?.system.version}</Text>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Rust Version">
+                    {overview?.system.rust_version || "Unknown"}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="OS">
+                    {overview?.system.os} ({overview?.system.arch})
+                  </Descriptions.Item>
+                  <Descriptions.Item label="PID">
+                    {overview?.system.pid}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Uptime">
+                    {overview ? formatUptime(overview.system.uptime_secs) : "-"}
+                  </Descriptions.Item>
+                </Descriptions>
+              </Card>
+            </Col>
           </Row>
         </div>
       ),
@@ -1632,65 +1647,6 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
             </Col>
           </Row>
         </div>
-      ),
-    },
-    {
-      key: "system",
-      label: (
-        <span>
-          <DatabaseOutlined /> System
-        </span>
-      ),
-      children: (
-        <Row gutter={[16, 16]}>
-          <Col xs={24}>
-            <Card title="System Information" size="small">
-              <Descriptions column={1} size="small">
-                <Descriptions.Item label="Version">
-                  <Text code>v{overview?.system.version}</Text>
-                </Descriptions.Item>
-                <Descriptions.Item label="Rust Version">
-                  {overview?.system.rust_version || "Unknown"}
-                </Descriptions.Item>
-                <Descriptions.Item label="OS">
-                  {overview?.system.os} ({overview?.system.arch})
-                </Descriptions.Item>
-                <Descriptions.Item label="PID">
-                  {overview?.system.pid}
-                </Descriptions.Item>
-                <Descriptions.Item label="Uptime">
-                  {overview ? formatUptime(overview.system.uptime_secs) : "-"}
-                </Descriptions.Item>
-              </Descriptions>
-            </Card>
-          </Col>
-
-          <Col xs={24}>
-            <Card title="Usage Guide" size="small">
-              <Descriptions column={1} size="small" bordered>
-                <Descriptions.Item label="Rule Syntax">
-                  <Paragraph style={{ margin: 0 }}>
-                    <Text code>pattern protocol://value</Text>
-                    <br />
-                    Example: <Text code>*.example.com host://127.0.0.1</Text>
-                  </Paragraph>
-                </Descriptions.Item>
-                <Descriptions.Item label="Supported Protocols">
-                  <Text>
-                    host, proxy, pac, reqHeaders, reqBody, resHeaders, resBody,
-                    htmlAppend, jsAppend, cssAppend, and more...
-                  </Text>
-                </Descriptions.Item>
-                <Descriptions.Item label="Pattern Matching">
-                  <Text>
-                    Supports glob patterns (* and **) and regular expressions
-                    (/pattern/)
-                  </Text>
-                </Descriptions.Item>
-              </Descriptions>
-            </Card>
-          </Col>
-        </Row>
       ),
     },
     {

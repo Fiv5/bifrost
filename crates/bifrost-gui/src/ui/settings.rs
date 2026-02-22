@@ -13,8 +13,6 @@ impl SettingsPanel {
         ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                Self::system_proxy_section(ui, state, controller);
-                ui.add_space(16.0);
                 Self::proxy_settings(ui, state);
                 ui.add_space(16.0);
                 Self::tls_settings(ui, state);
@@ -22,6 +20,8 @@ impl SettingsPanel {
                 Self::certificate_section(ui, state);
                 ui.add_space(16.0);
                 Self::usage_guide(ui);
+                ui.add_space(16.0);
+                Self::system_proxy_section(ui, state, controller);
             });
     }
 

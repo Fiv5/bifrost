@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{AdminState, TrafficType};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
@@ -18,6 +18,7 @@ struct TeeBodyDropGuard {
     buffer: BytesMut,
     max_body_size: usize,
     content_encoding: Option<String>,
+    traffic_type: Option<TrafficType>,
 }
 
 impl Drop for TeeBodyDropGuard {
@@ -69,6 +70,7 @@ impl TeeBody {
         record_id: String,
         max_body_size: Option<usize>,
         content_encoding: Option<String>,
+        traffic_type: Option<TrafficType>,
     ) -> Self {
         let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
@@ -81,6 +83,7 @@ impl TeeBody {
                 buffer: BytesMut::with_capacity(8192),
                 max_body_size: max_size,
                 content_encoding,
+                traffic_type,
             },
         }
     }
@@ -113,7 +116,13 @@ impl Body for TeeBody {
                     }
 
                     if let Some(ref state) = self.guard.admin_state {
-                        state.metrics_collector.add_bytes_received(len as u64);
+                        if let Some(traffic_type) = self.guard.traffic_type {
+                            state
+                                .metrics_collector
+                                .add_bytes_received_by_type(traffic_type, len as u64);
+                        } else {
+                            state.metrics_collector.add_bytes_received(len as u64);
+                        }
                     }
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -147,6 +156,7 @@ pub fn create_tee_body_with_store(
     record_id: String,
     max_body_size: Option<usize>,
     content_encoding: Option<String>,
+    traffic_type: Option<TrafficType>,
 ) -> TeeBody {
     TeeBody::new(
         body,
@@ -154,6 +164,7 @@ pub fn create_tee_body_with_store(
         record_id,
         max_body_size,
         content_encoding,
+        traffic_type,
     )
 }
 
@@ -162,6 +173,7 @@ struct SseTeeBodyDropGuard {
     record_id: String,
     total_bytes: usize,
     finished: bool,
+    traffic_type: Option<TrafficType>,
 }
 
 impl Drop for SseTeeBodyDropGuard {
@@ -190,7 +202,12 @@ pub struct SseTeeBody {
 }
 
 impl SseTeeBody {
-    pub fn new(inner: Incoming, admin_state: Option<Arc<AdminState>>, record_id: String) -> Self {
+    pub fn new(
+        inner: Incoming,
+        admin_state: Option<Arc<AdminState>>,
+        record_id: String,
+        traffic_type: Option<TrafficType>,
+    ) -> Self {
         if let Some(ref state) = admin_state {
             state.connection_monitor.register_connection(&record_id);
         }
@@ -202,6 +219,7 @@ impl SseTeeBody {
                 record_id,
                 total_bytes: 0,
                 finished: false,
+                traffic_type,
             },
             buffer: BytesMut::with_capacity(4096),
         }
@@ -261,7 +279,13 @@ impl Body for SseTeeBody {
                     self.guard.total_bytes += len;
 
                     if let Some(ref state) = self.guard.admin_state {
-                        state.metrics_collector.add_bytes_received(len as u64);
+                        if let Some(traffic_type) = self.guard.traffic_type {
+                            state
+                                .metrics_collector
+                                .add_bytes_received_by_type(traffic_type, len as u64);
+                        } else {
+                            state.metrics_collector.add_bytes_received(len as u64);
+                        }
                     }
 
                     self.buffer.extend_from_slice(data);
@@ -319,8 +343,9 @@ pub fn create_sse_tee_body(
     body: Incoming,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
+    traffic_type: Option<TrafficType>,
 ) -> SseTeeBody {
-    SseTeeBody::new(body, admin_state, record_id)
+    SseTeeBody::new(body, admin_state, record_id, traffic_type)
 }
 
 use bifrost_admin::BodyRef;
