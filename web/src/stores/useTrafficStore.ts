@@ -77,9 +77,9 @@ export const filterRecords = (
         const pUpper = p.toUpperCase();
         if (pUpper === 'H2') return protocol.includes('HTTP/2');
         if (pUpper === 'HTTP') return protocol === 'HTTP/1.0' || protocol === 'HTTP/1.1';
-        if (pUpper === 'HTTPS') return record.host?.startsWith('https:') || protocol.includes('HTTPS');
-        if (pUpper === 'WS') return record.is_websocket && !record.host?.startsWith('wss:');
-        if (pUpper === 'WSS') return record.is_websocket && record.host?.startsWith('wss:');
+        if (pUpper === 'HTTPS') return protocol === 'HTTPS';
+        if (pUpper === 'WS') return record.is_websocket && protocol === 'WS';
+        if (pUpper === 'WSS') return record.is_websocket && protocol === 'WSS';
         return false;
       });
       if (!matches) return false;
