@@ -317,6 +317,7 @@ export default function TrafficDetail({
             recordId={record.id}
             isWebSocket={record.is_websocket || false}
             frameCount={record.frame_count ?? 0}
+            isConnectionOpen={record.socket_status?.is_open ?? false}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
           />

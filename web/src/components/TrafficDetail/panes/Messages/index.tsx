@@ -26,6 +26,7 @@ interface MessagesProps {
   recordId: string;
   isWebSocket: boolean;
   frameCount: number;
+  isConnectionOpen?: boolean;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
 }
@@ -96,6 +97,7 @@ export const Messages = ({
   recordId,
   isWebSocket,
   frameCount,
+  isConnectionOpen = false,
   searchValue,
   onSearch,
 }: MessagesProps) => {
@@ -107,6 +109,7 @@ export const Messages = ({
   const tableRef = useRef<HTMLDivElement>(null);
   const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
   const fetchFrames = useCallback(async (after?: number) => {
     setLoading(true);
@@ -144,6 +147,41 @@ export const Messages = ({
       fetchFrames();
     }
   }, [recordId, frameCount, fetchFrames]);
+
+  useEffect(() => {
+    if (!isConnectionOpen) {
+      return;
+    }
+
+    const eventSource = new EventSource(`/_bifrost/api/traffic/${recordId}/frames/stream`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      try {
+        const frame = JSON.parse(event.data) as WebSocketFrame;
+        setFrames((prev) => {
+          if (prev.some(f => f.frame_id === frame.frame_id)) {
+            return prev;
+          }
+          return [...prev, frame];
+        });
+        setLastFrameId(frame.frame_id);
+      } catch (error) {
+        console.error('Failed to parse frame event:', error);
+      }
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+    };
+
+    return () => {
+      eventSource.close();
+      eventSourceRef.current = null;
+      fetch(`/_bifrost/api/traffic/${recordId}/frames/unsubscribe`, { method: 'DELETE' }).catch(() => {});
+    };
+  }, [recordId, isConnectionOpen]);
 
   useMarkSearch(searchValue, () => tableRef.current, onSearch);
 
@@ -260,7 +298,7 @@ export const Messages = ({
     fetchFrames();
   }, [fetchFrames]);
 
-  if (frameCount === 0) {
+  if (frameCount === 0 && frames.length === 0 && !isConnectionOpen) {
     return (
       <div
         style={{
