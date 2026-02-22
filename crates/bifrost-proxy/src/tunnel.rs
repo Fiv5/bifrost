@@ -1383,8 +1383,12 @@ async fn handle_intercepted_request_with_protocol(
                 receive_ms: None,
                 total_ms,
             });
-            record.request_headers = Some(req_headers);
+            record.request_headers = Some(req_headers.clone());
             record.response_headers = Some(res_headers);
+            record.request_content_type = req_headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                .map(|(_, v)| v.clone());
             record.client_ip = client_ip.clone();
             record.client_app = client_app.clone();
             record.client_pid = client_pid;
@@ -1504,8 +1508,12 @@ async fn handle_intercepted_request_with_protocol(
             receive_ms: Some(receive_ms),
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(res_headers);
+        record.request_content_type = req_headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone());
         record.client_ip = client_ip.clone();
         record.client_app = client_app.clone();
         record.client_pid = client_pid;
@@ -1828,12 +1836,16 @@ async fn handle_intercepted_websocket(
             receive_ms: None,
             total_ms,
         });
-        record.request_headers = Some(
-            req.headers()
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect(),
-        );
+        let req_headers: Vec<(String, String)> = req
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.request_headers = Some(req_headers.clone());
+        record.request_content_type = req_headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone());
         record.host = original_host.to_string();
         record.client_ip = client_ip.clone();
         record.client_app = client_app.clone();

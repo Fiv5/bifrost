@@ -1,4 +1,11 @@
-import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useMemo,
+  type CSSProperties,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
 import { useTrafficStore, filterRecords } from "../../stores/useTrafficStore";
@@ -8,7 +15,11 @@ import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
 import SplitPane from "../../components/SplitPane";
-import type { TrafficSummary, FilterCondition, ToolbarFilters } from "../../types";
+import type {
+  TrafficSummary,
+  FilterCondition,
+  ToolbarFilters,
+} from "../../types";
 
 const FILTER_PARAM = "filter";
 const TOOLBAR_PARAM = "toolbar";
@@ -28,10 +39,10 @@ const deserializeFilters = (str: string): FilterCondition[] => {
 };
 
 const serializeToolbar = (toolbar: ToolbarFilters): string => {
-  const hasFilters = 
-    toolbar.rule.length > 0 || 
-    toolbar.protocol.length > 0 || 
-    toolbar.type.length > 0 || 
+  const hasFilters =
+    toolbar.rule.length > 0 ||
+    toolbar.protocol.length > 0 ||
+    toolbar.type.length > 0 ||
     toolbar.status.length > 0;
   if (!hasFilters) return "";
   return btoa(JSON.stringify(toolbar));
@@ -85,7 +96,7 @@ export default function Traffic() {
     toggleSystemProxy,
   } = useProxyStore();
   const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(false);
-  
+
   const initializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
 
@@ -94,13 +105,13 @@ export default function Traffic() {
       const success = await toggleSystemProxy(enabled);
       if (success) {
         message.success(
-          enabled ? "System proxy enabled" : "System proxy disabled"
+          enabled ? "System proxy enabled" : "System proxy disabled",
         );
       } else {
         message.error("Failed to toggle system proxy");
       }
     },
-    [toggleSystemProxy]
+    [toggleSystemProxy],
   );
 
   useEffect(() => {
@@ -109,10 +120,10 @@ export default function Traffic() {
 
     const filterParam = searchParams.get(FILTER_PARAM);
     const toolbarParam = searchParams.get(TOOLBAR_PARAM);
-    
+
     const filtersFromUrl = deserializeFilters(filterParam || "");
     const toolbarFromUrl = deserializeToolbar(toolbarParam || "");
-    
+
     if (filtersFromUrl.length > 0 || toolbarFromUrl) {
       initFromUrl(filtersFromUrl, toolbarFromUrl);
     }
@@ -121,11 +132,18 @@ export default function Traffic() {
       startPolling();
     });
     fetchSystemProxy();
-    
+
     return () => {
       stopPolling();
     };
-  }, [searchParams, fetchInitialData, startPolling, stopPolling, fetchSystemProxy, initFromUrl]);
+  }, [
+    searchParams,
+    fetchInitialData,
+    startPolling,
+    stopPolling,
+    fetchSystemProxy,
+    initFromUrl,
+  ]);
 
   useEffect(() => {
     if (!initializedRef.current) return;
@@ -133,35 +151,38 @@ export default function Traffic() {
       isUpdatingUrlRef.current = false;
       return;
     }
-    
+
     isUpdatingUrlRef.current = true;
     setSearchParams(
       (prev) => {
         const filterStr = serializeFilters(filterConditions);
         const toolbarStr = serializeToolbar(toolbarFilters);
-        
+
         if (filterStr) {
           prev.set(FILTER_PARAM, filterStr);
         } else {
           prev.delete(FILTER_PARAM);
         }
-        
+
         if (toolbarStr) {
           prev.set(TOOLBAR_PARAM, toolbarStr);
         } else {
           prev.delete(TOOLBAR_PARAM);
         }
-        
+
         return prev;
       },
-      { replace: true }
+      { replace: true },
     );
   }, [filterConditions, toolbarFilters, setSearchParams]);
 
-  const handleSelect = useCallback(async (record: TrafficSummary) => {
-    setSelectedId(record.id);
-    await fetchTrafficDetail(record.id);
-  }, [fetchTrafficDetail]);
+  const handleSelect = useCallback(
+    async (record: TrafficSummary) => {
+      setSelectedId(record.id);
+      await fetchTrafficDetail(record.id);
+    },
+    [fetchTrafficDetail],
+  );
 
   const handleClear = useCallback(async () => {
     const success = await clearTraffic();
@@ -175,33 +196,45 @@ export default function Traffic() {
     setPaused(!paused);
   }, [paused, setPaused]);
 
-  const handleFilterConditionsChange = useCallback((conditions: FilterCondition[]) => {
-    setFilterConditions(conditions);
-  }, [setFilterConditions]);
+  const handleFilterConditionsChange = useCallback(
+    (conditions: FilterCondition[]) => {
+      setFilterConditions(conditions);
+    },
+    [setFilterConditions],
+  );
 
   const handleDetailPanelToggle = useCallback(() => {
-    setDetailPanelCollapsed(prev => !prev);
+    setDetailPanelCollapsed((prev) => !prev);
   }, []);
 
-  const handleDoubleClick = useCallback(async (record: TrafficSummary) => {
-    setSelectedId(record.id);
-    await fetchTrafficDetail(record.id);
-    if (detailPanelCollapsed) {
-      setDetailPanelCollapsed(false);
-    }
-  }, [fetchTrafficDetail, detailPanelCollapsed]);
+  const handleDoubleClick = useCallback(
+    async (record: TrafficSummary) => {
+      setSelectedId(record.id);
+      await fetchTrafficDetail(record.id);
+      if (detailPanelCollapsed) {
+        setDetailPanelCollapsed(false);
+      }
+    },
+    [fetchTrafficDetail, detailPanelCollapsed],
+  );
 
-  const handleScrollPositionChange = useCallback((isAtBottom: boolean) => {
-    setAutoScroll(isAtBottom);
-  }, [setAutoScroll]);
+  const handleScrollPositionChange = useCallback(
+    (isAtBottom: boolean) => {
+      setAutoScroll(isAtBottom);
+    },
+    [setAutoScroll],
+  );
 
   const handleScrollToBottom = useCallback(() => {
     clearNewRecordsCount();
   }, [clearNewRecordsCount]);
 
-  const handleScrollTopChange = useCallback((newScrollTop: number) => {
-    setScrollTop(newScrollTop);
-  }, [setScrollTop]);
+  const handleScrollTopChange = useCallback(
+    (newScrollTop: number) => {
+      setScrollTop(newScrollTop);
+    },
+    [setScrollTop],
+  );
 
   const filteredRecords = useMemo(() => {
     return filterRecords(records, toolbarFilters, filterConditions);
@@ -229,31 +262,31 @@ export default function Traffic() {
 
   const styles: Record<string, CSSProperties> = {
     container: {
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      overflow: 'hidden',
+      display: "flex",
+      flexDirection: "column",
+      height: "100%",
+      overflow: "hidden",
       backgroundColor: token.colorBgContainer,
     },
     filterBarWrapper: {
-      padding: '8px 16px',
+      padding: "8px 16px",
       backgroundColor: token.colorBgContainer,
       borderBottom: `1px solid ${token.colorBorderSecondary}`,
     },
     mainContent: {
       flex: 1,
-      overflow: 'hidden',
+      overflow: "hidden",
       backgroundColor: token.colorBgContainer,
     },
     tableWrapper: {
-      height: '100%',
+      height: "100%",
       backgroundColor: token.colorBgContainer,
     },
     detailWrapper: {
-      height: '100%',
-      padding: 16,
+      height: "100%",
+      padding: 4,
       backgroundColor: token.colorBgContainer,
-      overflow: 'auto',
+      overflow: "auto",
     },
   };
 
