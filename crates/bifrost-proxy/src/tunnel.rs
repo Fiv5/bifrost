@@ -58,7 +58,7 @@ fn get_https_pooled_client() -> &'static HttpsPooledClient {
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(config)
             .https_or_http()
-            .enable_http1()
+            .enable_all_versions()
             .build();
 
         Client::builder(TokioExecutor::new())
@@ -78,7 +78,7 @@ fn get_https_unsafe_pooled_client() -> &'static HttpsPooledClient {
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(config)
             .https_or_http()
-            .enable_http1()
+            .enable_all_versions()
             .build();
 
         Client::builder(TokioExecutor::new())

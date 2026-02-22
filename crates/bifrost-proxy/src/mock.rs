@@ -38,7 +38,7 @@ fn get_https_client() -> &'static HttpsClient {
         let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(config)
             .https_or_http()
-            .enable_http1()
+            .enable_all_versions()
             .build();
 
         Client::builder(TokioExecutor::new()).build(https_connector)
