@@ -1,4 +1,4 @@
-import { useEffect, useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, memo, type CSSProperties } from "react";
 import { theme } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
@@ -29,10 +29,14 @@ function formatUptime(seconds: number): string {
   return h > 0 ? `${d}d ${h}h` : `${d}d`;
 }
 
-export default function StatusBar() {
+const StatusBar = memo(function StatusBar() {
   const { token } = theme.useToken();
-  const { overview, current, enablePush, disablePush } = useMetricsStore();
-  const { systemProxy, fetchSystemProxy } = useProxyStore();
+  const overview = useMetricsStore((state) => state.overview);
+  const current = useMetricsStore((state) => state.current);
+  const enablePush = useMetricsStore((state) => state.enablePush);
+  const disablePush = useMetricsStore((state) => state.disablePush);
+  const systemProxy = useProxyStore((state) => state.systemProxy);
+  const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
 
   useEffect(() => {
     fetchSystemProxy();
@@ -108,6 +112,40 @@ export default function StatusBar() {
     value: {
       fontFamily: "monospace",
     },
+    valueRate: {
+      fontFamily: "monospace",
+      minWidth: 70,
+      textAlign: "right" as const,
+    },
+    valueTraffic: {
+      fontFamily: "monospace",
+      minWidth: 58,
+      textAlign: "right" as const,
+    },
+    valueNumber: {
+      fontFamily: "monospace",
+      minWidth: 40,
+      textAlign: "right" as const,
+    },
+    valueMem: {
+      fontFamily: "monospace",
+      minWidth: 52,
+      textAlign: "right" as const,
+    },
+    valueCpu: {
+      fontFamily: "monospace",
+      minWidth: 38,
+      textAlign: "right" as const,
+    },
+    valueUptime: {
+      fontFamily: "monospace",
+      minWidth: 48,
+      textAlign: "right" as const,
+    },
+    valueStatus: {
+      fontFamily: "monospace",
+      minWidth: 52,
+    },
     statusDot: {
       width: 6,
       height: 6,
@@ -134,57 +172,59 @@ export default function StatusBar() {
       <div style={styles.item}>
         <div style={styles.statusDot} />
         <span style={styles.label}>Proxy:</span>
-        <span style={styles.value}>{proxyStatus.text}</span>
+        <span style={styles.valueStatus}>{proxyStatus.text}</span>
       </div>
 
       <div style={styles.separator} />
 
       <div style={styles.item}>
         <ArrowUpOutlined style={styles.rateUp} />
-        <span style={styles.value}>{uploadRate}</span>
+        <span style={styles.valueRate}>{uploadRate}</span>
       </div>
 
       <div style={styles.item}>
         <ArrowDownOutlined style={styles.rateDown} />
-        <span style={styles.value}>{downloadRate}</span>
+        <span style={styles.valueRate}>{downloadRate}</span>
       </div>
 
       <div style={styles.separator} />
 
       <div style={styles.item}>
         <span style={styles.label}>Total:</span>
-        <span style={styles.value}>{totalTraffic}</span>
+        <span style={styles.valueTraffic}>{totalTraffic}</span>
       </div>
 
       <div style={styles.separator} />
 
       <div style={styles.item}>
         <span style={styles.label}>Conn:</span>
-        <span style={styles.value}>{metrics?.active_connections ?? 0}</span>
+        <span style={styles.valueNumber}>
+          {metrics?.active_connections ?? 0}
+        </span>
       </div>
 
       <div style={styles.item}>
         <span style={styles.label}>Req:</span>
-        <span style={styles.value}>{metrics?.total_requests ?? 0}</span>
+        <span style={styles.valueNumber}>{metrics?.total_requests ?? 0}</span>
       </div>
 
       <div style={styles.separator} />
 
       <div style={styles.item}>
         <span style={styles.label}>Mem:</span>
-        <span style={styles.value}>{memoryUsage}</span>
+        <span style={styles.valueMem}>{memoryUsage}</span>
       </div>
 
       <div style={styles.item}>
         <span style={styles.label}>CPU:</span>
-        <span style={styles.value}>{cpuUsage}</span>
+        <span style={styles.valueCpu}>{cpuUsage}</span>
       </div>
 
       <div style={styles.separator} />
 
       <div style={styles.item}>
         <span style={styles.label}>Uptime:</span>
-        <span style={styles.value}>{uptime}</span>
+        <span style={styles.valueUptime}>{uptime}</span>
       </div>
 
       {overview?.system?.version && (
@@ -197,4 +237,6 @@ export default function StatusBar() {
       )}
     </div>
   );
-}
+});
+
+export default StatusBar;

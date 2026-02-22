@@ -65,6 +65,10 @@ pub async fn handle_websocket_upgrade(
         })?;
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
+    if let Err(e) = target_stream.set_nodelay(true) {
+        debug!("Failed to set TCP_NODELAY on WebSocket connection: {}", e);
+    }
+
     let upgrade_request = build_websocket_handshake(&req)?;
     target_stream
         .write_all(upgrade_request.as_bytes())

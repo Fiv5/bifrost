@@ -63,7 +63,13 @@ export interface ClientSubscription {
   need_metrics?: boolean;
   need_history?: boolean;
   history_limit?: number;
+  metrics_interval_ms?: number;
 }
+
+export const METRICS_INTERVAL_MIN_MS = 200;
+export const METRICS_INTERVAL_MAX_MS = 5000;
+export const METRICS_INTERVAL_DEFAULT_MS = 1000;
+export const METRICS_INTERVAL_FAST_MS = 250;
 
 type MessageHandler<T> = (data: T) => void;
 
@@ -144,6 +150,10 @@ class PushService {
 
     if (this.subscription.history_limit) {
       params.append('history_limit', String(this.subscription.history_limit));
+    }
+
+    if (this.subscription.metrics_interval_ms) {
+      params.append('metrics_interval_ms', String(this.subscription.metrics_interval_ms));
     }
 
     return params.toString();

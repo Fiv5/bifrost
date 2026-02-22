@@ -293,6 +293,14 @@ pub async fn handle_connect(
             ))
         })?;
 
+    if let Err(e) = target_stream.set_nodelay(true) {
+        warn!(
+            "[{}] Failed to set TCP_NODELAY on tunnel connection: {}",
+            ctx.id_str(),
+            e
+        );
+    }
+
     if verbose_logging {
         info!(
             "[{}] CONNECT tunnel established to {}:{}",
@@ -2339,6 +2347,7 @@ pub async fn tunnel_bidirectional(
                 break;
             }
             target_write.write_all(&buf[..n]).await?;
+            target_write.flush().await?;
 
             if let Some(ref state) = admin_state_clone {
                 state
@@ -2358,6 +2367,7 @@ pub async fn tunnel_bidirectional(
                 break;
             }
             client_write.write_all(&buf[..n]).await?;
+            client_write.flush().await?;
 
             if let Some(ref state) = admin_state_clone2 {
                 state

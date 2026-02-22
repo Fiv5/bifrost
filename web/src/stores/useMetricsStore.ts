@@ -5,6 +5,7 @@ import pushService, {
   type OverviewData,
   type MetricsData,
   type HistoryData,
+  METRICS_INTERVAL_DEFAULT_MS,
 } from '../services/pushService';
 
 interface MetricsState {
@@ -14,12 +15,15 @@ interface MetricsState {
   loading: boolean;
   error: string | null;
   usePush: boolean;
-  pushUnsubscribes: (() => void)[];
+  pushRefCount: number;
+  overviewUnsubscribe: (() => void) | null;
+  metricsUnsubscribe: (() => void) | null;
+  historyUnsubscribe: (() => void) | null;
   fetchMetrics: () => Promise<void>;
   fetchHistory: (limit?: number) => Promise<void>;
   fetchOverview: () => Promise<void>;
   clearError: () => void;
-  enablePush: (options?: { needOverview?: boolean; needMetrics?: boolean; needHistory?: boolean; historyLimit?: number }) => void;
+  enablePush: (options?: { needOverview?: boolean; needMetrics?: boolean; needHistory?: boolean; historyLimit?: number; metricsIntervalMs?: number }) => void;
   disablePush: () => void;
   handleOverviewPush: (data: OverviewData) => void;
   handleMetricsPush: (data: MetricsData) => void;
@@ -33,7 +37,10 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
   loading: false,
   error: null,
   usePush: true,
-  pushUnsubscribes: [],
+  pushRefCount: 0,
+  overviewUnsubscribe: null,
+  metricsUnsubscribe: null,
+  historyUnsubscribe: null,
 
   fetchMetrics: async () => {
     try {
@@ -68,13 +75,16 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
 
   enablePush: (options = {}) => {
     const state = get();
-    if (state.pushUnsubscribes.length > 0) return;
+
+    const newRefCount = state.pushRefCount + 1;
+    set({ pushRefCount: newRefCount });
 
     const {
       needOverview = true,
       needMetrics = true,
       needHistory = false,
       historyLimit = 3600,
+      metricsIntervalMs = METRICS_INTERVAL_DEFAULT_MS,
     } = options;
 
     const subscription = {
@@ -82,43 +92,58 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       need_metrics: needMetrics,
       need_history: needHistory,
       history_limit: historyLimit,
+      metrics_interval_ms: metricsIntervalMs,
     };
 
-    pushService.connect(subscription);
-
-    const unsubscribes: (() => void)[] = [];
-
-    if (needOverview) {
-      unsubscribes.push(
-        pushService.onOverviewUpdate((data) => {
-          get().handleOverviewPush(data);
-        })
-      );
+    if (newRefCount === 1) {
+      pushService.connect(subscription);
+    } else {
+      pushService.updateSubscription(subscription);
     }
 
-    if (needMetrics) {
-      unsubscribes.push(
-        pushService.onMetricsUpdate((data) => {
-          get().handleMetricsPush(data);
-        })
-      );
+    if (needOverview && !state.overviewUnsubscribe) {
+      const unsub = pushService.onOverviewUpdate((data) => {
+        get().handleOverviewPush(data);
+      });
+      set({ overviewUnsubscribe: unsub });
     }
 
-    if (needHistory) {
-      unsubscribes.push(
-        pushService.onHistoryUpdate((data) => {
-          get().handleHistoryPush(data);
-        })
-      );
+    if (needMetrics && !state.metricsUnsubscribe) {
+      const unsub = pushService.onMetricsUpdate((data) => {
+        get().handleMetricsPush(data);
+      });
+      set({ metricsUnsubscribe: unsub });
     }
 
-    set({ pushUnsubscribes: unsubscribes });
+    if (needHistory && !state.historyUnsubscribe) {
+      const unsub = pushService.onHistoryUpdate((data) => {
+        get().handleHistoryPush(data);
+      });
+      set({ historyUnsubscribe: unsub });
+    }
   },
 
   disablePush: () => {
     const state = get();
-    state.pushUnsubscribes.forEach((unsub) => unsub());
-    set({ pushUnsubscribes: [] });
+    const newRefCount = Math.max(0, state.pushRefCount - 1);
+    set({ pushRefCount: newRefCount });
+
+    if (newRefCount > 0) {
+      return;
+    }
+
+    if (state.overviewUnsubscribe) {
+      state.overviewUnsubscribe();
+      set({ overviewUnsubscribe: null });
+    }
+    if (state.metricsUnsubscribe) {
+      state.metricsUnsubscribe();
+      set({ metricsUnsubscribe: null });
+    }
+    if (state.historyUnsubscribe) {
+      state.historyUnsubscribe();
+      set({ historyUnsubscribe: null });
+    }
   },
 
   handleOverviewPush: (data: OverviewData) => {

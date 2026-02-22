@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+
+use futures_util::FutureExt;
 
 use regex::Regex;
 
@@ -475,10 +478,37 @@ impl ProxyServer {
     }
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+        const ERROR_BACKOFF_MS: u64 = 100;
+
         loop {
-            let (stream, peer_addr) = listener.accept().await.map_err(|e| {
-                BifrostError::Network(format!("Failed to accept connection: {}", e))
-            })?;
+            let (stream, peer_addr) = match listener.accept().await {
+                Ok(conn) => {
+                    consecutive_errors = 0;
+                    conn
+                }
+                Err(e) => {
+                    consecutive_errors += 1;
+                    error!(
+                        "Failed to accept connection (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(BifrostError::Network(format!(
+                            "Too many consecutive accept errors ({}), giving up: {}",
+                            consecutive_errors, e
+                        )));
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        ERROR_BACKOFF_MS * consecutive_errors as u64,
+                    ))
+                    .await;
+                    continue;
+                }
+            };
 
             debug!("Accepted connection from {}", peer_addr);
 
@@ -524,43 +554,61 @@ impl ProxyServer {
             };
 
             tokio::spawn(async move {
-                let io = TokioIo::new(stream);
+                let connection_task = async {
+                    let io = TokioIo::new(stream);
 
-                let service = service_fn(move |req: Request<Incoming>| {
-                    let rules = Arc::clone(&rules);
-                    let tls_config = Arc::clone(&tls_config);
-                    let proxy_config = proxy_config.clone();
-                    let admin_state = admin_state.clone();
-                    let push_manager = push_manager.clone();
-                    let admin_security_config = admin_security_config.clone();
-                    let dns_resolver = Arc::clone(&dns_resolver);
-                    let access_control = Arc::clone(&access_control);
-                    async move {
-                        handle_request(
-                            req,
-                            peer_addr,
-                            rules,
-                            tls_config,
-                            proxy_config,
-                            admin_state,
-                            push_manager,
-                            admin_security_config,
-                            dns_resolver,
-                            access_control,
-                            initial_generation,
-                        )
+                    let service = service_fn(move |req: Request<Incoming>| {
+                        let rules = Arc::clone(&rules);
+                        let tls_config = Arc::clone(&tls_config);
+                        let proxy_config = proxy_config.clone();
+                        let admin_state = admin_state.clone();
+                        let push_manager = push_manager.clone();
+                        let admin_security_config = admin_security_config.clone();
+                        let dns_resolver = Arc::clone(&dns_resolver);
+                        let access_control = Arc::clone(&access_control);
+                        async move {
+                            handle_request(
+                                req,
+                                peer_addr,
+                                rules,
+                                tls_config,
+                                proxy_config,
+                                admin_state,
+                                push_manager,
+                                admin_security_config,
+                                dns_resolver,
+                                access_control,
+                                initial_generation,
+                            )
+                            .await
+                        }
+                    });
+
+                    if let Err(err) = http1::Builder::new()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection(io, service)
+                        .with_upgrades()
                         .await
+                    {
+                        error!("Error serving connection from {}: {:?}", peer_addr, err);
                     }
-                });
+                };
 
-                if let Err(err) = http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
-                    .serve_connection(io, service)
-                    .with_upgrades()
-                    .await
-                {
-                    error!("Error serving connection from {}: {:?}", peer_addr, err);
+                let result = AssertUnwindSafe(connection_task).catch_unwind().await;
+
+                if let Err(panic_err) = result {
+                    let panic_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    error!(
+                        "Connection handler for {} panicked: {}",
+                        peer_addr, panic_msg
+                    );
                 }
             });
         }

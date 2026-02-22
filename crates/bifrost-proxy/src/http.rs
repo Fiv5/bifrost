@@ -343,6 +343,10 @@ pub async fn handle_http_request(
         })?;
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
+    if let Err(e) = stream.set_nodelay(true) {
+        debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
+    }
+
     let use_tls = matches!(
         resolved_rules.host_protocol,
         Some(Protocol::Https) | Some(Protocol::Wss)
@@ -783,6 +787,10 @@ async fn forward_without_rules(
         })?;
     let connect_ms = connect_start.elapsed().as_millis() as u64;
 
+    if let Err(e) = stream.set_nodelay(true) {
+        debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
+    }
+
     let io = TokioIo::new(stream);
 
     let (mut sender, conn) = ClientBuilder::new()
@@ -1076,6 +1084,10 @@ async fn handle_http_websocket(
             ))
         })?;
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+
+    if let Err(e) = target_stream.set_nodelay(true) {
+        debug!("Failed to set TCP_NODELAY on WebSocket connection: {}", e);
+    }
 
     let upgrade_request = build_http_websocket_handshake(&req, &target_host, target_port)?;
     target_stream

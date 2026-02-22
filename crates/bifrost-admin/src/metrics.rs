@@ -83,6 +83,13 @@ pub struct MetricsCollector {
     last_bytes_sent: AtomicU64,
     last_bytes_received: AtomicU64,
     last_snapshot_time: AtomicU64,
+    realtime_last_request_count: AtomicU64,
+    realtime_last_bytes_sent: AtomicU64,
+    realtime_last_bytes_received: AtomicU64,
+    realtime_last_time: AtomicU64,
+    smoothed_qps: RwLock<f32>,
+    smoothed_bytes_sent_rate: RwLock<f32>,
+    smoothed_bytes_received_rate: RwLock<f32>,
     system: RwLock<System>,
     pid: Pid,
     max_qps: RwLock<f32>,
@@ -110,6 +117,13 @@ impl MetricsCollector {
             last_bytes_sent: AtomicU64::new(0),
             last_bytes_received: AtomicU64::new(0),
             last_snapshot_time: AtomicU64::new(0),
+            realtime_last_request_count: AtomicU64::new(0),
+            realtime_last_bytes_sent: AtomicU64::new(0),
+            realtime_last_bytes_received: AtomicU64::new(0),
+            realtime_last_time: AtomicU64::new(0),
+            smoothed_qps: RwLock::new(0.0),
+            smoothed_bytes_sent_rate: RwLock::new(0.0),
+            smoothed_bytes_received_rate: RwLock::new(0.0),
             system: RwLock::new(system),
             pid,
             max_qps: RwLock::new(0.0),
@@ -205,24 +219,77 @@ impl MetricsCollector {
         let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let bytes_received = self.bytes_received.load(Ordering::Relaxed);
 
-        let last_count = self.last_request_count.load(Ordering::Relaxed);
-        let last_bytes_sent = self.last_bytes_sent.load(Ordering::Relaxed);
-        let last_bytes_received = self.last_bytes_received.load(Ordering::Relaxed);
-        let last_time = self.last_snapshot_time.load(Ordering::Relaxed);
+        let realtime_last_count = self.realtime_last_request_count.load(Ordering::Relaxed);
+        let realtime_last_bytes_sent = self.realtime_last_bytes_sent.load(Ordering::Relaxed);
+        let realtime_last_bytes_received =
+            self.realtime_last_bytes_received.load(Ordering::Relaxed);
+        let realtime_last_time = self.realtime_last_time.load(Ordering::Relaxed);
 
-        let (qps, bytes_sent_rate, bytes_received_rate) = if last_time > 0 && now > last_time {
-            let elapsed_secs = (now - last_time) as f32 / 1000.0;
-            if elapsed_secs > 0.0 {
-                (
-                    (total_requests - last_count) as f32 / elapsed_secs,
-                    (bytes_sent - last_bytes_sent) as f32 / elapsed_secs,
-                    (bytes_received - last_bytes_received) as f32 / elapsed_secs,
-                )
+        let min_update_interval_ms: u64 = 500;
+        let elapsed_since_last = now.saturating_sub(realtime_last_time);
+        let should_update_realtime = elapsed_since_last >= min_update_interval_ms;
+
+        let (raw_qps, raw_bytes_sent_rate, raw_bytes_received_rate) =
+            if realtime_last_time > 0 && elapsed_since_last > 0 {
+                let elapsed_secs = elapsed_since_last as f32 / 1000.0;
+                if elapsed_secs > 0.0 {
+                    (
+                        (total_requests.saturating_sub(realtime_last_count)) as f32 / elapsed_secs,
+                        (bytes_sent.saturating_sub(realtime_last_bytes_sent)) as f32 / elapsed_secs,
+                        (bytes_received.saturating_sub(realtime_last_bytes_received)) as f32
+                            / elapsed_secs,
+                    )
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
             } else {
                 (0.0, 0.0, 0.0)
+            };
+
+        let smoothing_alpha: f32 = 0.4;
+        let decay_alpha: f32 = 0.85;
+
+        let (qps, bytes_sent_rate, bytes_received_rate) = if should_update_realtime {
+            let mut smoothed_qps = self.smoothed_qps.write();
+            let mut smoothed_sent = self.smoothed_bytes_sent_rate.write();
+            let mut smoothed_recv = self.smoothed_bytes_received_rate.write();
+
+            if raw_qps > 0.0 || raw_bytes_sent_rate > 0.0 || raw_bytes_received_rate > 0.0 {
+                *smoothed_qps = smoothing_alpha * raw_qps + (1.0 - smoothing_alpha) * *smoothed_qps;
+                *smoothed_sent = smoothing_alpha * raw_bytes_sent_rate
+                    + (1.0 - smoothing_alpha) * *smoothed_sent;
+                *smoothed_recv = smoothing_alpha * raw_bytes_received_rate
+                    + (1.0 - smoothing_alpha) * *smoothed_recv;
+            } else {
+                *smoothed_qps *= decay_alpha;
+                *smoothed_sent *= decay_alpha;
+                *smoothed_recv *= decay_alpha;
+
+                if *smoothed_qps < 0.01 {
+                    *smoothed_qps = 0.0;
+                }
+                if *smoothed_sent < 1.0 {
+                    *smoothed_sent = 0.0;
+                }
+                if *smoothed_recv < 1.0 {
+                    *smoothed_recv = 0.0;
+                }
             }
+
+            self.realtime_last_request_count
+                .store(total_requests, Ordering::Relaxed);
+            self.realtime_last_bytes_sent
+                .store(bytes_sent, Ordering::Relaxed);
+            self.realtime_last_bytes_received
+                .store(bytes_received, Ordering::Relaxed);
+            self.realtime_last_time.store(now, Ordering::Relaxed);
+
+            (*smoothed_qps, *smoothed_sent, *smoothed_recv)
         } else {
-            (0.0, 0.0, 0.0)
+            let smoothed_qps = *self.smoothed_qps.read();
+            let smoothed_sent = *self.smoothed_bytes_sent_rate.read();
+            let smoothed_recv = *self.smoothed_bytes_received_rate.read();
+            (smoothed_qps, smoothed_sent, smoothed_recv)
         };
 
         let max_qps = *self.max_qps.read();

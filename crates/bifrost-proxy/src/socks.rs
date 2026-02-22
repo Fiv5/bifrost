@@ -1,7 +1,9 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use bifrost_core::{BifrostError, Result};
+use futures_util::FutureExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
@@ -209,10 +211,37 @@ impl SocksServer {
     }
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
+        let mut consecutive_errors = 0u32;
+        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+        const ERROR_BACKOFF_MS: u64 = 100;
+
         loop {
-            let (stream, peer_addr) = listener.accept().await.map_err(|e| {
-                BifrostError::Network(format!("Failed to accept connection: {}", e))
-            })?;
+            let (stream, peer_addr) = match listener.accept().await {
+                Ok(conn) => {
+                    consecutive_errors = 0;
+                    conn
+                }
+                Err(e) => {
+                    consecutive_errors += 1;
+                    error!(
+                        "SOCKS5: Failed to accept connection (attempt {}/{}): {}",
+                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                    );
+
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                        return Err(BifrostError::Network(format!(
+                            "SOCKS5: Too many consecutive accept errors ({}), giving up: {}",
+                            consecutive_errors, e
+                        )));
+                    }
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(
+                        ERROR_BACKOFF_MS * consecutive_errors as u64,
+                    ))
+                    .await;
+                    continue;
+                }
+            };
 
             debug!("SOCKS5: Accepted connection from {}", peer_addr);
 
@@ -248,9 +277,24 @@ impl SocksServer {
             let rules = Arc::clone(&self.rules);
 
             tokio::spawn(async move {
-                let mut handler = SocksHandler::new(stream, config, rules);
-                if let Err(e) = handler.handle_client().await {
-                    error!("SOCKS5 error for {}: {}", peer_addr, e);
+                let handler_task = async {
+                    let mut handler = SocksHandler::new(stream, config, rules);
+                    if let Err(e) = handler.handle_client().await {
+                        error!("SOCKS5 error for {}: {}", peer_addr, e);
+                    }
+                };
+
+                let result = AssertUnwindSafe(handler_task).catch_unwind().await;
+
+                if let Err(panic_err) = result {
+                    let panic_msg = if let Some(s) = panic_err.downcast_ref::<&str>() {
+                        (*s).to_string()
+                    } else if let Some(s) = panic_err.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic".to_string()
+                    };
+                    error!("SOCKS5 handler for {} panicked: {}", peer_addr, panic_msg);
                 }
             });
         }
@@ -480,6 +524,9 @@ impl SocksHandler {
         let target_addr = format!("{}:{}", target_host, target_port);
         match TcpStream::connect(&target_addr).await {
             Ok(target_stream) => {
+                if let Err(e) = target_stream.set_nodelay(true) {
+                    debug!("Failed to set TCP_NODELAY on SOCKS5 connection: {}", e);
+                }
                 let local_addr = target_stream.local_addr().ok();
                 self.send_reply(SocksReply::Succeeded, local_addr).await?;
                 debug!("SOCKS5: Connected to {}", target_addr);
@@ -541,6 +588,7 @@ impl SocksHandler {
                     break;
                 }
                 target_write.write_all(&buf[..n]).await?;
+                target_write.flush().await?;
             }
             target_write.shutdown().await?;
             Ok::<_, std::io::Error>(())
@@ -554,6 +602,7 @@ impl SocksHandler {
                     break;
                 }
                 client_write.write_all(&buf[..n]).await?;
+                client_write.flush().await?;
             }
             Ok::<_, std::io::Error>(())
         };

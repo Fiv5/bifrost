@@ -110,11 +110,20 @@ pub struct ClientSubscription {
     pub need_history: bool,
     #[serde(default = "default_history_limit")]
     pub history_limit: usize,
+    #[serde(default = "default_metrics_interval_ms")]
+    pub metrics_interval_ms: u64,
 }
 
 fn default_history_limit() -> usize {
     60
 }
+
+fn default_metrics_interval_ms() -> u64 {
+    1000
+}
+
+pub const METRICS_INTERVAL_MIN_MS: u64 = 200;
+pub const METRICS_INTERVAL_MAX_MS: u64 = 5000;
 
 impl Default for ClientSubscription {
     fn default() -> Self {
@@ -125,6 +134,7 @@ impl Default for ClientSubscription {
             need_metrics: false,
             need_history: false,
             history_limit: default_history_limit(),
+            metrics_interval_ms: default_metrics_interval_ms(),
         }
     }
 }
@@ -382,6 +392,10 @@ impl PushManager {
     }
 
     pub async fn broadcast_metrics(&self) {
+        self.broadcast_metrics_with_interval(0).await;
+    }
+
+    pub async fn broadcast_metrics_with_interval(&self, elapsed_ms: u64) {
         let mut clients_to_remove = Vec::new();
 
         let metrics = self.state.metrics_collector.get_current();
@@ -394,9 +408,17 @@ impl PushManager {
             let subscription = client.get_subscription();
 
             if subscription.need_metrics {
-                let msg = PushMessage::MetricsUpdate(metrics_data.clone());
-                if !client.send(msg) {
-                    clients_to_remove.push(client.id);
+                let client_interval = subscription
+                    .metrics_interval_ms
+                    .clamp(METRICS_INTERVAL_MIN_MS, METRICS_INTERVAL_MAX_MS);
+
+                let should_send = elapsed_ms == 0 || elapsed_ms % client_interval < 500;
+
+                if should_send {
+                    let msg = PushMessage::MetricsUpdate(metrics_data.clone());
+                    if !client.send(msg) {
+                        clients_to_remove.push(client.id);
+                    }
                 }
             }
         }
@@ -626,11 +648,17 @@ pub fn start_push_tasks(manager: SharedPushManager) -> Vec<tokio::task::JoinHand
 
     let manager_metrics = manager.clone();
     handles.push(tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let base_interval_ms: u64 = 500;
+        let mut interval = tokio::time::interval(Duration::from_millis(base_interval_ms));
+        let mut tick_count: u64 = 0;
         loop {
             interval.tick().await;
+            tick_count = tick_count.wrapping_add(1);
             if manager_metrics.client_count() > 0 {
-                manager_metrics.broadcast_metrics().await;
+                let elapsed_ms = tick_count * base_interval_ms;
+                manager_metrics
+                    .broadcast_metrics_with_interval(elapsed_ms)
+                    .await;
             }
         }
     }));

@@ -6,11 +6,12 @@ mod state;
 mod ui;
 
 use app::BifrostApp;
-use bifrost_core::{init_logging_with_config, LogConfig, LogOutput};
+use bifrost_core::{init_logging_with_config, install_panic_hook, LogConfig, LogOutput};
 use bifrost_storage::data_dir;
 use bifrost_tls::init_crypto_provider;
 
 fn main() -> eframe::Result<()> {
+    install_panic_hook();
     init_crypto_provider();
 
     let log_level = std::env::var("BIFROST_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
