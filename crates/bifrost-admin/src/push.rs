@@ -203,6 +203,15 @@ impl PushManager {
             {
                 summary.frame_count = status.frame_count;
                 summary.socket_status = Some(status);
+            } else if let Some(ref fs) = self.state.frame_store {
+                if let Some(metadata) = fs.get_metadata(&summary.id) {
+                    summary.frame_count = metadata.frame_count as usize;
+                    summary.socket_status = Some(crate::traffic::SocketStatus {
+                        is_open: !metadata.is_closed,
+                        frame_count: metadata.frame_count as usize,
+                        ..Default::default()
+                    });
+                }
             }
         }
         summary

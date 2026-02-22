@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
 use bifrost_core::SystemProxyManager;
+use bifrost_storage::SystemProxyConfigUpdate;
 
 #[derive(Serialize)]
 struct SystemProxyStatus {
@@ -162,6 +163,26 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
 
         match final_result {
             Ok(()) => {
+                if let Some(ref config_manager) = state.config_manager {
+                    let update = SystemProxyConfigUpdate {
+                        enabled: Some(request.enabled),
+                        bypass: if request.enabled {
+                            Some(bypass.clone())
+                        } else {
+                            None
+                        },
+                        auto_enable: None,
+                    };
+                    if let Err(e) = config_manager.update_system_proxy_config(update).await {
+                        tracing::error!("Failed to persist system proxy config: {}", e);
+                    } else {
+                        tracing::info!(
+                            "System proxy config persisted: enabled={}",
+                            request.enabled
+                        );
+                    }
+                }
+
                 let status = SystemProxyStatus {
                     supported: true,
                     enabled: request.enabled,

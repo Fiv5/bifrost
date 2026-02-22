@@ -3,8 +3,28 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
-use crate::state::SharedAdminState;
-use crate::traffic::TrafficFilter;
+use crate::state::{AdminState, SharedAdminState};
+use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
+
+fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
+    if !summary.is_sse && !summary.is_websocket && !summary.is_tunnel {
+        return;
+    }
+
+    if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
+        summary.frame_count = status.frame_count;
+        summary.socket_status = Some(status);
+    } else if let Some(ref fs) = state.frame_store {
+        if let Some(metadata) = fs.get_metadata(&summary.id) {
+            summary.frame_count = metadata.frame_count as usize;
+            summary.socket_status = Some(SocketStatus {
+                is_open: !metadata.is_closed,
+                frame_count: metadata.frame_count as usize,
+                ..Default::default()
+            });
+        }
+    }
+}
 
 pub async fn handle_traffic(
     req: Request<Incoming>,
@@ -92,12 +112,7 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
         .skip(offset)
         .take(limit)
         .map(|mut summary| {
-            if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-                if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-                    summary.frame_count = status.frame_count;
-                    summary.socket_status = Some(status);
-                }
-            }
+            enrich_frame_info(&mut summary, &state);
             summary
         })
         .collect();
@@ -127,17 +142,13 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
             .get_after(params.after_id.as_deref(), &filter, limit)
     };
 
-    let enrich_summary = |mut summary: crate::traffic::TrafficSummary| {
-        if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-            if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-                summary.frame_count = status.frame_count;
-                summary.socket_status = Some(status);
-            }
-        }
-        summary
-    };
-
-    let new_records: Vec<_> = new_records.into_iter().map(enrich_summary).collect();
+    let new_records: Vec<_> = new_records
+        .into_iter()
+        .map(|mut summary| {
+            enrich_frame_info(&mut summary, &state);
+            summary
+        })
+        .collect();
 
     let updated_records = if !params.pending_ids.is_empty() {
         let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
@@ -149,14 +160,7 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
         summaries
             .into_iter()
             .map(|mut summary| {
-                if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-                    if let Some(status) =
-                        state.connection_monitor.get_connection_status(&summary.id)
-                    {
-                        summary.frame_count = status.frame_count;
-                        summary.socket_status = Some(status);
-                    }
-                }
+                enrich_frame_info(&mut summary, &state);
                 summary
             })
             .collect()
@@ -229,6 +233,16 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
                     record.frame_count = status.frame_count;
                     record.last_frame_id = status.frame_count as u64;
                     record.socket_status = Some(status);
+                } else if let Some(ref fs) = state.frame_store {
+                    if let Some(metadata) = fs.get_metadata(&record.id) {
+                        record.frame_count = metadata.frame_count as usize;
+                        record.last_frame_id = metadata.last_frame_id;
+                        record.socket_status = Some(SocketStatus {
+                            is_open: !metadata.is_closed,
+                            frame_count: metadata.frame_count as usize,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
             json_response(&record)
