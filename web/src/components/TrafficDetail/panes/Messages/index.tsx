@@ -15,6 +15,7 @@ import plaintext from 'highlight.js/lib/languages/plaintext';
 import 'highlight.js/styles/github.css';
 import type { WebSocketFrame, FrameDirection, FrameType, SessionTargetSearchState } from '../../../../types';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
+import { SseMessageList } from './SseMessageList';
 
 hljs.registerLanguage('json', json);
 hljs.registerLanguage('plaintext', plaintext);
@@ -251,6 +252,14 @@ export const Messages = ({
     },
   ];
 
+  const handleLoadMore = useCallback(() => {
+    fetchFrames(lastFrameId);
+  }, [fetchFrames, lastFrameId]);
+
+  const handleRefresh = useCallback(() => {
+    fetchFrames();
+  }, [fetchFrames]);
+
   if (frameCount === 0) {
     return (
       <div
@@ -266,6 +275,21 @@ export const Messages = ({
           description={`No ${isWebSocket ? 'WebSocket' : 'SSE'} messages yet`}
         />
       </div>
+    );
+  }
+
+  if (!isWebSocket) {
+    return (
+      <SseMessageList
+        frames={frames}
+        filteredFrames={filteredFrames}
+        loading={loading}
+        hasMore={hasMore}
+        searchValue={searchValue}
+        onSearch={onSearch}
+        onLoadMore={handleLoadMore}
+        onRefresh={handleRefresh}
+      />
     );
   }
 

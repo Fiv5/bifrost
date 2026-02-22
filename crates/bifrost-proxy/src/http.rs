@@ -559,6 +559,7 @@ pub async fn handle_http_request(
 
             if is_sse {
                 record.set_sse();
+                state.connection_monitor.register_connection(&record_id);
             }
 
             record.request_body_ref = store_request_body(
