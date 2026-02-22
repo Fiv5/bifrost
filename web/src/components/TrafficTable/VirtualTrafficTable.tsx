@@ -30,7 +30,7 @@ interface VirtualTrafficTableProps {
 
 const ROW_HEIGHT = 36;
 const SCROLL_THRESHOLD = 50;
-const TABLE_MIN_WIDTH = 1340;
+const TABLE_MIN_WIDTH = 1440;
 
 const getStatusDotColor = (status: number): string => {
   if (status === 0) return "#d9d9d9";
