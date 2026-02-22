@@ -367,7 +367,7 @@ pub async fn handle_connect(
                     );
 
                     if let Some(socket_status) = state.connection_monitor.get_status(&req_id) {
-                        state.update_traffic_by_id(&req_id, |record| {
+                        state.update_traffic_by_id(&req_id, move |record| {
                             record.socket_status = Some(socket_status.clone());
                         });
                     }

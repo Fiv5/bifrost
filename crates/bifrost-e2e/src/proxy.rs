@@ -1,4 +1,7 @@
-use bifrost_admin::{AdminState, BodyStore, ConnectionRegistry, RuntimeConfig};
+use bifrost_admin::{
+    start_async_traffic_processor, AdminState, AsyncTrafficWriter, BodyStore, ConnectionRegistry,
+    RuntimeConfig,
+};
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
 };
@@ -735,11 +738,21 @@ impl ProxyInstance {
 
         let frame_store = bifrost_admin::FrameStore::new(temp_dir, Some(24));
 
+        let traffic_recorder = std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
+        let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
+        let _async_traffic_task = start_async_traffic_processor(
+            async_traffic_rx,
+            traffic_recorder.clone(),
+            Some(traffic_store.clone()),
+        );
+
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_body_store(body_store)
             .with_traffic_store_shared(traffic_store)
+            .with_traffic_recorder_shared(traffic_recorder)
+            .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store(frame_store);
 
         let server = ProxyServer::new(config)

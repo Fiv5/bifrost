@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bifrost_admin::{start_push_tasks, AdminState, BodyStore, PushManager};
+use bifrost_admin::{
+    start_async_traffic_processor, start_push_tasks, AdminState, AsyncTrafficWriter, BodyStore,
+    PushManager,
+};
 use bifrost_core::{
     parse_rules, system_proxy::SystemProxyManager, Protocol, RequestContext, Rule,
     RulesResolver as CoreRulesResolver, ValueStore,
@@ -414,9 +417,19 @@ async fn run_proxy_server(
 
     let config_manager = ConfigManager::new(bifrost_dir.clone()).ok();
 
+    let traffic_recorder = std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
+    let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
+    let _async_traffic_task = start_async_traffic_processor(
+        async_traffic_rx,
+        traffic_recorder.clone(),
+        Some(traffic_store.clone()),
+    );
+
     let mut admin_state = AdminState::new(settings.port)
         .with_body_store(body_store)
         .with_traffic_store_shared(traffic_store.clone())
+        .with_traffic_recorder_shared(traffic_recorder)
+        .with_async_traffic_writer(async_traffic_writer)
         .with_frame_store(frame_store);
 
     bifrost_admin::start_traffic_cleanup_task(traffic_store);

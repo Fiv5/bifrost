@@ -1,4 +1,5 @@
 mod app_icon;
+mod async_traffic;
 mod body_store;
 pub mod connection_monitor;
 pub mod connection_registry;
@@ -18,6 +19,9 @@ mod traffic_store;
 mod tests;
 
 pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
+pub use async_traffic::{
+    start_async_traffic_processor, AsyncTrafficWriter, SharedAsyncTrafficWriter, TrafficCommand,
+};
 pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
 pub use connection_monitor::{ConnectionMonitor, SharedConnectionMonitor, WebSocketFrameRecord};
 pub use connection_registry::{
@@ -36,8 +40,8 @@ pub use state::{
     SharedValuesStorage,
 };
 pub use traffic::{
-    FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,
-    TrafficRecorder,
+    FrameDirection, FrameType, MatchedRule, RequestTiming, SharedTrafficRecorder, SocketStatus,
+    TrafficRecord, TrafficRecorder,
 };
 pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_admin::{
-    start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
-    BodyStore, PushManager, RuntimeConfig,
+    start_async_traffic_processor, start_metrics_collector_task, start_push_tasks,
+    status_printer::TlsStatusInfo, AdminState, AsyncTrafficWriter, BodyStore, PushManager,
+    RuntimeConfig,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -493,9 +494,19 @@ pub fn run_foreground(
 
         let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
+        let traffic_recorder = std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
+        let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
+        let _async_traffic_task = start_async_traffic_processor(
+            async_traffic_rx,
+            traffic_recorder.clone(),
+            Some(traffic_store.clone()),
+        );
+
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_traffic_store_shared(traffic_store.clone())
+            .with_traffic_recorder_shared(traffic_recorder)
+            .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store(frame_store)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -741,9 +752,20 @@ pub fn run_daemon(
                 let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
                 let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
+                let traffic_recorder =
+                    std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
+                let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
+                let _async_traffic_task = start_async_traffic_processor(
+                    async_traffic_rx,
+                    traffic_recorder.clone(),
+                    Some(traffic_store.clone()),
+                );
+
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
                     .with_traffic_store_shared(traffic_store.clone())
+                    .with_traffic_recorder_shared(traffic_recorder)
+                    .with_async_traffic_writer(async_traffic_writer)
                     .with_frame_store(frame_store)
                     .with_runtime_config(runtime_config)
                     .with_connection_registry(connection_registry)

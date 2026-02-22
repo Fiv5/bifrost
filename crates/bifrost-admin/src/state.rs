@@ -8,6 +8,7 @@ use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
 use crate::app_icon::SharedAppIconCache;
+use crate::async_traffic::{AsyncTrafficWriter, SharedAsyncTrafficWriter};
 use crate::body_store::SharedBodyStore;
 use crate::connection_monitor::{ConnectionMonitor, SharedConnectionMonitor};
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
@@ -63,6 +64,7 @@ impl RuntimeConfig {
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
     pub traffic_store: Option<SharedTrafficStore>,
+    pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
     pub values_storage: Option<SharedValuesStorage>,
@@ -88,6 +90,7 @@ impl AdminState {
         Self {
             traffic_recorder: Arc::new(TrafficRecorder::default()),
             traffic_store: None,
+            async_traffic_writer: None,
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
             values_storage: None,
@@ -122,21 +125,31 @@ impl AdminState {
         }
     }
 
+    #[inline]
     pub fn record_traffic(&self, record: crate::traffic::TrafficRecord) {
-        if let Some(ref traffic_store) = self.traffic_store {
-            traffic_store.record(record.clone());
+        if let Some(ref writer) = self.async_traffic_writer {
+            writer.record(record);
+        } else {
+            if let Some(ref traffic_store) = self.traffic_store {
+                traffic_store.record(record.clone());
+            }
+            self.traffic_recorder.record(record);
         }
-        self.traffic_recorder.record(record);
     }
 
+    #[inline]
     pub fn update_traffic_by_id<F>(&self, id: &str, updater: F)
     where
-        F: Fn(&mut crate::traffic::TrafficRecord) + Clone,
+        F: Fn(&mut crate::traffic::TrafficRecord) + Send + Sync + Clone + 'static,
     {
-        if let Some(ref traffic_store) = self.traffic_store {
-            traffic_store.update_by_id(id, updater.clone());
+        if let Some(ref writer) = self.async_traffic_writer {
+            writer.update_by_id(id, updater);
+        } else {
+            if let Some(ref traffic_store) = self.traffic_store {
+                traffic_store.update_by_id(id, updater.clone());
+            }
+            self.traffic_recorder.update_by_id(id, updater);
         }
-        self.traffic_recorder.update_by_id(id, updater);
     }
 
     pub fn with_rules_storage(mut self, storage: RulesStorage) -> Self {
@@ -151,6 +164,11 @@ impl AdminState {
 
     pub fn with_traffic_recorder(mut self, recorder: TrafficRecorder) -> Self {
         self.traffic_recorder = Arc::new(recorder);
+        self
+    }
+
+    pub fn with_traffic_recorder_shared(mut self, recorder: SharedTrafficRecorder) -> Self {
+        self.traffic_recorder = recorder;
         self
     }
 
@@ -245,6 +263,16 @@ impl AdminState {
 
     pub fn with_app_icon_cache(mut self, cache: SharedAppIconCache) -> Self {
         self.app_icon_cache = Some(cache);
+        self
+    }
+
+    pub fn with_async_traffic_writer(mut self, writer: AsyncTrafficWriter) -> Self {
+        self.async_traffic_writer = Some(Arc::new(writer));
+        self
+    }
+
+    pub fn with_async_traffic_writer_shared(mut self, writer: SharedAsyncTrafficWriter) -> Self {
+        self.async_traffic_writer = Some(writer);
         self
     }
 }

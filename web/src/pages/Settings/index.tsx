@@ -61,6 +61,7 @@ import {
   ReloadOutlined,
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
+import { useProxyStore } from "../../stores/useProxyStore";
 import {
   getPendingAuthorizations,
   approvePending,
@@ -69,11 +70,8 @@ import {
 } from "../../api/whitelist";
 import { getAppMetrics, getHostMetrics } from "../../api/metrics";
 import {
-  getSystemProxyStatus,
-  setSystemProxy,
   getProxyAddressInfo,
   getProxyQRCodeUrl,
-  type SystemProxyStatus,
   type ProxyAddressInfo,
 } from "../../api/proxy";
 import {
@@ -134,10 +132,12 @@ export default function Settings() {
 
   const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
   const [pendingLoading, setPendingLoading] = useState(false);
-  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
-    null,
-  );
-  const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+  const {
+    systemProxy,
+    loading: systemProxyLoading,
+    fetchSystemProxy,
+    toggleSystemProxy,
+  } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
   const [tlsLoading, setTlsLoading] = useState(false);
   const [certInfo, setCertInfo] = useState<CertInfo | null>(null);
@@ -155,15 +155,6 @@ export default function Settings() {
   const [proxyAddressInfo, setProxyAddressInfo] =
     useState<ProxyAddressInfo | null>(null);
   const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
-
-  const fetchSystemProxy = async () => {
-    try {
-      const status = await getSystemProxyStatus();
-      setSystemProxyState(status);
-    } catch {
-      console.error("Failed to fetch system proxy status");
-    }
-  };
 
   const fetchTlsConfig = useCallback(async () => {
     setTlsLoading(true);
@@ -235,17 +226,13 @@ export default function Settings() {
   }, [selectedProxyIp]);
 
   const handleSystemProxyToggle = async (enabled: boolean) => {
-    setSystemProxyLoading(true);
-    try {
-      const result = await setSystemProxy({ enabled });
-      setSystemProxyState(result);
+    const success = await toggleSystemProxy(enabled);
+    if (success) {
       message.success(
         enabled ? "System proxy enabled" : "System proxy disabled",
       );
-    } catch {
+    } else {
       message.error("Failed to toggle system proxy");
-    } finally {
-      setSystemProxyLoading(false);
     }
   };
 

@@ -2,17 +2,13 @@ import { useEffect, useState, useCallback, useRef, useMemo, type CSSProperties }
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
 import { useTrafficStore, filterRecords } from "../../stores/useTrafficStore";
+import { useProxyStore } from "../../stores/useProxyStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
 import SplitPane from "../../components/SplitPane";
 import type { TrafficSummary, FilterCondition, ToolbarFilters } from "../../types";
-import {
-  getSystemProxyStatus,
-  setSystemProxy,
-  type SystemProxyStatus,
-} from "../../api/proxy";
 
 const FILTER_PARAM = "filter";
 const TOOLBAR_PARAM = "toolbar";
@@ -82,40 +78,29 @@ export default function Traffic() {
 
   const [selectedId, setSelectedId] = useState<string>();
   const [showFilterBar] = useState(true);
-  const [systemProxy, setSystemProxyState] = useState<SystemProxyStatus | null>(
-    null
-  );
-  const [systemProxyLoading, setSystemProxyLoading] = useState(false);
+  const {
+    systemProxy,
+    loading: systemProxyLoading,
+    fetchSystemProxy,
+    toggleSystemProxy,
+  } = useProxyStore();
   const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(false);
   
   const initializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
 
-  const fetchSystemProxy = useCallback(async () => {
-    try {
-      const status = await getSystemProxyStatus();
-      setSystemProxyState(status);
-    } catch {
-      console.error("Failed to fetch system proxy status");
-    }
-  }, []);
-
   const handleSystemProxyToggle = useCallback(
     async (enabled: boolean) => {
-      setSystemProxyLoading(true);
-      try {
-        const result = await setSystemProxy({ enabled });
-        setSystemProxyState(result);
+      const success = await toggleSystemProxy(enabled);
+      if (success) {
         message.success(
           enabled ? "System proxy enabled" : "System proxy disabled"
         );
-      } catch {
+      } else {
         message.error("Failed to toggle system proxy");
-      } finally {
-        setSystemProxyLoading(false);
       }
     },
-    []
+    [toggleSystemProxy]
   );
 
   useEffect(() => {
