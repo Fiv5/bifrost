@@ -183,6 +183,14 @@ export default function Traffic() {
     setDetailPanelCollapsed(prev => !prev);
   }, []);
 
+  const handleDoubleClick = useCallback(async (record: TrafficSummary) => {
+    setSelectedId(record.id);
+    await fetchTrafficDetail(record.id);
+    if (detailPanelCollapsed) {
+      setDetailPanelCollapsed(false);
+    }
+  }, [fetchTrafficDetail, detailPanelCollapsed]);
+
   const handleScrollPositionChange = useCallback((isAtBottom: boolean) => {
     setAutoScroll(isAtBottom);
   }, [setAutoScroll]);
@@ -282,6 +290,7 @@ export default function Traffic() {
             <VirtualTrafficTable
               data={filteredRecords}
               onSelect={handleSelect}
+              onDoubleClick={handleDoubleClick}
               selectedId={selectedId}
               hasMore={hasMore}
               autoScroll={autoScroll}
@@ -302,6 +311,7 @@ export default function Traffic() {
                 <VirtualTrafficTable
                   data={filteredRecords}
                   onSelect={handleSelect}
+                  onDoubleClick={handleDoubleClick}
                   selectedId={selectedId}
                   hasMore={hasMore}
                   autoScroll={autoScroll}

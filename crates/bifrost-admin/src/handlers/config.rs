@@ -90,6 +90,12 @@ pub async fn handle_config(
                 _ => method_not_allowed(),
             }
         }
+        "/api/config/connections/disconnect" | "/api/config/connections/disconnect/" => {
+            match method {
+                Method::POST => disconnect_by_domain(req, state).await,
+                _ => method_not_allowed(),
+            }
+        }
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
 }
@@ -128,6 +134,70 @@ async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
     };
 
     json_response(&tls_config)
+}
+
+#[derive(Deserialize)]
+pub struct DisconnectByDomainRequest {
+    pub domain: String,
+}
+
+#[derive(Serialize)]
+pub struct DisconnectResponse {
+    pub success: bool,
+    pub disconnected_count: usize,
+    pub message: String,
+}
+
+async fn disconnect_by_domain(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: DisconnectByDomainRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let domain = request.domain.trim();
+    if domain.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "Domain cannot be empty");
+    }
+
+    let pattern = domain.to_string();
+
+    let disconnected = state
+        .connection_registry
+        .disconnect_by_host_pattern(std::slice::from_ref(&pattern));
+
+    let count = disconnected.len();
+    tracing::info!(
+        "Force disconnect by domain '{}': {} connections closed",
+        domain,
+        count
+    );
+
+    let response = DisconnectResponse {
+        success: true,
+        disconnected_count: count,
+        message: if count > 0 {
+            format!("Disconnected {} connection(s) matching '{}'", count, domain)
+        } else {
+            format!("No active connections found matching '{}'", domain)
+        },
+    };
+
+    json_response(&response)
 }
 
 async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {

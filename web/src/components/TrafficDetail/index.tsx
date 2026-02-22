@@ -346,6 +346,8 @@ export default function TrafficDetail({
             body={responseBody}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
+            isTunnel={record.is_tunnel}
+            host={record.host}
           />
         ),
       },

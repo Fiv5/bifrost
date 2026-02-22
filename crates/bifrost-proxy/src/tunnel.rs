@@ -1362,7 +1362,8 @@ async fn handle_intercepted_request_with_protocol(
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
 
-            let mut record = TrafficRecord::new(record_id.clone(), method_str, target_uri);
+            let mut record =
+                TrafficRecord::new(record_id.clone(), method_str, original_uri.clone());
             record.status = res_parts.status.as_u16();
             record.content_type = res_parts
                 .headers
@@ -1483,7 +1484,7 @@ async fn handle_intercepted_request_with_protocol(
             .metrics_collector
             .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(req_id.to_string(), method_str, target_uri);
+        let mut record = TrafficRecord::new(req_id.to_string(), method_str, original_uri.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers

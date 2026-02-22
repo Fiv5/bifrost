@@ -1,9 +1,11 @@
-import { useMemo, useRef, useState } from 'react';
-import { theme, Button } from 'antd';
+import { useMemo, useRef, useState, useCallback } from 'react';
+import { theme, Button, Modal, message } from 'antd';
+import { LockOutlined } from '@ant-design/icons';
 import type { SessionTargetSearchState } from '../../../../types';
 import { useTextSelection } from '../../hooks/useTextSelection';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
 import { DEFAULT_SHOW_MAX_SIZE } from '../../helper/contentType';
+import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../../../api/config';
 
 interface RawProps {
   type: 'request' | 'response';
@@ -15,6 +17,8 @@ interface RawProps {
   body?: string | null;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
+  isTunnel?: boolean;
+  host?: string;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -53,11 +57,48 @@ export const Raw = ({
   body,
   searchValue,
   onSearch,
+  isTunnel,
+  host,
 }: RawProps) => {
   const { token } = theme.useToken();
   const [showAll, setShowAll] = useState(false);
   const wrapperRef = useTextSelection(true);
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const handleAddToInterceptList = useCallback(() => {
+    if (!host) {
+      message.error('No host found for this request');
+      return;
+    }
+
+    Modal.confirm({
+      title: 'Add to Intercept List',
+      content: `Add "${host}" to TLS intercept list? This will enable HTTPS inspection for this domain and disconnect existing tunnel connections.`,
+      okText: 'Add',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const currentConfig = await getTlsConfig();
+          if (currentConfig.intercept_include.includes(host)) {
+            message.info(`"${host}" is already in the intercept list`);
+            return;
+          }
+
+          const newIncludeList = [...currentConfig.intercept_include, host];
+          await updateTlsConfig({ intercept_include: newIncludeList });
+
+          await disconnectByDomain(host);
+
+          message.success(`Added "${host}" to intercept list and disconnected existing connections`);
+        } catch (error) {
+          message.error('Failed to add domain to intercept list');
+          console.error(error);
+        }
+      },
+    });
+  }, [host]);
+
+  const showInterceptButton = type === 'response' && isTunnel && host;
 
   useMarkSearch(
     searchValue,
@@ -130,12 +171,26 @@ export const Raw = ({
           onClick={() => setShowAll(true)}
           style={{
             position: 'absolute',
-            bottom: 8,
+            bottom: showInterceptButton ? 44 : 8,
             right: 8,
             background: token.colorBgContainer,
           }}
         >
           Show All ({Math.round(((body?.length ?? 0) - DEFAULT_SHOW_MAX_SIZE) / 1024)}KB more)
+        </Button>
+      )}
+      {showInterceptButton && (
+        <Button
+          type="primary"
+          icon={<LockOutlined />}
+          onClick={handleAddToInterceptList}
+          style={{
+            position: 'absolute',
+            bottom: 8,
+            right: 8,
+          }}
+        >
+          Intercept this domain
         </Button>
       )}
     </div>

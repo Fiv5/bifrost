@@ -10,13 +10,16 @@ import { Tag, Typography, Tooltip, Badge, theme } from "antd";
 import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 import AppIcon from "../AppIcon";
+import TrafficContextMenu from "./TrafficContextMenu";
 
 const { Text } = Typography;
 
 interface VirtualTrafficTableProps {
   data: TrafficSummary[];
   onSelect?: (record: TrafficSummary) => void;
+  onDoubleClick?: (record: TrafficSummary) => void;
   selectedId?: string;
+  selectedIds?: string[];
   onLoadMore?: () => void;
   hasMore?: boolean;
   autoScroll?: boolean;
@@ -235,9 +238,11 @@ const columns: ColumnDef[] = [
     width: 65,
     align: "right",
     render: (record) => {
-      const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
-        ? record.socket_status.send_bytes + record.socket_status.receive_bytes
-        : record.response_size;
+      const size =
+        (record.is_websocket || record.is_sse || record.is_tunnel) &&
+        record.socket_status
+          ? record.socket_status.send_bytes + record.socket_status.receive_bytes
+          : record.response_size;
       return (
         <Text type="secondary" style={{ fontSize: 11 }}>
           {formatSize(size)}
@@ -321,7 +326,9 @@ const columns: ColumnDef[] = [
 export default function VirtualTrafficTable({
   data,
   onSelect,
+  onDoubleClick,
   selectedId,
+  selectedIds = [],
   onLoadMore,
   hasMore,
   autoScroll = true,
@@ -339,6 +346,40 @@ export default function VirtualTrafficTable({
   const isAtBottomRef = useRef(true);
   const [showNewIndicator, setShowNewIndicator] = useState(false);
   const initialScrollRestoredRef = useRef(false);
+
+  const [contextMenu, setContextMenu] = useState<{
+    visible: boolean;
+    record: TrafficSummary | null;
+    position: { x: number; y: number };
+  }>({
+    visible: false,
+    record: null,
+    position: { x: 0, y: 0 },
+  });
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, record: TrafficSummary) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({
+        visible: true,
+        record,
+        position: { x: e.clientX, y: e.clientY },
+      });
+    },
+    [],
+  );
+
+  const handleCloseContextMenu = useCallback(() => {
+    setContextMenu((prev) => ({ ...prev, visible: false }));
+  }, []);
+
+  const selectedRecords =
+    selectedIds.length > 0
+      ? data.filter((r) => selectedIds.includes(r.id))
+      : contextMenu.record
+        ? [contextMenu.record]
+        : [];
 
   const rowVirtualizer = useVirtualizer({
     count: data.length,
@@ -377,10 +418,20 @@ export default function VirtualTrafficTable({
         onLoadMore();
       }
     }
-  }, [checkIsAtBottom, onScrollPositionChange, onLoadMore, hasMore, onScrollTopChange]);
+  }, [
+    checkIsAtBottom,
+    onScrollPositionChange,
+    onLoadMore,
+    hasMore,
+    onScrollTopChange,
+  ]);
 
   useEffect(() => {
-    if (!initialScrollRestoredRef.current && data.length > 0 && parentRef.current) {
+    if (
+      !initialScrollRestoredRef.current &&
+      data.length > 0 &&
+      parentRef.current
+    ) {
       initialScrollRestoredRef.current = true;
       if (initialScrollTop > 0) {
         parentRef.current.scrollTop = initialScrollTop;
@@ -407,7 +458,13 @@ export default function VirtualTrafficTable({
     }
 
     prevDataLengthRef.current = currLength;
-  }, [data.length, autoScroll, rowVirtualizer, initialScrollTop, checkIsAtBottom]);
+  }, [
+    data.length,
+    autoScroll,
+    rowVirtualizer,
+    initialScrollTop,
+    checkIsAtBottom,
+  ]);
 
   useEffect(() => {
     if (data.length === 0) {
@@ -699,6 +756,8 @@ export default function VirtualTrafficTable({
                           : token.colorFillQuaternary,
                     }}
                     onClick={() => onSelect?.(record)}
+                    onDoubleClick={() => onDoubleClick?.(record)}
+                    onContextMenu={(e) => handleContextMenu(e, record)}
                   >
                     {columns.map((col) => (
                       <div
@@ -734,6 +793,14 @@ export default function VirtualTrafficTable({
           <ArrowDownOutlined style={{ fontSize: 14 }} />
         </div>
       )}
+
+      <TrafficContextMenu
+        record={contextMenu.record}
+        visible={contextMenu.visible}
+        position={contextMenu.position}
+        onClose={handleCloseContextMenu}
+        selectedRecords={selectedRecords}
+      />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { get, put, del } from './client';
+import { get, put, del, post } from './client';
 
 export interface TlsConfig {
   enable_tls_interception: boolean;
@@ -102,4 +102,14 @@ export interface ClearCacheResponse {
 
 export async function clearBodyCache(): Promise<ClearCacheResponse> {
   return del<ClearCacheResponse>('/config/performance/clear-cache');
+}
+
+export interface DisconnectResponse {
+  success: boolean;
+  disconnected_count: number;
+  message: string;
+}
+
+export async function disconnectByDomain(domain: string): Promise<DisconnectResponse> {
+  return post<DisconnectResponse>('/config/connections/disconnect', { domain });
 }

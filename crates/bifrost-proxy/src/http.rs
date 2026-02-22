@@ -1107,8 +1107,8 @@ async fn handle_http_websocket(
 
         let ws_url = format!(
             "ws://{}:{}{}",
-            target_host,
-            target_port,
+            host,
+            port,
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
