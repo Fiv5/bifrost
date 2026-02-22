@@ -333,8 +333,9 @@ pub struct TrafficRecorder {
 impl TrafficRecorder {
     pub fn new(max_records: usize) -> Self {
         let (tx, _) = broadcast::channel(1000);
+        let initial_capacity = max_records.min(1000);
         Self {
-            records: RwLock::new(VecDeque::with_capacity(max_records)),
+            records: RwLock::new(VecDeque::with_capacity(initial_capacity)),
             max_records: AtomicUsize::new(max_records),
             tx,
             sequence: AtomicU64::new(1),

@@ -216,8 +216,8 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     } else {
         TrafficConfig {
             max_records: 5000,
-            max_body_memory_size: 2 * 1024 * 1024,
-            max_body_buffer_size: 32 * 1024 * 1024,
+            max_body_memory_size: 512 * 1024,
+            max_body_buffer_size: 10 * 1024 * 1024,
             file_retention_days: 7,
         }
     };

@@ -3,15 +3,17 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
 use crate::connection_monitor::WebSocketFrameRecord;
 
 const DEFAULT_RETENTION_HOURS: u64 = 24;
 const FRAMES_SUBDIR: &str = "frames";
+const BATCH_FLUSH_INTERVAL_MS: u64 = 500;
+const BATCH_SIZE_THRESHOLD: usize = 50;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrameStoreMetadata {
@@ -40,10 +42,25 @@ impl FrameStoreMetadata {
     }
 }
 
+struct PendingFrames {
+    frames: HashMap<String, Vec<WebSocketFrameRecord>>,
+    last_flush: Instant,
+}
+
+impl Default for PendingFrames {
+    fn default() -> Self {
+        Self {
+            frames: HashMap::new(),
+            last_flush: Instant::now(),
+        }
+    }
+}
+
 pub struct FrameStore {
     base_dir: PathBuf,
     retention_hours: u64,
     metadata_cache: RwLock<HashMap<String, FrameStoreMetadata>>,
+    pending_frames: Mutex<PendingFrames>,
 }
 
 impl FrameStore {
@@ -57,6 +74,7 @@ impl FrameStore {
             base_dir,
             retention_hours: retention_hours.unwrap_or(DEFAULT_RETENTION_HOURS),
             metadata_cache: RwLock::new(HashMap::new()),
+            pending_frames: Mutex::new(PendingFrames::default()),
         };
 
         store.load_metadata_cache();
@@ -121,40 +139,88 @@ impl FrameStore {
         connection_id: &str,
         frame: &WebSocketFrameRecord,
     ) -> std::io::Result<()> {
-        let path = self.connection_file_path(connection_id);
+        let should_flush = {
+            let mut pending = self.pending_frames.lock();
+            pending
+                .frames
+                .entry(connection_id.to_string())
+                .or_default()
+                .push(frame.clone());
 
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+            let total_frames: usize = pending.frames.values().map(|v| v.len()).sum();
+            let time_elapsed = pending.last_flush.elapsed().as_millis() as u64;
 
-        let mut writer = BufWriter::new(file);
-        let json = serde_json::to_string(frame)?;
-        writeln!(writer, "{}", json)?;
-        writer.flush()?;
+            total_frames >= BATCH_SIZE_THRESHOLD || time_elapsed >= BATCH_FLUSH_INTERVAL_MS
+        };
 
-        let metadata_to_save = {
-            let mut cache = self.metadata_cache.write();
-            let metadata = cache.entry(connection_id.to_string()).or_insert_with(|| {
-                let meta_path = self.metadata_file_path(connection_id);
-                if let Ok(content) = fs::read_to_string(&meta_path) {
-                    serde_json::from_str(&content)
-                        .unwrap_or_else(|_| FrameStoreMetadata::new(connection_id))
-                } else {
-                    FrameStoreMetadata::new(connection_id)
+        if should_flush {
+            self.flush_pending_frames();
+        }
+
+        Ok(())
+    }
+
+    fn flush_pending_frames(&self) {
+        let frames_to_write: HashMap<String, Vec<WebSocketFrameRecord>> = {
+            let mut pending = self.pending_frames.lock();
+            pending.last_flush = Instant::now();
+            std::mem::take(&mut pending.frames)
+        };
+
+        if frames_to_write.is_empty() {
+            return;
+        }
+
+        for (connection_id, frames) in frames_to_write {
+            if frames.is_empty() {
+                continue;
+            }
+
+            let path = self.connection_file_path(&connection_id);
+            let file = match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(f) => f,
+                Err(e) => {
+                    tracing::warn!(
+                        "[FRAME_STORE] Failed to open file for {}: {}",
+                        connection_id,
+                        e
+                    );
+                    continue;
                 }
-            });
+            };
 
-            metadata.frame_count += 1;
-            metadata.last_frame_id = frame.frame_id;
+            let mut writer = BufWriter::new(file);
+            let mut last_frame_id = 0u64;
+            let frame_count = frames.len() as u64;
+
+            for frame in &frames {
+                if let Ok(json) = serde_json::to_string(frame) {
+                    let _ = writeln!(writer, "{}", json);
+                    last_frame_id = frame.frame_id;
+                }
+            }
+            let _ = writer.flush();
+
+            let mut cache = self.metadata_cache.write();
+            let metadata = cache
+                .entry(connection_id.clone())
+                .or_insert_with(|| FrameStoreMetadata::new(&connection_id));
+
+            metadata.frame_count += frame_count;
+            metadata.last_frame_id = last_frame_id;
             metadata.updated_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            metadata.clone()
-        };
+            let m = metadata.clone();
+            drop(cache);
+            self.save_metadata(&m);
+        }
+    }
 
-        self.save_metadata(&metadata_to_save);
-
-        Ok(())
+    pub fn flush(&self) {
+        self.flush_pending_frames();
     }
 
     pub fn load_frames(
@@ -222,6 +288,32 @@ impl FrameStore {
     }
 
     pub fn mark_connection_closed(&self, connection_id: &str) {
+        {
+            let mut pending = self.pending_frames.lock();
+            if let Some(frames) = pending.frames.remove(connection_id) {
+                if !frames.is_empty() {
+                    let path = self.connection_file_path(connection_id);
+                    if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
+                        let mut writer = BufWriter::new(file);
+                        for frame in &frames {
+                            if let Ok(json) = serde_json::to_string(frame) {
+                                let _ = writeln!(writer, "{}", json);
+                            }
+                        }
+                        let _ = writer.flush();
+
+                        let mut cache = self.metadata_cache.write();
+                        if let Some(metadata) = cache.get_mut(connection_id) {
+                            metadata.frame_count += frames.len() as u64;
+                            if let Some(last_frame) = frames.last() {
+                                metadata.last_frame_id = last_frame.frame_id;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut cache = self.metadata_cache.write();
         if let Some(metadata) = cache.get_mut(connection_id) {
             metadata.is_closed = true;
@@ -348,6 +440,12 @@ impl FrameStore {
             frames_dir: frames_dir.to_string_lossy().to_string(),
             retention_hours: self.retention_hours,
         }
+    }
+}
+
+impl Drop for FrameStore {
+    fn drop(&mut self) {
+        self.flush_pending_frames();
     }
 }
 

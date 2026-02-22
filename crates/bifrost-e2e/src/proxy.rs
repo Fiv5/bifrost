@@ -569,7 +569,7 @@ impl ProxyInstance {
             client_whitelist: Vec::new(),
             allow_lan: true,
             unsafe_ssl: false,
-            max_body_buffer_size: 32 * 1024 * 1024,
+            max_body_buffer_size: 10 * 1024 * 1024,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -629,7 +629,7 @@ impl ProxyInstance {
             client_whitelist: Vec::new(),
             allow_lan: true,
             unsafe_ssl: false,
-            max_body_buffer_size: 32 * 1024 * 1024,
+            max_body_buffer_size: 10 * 1024 * 1024,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -693,7 +693,7 @@ impl ProxyInstance {
             client_whitelist: Vec::new(),
             allow_lan: true,
             unsafe_ssl,
-            max_body_buffer_size: 32 * 1024 * 1024,
+            max_body_buffer_size: 10 * 1024 * 1024,
         };
 
         init_crypto_provider();

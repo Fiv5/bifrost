@@ -83,7 +83,7 @@ pub struct AdminState {
     pub app_icon_cache: Option<SharedAppIconCache>,
 }
 
-const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 32 * 1024 * 1024;
+const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
 
 impl AdminState {
     pub fn new(port: u16) -> Self {

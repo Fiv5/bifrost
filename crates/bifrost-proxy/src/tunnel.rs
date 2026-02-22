@@ -62,8 +62,8 @@ fn get_https_pooled_client() -> &'static HttpsPooledClient {
             .build();
 
         Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(32)
             .build(https_connector)
     })
 }
@@ -82,8 +82,8 @@ fn get_https_unsafe_pooled_client() -> &'static HttpsPooledClient {
             .build();
 
         Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(std::time::Duration::from_secs(60))
+            .pool_max_idle_per_host(32)
             .build(https_connector)
     })
 }
@@ -2340,14 +2340,13 @@ pub async fn tunnel_bidirectional(
     let admin_state_clone2 = admin_state.cloned();
 
     let client_to_target = async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = [0u8; 16384];
         loop {
             let n = client_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             target_write.write_all(&buf[..n]).await?;
-            target_write.flush().await?;
 
             if let Some(ref state) = admin_state_clone {
                 state
@@ -2360,14 +2359,13 @@ pub async fn tunnel_bidirectional(
     };
 
     let target_to_client = async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = [0u8; 16384];
         loop {
             let n = target_read.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
             client_write.write_all(&buf[..n]).await?;
-            client_write.flush().await?;
 
             if let Some(ref state) = admin_state_clone2 {
                 state
@@ -2433,7 +2431,7 @@ pub async fn tunnel_bidirectional_with_cancel(
     let req_id_owned2 = req_id.to_string();
 
     let client_to_target = async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = [0u8; 16384];
         let mut total_sent: u64 = 0;
         loop {
             let n = client_read.read(&mut buf).await?;
@@ -2459,7 +2457,7 @@ pub async fn tunnel_bidirectional_with_cancel(
     };
 
     let target_to_client = async move {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = [0u8; 16384];
         let mut total_received: u64 = 0;
         loop {
             let n = target_read.read(&mut buf).await?;

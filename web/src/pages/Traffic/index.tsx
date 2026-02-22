@@ -240,55 +240,51 @@ export default function Traffic() {
     return filterRecords(records, toolbarFilters, filterConditions);
   }, [records, toolbarFilters, filterConditions]);
 
-  const availableClientApps = useMemo(() => {
+  const clientInfo = useMemo(() => {
     const appSet = new Set<string>();
-    records.forEach((record) => {
-      if (record.client_app) {
-        appSet.add(record.client_app);
-      }
-    });
-    return Array.from(appSet).sort();
-  }, [records]);
-
-  const availableClientIps = useMemo(() => {
     const ipSet = new Set<string>();
-    records.forEach((record) => {
-      if (record.client_ip) {
-        ipSet.add(record.client_ip);
-      }
-    });
-    return Array.from(ipSet).sort();
+    for (const record of records) {
+      if (record.client_app) appSet.add(record.client_app);
+      if (record.client_ip) ipSet.add(record.client_ip);
+    }
+    return {
+      apps: Array.from(appSet).sort(),
+      ips: Array.from(ipSet).sort(),
+    };
   }, [records]);
 
-  const styles: Record<string, CSSProperties> = {
-    container: {
-      display: "flex",
-      flexDirection: "column",
-      height: "100%",
-      overflow: "hidden",
-      backgroundColor: token.colorBgContainer,
-    },
-    filterBarWrapper: {
-      padding: "8px 16px",
-      backgroundColor: token.colorBgContainer,
-      borderBottom: `1px solid ${token.colorBorderSecondary}`,
-    },
-    mainContent: {
-      flex: 1,
-      overflow: "hidden",
-      backgroundColor: token.colorBgContainer,
-    },
-    tableWrapper: {
-      height: "100%",
-      backgroundColor: token.colorBgContainer,
-    },
-    detailWrapper: {
-      height: "100%",
-      padding: 4,
-      backgroundColor: token.colorBgContainer,
-      overflow: "auto",
-    },
-  };
+  const styles = useMemo<Record<string, CSSProperties>>(
+    () => ({
+      container: {
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        overflow: "hidden",
+        backgroundColor: token.colorBgContainer,
+      },
+      filterBarWrapper: {
+        padding: "8px 16px",
+        backgroundColor: token.colorBgContainer,
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+      },
+      mainContent: {
+        flex: 1,
+        overflow: "hidden",
+        backgroundColor: token.colorBgContainer,
+      },
+      tableWrapper: {
+        height: "100%",
+        backgroundColor: token.colorBgContainer,
+      },
+      detailWrapper: {
+        height: "100%",
+        padding: 4,
+        backgroundColor: token.colorBgContainer,
+        overflow: "auto",
+      },
+    }),
+    [token],
+  );
 
   return (
     <div style={styles.container}>
@@ -311,8 +307,8 @@ export default function Traffic() {
           <FilterBar
             filters={filterConditions}
             onFiltersChange={handleFilterConditionsChange}
-            availableClientApps={availableClientApps}
-            availableClientIps={availableClientIps}
+            availableClientApps={clientInfo.apps}
+            availableClientIps={clientInfo.ips}
           />
         </div>
       )}

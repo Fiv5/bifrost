@@ -92,9 +92,10 @@ impl TrafficStore {
         let retention = retention_hours.unwrap_or(DEFAULT_RETENTION_HOURS);
         let (tx, _) = broadcast::channel(1000);
 
+        let initial_capacity = max_records.min(1000);
         let store = Self {
             traffic_dir,
-            records: RwLock::new(VecDeque::with_capacity(max_records)),
+            records: RwLock::new(VecDeque::with_capacity(initial_capacity)),
             max_records: AtomicUsize::new(max_records),
             retention_hours: AtomicU64::new(retention),
             tx,

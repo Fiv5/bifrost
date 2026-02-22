@@ -94,7 +94,7 @@ impl Default for ProxyConfig {
             client_whitelist: Vec::new(),
             allow_lan: false,
             unsafe_ssl: false,
-            max_body_buffer_size: 32 * 1024 * 1024, // 32MB
+            max_body_buffer_size: 10 * 1024 * 1024, // 10MB
         }
     }
 }
@@ -967,7 +967,7 @@ mod tests {
             client_whitelist: vec!["192.168.1.0/24".to_string()],
             allow_lan: true,
             unsafe_ssl: false,
-            max_body_buffer_size: 32 * 1024 * 1024,
+            max_body_buffer_size: 10 * 1024 * 1024,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);

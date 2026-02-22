@@ -224,6 +224,8 @@ impl WebSocketFrame {
     }
 }
 
+const DEFAULT_MAX_FRAGMENT_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 pin_project! {
     pub struct WebSocketReader<R> {
         #[pin]
@@ -231,16 +233,22 @@ pin_project! {
         buffer: BytesMut,
         fragment_buffer: Vec<u8>,
         fragment_opcode: Option<Opcode>,
+        max_fragment_size: usize,
     }
 }
 
 impl<R> WebSocketReader<R> {
     pub fn new(inner: R) -> Self {
+        Self::with_max_fragment_size(inner, DEFAULT_MAX_FRAGMENT_BUFFER_SIZE)
+    }
+
+    pub fn with_max_fragment_size(inner: R, max_fragment_size: usize) -> Self {
         Self {
             inner,
             buffer: BytesMut::with_capacity(8192),
             fragment_buffer: Vec::new(),
             fragment_opcode: None,
+            max_fragment_size,
         }
     }
 
@@ -264,6 +272,17 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                 }
 
                 if frame.opcode == Opcode::Continuation {
+                    let new_size = this.fragment_buffer.len() + frame.payload.len();
+                    if new_size > *this.max_fragment_size {
+                        tracing::warn!(
+                            "[WS] Fragment buffer overflow: {} bytes exceeds limit of {} bytes, dropping fragments",
+                            new_size,
+                            *this.max_fragment_size
+                        );
+                        this.fragment_buffer.clear();
+                        *this.fragment_opcode = None;
+                        continue;
+                    }
                     this.fragment_buffer.extend_from_slice(&frame.payload);
                     if frame.fin {
                         let opcode = this.fragment_opcode.take().unwrap_or(Opcode::Text);
@@ -276,7 +295,17 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                         return Poll::Ready(Some(Ok(complete_frame)));
                     }
                 } else if !frame.fin {
+                    let new_size = frame.payload.len();
+                    if new_size > *this.max_fragment_size {
+                        tracing::warn!(
+                            "[WS] Initial fragment too large: {} bytes exceeds limit of {} bytes",
+                            new_size,
+                            *this.max_fragment_size
+                        );
+                        continue;
+                    }
                     *this.fragment_opcode = Some(frame.opcode);
+                    this.fragment_buffer.clear();
                     this.fragment_buffer.extend_from_slice(&frame.payload);
                 } else {
                     return Poll::Ready(Some(Ok(frame)));

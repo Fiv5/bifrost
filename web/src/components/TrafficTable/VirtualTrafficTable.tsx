@@ -3,6 +3,8 @@ import {
   useEffect,
   useCallback,
   useState,
+  memo,
+  useMemo,
   type CSSProperties,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -35,14 +37,23 @@ const ROW_HEIGHT = 36;
 const SCROLL_THRESHOLD = 50;
 const TABLE_MIN_WIDTH = 1440;
 
+const STATUS_DOT_COLORS: Record<string, string> = {
+  pending: "#d9d9d9",
+  info: "#73d13d",
+  success: "#52c41a",
+  redirect: "#faad14",
+  clientError: "#fa8c16",
+  serverError: "#f5222d",
+};
+
 const getStatusDotColor = (status: number): string => {
-  if (status === 0) return "#d9d9d9";
-  if (status >= 100 && status < 200) return "#73d13d";
-  if (status >= 200 && status < 300) return "#52c41a";
-  if (status >= 300 && status < 400) return "#faad14";
-  if (status >= 400 && status < 500) return "#fa8c16";
-  if (status >= 500) return "#f5222d";
-  return "#d9d9d9";
+  if (status === 0) return STATUS_DOT_COLORS.pending;
+  if (status >= 100 && status < 200) return STATUS_DOT_COLORS.info;
+  if (status >= 200 && status < 300) return STATUS_DOT_COLORS.success;
+  if (status >= 300 && status < 400) return STATUS_DOT_COLORS.redirect;
+  if (status >= 400 && status < 500) return STATUS_DOT_COLORS.clientError;
+  if (status >= 500) return STATUS_DOT_COLORS.serverError;
+  return STATUS_DOT_COLORS.pending;
 };
 
 const getStatusColor = (status: number) => {
@@ -53,18 +64,19 @@ const getStatusColor = (status: number) => {
   return "default";
 };
 
+const METHOD_COLORS: Record<string, string> = {
+  GET: "green",
+  POST: "blue",
+  PUT: "orange",
+  DELETE: "red",
+  PATCH: "purple",
+  OPTIONS: "default",
+  HEAD: "cyan",
+  CONNECT: "magenta",
+};
+
 const getMethodColor = (method: string) => {
-  const colors: Record<string, string> = {
-    GET: "green",
-    POST: "blue",
-    PUT: "orange",
-    DELETE: "red",
-    PATCH: "purple",
-    OPTIONS: "default",
-    HEAD: "cyan",
-    CONNECT: "magenta",
-  };
-  return colors[method.toUpperCase()] || "default";
+  return METHOD_COLORS[method.toUpperCase()] || "default";
 };
 
 const formatSize = (bytes: number) => {
@@ -86,6 +98,25 @@ interface ColumnDef {
   align?: "left" | "center" | "right";
   render: (record: TrafficSummary) => React.ReactNode;
 }
+
+const getColumnStyle = (col: ColumnDef): CSSProperties => {
+  const width = typeof col.width === "number" ? col.width : undefined;
+  const minWidth = col.minWidth ?? width;
+  const isAutoWidth = col.width === "auto";
+  return {
+    width: width,
+    minWidth: minWidth,
+    flex: isAutoWidth ? 1 : `0 0 ${width}px`,
+    justifyContent:
+      col.align === "center"
+        ? "center"
+        : col.align === "right"
+          ? "flex-end"
+          : "flex-start",
+  };
+};
+
+const columnStyles: CSSProperties[] = [];
 
 const columns: ColumnDef[] = [
   {
@@ -323,6 +354,137 @@ const columns: ColumnDef[] = [
   },
 ];
 
+for (const col of columns) {
+  columnStyles.push(getColumnStyle(col));
+}
+
+const baseRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  height: ROW_HEIGHT,
+  maxHeight: ROW_HEIGHT,
+  minHeight: ROW_HEIGHT,
+  minWidth: TABLE_MIN_WIDTH,
+  boxSizing: "border-box",
+  cursor: "pointer",
+  position: "absolute",
+  top: 0,
+  left: 0,
+  width: "100%",
+  willChange: "transform",
+  contain: "layout style",
+};
+
+const baseCellStyle: CSSProperties = {
+  padding: "0 8px",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  display: "flex",
+  alignItems: "center",
+  height: "100%",
+  maxHeight: ROW_HEIGHT,
+  lineHeight: `${ROW_HEIGHT - 2}px`,
+};
+
+interface TableRowProps {
+  record: TrafficSummary;
+  isSelected: boolean;
+  translateY: number;
+  rowIndex: number;
+  borderColor: string;
+  selectedBg: string;
+  evenBg: string;
+  oddBg: string;
+  onRowClick: () => void;
+  onRowDoubleClick: () => void;
+  onRowContextMenu: (e: React.MouseEvent) => void;
+}
+
+const areRowPropsEqual = (prev: TableRowProps, next: TableRowProps): boolean => {
+  if (prev.isSelected !== next.isSelected) return false;
+  if (prev.translateY !== next.translateY) return false;
+  if (prev.rowIndex !== next.rowIndex) return false;
+  
+  const prevRecord = prev.record;
+  const nextRecord = next.record;
+  if (prevRecord.id !== nextRecord.id) return false;
+  if (prevRecord.status !== nextRecord.status) return false;
+  if (prevRecord.sequence !== nextRecord.sequence) return false;
+  if (prevRecord.duration_ms !== nextRecord.duration_ms) return false;
+  if (prevRecord.response_size !== nextRecord.response_size) return false;
+  if (prevRecord.end_time !== nextRecord.end_time) return false;
+  if (prevRecord.socket_status?.send_bytes !== nextRecord.socket_status?.send_bytes) return false;
+  if (prevRecord.socket_status?.receive_bytes !== nextRecord.socket_status?.receive_bytes) return false;
+  
+  return true;
+};
+
+const TableRow = memo(function TableRow({
+  record,
+  isSelected,
+  translateY,
+  rowIndex,
+  borderColor,
+  selectedBg,
+  evenBg,
+  oddBg,
+  onRowClick,
+  onRowDoubleClick,
+  onRowContextMenu,
+}: TableRowProps) {
+  const rowStyle: CSSProperties = {
+    ...baseRowStyle,
+    borderBottom: `1px solid ${borderColor}`,
+    transform: `translateY(${translateY}px)`,
+    backgroundColor: isSelected
+      ? selectedBg
+      : rowIndex % 2 === 0
+        ? evenBg
+        : oddBg,
+  };
+
+  return (
+    <div
+      data-index={rowIndex}
+      style={rowStyle}
+      onClick={onRowClick}
+      onDoubleClick={onRowDoubleClick}
+      onContextMenu={onRowContextMenu}
+    >
+      {columns.map((col, colIndex) => (
+        <div
+          key={col.key}
+          style={{ ...baseCellStyle, ...columnStyles[colIndex] }}
+        >
+          {col.render(record)}
+        </div>
+      ))}
+    </div>
+  );
+}, areRowPropsEqual);
+
+const keyframesStyle = `
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  }
+  @keyframes pulse {
+    0%, 100% {
+      transform: translateX(-50%) scale(1);
+    }
+    50% {
+      transform: translateX(-50%) scale(1.05);
+    }
+  }
+`;
+
 export default function VirtualTrafficTable({
   data,
   onSelect,
@@ -446,11 +608,9 @@ export default function VirtualTrafficTable({
 
     if (currLength > prevLength && prevLength > 0) {
       if (autoScroll && isAtBottomRef.current) {
-        requestAnimationFrame(() => {
-          rowVirtualizer.scrollToIndex(currLength - 1, {
-            align: "end",
-            behavior: "auto",
-          });
+        rowVirtualizer.scrollToIndex(currLength - 1, {
+          align: "end",
+          behavior: "auto",
         });
       } else if (!isAtBottomRef.current) {
         setShowNewIndicator(true);
@@ -560,173 +720,116 @@ export default function VirtualTrafficTable({
     };
   }, [handleKeyDown]);
 
-  const styles: Record<string, CSSProperties> = {
-    container: {
-      display: "flex",
-      flexDirection: "column",
-      height: "100%",
-      width: "100%",
-      overflow: "hidden",
-      position: "relative",
-      backgroundColor: token.colorBgContainer,
-      outline: "none",
-    },
-    scrollContainer: {
-      flex: 1,
-      overflow: "auto",
-      position: "relative",
-      minWidth: 0,
-      backgroundColor: token.colorBgContainer,
-    },
-    tableInner: {
-      minWidth: TABLE_MIN_WIDTH,
-      display: "flex",
-      flexDirection: "column",
-      height: "fit-content",
-      minHeight: "100%",
-      backgroundColor: token.colorBgContainer,
-    },
-    header: {
-      display: "flex",
-      alignItems: "center",
-      height: ROW_HEIGHT,
-      minWidth: TABLE_MIN_WIDTH,
-      borderBottom: `1px solid ${token.colorBorderSecondary}`,
-      backgroundColor: token.colorBgContainer,
-      fontSize: 12,
-      fontWeight: 500,
-      color: token.colorTextSecondary,
-      position: "sticky",
-      top: 0,
-      zIndex: 2,
-      flexShrink: 0,
-    },
-    headerCell: {
-      padding: "0 8px",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-    },
-    virtualList: {
-      width: "100%",
-      minWidth: TABLE_MIN_WIDTH,
-      position: "relative",
-      willChange: "transform",
-      contain: "strict",
-      backgroundColor: token.colorBgContainer,
-    },
-    row: {
-      display: "flex",
-      alignItems: "center",
-      height: ROW_HEIGHT,
-      maxHeight: ROW_HEIGHT,
-      minHeight: ROW_HEIGHT,
-      minWidth: TABLE_MIN_WIDTH,
-      boxSizing: "border-box",
-      borderBottom: `1px solid ${token.colorBorderSecondary}`,
-      cursor: "pointer",
-      position: "absolute",
-      top: 0,
-      left: 0,
-      width: "100%",
-      willChange: "transform",
-      contain: "layout style",
-    },
-    cell: {
-      padding: "0 8px",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      whiteSpace: "nowrap",
-      display: "flex",
-      alignItems: "center",
-      height: "100%",
-      maxHeight: ROW_HEIGHT,
-      lineHeight: `${ROW_HEIGHT - 2}px`,
-    },
-    emptyState: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      height: "100%",
-      color: token.colorTextSecondary,
-    },
-    newRecordsIndicator: {
-      position: "absolute",
-      bottom: 16,
-      left: "50%",
-      transform: "translateX(-50%)",
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "8px 16px",
-      backgroundColor: token.colorPrimary,
-      color: "#fff",
-      borderRadius: 20,
-      cursor: "pointer",
-      boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
-      zIndex: 100,
-      animation: "slideUp 0.3s ease-out",
-      transition: "transform 0.2s, box-shadow 0.2s",
-    },
-  };
+  const styles = useMemo(
+    () => ({
+      container: {
+        display: "flex",
+        flexDirection: "column" as const,
+        height: "100%",
+        width: "100%",
+        overflow: "hidden",
+        position: "relative" as const,
+        backgroundColor: token.colorBgContainer,
+        outline: "none",
+      },
+      scrollContainer: {
+        flex: 1,
+        overflow: "auto",
+        position: "relative" as const,
+        minWidth: 0,
+        backgroundColor: token.colorBgContainer,
+      },
+      tableInner: {
+        minWidth: TABLE_MIN_WIDTH,
+        display: "flex",
+        flexDirection: "column" as const,
+        height: "fit-content",
+        minHeight: "100%",
+        backgroundColor: token.colorBgContainer,
+      },
+      header: {
+        display: "flex",
+        alignItems: "center",
+        height: ROW_HEIGHT,
+        minWidth: TABLE_MIN_WIDTH,
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+        backgroundColor: token.colorBgContainer,
+        fontSize: 12,
+        fontWeight: 500,
+        color: token.colorTextSecondary,
+        position: "sticky" as const,
+        top: 0,
+        zIndex: 2,
+        flexShrink: 0,
+      },
+      headerCell: {
+        padding: "0 8px",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap" as const,
+      },
+      virtualList: {
+        width: "100%",
+        minWidth: TABLE_MIN_WIDTH,
+        position: "relative" as const,
+        willChange: "transform",
+        contain: "strict",
+        backgroundColor: token.colorBgContainer,
+      },
+      emptyState: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100%",
+        color: token.colorTextSecondary,
+      },
+      newRecordsIndicator: {
+        position: "absolute" as const,
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "8px 16px",
+        backgroundColor: token.colorPrimary,
+        color: "#fff",
+        borderRadius: 20,
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
+        zIndex: 100,
+        animation: "slideUp 0.3s ease-out",
+        transition: "transform 0.2s, box-shadow 0.2s",
+      },
+    }),
+    [token],
+  );
 
-  const getColumnStyle = (col: ColumnDef): CSSProperties => {
-    const width = typeof col.width === "number" ? col.width : undefined;
-    const minWidth = col.minWidth ?? width;
-    const isAutoWidth = col.width === "auto";
-    return {
-      width: width,
-      minWidth: minWidth,
-      flex: isAutoWidth ? 1 : `0 0 ${width}px`,
-      justifyContent:
-        col.align === "center"
-          ? "center"
-          : col.align === "right"
-            ? "flex-end"
-            : "flex-start",
-    };
-  };
+  const headerCells = useMemo(
+    () =>
+      columns.map((col, index) => (
+        <div
+          key={col.key}
+          style={{ ...styles.headerCell, ...columnStyles[index] }}
+        >
+          {col.title}
+        </div>
+      )),
+    [styles.headerCell],
+  );
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
 
   return (
     <div ref={containerRef} style={styles.container} tabIndex={0}>
-      <style>
-        {`
-          @keyframes slideUp {
-            from {
-              opacity: 0;
-              transform: translateX(-50%) translateY(20px);
-            }
-            to {
-              opacity: 1;
-              transform: translateX(-50%) translateY(0);
-            }
-          }
-          @keyframes pulse {
-            0%, 100% {
-              transform: translateX(-50%) scale(1);
-            }
-            50% {
-              transform: translateX(-50%) scale(1.05);
-            }
-          }
-        `}
-      </style>
+      <style>{keyframesStyle}</style>
       <div
         ref={parentRef}
         style={styles.scrollContainer}
         onScroll={handleScroll}
       >
         <div style={styles.tableInner}>
-          <div style={styles.header}>
-            {columns.map((col) => (
-              <div
-                key={col.key}
-                style={{ ...styles.headerCell, ...getColumnStyle(col) }}
-              >
-                {col.title}
-              </div>
-            ))}
-          </div>
+          <div style={styles.header}>{headerCells}</div>
 
           {data.length === 0 ? (
             <div style={styles.emptyState}>No traffic data</div>
@@ -737,37 +840,24 @@ export default function VirtualTrafficTable({
                 height: `${rowVirtualizer.getTotalSize()}px`,
               }}
             >
-              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              {virtualItems.map((virtualRow) => {
                 const record = data[virtualRow.index];
                 if (!record) return null;
-                const isSelected = record.id === selectedId;
                 return (
-                  <div
+                  <TableRow
                     key={virtualRow.key}
-                    data-index={virtualRow.index}
-                    style={{
-                      ...styles.row,
-                      height: ROW_HEIGHT,
-                      transform: `translateY(${virtualRow.start}px)`,
-                      backgroundColor: isSelected
-                        ? token.colorPrimaryBg
-                        : virtualRow.index % 2 === 0
-                          ? token.colorBgContainer
-                          : token.colorFillQuaternary,
-                    }}
-                    onClick={() => onSelect?.(record)}
-                    onDoubleClick={() => onDoubleClick?.(record)}
-                    onContextMenu={(e) => handleContextMenu(e, record)}
-                  >
-                    {columns.map((col) => (
-                      <div
-                        key={col.key}
-                        style={{ ...styles.cell, ...getColumnStyle(col) }}
-                      >
-                        {col.render(record)}
-                      </div>
-                    ))}
-                  </div>
+                    record={record}
+                    isSelected={record.id === selectedId}
+                    translateY={virtualRow.start}
+                    rowIndex={virtualRow.index}
+                    borderColor={token.colorBorderSecondary}
+                    selectedBg={token.colorPrimaryBg}
+                    evenBg={token.colorBgContainer}
+                    oddBg={token.colorFillQuaternary}
+                    onRowClick={() => onSelect?.(record)}
+                    onRowDoubleClick={() => onDoubleClick?.(record)}
+                    onRowContextMenu={(e) => handleContextMenu(e, record)}
+                  />
                 );
               })}
             </div>

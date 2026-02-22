@@ -109,8 +109,9 @@ pub struct ConnectionFrameStore {
 impl ConnectionFrameStore {
     pub fn new(max_frames: usize) -> Self {
         let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+        let initial_capacity = max_frames.min(32);
         Self {
-            frames: VecDeque::with_capacity(max_frames.min(100)),
+            frames: VecDeque::with_capacity(initial_capacity),
             max_frames,
             frame_id_counter: AtomicU64::new(0),
             status: SocketStatus::default(),

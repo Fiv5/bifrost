@@ -5,6 +5,7 @@ import pushService, { type TrafficUpdatesData } from '../services/pushService';
 
 interface TrafficState {
   records: TrafficSummary[];
+  recordsMap: Map<string, TrafficSummary>;
   currentRecord: TrafficRecord | null;
   requestBody: string | null;
   responseBody: string | null;
@@ -25,6 +26,7 @@ interface TrafficState {
   scrollTop: number;
   usePush: boolean;
   pushUnsubscribe: (() => void) | null;
+  filterVersion: number;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -48,6 +50,19 @@ interface TrafficState {
 
 const POLL_INTERVAL = 1000;
 const BATCH_LIMIT = 500;
+const MAX_RECORDS = 10000;
+const UPDATE_THROTTLE_MS = 100;
+
+interface BatchedUpdate {
+  newRecords: TrafficSummary[];
+  updatedRecords: TrafficSummary[];
+  serverTotal: number;
+  hasMore: boolean;
+}
+
+let pendingBatch: BatchedUpdate | null = null;
+let rafId: number | null = null;
+let lastUpdateTime = 0;
 
 const contentTypeMap: Record<string, string[]> = {
   'JSON': ['json', 'application/json'],
@@ -61,117 +76,170 @@ const contentTypeMap: Record<string, string[]> = {
   'SSE': ['event-stream', 'text/event-stream'],
 };
 
+const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]): boolean => {
+  return toolbar.rule.length > 0 ||
+    toolbar.protocol.length > 0 ||
+    toolbar.status.length > 0 ||
+    toolbar.type.length > 0 ||
+    conditions.some(c => c.value);
+};
+
+interface CompiledCondition {
+  field: string;
+  operator: string;
+  valueLower: string;
+  regex: RegExp | null;
+}
+
+const compileConditions = (conditions: FilterCondition[]): CompiledCondition[] => {
+  return conditions
+    .filter(c => c.value)
+    .map(c => {
+      let regex: RegExp | null = null;
+      if (c.operator === 'regex') {
+        try {
+          regex = new RegExp(c.value, 'i');
+        } catch {
+          regex = null;
+        }
+      }
+      return {
+        field: c.field,
+        operator: c.operator,
+        valueLower: c.value.toLowerCase(),
+        regex,
+      };
+    });
+};
+
+const matchRecord = (
+  record: TrafficSummary,
+  toolbar: ToolbarFilters,
+  compiledConditions: CompiledCondition[],
+  protocolSet: Set<string>,
+  statusSet: Set<string>,
+  typeSet: Set<string>
+): boolean => {
+  if (toolbar.rule.length > 0 && !record.has_rule_hit) {
+    return false;
+  }
+
+  if (protocolSet.size > 0) {
+    const protocol = record.protocol?.toUpperCase() || '';
+    let matched = false;
+    if (protocolSet.has('H2') && protocol.includes('HTTP/2')) matched = true;
+    else if (protocolSet.has('HTTP') && (protocol === 'HTTP/1.0' || protocol === 'HTTP/1.1')) matched = true;
+    else if (protocolSet.has('HTTPS') && protocol === 'HTTPS') matched = true;
+    else if (protocolSet.has('WS') && record.is_websocket && protocol === 'WS') matched = true;
+    else if (protocolSet.has('WSS') && record.is_websocket && protocol === 'WSS') matched = true;
+    if (!matched) return false;
+  }
+
+  if (statusSet.size > 0) {
+    const status = record.status;
+    let matched = false;
+    if (statusSet.has('error') && (status === 0 || status >= 500)) matched = true;
+    else if (statusSet.has('1xx') && status >= 100 && status < 200) matched = true;
+    else if (statusSet.has('2xx') && status >= 200 && status < 300) matched = true;
+    else if (statusSet.has('3xx') && status >= 300 && status < 400) matched = true;
+    else if (statusSet.has('4xx') && status >= 400 && status < 500) matched = true;
+    else if (statusSet.has('5xx') && status >= 500 && status < 600) matched = true;
+    if (!matched) return false;
+  }
+
+  if (typeSet.size > 0) {
+    const contentType = (record.content_type || '').toLowerCase();
+    let matched = false;
+    for (const t of typeSet) {
+      const patterns = contentTypeMap[t] || [t.toLowerCase()];
+      if (patterns.some(pattern => contentType.includes(pattern))) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) return false;
+  }
+
+  for (const cond of compiledConditions) {
+    let fieldValue = '';
+    switch (cond.field) {
+      case 'url':
+        fieldValue = `${record.host || ''}${record.path || ''}`;
+        break;
+      case 'host':
+        fieldValue = record.host || '';
+        break;
+      case 'path':
+        fieldValue = record.path || '';
+        break;
+      case 'method':
+        fieldValue = record.method || '';
+        break;
+      case 'content_type':
+        fieldValue = record.content_type || '';
+        break;
+      case 'client_app':
+        fieldValue = record.client_app || '';
+        break;
+      case 'client_ip':
+        fieldValue = record.client_ip || '';
+        break;
+      default:
+        continue;
+    }
+
+    const fieldValueLower = fieldValue.toLowerCase();
+    let matched = false;
+
+    switch (cond.operator) {
+      case 'contains':
+        matched = fieldValueLower.includes(cond.valueLower);
+        break;
+      case 'equals':
+        matched = fieldValueLower === cond.valueLower;
+        break;
+      case 'regex':
+        matched = cond.regex ? cond.regex.test(fieldValue) : false;
+        break;
+      case 'not_contains':
+        matched = !fieldValueLower.includes(cond.valueLower);
+        break;
+      default:
+        matched = fieldValueLower.includes(cond.valueLower);
+    }
+
+    if (!matched) return false;
+  }
+
+  return true;
+};
+
 export const filterRecords = (
   records: TrafficSummary[],
   toolbar: ToolbarFilters,
   conditions: FilterCondition[]
 ): TrafficSummary[] => {
-  return records.filter(record => {
-    if (toolbar.rule.includes('Hit Rule') && !record.has_rule_hit) {
-      return false;
+  if (!hasActiveFilters(toolbar, conditions)) {
+    return records;
+  }
+
+  const compiledConditions = compileConditions(conditions);
+  const protocolSet = new Set(toolbar.protocol.map(p => p.toUpperCase()));
+  const statusSet = new Set(toolbar.status);
+  const typeSet = new Set(toolbar.type);
+
+  const result: TrafficSummary[] = [];
+  for (const record of records) {
+    if (matchRecord(record, toolbar, compiledConditions, protocolSet, statusSet, typeSet)) {
+      result.push(record);
     }
-
-    if (toolbar.protocol.length > 0) {
-      const protocol = record.protocol?.toUpperCase() || '';
-      const matches = toolbar.protocol.some(p => {
-        const pUpper = p.toUpperCase();
-        if (pUpper === 'H2') return protocol.includes('HTTP/2');
-        if (pUpper === 'HTTP') return protocol === 'HTTP/1.0' || protocol === 'HTTP/1.1';
-        if (pUpper === 'HTTPS') return protocol === 'HTTPS';
-        if (pUpper === 'WS') return record.is_websocket && protocol === 'WS';
-        if (pUpper === 'WSS') return record.is_websocket && protocol === 'WSS';
-        return false;
-      });
-      if (!matches) return false;
-    }
-
-    if (toolbar.status.length > 0) {
-      const status = record.status;
-      const matches = toolbar.status.some(s => {
-        if (s === 'error') return status === 0 || status >= 500;
-        if (s === '1xx') return status >= 100 && status < 200;
-        if (s === '2xx') return status >= 200 && status < 300;
-        if (s === '3xx') return status >= 300 && status < 400;
-        if (s === '4xx') return status >= 400 && status < 500;
-        if (s === '5xx') return status >= 500 && status < 600;
-        return false;
-      });
-      if (!matches) return false;
-    }
-
-    if (toolbar.type.length > 0) {
-      const contentType = (record.content_type || '').toLowerCase();
-      const matches = toolbar.type.some(t => {
-        const patterns = contentTypeMap[t] || [t.toLowerCase()];
-        return patterns.some(pattern => contentType.includes(pattern));
-      });
-      if (!matches) return false;
-    }
-
-    for (const cond of conditions) {
-      if (!cond.value) continue;
-
-      const value = cond.value;
-      let fieldValue = '';
-
-      switch (cond.field) {
-        case 'url':
-          fieldValue = `${record.host || ''}${record.path || ''}`;
-          break;
-        case 'host':
-          fieldValue = record.host || '';
-          break;
-        case 'path':
-          fieldValue = record.path || '';
-          break;
-        case 'method':
-          fieldValue = record.method || '';
-          break;
-        case 'content_type':
-          fieldValue = record.content_type || '';
-          break;
-        case 'client_app':
-          fieldValue = record.client_app || '';
-          break;
-        case 'client_ip':
-          fieldValue = record.client_ip || '';
-          break;
-        default:
-          continue;
-      }
-
-      let matches = false;
-      switch (cond.operator) {
-        case 'contains':
-          matches = fieldValue.toLowerCase().includes(value.toLowerCase());
-          break;
-        case 'equals':
-          matches = fieldValue.toLowerCase() === value.toLowerCase();
-          break;
-        case 'regex':
-          try {
-            const regex = new RegExp(value, 'i');
-            matches = regex.test(fieldValue);
-          } catch {
-            matches = false;
-          }
-          break;
-        case 'not_contains':
-          matches = !fieldValue.toLowerCase().includes(value.toLowerCase());
-          break;
-        default:
-          matches = fieldValue.toLowerCase().includes(value.toLowerCase());
-      }
-
-      if (!matches) return false;
-    }
-
-    return true;
-  });
+  }
+  return result;
 };
 
 export const useTrafficStore = create<TrafficState>((set, get) => ({
   records: [],
+  recordsMap: new Map(),
   currentRecord: null,
   requestBody: null,
   responseBody: null,
@@ -192,6 +260,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   scrollTop: 0,
   usePush: true,
   pushUnsubscribe: null,
+  filterVersion: 0,
 
   startPolling: () => {
     const state = get();
@@ -244,61 +313,120 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   handleTrafficPush: (data: TrafficUpdatesData) => {
     const state = get();
     if (state.paused) return;
+    if (data.new_records.length === 0 && data.updated_records.length === 0) return;
 
-    set((prevState) => {
-      const recordsMap = new Map(prevState.records.map(r => [r.id, r]));
-
-      data.updated_records.forEach(r => {
-        recordsMap.set(r.id, r);
-      });
-
-      data.new_records.forEach(r => {
-        if (!recordsMap.has(r.id)) {
-          recordsMap.set(r.id, r);
-        }
-      });
-
-      const newPendingIds = new Set(prevState.pendingIds);
-
-      data.updated_records.forEach(r => {
-        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-        if (!isPending) {
-          newPendingIds.delete(r.id);
-        }
-      });
-
-      data.new_records.forEach(r => {
-        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-        if (isPending) {
-          newPendingIds.add(r.id);
-        }
-      });
-
-      const allRecords = Array.from(recordsMap.values());
-      allRecords.sort((a, b) => a.sequence - b.sequence);
-
-      const lastRecord = data.new_records[data.new_records.length - 1];
-      const newLastId = lastRecord?.id || prevState.lastId;
-
-      const newCount = data.new_records.length;
-      const updatedNewRecordsCount = prevState.autoScroll
-        ? 0
-        : prevState.newRecordsCount + newCount;
-
-      pushService.updateSubscription({
-        last_traffic_id: newLastId || undefined,
-        pending_ids: Array.from(newPendingIds),
-      });
-
-      return {
-        records: allRecords,
+    if (pendingBatch) {
+      pendingBatch.newRecords.push(...data.new_records);
+      pendingBatch.updatedRecords.push(...data.updated_records);
+      pendingBatch.serverTotal = data.server_total;
+      pendingBatch.hasMore = data.has_more;
+    } else {
+      pendingBatch = {
+        newRecords: [...data.new_records],
+        updatedRecords: [...data.updated_records],
         serverTotal: data.server_total,
         hasMore: data.has_more,
-        lastId: newLastId,
-        pendingIds: newPendingIds,
-        newRecordsCount: updatedNewRecordsCount,
       };
-    });
+    }
+
+    const now = performance.now();
+    const timeSinceLastUpdate = now - lastUpdateTime;
+
+    if (rafId !== null) {
+      return;
+    }
+
+    const scheduleUpdate = () => {
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const batch = pendingBatch;
+        if (!batch) return;
+        pendingBatch = null;
+        lastUpdateTime = performance.now();
+
+        set((prevState) => {
+          const recordsMap = prevState.recordsMap;
+          let hasChanges = false;
+
+          for (const r of batch.updatedRecords) {
+            const existing = recordsMap.get(r.id);
+            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status) {
+              recordsMap.set(r.id, r);
+              hasChanges = true;
+            }
+          }
+
+          for (const r of batch.newRecords) {
+            if (!recordsMap.has(r.id)) {
+              recordsMap.set(r.id, r);
+              hasChanges = true;
+            }
+          }
+
+          const newPendingIds = prevState.pendingIds;
+
+          for (const r of batch.updatedRecords) {
+            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            if (!isPending) {
+              newPendingIds.delete(r.id);
+            }
+          }
+
+          for (const r of batch.newRecords) {
+            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            if (isPending) {
+              newPendingIds.add(r.id);
+            }
+          }
+
+          let allRecords: TrafficSummary[];
+          if (hasChanges) {
+            allRecords = Array.from(recordsMap.values());
+            allRecords.sort((a, b) => a.sequence - b.sequence);
+
+            if (allRecords.length > MAX_RECORDS) {
+              const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
+              for (const r of toRemove) {
+                recordsMap.delete(r.id);
+                newPendingIds.delete(r.id);
+              }
+              allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
+            }
+          } else {
+            allRecords = prevState.records;
+          }
+
+          const lastRecord = batch.newRecords[batch.newRecords.length - 1];
+          const newLastId = lastRecord?.id || prevState.lastId;
+
+          const newCount = batch.newRecords.length;
+          const updatedNewRecordsCount = prevState.autoScroll
+            ? 0
+            : prevState.newRecordsCount + newCount;
+
+          pushService.updateSubscription({
+            last_traffic_id: newLastId || undefined,
+            pending_ids: Array.from(newPendingIds),
+          });
+
+          return {
+            records: allRecords,
+            recordsMap,
+            serverTotal: batch.serverTotal,
+            hasMore: batch.hasMore,
+            lastId: newLastId,
+            pendingIds: newPendingIds,
+            newRecordsCount: updatedNewRecordsCount,
+          };
+        });
+      });
+    };
+
+    if (timeSinceLastUpdate >= UPDATE_THROTTLE_MS) {
+      scheduleUpdate();
+    } else {
+      setTimeout(scheduleUpdate, UPDATE_THROTTLE_MS - timeSinceLastUpdate);
+    }
   },
 
   fetchInitialData: async () => {
@@ -310,21 +438,25 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       const response = await api.getTrafficUpdates(filter);
 
       const newPendingIds = new Set<string>();
-      response.new_records.forEach(r => {
+      const newRecordsMap = new Map<string, TrafficSummary>();
+      for (const r of response.new_records) {
+        newRecordsMap.set(r.id, r);
         if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
           newPendingIds.add(r.id);
         }
-      });
+      }
 
       const lastRecord = response.new_records[response.new_records.length - 1];
 
       set({
         records: response.new_records,
+        recordsMap: newRecordsMap,
         serverTotal: response.server_total,
         hasMore: response.has_more,
         lastId: lastRecord?.id || null,
         pendingIds: newPendingIds,
         loading: false,
+        filterVersion: 0,
       });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -346,55 +478,78 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
       const response = await api.getTrafficUpdates(filter);
 
-      set((prevState) => {
-        const recordsMap = new Map(prevState.records.map(r => [r.id, r]));
+      if (response.new_records.length > 0 || response.updated_records.length > 0) {
+        set((prevState) => {
+          const recordsMap = prevState.recordsMap;
+          let hasChanges = false;
 
-        response.updated_records.forEach(r => {
-          recordsMap.set(r.id, r);
-        });
-
-        response.new_records.forEach(r => {
-          if (!recordsMap.has(r.id)) {
-            recordsMap.set(r.id, r);
+          for (const r of response.updated_records) {
+            const existing = recordsMap.get(r.id);
+            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status) {
+              recordsMap.set(r.id, r);
+              hasChanges = true;
+            }
           }
-        });
 
-        const newPendingIds = new Set(prevState.pendingIds);
-
-        response.updated_records.forEach(r => {
-          const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-          if (!isPending) {
-            newPendingIds.delete(r.id);
+          for (const r of response.new_records) {
+            if (!recordsMap.has(r.id)) {
+              recordsMap.set(r.id, r);
+              hasChanges = true;
+            }
           }
-        });
 
-        response.new_records.forEach(r => {
-          const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-          if (isPending) {
-            newPendingIds.add(r.id);
+          const newPendingIds = prevState.pendingIds;
+
+          for (const r of response.updated_records) {
+            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            if (!isPending) {
+              newPendingIds.delete(r.id);
+            }
           }
+
+          for (const r of response.new_records) {
+            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            if (isPending) {
+              newPendingIds.add(r.id);
+            }
+          }
+
+          let allRecords: TrafficSummary[];
+          if (hasChanges) {
+            allRecords = Array.from(recordsMap.values());
+            allRecords.sort((a, b) => a.sequence - b.sequence);
+
+            if (allRecords.length > MAX_RECORDS) {
+              const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
+              for (const r of toRemove) {
+                recordsMap.delete(r.id);
+                newPendingIds.delete(r.id);
+              }
+              allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
+            }
+          } else {
+            allRecords = prevState.records;
+          }
+
+          const lastRecord = response.new_records[response.new_records.length - 1];
+          const newLastId = lastRecord?.id || prevState.lastId;
+
+          const newCount = response.new_records.length;
+          const updatedNewRecordsCount = prevState.autoScroll
+            ? 0
+            : prevState.newRecordsCount + newCount;
+
+          return {
+            records: allRecords,
+            recordsMap,
+            serverTotal: response.server_total,
+            hasMore: response.has_more,
+            lastId: newLastId,
+            pendingIds: newPendingIds,
+            newRecordsCount: updatedNewRecordsCount,
+          };
         });
-
-        const allRecords = Array.from(recordsMap.values());
-        allRecords.sort((a, b) => a.sequence - b.sequence);
-
-        const lastRecord = response.new_records[response.new_records.length - 1];
-        const newLastId = lastRecord?.id || prevState.lastId;
-
-        const newCount = response.new_records.length;
-        const updatedNewRecordsCount = prevState.autoScroll
-          ? 0
-          : prevState.newRecordsCount + newCount;
-
-        return {
-          records: allRecords,
-          serverTotal: response.server_total,
-          hasMore: response.has_more,
-          lastId: newLastId,
-          pendingIds: newPendingIds,
-          newRecordsCount: updatedNewRecordsCount,
-        };
-      });
+      }
 
       const currentState = get();
       if (currentState.polling) {
@@ -441,6 +596,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       await api.clearTraffic();
       set({
         records: [],
+        recordsMap: new Map(),
         serverTotal: 0,
         hasMore: false,
         lastId: null,
@@ -448,7 +604,8 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         currentRecord: null,
         requestBody: null,
         responseBody: null,
-        loading: false
+        loading: false,
+        filterVersion: 0,
       });
       return true;
     } catch (e) {
@@ -458,11 +615,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   },
 
   setToolbarFilters: (filters: ToolbarFilters) => {
-    set({ toolbarFilters: filters });
+    set((state) => ({ toolbarFilters: filters, filterVersion: state.filterVersion + 1 }));
   },
 
   setFilterConditions: (conditions: FilterCondition[]) => {
-    set({ filterConditions: conditions });
+    set((state) => ({ filterConditions: conditions, filterVersion: state.filterVersion + 1 }));
   },
 
   setPaused: (paused: boolean) => {
