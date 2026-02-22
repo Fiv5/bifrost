@@ -9,6 +9,7 @@ import {
 import type { CSSProperties } from "react";
 import { useEffect } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
+import StatusBar from "../StatusBar";
 
 interface MenuItem {
   key: string;
@@ -47,8 +48,14 @@ export default function AppLayout() {
   const styles: Record<string, CSSProperties> = {
     layout: {
       display: "flex",
+      flexDirection: "column",
       height: "100vh",
       width: "100vw",
+      overflow: "hidden",
+    },
+    main: {
+      display: "flex",
+      flex: 1,
       overflow: "hidden",
     },
     sidebar: {
@@ -118,36 +125,39 @@ export default function AppLayout() {
 
   return (
     <div style={styles.layout}>
-      <div style={styles.sidebar}>
-        {menuItems.map((item) => {
-          const active = isActive(item.key);
-          return (
-            <Tooltip
-              key={item.key}
-              title={
-                item.key === "/settings" && pendingCount > 0
-                  ? `${item.label} (${pendingCount} pending)`
-                  : item.label
-              }
-              placement="right"
-            >
-              <div
-                style={{
-                  ...styles.menuItem,
-                  ...(active ? styles.menuItemActive : {}),
-                }}
-                onClick={() => handleClick(item.key)}
+      <div style={styles.main}>
+        <div style={styles.sidebar}>
+          {menuItems.map((item) => {
+            const active = isActive(item.key);
+            return (
+              <Tooltip
+                key={item.key}
+                title={
+                  item.key === "/settings" && pendingCount > 0
+                    ? `${item.label} (${pendingCount} pending)`
+                    : item.label
+                }
+                placement="right"
               >
-                {active && <div style={styles.activeBorder as CSSProperties} />}
-                {renderMenuIcon(item)}
-              </div>
-            </Tooltip>
-          );
-        })}
+                <div
+                  style={{
+                    ...styles.menuItem,
+                    ...(active ? styles.menuItemActive : {}),
+                  }}
+                  onClick={() => handleClick(item.key)}
+                >
+                  {active && <div style={styles.activeBorder as CSSProperties} />}
+                  {renderMenuIcon(item)}
+                </div>
+              </Tooltip>
+            );
+          })}
+        </div>
+        <div style={styles.content}>
+          <Outlet />
+        </div>
       </div>
-      <div style={styles.content}>
-        <Outlet />
-      </div>
+      <StatusBar />
     </div>
   );
 }

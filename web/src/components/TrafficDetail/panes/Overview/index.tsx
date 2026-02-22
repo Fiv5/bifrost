@@ -74,39 +74,40 @@ const RuleCard = ({ rule, index }: { rule: MatchedRule; index: number }) => {
   return (
     <div
       style={{
-        padding: 8,
-        marginBottom: 6,
+        padding: 6,
+        marginBottom: 4,
         backgroundColor: token.colorBgLayout,
         borderRadius: 4,
         border: `1px solid ${token.colorBorderSecondary}`,
+        fontSize: 12,
       }}
     >
-      <div style={{ marginBottom: 4 }}>
-        <Tag color="blue">#{index + 1}</Tag>
-        <Text strong>{source}</Text>
-      </div>
       <div style={{ marginBottom: 2 }}>
-        <Text type="secondary">Protocol: </Text>
-        <Tag color="green">{rule.protocol}</Tag>
+        <Tag color="blue" style={{ fontSize: 11 }}>#{index + 1}</Tag>
+        <Text strong style={{ fontSize: 12 }}>{source}</Text>
       </div>
-      <div style={{ marginBottom: 2 }}>
-        <Text type="secondary">Pattern: </Text>
-        <Text code>{rule.pattern}</Text>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>Protocol: </Text>
+        <Tag color="green" style={{ fontSize: 11 }}>{rule.protocol}</Tag>
       </div>
-      <div style={{ marginBottom: 2 }}>
-        <Text type="secondary">Value: </Text>
-        <Text code>{rule.value || "(empty)"}</Text>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>Pattern: </Text>
+        <Text code style={{ fontSize: 11 }}>{rule.pattern}</Text>
+      </div>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>Value: </Text>
+        <Text code style={{ fontSize: 11 }}>{rule.value || "(empty)"}</Text>
       </div>
       {rule.raw && (
         <div>
-          <Text type="secondary">Raw Rule:</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>Raw Rule:</Text>
           <pre
             style={{
               fontFamily: "monospace",
-              fontSize: 12,
-              padding: "4px 8px",
+              fontSize: 11,
+              padding: "2px 6px",
               borderRadius: 4,
-              margin: "4px 0 0 0",
+              margin: "2px 0 0 0",
               whiteSpace: "pre-wrap",
               wordBreak: "break-all",
               backgroundColor: token.colorBgContainer,
@@ -144,11 +145,11 @@ const TimingBar = ({ timing }: { timing: RequestTiming }) => {
   ].filter((p) => p.value !== undefined && p.value > 0);
 
   return (
-    <div style={{ marginTop: 4 }}>
+    <div style={{ marginTop: 2 }}>
       <div
         style={{
           display: "flex",
-          height: 16,
+          height: 14,
           borderRadius: 4,
           overflow: "hidden",
           backgroundColor: token.colorBgLayout,
@@ -166,16 +167,16 @@ const TimingBar = ({ timing }: { timing: RequestTiming }) => {
           />
         ))}
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
         {phases.map((phase) => (
           <div
             key={phase.key}
-            style={{ display: "flex", alignItems: "center", gap: 4 }}
+            style={{ display: "flex", alignItems: "center", gap: 3 }}
           >
             <div
               style={{
-                width: 10,
-                height: 10,
+                width: 8,
+                height: 8,
                 borderRadius: 2,
                 backgroundColor: phase.color,
               }}
@@ -203,30 +204,34 @@ const SocketStatusCard = ({
     <div
       className="compact-socket-status"
       style={{
-        padding: 8,
+        padding: 6,
         backgroundColor: token.colorBgLayout,
         borderRadius: 4,
         border: `1px solid ${token.colorBorderSecondary}`,
+        fontSize: 12,
       }}
     >
-      <div style={{ marginBottom: 4 }}>
-        <Tag color={status.is_open ? "green" : "default"}>
+      <div style={{ marginBottom: 2 }}>
+        <Tag color={status.is_open ? "green" : "default"} style={{ fontSize: 11 }}>
           {status.is_open ? "Connected" : "Closed"}
         </Tag>
-        <Tag color="blue">{isWebSocket ? "WebSocket" : "SSE"}</Tag>
+        <Tag color="blue" style={{ fontSize: 11 }}>{isWebSocket ? "WebSocket" : "SSE"}</Tag>
       </div>
       <ConfigProvider
         theme={{
           components: {
             Descriptions: {
-              itemPaddingBottom: 2,
-              padding: 4,
-              paddingSM: 4,
+              itemPaddingBottom: 0,
+              padding: 2,
+              paddingSM: 2,
+              paddingXS: 2,
+              fontSize: 12,
+              titleMarginBottom: 4,
             },
           },
         }}
       >
-        <Descriptions column={2} size="small" bordered>
+        <Descriptions column={2} size="small" bordered labelStyle={{ fontSize: 12 }} contentStyle={{ fontSize: 12 }}>
           <Descriptions.Item label="Send Count">
             {status.send_count}
           </Descriptions.Item>
@@ -327,14 +332,17 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
   return (
-    <div ref={wrapperRef}>
+    <div ref={wrapperRef} style={{ fontSize: 12 }}>
       <ConfigProvider
         theme={{
           components: {
             Descriptions: {
-              itemPaddingBottom: 2,
-              padding: 4,
-              paddingSM: 4,
+              itemPaddingBottom: 0,
+              padding: 2,
+              paddingSM: 2,
+              paddingXS: 2,
+              fontSize: 12,
+              titleMarginBottom: 4,
             },
           },
         }}
@@ -343,8 +351,9 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           column={1}
           size="small"
           bordered
-          style={{ marginBottom: 8 }}
-          labelStyle={{ width: 140, fontWeight: 500 }}
+          style={{ marginBottom: 4 }}
+          labelStyle={{ width: 120, fontWeight: 500, fontSize: 12 }}
+          contentStyle={{ fontSize: 12 }}
         >
           <Descriptions.Item label="URL">
             <Paragraph
@@ -411,8 +420,9 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           column={2}
           size="small"
           bordered
-          style={{ marginBottom: 8 }}
-          labelStyle={{ width: 140, fontWeight: 500 }}
+          style={{ marginBottom: 4 }}
+          labelStyle={{ width: 120, fontWeight: 500, fontSize: 12 }}
+          contentStyle={{ fontSize: 12 }}
         >
           <Descriptions.Item label="Request Size">
             {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
@@ -439,8 +449,9 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           column={2}
           size="small"
           bordered
-          style={{ marginBottom: 8 }}
-          labelStyle={{ width: 140, fontWeight: 500 }}
+          style={{ marginBottom: 4 }}
+          labelStyle={{ width: 120, fontWeight: 500, fontSize: 12 }}
+          contentStyle={{ fontSize: 12 }}
         >
           <Descriptions.Item label="Timestamp" span={2}>
             {dayjs(record.timestamp).format("YYYY-MM-DD HH:mm:ss.SSS")}
@@ -486,7 +497,7 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
             items={collapseItems}
             defaultActiveKey={["timing", "socket", "rules"]}
             size="small"
-            style={{ marginTop: 8 }}
+            style={{ marginTop: 4, fontSize: 12 }}
           />
         )}
       </ConfigProvider>

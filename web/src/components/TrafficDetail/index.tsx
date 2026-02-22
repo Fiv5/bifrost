@@ -290,6 +290,8 @@ export default function TrafficDetail({
             headers={record.response_headers}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
+            isTunnel={record.is_tunnel}
+            host={record.host}
           />
         ),
       },

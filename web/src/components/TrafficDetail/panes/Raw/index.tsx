@@ -99,6 +99,7 @@ export const Raw = ({
   }, [host]);
 
   const showInterceptButton = type === 'response' && isTunnel && host;
+  const isTunnelResponse = type === 'response' && isTunnel;
 
   useMarkSearch(
     searchValue,
@@ -136,6 +137,37 @@ export const Raw = ({
     bodyText = bodyText.substring(0, DEFAULT_SHOW_MAX_SIZE);
   }
 
+  if (isTunnelResponse) {
+    return (
+      <div
+        ref={wrapperRef}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          minHeight: 200,
+          backgroundColor: token.colorBgLayout,
+          borderRadius: 4,
+        }}
+      >
+        {showInterceptButton ? (
+          <Button
+            type="primary"
+            icon={<LockOutlined />}
+            onClick={handleAddToInterceptList}
+            size="large"
+          >
+            Intercept this domain
+          </Button>
+        ) : (
+          <div style={{ color: token.colorTextSecondary }}>
+            No response data for tunnel connection
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div ref={wrapperRef} style={{ position: 'relative' }}>
       <div
@@ -171,26 +203,12 @@ export const Raw = ({
           onClick={() => setShowAll(true)}
           style={{
             position: 'absolute',
-            bottom: showInterceptButton ? 44 : 8,
+            bottom: 8,
             right: 8,
             background: token.colorBgContainer,
           }}
         >
           Show All ({Math.round(((body?.length ?? 0) - DEFAULT_SHOW_MAX_SIZE) / 1024)}KB more)
-        </Button>
-      )}
-      {showInterceptButton && (
-        <Button
-          type="primary"
-          icon={<LockOutlined />}
-          onClick={handleAddToInterceptList}
-          style={{
-            position: 'absolute',
-            bottom: 8,
-            right: 8,
-          }}
-        >
-          Intercept this domain
         </Button>
       )}
     </div>
