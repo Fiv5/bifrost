@@ -742,12 +742,15 @@ impl ProxyInstance {
             .with_traffic_store_shared(traffic_store)
             .with_frame_store(frame_store);
 
-        let admin_state_arc = Arc::new(admin_state);
-
         let server = ProxyServer::new(config)
             .with_rules(resolver)
             .with_tls_config(tls_config)
-            .with_admin_state_shared(admin_state_arc.clone());
+            .with_admin_state(admin_state);
+
+        let admin_state_arc = server
+            .admin_state()
+            .cloned()
+            .expect("admin_state should be set");
 
         tokio::spawn(async move {
             tokio::select! {

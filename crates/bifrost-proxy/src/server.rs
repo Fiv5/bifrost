@@ -411,11 +411,6 @@ impl ProxyServer {
         self
     }
 
-    pub fn with_admin_state_shared(mut self, admin_state: Arc<AdminState>) -> Self {
-        self.admin_state = Some(admin_state);
-        self
-    }
-
     pub fn with_push_manager(mut self, push_manager: SharedPushManager) -> Self {
         self.push_manager = Some(push_manager);
         self

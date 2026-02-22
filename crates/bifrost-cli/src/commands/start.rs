@@ -528,15 +528,18 @@ pub fn run_foreground(
 
         log_resolver_rules(&resolver);
 
-        let admin_state_arc = Arc::new(admin_state);
-        let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-        let _push_tasks = start_push_tasks(push_manager.clone());
-
         let server = ProxyServer::new(config)
             .with_tls_config(tls_config)
-            .with_admin_state_shared(admin_state_arc)
-            .with_push_manager(push_manager)
+            .with_admin_state(admin_state)
             .with_rules(resolver.clone());
+
+        let admin_state_arc = server
+            .admin_state()
+            .cloned()
+            .expect("admin_state should be set");
+        let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+        let _push_tasks = start_push_tasks(push_manager.clone());
+        let server = server.with_push_manager(push_manager);
 
         let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
 
@@ -773,15 +776,18 @@ pub fn run_daemon(
 
                 log_resolver_rules(&resolver);
 
-                let admin_state_arc = Arc::new(admin_state);
-                let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-                let _push_tasks = start_push_tasks(push_manager.clone());
-
                 let server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
-                    .with_admin_state_shared(admin_state_arc)
-                    .with_push_manager(push_manager)
+                    .with_admin_state(admin_state)
                     .with_rules(resolver.clone());
+
+                let admin_state_arc = server
+                    .admin_state()
+                    .cloned()
+                    .expect("admin_state should be set");
+                let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+                let _push_tasks = start_push_tasks(push_manager.clone());
+                let server = server.with_push_manager(push_manager);
 
                 let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
 

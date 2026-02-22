@@ -432,15 +432,18 @@ async fn run_proxy_server(
 
     let values_storage_for_watcher = admin_state.values_storage.clone();
 
-    let admin_state_arc = Arc::new(admin_state);
-    let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-    let _push_tasks = start_push_tasks(push_manager.clone());
-
     let server = ProxyServer::new(proxy_config)
         .with_tls_config(tls_config)
         .with_rules(resolver.clone())
-        .with_admin_state_shared(admin_state_arc)
-        .with_push_manager(push_manager);
+        .with_admin_state(admin_state);
+
+    let admin_state_arc = server
+        .admin_state()
+        .cloned()
+        .expect("admin_state should be set");
+    let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+    let _push_tasks = start_push_tasks(push_manager.clone());
+    let server = server.with_push_manager(push_manager);
 
     info!(
         "GUI: Proxy server starting on {}:{}",
