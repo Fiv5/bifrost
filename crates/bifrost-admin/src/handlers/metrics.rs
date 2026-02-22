@@ -26,6 +26,10 @@ pub async fn handle_metrics(
             Method::GET => get_app_metrics(state).await,
             _ => method_not_allowed(),
         },
+        "/api/metrics/hosts" => match method {
+            Method::GET => get_host_metrics(state).await,
+            _ => method_not_allowed(),
+        },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
 }
@@ -63,7 +67,13 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
     if let Some(ref traffic_store) = state.traffic_store {
         let records = traffic_store.get_all();
 
-        for record in records {
+        for mut record in records {
+            if record.is_websocket || record.is_sse || record.is_tunnel {
+                if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
+                    record.socket_status = Some(status);
+                }
+            }
+
             let app_name = record
                 .client_app
                 .clone()
@@ -103,6 +113,78 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
     }
 
     let mut result: Vec<AppMetrics> = app_stats.into_values().collect();
+    result.sort_by(|a, b| b.requests.cmp(&a.requests));
+
+    json_response(&result)
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct HostMetrics {
+    pub host: String,
+    pub requests: u64,
+    pub active_connections: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub http_requests: u64,
+    pub https_requests: u64,
+    pub tunnel_requests: u64,
+    pub ws_requests: u64,
+    pub wss_requests: u64,
+}
+
+async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
+    let mut host_stats: HashMap<String, HostMetrics> = HashMap::new();
+
+    if let Some(ref traffic_store) = state.traffic_store {
+        let records = traffic_store.get_all();
+
+        for mut record in records {
+            if record.is_websocket || record.is_sse || record.is_tunnel {
+                if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
+                    record.socket_status = Some(status);
+                }
+            }
+
+            let host = if record.host.is_empty() {
+                "Unknown".to_string()
+            } else {
+                record.host.clone()
+            };
+
+            let entry = host_stats
+                .entry(host.clone())
+                .or_insert_with(|| HostMetrics {
+                    host,
+                    ..Default::default()
+                });
+
+            entry.requests += 1;
+
+            if record.is_websocket || record.is_sse || record.is_tunnel {
+                if let Some(ref socket_status) = record.socket_status {
+                    entry.bytes_sent += socket_status.send_bytes;
+                    entry.bytes_received += socket_status.receive_bytes;
+                } else {
+                    entry.bytes_sent += record.request_size as u64;
+                    entry.bytes_received += record.response_size as u64;
+                }
+            } else {
+                entry.bytes_sent += record.request_size as u64;
+                entry.bytes_received += record.response_size as u64;
+            }
+
+            match record.protocol.as_str() {
+                "http" => entry.http_requests += 1,
+                "https" => entry.https_requests += 1,
+                "tunnel" => entry.tunnel_requests += 1,
+                "ws" => entry.ws_requests += 1,
+                "wss" => entry.wss_requests += 1,
+                _ => {}
+            }
+        }
+    }
+
+    let mut result: Vec<HostMetrics> = host_stats.into_values().collect();
     result.sort_by(|a, b| b.requests.cmp(&a.requests));
 
     json_response(&result)

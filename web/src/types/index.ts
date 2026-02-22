@@ -198,6 +198,19 @@ export interface AppMetrics {
   wss_requests: number;
 }
 
+export interface HostMetrics {
+  host: string;
+  requests: number;
+  active_connections: number;
+  bytes_sent: number;
+  bytes_received: number;
+  http_requests: number;
+  https_requests: number;
+  tunnel_requests: number;
+  ws_requests: number;
+  wss_requests: number;
+}
+
 export interface SystemInfo {
   version: string;
   rust_version: string;

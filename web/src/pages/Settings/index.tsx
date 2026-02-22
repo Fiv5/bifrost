@@ -67,7 +67,7 @@ import {
   rejectPending,
   clearPendingAuthorizations,
 } from "../../api/whitelist";
-import { getAppMetrics } from "../../api/metrics";
+import { getAppMetrics, getHostMetrics } from "../../api/metrics";
 import {
   getSystemProxyStatus,
   setSystemProxy,
@@ -96,6 +96,7 @@ import type {
   TrafficTypeMetrics,
   AccessMode,
   AppMetrics,
+  HostMetrics,
 } from "../../types";
 import { useThemeStore, type ThemeMode } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
@@ -149,6 +150,8 @@ export default function Settings() {
   const [perfLoading, setPerfLoading] = useState(false);
   const [appMetrics, setAppMetrics] = useState<AppMetrics[]>([]);
   const [appMetricsLoading, setAppMetricsLoading] = useState(false);
+  const [hostMetrics, setHostMetrics] = useState<HostMetrics[]>([]);
+  const [hostMetricsLoading, setHostMetricsLoading] = useState(false);
   const [proxyAddressInfo, setProxyAddressInfo] =
     useState<ProxyAddressInfo | null>(null);
   const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
@@ -204,6 +207,18 @@ export default function Settings() {
       console.error("Failed to fetch app metrics");
     } finally {
       setAppMetricsLoading(false);
+    }
+  }, []);
+
+  const fetchHostMetricsData = useCallback(async () => {
+    setHostMetricsLoading(true);
+    try {
+      const metrics = await getHostMetrics();
+      setHostMetrics(metrics);
+    } catch {
+      console.error("Failed to fetch host metrics");
+    } finally {
+      setHostMetricsLoading(false);
     }
   }, []);
 
@@ -555,6 +570,7 @@ export default function Settings() {
       fetchOverview();
       fetchHistory(3600);
       fetchAppMetricsData();
+      fetchHostMetricsData();
       enablePush({
         needOverview: true,
         needMetrics: true,
@@ -563,21 +579,26 @@ export default function Settings() {
       });
 
       const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+      const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
       return () => {
         disablePush();
         clearInterval(appMetricsInterval);
+        clearInterval(hostMetricsInterval);
       };
     } else {
       fetchOverview();
       fetchHistory(3600);
       fetchAppMetricsData();
+      fetchHostMetricsData();
       const interval = setInterval(fetchOverview, 1000);
       const historyInterval = setInterval(() => fetchHistory(3600), 5000);
       const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+      const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
       return () => {
         clearInterval(interval);
         clearInterval(historyInterval);
         clearInterval(appMetricsInterval);
+        clearInterval(hostMetricsInterval);
       };
     }
   }, [
@@ -587,6 +608,7 @@ export default function Settings() {
     fetchCertInfo,
     fetchPerformanceConfig,
     fetchAppMetricsData,
+    fetchHostMetricsData,
     fetchProxyAddressInfo,
     enablePush,
     disablePush,
@@ -1543,6 +1565,18 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     />
                   ),
                 },
+                {
+                  key: "hosts",
+                  label: "Hosts",
+                  children: (
+                    <HostMetricsContent
+                      hostMetrics={hostMetrics}
+                      loading={hostMetricsLoading}
+                      formatBytes={formatBytes}
+                      onRefresh={fetchHostMetricsData}
+                    />
+                  ),
+                },
               ]}
             />
 
@@ -2169,6 +2203,185 @@ function AppMetricsContent({
           pageSize: 10,
           showSizeChanger: true,
           showTotal: (total) => `Total ${total} applications`,
+        }}
+      />
+    </div>
+  );
+}
+
+interface HostMetricsContentProps {
+  hostMetrics: HostMetrics[];
+  loading: boolean;
+  formatBytes: (bytes: number) => string;
+  onRefresh: () => void;
+}
+
+function HostMetricsContent({
+  hostMetrics,
+  loading,
+  formatBytes,
+  onRefresh,
+}: HostMetricsContentProps) {
+  const { token } = theme.useToken();
+
+  const columns: ColumnsType<HostMetrics> = [
+    {
+      title: "Host",
+      dataIndex: "host",
+      key: "host",
+      fixed: "left" as const,
+      width: 250,
+      render: (host: string) => (
+        <Space>
+          <GlobalOutlined style={{ color: token.colorPrimary }} />
+          <Text strong>{host}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: "Requests",
+      dataIndex: "requests",
+      key: "requests",
+      width: 100,
+      sorter: (a, b) => a.requests - b.requests,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "Upload",
+      dataIndex: "bytes_sent",
+      key: "bytes_sent",
+      width: 100,
+      sorter: (a, b) => a.bytes_sent - b.bytes_sent,
+      render: (val: number) => formatBytes(val),
+    },
+    {
+      title: "Download",
+      dataIndex: "bytes_received",
+      key: "bytes_received",
+      width: 100,
+      sorter: (a, b) => a.bytes_received - b.bytes_received,
+      render: (val: number) => formatBytes(val),
+    },
+    {
+      title: "HTTP",
+      dataIndex: "http_requests",
+      key: "http_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "HTTPS",
+      dataIndex: "https_requests",
+      key: "https_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "Tunnel",
+      dataIndex: "tunnel_requests",
+      key: "tunnel_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "WS",
+      dataIndex: "ws_requests",
+      key: "ws_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "WSS",
+      dataIndex: "wss_requests",
+      key: "wss_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+  ];
+
+  const totalStats = hostMetrics.reduce(
+    (acc, host) => ({
+      requests: acc.requests + host.requests,
+      bytes_sent: acc.bytes_sent + host.bytes_sent,
+      bytes_received: acc.bytes_received + host.bytes_received,
+    }),
+    { requests: 0, bytes_sent: 0, bytes_received: 0 },
+  );
+
+  return (
+    <div>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Hosts"
+              value={hostMetrics.length}
+              prefix={<GlobalOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Requests"
+              value={totalStats.requests.toLocaleString()}
+              prefix={<ApiOutlined />}
+            />
+          </Card>
+        </Col>
+        <Col xs={24} sm={8}>
+          <Card
+            size="small"
+            bordered={false}
+            style={{ background: token.colorBgLayout }}
+          >
+            <Statistic
+              title="Total Traffic"
+              value={formatBytes(
+                totalStats.bytes_sent + totalStats.bytes_received,
+              )}
+              prefix={<SwapOutlined />}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <div
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          justifyContent: "flex-end",
+        }}
+      >
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={onRefresh}
+          loading={loading}
+          size="small"
+        >
+          Refresh
+        </Button>
+      </div>
+
+      <Table
+        columns={columns}
+        dataSource={hostMetrics}
+        rowKey="host"
+        loading={loading}
+        size="small"
+        scroll={{ x: 900 }}
+        pagination={{
+          pageSize: 10,
+          showSizeChanger: true,
+          showTotal: (total) => `Total ${total} hosts`,
         }}
       />
     </div>

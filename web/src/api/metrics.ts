@@ -1,5 +1,5 @@
 import { get } from './client';
-import type { MetricsSnapshot, SystemOverview, AppMetrics } from '../types';
+import type { MetricsSnapshot, SystemOverview, AppMetrics, HostMetrics } from '../types';
 
 export async function getMetrics(): Promise<MetricsSnapshot> {
   return get<MetricsSnapshot>('/metrics');
@@ -16,4 +16,8 @@ export async function getSystemOverview(): Promise<SystemOverview> {
 
 export async function getAppMetrics(): Promise<AppMetrics[]> {
   return get<AppMetrics[]>('/metrics/apps');
+}
+
+export async function getHostMetrics(): Promise<HostMetrics[]> {
+  return get<HostMetrics[]>('/metrics/hosts');
 }
