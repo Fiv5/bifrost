@@ -315,16 +315,17 @@ impl FrameStore {
         }
 
         let mut cache = self.metadata_cache.write();
-        if let Some(metadata) = cache.get_mut(connection_id) {
-            metadata.is_closed = true;
-            metadata.updated_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            let m = metadata.clone();
-            drop(cache);
-            self.save_metadata(&m);
-        }
+        let metadata = cache
+            .entry(connection_id.to_string())
+            .or_insert_with(|| FrameStoreMetadata::new(connection_id));
+        metadata.is_closed = true;
+        metadata.updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let m = metadata.clone();
+        drop(cache);
+        self.save_metadata(&m);
     }
 
     pub fn connection_exists(&self, connection_id: &str) -> bool {
@@ -513,6 +514,7 @@ mod tests {
 
         store.append_frame("conn-1", &frame1).unwrap();
         store.append_frame("conn-1", &frame2).unwrap();
+        store.flush();
 
         let (frames, has_more) = store.load_frames("conn-1", None, 10).unwrap();
         assert_eq!(frames.len(), 2);
@@ -532,6 +534,7 @@ mod tests {
             let frame = create_test_frame(i, &format!("Message {}", i));
             store.append_frame("conn-1", &frame).unwrap();
         }
+        store.flush();
 
         let (frames, _) = store.load_frames("conn-1", Some(2), 10).unwrap();
         assert_eq!(frames.len(), 2);
@@ -548,6 +551,7 @@ mod tests {
 
         let frame = create_test_frame(0, "Test");
         store.append_frame("conn-1", &frame).unwrap();
+        store.flush();
 
         let metadata = store.get_metadata("conn-1").unwrap();
         assert_eq!(metadata.connection_id, "conn-1");
