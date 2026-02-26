@@ -1,15 +1,67 @@
 # Bifrost
 
-Bifrost 是一个用 Rust 编写的高性能 HTTP/HTTPS/SOCKS5 代理服务器，灵感来源于 (Whistle)[https://github.com/avwo/whistle]。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
+<p align="center">
+  <strong>🌈 高性能 HTTP/HTTPS/SOCKS5 代理服务器</strong>
+</p>
 
-## 特性
+<p align="center">
+  <a href="https://github.com/hxfdarling/bifrost/actions"><img src="https://github.com/hxfdarling/bifrost/workflows/CI/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/hxfdarling/bifrost/releases"><img src="https://img.shields.io/github/v/release/hxfdarling/bifrost" alt="Release"></a>
+  <a href="https://github.com/hxfdarling/bifrost/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
 
-- 🚀 **高性能** - 基于 Tokio 异步运行时和 Hyper HTTP 库
-- 🔒 **TLS 拦截** - 支持 HTTPS 流量解密和检查
-- 🧩 **插件系统** - 支持 Rust 原生插件和 Node.js 插件
-- 📝 **规则引擎** - 强大的 URL 匹配和请求/响应修改规则
-- 🌐 **多协议支持** - HTTP/HTTPS 代理和 SOCKS5 代理
-- 💾 **持久化存储** - 规则和配置的本地存储管理
+Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
+
+## ✨ 特性
+
+### 🚀 高性能
+- 基于 **Tokio** 异步运行时，支持高并发连接
+- 使用 **Hyper** HTTP 库，性能卓越
+- 智能连接池，减少连接建立开销
+
+### 🌐 全协议支持
+| 协议 | 支持情况 | 说明 |
+|------|---------|------|
+| HTTP/1.1 | ✅ | 完整支持 |
+| HTTP/2 | ✅ | 帧级别处理，支持多路复用 |
+| HTTP/3 (QUIC) | ✅ | 基于 Quinn 实现，支持 0-RTT |
+| HTTPS | ✅ | TLS 1.2/1.3，支持 MITM 拦截 |
+| SOCKS5 TCP | ✅ | 支持用户名/密码认证 |
+| SOCKS5 UDP | ✅ | UDP ASSOCIATE 完整支持 |
+| WebSocket | ✅ | ws:// 和 wss:// 协议 |
+| CONNECT-UDP | ✅ | MASQUE 协议 (RFC 9298) |
+| gRPC | ✅ | 基于 HTTP/2 |
+| SSE | ✅ | Server-Sent Events |
+
+### 🔒 TLS 拦截 (MITM)
+- 自动生成 CA 证书
+- 动态签发服务器证书（LRU 缓存优化）
+- 支持 SNI 检测
+- 可选择性拦截或透传特定域名
+
+### 📝 强大的规则引擎
+- **74 种规则协议** - 覆盖路由、修改、注入、控制等场景
+- **多种匹配模式** - 域名、IP、正则、通配符、路径匹配
+- **请求/响应修改** - Headers、Body、Cookies、状态码等
+- **内容注入** - HTML/JS/CSS 注入
+- **流量控制** - 延迟、限速、Mock 响应
+
+### 🧩 插件系统
+- **22 种 Hook 点** - 覆盖请求/响应全生命周期
+- 支持 Rust 原生插件
+- 支持 Node.js 插件
+
+### 🖥️ 管理界面
+- 内置 Web UI 管理界面
+- 实时流量监控
+- 规则在线编辑
+- 请求/响应查看与重放
+
+### 🔐 安全特性
+- 访问控制（本地/白名单/交互式）
+- IP 白名单和 CIDR 支持
+- 局域网访问控制
+- 管理端口保护
 
 ## 项目结构
 
@@ -657,32 +709,45 @@ cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
 
 ### 发布工作流
 
-推送 `v*` 格式的 tag 时自动触发：
+支持两种发布方式：
+
+**方式一：手动触发（推荐）**
+
+1. 进入 GitHub → Actions → Release
+2. 点击 "Run workflow"
+3. 选择版本类型：`patch` / `minor` / `major`
+4. 可选：输入预发布标识（如 `alpha`、`beta`、`rc.1`）
+
+版本号将自动计算（基于最新 tag 递增）。
+
+**方式二：推送 Tag**
 
 ```bash
-# 发布新版本
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-**支持的构建目标：**
+### 构建目标
 
-| 平台        | Target                      | 产物格式  |
-| ----------- | --------------------------- | --------- |
-| Linux x64   | `x86_64-unknown-linux-gnu`  | `.tar.gz` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
-| macOS x64   | `x86_64-apple-darwin`       | `.tar.gz` |
-| macOS ARM64 | `aarch64-apple-darwin`      | `.tar.gz` |
-| Windows x64 | `x86_64-pc-windows-msvc`    | `.zip`    |
+| 平台 | 架构 | Target | 产物格式 |
+|------|------|--------|----------|
+| Linux | x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Linux | ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
+| Linux | ARMv7 | `armv7-unknown-linux-gnueabihf` | `.tar.gz` |
+| macOS | Intel | `x86_64-apple-darwin` | `.tar.gz` |
+| macOS | Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
+| Windows | x64 | `x86_64-pc-windows-msvc` | `.zip` |
+| Windows | ARM64 | `aarch64-pc-windows-msvc` | `.zip` |
 
-**发布产物示例：**
+### 发布产物
 
-```
-bifrost-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-bifrost-v0.1.0-aarch64-apple-darwin.tar.gz
-bifrost-v0.1.0-x86_64-pc-windows-msvc.zip
-bifrost-v0.1.0-checksums.txt
-```
+每次发布会自动生成：
+
+- CLI 二进制文件（7 个平台）
+- GUI 应用程序（macOS/Windows）
+- SHA256 校验和文件
+- 自动生成的 CHANGELOG
+- Homebrew Formula 自动更新
 
 ## 依赖
 
