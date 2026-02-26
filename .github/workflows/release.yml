@@ -460,7 +460,6 @@ jobs:
     name: Update Homebrew Formula
     needs: [prepare, release]
     runs-on: ubuntu-latest
-    if: needs.prepare.outputs.is_prerelease != 'true'
     steps:
       - name: Update Homebrew Formula
         uses: peter-evans/repository-dispatch@v3
@@ -471,5 +470,6 @@ jobs:
           client-payload: |
             {
               "version": "${{ needs.prepare.outputs.version }}",
-              "tag": "${{ needs.prepare.outputs.tag }}"
+              "tag": "${{ needs.prepare.outputs.tag }}",
+              "is_prerelease": "${{ needs.prepare.outputs.is_prerelease }}"
             }

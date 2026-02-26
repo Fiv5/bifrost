@@ -53,7 +53,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features --exclude bifrost-gui -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --exclude bifrost-gui -- -D warnings
 
   test:
     name: Test
@@ -81,7 +81,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test (Linux - exclude GUI)
         if: runner.os == 'Linux'
-        run: cargo test --all-features --exclude bifrost-gui
+        run: cargo test --workspace --all-features --exclude bifrost-gui
       - name: Test (macOS/Windows - Full)
         if: runner.os != 'Linux'
         run: cargo test --all-features
@@ -122,7 +122,7 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build (Linux - CLI only)
         if: runner.os == 'Linux'
-        run: cargo build --release --target ${{ matrix.target }} --exclude bifrost-gui
+        run: cargo build --workspace --release --target ${{ matrix.target }} --exclude bifrost-gui
       - name: Build (macOS/Windows - Full)
         if: runner.os != 'Linux'
         run: cargo build --release --target ${{ matrix.target }}
