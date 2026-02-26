@@ -8,7 +8,7 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "web/**"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/*.yml"
   pull_request:
     branches: [main]
     paths:
@@ -16,7 +16,7 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
       - "web/**"
-      - ".github/workflows/ci.yml"
+      - ".github/workflows/*.yml"
 
 env:
   CARGO_TERM_COLOR: always
