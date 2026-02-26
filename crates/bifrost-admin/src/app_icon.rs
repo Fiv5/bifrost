@@ -461,7 +461,7 @@ fn extract_app_icon_linux(app_path: &str) -> Option<Vec<u8>> {
     let app_name = path.file_name()?.to_str()?;
 
     let app_name_lower = app_name.to_lowercase();
-    let app_name_normalized = app_name_lower.replace(' ', "-").replace('_', "-");
+    let app_name_normalized = app_name_lower.replace([' ', '_'], "-");
 
     let icon_names = [
         app_name_normalized.clone(),
