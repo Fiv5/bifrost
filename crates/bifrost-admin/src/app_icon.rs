@@ -2,7 +2,9 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info, trace, warn};
+#[cfg(target_os = "macos")]
+use tracing::trace;
+use tracing::{debug, info, warn};
 
 const CACHE_VERSION: u32 = 2;
 
@@ -536,8 +538,8 @@ fn get_linux_icon_dirs() -> Vec<PathBuf> {
     ];
 
     if let Ok(home) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(home).join(".local/share/icons"));
-        dirs.push(PathBuf::from(home).join(".icons"));
+        dirs.push(PathBuf::from(&home).join(".local/share/icons"));
+        dirs.push(PathBuf::from(&home).join(".icons"));
     }
 
     if let Ok(xdg_data_dirs) = std::env::var("XDG_DATA_DIRS") {
