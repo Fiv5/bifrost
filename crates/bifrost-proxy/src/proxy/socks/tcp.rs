@@ -328,7 +328,9 @@ impl SocksServer {
                 .parse()
                 .map_err(|e| BifrostError::Config(format!("Invalid UDP address: {}", e)))?;
 
-            let mut udp_relay = UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
+            let mut udp_relay = UdpRelay::new(udp_addr)
+                .with_rules(Arc::clone(&self.rules))
+                .with_admin_state(self.admin_state.clone());
             let relay_addr = udp_relay.start().await?;
             info!("SOCKS5 UDP relay started on {}", relay_addr);
 
@@ -1100,6 +1102,12 @@ impl SocksHandler {
             state.connection_registry.unregister(&req_id);
             state.connection_monitor.unregister_connection(&req_id);
 
+            state.update_traffic_by_id(&req_id, move |record| {
+                record.request_size = total_sent as usize;
+                record.response_size = total_received as usize;
+                record.duration_ms = duration_ms;
+            });
+
             debug!(
                 "[{}] SOCKS5 tunnel closed: sent={} bytes, received={} bytes, duration={}ms",
                 req_id, total_sent, total_received, duration_ms
@@ -1240,6 +1248,11 @@ impl SocksHandler {
             }
         };
 
+        let start_time = Instant::now();
+        let req_id = generate_socks5_request_id();
+        let peer_addr = self.peer_addr;
+        let admin_state = self.admin_state.clone();
+
         let mut request_buf = vec![0u8; 8192];
         let n = self.stream().read(&mut request_buf).await?;
         if n == 0 {
@@ -1256,6 +1269,36 @@ impl SocksHandler {
 
         let url = format!("http://{}:{}{}", target_host, target_port, path);
         debug!("SOCKS5 HTTP: {} {}", method, url);
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .increment_connections_by_type(TrafficType::Socks5);
+            state
+                .metrics_collector
+                .increment_requests_by_type(TrafficType::Socks5);
+
+            let client_process = resolve_client_process(&peer_addr);
+            let (client_app, client_pid, client_path) = client_process
+                .as_ref()
+                .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+                .unwrap_or((None, None, None));
+
+            let mut record = TrafficRecord::new(
+                req_id.clone(),
+                method.to_string(),
+                url.clone(),
+            );
+            record.status = 200;
+            record.protocol = "socks5-http".to_string();
+            record.host = target_host.to_string();
+            record.client_ip = peer_addr.ip().to_string();
+            record.client_app = client_app;
+            record.client_pid = client_pid;
+            record.client_path = client_path;
+
+            state.record_traffic(record);
+        }
 
         let resolved = rules.resolve(&url, method);
 
@@ -1282,6 +1325,11 @@ impl SocksHandler {
         let (mut client_read, mut client_write) = self.stream().split();
         let (mut target_read, mut target_write) = target_stream.into_split();
 
+        let bytes_sent = Arc::new(AtomicU64::new(n as u64));
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        let bytes_sent_clone = Arc::clone(&bytes_sent);
+        let bytes_received_clone = Arc::clone(&bytes_received);
+
         let client_to_target = async {
             let mut buf = vec![0u8; 8192];
             loop {
@@ -1289,6 +1337,7 @@ impl SocksHandler {
                 if n == 0 {
                     break;
                 }
+                bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
                 target_write.write_all(&buf[..n]).await?;
                 target_write.flush().await?;
             }
@@ -1303,6 +1352,7 @@ impl SocksHandler {
                 if n == 0 {
                     break;
                 }
+                bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
                 client_write.write_all(&buf[..n]).await?;
                 client_write.flush().await?;
             }
@@ -1310,6 +1360,34 @@ impl SocksHandler {
         };
 
         let _ = tokio::try_join!(client_to_target, target_to_client);
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let total_sent = bytes_sent.load(Ordering::Relaxed);
+        let total_received = bytes_received.load(Ordering::Relaxed);
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .add_bytes_sent_by_type(TrafficType::Socks5, total_sent);
+            state
+                .metrics_collector
+                .add_bytes_received_by_type(TrafficType::Socks5, total_received);
+            state
+                .metrics_collector
+                .decrement_connections_by_type(TrafficType::Socks5);
+
+            state.update_traffic_by_id(&req_id, move |record| {
+                record.request_size = total_sent as usize;
+                record.response_size = total_received as usize;
+                record.duration_ms = duration_ms;
+            });
+
+            debug!(
+                "[{}] SOCKS5 HTTP: sent={} bytes, received={} bytes, duration={}ms",
+                req_id, total_sent, total_received, duration_ms
+            );
+        }
+
         Ok(())
     }
 
@@ -1361,7 +1439,7 @@ async fn handle_socks5_intercepted_request(
     } else {
         let target_protocol = resolved
             .host_protocol
-            .unwrap_or(bifrost_core::Protocol::Http);
+            .unwrap_or(bifrost_core::Protocol::Https);
         match target_protocol {
             bifrost_core::Protocol::Http => {
                 format!("http://{}:{}{}", target_host, target_port, path)
@@ -1374,7 +1452,11 @@ async fn handle_socks5_intercepted_request(
                 }
             }
             _ => {
-                format!("http://{}:{}{}", target_host, target_port, path)
+                if target_port == 443 {
+                    format!("https://{}{}", target_host, path)
+                } else {
+                    format!("https://{}:{}{}", target_host, target_port, path)
+                }
             }
         }
     };

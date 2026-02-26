@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bifrost_admin::AdminState;
+use bifrost_admin::{AdminState, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
@@ -23,11 +24,21 @@ const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct UdpSession {
     pub client_addr: SocketAddr,
     pub relay_socket: Arc<UdpSocket>,
     pub last_activity: Instant,
+    pub bytes_sent: Arc<AtomicU64>,
+    pub bytes_received: Arc<AtomicU64>,
+    pub packet_count: Arc<AtomicU64>,
+    pub req_id: String,
+}
+
+static UDP_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn generate_udp_session_id() -> String {
+    let id = UDP_SESSION_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("UDP-{:06}", id)
 }
 
 pub struct UdpRelay {
@@ -80,8 +91,8 @@ impl UdpRelay {
     }
 
     #[allow(dead_code)]
-    pub fn with_admin_state(mut self, admin_state: Arc<AdminState>) -> Self {
-        self.admin_state = Some(admin_state);
+    pub fn with_admin_state(mut self, admin_state: Option<Arc<AdminState>>) -> Self {
+        self.admin_state = admin_state;
         self
     }
 
@@ -121,6 +132,7 @@ impl UdpRelay {
         let relay_sessions = Arc::clone(&sessions);
         let rules = self.rules.clone();
         let dns_resolver = self.dns_resolver.clone();
+        let admin_state = self.admin_state.clone();
         let verbose = self
             .proxy_config
             .as_ref()
@@ -142,6 +154,7 @@ impl UdpRelay {
                                     src_addr,
                                     &rules,
                                     &dns_resolver,
+                                    &admin_state,
                                     verbose,
                                 ).await {
                                     debug!("UDP relay packet error from {}: {}", src_addr, e);
@@ -178,6 +191,7 @@ impl UdpRelay {
         src_addr: SocketAddr,
         rules: &Option<Arc<dyn RulesResolver>>,
         dns_resolver: &Option<Arc<DnsResolver>>,
+        admin_state: &Option<Arc<AdminState>>,
         verbose: bool,
     ) -> Result<()> {
         if data.len() < 10 {
@@ -277,63 +291,156 @@ impl UdpRelay {
             sessions_read.get(&src_addr).cloned()
         };
 
-        let relay_socket_for_target = if let Some(mut session) = session {
-            session.last_activity = Instant::now();
-            {
-                let mut sessions_write = sessions.write().await;
-                sessions_write.insert(src_addr, session.clone());
-            }
-            session.relay_socket
-        } else {
-            let new_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
-                BifrostError::Network(format!("Failed to create relay socket: {}", e))
-            })?;
+        let payload_len = payload.len() as u64;
 
-            let new_socket = Arc::new(new_socket);
+        let (relay_socket_for_target, session_bytes_sent, _session_bytes_received, req_id) =
+            if let Some(mut session) = session {
+                session.last_activity = Instant::now();
+                session.packet_count.fetch_add(1, Ordering::Relaxed);
+                let bytes_sent = Arc::clone(&session.bytes_sent);
+                let bytes_received = Arc::clone(&session.bytes_received);
+                let req_id = session.req_id.clone();
+                {
+                    let mut sessions_write = sessions.write().await;
+                    sessions_write.insert(src_addr, session.clone());
+                }
+                (session.relay_socket, bytes_sent, bytes_received, req_id)
+            } else {
+                let new_socket = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
+                    BifrostError::Network(format!("Failed to create relay socket: {}", e))
+                })?;
 
-            let session = UdpSession {
-                client_addr: src_addr,
-                relay_socket: Arc::clone(&new_socket),
-                last_activity: Instant::now(),
-            };
+                let new_socket = Arc::new(new_socket);
+                let bytes_sent = Arc::new(AtomicU64::new(0));
+                let bytes_received = Arc::new(AtomicU64::new(0));
+                let packet_count = Arc::new(AtomicU64::new(1));
+                let req_id = generate_udp_session_id();
 
-            {
-                let mut sessions_write = sessions.write().await;
-                sessions_write.insert(src_addr, session);
-            }
+                let session = UdpSession {
+                    client_addr: src_addr,
+                    relay_socket: Arc::clone(&new_socket),
+                    last_activity: Instant::now(),
+                    bytes_sent: Arc::clone(&bytes_sent),
+                    bytes_received: Arc::clone(&bytes_received),
+                    packet_count: Arc::clone(&packet_count),
+                    req_id: req_id.clone(),
+                };
 
-            let response_socket = Arc::clone(&new_socket);
-            let main_relay = Arc::clone(relay_socket);
-            let client = src_addr;
+                {
+                    let mut sessions_write = sessions.write().await;
+                    sessions_write.insert(src_addr, session);
+                }
 
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; UDP_BUFFER_SIZE];
-                loop {
-                    match tokio::time::timeout(SESSION_TIMEOUT, response_socket.recv_from(&mut buf))
+                if let Some(ref state) = admin_state {
+                    state
+                        .metrics_collector
+                        .increment_connections_by_type(TrafficType::Socks5);
+
+                    let host_str = match &dest_addr {
+                        SocksAddress::IPv4(ip) => ip.to_string(),
+                        SocksAddress::IPv6(ip) => ip.to_string(),
+                        SocksAddress::DomainName(domain) => domain.clone(),
+                    };
+
+                    let mut record = TrafficRecord::new(
+                        req_id.clone(),
+                        "UDP".to_string(),
+                        format!("udp://{}:{}", host_str, dest_port),
+                    );
+                    record.status = 200;
+                    record.protocol = "socks5-udp".to_string();
+                    record.host = host_str;
+                    record.is_tunnel = true;
+                    record.client_ip = src_addr.ip().to_string();
+
+                    state.record_traffic(record);
+
+                    info!(
+                        "[{}] SOCKS5 UDP session created for {} -> {}:{}",
+                        req_id, src_addr, target_addr.ip(), target_addr.port()
+                    );
+                }
+
+                let response_socket = Arc::clone(&new_socket);
+                let main_relay = Arc::clone(relay_socket);
+                let client = src_addr;
+                let session_bytes_received_clone = Arc::clone(&bytes_received);
+                let admin_state_clone = admin_state.clone();
+                let req_id_clone = req_id.clone();
+
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; UDP_BUFFER_SIZE];
+                    loop {
+                        match tokio::time::timeout(
+                            SESSION_TIMEOUT,
+                            response_socket.recv_from(&mut buf),
+                        )
                         .await
-                    {
-                        Ok(Ok((len, remote_addr))) => {
-                            let response = Self::build_udp_response(&remote_addr, &buf[..len]);
+                        {
+                            Ok(Ok((len, remote_addr))) => {
+                                session_bytes_received_clone
+                                    .fetch_add(len as u64, Ordering::Relaxed);
 
-                            if let Err(e) = main_relay.send_to(&response, client).await {
-                                debug!("Failed to send UDP response to client: {}", e);
+                                let response = Self::build_udp_response(&remote_addr, &buf[..len]);
+
+                                if let Err(e) = main_relay.send_to(&response, client).await {
+                                    debug!("Failed to send UDP response to client: {}", e);
+                                    break;
+                                }
+
+                                if let Some(ref state) = admin_state_clone {
+                                    state
+                                        .metrics_collector
+                                        .add_bytes_received_by_type(TrafficType::Socks5, len as u64);
+                                }
+                            }
+                            Ok(Err(e)) => {
+                                debug!("UDP session recv error: {}", e);
+                                break;
+                            }
+                            Err(_) => {
+                                debug!("UDP session timeout for client {}", client);
                                 break;
                             }
                         }
-                        Ok(Err(e)) => {
-                            debug!("UDP session recv error: {}", e);
-                            break;
-                        }
-                        Err(_) => {
-                            debug!("UDP session timeout for client {}", client);
-                            break;
-                        }
                     }
-                }
-            });
 
-            new_socket
-        };
+                    if let Some(ref state) = admin_state_clone {
+                        state
+                            .metrics_collector
+                            .decrement_connections_by_type(TrafficType::Socks5);
+
+                        let total_received =
+                            session_bytes_received_clone.load(Ordering::Relaxed);
+                        state.update_traffic_by_id(&req_id_clone, move |record| {
+                            record.response_size = total_received as usize;
+                        });
+
+                        debug!(
+                            "[{}] SOCKS5 UDP session closed, received={} bytes",
+                            req_id_clone, total_received
+                        );
+                    }
+                });
+
+                (new_socket, bytes_sent, bytes_received, req_id)
+            };
+
+        session_bytes_sent.fetch_add(payload_len, Ordering::Relaxed);
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .add_bytes_sent_by_type(TrafficType::Socks5, payload_len);
+            state
+                .metrics_collector
+                .increment_requests_by_type(TrafficType::Socks5);
+
+            let total_sent = session_bytes_sent.load(Ordering::Relaxed);
+            state.update_traffic_by_id(&req_id, move |record| {
+                record.request_size = total_sent as usize;
+            });
+        }
 
         relay_socket_for_target
             .send_to(payload, target_addr)

@@ -9,6 +9,16 @@ pub const ADDRESS_ASSIGN_CAPSULE_TYPE: u64 = 0x01;
 pub const ADDRESS_REQUEST_CAPSULE_TYPE: u64 = 0x02;
 pub const ROUTE_ADVERTISEMENT_CAPSULE_TYPE: u64 = 0x03;
 
+pub const MAX_UDP_PAYLOAD_SIZE: usize = 65527;
+
+pub const H3_DATAGRAM_ERROR: u64 = 0x33;
+
+pub const SETTINGS_H3_DATAGRAM: u64 = 0x33;
+
+fn is_reserved_capsule_type(type_value: u64) -> bool {
+    (type_value.wrapping_sub(0x17)).is_multiple_of(0x29)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CapsuleType {
     Datagram,
@@ -118,6 +128,35 @@ impl Capsule {
         let payload = self.data.slice(pos..);
 
         Ok((context_id, payload))
+    }
+
+    pub fn parse_datagram_payload_validated(&self) -> io::Result<(u64, Bytes)> {
+        let (context_id, payload) = self.parse_datagram_payload()?;
+
+        if context_id == 0 && payload.len() > MAX_UDP_PAYLOAD_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "UDP payload exceeds maximum size: {} > {} (RFC 9298)",
+                    payload.len(),
+                    MAX_UDP_PAYLOAD_SIZE
+                ),
+            ));
+        }
+
+        Ok((context_id, payload))
+    }
+
+    pub fn is_unknown_type(&self) -> bool {
+        matches!(self.capsule_type, CapsuleType::Unknown(_))
+    }
+
+    pub fn is_reserved_type(&self) -> bool {
+        if let CapsuleType::Unknown(v) = self.capsule_type {
+            is_reserved_capsule_type(v)
+        } else {
+            false
+        }
     }
 }
 
@@ -261,5 +300,38 @@ mod tests {
         let mut cursor = Cursor::new(encoded);
         let decoded = UdpProxyHeader::decode(&mut cursor).unwrap().unwrap();
         assert_eq!(decoded.context_id, 12345);
+    }
+
+    #[test]
+    fn test_max_udp_payload_validation() {
+        let payload = Bytes::from(vec![0u8; MAX_UDP_PAYLOAD_SIZE]);
+        let capsule = Capsule::datagram(0, payload);
+        assert!(capsule.parse_datagram_payload_validated().is_ok());
+
+        let large_payload = Bytes::from(vec![0u8; MAX_UDP_PAYLOAD_SIZE + 1]);
+        let large_capsule = Capsule::datagram(0, large_payload);
+        assert!(large_capsule.parse_datagram_payload_validated().is_err());
+
+        let large_payload_nonzero_ctx = Bytes::from(vec![0u8; MAX_UDP_PAYLOAD_SIZE + 1]);
+        let nonzero_capsule = Capsule::datagram(1, large_payload_nonzero_ctx);
+        assert!(nonzero_capsule.parse_datagram_payload_validated().is_ok());
+    }
+
+    #[test]
+    fn test_reserved_capsule_types() {
+        assert!(is_reserved_capsule_type(0x17));
+        assert!(is_reserved_capsule_type(0x17 + 0x29));
+        assert!(is_reserved_capsule_type(0x17 + 0x29 * 2));
+        assert!(!is_reserved_capsule_type(0x00));
+        assert!(!is_reserved_capsule_type(0x01));
+    }
+
+    #[test]
+    fn test_unknown_capsule_type_detection() {
+        let unknown_capsule = Capsule::new(CapsuleType::Unknown(0x99), Bytes::new());
+        assert!(unknown_capsule.is_unknown_type());
+
+        let datagram_capsule = Capsule::datagram(0, Bytes::from_static(b"test"));
+        assert!(!datagram_capsule.is_unknown_type());
     }
 }

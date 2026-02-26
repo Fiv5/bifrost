@@ -13,7 +13,7 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
-use super::capsule::{Capsule, CapsuleType};
+use super::capsule::{Capsule, CapsuleType, MAX_UDP_PAYLOAD_SIZE};
 use crate::dns::DnsResolver;
 use crate::server::{ProxyConfig, RulesResolver};
 use crate::utils::logging::RequestContext;
@@ -46,6 +46,12 @@ impl ConnectUdpTarget {
                     .parse::<u16>()
                     .map_err(|e| BifrostError::Parse(format!("Invalid port: {}", e)))?;
 
+                if port == 0 {
+                    return Err(BifrostError::Parse(
+                        "Port 0 is not allowed (RFC 9298)".to_string(),
+                    ));
+                }
+
                 return Ok(Self { host, port });
             }
         }
@@ -57,7 +63,15 @@ impl ConnectUdpTarget {
     }
 
     pub fn to_socket_addr(&self) -> Result<String> {
-        Ok(format!("{}:{}", self.host, self.port))
+        if self.host.contains(':') && !self.host.starts_with('[') {
+            Ok(format!("[{}]:{}", self.host, self.port))
+        } else {
+            Ok(format!("{}:{}", self.host, self.port))
+        }
+    }
+
+    pub fn is_ipv6(&self) -> bool {
+        self.host.contains(':')
     }
 }
 
@@ -330,27 +344,54 @@ where
                                 let consumed = capsule_buf.len() - cursor.remaining();
                                 capsule_buf.advance(consumed);
 
+                                if capsule.is_unknown_type() {
+                                    debug!(
+                                        "[{}] Skipping unknown capsule type: {:?}",
+                                        req_id_owned, capsule.capsule_type
+                                    );
+                                    continue;
+                                }
+
                                 if capsule.capsule_type == CapsuleType::Datagram {
-                                    if let Ok((context_id, payload)) =
-                                        capsule.parse_datagram_payload()
-                                    {
-                                        if context_id == 0 {
-                                            match target_socket.send(&payload).await {
-                                                Ok(n) => {
-                                                    total_sent += n as u64;
-                                                    if let Some(ref state) = admin_state_clone {
-                                                        state
-                                                            .metrics_collector
-                                                            .add_bytes_sent_by_type(
-                                                                TrafficType::H3,
-                                                                n as u64,
-                                                            );
+                                    match capsule.parse_datagram_payload_validated() {
+                                        Ok((context_id, payload)) => {
+                                            if context_id == 0 {
+                                                if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+                                                    debug!(
+                                                        "[{}] Dropping oversized UDP payload: {} bytes",
+                                                        req_id_owned,
+                                                        payload.len()
+                                                    );
+                                                    continue;
+                                                }
+                                                match target_socket.send(&payload).await {
+                                                    Ok(n) => {
+                                                        total_sent += n as u64;
+                                                        if let Some(ref state) = admin_state_clone {
+                                                            state
+                                                                .metrics_collector
+                                                                .add_bytes_sent_by_type(
+                                                                    TrafficType::H3,
+                                                                    n as u64,
+                                                                );
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        debug!("UDP send error: {}", e);
                                                     }
                                                 }
-                                                Err(e) => {
-                                                    debug!("UDP send error: {}", e);
-                                                }
+                                            } else {
+                                                debug!(
+                                                    "[{}] Non-zero context_id {} not supported, skipping",
+                                                    req_id_owned, context_id
+                                                );
                                             }
+                                        }
+                                        Err(e) => {
+                                            debug!(
+                                                "[{}] Failed to parse datagram payload: {}",
+                                                req_id_owned, e
+                                            );
                                         }
                                     }
                                 }
@@ -486,5 +527,50 @@ mod tests {
     fn test_invalid_uri() {
         let uri = "/invalid/path";
         assert!(ConnectUdpTarget::from_uri(uri).is_err());
+    }
+
+    #[test]
+    fn test_ipv6_uri_with_percent_encoding() {
+        let uri = "/.well-known/masque/udp/2001%3Adb8%3A%3A42/443/";
+        let target = ConnectUdpTarget::from_uri(uri).unwrap();
+        assert_eq!(target.host, "2001:db8::42");
+        assert_eq!(target.port, 443);
+        assert!(target.is_ipv6());
+    }
+
+    #[test]
+    fn test_ipv6_socket_addr_format() {
+        let target = ConnectUdpTarget {
+            host: "2001:db8::42".to_string(),
+            port: 443,
+        };
+        assert_eq!(target.to_socket_addr().unwrap(), "[2001:db8::42]:443");
+    }
+
+    #[test]
+    fn test_ipv4_socket_addr_format() {
+        let target = ConnectUdpTarget {
+            host: "192.168.1.1".to_string(),
+            port: 8080,
+        };
+        assert_eq!(target.to_socket_addr().unwrap(), "192.168.1.1:8080");
+    }
+
+    #[test]
+    fn test_port_zero_rejected() {
+        let uri = "/.well-known/masque/udp/example.com/0/";
+        let result = ConnectUdpTarget::from_uri(uri);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Port 0"));
+    }
+
+    #[test]
+    fn test_domain_socket_addr_format() {
+        let target = ConnectUdpTarget {
+            host: "example.com".to_string(),
+            port: 443,
+        };
+        assert_eq!(target.to_socket_addr().unwrap(), "example.com:443");
+        assert!(!target.is_ipv6());
     }
 }
