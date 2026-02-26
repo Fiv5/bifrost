@@ -3,13 +3,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bifrost_admin::{AdminState, MatchedRule, TrafficRecord, TrafficType};
+use bifrost_admin::{AdminState, ConnectionInfo, MatchedRule, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use h3::quic::BidiStream;
 use h3::server::RequestStream;
 use hyper::{Request, Response, StatusCode};
 use tokio::net::UdpSocket;
+use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
@@ -250,6 +251,9 @@ where
         );
     }
 
+    let req_id = ctx.id_str();
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
@@ -258,8 +262,17 @@ where
             .metrics_collector
             .increment_requests_by_type(TrafficType::H3);
 
+        let conn_info = ConnectionInfo::new(
+            req_id.clone(),
+            format!("{}:{}", target.host, target.port),
+            target.port,
+            false,
+            cancel_tx,
+        );
+        state.connection_registry.register(conn_info);
+
         let mut record = TrafficRecord::new(
-            ctx.id_str(),
+            req_id.clone(),
             "CONNECT-UDP".to_string(),
             format!("masque://{}:{}", target.host, target.port),
         );
@@ -294,12 +307,14 @@ where
         stream,
         session,
         verbose,
-        &ctx.id_str(),
+        &req_id,
         admin_state.as_ref(),
+        cancel_rx,
     )
     .await;
 
     if let Some(ref state) = admin_state {
+        state.connection_registry.unregister(&req_id);
         state
             .metrics_collector
             .decrement_connections_by_type(TrafficType::H3);
@@ -314,6 +329,7 @@ async fn run_udp_proxy_session<S>(
     verbose: bool,
     req_id: &str,
     admin_state: Option<&Arc<AdminState>>,
+    cancel_rx: oneshot::Receiver<()>,
 ) -> Result<()>
 where
     S: BidiStream<Bytes> + Send + 'static,
@@ -326,6 +342,7 @@ where
     let admin_state_clone2 = admin_state.cloned();
     let req_id_owned = req_id.to_string();
     let req_id_owned2 = req_id.to_string();
+    let req_id_for_cancel = req_id.to_string();
 
     let client_to_target = async move {
         let mut capsule_buf = BytesMut::new();
@@ -459,7 +476,21 @@ where
         Ok::<_, BifrostError>(total_received)
     };
 
-    let result = tokio::try_join!(client_to_target, target_to_client);
+    let relay_future = async { tokio::try_join!(client_to_target, target_to_client) };
+
+    let cancel_future = async {
+        let _ = cancel_rx.await;
+        debug!(
+            "[{}] CONNECT-UDP session cancelled by config change",
+            req_id_for_cancel
+        );
+        Err::<(u64, u64), BifrostError>(BifrostError::Network("Connection cancelled".to_string()))
+    };
+
+    let result = tokio::select! {
+        res = relay_future => res,
+        res = cancel_future => res,
+    };
 
     match result {
         Ok((sent, received)) => {
@@ -472,10 +503,20 @@ where
             Ok(())
         }
         Err(e) => {
-            if verbose {
+            let is_cancelled =
+                matches!(&e, BifrostError::Network(msg) if msg == "Connection cancelled");
+            if is_cancelled {
+                info!(
+                    "[{}] CONNECT-UDP session closed due to config change",
+                    req_id
+                );
+                Ok(())
+            } else if verbose {
                 debug!("[{}] CONNECT-UDP session error: {}", req_id, e);
+                Err(e)
+            } else {
+                Err(e)
             }
-            Err(e)
         }
     }
 }

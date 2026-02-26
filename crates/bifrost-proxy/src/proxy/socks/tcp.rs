@@ -1178,9 +1178,12 @@ impl SocksHandler {
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
 
+        let req_id = generate_socks5_request_id();
+        let admin_state = self.admin_state.clone();
+
         debug!(
-            "SOCKS5: Starting TLS MITM handshake for {}:{}",
-            target_host, target_port
+            "[{}] SOCKS5: Starting TLS MITM handshake for {}:{}",
+            req_id, target_host, target_port
         );
 
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
@@ -1196,12 +1199,34 @@ impl SocksHandler {
             .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
 
         debug!(
-            "SOCKS5: TLS handshake completed for {}:{}",
-            target_host, target_port
+            "[{}] SOCKS5: TLS handshake completed for {}:{}",
+            req_id, target_host, target_port
         );
 
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .increment_connections_by_type(TrafficType::Socks5);
+
+            let conn_info = ConnectionInfo::new(
+                req_id.clone(),
+                cert_host.to_string(),
+                target_port,
+                true,
+                cancel_tx,
+            );
+            state.connection_registry.register(conn_info);
+
+            info!(
+                "[{}] SOCKS5 TLS intercept tunnel established to {}:{} (from {})",
+                req_id, cert_host, target_port, self.peer_addr
+            );
+        }
+
         let rules = self.rules.clone();
-        let admin_state = self.admin_state.clone();
+        let admin_state_for_service = self.admin_state.clone();
         let dns_resolver = self.dns_resolver.clone();
         let verbose_logging = self.verbose_logging;
         let unsafe_ssl = self.unsafe_ssl;
@@ -1217,7 +1242,7 @@ impl SocksHandler {
             let target_host = target_host.clone();
             let original_host = original_host.clone();
             let rules = rules.clone();
-            let admin_state = admin_state.clone();
+            let admin_state = admin_state_for_service.clone();
             let dns_resolver = dns_resolver.clone();
             async move {
                 handle_socks5_intercepted_request(
@@ -1245,11 +1270,55 @@ impl SocksHandler {
             .serve_connection(client_io, service)
             .with_upgrades();
 
-        if let Err(e) = conn.await {
-            debug!("SOCKS5 TLS: HTTP connection ended: {}", e);
+        let mut conn = std::pin::pin!(conn);
+
+        let result = tokio::select! {
+            result = conn.as_mut() => {
+                match result {
+                    Ok(_) => Ok(false),
+                    Err(e) => {
+                        debug!("[{}] SOCKS5 TLS: HTTP connection ended: {}", req_id, e);
+                        Ok(false)
+                    }
+                }
+            }
+            _ = cancel_rx => {
+                debug!("[{}] SOCKS5 TLS intercept cancelled by config change, initiating graceful shutdown", req_id);
+                conn.as_mut().graceful_shutdown();
+                let _ = conn.await;
+                Ok(true)
+            }
+        };
+
+        if let Some(ref state) = admin_state {
+            state.connection_registry.unregister(&req_id);
+            state
+                .metrics_collector
+                .decrement_connections_by_type(TrafficType::Socks5);
+
+            match result {
+                Ok(true) => {
+                    info!(
+                        "[{}] SOCKS5 TLS intercept tunnel {}:{} closed due to config change",
+                        req_id, cert_host, target_port
+                    );
+                }
+                Ok(false) => {
+                    debug!(
+                        "[{}] SOCKS5 TLS intercept tunnel {}:{} closed normally",
+                        req_id, cert_host, target_port
+                    );
+                }
+                Err(ref e) => {
+                    debug!(
+                        "[{}] SOCKS5 TLS intercept tunnel {}:{} error: {}",
+                        req_id, cert_host, target_port, e
+                    );
+                }
+            }
         }
 
-        Ok(())
+        result.map(|_| ())
     }
 
     async fn relay_with_http_intercept(
@@ -1287,7 +1356,9 @@ impl SocksHandler {
         let path = parts.get(1).unwrap_or(&"/");
 
         let url = format!("http://{}:{}{}", target_host, target_port, path);
-        debug!("SOCKS5 HTTP: {} {}", method, url);
+        debug!("[{}] SOCKS5 HTTP: {} {}", req_id, method, url);
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         if let Some(ref state) = admin_state {
             state
@@ -1296,6 +1367,15 @@ impl SocksHandler {
             state
                 .metrics_collector
                 .increment_requests_by_type(TrafficType::Socks5);
+
+            let conn_info = ConnectionInfo::new(
+                req_id.clone(),
+                target_host.to_string(),
+                target_port,
+                true,
+                cancel_tx,
+            );
+            state.connection_registry.register(conn_info);
 
             let client_process = resolve_client_process(&peer_addr);
             let (client_app, client_pid, client_path) = client_process
@@ -1327,6 +1407,11 @@ impl SocksHandler {
 
             state.record_traffic(record);
             state.connection_monitor.register_connection(&req_id);
+
+            info!(
+                "[{}] SOCKS5 HTTP intercept established to {}:{} (from {})",
+                req_id, target_host, target_port, peer_addr
+            );
         }
 
         let resolved = rules.resolve(&url, method);
@@ -1339,7 +1424,10 @@ impl SocksHandler {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(target_port);
 
-            debug!("SOCKS5 HTTP: Redirecting to {}:{}", new_host, new_port);
+            debug!(
+                "[{}] SOCKS5 HTTP: Redirecting to {}:{}",
+                req_id, new_host, new_port
+            );
 
             drop(target_stream);
             target_stream = TcpStream::connect(format!("{}:{}", new_host, new_port)).await?;
@@ -1406,7 +1494,12 @@ impl SocksHandler {
             Ok::<_, std::io::Error>(())
         };
 
-        let _ = tokio::try_join!(client_to_target, target_to_client);
+        let relay_future = async { tokio::try_join!(client_to_target, target_to_client) };
+
+        let (relay_result, was_cancelled) = tokio::select! {
+            res = relay_future => (res, false),
+            _ = cancel_rx => (Ok(((), ())), true),
+        };
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         let total_sent = bytes_sent.load(Ordering::Relaxed);
@@ -1423,6 +1516,7 @@ impl SocksHandler {
                 .metrics_collector
                 .decrement_connections_by_type(TrafficType::Socks5);
 
+            state.connection_registry.unregister(&req_id);
             state.connection_monitor.unregister_connection(&req_id);
 
             state.update_traffic_by_id(&req_id, move |record| {
@@ -1431,13 +1525,20 @@ impl SocksHandler {
                 record.duration_ms = duration_ms;
             });
 
-            debug!(
-                "[{}] SOCKS5 HTTP: sent={} bytes, received={} bytes, duration={}ms",
-                req_id, total_sent, total_received, duration_ms
-            );
+            if was_cancelled {
+                info!(
+                    "[{}] SOCKS5 HTTP intercept {}:{} closed due to config change",
+                    req_id, target_host, target_port
+                );
+            } else {
+                debug!(
+                    "[{}] SOCKS5 HTTP: sent={} bytes, received={} bytes, duration={}ms",
+                    req_id, total_sent, total_received, duration_ms
+                );
+            }
         }
 
-        Ok(())
+        relay_result.map(|_| ()).map_err(|e| BifrostError::Network(e.to_string()))
     }
 
     fn rewrite_http_host(&self, request: &[u8], old_host: &str, new_host: &str) -> Result<Vec<u8>> {

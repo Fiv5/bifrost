@@ -49,7 +49,7 @@ interface TrafficState {
 }
 
 const POLL_INTERVAL = 1000;
-const BATCH_LIMIT = 500;
+const BATCH_LIMIT = 1000;
 const MAX_RECORDS = 10000;
 const UPDATE_THROTTLE_MS = 100;
 

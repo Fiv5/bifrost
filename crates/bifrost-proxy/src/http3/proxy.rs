@@ -145,7 +145,7 @@ where
         record.client_ip = peer_addr.ip().to_string();
         record.request_headers = Some(req_headers.clone());
         record.request_size = calculate_request_size(
-            &method.to_string(),
+            method.as_ref(),
             &uri.to_string(),
             &req_headers,
             body_data.len(),
