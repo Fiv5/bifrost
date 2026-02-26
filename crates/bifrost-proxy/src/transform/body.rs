@@ -2,8 +2,8 @@ use bytes::Bytes;
 use serde_json::Value;
 use tracing::debug;
 
-use crate::logging::RequestContext;
 use crate::server::{RegexReplace, ResolvedRules};
+use crate::utils::logging::RequestContext;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Phase {

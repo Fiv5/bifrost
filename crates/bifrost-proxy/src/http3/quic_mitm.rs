@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
 
 use crate::dns::DnsResolver;
+use crate::protocol::QuicPacketDetector;
 use crate::server::{ProxyConfig, RulesResolver, TlsConfig};
 use crate::socks::SocksAddress;
 
@@ -247,19 +248,7 @@ impl QuicMitmRelay {
     }
 
     fn is_quic_packet(data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
-        }
-
-        let first_byte = data[0];
-        let header_form = (first_byte >> 7) & 0x01;
-
-        if header_form == 1 {
-            let long_packet_type = (first_byte >> 4) & 0x03;
-            matches!(long_packet_type, 0..=3)
-        } else {
-            data.len() >= 20
-        }
+        QuicPacketDetector::is_quic_packet(data)
     }
 
     fn extract_sni_from_quic(data: &[u8]) -> Option<String> {
@@ -733,45 +722,7 @@ impl QuicMitmRelay {
     }
 
     fn parse_address(atyp: u8, data: &[u8]) -> Result<(SocksAddress, u16, usize)> {
-        match atyp {
-            0x01 => {
-                if data.len() < 6 {
-                    return Err(BifrostError::Parse("IPv4 address too short".to_string()));
-                }
-                let addr = std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]);
-                let port = u16::from_be_bytes([data[4], data[5]]);
-                Ok((SocksAddress::IPv4(addr), port, 6))
-            }
-            0x03 => {
-                if data.is_empty() {
-                    return Err(BifrostError::Parse(
-                        "Domain name length missing".to_string(),
-                    ));
-                }
-                let len = data[0] as usize;
-                if data.len() < 1 + len + 2 {
-                    return Err(BifrostError::Parse("Domain name too short".to_string()));
-                }
-                let domain = String::from_utf8(data[1..1 + len].to_vec())
-                    .map_err(|e| BifrostError::Parse(format!("Invalid domain encoding: {}", e)))?;
-                let port = u16::from_be_bytes([data[1 + len], data[2 + len]]);
-                Ok((SocksAddress::DomainName(domain), port, 1 + len + 2))
-            }
-            0x04 => {
-                if data.len() < 18 {
-                    return Err(BifrostError::Parse("IPv6 address too short".to_string()));
-                }
-                let mut addr_bytes = [0u8; 16];
-                addr_bytes.copy_from_slice(&data[0..16]);
-                let addr = std::net::Ipv6Addr::from(addr_bytes);
-                let port = u16::from_be_bytes([data[16], data[17]]);
-                Ok((SocksAddress::IPv6(addr), port, 18))
-            }
-            _ => Err(BifrostError::Parse(format!(
-                "Invalid address type: {}",
-                atyp
-            ))),
-        }
+        SocksAddress::parse_from_bytes(atyp, data)
     }
 
     async fn cleanup_sessions(

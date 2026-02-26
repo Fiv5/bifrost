@@ -7,9 +7,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::logging::RequestContext;
 use crate::server::{full_body, BoxBody, ResolvedRules};
-use crate::url::build_redirect_uri;
+use crate::utils::logging::RequestContext;
+use crate::utils::url::build_redirect_uri;
 
 type HttpClient =
     Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Empty<Bytes>>;

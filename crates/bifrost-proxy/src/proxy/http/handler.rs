@@ -17,16 +17,16 @@ use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 
-use crate::body::{apply_body_rules, apply_content_injection, Phase};
-use crate::decompress::{decompress_body, get_content_encoding};
-use crate::logging::{format_rules_detail, format_rules_summary, RequestContext};
-use crate::mock::{generate_mock_response, should_intercept_response};
-use crate::request::apply_req_rules;
-use crate::response::apply_res_rules;
+use super::tunnel::get_tls_client_config;
 use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
-use crate::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
-use crate::tunnel::get_tls_client_config;
-use crate::url::apply_url_rules;
+use crate::transform::apply_req_rules;
+use crate::transform::apply_res_rules;
+use crate::transform::{apply_body_rules, apply_content_injection, Phase};
+use crate::transform::{decompress_body, get_content_encoding};
+use crate::utils::logging::{format_rules_detail, format_rules_summary, RequestContext};
+use crate::utils::mock::{generate_mock_response, should_intercept_response};
+use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
+use crate::utils::url::apply_url_rules;
 
 const STREAMING_CONTENT_TYPES: &[&str] = &[
     "video/x-flv",
@@ -1047,8 +1047,8 @@ async fn handle_http_websocket(
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
+    use super::websocket::websocket_bidirectional_generic_with_capture;
     use crate::server::empty_body;
-    use crate::websocket::websocket_bidirectional_generic_with_capture;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let start_time = Instant::now();

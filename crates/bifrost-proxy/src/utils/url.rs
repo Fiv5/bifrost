@@ -2,8 +2,8 @@ use hyper::Uri;
 use tracing::debug;
 use url::Url;
 
-use crate::logging::RequestContext;
 use crate::server::ResolvedRules;
+use crate::utils::logging::RequestContext;
 
 pub fn apply_url_params(uri: &Uri, rules: &ResolvedRules) -> Uri {
     if rules.url_params.is_empty() {

@@ -2,8 +2,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
-use bifrost_core::{BifrostError, Result};
+use bifrost_admin::{
+    AdminState, ConnectionInfo, FrameDirection, MatchedRule, TrafficRecord, TrafficType,
+};
+use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Buf, Bytes};
 use h3::quic::BidiStream;
 use h3::server::RequestStream;
@@ -15,8 +17,8 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::logging::RequestContext;
 use crate::server::{ProxyConfig, RulesResolver};
+use crate::utils::logging::RequestContext;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BUFFER_SIZE: usize = 16384;
@@ -25,7 +27,7 @@ pub async fn handle_h3_connect<S>(
     req: Request<()>,
     stream: RequestStream<S, Bytes>,
     peer_addr: SocketAddr,
-    _rules: Arc<dyn RulesResolver>,
+    rules: Arc<dyn RulesResolver>,
     proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Arc<DnsResolver>,
@@ -48,17 +50,87 @@ where
         info!("[{}] HTTP/3 CONNECT to {}:{}", ctx.id_str(), host, port);
     }
 
-    let connect_host = dns_resolver
-        .resolve(&host, &[])
-        .await
-        .ok()
-        .flatten()
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| host.clone());
+    let url = format!("https://{}:{}", host, port);
+    let resolved_rules = rules.resolve(&url, "CONNECT");
+
+    let has_rules = resolved_rules.host.is_some() || !resolved_rules.rules.is_empty();
+    if verbose && has_rules {
+        info!(
+            "[{}] HTTP/3 CONNECT rules matched for {}:{}",
+            ctx.id_str(),
+            host,
+            port
+        );
+    }
+
+    let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let parts: Vec<&str> = host_rule_clean.split(':').collect();
+        let h = parts[0].to_string();
+        let p = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(port)
+        } else {
+            match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+                _ => port,
+            }
+        };
+        if verbose {
+            info!(
+                "[{}] HTTP/3 CONNECT redirected: {}:{} -> {}:{} (protocol={:?})",
+                ctx.id_str(),
+                host,
+                port,
+                h,
+                p,
+                resolved_rules.host_protocol
+            );
+        }
+        (h, p)
+    } else {
+        (host.clone(), port)
+    };
+
+    let connect_host = if !resolved_rules.dns_servers.is_empty() {
+        if verbose {
+            info!(
+                "[{}] [DNS] resolving {} with custom servers: {:?}",
+                ctx.id_str(),
+                target_host,
+                resolved_rules.dns_servers
+            );
+        }
+        match dns_resolver
+            .resolve(&target_host, &resolved_rules.dns_servers)
+            .await
+        {
+            Ok(Some(ip)) => {
+                if verbose {
+                    info!(
+                        "[{}] [DNS] resolved {} -> {}",
+                        ctx.id_str(),
+                        target_host,
+                        ip
+                    );
+                }
+                ip.to_string()
+            }
+            Ok(None) | Err(_) => target_host.clone(),
+        }
+    } else {
+        dns_resolver
+            .resolve(&target_host, &[])
+            .await
+            .ok()
+            .flatten()
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| target_host.clone())
+    };
 
     let target_stream = match timeout(
         CONNECT_TIMEOUT,
-        TcpStream::connect(format!("{}:{}", connect_host, port)),
+        TcpStream::connect(format!("{}:{}", connect_host, target_port)),
     )
     .await
     {
@@ -67,8 +139,8 @@ where
             warn!(
                 "[{}] HTTP/3 CONNECT failed to {}:{}: {}",
                 ctx.id_str(),
-                host,
-                port,
+                target_host,
+                target_port,
                 e
             );
             let mut stream = stream;
@@ -80,15 +152,15 @@ where
             let _ = stream.finish().await;
             return Err(BifrostError::Network(format!(
                 "Failed to connect to {}:{}: {}",
-                host, port, e
+                target_host, target_port, e
             )));
         }
         Err(_) => {
             warn!(
                 "[{}] HTTP/3 CONNECT timeout to {}:{}",
                 ctx.id_str(),
-                host,
-                port
+                target_host,
+                target_port
             );
             let mut stream = stream;
             let response = Response::builder()
@@ -99,7 +171,7 @@ where
             let _ = stream.finish().await;
             return Err(BifrostError::Network(format!(
                 "Connection timeout to {}:{}",
-                host, port
+                target_host, target_port
             )));
         }
     };
@@ -124,8 +196,8 @@ where
         info!(
             "[{}] HTTP/3 CONNECT tunnel established to {}:{}",
             ctx.id_str(),
-            host,
-            port
+            target_host,
+            target_port
         );
     }
 
@@ -142,8 +214,8 @@ where
 
         let conn_info = ConnectionInfo::new(
             req_id.clone(),
-            format!("{}:{}", host, port),
-            port,
+            format!("{}:{}", target_host, target_port),
+            target_port,
             false,
             cancel_tx,
         );
@@ -159,6 +231,25 @@ where
         record.host = host.clone();
         record.is_tunnel = true;
         record.client_ip = peer_addr.ip().to_string();
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
         state.record_traffic(record);
 
         state.connection_monitor.register_connection(&req_id);

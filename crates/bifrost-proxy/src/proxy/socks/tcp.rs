@@ -21,14 +21,14 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::http::handle_http_request;
-use crate::logging::RequestContext;
-use crate::process_info::resolve_client_process;
 use crate::protocol::ProtocolDetector;
 use crate::server::{full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig};
-use crate::socks_udp::UdpRelay;
-use crate::tunnel::SingleCertResolver;
+use crate::utils::logging::RequestContext;
+use crate::utils::process_info::resolve_client_process;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
+
+use super::super::http::{handle_http_request, SingleCertResolver};
+use super::udp::UdpRelay;
 
 const SOCKS5_VERSION: u8 = 0x05;
 
@@ -147,6 +147,48 @@ impl SocksAddress {
                 bytes.extend_from_slice(domain.as_bytes());
                 bytes
             }
+        }
+    }
+
+    pub fn parse_from_bytes(atyp: u8, data: &[u8]) -> Result<(Self, u16, usize)> {
+        match atyp {
+            0x01 => {
+                if data.len() < 6 {
+                    return Err(BifrostError::Parse("IPv4 address too short".to_string()));
+                }
+                let addr = Ipv4Addr::new(data[0], data[1], data[2], data[3]);
+                let port = u16::from_be_bytes([data[4], data[5]]);
+                Ok((SocksAddress::IPv4(addr), port, 6))
+            }
+            0x03 => {
+                if data.is_empty() {
+                    return Err(BifrostError::Parse(
+                        "Domain name length missing".to_string(),
+                    ));
+                }
+                let len = data[0] as usize;
+                if data.len() < 1 + len + 2 {
+                    return Err(BifrostError::Parse("Domain name too short".to_string()));
+                }
+                let domain = String::from_utf8(data[1..1 + len].to_vec())
+                    .map_err(|e| BifrostError::Parse(format!("Invalid domain encoding: {}", e)))?;
+                let port = u16::from_be_bytes([data[1 + len], data[2 + len]]);
+                Ok((SocksAddress::DomainName(domain), port, 1 + len + 2))
+            }
+            0x04 => {
+                if data.len() < 18 {
+                    return Err(BifrostError::Parse("IPv6 address too short".to_string()));
+                }
+                let mut addr_bytes = [0u8; 16];
+                addr_bytes.copy_from_slice(&data[0..16]);
+                let addr = Ipv6Addr::from(addr_bytes);
+                let port = u16::from_be_bytes([data[16], data[17]]);
+                Ok((SocksAddress::IPv6(addr), port, 18))
+            }
+            _ => Err(BifrostError::Parse(format!(
+                "Invalid address type: {}",
+                atyp
+            ))),
         }
     }
 }

@@ -12,10 +12,10 @@ use hyper::{Request, Response, StatusCode, Uri};
 use tracing::{debug, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::http::{needs_body_processing, needs_request_body_processing};
-use crate::logging::RequestContext;
 use crate::protocol::ProtocolDetector;
+use crate::proxy::http::handler::{needs_body_processing, needs_request_body_processing};
 use crate::server::{ProxyConfig, ResolvedRules, RulesResolver};
+use crate::utils::logging::RequestContext;
 
 use super::Http3Client;
 

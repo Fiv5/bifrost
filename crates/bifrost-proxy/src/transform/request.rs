@@ -2,8 +2,8 @@ use hyper::header::{HeaderName, HeaderValue};
 use hyper::http::request::Parts;
 use tracing::info;
 
-use crate::logging::RequestContext;
 use crate::server::{CorsConfig, ResolvedRules};
+use crate::utils::logging::RequestContext;
 
 pub fn apply_req_rules(
     parts: &mut Parts,

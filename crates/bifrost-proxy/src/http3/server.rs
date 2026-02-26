@@ -256,6 +256,7 @@ where
                 req,
                 stream,
                 peer_addr,
+                rules,
                 proxy_config,
                 admin_state,
                 dns_resolver,

@@ -7,8 +7,8 @@ use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
 
-use crate::decompress::decompress_body;
 use crate::server::BoxBody;
+use crate::transform::decompress::decompress_body;
 
 struct TeeBodyDropGuard {
     admin_state: Option<Arc<AdminState>>,

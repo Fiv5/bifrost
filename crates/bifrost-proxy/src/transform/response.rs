@@ -3,8 +3,8 @@ use hyper::http::response::Parts;
 use hyper::StatusCode;
 use tracing::info;
 
-use crate::logging::RequestContext;
 use crate::server::{CorsConfig, ResolvedRules};
+use crate::utils::logging::RequestContext;
 
 pub fn apply_res_rules(
     parts: &mut Parts,

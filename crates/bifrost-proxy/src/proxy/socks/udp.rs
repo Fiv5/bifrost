@@ -10,8 +10,10 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
 
 use crate::dns::DnsResolver;
+use crate::protocol::QuicPacketDetector;
 use crate::server::{ProxyConfig, RulesResolver, TlsConfig};
-use crate::socks::{AddressType, SocksAddress};
+
+use super::tcp::{AddressType, SocksAddress};
 
 #[cfg(feature = "http3")]
 use crate::http3::QuicMitmRelay;
@@ -118,6 +120,12 @@ impl UdpRelay {
         let relay_socket = Arc::clone(&socket);
         let relay_sessions = Arc::clone(&sessions);
         let rules = self.rules.clone();
+        let dns_resolver = self.dns_resolver.clone();
+        let verbose = self
+            .proxy_config
+            .as_ref()
+            .map(|c| c.verbose_logging)
+            .unwrap_or(false);
 
         tokio::spawn(async move {
             let mut buf = vec![0u8; UDP_BUFFER_SIZE];
@@ -133,6 +141,8 @@ impl UdpRelay {
                                     &buf[..len],
                                     src_addr,
                                     &rules,
+                                    &dns_resolver,
+                                    verbose,
                                 ).await {
                                     debug!("UDP relay packet error from {}: {}", src_addr, e);
                                 }
@@ -167,6 +177,8 @@ impl UdpRelay {
         data: &[u8],
         src_addr: SocketAddr,
         rules: &Option<Arc<dyn RulesResolver>>,
+        dns_resolver: &Option<Arc<DnsResolver>>,
+        verbose: bool,
     ) -> Result<()> {
         if data.len() < 10 {
             return Err(BifrostError::Parse("UDP packet too short".to_string()));
@@ -200,18 +212,63 @@ impl UdpRelay {
             is_quic
         );
 
-        let (final_host, final_port) = Self::apply_host_rule(&dest_addr, dest_port, rules, is_quic);
+        let (final_host, final_port, dns_servers) =
+            Self::apply_rules(&dest_addr, dest_port, rules, is_quic, verbose);
 
         let target_addr = match &final_host {
             SocksAddress::IPv4(ip) => SocketAddr::new((*ip).into(), final_port),
             SocksAddress::IPv6(ip) => SocketAddr::new((*ip).into(), final_port),
             SocksAddress::DomainName(domain) => {
-                let resolved = tokio::net::lookup_host(format!("{}:{}", domain, final_port))
-                    .await
-                    .map_err(|e| BifrostError::Network(format!("DNS lookup failed: {}", e)))?
-                    .next()
-                    .ok_or_else(|| BifrostError::Network("No address resolved".to_string()))?;
-                resolved
+                if let Some(resolver) = dns_resolver {
+                    if !dns_servers.is_empty() {
+                        if verbose {
+                            info!(
+                                "UDP relay: [DNS] resolving {} with custom servers: {:?}",
+                                domain, dns_servers
+                            );
+                        }
+                        match resolver.resolve(domain, &dns_servers).await {
+                            Ok(Some(ip)) => {
+                                if verbose {
+                                    info!("UDP relay: [DNS] resolved {} -> {}", domain, ip);
+                                }
+                                SocketAddr::new(ip, final_port)
+                            }
+                            Ok(None) | Err(_) => {
+                                tokio::net::lookup_host(format!("{}:{}", domain, final_port))
+                                    .await
+                                    .map_err(|e| {
+                                        BifrostError::Network(format!("DNS lookup failed: {}", e))
+                                    })?
+                                    .next()
+                                    .ok_or_else(|| {
+                                        BifrostError::Network("No address resolved".to_string())
+                                    })?
+                            }
+                        }
+                    } else {
+                        match resolver.resolve(domain, &[]).await {
+                            Ok(Some(ip)) => SocketAddr::new(ip, final_port),
+                            Ok(None) | Err(_) => {
+                                tokio::net::lookup_host(format!("{}:{}", domain, final_port))
+                                    .await
+                                    .map_err(|e| {
+                                        BifrostError::Network(format!("DNS lookup failed: {}", e))
+                                    })?
+                                    .next()
+                                    .ok_or_else(|| {
+                                        BifrostError::Network("No address resolved".to_string())
+                                    })?
+                            }
+                        }
+                    }
+                } else {
+                    tokio::net::lookup_host(format!("{}:{}", domain, final_port))
+                        .await
+                        .map_err(|e| BifrostError::Network(format!("DNS lookup failed: {}", e)))?
+                        .next()
+                        .ok_or_else(|| BifrostError::Network("No address resolved".to_string()))?
+                }
             }
         };
 
@@ -287,71 +344,22 @@ impl UdpRelay {
     }
 
     fn parse_address(atyp: u8, data: &[u8]) -> Result<(SocksAddress, u16, usize)> {
-        match atyp {
-            0x01 => {
-                if data.len() < 6 {
-                    return Err(BifrostError::Parse("IPv4 address too short".to_string()));
-                }
-                let addr = std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]);
-                let port = u16::from_be_bytes([data[4], data[5]]);
-                Ok((SocksAddress::IPv4(addr), port, 6))
-            }
-            0x03 => {
-                if data.is_empty() {
-                    return Err(BifrostError::Parse(
-                        "Domain name length missing".to_string(),
-                    ));
-                }
-                let len = data[0] as usize;
-                if data.len() < 1 + len + 2 {
-                    return Err(BifrostError::Parse("Domain name too short".to_string()));
-                }
-                let domain = String::from_utf8(data[1..1 + len].to_vec())
-                    .map_err(|e| BifrostError::Parse(format!("Invalid domain encoding: {}", e)))?;
-                let port = u16::from_be_bytes([data[1 + len], data[2 + len]]);
-                Ok((SocksAddress::DomainName(domain), port, 1 + len + 2))
-            }
-            0x04 => {
-                if data.len() < 18 {
-                    return Err(BifrostError::Parse("IPv6 address too short".to_string()));
-                }
-                let mut addr_bytes = [0u8; 16];
-                addr_bytes.copy_from_slice(&data[0..16]);
-                let addr = std::net::Ipv6Addr::from(addr_bytes);
-                let port = u16::from_be_bytes([data[16], data[17]]);
-                Ok((SocksAddress::IPv6(addr), port, 18))
-            }
-            _ => Err(BifrostError::Parse(format!(
-                "Invalid address type: {}",
-                atyp
-            ))),
-        }
+        SocksAddress::parse_from_bytes(atyp, data)
     }
 
     fn is_quic_packet(data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
-        }
-
-        let first_byte = data[0];
-        let header_form = (first_byte >> 7) & 0x01;
-
-        if header_form == 1 {
-            let long_packet_type = (first_byte >> 4) & 0x03;
-            matches!(long_packet_type, 0..=3)
-        } else {
-            data.len() >= 20
-        }
+        QuicPacketDetector::is_quic_packet(data)
     }
 
-    fn apply_host_rule(
+    fn apply_rules(
         dest_addr: &SocksAddress,
         dest_port: u16,
         rules: &Option<Arc<dyn RulesResolver>>,
         is_quic: bool,
-    ) -> (SocksAddress, u16) {
+        verbose: bool,
+    ) -> (SocksAddress, u16, Vec<String>) {
         let Some(rules) = rules else {
-            return (dest_addr.clone(), dest_port);
+            return (dest_addr.clone(), dest_port, vec![]);
         };
 
         let host_str = match dest_addr {
@@ -369,6 +377,8 @@ impl UdpRelay {
 
         let resolved = rules.resolve(&url, "GET");
 
+        let dns_servers = resolved.dns_servers.clone();
+
         if let Some(ref host_rule) = resolved.host {
             let parts: Vec<&str> = host_rule.split(':').collect();
             let new_host = parts[0].to_string();
@@ -378,21 +388,23 @@ impl UdpRelay {
                 dest_port
             };
 
-            debug!(
-                "UDP relay: host rule applied - {}:{} -> {}:{}",
-                host_str, dest_port, new_host, new_port
-            );
+            if verbose {
+                info!(
+                    "UDP relay: host rule applied - {}:{} -> {}:{}",
+                    host_str, dest_port, new_host, new_port
+                );
+            }
 
             if let Ok(ipv4) = new_host.parse::<std::net::Ipv4Addr>() {
-                return (SocksAddress::IPv4(ipv4), new_port);
+                return (SocksAddress::IPv4(ipv4), new_port, dns_servers);
             }
             if let Ok(ipv6) = new_host.parse::<std::net::Ipv6Addr>() {
-                return (SocksAddress::IPv6(ipv6), new_port);
+                return (SocksAddress::IPv6(ipv6), new_port, dns_servers);
             }
-            return (SocksAddress::DomainName(new_host), new_port);
+            return (SocksAddress::DomainName(new_host), new_port, dns_servers);
         }
 
-        (dest_addr.clone(), dest_port)
+        (dest_addr.clone(), dest_port, dns_servers)
     }
 
     fn build_udp_response(remote_addr: &SocketAddr, payload: &[u8]) -> Vec<u8> {

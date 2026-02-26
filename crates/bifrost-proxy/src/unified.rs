@@ -11,7 +11,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::RwLock;
 use tracing::debug;
 
-use crate::protocol::{ProtocolDetector, TransportProtocol};
+use crate::protocol::{ProtocolDetector, QuicPacketDetector, TransportProtocol};
 
 const PEEK_BUFFER_SIZE: usize = 16;
 
@@ -151,21 +151,7 @@ impl UdpPacketDetector {
     }
 
     fn is_quic_packet(data: &[u8]) -> bool {
-        if data.is_empty() {
-            return false;
-        }
-
-        let first_byte = data[0];
-
-        if first_byte & 0x80 != 0 {
-            return true;
-        }
-
-        if first_byte & 0x40 != 0 {
-            return true;
-        }
-
-        false
+        QuicPacketDetector::is_quic_packet(data)
     }
 
     fn is_socks5_udp_packet(data: &[u8]) -> bool {
@@ -262,7 +248,10 @@ mod tests {
 
     #[test]
     fn test_quic_short_header_detection() {
-        let quic_short_header = [0x40, 0x00, 0x00, 0x01];
+        let quic_short_header = [
+            0x40, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+            0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11,
+        ];
         assert!(UdpPacketDetector::is_quic_packet(&quic_short_header));
     }
 

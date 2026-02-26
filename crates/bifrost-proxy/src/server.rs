@@ -23,12 +23,11 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::http::handle_http_request;
-use crate::logging::RequestContext;
-use crate::process_info::resolve_client_process;
-use crate::socks::SocksHandler;
-use crate::tunnel::handle_connect;
+use crate::proxy::http::{handle_connect, handle_http_request};
+use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
+use crate::utils::logging::RequestContext;
+use crate::utils::process_info::resolve_client_process;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 #[derive(Debug, Clone)]
@@ -381,7 +380,7 @@ pub struct ProxyServer {
     dns_resolver: Arc<DnsResolver>,
     udp_relay_addr: Arc<RwLock<Option<SocketAddr>>>,
     #[allow(dead_code)]
-    udp_relay: Arc<RwLock<Option<crate::socks_udp::UdpRelay>>>,
+    udp_relay: Arc<RwLock<Option<UdpRelay>>>,
 }
 
 impl ProxyServer {
@@ -459,8 +458,7 @@ impl ProxyServer {
 
         if self.config.enable_socks {
             let udp_addr = SocketAddr::new(addr.ip(), addr.port());
-            let mut udp_relay =
-                crate::socks_udp::UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
+            let mut udp_relay = UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
             let udp_relay_started_addr = udp_relay.start().await?;
             {
                 let mut relay_addr = self.udp_relay_addr.write().await;
@@ -479,7 +477,7 @@ impl ProxyServer {
         }
 
         if let Some(socks5_port) = self.config.socks5_port {
-            let socks_config = crate::socks::SocksConfig {
+            let socks_config = SocksConfig {
                 port: socks5_port,
                 host: self.config.host.clone(),
                 auth_required: self.config.socks5_auth_required,
@@ -494,7 +492,7 @@ impl ProxyServer {
             };
             let enable_tls_intercept =
                 self.config.enable_tls_interception && self.tls_config.ca_cert.is_some();
-            let socks_server = crate::socks::SocksServer::new(socks_config)
+            let socks_server = SocksServer::new(socks_config)
                 .with_rules(Arc::clone(&self.rules))
                 .with_access_control(Arc::clone(&self.access_control))
                 .with_verbose_logging(self.config.verbose_logging)
@@ -646,8 +644,8 @@ impl ProxyServer {
                                 return;
                             }
                             Ok(DetectedProtocol::Socks4) => {
-                                debug!(
-                                    "Detected SOCKS4 protocol from {} (not fully supported)",
+                                warn!(
+                                    "SOCKS4 connection from {} rejected - SOCKS4 protocol is not supported, please use SOCKS5 instead",
                                     peer_addr
                                 );
                                 return;

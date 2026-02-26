@@ -15,10 +15,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
-use crate::logging::RequestContext;
-use crate::process_info::resolve_client_process;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, BoxBody, RulesResolver};
+use crate::utils::logging::RequestContext;
+use crate::utils::process_info::resolve_client_process;
 
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,

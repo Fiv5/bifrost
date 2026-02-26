@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bifrost_admin::{AdminState, TrafficRecord, TrafficType};
+use bifrost_admin::{AdminState, MatchedRule, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 use bytes::{Buf, Bytes, BytesMut};
 use h3::quic::BidiStream;
@@ -15,8 +15,8 @@ use tracing::{debug, info};
 
 use super::capsule::{Capsule, CapsuleType};
 use crate::dns::DnsResolver;
-use crate::logging::RequestContext;
-use crate::server::ProxyConfig;
+use crate::server::{ProxyConfig, RulesResolver};
+use crate::utils::logging::RequestContext;
 
 const UDP_BUFFER_SIZE: usize = 65535;
 const UDP_TIMEOUT: Duration = Duration::from_secs(300);
@@ -113,6 +113,7 @@ pub async fn handle_connect_udp<S>(
     req: Request<()>,
     stream: RequestStream<S, Bytes>,
     peer_addr: SocketAddr,
+    rules: Arc<dyn RulesResolver>,
     proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Arc<DnsResolver>,
@@ -135,15 +136,80 @@ where
         );
     }
 
-    let resolved_host = dns_resolver
-        .resolve(&target.host, &[])
-        .await
-        .ok()
-        .flatten()
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| target.host.clone());
+    let url = format!("udp://{}:{}", target.host, target.port);
+    let resolved_rules = rules.resolve(&url, "CONNECT-UDP");
 
-    let target_addr: SocketAddr = format!("{}:{}", resolved_host, target.port)
+    let has_rules = resolved_rules.host.is_some() || !resolved_rules.rules.is_empty();
+    if verbose && has_rules {
+        info!(
+            "[{}] CONNECT-UDP rules matched for {}:{}",
+            ctx.id_str(),
+            target.host,
+            target.port
+        );
+    }
+
+    let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let parts: Vec<&str> = host_rule_clean.split(':').collect();
+        let h = parts[0].to_string();
+        let p = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(target.port)
+        } else {
+            target.port
+        };
+        if verbose {
+            info!(
+                "[{}] CONNECT-UDP redirected: {}:{} -> {}:{}",
+                ctx.id_str(),
+                target.host,
+                target.port,
+                h,
+                p
+            );
+        }
+        (h, p)
+    } else {
+        (target.host.clone(), target.port)
+    };
+
+    let resolved_host = if !resolved_rules.dns_servers.is_empty() {
+        if verbose {
+            info!(
+                "[{}] [DNS] resolving {} with custom servers: {:?}",
+                ctx.id_str(),
+                target_host,
+                resolved_rules.dns_servers
+            );
+        }
+        match dns_resolver
+            .resolve(&target_host, &resolved_rules.dns_servers)
+            .await
+        {
+            Ok(Some(ip)) => {
+                if verbose {
+                    info!(
+                        "[{}] [DNS] resolved {} -> {}",
+                        ctx.id_str(),
+                        target_host,
+                        ip
+                    );
+                }
+                ip.to_string()
+            }
+            Ok(None) | Err(_) => target_host.clone(),
+        }
+    } else {
+        dns_resolver
+            .resolve(&target_host, &[])
+            .await
+            .ok()
+            .flatten()
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| target_host.clone())
+    };
+
+    let target_addr: SocketAddr = format!("{}:{}", resolved_host, target_port)
         .parse()
         .map_err(|e| BifrostError::Parse(format!("Invalid target address: {}", e)))?;
 
@@ -188,6 +254,25 @@ where
         record.host = target.host.clone();
         record.client_ip = peer_addr.ip().to_string();
         record.set_h3();
+        record.has_rule_hit = has_rules;
+        record.matched_rules = if resolved_rules.rules.is_empty() {
+            None
+        } else {
+            Some(
+                resolved_rules
+                    .rules
+                    .iter()
+                    .map(|r| MatchedRule {
+                        pattern: r.pattern.clone(),
+                        protocol: format!("{:?}", r.protocol),
+                        value: r.value.clone(),
+                        rule_name: r.rule_name.clone(),
+                        raw: r.raw.clone(),
+                        line: r.line,
+                    })
+                    .collect(),
+            )
+        };
         state.record_traffic(record);
     }
 

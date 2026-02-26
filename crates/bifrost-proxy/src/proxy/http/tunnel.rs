@@ -24,20 +24,20 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
-use crate::body::{apply_body_rules, Phase};
-use crate::decompress::get_content_encoding;
-use crate::dns::DnsResolver;
-use crate::http::{
+use super::handler::{
     needs_body_processing, needs_request_body_processing, parse_and_record_sse_events,
 };
-use crate::logging::{format_rules_summary, RequestContext};
+use crate::dns::DnsResolver;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
-use crate::response::apply_res_rules;
 use crate::server::{
     empty_body, full_body, BoxBody, ProxyConfig, ResolvedRules, RulesResolver, TlsConfig,
     TlsInterceptConfig,
 };
-use crate::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
+use crate::transform::apply_res_rules;
+use crate::transform::decompress::get_content_encoding;
+use crate::transform::{apply_body_rules, Phase};
+use crate::utils::logging::{format_rules_summary, RequestContext};
+use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
 
 use futures_util::StreamExt;
 
@@ -563,7 +563,7 @@ async fn tls_intercept_tunnel(
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
         let original_port = original_port_for_requests;
-        let req_id = crate::logging::generate_request_id();
+        let req_id = crate::utils::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
         let client_ip = client_ip_clone.clone();
@@ -648,7 +648,7 @@ async fn tls_intercept_tunnel_with_cancel(
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
         let original_port = original_port_for_requests;
-        let req_id = crate::logging::generate_request_id();
+        let req_id = crate::utils::logging::generate_request_id();
         let admin_state = admin_state_clone.clone();
         let rules = rules_clone.clone();
         let client_ip = client_ip_clone.clone();
@@ -1566,10 +1566,8 @@ async fn handle_intercepted_request_with_protocol(
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
 
-            let decompressed_res_body = crate::decompress::decompress_body(
-                &res_body_bytes,
-                res_content_encoding.as_deref(),
-            );
+            let decompressed_res_body =
+                crate::transform::decompress_body(&res_body_bytes, res_content_encoding.as_deref());
             record.response_body_ref = store.store(req_id, "res", decompressed_res_body.as_ref());
         }
 
