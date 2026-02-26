@@ -184,6 +184,7 @@ impl UdpRelay {
         Ok(local_addr)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_packet(
         relay_socket: &Arc<UdpSocket>,
         sessions: &Arc<RwLock<HashMap<SocketAddr, UdpSession>>>,
@@ -357,7 +358,10 @@ impl UdpRelay {
 
                     info!(
                         "[{}] SOCKS5 UDP session created for {} -> {}:{}",
-                        req_id, src_addr, target_addr.ip(), target_addr.port()
+                        req_id,
+                        src_addr,
+                        target_addr.ip(),
+                        target_addr.port()
                     );
                 }
 
@@ -389,9 +393,10 @@ impl UdpRelay {
                                 }
 
                                 if let Some(ref state) = admin_state_clone {
-                                    state
-                                        .metrics_collector
-                                        .add_bytes_received_by_type(TrafficType::Socks5, len as u64);
+                                    state.metrics_collector.add_bytes_received_by_type(
+                                        TrafficType::Socks5,
+                                        len as u64,
+                                    );
                                 }
                             }
                             Ok(Err(e)) => {
@@ -410,8 +415,7 @@ impl UdpRelay {
                             .metrics_collector
                             .decrement_connections_by_type(TrafficType::Socks5);
 
-                        let total_received =
-                            session_bytes_received_clone.load(Ordering::Relaxed);
+                        let total_received = session_bytes_received_clone.load(Ordering::Relaxed);
                         state.update_traffic_by_id(&req_id_clone, move |record| {
                             record.response_size = total_received as usize;
                         });

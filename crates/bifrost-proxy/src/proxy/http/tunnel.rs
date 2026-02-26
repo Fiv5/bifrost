@@ -36,6 +36,9 @@ use crate::server::{
 use crate::transform::apply_res_rules;
 use crate::transform::decompress::get_content_encoding;
 use crate::transform::{apply_body_rules, Phase};
+use crate::utils::http_size::{
+    calculate_request_size, calculate_response_headers_size, calculate_response_size,
+};
 use crate::utils::logging::{format_rules_summary, RequestContext};
 use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
 
@@ -1371,14 +1374,20 @@ async fn handle_intercepted_request_with_protocol(
                 .increment_requests_by_type(traffic_type);
 
             let mut record =
-                TrafficRecord::new(record_id.clone(), method_str, original_uri.clone());
+                TrafficRecord::new(record_id.clone(), method_str.clone(), original_uri.clone());
             record.status = res_parts.status.as_u16();
             record.content_type = res_parts
                 .headers
                 .get(hyper::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            record.request_size = body_bytes.len();
+            let res_headers: Vec<(String, String)> = res_parts
+                .headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+            record.request_size =
+                calculate_request_size(&method_str, &original_uri, &req_headers, body_bytes.len());
             record.response_size = 0;
             record.duration_ms = total_ms;
             record.host = original_host.to_string();
@@ -1392,7 +1401,7 @@ async fn handle_intercepted_request_with_protocol(
                 total_ms,
             });
             record.request_headers = Some(req_headers.clone());
-            record.response_headers = Some(res_headers);
+            record.response_headers = Some(res_headers.clone());
             record.request_content_type = req_headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
@@ -1453,6 +1462,8 @@ async fn handle_intercepted_request_with_protocol(
                 create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
+            let response_headers_size =
+                calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
             let tee_body = create_tee_body_with_store(
                 res_body,
                 admin_state.clone(),
@@ -1460,6 +1471,7 @@ async fn handle_intercepted_request_with_protocol(
                 Some(max_body_buffer_size),
                 res_content_encoding.clone(),
                 Some(traffic_type),
+                response_headers_size,
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
@@ -1496,15 +1508,26 @@ async fn handle_intercepted_request_with_protocol(
             .metrics_collector
             .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(req_id.to_string(), method_str, original_uri.clone());
+        let mut record =
+            TrafficRecord::new(req_id.to_string(), method_str.clone(), original_uri.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
             .get(hyper::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        record.request_size = body_bytes.len();
-        record.response_size = res_body_bytes.len();
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.request_size =
+            calculate_request_size(&method_str, &original_uri, &req_headers, body_bytes.len());
+        record.response_size = calculate_response_size(
+            res_parts.status.as_u16(),
+            &res_headers,
+            res_body_bytes.len(),
+        );
         record.duration_ms = total_ms;
         record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
@@ -1517,7 +1540,7 @@ async fn handle_intercepted_request_with_protocol(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers);
+        record.response_headers = Some(res_headers.clone());
         record.request_content_type = req_headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))

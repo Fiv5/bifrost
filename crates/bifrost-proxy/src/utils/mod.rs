@@ -1,9 +1,13 @@
+pub mod http_size;
 pub mod logging;
 pub mod mock;
 pub mod process_info;
 pub mod tee;
 pub mod url;
 
+pub use http_size::{
+    calculate_request_size, calculate_response_headers_size, calculate_response_size,
+};
 pub use logging::{
     format_rules_detail, format_rules_summary, generate_request_id, truncate_body, RequestContext,
 };

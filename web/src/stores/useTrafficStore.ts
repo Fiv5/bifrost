@@ -352,7 +352,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
           for (const r of batch.updatedRecords) {
             const existing = recordsMap.get(r.id);
-            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status) {
+            const socketStatusChanged =
+              existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
+              existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
+              existing?.socket_status?.is_open !== r.socket_status?.is_open;
+            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status || socketStatusChanged) {
               recordsMap.set(r.id, r);
               hasChanges = true;
             }
@@ -411,6 +415,18 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
             pending_ids: Array.from(newPendingIds),
           });
 
+          let updatedCurrentRecord = prevState.currentRecord;
+          if (updatedCurrentRecord) {
+            const updatedSummary = batch.updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+            if (updatedSummary && updatedSummary.socket_status) {
+              updatedCurrentRecord = {
+                ...updatedCurrentRecord,
+                socket_status: updatedSummary.socket_status,
+                frame_count: updatedSummary.frame_count,
+              };
+            }
+          }
+
           return {
             records: allRecords,
             recordsMap,
@@ -419,6 +435,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
             lastId: newLastId,
             pendingIds: newPendingIds,
             newRecordsCount: updatedNewRecordsCount,
+            currentRecord: updatedCurrentRecord,
           };
         });
       });

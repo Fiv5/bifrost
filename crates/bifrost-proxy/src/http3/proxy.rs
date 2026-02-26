@@ -15,6 +15,7 @@ use crate::dns::DnsResolver;
 use crate::protocol::ProtocolDetector;
 use crate::proxy::http::handler::{needs_body_processing, needs_request_body_processing};
 use crate::server::{ProxyConfig, ResolvedRules, RulesResolver};
+use crate::utils::http_size::{calculate_request_size, calculate_response_size};
 use crate::utils::logging::RequestContext;
 
 use super::Http3Client;
@@ -128,6 +129,11 @@ where
         Bytes::from(body_data.clone())
     };
 
+    let req_headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
@@ -137,13 +143,13 @@ where
         record.protocol = "h3".to_string();
         record.host = host.clone();
         record.client_ip = peer_addr.ip().to_string();
-        record.request_headers = Some(
-            headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect(),
+        record.request_headers = Some(req_headers.clone());
+        record.request_size = calculate_request_size(
+            &method.to_string(),
+            &uri.to_string(),
+            &req_headers,
+            body_data.len(),
         );
-        record.request_size = body_data.len();
         record.has_rule_hit = has_rules;
         record.is_websocket = is_websocket;
         record.is_sse = is_sse;
@@ -227,12 +233,14 @@ where
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
     let response_body_len = modified_response_body.len();
+    let response_total_size =
+        calculate_response_size(status.as_u16(), &response_headers_vec, response_body_len);
 
     if let Some(ref state) = admin_state {
         let req_id = ctx.id_str();
         state.update_traffic_by_id(&req_id, move |record| {
             record.status = status.as_u16();
-            record.response_size = response_body_len;
+            record.response_size = response_total_size;
             record.response_headers = Some(response_headers_vec.clone());
             record.duration_ms = duration_ms;
         });

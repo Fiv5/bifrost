@@ -2,7 +2,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bifrost_admin::{AdminState, TrafficType};
+use bifrost_admin::{AdminState, FrameDirection, TrafficType};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
@@ -19,6 +19,7 @@ struct TeeBodyDropGuard {
     max_body_size: usize,
     content_encoding: Option<String>,
     traffic_type: Option<TrafficType>,
+    response_headers_size: usize,
 }
 
 impl Drop for TeeBodyDropGuard {
@@ -45,13 +46,20 @@ impl TeeBodyDropGuard {
                 None
             };
 
-            let total_bytes = self.total_bytes;
+            let total_bytes = self.total_bytes + self.response_headers_size;
             state.update_traffic_by_id(&self.record_id, move |record| {
                 record.response_size = total_bytes;
                 if response_body_ref.is_some() {
                     record.response_body_ref = response_body_ref.clone();
                 }
             });
+
+            state.connection_monitor.set_connection_closed(
+                &self.record_id,
+                None,
+                None,
+                state.frame_store.as_ref(),
+            );
         }
     }
 }
@@ -71,6 +79,7 @@ impl TeeBody {
         max_body_size: Option<usize>,
         content_encoding: Option<String>,
         traffic_type: Option<TrafficType>,
+        response_headers_size: usize,
     ) -> Self {
         let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
@@ -84,6 +93,7 @@ impl TeeBody {
                 max_body_size: max_size,
                 content_encoding,
                 traffic_type,
+                response_headers_size,
             },
         }
     }
@@ -123,6 +133,11 @@ impl Body for TeeBody {
                         } else {
                             state.metrics_collector.add_bytes_received(len as u64);
                         }
+                        state.connection_monitor.update_traffic(
+                            &self.guard.record_id,
+                            FrameDirection::Receive,
+                            len as u64,
+                        );
                     }
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -157,6 +172,7 @@ pub fn create_tee_body_with_store(
     max_body_size: Option<usize>,
     content_encoding: Option<String>,
     traffic_type: Option<TrafficType>,
+    response_headers_size: usize,
 ) -> TeeBody {
     TeeBody::new(
         body,
@@ -165,6 +181,7 @@ pub fn create_tee_body_with_store(
         max_body_size,
         content_encoding,
         traffic_type,
+        response_headers_size,
     )
 }
 

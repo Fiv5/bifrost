@@ -23,6 +23,9 @@ use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
 use crate::transform::{decompress_body, get_content_encoding};
+use crate::utils::http_size::{
+    calculate_request_size, calculate_response_headers_size, calculate_response_size,
+};
 use crate::utils::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::utils::mock::{generate_mock_response, should_intercept_response};
 use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
@@ -520,14 +523,21 @@ pub async fn handle_http_request(
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
 
-            let mut record = TrafficRecord::new(record_id.clone(), method, record_url.clone());
+            let mut record =
+                TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
             record.status = res_parts.status.as_u16();
             record.content_type = res_parts
                 .headers
                 .get(hyper::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            record.request_size = final_body.len();
+            let res_headers: Vec<(String, String)> = res_parts
+                .headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+            record.request_size =
+                calculate_request_size(&method, &record_url, &req_headers, final_body.len());
             record.response_size = 0;
             record.duration_ms = total_ms;
             record.timing = Some(RequestTiming {
@@ -573,10 +583,11 @@ pub async fn handle_http_request(
                 record.protocol = "ws".to_string();
                 record.set_websocket();
                 state.connection_monitor.register_connection(&record_id);
-            }
-
-            if is_sse {
+            } else if is_sse {
                 record.set_sse();
+                state.connection_monitor.register_connection(&record_id);
+            } else {
+                record.is_tunnel = true;
                 state.connection_monitor.register_connection(&record_id);
             }
 
@@ -595,6 +606,8 @@ pub async fn handle_http_request(
                 create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
+            let response_headers_size =
+                calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
             let tee_body = create_tee_body_with_store(
                 res_body,
                 admin_state.clone(),
@@ -602,6 +615,7 @@ pub async fn handle_http_request(
                 Some(max_body_buffer_size),
                 res_content_encoding.clone(),
                 Some(traffic_type),
+                response_headers_size,
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
@@ -681,15 +695,25 @@ pub async fn handle_http_request(
             .metrics_collector
             .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(ctx.id_str(), method, record_url.clone());
+        let mut record = TrafficRecord::new(ctx.id_str(), method.clone(), record_url.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
             .get(hyper::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        record.request_size = final_body.len();
-        record.response_size = final_res_body.len();
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.request_size =
+            calculate_request_size(&method, &record_url, &req_headers, final_body.len());
+        record.response_size = calculate_response_size(
+            res_parts.status.as_u16(),
+            &res_headers,
+            final_res_body.len(),
+        );
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
             dns_ms,
@@ -701,7 +725,7 @@ pub async fn handle_http_request(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers);
+        record.response_headers = Some(res_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = if resolved_rules.rules.is_empty() {
             None
@@ -900,14 +924,20 @@ async fn forward_without_rules(
             .metrics_collector
             .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(record_id.clone(), method, record_url.clone());
+        let mut record = TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
             .get(hyper::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        record.request_size = body_bytes.len();
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+        record.request_size =
+            calculate_request_size(&method, &record_url, &req_headers, body_bytes.len());
         record.response_size = 0;
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
@@ -920,7 +950,7 @@ async fn forward_without_rules(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers);
+        record.response_headers = Some(res_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = if resolved_rules.rules.is_empty() {
             None
@@ -970,6 +1000,8 @@ async fn forward_without_rules(
             create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
+        let response_headers_size =
+            calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
         let tee_body = create_tee_body_with_store(
             res_body,
             admin_state,
@@ -977,6 +1009,7 @@ async fn forward_without_rules(
             None,
             res_content_encoding,
             Some(traffic_type),
+            response_headers_size,
         );
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     }

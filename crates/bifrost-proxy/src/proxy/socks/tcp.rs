@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, ConnectionInfo, TrafficRecord, TrafficType};
+use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 
 use futures_util::FutureExt;
@@ -25,6 +25,7 @@ use crate::protocol::ProtocolDetector;
 use crate::server::{full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
+use crate::utils::tee::store_request_body;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 use super::super::http::{handle_http_request, SingleCertResolver};
@@ -1039,8 +1040,12 @@ impl SocksHandler {
         let bytes_received = Arc::new(AtomicU64::new(0));
         let bytes_sent_clone = Arc::clone(&bytes_sent);
         let bytes_received_clone = Arc::clone(&bytes_received);
+        let admin_state_send = admin_state.clone();
+        let admin_state_recv = admin_state.clone();
+        let req_id_send = req_id.clone();
+        let req_id_recv = req_id.clone();
 
-        let client_to_target = async {
+        let client_to_target = async move {
             let mut buf = vec![0u8; 8192];
             loop {
                 let n = client_read.read(&mut buf).await?;
@@ -1048,6 +1053,13 @@ impl SocksHandler {
                     break;
                 }
                 bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
+                if let Some(ref state) = admin_state_send {
+                    state.connection_monitor.update_traffic(
+                        &req_id_send,
+                        FrameDirection::Send,
+                        n as u64,
+                    );
+                }
                 target_write.write_all(&buf[..n]).await?;
                 target_write.flush().await?;
             }
@@ -1055,7 +1067,7 @@ impl SocksHandler {
             Ok::<_, std::io::Error>(())
         };
 
-        let target_to_client = async {
+        let target_to_client = async move {
             let mut buf = vec![0u8; 8192];
             loop {
                 let n = target_read.read(&mut buf).await?;
@@ -1063,6 +1075,13 @@ impl SocksHandler {
                     break;
                 }
                 bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
+                if let Some(ref state) = admin_state_recv {
+                    state.connection_monitor.update_traffic(
+                        &req_id_recv,
+                        FrameDirection::Receive,
+                        n as u64,
+                    );
+                }
                 client_write.write_all(&buf[..n]).await?;
                 client_write.flush().await?;
             }
@@ -1284,20 +1303,30 @@ impl SocksHandler {
                 .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
                 .unwrap_or((None, None, None));
 
-            let mut record = TrafficRecord::new(
-                req_id.clone(),
-                method.to_string(),
-                url.clone(),
-            );
+            let mut record = TrafficRecord::new(req_id.clone(), method.to_string(), url.clone());
             record.status = 200;
             record.protocol = "socks5-http".to_string();
             record.host = target_host.to_string();
+            record.is_tunnel = true;
             record.client_ip = peer_addr.ip().to_string();
             record.client_app = client_app;
             record.client_pid = client_pid;
             record.client_path = client_path;
 
+            let body_start = request_str
+                .find("\r\n\r\n")
+                .map(|i| i + 4)
+                .or_else(|| request_str.find("\n\n").map(|i| i + 2));
+            if let Some(body_offset) = body_start {
+                if body_offset < request_data.len() {
+                    let body_data = &request_data[body_offset..];
+                    record.request_body_ref =
+                        store_request_body(&admin_state, &req_id, body_data, None);
+                }
+            }
+
             state.record_traffic(record);
+            state.connection_monitor.register_connection(&req_id);
         }
 
         let resolved = rules.resolve(&url, method);
@@ -1329,8 +1358,12 @@ impl SocksHandler {
         let bytes_received = Arc::new(AtomicU64::new(0));
         let bytes_sent_clone = Arc::clone(&bytes_sent);
         let bytes_received_clone = Arc::clone(&bytes_received);
+        let admin_state_send = admin_state.clone();
+        let admin_state_recv = admin_state.clone();
+        let req_id_send = req_id.clone();
+        let req_id_recv = req_id.clone();
 
-        let client_to_target = async {
+        let client_to_target = async move {
             let mut buf = vec![0u8; 8192];
             loop {
                 let n = client_read.read(&mut buf).await?;
@@ -1338,6 +1371,13 @@ impl SocksHandler {
                     break;
                 }
                 bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
+                if let Some(ref state) = admin_state_send {
+                    state.connection_monitor.update_traffic(
+                        &req_id_send,
+                        FrameDirection::Send,
+                        n as u64,
+                    );
+                }
                 target_write.write_all(&buf[..n]).await?;
                 target_write.flush().await?;
             }
@@ -1345,7 +1385,7 @@ impl SocksHandler {
             Ok::<_, std::io::Error>(())
         };
 
-        let target_to_client = async {
+        let target_to_client = async move {
             let mut buf = vec![0u8; 8192];
             loop {
                 let n = target_read.read(&mut buf).await?;
@@ -1353,6 +1393,13 @@ impl SocksHandler {
                     break;
                 }
                 bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
+                if let Some(ref state) = admin_state_recv {
+                    state.connection_monitor.update_traffic(
+                        &req_id_recv,
+                        FrameDirection::Receive,
+                        n as u64,
+                    );
+                }
                 client_write.write_all(&buf[..n]).await?;
                 client_write.flush().await?;
             }
@@ -1375,6 +1422,8 @@ impl SocksHandler {
             state
                 .metrics_collector
                 .decrement_connections_by_type(TrafficType::Socks5);
+
+            state.connection_monitor.unregister_connection(&req_id);
 
             state.update_traffic_by_id(&req_id, move |record| {
                 record.request_size = total_sent as usize;
