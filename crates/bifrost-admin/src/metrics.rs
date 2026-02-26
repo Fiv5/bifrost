@@ -16,6 +16,9 @@ pub enum TrafficType {
     Tunnel,
     Ws,
     Wss,
+    H3,
+    H3s,
+    Socks5,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -47,6 +50,9 @@ pub struct MetricsSnapshot {
     pub tunnel: TrafficTypeMetrics,
     pub ws: TrafficTypeMetrics,
     pub wss: TrafficTypeMetrics,
+    pub h3: TrafficTypeMetrics,
+    pub h3s: TrafficTypeMetrics,
+    pub socks5: TrafficTypeMetrics,
 }
 
 #[derive(Default)]
@@ -100,6 +106,9 @@ pub struct MetricsCollector {
     tunnel: TrafficTypeCounters,
     ws: TrafficTypeCounters,
     wss: TrafficTypeCounters,
+    h3: TrafficTypeCounters,
+    h3s: TrafficTypeCounters,
+    socks5: TrafficTypeCounters,
 }
 
 impl MetricsCollector {
@@ -134,6 +143,9 @@ impl MetricsCollector {
             tunnel: TrafficTypeCounters::new(),
             ws: TrafficTypeCounters::new(),
             wss: TrafficTypeCounters::new(),
+            h3: TrafficTypeCounters::new(),
+            h3s: TrafficTypeCounters::new(),
+            socks5: TrafficTypeCounters::new(),
         }
     }
 
@@ -144,6 +156,9 @@ impl MetricsCollector {
             TrafficType::Tunnel => &self.tunnel,
             TrafficType::Ws => &self.ws,
             TrafficType::Wss => &self.wss,
+            TrafficType::H3 => &self.h3,
+            TrafficType::H3s => &self.h3s,
+            TrafficType::Socks5 => &self.socks5,
         }
     }
 
@@ -316,6 +331,9 @@ impl MetricsCollector {
             tunnel: self.tunnel.to_metrics(),
             ws: self.ws.to_metrics(),
             wss: self.wss.to_metrics(),
+            h3: self.h3.to_metrics(),
+            h3s: self.h3s.to_metrics(),
+            socks5: self.socks5.to_metrics(),
         }
     }
 

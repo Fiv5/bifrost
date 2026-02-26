@@ -2179,7 +2179,7 @@ where
     }
 }
 
-struct SingleCertResolver(Arc<CertifiedKey>);
+pub struct SingleCertResolver(pub Arc<CertifiedKey>);
 
 impl std::fmt::Debug for SingleCertResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

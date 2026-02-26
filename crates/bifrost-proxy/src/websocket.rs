@@ -16,6 +16,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
 use crate::logging::RequestContext;
+use crate::process_info::resolve_client_process;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, BoxBody, RulesResolver};
 
@@ -23,6 +24,7 @@ pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     admin_state: Option<Arc<AdminState>>,
+    peer_addr: std::net::SocketAddr,
 ) -> Result<Response<BoxBody>> {
     let ctx = RequestContext::new();
     let start_time = Instant::now();
@@ -105,6 +107,12 @@ pub async fn handle_websocket_upgrade(
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
+        let client_process = resolve_client_process(&peer_addr);
+        let (client_app, client_pid, client_path) = client_process
+            .as_ref()
+            .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+            .unwrap_or((None, None, None));
+
         let mut record = TrafficRecord::new(record_id.clone(), method, ws_url);
         record.status = 101;
         record.protocol = "ws".to_string();
@@ -138,6 +146,10 @@ pub async fn handle_websocket_upgrade(
                     .collect(),
             )
         };
+        record.client_ip = peer_addr.ip().to_string();
+        record.client_app = client_app;
+        record.client_pid = client_pid;
+        record.client_path = client_path;
         record.set_websocket();
 
         state.connection_monitor.register_connection(&record_id);

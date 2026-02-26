@@ -132,6 +132,8 @@ const matchRecord = (
     else if (protocolSet.has('HTTPS') && protocol === 'HTTPS') matched = true;
     else if (protocolSet.has('WS') && record.is_websocket && protocol === 'WS') matched = true;
     else if (protocolSet.has('WSS') && record.is_websocket && protocol === 'WSS') matched = true;
+    else if (protocolSet.has('H3') && (record.is_h3 || protocol === 'H3')) matched = true;
+    else if (protocolSet.has('H3S') && (record.is_h3 || protocol === 'H3S' || protocol === 'H3')) matched = true;
     if (!matched) return false;
   }
 

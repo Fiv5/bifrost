@@ -18,7 +18,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -26,7 +26,9 @@ use crate::dns::DnsResolver;
 use crate::http::handle_http_request;
 use crate::logging::RequestContext;
 use crate::process_info::resolve_client_process;
+use crate::socks::SocksHandler;
 use crate::tunnel::handle_connect;
+use crate::unified::{DetectedProtocol, PeekableStream};
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 #[derive(Debug, Clone)]
@@ -72,6 +74,7 @@ pub struct ProxyConfig {
     pub allow_lan: bool,
     pub unsafe_ssl: bool,
     pub max_body_buffer_size: usize,
+    pub enable_socks: bool,
 }
 
 impl Default for ProxyConfig {
@@ -95,6 +98,7 @@ impl Default for ProxyConfig {
             allow_lan: false,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
+            enable_socks: true,
         }
     }
 }
@@ -375,6 +379,9 @@ pub struct ProxyServer {
     admin_security_config: AdminSecurityConfig,
     access_control: Arc<RwLock<ClientAccessControl>>,
     dns_resolver: Arc<DnsResolver>,
+    udp_relay_addr: Arc<RwLock<Option<SocketAddr>>>,
+    #[allow(dead_code)]
+    udp_relay: Arc<RwLock<Option<crate::socks_udp::UdpRelay>>>,
 }
 
 impl ProxyServer {
@@ -395,6 +402,8 @@ impl ProxyServer {
             admin_security_config,
             access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
             dns_resolver,
+            udp_relay_addr: Arc::new(RwLock::new(None)),
+            udp_relay: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -447,7 +456,27 @@ impl ProxyServer {
             .map_err(|e| BifrostError::Config(format!("Invalid address: {}", e)))?;
 
         let listener = self.bind(addr).await?;
-        info!("Proxy server listening on {}", addr);
+
+        if self.config.enable_socks {
+            let udp_addr = SocketAddr::new(addr.ip(), addr.port());
+            let mut udp_relay =
+                crate::socks_udp::UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
+            let udp_relay_started_addr = udp_relay.start().await?;
+            {
+                let mut relay_addr = self.udp_relay_addr.write().await;
+                *relay_addr = Some(udp_relay_started_addr);
+            }
+            {
+                let mut relay = self.udp_relay.write().await;
+                *relay = Some(udp_relay);
+            }
+            info!(
+                "Unified proxy server listening on {} (HTTP/HTTPS/SOCKS5), UDP relay on {}",
+                addr, udp_relay_started_addr
+            );
+        } else {
+            info!("Proxy server listening on {} (HTTP/HTTPS only)", addr);
+        }
 
         if let Some(socks5_port) = self.config.socks5_port {
             let socks_config = crate::socks::SocksConfig {
@@ -460,10 +489,27 @@ impl ProxyServer {
                 access_mode: self.config.access_mode,
                 client_whitelist: self.config.client_whitelist.clone(),
                 allow_lan: self.config.allow_lan,
+                enable_udp: true,
+                udp_port: None,
             };
+            let enable_tls_intercept =
+                self.config.enable_tls_interception && self.tls_config.ca_cert.is_some();
             let socks_server = crate::socks::SocksServer::new(socks_config)
                 .with_rules(Arc::clone(&self.rules))
-                .with_access_control(Arc::clone(&self.access_control));
+                .with_access_control(Arc::clone(&self.access_control))
+                .with_verbose_logging(self.config.verbose_logging)
+                .with_unsafe_ssl(self.config.unsafe_ssl)
+                .with_dns_resolver(Arc::clone(&self.dns_resolver))
+                .with_tls_intercept(
+                    Arc::clone(&self.tls_config),
+                    enable_tls_intercept,
+                    self.admin_state.clone(),
+                );
+
+            info!(
+                "Separate SOCKS5 server also listening on {}:{}",
+                self.config.host, socks5_port
+            );
 
             let http_future = self.serve(listener);
             let socks_future = socks_server.run();
@@ -552,46 +598,91 @@ impl ProxyServer {
                 let ac = self.access_control.read().await;
                 ac.generation()
             };
+            let enable_socks = self.config.enable_socks;
+            let socks5_auth_required = self.config.socks5_auth_required;
+            let socks5_username = self.config.socks5_username.clone();
+            let socks5_password = self.config.socks5_password.clone();
+            let timeout_secs = self.config.timeout_secs;
+            let udp_relay_addr = Arc::clone(&self.udp_relay_addr);
 
             tokio::spawn(async move {
                 let connection_task = async {
-                    let io = TokioIo::new(stream);
-
-                    let service = service_fn(move |req: Request<Incoming>| {
-                        let rules = Arc::clone(&rules);
-                        let tls_config = Arc::clone(&tls_config);
-                        let proxy_config = proxy_config.clone();
-                        let admin_state = admin_state.clone();
-                        let push_manager = push_manager.clone();
-                        let admin_security_config = admin_security_config.clone();
-                        let dns_resolver = Arc::clone(&dns_resolver);
-                        let access_control = Arc::clone(&access_control);
-                        async move {
-                            handle_request(
-                                req,
-                                peer_addr,
-                                rules,
-                                tls_config,
-                                proxy_config,
-                                admin_state,
-                                push_manager,
-                                admin_security_config,
-                                dns_resolver,
-                                access_control,
-                                initial_generation,
-                            )
-                            .await
+                    if enable_socks {
+                        let mut peekable = PeekableStream::new(stream);
+                        match peekable.detect_protocol().await {
+                            Ok(DetectedProtocol::Socks5) => {
+                                debug!(
+                                    "Detected SOCKS5 protocol from {} on unified port",
+                                    peer_addr
+                                );
+                                let stream = peekable.into_inner();
+                                let enable_tls_intercept = proxy_config.enable_tls_interception
+                                    && tls_config.ca_cert.is_some();
+                                let current_udp_relay_addr = {
+                                    let addr = udp_relay_addr.read().await;
+                                    *addr
+                                };
+                                let handler = SocksHandler::new(
+                                    stream,
+                                    peer_addr,
+                                    socks5_auth_required,
+                                    socks5_username,
+                                    socks5_password,
+                                    timeout_secs,
+                                    current_udp_relay_addr,
+                                )
+                                .with_rules(Arc::clone(&rules))
+                                .with_verbose_logging(proxy_config.verbose_logging)
+                                .with_unsafe_ssl(proxy_config.unsafe_ssl)
+                                .with_dns_resolver(Arc::clone(&dns_resolver))
+                                .with_tls_intercept(
+                                    Arc::clone(&tls_config),
+                                    enable_tls_intercept,
+                                    admin_state.clone(),
+                                );
+                                if let Err(e) = handler.handle().await {
+                                    debug!("SOCKS5 handler error for {}: {}", peer_addr, e);
+                                }
+                                return;
+                            }
+                            Ok(DetectedProtocol::Socks4) => {
+                                debug!(
+                                    "Detected SOCKS4 protocol from {} (not fully supported)",
+                                    peer_addr
+                                );
+                                return;
+                            }
+                            Ok(_) | Err(_) => {}
                         }
-                    });
-
-                    if let Err(err) = http1::Builder::new()
-                        .preserve_header_case(true)
-                        .title_case_headers(true)
-                        .serve_connection(io, service)
-                        .with_upgrades()
-                        .await
-                    {
-                        error!("Error serving connection from {}: {:?}", peer_addr, err);
+                        handle_http_connection(
+                            peekable.into_inner(),
+                            peer_addr,
+                            rules,
+                            tls_config,
+                            proxy_config,
+                            admin_state,
+                            push_manager,
+                            admin_security_config,
+                            dns_resolver,
+                            access_control,
+                            initial_generation,
+                        )
+                        .await;
+                    } else {
+                        handle_http_connection(
+                            stream,
+                            peer_addr,
+                            rules,
+                            tls_config,
+                            proxy_config,
+                            admin_state,
+                            push_manager,
+                            admin_security_config,
+                            dns_resolver,
+                            access_control,
+                            initial_generation,
+                        )
+                        .await;
                     }
                 };
 
@@ -612,6 +703,60 @@ impl ProxyServer {
                 }
             });
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_http_connection(
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    rules: Arc<dyn RulesResolver>,
+    tls_config: Arc<TlsConfig>,
+    proxy_config: ProxyConfig,
+    admin_state: Option<Arc<AdminState>>,
+    push_manager: Option<SharedPushManager>,
+    admin_security_config: AdminSecurityConfig,
+    dns_resolver: Arc<DnsResolver>,
+    access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
+    initial_generation: u64,
+) {
+    let io = TokioIo::new(stream);
+
+    let service = service_fn(move |req: Request<Incoming>| {
+        let rules = Arc::clone(&rules);
+        let tls_config = Arc::clone(&tls_config);
+        let proxy_config = proxy_config.clone();
+        let admin_state = admin_state.clone();
+        let push_manager = push_manager.clone();
+        let admin_security_config = admin_security_config.clone();
+        let dns_resolver = Arc::clone(&dns_resolver);
+        let access_control = Arc::clone(&access_control);
+        async move {
+            handle_request(
+                req,
+                peer_addr,
+                rules,
+                tls_config,
+                proxy_config,
+                admin_state,
+                push_manager,
+                admin_security_config,
+                dns_resolver,
+                access_control,
+                initial_generation,
+            )
+            .await
+        }
+    });
+
+    if let Err(err) = http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(io, service)
+        .with_upgrades()
+        .await
+    {
+        error!("Error serving connection from {}: {:?}", peer_addr, err);
     }
 }
 
@@ -968,6 +1113,7 @@ mod tests {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            enable_socks: true,
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);

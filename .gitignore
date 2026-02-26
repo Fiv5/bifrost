@@ -9,3 +9,4 @@ node_modules
 e2e-tests/.test_results/
 .vscode
 .bifrost_test/
+.bifrost-*-test/

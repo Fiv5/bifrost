@@ -1,10 +1,13 @@
 #!/bin/bash
 # HTTP 客户端封装 - 简化测试请求发送
+# 支持 HTTP 和 SOCKS5 两种代理模式
 
 _HTTP_CLIENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-8080}
+SOCKS5_PORT=${SOCKS5_PORT:-}
+PROXY_MODE=${PROXY_MODE:-http}
 TIMEOUT=${TIMEOUT:-10}
 
 _temp_headers_file=""
@@ -38,7 +41,11 @@ http_request() {
     fi
 
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-        curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        if [ "$PROXY_MODE" = "socks5" ] && [ -n "$SOCKS5_PORT" ]; then
+            curl_args+=(--socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}")
+        else
+            curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        fi
     fi
 
     if [ -n "$data" ]; then
@@ -105,8 +112,12 @@ http_request_no_proxy() {
         --noproxy '*'
     )
 
-    if [ -n "$TEST_ID" ]; then
-        curl_args+=(-H "X-Test-ID: $TEST_ID")
+    if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
+        if [ "$PROXY_MODE" = "socks5" ] && [ -n "$SOCKS5_PORT" ]; then
+            curl_args+=(--socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}")
+        else
+            curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        fi
     fi
 
     if [ -n "$data" ]; then
@@ -152,7 +163,11 @@ https_request() {
     fi
 
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-        curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        if [ "$PROXY_MODE" = "socks5" ] && [ -n "$SOCKS5_PORT" ]; then
+            curl_args+=(--socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}")
+        else
+            curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        fi
     fi
 
     if [ -n "$data" ]; then
@@ -243,7 +258,11 @@ http_post_large_body() {
     fi
     
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-        curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        if [ "$PROXY_MODE" = "socks5" ] && [ -n "$SOCKS5_PORT" ]; then
+            curl_args+=(--socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}")
+        else
+            curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        fi
     fi
     
     if [ -n "$extra_headers" ]; then
@@ -296,7 +315,11 @@ https_post_large_body() {
     fi
     
     if [ -n "$PROXY_HOST" ] && [ -n "$PROXY_PORT" ]; then
-        curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        if [ "$PROXY_MODE" = "socks5" ] && [ -n "$SOCKS5_PORT" ]; then
+            curl_args+=(--socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}")
+        else
+            curl_args+=(--proxy "http://${PROXY_HOST}:${PROXY_PORT}")
+        fi
     fi
     
     if [ -n "$extra_headers" ]; then

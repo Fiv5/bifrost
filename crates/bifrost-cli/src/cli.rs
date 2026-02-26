@@ -35,9 +35,9 @@ SUBCOMMAND REFERENCE
 ────────────────────────────────────────────────────────────────────────────
 
 start [OPTIONS]                   Start the proxy server (default)
-  -p, --port <PORT>                   HTTP proxy port (overrides global -p)
+  -p, --port <PORT>                   Unified proxy port for HTTP/HTTPS/SOCKS5
   -H, --host <HOST>                   Listen address (overrides global -H)
-  --socks5-port <PORT>                SOCKS5 proxy port (overrides global --socks5-port)
+  --socks5-port <PORT>                Separate SOCKS5 port (optional; default: share main port)
   -d, --daemon                        Run as background daemon
   --skip-cert-check                   Skip CA certificate check
   --access-mode <MODE>              Access mode: local_only|whitelist|interactive|allow_all
@@ -136,7 +136,10 @@ pub struct Cli {
     #[arg(short = 'H', long, default_value = "0.0.0.0", help = "Listen address")]
     pub host: String,
 
-    #[arg(long, help = "SOCKS5 proxy port (disabled by default)")]
+    #[arg(
+        long,
+        help = "Separate SOCKS5 proxy port (by default SOCKS5 shares the main port)"
+    )]
     pub socks5_port: Option<u16>,
 
     #[arg(
@@ -169,7 +172,10 @@ pub enum Commands {
         port: Option<u16>,
         #[arg(short = 'H', long, help = "Listen address (overrides global -H)")]
         host: Option<String>,
-        #[arg(long, help = "SOCKS5 proxy port (overrides global --socks5-port)")]
+        #[arg(
+            long,
+            help = "Separate SOCKS5 port (overrides global; omit to share main port)"
+        )]
         socks5_port: Option<u16>,
         #[arg(short, long, help = "Run as daemon")]
         daemon: bool,

@@ -146,6 +146,8 @@ pub struct TrafficRecord {
     pub is_websocket: bool,
     #[serde(default)]
     pub is_sse: bool,
+    #[serde(default)]
+    pub is_h3: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_status: Option<SocketStatus>,
     #[serde(default)]
@@ -200,10 +202,15 @@ impl TrafficRecord {
             request_content_type: None,
             is_websocket: false,
             is_sse: false,
+            is_h3: false,
             socket_status: None,
             frame_count: 0,
             last_frame_id: 0,
         }
+    }
+
+    pub fn set_h3(&mut self) {
+        self.is_h3 = true;
     }
 
     pub fn set_websocket(&mut self) {
@@ -247,6 +254,8 @@ pub struct TrafficSummary {
     pub is_websocket: bool,
     #[serde(default)]
     pub is_sse: bool,
+    #[serde(default)]
+    pub is_h3: bool,
     #[serde(default)]
     pub is_tunnel: bool,
     #[serde(default)]
@@ -314,6 +323,7 @@ impl From<&TrafficRecord> for TrafficSummary {
             matched_protocols,
             is_websocket: record.is_websocket,
             is_sse: record.is_sse,
+            is_h3: record.is_h3,
             is_tunnel: record.is_tunnel,
             frame_count: record.frame_count,
             socket_status: record.socket_status.clone(),
@@ -503,6 +513,9 @@ pub struct TrafficFilter {
     pub header_contains: Option<String>,
     pub client_ip: Option<String>,
     pub client_app: Option<String>,
+    pub is_h3: Option<bool>,
+    pub is_websocket: Option<bool>,
+    pub is_sse: Option<bool>,
 }
 
 impl TrafficFilter {
@@ -634,6 +647,24 @@ impl TrafficFilter {
                     return false;
                 }
             } else {
+                return false;
+            }
+        }
+
+        if let Some(is_h3) = self.is_h3 {
+            if record.is_h3 != is_h3 {
+                return false;
+            }
+        }
+
+        if let Some(is_websocket) = self.is_websocket {
+            if record.is_websocket != is_websocket {
+                return false;
+            }
+        }
+
+        if let Some(is_sse) = self.is_sse {
+            if record.is_sse != is_sse {
                 return false;
             }
         }

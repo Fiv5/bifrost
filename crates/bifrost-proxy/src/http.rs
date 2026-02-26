@@ -46,6 +46,14 @@ const STREAMING_CONTENT_TYPES: &[&str] = &[
     "application/octet-stream",
 ];
 
+fn get_traffic_type_from_url(url: &str) -> TrafficType {
+    if url.starts_with("https://") {
+        TrafficType::Https
+    } else {
+        TrafficType::Http
+    }
+}
+
 fn get_content_type(res_parts: &ResponseParts) -> String {
     res_parts
         .headers
@@ -130,6 +138,11 @@ pub async fn handle_http_request(
     let uri = req.uri().clone();
     let method = req.method().to_string();
     let url = uri.to_string();
+    let record_url = if ctx.url.is_empty() {
+        url.clone()
+    } else {
+        ctx.url.clone()
+    };
     let start_time = std::time::Instant::now();
 
     let resolved_rules = rules.resolve(&url, &method);
@@ -163,7 +176,7 @@ pub async fn handle_http_request(
         if verbose_logging {
             info!("[{}] [IGNORED] request ignored by rule", ctx.id_str());
         }
-        return forward_without_rules(req, admin_state, &resolved_rules, has_rules).await;
+        return forward_without_rules(req, admin_state, &resolved_rules, has_rules, ctx).await;
     }
 
     if let Some(mock_response) =
@@ -497,16 +510,17 @@ pub async fn handle_http_request(
 
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = ctx.id_str();
+        let traffic_type = get_traffic_type_from_url(&record_url);
 
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
-                .add_bytes_sent_by_type(TrafficType::Http, final_body.len() as u64);
+                .add_bytes_sent_by_type(traffic_type, final_body.len() as u64);
             state
                 .metrics_collector
-                .increment_requests_by_type(TrafficType::Http);
+                .increment_requests_by_type(traffic_type);
 
-            let mut record = TrafficRecord::new(record_id.clone(), method, url);
+            let mut record = TrafficRecord::new(record_id.clone(), method, record_url.clone());
             record.status = res_parts.status.as_u16();
             record.content_type = res_parts
                 .headers
@@ -577,12 +591,8 @@ pub async fn handle_http_request(
         }
 
         if is_sse {
-            let tee_body = create_sse_tee_body(
-                res_body,
-                admin_state.clone(),
-                record_id,
-                Some(TrafficType::Http),
-            );
+            let tee_body =
+                create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
             let tee_body = create_tee_body_with_store(
@@ -591,7 +601,7 @@ pub async fn handle_http_request(
                 record_id,
                 Some(max_body_buffer_size),
                 res_content_encoding.clone(),
-                Some(TrafficType::Http),
+                Some(traffic_type),
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         }
@@ -660,17 +670,18 @@ pub async fn handle_http_request(
     let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
+        let traffic_type = get_traffic_type_from_url(&record_url);
         state
             .metrics_collector
-            .add_bytes_sent_by_type(TrafficType::Http, final_body.len() as u64);
+            .add_bytes_sent_by_type(traffic_type, final_body.len() as u64);
         state
             .metrics_collector
-            .add_bytes_received_by_type(TrafficType::Http, final_res_body.len() as u64);
+            .add_bytes_received_by_type(traffic_type, final_res_body.len() as u64);
         state
             .metrics_collector
-            .increment_requests_by_type(TrafficType::Http);
+            .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(ctx.id_str(), method, url);
+        let mut record = TrafficRecord::new(ctx.id_str(), method, record_url.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
@@ -768,11 +779,17 @@ async fn forward_without_rules(
     admin_state: Option<Arc<AdminState>>,
     resolved_rules: &ResolvedRules,
     has_rules: bool,
+    ctx: &RequestContext,
 ) -> Result<Response<BoxBody>> {
     let start_time = Instant::now();
     let method = req.method().to_string();
     let uri = req.uri().clone();
     let url = uri.to_string();
+    let record_url = if ctx.url.is_empty() {
+        url.clone()
+    } else {
+        ctx.url.clone()
+    };
     let host = uri
         .host()
         .ok_or_else(|| BifrostError::Network("Missing host in URI".to_string()))?
@@ -873,15 +890,17 @@ async fn forward_without_rules(
             .as_nanos()
     );
 
+    let traffic_type = get_traffic_type_from_url(&record_url);
+
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
-            .add_bytes_sent_by_type(TrafficType::Http, body_bytes.len() as u64);
+            .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
         state
             .metrics_collector
-            .increment_requests_by_type(TrafficType::Http);
+            .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(record_id.clone(), method, url);
+        let mut record = TrafficRecord::new(record_id.clone(), method, record_url.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
@@ -925,6 +944,10 @@ async fn forward_without_rules(
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
+        record.client_ip = ctx.client_ip.clone();
+        record.client_app = ctx.client_app.clone();
+        record.client_pid = ctx.client_pid;
+        record.client_path = ctx.client_path.clone();
 
         let is_sse = is_sse_response(&res_parts);
         if is_sse {
@@ -943,12 +966,8 @@ async fn forward_without_rules(
     }
 
     if is_sse_response(&res_parts) {
-        let tee_body = create_sse_tee_body(
-            res_body,
-            admin_state.clone(),
-            record_id,
-            Some(TrafficType::Http),
-        );
+        let tee_body =
+            create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     } else {
         let tee_body = create_tee_body_with_store(
@@ -957,7 +976,7 @@ async fn forward_without_rules(
             record_id,
             None,
             res_content_encoding,
-            Some(TrafficType::Http),
+            Some(traffic_type),
         );
         Ok(Response::from_parts(res_parts, tee_body.boxed()))
     }

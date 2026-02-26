@@ -570,6 +570,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            enable_socks: true,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -630,6 +631,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            enable_socks: true,
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -694,6 +696,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl,
             max_body_buffer_size: 10 * 1024 * 1024,
+            enable_socks: true,
         };
 
         init_crypto_provider();

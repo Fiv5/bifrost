@@ -1,18 +1,43 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
+use bifrost_admin::{AdminState, ConnectionInfo, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
+
 use futures_util::FutureExt;
+use hyper::body::Incoming;
+use hyper::server::conn::http1::Builder as ServerBuilder;
+use hyper::service::service_fn;
+use hyper::{Request, Response, Uri};
+use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_rustls::rustls::ServerConfig;
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
-use crate::server::RulesResolver;
+use crate::dns::DnsResolver;
+use crate::http::handle_http_request;
+use crate::logging::RequestContext;
+use crate::process_info::resolve_client_process;
+use crate::protocol::ProtocolDetector;
+use crate::server::{full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig};
+use crate::socks_udp::UdpRelay;
+use crate::tunnel::SingleCertResolver;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 const SOCKS5_VERSION: u8 = 0x05;
+
+static SOCKS5_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn generate_socks5_request_id() -> String {
+    let id = SOCKS5_REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("SOCKS-{:06}", id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -137,6 +162,8 @@ pub struct SocksConfig {
     pub access_mode: AccessMode,
     pub client_whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub enable_udp: bool,
+    pub udp_port: Option<u16>,
 }
 
 impl Default for SocksConfig {
@@ -151,6 +178,8 @@ impl Default for SocksConfig {
             access_mode: AccessMode::LocalOnly,
             client_whitelist: Vec::new(),
             allow_lan: false,
+            enable_udp: true,
+            udp_port: None,
         }
     }
 }
@@ -159,6 +188,15 @@ pub struct SocksServer {
     config: SocksConfig,
     rules: Arc<dyn RulesResolver>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    udp_relay_addr: Arc<RwLock<Option<SocketAddr>>>,
+    #[allow(dead_code)]
+    udp_relay: Arc<RwLock<Option<UdpRelay>>>,
+    tls_config: Option<Arc<TlsConfig>>,
+    enable_tls_intercept: bool,
+    admin_state: Option<Arc<AdminState>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
+    verbose_logging: bool,
+    unsafe_ssl: bool,
 }
 
 impl SocksServer {
@@ -172,6 +210,14 @@ impl SocksServer {
             config,
             rules: Arc::new(crate::server::NoOpRulesResolver),
             access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
+            udp_relay_addr: Arc::new(RwLock::new(None)),
+            udp_relay: Arc::new(RwLock::new(None)),
+            tls_config: None,
+            enable_tls_intercept: false,
+            admin_state: None,
+            dns_resolver: None,
+            verbose_logging: false,
+            unsafe_ssl: true,
         }
     }
 
@@ -182,6 +228,33 @@ impl SocksServer {
 
     pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
         self.access_control = access_control;
+        self
+    }
+
+    pub fn with_tls_intercept(
+        mut self,
+        tls_config: Arc<TlsConfig>,
+        enable: bool,
+        admin_state: Option<Arc<AdminState>>,
+    ) -> Self {
+        self.tls_config = Some(tls_config);
+        self.enable_tls_intercept = enable;
+        self.admin_state = admin_state;
+        self
+    }
+
+    pub fn with_dns_resolver(mut self, dns_resolver: Arc<DnsResolver>) -> Self {
+        self.dns_resolver = Some(dns_resolver);
+        self
+    }
+
+    pub fn with_verbose_logging(mut self, verbose: bool) -> Self {
+        self.verbose_logging = verbose;
+        self
+    }
+
+    pub fn with_unsafe_ssl(mut self, unsafe_ssl: bool) -> Self {
+        self.unsafe_ssl = unsafe_ssl;
         self
     }
 
@@ -207,7 +280,32 @@ impl SocksServer {
         let listener = self.bind(addr).await?;
         info!("SOCKS5 server listening on {}", addr);
 
+        if self.config.enable_udp {
+            let udp_port = self.config.udp_port.unwrap_or(0);
+            let udp_addr: SocketAddr = format!("{}:{}", self.config.host, udp_port)
+                .parse()
+                .map_err(|e| BifrostError::Config(format!("Invalid UDP address: {}", e)))?;
+
+            let mut udp_relay = UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
+            let relay_addr = udp_relay.start().await?;
+            info!("SOCKS5 UDP relay started on {}", relay_addr);
+
+            {
+                let mut addr_guard = self.udp_relay_addr.write().await;
+                *addr_guard = Some(relay_addr);
+            }
+            {
+                let mut relay_guard = self.udp_relay.write().await;
+                *relay_guard = Some(udp_relay);
+            }
+        }
+
         self.serve(listener).await
+    }
+
+    pub async fn get_udp_relay_addr(&self) -> Option<SocketAddr> {
+        let addr = self.udp_relay_addr.read().await;
+        *addr
     }
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
@@ -274,12 +372,35 @@ impl SocksServer {
             }
 
             let config = self.config.clone();
+            let udp_relay_addr = Arc::clone(&self.udp_relay_addr);
             let rules = Arc::clone(&self.rules);
+            let tls_config = self.tls_config.clone();
+            let enable_tls_intercept = self.enable_tls_intercept;
+            let admin_state = self.admin_state.clone();
+            let dns_resolver = self.dns_resolver.clone();
+            let verbose_logging = self.verbose_logging;
+            let unsafe_ssl = self.unsafe_ssl;
 
             tokio::spawn(async move {
                 let handler_task = async {
-                    let mut handler = SocksHandler::new(stream, config, rules);
-                    if let Err(e) = handler.handle_client().await {
+                    let udp_addr = {
+                        let addr = udp_relay_addr.read().await;
+                        *addr
+                    };
+                    let mut handler = SocksHandler::from_config_with_rules(
+                        stream, peer_addr, &config, udp_addr, rules,
+                    );
+                    handler = handler
+                        .with_verbose_logging(verbose_logging)
+                        .with_unsafe_ssl(unsafe_ssl);
+                    if let Some(dns) = dns_resolver {
+                        handler = handler.with_dns_resolver(dns);
+                    }
+                    if let Some(tls_cfg) = tls_config {
+                        handler =
+                            handler.with_tls_intercept(tls_cfg, enable_tls_intercept, admin_state);
+                    }
+                    if let Err(e) = handler.handle().await {
                         error!("SOCKS5 error for {}: {}", peer_addr, e);
                     }
                 };
@@ -301,35 +422,143 @@ impl SocksServer {
     }
 }
 
-struct SocksHandler {
-    stream: TcpStream,
-    config: SocksConfig,
-    rules: Arc<dyn RulesResolver>,
+pub struct SocksHandler {
+    stream: Option<TcpStream>,
+    peer_addr: SocketAddr,
+    auth_required: bool,
+    username: Option<String>,
+    password: Option<String>,
+    timeout_secs: u64,
+    udp_relay_addr: Option<SocketAddr>,
+    rules: Option<Arc<dyn RulesResolver>>,
+    tls_config: Option<Arc<TlsConfig>>,
+    enable_tls_intercept: bool,
+    admin_state: Option<Arc<AdminState>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
+    verbose_logging: bool,
+    unsafe_ssl: bool,
 }
 
 impl SocksHandler {
-    fn new(stream: TcpStream, config: SocksConfig, rules: Arc<dyn RulesResolver>) -> Self {
+    pub fn new(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        auth_required: bool,
+        username: Option<String>,
+        password: Option<String>,
+        timeout_secs: u64,
+        udp_relay_addr: Option<SocketAddr>,
+    ) -> Self {
         Self {
-            stream,
-            config,
-            rules,
+            stream: Some(stream),
+            peer_addr,
+            auth_required,
+            username,
+            password,
+            timeout_secs,
+            udp_relay_addr,
+            rules: None,
+            tls_config: None,
+            enable_tls_intercept: false,
+            admin_state: None,
+            dns_resolver: None,
+            verbose_logging: false,
+            unsafe_ssl: true,
         }
     }
 
-    pub async fn handle_client(&mut self) -> Result<()> {
+    fn stream(&mut self) -> &mut TcpStream {
+        self.stream.as_mut().expect("Stream should be available")
+    }
+
+    pub fn with_rules(mut self, rules: Arc<dyn RulesResolver>) -> Self {
+        self.rules = Some(rules);
+        self
+    }
+
+    pub fn with_tls_intercept(
+        mut self,
+        tls_config: Arc<TlsConfig>,
+        enable: bool,
+        admin_state: Option<Arc<AdminState>>,
+    ) -> Self {
+        self.tls_config = Some(tls_config);
+        self.enable_tls_intercept = enable;
+        self.admin_state = admin_state;
+        self
+    }
+
+    pub fn with_dns_resolver(mut self, dns_resolver: Arc<DnsResolver>) -> Self {
+        self.dns_resolver = Some(dns_resolver);
+        self
+    }
+
+    pub fn with_verbose_logging(mut self, verbose: bool) -> Self {
+        self.verbose_logging = verbose;
+        self
+    }
+
+    pub fn with_unsafe_ssl(mut self, unsafe_ssl: bool) -> Self {
+        self.unsafe_ssl = unsafe_ssl;
+        self
+    }
+
+    pub fn from_config(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        config: &SocksConfig,
+        udp_relay_addr: Option<SocketAddr>,
+    ) -> Self {
+        Self::new(
+            stream,
+            peer_addr,
+            config.auth_required,
+            config.username.clone(),
+            config.password.clone(),
+            config.timeout_secs,
+            udp_relay_addr,
+        )
+    }
+
+    pub fn from_config_with_rules(
+        stream: TcpStream,
+        peer_addr: SocketAddr,
+        config: &SocksConfig,
+        udp_relay_addr: Option<SocketAddr>,
+        rules: Arc<dyn RulesResolver>,
+    ) -> Self {
+        Self::from_config(stream, peer_addr, config, udp_relay_addr).with_rules(rules)
+    }
+
+    pub async fn handle(mut self) -> Result<()> {
+        self.handle_client().await
+    }
+
+    async fn handle_client(&mut self) -> Result<()> {
         let auth_method = self.handle_handshake().await?;
 
         if auth_method == AuthMethod::UsernamePassword {
             self.handle_auth().await?;
         }
 
-        let (address, port) = self.handle_request().await?;
-        self.connect_and_relay(address, port).await
+        let (command, address, port) = self.handle_request().await?;
+
+        match command {
+            SocksCommand::Connect => self.connect_and_relay(address, port).await,
+            SocksCommand::UdpAssociate => self.handle_udp_associate(address, port).await,
+            SocksCommand::Bind => {
+                self.send_reply(SocksReply::CommandNotSupported, None)
+                    .await?;
+                Err(BifrostError::Network(
+                    "BIND command not supported".to_string(),
+                ))
+            }
+        }
     }
 
     async fn handle_handshake(&mut self) -> Result<AuthMethod> {
         let mut header = [0u8; 2];
-        self.stream.read_exact(&mut header).await?;
+        self.stream().read_exact(&mut header).await?;
 
         let version = header[0];
         let nmethods = header[1];
@@ -342,12 +571,12 @@ impl SocksHandler {
         }
 
         let mut methods = vec![0u8; nmethods as usize];
-        self.stream.read_exact(&mut methods).await?;
+        self.stream().read_exact(&mut methods).await?;
 
         let selected_method = self.select_auth_method(&methods);
 
         let response = [SOCKS5_VERSION, selected_method as u8];
-        self.stream.write_all(&response).await?;
+        self.stream().write_all(&response).await?;
 
         if selected_method == AuthMethod::NoAcceptable {
             return Err(BifrostError::Network(
@@ -359,7 +588,7 @@ impl SocksHandler {
     }
 
     fn select_auth_method(&self, methods: &[u8]) -> AuthMethod {
-        if self.config.auth_required {
+        if self.auth_required {
             if methods.contains(&(AuthMethod::UsernamePassword as u8)) {
                 return AuthMethod::UsernamePassword;
             }
@@ -368,13 +597,13 @@ impl SocksHandler {
         }
 
         if methods.contains(&(AuthMethod::UsernamePassword as u8))
-            && self.config.username.is_some()
-            && self.config.password.is_some()
+            && self.username.is_some()
+            && self.password.is_some()
         {
             return AuthMethod::UsernamePassword;
         }
 
-        if methods.contains(&(AuthMethod::NoAuth as u8)) && !self.config.auth_required {
+        if methods.contains(&(AuthMethod::NoAuth as u8)) && !self.auth_required {
             return AuthMethod::NoAuth;
         }
 
@@ -383,7 +612,7 @@ impl SocksHandler {
 
     async fn handle_auth(&mut self) -> Result<()> {
         let mut version = [0u8; 1];
-        self.stream.read_exact(&mut version).await?;
+        self.stream().read_exact(&mut version).await?;
 
         if version[0] != 0x01 {
             return Err(BifrostError::Parse(format!(
@@ -393,14 +622,14 @@ impl SocksHandler {
         }
 
         let mut ulen = [0u8; 1];
-        self.stream.read_exact(&mut ulen).await?;
+        self.stream().read_exact(&mut ulen).await?;
         let mut username = vec![0u8; ulen[0] as usize];
-        self.stream.read_exact(&mut username).await?;
+        self.stream().read_exact(&mut username).await?;
 
         let mut plen = [0u8; 1];
-        self.stream.read_exact(&mut plen).await?;
+        self.stream().read_exact(&mut plen).await?;
         let mut password = vec![0u8; plen[0] as usize];
-        self.stream.read_exact(&mut password).await?;
+        self.stream().read_exact(&mut password).await?;
 
         let username = String::from_utf8_lossy(&username).to_string();
         let password = String::from_utf8_lossy(&password).to_string();
@@ -413,7 +642,7 @@ impl SocksHandler {
             [0x01, 0x01]
         };
 
-        self.stream.write_all(&response).await?;
+        self.stream().write_all(&response).await?;
 
         if !auth_success {
             return Err(BifrostError::Network("Authentication failed".to_string()));
@@ -424,7 +653,7 @@ impl SocksHandler {
     }
 
     fn verify_credentials(&self, username: &str, password: &str) -> bool {
-        match (&self.config.username, &self.config.password) {
+        match (&self.username, &self.password) {
             (Some(expected_user), Some(expected_pass)) => {
                 username == expected_user && password == expected_pass
             }
@@ -432,9 +661,9 @@ impl SocksHandler {
         }
     }
 
-    async fn handle_request(&mut self) -> Result<(SocksAddress, u16)> {
+    async fn handle_request(&mut self) -> Result<(SocksCommand, SocksAddress, u16)> {
         let mut header = [0u8; 4];
-        self.stream.read_exact(&mut header).await?;
+        self.stream().read_exact(&mut header).await?;
 
         let version = header[0];
         let cmd = header[1];
@@ -450,43 +679,34 @@ impl SocksHandler {
         let command = SocksCommand::try_from(cmd)?;
         let addr_type = AddressType::try_from(atyp)?;
 
-        if command != SocksCommand::Connect {
-            self.send_reply(SocksReply::CommandNotSupported, None)
-                .await?;
-            return Err(BifrostError::Network(format!(
-                "Unsupported SOCKS5 command: {:?}",
-                command
-            )));
-        }
-
         let address = self.read_address(addr_type).await?;
 
         let mut port_bytes = [0u8; 2];
-        self.stream.read_exact(&mut port_bytes).await?;
+        self.stream().read_exact(&mut port_bytes).await?;
         let port = u16::from_be_bytes(port_bytes);
 
-        debug!("SOCKS5: Request to connect to {:?}:{}", address, port);
+        debug!("SOCKS5: Request {:?} to {:?}:{}", command, address, port);
 
-        Ok((address, port))
+        Ok((command, address, port))
     }
 
     async fn read_address(&mut self, addr_type: AddressType) -> Result<SocksAddress> {
         match addr_type {
             AddressType::IPv4 => {
                 let mut addr = [0u8; 4];
-                self.stream.read_exact(&mut addr).await?;
+                self.stream().read_exact(&mut addr).await?;
                 Ok(SocksAddress::IPv4(Ipv4Addr::from(addr)))
             }
             AddressType::IPv6 => {
                 let mut addr = [0u8; 16];
-                self.stream.read_exact(&mut addr).await?;
+                self.stream().read_exact(&mut addr).await?;
                 Ok(SocksAddress::IPv6(Ipv6Addr::from(addr)))
             }
             AddressType::DomainName => {
                 let mut len = [0u8; 1];
-                self.stream.read_exact(&mut len).await?;
+                self.stream().read_exact(&mut len).await?;
                 let mut domain = vec![0u8; len[0] as usize];
-                self.stream.read_exact(&mut domain).await?;
+                self.stream().read_exact(&mut domain).await?;
                 let domain_str = String::from_utf8(domain).map_err(|e| {
                     BifrostError::Parse(format!("Invalid domain name encoding: {}", e))
                 })?;
@@ -502,17 +722,28 @@ impl SocksHandler {
             SocksAddress::DomainName(domain) => format!("socks5://{}:{}", domain, port),
         };
 
-        let resolved_rules = self.rules.resolve(&url, "CONNECT");
-
-        let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
-            let parts: Vec<&str> = host_rule.split(':').collect();
-            let h = parts[0].to_string();
-            let p = if parts.len() > 1 {
-                parts[1].parse().unwrap_or(port)
+        let (target_host, target_port) = if let Some(ref rules) = self.rules {
+            debug!("SOCKS5: Resolving rules for URL: {}", url);
+            let resolved = rules.resolve(&url, "CONNECT");
+            debug!("SOCKS5: Resolved host rule: {:?}", resolved.host);
+            if let Some(ref host_rule) = resolved.host {
+                let host_rule = host_rule.trim_end_matches('/');
+                let parts: Vec<&str> = host_rule.split(':').collect();
+                let h = parts[0].to_string();
+                let p = if parts.len() > 1 {
+                    parts[1].parse().unwrap_or(port)
+                } else {
+                    port
+                };
+                debug!("SOCKS5: Rule applied - {} -> {}:{}", url, h, p);
+                (h, p)
             } else {
-                port
-            };
-            (h, p)
+                match &address {
+                    SocksAddress::IPv4(ip) => (ip.to_string(), port),
+                    SocksAddress::IPv6(ip) => (ip.to_string(), port),
+                    SocksAddress::DomainName(domain) => (domain.clone(), port),
+                }
+            }
         } else {
             match &address {
                 SocksAddress::IPv4(ip) => (ip.to_string(), port),
@@ -530,7 +761,8 @@ impl SocksHandler {
                 let local_addr = target_stream.local_addr().ok();
                 self.send_reply(SocksReply::Succeeded, local_addr).await?;
                 debug!("SOCKS5: Connected to {}", target_addr);
-                self.relay_data(target_stream).await
+                self.relay_data(target_stream, &target_host, target_port, &url)
+                    .await
             }
             Err(e) => {
                 let reply = match e.kind() {
@@ -545,6 +777,54 @@ impl SocksHandler {
                 )))
             }
         }
+    }
+
+    async fn handle_udp_associate(&mut self, _address: SocksAddress, _port: u16) -> Result<()> {
+        let udp_relay_addr = match self.udp_relay_addr {
+            Some(addr) => addr,
+            None => {
+                self.send_reply(SocksReply::CommandNotSupported, None)
+                    .await?;
+                return Err(BifrostError::Network(
+                    "UDP ASSOCIATE not enabled on this server".to_string(),
+                ));
+            }
+        };
+
+        info!("SOCKS5: UDP ASSOCIATE request, relay at {}", udp_relay_addr);
+
+        self.send_reply(SocksReply::Succeeded, Some(udp_relay_addr))
+            .await?;
+
+        debug!("SOCKS5: UDP ASSOCIATE established, keeping TCP connection alive");
+
+        let mut buf = [0u8; 1];
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(self.timeout_secs * 10),
+                self.stream().read(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok(0)) => {
+                    debug!("SOCKS5: UDP ASSOCIATE TCP connection closed by client");
+                    break;
+                }
+                Ok(Ok(_)) => {
+                    continue;
+                }
+                Ok(Err(e)) => {
+                    debug!("SOCKS5: UDP ASSOCIATE TCP connection error: {}", e);
+                    break;
+                }
+                Err(_) => {
+                    debug!("SOCKS5: UDP ASSOCIATE timeout, closing connection");
+                    break;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn send_reply(
@@ -572,12 +852,392 @@ impl SocksHandler {
             }
         }
 
-        self.stream.write_all(&response).await?;
+        self.stream().write_all(&response).await?;
         Ok(())
     }
 
-    async fn relay_data(&mut self, target_stream: TcpStream) -> Result<()> {
-        let (mut client_read, mut client_write) = self.stream.split();
+    async fn relay_data(
+        &mut self,
+        target_stream: TcpStream,
+        target_host: &str,
+        target_port: u16,
+        original_url: &str,
+    ) -> Result<()> {
+        let rule_tls_intercept = if let Some(ref rules) = self.rules {
+            let resolved = rules.resolve(original_url, "CONNECT");
+            debug!(
+                "SOCKS5: Rule tls_intercept={:?} for {}",
+                resolved.tls_intercept, original_url
+            );
+            resolved.tls_intercept
+        } else {
+            None
+        };
+
+        let mut peek_buf = [0u8; 16];
+        let peek_len = self.stream().peek(&mut peek_buf).await.unwrap_or(0);
+
+        if peek_len > 0 {
+            let protocol = ProtocolDetector::detect_protocol_type(&peek_buf[..peek_len]);
+            debug!(
+                "SOCKS5: Detected protocol {:?} for {}:{}",
+                protocol, target_host, target_port
+            );
+
+            match protocol {
+                Some(crate::protocol::TransportProtocol::Tls) => {
+                    let should_intercept = rule_tls_intercept.unwrap_or(self.enable_tls_intercept);
+                    if should_intercept {
+                        if let Some(ref tls_config) = self.tls_config {
+                            if tls_config.ca_cert.is_some() {
+                                debug!(
+                                    "SOCKS5: TLS interception enabled for {}:{} (rule={:?}, global={})",
+                                    target_host, target_port, rule_tls_intercept, self.enable_tls_intercept
+                                );
+                                let original_host = original_url
+                                    .strip_prefix("socks5://")
+                                    .and_then(|s| s.split(':').next())
+                                    .unwrap_or(target_host);
+                                return self
+                                    .relay_with_tls_intercept(
+                                        target_stream,
+                                        target_host,
+                                        target_port,
+                                        original_host,
+                                    )
+                                    .await;
+                            }
+                        }
+                    }
+                }
+                Some(crate::protocol::TransportProtocol::Http1) => {
+                    if self.rules.is_some() {
+                        debug!(
+                            "SOCKS5: HTTP interception for {}:{}",
+                            target_host, target_port
+                        );
+                        return self
+                            .relay_with_http_intercept(target_stream, target_host, target_port)
+                            .await;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.relay_raw(target_stream, target_host, target_port)
+            .await
+    }
+
+    async fn relay_raw(
+        &mut self,
+        target_stream: TcpStream,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<()> {
+        let start_time = Instant::now();
+        let req_id = generate_socks5_request_id();
+        let peer_addr = self.peer_addr;
+        let admin_state = self.admin_state.clone();
+
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .increment_connections_by_type(TrafficType::Socks5);
+            state
+                .metrics_collector
+                .increment_requests_by_type(TrafficType::Socks5);
+
+            let conn_info = ConnectionInfo::new(
+                req_id.clone(),
+                target_host.to_string(),
+                target_port,
+                false,
+                cancel_tx,
+            );
+            state.connection_registry.register(conn_info);
+
+            let client_process = resolve_client_process(&peer_addr);
+            let (client_app, client_pid, client_path) = client_process
+                .as_ref()
+                .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+                .unwrap_or((None, None, None));
+
+            let mut record = TrafficRecord::new(
+                req_id.clone(),
+                "CONNECT".to_string(),
+                format!("socks5://{}:{}", target_host, target_port),
+            );
+            record.status = 200;
+            record.protocol = "socks5".to_string();
+            record.host = target_host.to_string();
+            record.is_tunnel = true;
+            record.client_ip = peer_addr.ip().to_string();
+            record.client_app = client_app;
+            record.client_pid = client_pid;
+            record.client_path = client_path;
+
+            state.record_traffic(record);
+            state.connection_monitor.register_connection(&req_id);
+
+            info!(
+                "[{}] SOCKS5 tunnel established to {}:{} (from {})",
+                req_id, target_host, target_port, peer_addr
+            );
+        }
+
+        let (mut client_read, mut client_write) = self.stream().split();
+        let (mut target_read, mut target_write) = target_stream.into_split();
+
+        let bytes_sent = Arc::new(AtomicU64::new(0));
+        let bytes_received = Arc::new(AtomicU64::new(0));
+        let bytes_sent_clone = Arc::clone(&bytes_sent);
+        let bytes_received_clone = Arc::clone(&bytes_received);
+
+        let client_to_target = async {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = client_read.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
+                target_write.write_all(&buf[..n]).await?;
+                target_write.flush().await?;
+            }
+            target_write.shutdown().await?;
+            Ok::<_, std::io::Error>(())
+        };
+
+        let target_to_client = async {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = target_read.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
+                client_write.write_all(&buf[..n]).await?;
+                client_write.flush().await?;
+            }
+            Ok::<_, std::io::Error>(())
+        };
+
+        let cancel_future = async {
+            let _ = cancel_rx.await;
+            Err::<(), std::io::Error>(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Connection cancelled",
+            ))
+        };
+
+        let relay_future = async { tokio::try_join!(client_to_target, target_to_client) };
+
+        let result = tokio::select! {
+            res = relay_future => res.map(|_| ()),
+            _ = cancel_future => Ok(()),
+        };
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let total_sent = bytes_sent.load(Ordering::Relaxed);
+        let total_received = bytes_received.load(Ordering::Relaxed);
+
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .add_bytes_sent_by_type(TrafficType::Socks5, total_sent);
+            state
+                .metrics_collector
+                .add_bytes_received_by_type(TrafficType::Socks5, total_received);
+            state
+                .metrics_collector
+                .decrement_connections_by_type(TrafficType::Socks5);
+
+            state.connection_registry.unregister(&req_id);
+            state.connection_monitor.unregister_connection(&req_id);
+
+            debug!(
+                "[{}] SOCKS5 tunnel closed: sent={} bytes, received={} bytes, duration={}ms",
+                req_id, total_sent, total_received, duration_ms
+            );
+        }
+
+        match result {
+            Ok(_) => {
+                debug!("SOCKS5: Connection closed normally");
+                Ok(())
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::BrokenPipe
+                    || e.kind() == std::io::ErrorKind::Interrupted
+                {
+                    debug!("SOCKS5: Connection closed: {}", e);
+                    Ok(())
+                } else {
+                    Err(BifrostError::Network(format!("Relay error: {}", e)))
+                }
+            }
+        }
+    }
+
+    async fn relay_with_tls_intercept(
+        &mut self,
+        _target_stream: TcpStream,
+        target_host: &str,
+        target_port: u16,
+        cert_host: &str,
+    ) -> Result<()> {
+        let tls_config = match &self.tls_config {
+            Some(c) => Arc::clone(c),
+            None => return Err(BifrostError::Tls("TLS config not available".to_string())),
+        };
+
+        let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
+            sni_resolver.resolve(cert_host)?
+        } else if let Some(ref cert_generator) = tls_config.cert_generator {
+            Arc::new(cert_generator.generate_for_domain(cert_host)?)
+        } else {
+            return Err(BifrostError::Tls(
+                "TLS interception enabled but cert generator not configured".to_string(),
+            ));
+        };
+
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+
+        debug!(
+            "SOCKS5: Starting TLS MITM handshake for {}:{}",
+            target_host, target_port
+        );
+
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let client_stream = self
+            .stream
+            .take()
+            .ok_or_else(|| BifrostError::Network("Stream already taken".to_string()))?;
+
+        let client_tls = acceptor
+            .accept(client_stream)
+            .await
+            .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+
+        debug!(
+            "SOCKS5: TLS handshake completed for {}:{}",
+            target_host, target_port
+        );
+
+        let rules = self.rules.clone();
+        let admin_state = self.admin_state.clone();
+        let dns_resolver = self.dns_resolver.clone();
+        let verbose_logging = self.verbose_logging;
+        let unsafe_ssl = self.unsafe_ssl;
+        let peer_addr = self.peer_addr;
+        let target_host = target_host.to_string();
+        let original_host = cert_host.to_string();
+        let max_body_buffer_size = admin_state
+            .as_ref()
+            .map(|s| s.get_max_body_buffer_size())
+            .unwrap_or(10 * 1024 * 1024);
+
+        let service = service_fn(move |req: Request<Incoming>| {
+            let target_host = target_host.clone();
+            let original_host = original_host.clone();
+            let rules = rules.clone();
+            let admin_state = admin_state.clone();
+            let dns_resolver = dns_resolver.clone();
+            async move {
+                handle_socks5_intercepted_request(
+                    req,
+                    &target_host,
+                    target_port,
+                    &original_host,
+                    rules,
+                    admin_state,
+                    dns_resolver,
+                    max_body_buffer_size,
+                    verbose_logging,
+                    unsafe_ssl,
+                    peer_addr,
+                )
+                .await
+            }
+        });
+
+        let client_io = TokioIo::new(client_tls);
+
+        let conn = ServerBuilder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .serve_connection(client_io, service)
+            .with_upgrades();
+
+        if let Err(e) = conn.await {
+            debug!("SOCKS5 TLS: HTTP connection ended: {}", e);
+        }
+
+        Ok(())
+    }
+
+    async fn relay_with_http_intercept(
+        &mut self,
+        mut target_stream: TcpStream,
+        target_host: &str,
+        target_port: u16,
+    ) -> Result<()> {
+        let rules = match &self.rules {
+            Some(r) => Arc::clone(r),
+            None => {
+                return self
+                    .relay_raw(target_stream, target_host, target_port)
+                    .await
+            }
+        };
+
+        let mut request_buf = vec![0u8; 8192];
+        let n = self.stream().read(&mut request_buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+
+        let request_data = &request_buf[..n];
+        let request_str = String::from_utf8_lossy(request_data);
+
+        let first_line = request_str.lines().next().unwrap_or("");
+        let parts: Vec<&str> = first_line.split_whitespace().collect();
+        let method = parts.first().unwrap_or(&"GET");
+        let path = parts.get(1).unwrap_or(&"/");
+
+        let url = format!("http://{}:{}{}", target_host, target_port, path);
+        debug!("SOCKS5 HTTP: {} {}", method, url);
+
+        let resolved = rules.resolve(&url, method);
+
+        if let Some(ref host_rule) = resolved.host {
+            let new_host = host_rule.split(':').next().unwrap_or(host_rule);
+            let new_port: u16 = host_rule
+                .split(':')
+                .nth(1)
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(target_port);
+
+            debug!("SOCKS5 HTTP: Redirecting to {}:{}", new_host, new_port);
+
+            drop(target_stream);
+            target_stream = TcpStream::connect(format!("{}:{}", new_host, new_port)).await?;
+
+            let modified_request = self.rewrite_http_host(request_data, target_host, new_host)?;
+            target_stream.write_all(&modified_request).await?;
+        } else {
+            target_stream.write_all(request_data).await?;
+        }
+        target_stream.flush().await?;
+
+        let (mut client_read, mut client_write) = self.stream().split();
         let (mut target_read, mut target_write) = target_stream.into_split();
 
         let client_to_target = async {
@@ -607,23 +1267,124 @@ impl SocksHandler {
             Ok::<_, std::io::Error>(())
         };
 
-        let result = tokio::try_join!(client_to_target, target_to_client);
+        let _ = tokio::try_join!(client_to_target, target_to_client);
+        Ok(())
+    }
 
-        match result {
-            Ok(_) => {
-                debug!("SOCKS5: Connection closed normally");
-                Ok(())
+    fn rewrite_http_host(&self, request: &[u8], old_host: &str, new_host: &str) -> Result<Vec<u8>> {
+        let request_str = String::from_utf8_lossy(request);
+        let modified = request_str.replace(
+            &format!("Host: {}", old_host),
+            &format!("Host: {}", new_host),
+        );
+        Ok(modified.into_bytes())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_socks5_intercepted_request(
+    req: Request<Incoming>,
+    target_host: &str,
+    target_port: u16,
+    original_host: &str,
+    rules: Option<Arc<dyn RulesResolver>>,
+    admin_state: Option<Arc<AdminState>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
+    max_body_buffer_size: usize,
+    verbose_logging: bool,
+    unsafe_ssl: bool,
+    peer_addr: SocketAddr,
+) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    let method = req.method().to_string();
+    let original_uri = req.uri().clone();
+    let path = original_uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+
+    let full_url = format!("https://{}{}", original_host, path);
+
+    debug!(
+        "SOCKS5 TLS intercepted: {} {} (target: {}:{})",
+        method, full_url, target_host, target_port
+    );
+
+    let rules_resolver: Arc<dyn RulesResolver> =
+        rules.clone().unwrap_or_else(|| Arc::new(NoOpRulesResolver));
+
+    let resolved = rules_resolver.resolve(&full_url, &method);
+
+    let request_url = if resolved.ignored {
+        full_url.clone()
+    } else {
+        let target_protocol = resolved
+            .host_protocol
+            .unwrap_or(bifrost_core::Protocol::Http);
+        match target_protocol {
+            bifrost_core::Protocol::Http => {
+                format!("http://{}:{}{}", target_host, target_port, path)
             }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::ConnectionReset
-                    || e.kind() == std::io::ErrorKind::BrokenPipe
-                {
-                    debug!("SOCKS5: Connection closed: {}", e);
-                    Ok(())
+            bifrost_core::Protocol::Https => {
+                if target_port == 443 {
+                    format!("https://{}{}", target_host, path)
                 } else {
-                    Err(BifrostError::Network(format!("Relay error: {}", e)))
+                    format!("https://{}:{}{}", target_host, target_port, path)
                 }
             }
+            _ => {
+                format!("http://{}:{}{}", target_host, target_port, path)
+            }
+        }
+    };
+
+    debug!(
+        "SOCKS5 TLS: Forwarding to {} (ignored: {})",
+        request_url, resolved.ignored
+    );
+
+    let new_uri: Uri = request_url.parse().unwrap_or_else(|_| original_uri.clone());
+
+    let (parts, body) = req.into_parts();
+    let mut new_req = Request::from_parts(parts, body);
+    *new_req.uri_mut() = new_uri;
+
+    let client_process = resolve_client_process(&peer_addr);
+    let (client_app, client_pid, client_path) = client_process
+        .as_ref()
+        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+        .unwrap_or((None, None, None));
+
+    let ctx = RequestContext::new()
+        .with_client_ip(peer_addr.ip().to_string())
+        .with_client_process(client_app, client_pid, client_path)
+        .with_request_info(
+            full_url.clone(),
+            method.clone(),
+            original_host.to_string(),
+            path.to_string(),
+            String::new(),
+            peer_addr.ip().to_string(),
+        );
+
+    match handle_http_request(
+        new_req,
+        rules_resolver,
+        verbose_logging,
+        unsafe_ssl,
+        max_body_buffer_size,
+        &ctx,
+        admin_state,
+        dns_resolver,
+    )
+    .await
+    {
+        Ok(response) => Ok(response),
+        Err(e) => {
+            error!("SOCKS5 TLS: Request handling failed: {}", e);
+            Ok(Response::builder()
+                .status(502)
+                .body(full_body(format!("Request handling failed: {}", e)))
+                .unwrap())
         }
     }
 }
@@ -740,6 +1501,8 @@ mod tests {
         assert!(config.username.is_none());
         assert!(config.password.is_none());
         assert_eq!(config.timeout_secs, 30);
+        assert!(config.enable_udp);
+        assert!(config.udp_port.is_none());
     }
 
     #[test]
@@ -762,6 +1525,8 @@ mod tests {
             access_mode: AccessMode::Whitelist,
             client_whitelist: vec!["10.0.0.0/8".to_string()],
             allow_lan: true,
+            enable_udp: true,
+            udp_port: Some(1081),
         };
         let server = SocksServer::new(config);
         assert_eq!(server.config().port, 9050);
@@ -769,6 +1534,8 @@ mod tests {
         assert!(server.config().auth_required);
         assert_eq!(server.config().access_mode, AccessMode::Whitelist);
         assert!(server.config().allow_lan);
+        assert!(server.config().enable_udp);
+        assert_eq!(server.config().udp_port, Some(1081));
     }
 
     #[tokio::test]
@@ -887,6 +1654,8 @@ mod tests {
             access_mode: AccessMode::LocalOnly,
             client_whitelist: Vec::new(),
             allow_lan: false,
+            enable_udp: false,
+            udp_port: None,
         };
         assert!(config.auth_required);
         assert_eq!(config.username, Some("admin".to_string()));

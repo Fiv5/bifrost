@@ -187,21 +187,29 @@ impl PathsConfig {
     }
 
     pub fn resolve_paths(&mut self, data_dir: &Path) {
-        if self.rules_dir.is_relative() {
-            self.rules_dir = data_dir.join(&self.rules_dir);
+        self.rules_dir = Self::resolve_single_path(&self.rules_dir, data_dir);
+        self.values_dir = Self::resolve_single_path(&self.values_dir, data_dir);
+        self.plugins_dir = Self::resolve_single_path(&self.plugins_dir, data_dir);
+        self.cert_dir = Self::resolve_single_path(&self.cert_dir, data_dir);
+        self.traffic_dir = Self::resolve_single_path(&self.traffic_dir, data_dir);
+    }
+
+    fn resolve_single_path(path: &Path, data_dir: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
         }
-        if self.values_dir.is_relative() {
-            self.values_dir = data_dir.join(&self.values_dir);
+
+        if path.starts_with(data_dir) {
+            return path.to_path_buf();
         }
-        if self.plugins_dir.is_relative() {
-            self.plugins_dir = data_dir.join(&self.plugins_dir);
+
+        let path_str = path.to_string_lossy();
+        let data_dir_str = data_dir.to_string_lossy();
+        if path_str.contains(&*data_dir_str) {
+            return path.to_path_buf();
         }
-        if self.cert_dir.is_relative() {
-            self.cert_dir = data_dir.join(&self.cert_dir);
-        }
-        if self.traffic_dir.is_relative() {
-            self.traffic_dir = data_dir.join(&self.traffic_dir);
-        }
+
+        data_dir.join(path)
     }
 }
 

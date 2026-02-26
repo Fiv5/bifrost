@@ -145,6 +145,7 @@ pub fn run_start(
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
+        enable_socks: true,
         ..Default::default()
     };
 
@@ -350,9 +351,22 @@ pub fn run_foreground(
 
     println!();
     println!("📡 NETWORK");
-    println!("   HTTP Proxy:    {}:{}", config.host, config.port);
     if let Some(socks5_port) = config.socks5_port {
-        println!("   SOCKS5 Proxy:  {}:{}", config.host, socks5_port);
+        println!(
+            "   Unified Proxy: {}:{} (HTTP/HTTPS/SOCKS5)",
+            config.host, config.port
+        );
+        println!(
+            "   SOCKS5 (alt):  {}:{} (separate port)",
+            config.host, socks5_port
+        );
+    } else if config.enable_socks {
+        println!(
+            "   Unified Proxy: {}:{} (HTTP/HTTPS/SOCKS5)",
+            config.host, config.port
+        );
+    } else {
+        println!("   HTTP Proxy:    {}:{}", config.host, config.port);
     }
     println!("   Admin UI:      http://{}:{}/", admin_host, config.port);
 
@@ -605,9 +619,16 @@ pub fn run_daemon(
     std::fs::create_dir_all(&bifrost_dir)?;
 
     println!("Starting Bifrost proxy in daemon mode...");
-    println!("HTTP proxy: {}:{}", config.host, config.port);
+    if config.enable_socks {
+        println!(
+            "Unified proxy (HTTP/HTTPS/SOCKS5): {}:{}",
+            config.host, config.port
+        );
+    } else {
+        println!("HTTP proxy: {}:{}", config.host, config.port);
+    }
     if let Some(socks5_port) = config.socks5_port {
-        println!("SOCKS5 proxy: {}:{}", config.host, socks5_port);
+        println!("SOCKS5 (separate): {}:{}", config.host, socks5_port);
     }
     println!("PID file: {}", get_pid_file()?.display());
     println!("Log file: {}", bifrost_dir.join("bifrost.log").display());
@@ -845,6 +866,11 @@ pub fn run_daemon(
 
 fn load_stored_rules(rules_storage: &bifrost_storage::RulesStorage) -> Vec<Rule> {
     let mut stored_rules = Vec::new();
+    tracing::info!(
+        target: "bifrost_cli::rules",
+        base_dir = %rules_storage.base_dir().display(),
+        "loading rules from storage"
+    );
     match rules_storage.load_enabled() {
         Ok(rule_files) => {
             let stored_count = rule_files.len();

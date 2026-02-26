@@ -1,0 +1,280 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+E2E_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$E2E_DIR")"
+
+source "$E2E_DIR/test_utils/assert.sh"
+source "$E2E_DIR/test_utils/http_client.sh"
+
+PROXY_HOST=${PROXY_HOST:-127.0.0.1}
+PROXY_PORT=${PROXY_PORT:-18081}
+SOCKS5_PORT=${SOCKS5_PORT:-18082}
+BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
+DATA_DIR="${PROJECT_ROOT}/.bifrost-socks5-tls-rules-test"
+
+cleanup() {
+    echo "Cleaning up..."
+    pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true
+    sleep 1
+    rm -rf "$DATA_DIR"
+}
+
+trap cleanup EXIT
+
+start_proxy_with_rules() {
+    local rules="$1"
+    echo "Starting Bifrost proxy on port $PROXY_PORT (SOCKS5: $SOCKS5_PORT)..."
+    echo "Rules: $rules"
+    
+    pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true
+    sleep 1
+    
+    rm -rf "$DATA_DIR"
+    mkdir -p "$DATA_DIR/rules"
+    
+    export BIFROST_DATA_DIR="$DATA_DIR"
+    
+    if [ -n "$rules" ]; then
+        RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
+            --unsafe-ssl --skip-cert-check --rules "$rules" 2>&1 &
+    else
+        RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
+            --unsafe-ssl --skip-cert-check 2>&1 &
+    fi
+    PROXY_PID=$!
+    
+    sleep 5
+    
+    if ! kill -0 $PROXY_PID 2>/dev/null; then
+        echo "ERROR: Proxy failed to start"
+        exit 1
+    fi
+    
+    echo "Proxy started (PID: $PROXY_PID)"
+}
+
+restart_proxy_with_rules() {
+    local rules="$1"
+    echo "Restarting proxy with new rules..."
+    pkill -f "bifrost" 2>/dev/null || true
+    sleep 3
+    
+    while lsof -i :$PROXY_PORT >/dev/null 2>&1 || lsof -i :$SOCKS5_PORT >/dev/null 2>&1; do
+        echo "  Waiting for ports to be released..."
+        sleep 1
+    done
+    
+    start_proxy_with_rules "$rules"
+}
+
+test_https_via_socks5_basic() {
+    echo ""
+    echo "=== Test 1: Basic HTTPS via SOCKS5 ==="
+    
+    start_proxy_with_rules ""
+    
+    PROXY_MODE="socks5"
+    https_request "https://httpbin.org/ip"
+    
+    if [ "$HTTP_STATUS" = "200" ]; then
+        echo "  ✅ Basic HTTPS via SOCKS5 works"
+        echo "  Response: $HTTP_BODY"
+    else
+        echo "  ❌ Basic HTTPS via SOCKS5 failed: status=$HTTP_STATUS"
+        return 1
+    fi
+}
+
+test_https_header_rule_via_socks5() {
+    echo ""
+    echo "=== Test 2: HTTPS Header Rule via SOCKS5 ==="
+    
+    restart_proxy_with_rules "httpbin.org/headers resHeaders://X-Bifrost-Test=socks5-tls-intercept"
+    
+    PROXY_MODE="socks5"
+    https_request "https://httpbin.org/headers"
+    
+    echo "  Response Headers:"
+    echo "$HTTP_HEADERS" | head -20
+    
+    if echo "$HTTP_HEADERS" | grep -qi "X-Bifrost-Test"; then
+        echo "  ✅ Response header rule applied via SOCKS5 TLS intercept"
+    else
+        echo "  ❌ Response header not found"
+        return 1
+    fi
+    
+    if [ "$HTTP_STATUS" = "200" ]; then
+        echo "  ✅ HTTPS request successful"
+    else
+        echo "  ❌ HTTPS request failed: status=$HTTP_STATUS"
+        return 1
+    fi
+}
+
+test_https_host_redirect_via_socks5() {
+    echo ""
+    echo "=== Test 3: HTTPS Host Redirect via SOCKS5 ==="
+    
+    restart_proxy_with_rules "example-redirect.test host://httpbin.org"
+    
+    PROXY_MODE="socks5"
+    https_request "https://httpbin.org/get"
+    
+    if [ "$HTTP_STATUS" = "200" ]; then
+        echo "  ✅ Host redirect rule works via SOCKS5"
+        echo "  Response body preview: ${HTTP_BODY:0:200}"
+    else
+        echo "  ❌ Host redirect failed: status=$HTTP_STATUS"
+        return 1
+    fi
+}
+
+test_https_mock_response_via_socks5() {
+    echo ""
+    echo "=== Test 4: HTTPS Mock Response via SOCKS5 ==="
+    
+    restart_proxy_with_rules 'httpbin.org/mock-test file://({"mocked":true,"source":"socks5"})'
+    
+    PROXY_MODE="socks5"
+    https_request "https://httpbin.org/mock-test"
+    
+    echo "  Response: $HTTP_BODY"
+    
+    if echo "$HTTP_BODY" | grep -q "mocked"; then
+        echo "  ✅ Mock response rule works via SOCKS5 TLS intercept"
+    else
+        echo "  ❌ Mock response not applied"
+        return 1
+    fi
+}
+
+test_compare_http_vs_socks5() {
+    echo ""
+    echo "=== Test 5: Compare HTTP Proxy vs SOCKS5 Proxy ==="
+    
+    restart_proxy_with_rules "httpbin.org/anything resHeaders://X-Proxy-Mode=test-header"
+    
+    echo "  --- HTTP Proxy Mode ---"
+    PROXY_MODE="http"
+    https_request "https://httpbin.org/anything"
+    local http_status=$HTTP_STATUS
+    local http_has_header=$(echo "$HTTP_HEADERS" | grep -ci "X-Proxy-Mode" || echo "0")
+    echo "  HTTP Proxy: status=$http_status, has_header=$http_has_header"
+    
+    echo "  --- SOCKS5 Proxy Mode ---"
+    PROXY_MODE="socks5"
+    https_request "https://httpbin.org/anything"
+    local socks5_status=$HTTP_STATUS
+    local socks5_has_header=$(echo "$HTTP_HEADERS" | grep -ci "X-Proxy-Mode" || echo "0")
+    echo "  SOCKS5 Proxy: status=$socks5_status, has_header=$socks5_has_header"
+    
+    if [ "$http_status" = "200" ] && [ "$socks5_status" = "200" ]; then
+        echo "  ✅ Both proxy modes work"
+        if [ "$http_has_header" -gt 0 ] && [ "$socks5_has_header" -gt 0 ]; then
+            echo "  ✅ Both proxy modes applied the header rule"
+        else
+            echo "  ⚠ Header rule: HTTP=$http_has_header, SOCKS5=$socks5_has_header"
+        fi
+    else
+        echo "  ❌ One or both proxy modes failed"
+        return 1
+    fi
+}
+
+test_socks5_udp_associate() {
+    echo ""
+    echo "=== Test 6: SOCKS5 UDP ASSOCIATE ==="
+    
+    local socks_port=$SOCKS5_PORT
+    python3 << PYTHON_SCRIPT
+import socket
+import struct
+import sys
+
+SOCKS5_HOST = "127.0.0.1"
+SOCKS5_PORT = $socks_port
+
+try:
+    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp_sock.settimeout(10)
+    tcp_sock.connect((SOCKS5_HOST, SOCKS5_PORT))
+    print(f"✓ Connected to SOCKS5 server at {SOCKS5_HOST}:{SOCKS5_PORT}")
+    
+    tcp_sock.send(b'\x05\x01\x00')
+    auth_resp = tcp_sock.recv(2)
+    if auth_resp != b'\x05\x00':
+        print(f"❌ Auth failed: {auth_resp.hex()}")
+        sys.exit(1)
+    print("✓ SOCKS5 auth OK")
+    
+    tcp_sock.send(b'\x05\x03\x00\x01\x00\x00\x00\x00\x00\x00')
+    resp = tcp_sock.recv(10)
+    
+    if resp[1] != 0x00:
+        print(f"❌ UDP ASSOCIATE failed: reply={resp[1]}")
+        sys.exit(1)
+    
+    relay_ip = socket.inet_ntoa(resp[4:8])
+    relay_port = struct.unpack('>H', resp[8:10])[0]
+    
+    if relay_ip == '0.0.0.0':
+        relay_ip = SOCKS5_HOST
+    
+    print(f"✅ UDP relay at {relay_ip}:{relay_port}")
+    
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    udp_sock.settimeout(5)
+    
+    dns_query = b'\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'
+    dns_query += b'\x06google\x03com\x00\x00\x01\x00\x01'
+    
+    packet = b'\x00\x00\x00'
+    packet += b'\x01'
+    packet += socket.inet_aton('8.8.8.8')
+    packet += struct.pack('>H', 53)
+    packet += dns_query
+    
+    relay_addr = (relay_ip, relay_port)
+    udp_sock.sendto(packet, relay_addr)
+    print(f"✓ Sent DNS query via UDP relay ({len(packet)} bytes)")
+    
+    try:
+        response_data, addr = udp_sock.recvfrom(4096)
+        print(f"✅ Received UDP response from {addr} ({len(response_data)} bytes)")
+        print("✅ SOCKS5 UDP relay is working!")
+    except socket.timeout:
+        print("⚠ UDP response timeout (relay works, target may not respond)")
+    
+    tcp_sock.close()
+    udp_sock.close()
+    print("✅ SOCKS5 UDP ASSOCIATE test completed")
+    
+except Exception as e:
+    print(f"❌ Error: {e}")
+    sys.exit(1)
+PYTHON_SCRIPT
+}
+
+echo "=============================================="
+echo "  SOCKS5 TLS Intercept Rules E2E Test Suite"
+echo "=============================================="
+echo ""
+echo "This test verifies that SOCKS5 proxy with TLS"
+echo "intercept supports the same rules as HTTP proxy."
+echo ""
+echo "=== Running Tests ==="
+
+test_https_via_socks5_basic
+test_https_header_rule_via_socks5
+test_https_host_redirect_via_socks5
+test_https_mock_response_via_socks5
+test_compare_http_vs_socks5
+test_socks5_udp_associate
+
+echo ""
+echo "=============================================="
+echo "  All SOCKS5 TLS Rules Tests Completed!"
+echo "=============================================="

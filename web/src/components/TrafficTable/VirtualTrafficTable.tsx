@@ -160,12 +160,21 @@ const columns: ColumnDef[] = [
   {
     key: "protocol",
     title: "Protocol",
-    width: 60,
-    render: (record) => (
-      <Text type="secondary" style={{ fontSize: 11 }}>
-        {record.protocol?.replace("HTTP/", "") || "-"}
-      </Text>
-    ),
+    width: 70,
+    render: (record) => {
+      const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
+      const displayProtocol = isH3 
+        ? 'H3' 
+        : record.protocol?.replace("HTTP/", "").toUpperCase() || "-";
+      return (
+        <Tag 
+          color={isH3 ? "purple" : "default"} 
+          style={{ margin: 0, fontSize: 11 }}
+        >
+          {displayProtocol}
+        </Tag>
+      );
+    },
   },
   {
     key: "method",

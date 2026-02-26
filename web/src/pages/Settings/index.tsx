@@ -1541,6 +1541,36 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   ),
                 },
                 {
+                  key: "h3",
+                  label: "H3",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.h3}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "h3s",
+                  label: "H3S",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.h3s}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
+                  key: "socks5",
+                  label: "SOCKS5",
+                  children: (
+                    <TrafficTypeContent
+                      metrics={overview?.metrics.socks5}
+                      formatBytes={formatBytes}
+                    />
+                  ),
+                },
+                {
                   key: "apps",
                   label: "Applications",
                   children: (
@@ -2105,6 +2135,20 @@ function AppMetricsContent({
       width: 80,
       render: (val: number) => val.toLocaleString(),
     },
+    {
+      title: "H3",
+      dataIndex: "h3_requests",
+      key: "h3_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "H3S",
+      dataIndex: "h3s_requests",
+      key: "h3s_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
   ];
 
   const totalStats = appMetrics.reduce(
@@ -2281,6 +2325,20 @@ function HostMetricsContent({
       title: "WSS",
       dataIndex: "wss_requests",
       key: "wss_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "H3",
+      dataIndex: "h3_requests",
+      key: "h3_requests",
+      width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "H3S",
+      dataIndex: "h3s_requests",
+      key: "h3s_requests",
       width: 80,
       render: (val: number) => val.toLocaleString(),
     },

@@ -62,6 +62,7 @@ export interface TrafficSummary {
   matched_protocols: string[];
   is_websocket?: boolean;
   is_sse?: boolean;
+  is_h3?: boolean;
   is_tunnel?: boolean;
   frame_count?: number;
   socket_status?: SocketStatus | null;
@@ -140,6 +141,9 @@ export interface TrafficFilter {
   header_contains?: string;
   client_ip?: string;
   client_app?: string;
+  is_h3?: boolean;
+  is_websocket?: boolean;
+  is_sse?: boolean;
 }
 
 export interface ToolbarFilters {
@@ -183,6 +187,9 @@ export interface MetricsSnapshot {
   tunnel: TrafficTypeMetrics;
   ws: TrafficTypeMetrics;
   wss: TrafficTypeMetrics;
+  h3: TrafficTypeMetrics;
+  h3s: TrafficTypeMetrics;
+  socks5: TrafficTypeMetrics;
 }
 
 export interface AppMetrics {
@@ -196,6 +203,9 @@ export interface AppMetrics {
   tunnel_requests: number;
   ws_requests: number;
   wss_requests: number;
+  h3_requests: number;
+  h3s_requests: number;
+  socks5_requests: number;
 }
 
 export interface HostMetrics {
@@ -209,6 +219,9 @@ export interface HostMetrics {
   tunnel_requests: number;
   ws_requests: number;
   wss_requests: number;
+  h3_requests: number;
+  h3s_requests: number;
+  socks5_requests: number;
 }
 
 export interface SystemInfo {

@@ -331,6 +331,8 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
     return null;
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
+  const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
+
   return (
     <div ref={wrapperRef} style={{ fontSize: 12 }}>
       <ConfigProvider
@@ -369,6 +371,11 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
             {connectionType && (
               <Tag color="purple" style={{ marginLeft: 4 }}>
                 {connectionType}
+              </Tag>
+            )}
+            {isH3 && (
+              <Tag color="purple" style={{ marginLeft: 4 }}>
+                HTTP/3
               </Tag>
             )}
           </Descriptions.Item>

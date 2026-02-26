@@ -34,6 +34,8 @@ async fn start_socks5_server(auth_required: bool) -> (String, u16) {
         access_mode: bifrost_core::AccessMode::AllowAll,
         client_whitelist: vec![],
         allow_lan: true,
+        enable_udp: false,
+        udp_port: None,
     };
 
     let server = SocksServer::new(config);
@@ -317,6 +319,8 @@ fn test_socks_config_with_auth() {
         access_mode: bifrost_core::AccessMode::AllowAll,
         client_whitelist: vec![],
         allow_lan: true,
+        enable_udp: false,
+        udp_port: None,
     };
     assert!(config.auth_required);
     assert_eq!(config.username, Some("user".to_string()));
@@ -352,6 +356,8 @@ fn test_socks_server_new() {
         access_mode: bifrost_core::AccessMode::AllowAll,
         client_whitelist: vec![],
         allow_lan: true,
+        enable_udp: false,
+        udp_port: None,
     };
     let server = SocksServer::new(config.clone());
     assert_eq!(server.config().port, 1080);
