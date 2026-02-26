@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# nextoncall.bytedance.net 代理规则测试脚本
+# www.qq.com 代理规则测试脚本
 #
 # 测试规则:
-# 1. https://nextoncall.bytedance.net/api/* -> 直接转发到原始服务 (excludeFilter 排除)
-# 2. https://nextoncall.bytedance.net/* -> http://localhost:8000/
-# 3. wss://nextoncall.bytedance.net/ -> ws://localhost:8000/
+# 1. https://www.qq.com/api/* -> 直接转发到原始服务 (excludeFilter 排除)
+# 2. https://www.qq.com/* -> http://localhost:8000/
+# 3. wss://www.qq.com/ -> ws://localhost:8000/
 #
 # 使用方式:
 #   ./test_nextoncall_rules.sh           # 运行完整测试
@@ -188,7 +188,7 @@ print_test_header() {
 test_http_root_forward() {
     print_test_header "HTTPS root path -> localhost:8000"
 
-    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://nextoncall.bytedance.net/"
+    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://www.qq.com/"
     log_info "Expected: Request forwarded to mock server at 127.0.0.1:$MOCK_PORT"
 
     local response
@@ -196,7 +196,7 @@ test_http_root_forward() {
         -k \
         --connect-timeout 10 \
         --max-time 30 \
-        "https://nextoncall.bytedance.net/" 2>&1)
+        "https://www.qq.com/" 2>&1)
 
     local exit_code=$?
 
@@ -225,7 +225,7 @@ test_http_root_forward() {
 test_http_api_path() {
     print_test_header "HTTPS /api/ path -> original service (excluded)"
 
-    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://nextoncall.bytedance.net/api/test"
+    log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://www.qq.com/api/test"
     log_info "Expected: Request NOT forwarded to mock server (excludeFilter should exclude /api/)"
 
     local response
@@ -233,7 +233,7 @@ test_http_api_path() {
         -k \
         --connect-timeout 10 \
         --max-time 30 \
-        "https://nextoncall.bytedance.net/api/test" 2>&1)
+        "https://www.qq.com/api/test" 2>&1)
 
     local exit_code=$?
 
@@ -260,15 +260,15 @@ test_websocket_forward() {
         return 0
     fi
 
-    log_info "Testing: websocat wss://nextoncall.bytedance.net/ via proxy"
+    log_info "Testing: websocat wss://www.qq.com/ via proxy"
     log_info "Expected: WebSocket connection forwarded to mock server"
 
     local response
     response=$(echo '{"test": "hello"}' | timeout 10 websocat -v \
-        --ws-c-uri "wss://nextoncall.bytedance.net/" \
+        --ws-c-uri "wss://www.qq.com/" \
         --proxy "http://$PROXY_HOST:$PROXY_PORT" \
         -k \
-        "wss://nextoncall.bytedance.net/" 2>&1 || true)
+        "wss://www.qq.com/" 2>&1 || true)
 
     echo "Response:"
     echo "$response" | head -30
@@ -296,16 +296,16 @@ run_manual_mode() {
     echo "║                                                              ║"
     echo "║  # Test root path (should forward to mock server)            ║"
     echo "║  curl -x http://$PROXY_HOST:$PROXY_PORT -k \\                         ║"
-    echo "║       https://nextoncall.bytedance.net/                      ║"
+    echo "║       https://www.qq.com/                      ║"
     echo "║                                                              ║"
     echo "║  # Test /api/ path (should NOT forward to mock server)       ║"
     echo "║  curl -x http://$PROXY_HOST:$PROXY_PORT -k \\                         ║"
-    echo "║       https://nextoncall.bytedance.net/api/test              ║"
+    echo "║       https://www.qq.com/api/test              ║"
     echo "║                                                              ║"
     echo "║  # Test WebSocket (requires websocat)                        ║"
     echo "║  echo 'hello' | websocat -v \\                                ║"
     echo "║       --proxy http://$PROXY_HOST:$PROXY_PORT -k \\                    ║"
-    echo "║       wss://nextoncall.bytedance.net/                        ║"
+    echo "║       wss://www.qq.com/                        ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
     echo "║  Press Ctrl+C to stop                                        ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
@@ -321,7 +321,7 @@ run_tests() {
 
     echo ""
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║         nextoncall.bytedance.net Rules Test Suite            ║"
+    echo "║         www.qq.com Rules Test Suite            ║"
     echo "╠══════════════════════════════════════════════════════════════╣"
     echo "║  Proxy:  http://$PROXY_HOST:$PROXY_PORT                               ║"
     echo "║  Mock:   http://127.0.0.1:$MOCK_PORT                               ║"
@@ -364,7 +364,7 @@ run_tests() {
 main() {
     echo ""
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║     nextoncall.bytedance.net Proxy Rules Test Script         ║"
+    echo "║     www.qq.com Proxy Rules Test Script         ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     echo ""
 

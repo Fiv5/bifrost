@@ -1,4 +1,4 @@
-# nextoncall.bytedance.net 转发规则测试
+# www.qq.com 转发规则测试
 # 测试目标:
 # 1. /api/ 路径 - 直接转发到原始服务 (不做特殊处理)
 # 2. 其他 HTTPS 请求 - 转发到 http://localhost:8000/
@@ -6,16 +6,16 @@
 
 # 规则1: /api/ 路径排除，让其直接访问原始服务
 # 使用 excludeFilter 排除 /api/ 路径，其他路径转发到本地服务
-nextoncall.bytedance.net host://127.0.0.1:8000 excludeFilter:///api/
+www.qq.com host://127.0.0.1:8000 excludeFilter:///api/
 
 # 规则2: WebSocket 请求转发到本地 WS 服务
 # 使用 wss:// 前缀明确指定协议匹配，排除/api/路径
-wss://nextoncall.bytedance.net/ ws://127.0.0.1:8000 excludeFilter:///api/
+wss://www.qq.com/ ws://127.0.0.1:8000 excludeFilter:///api/
 
 # 测试用例:
-# 1. curl -x http://127.0.0.1:9900 https://nextoncall.bytedance.net/
+# 1. curl -x http://127.0.0.1:9900 https://www.qq.com/
 #    预期: 转发到 127.0.0.1:8000
-# 2. curl -x http://127.0.0.1:9900 https://nextoncall.bytedance.net/api/test
+# 2. curl -x http://127.0.0.1:9900 https://www.qq.com/api/test
 #    预期: 直接访问原始服务 (被 excludeFilter 排除)
-# 3. websocat -v wss://nextoncall.bytedance.net/ --proxy http://127.0.0.1:9900
+# 3. websocat -v wss://www.qq.com/ --proxy http://127.0.0.1:9900
 #    预期: 转发到 ws://127.0.0.1:8000

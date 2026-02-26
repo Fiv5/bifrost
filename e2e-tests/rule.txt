@@ -1,10 +1,10 @@
 # Bifrost 规则配置文件
 # 格式: pattern protocol://target
 # 示例:
-#   nextoncall.bytedance.net http://127.0.0.1:3000  (转发到 HTTP)
-#   nextoncall.bytedance.net https://127.0.0.1:3000 (转发到 HTTPS)
+#   www.qq.com http://127.0.0.1:3000  (转发到 HTTP)
+#   www.qq.com https://127.0.0.1:3000 (转发到 HTTPS)
 #   *.example.com host://localhost:8080 (保持原协议转发)
 #   api.test.com redirect://https://new-api.test.com (重定向)
 
-# 测试规则 - 将 nextoncall.bytedance.net 转发到本地 HTTP 3000 端口
-nextoncall.bytedance.net http://127.0.0.1:3000
+# 测试规则 - 将 www.qq.com 转发到本地 HTTP 3000 端口
+www.qq.com http://127.0.0.1:3000
