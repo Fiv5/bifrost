@@ -98,7 +98,32 @@ clear_xattr() {
 }
 
 if [ "$INSTALL_CLI" = true ]; then
+    print_step "Ensuring frontend is built..."
+    WEB_DIR="$SCRIPT_DIR/web"
+    DIST_DIR="$WEB_DIR/dist"
+    
+    if [ -d "$WEB_DIR" ]; then
+        if [ ! -d "$WEB_DIR/node_modules" ]; then
+            print_step "Installing frontend dependencies..."
+            (cd "$WEB_DIR" && pnpm install)
+        fi
+        
+        if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
+            print_step "Building frontend..."
+            (cd "$WEB_DIR" && pnpm run build)
+        fi
+        
+        if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
+            print_error "Frontend build failed or incomplete"
+            exit 1
+        fi
+        print_success "Frontend ready"
+    else
+        print_warning "Web directory not found, skipping frontend build"
+    fi
+
     print_step "Building and installing bifrost CLI (release mode)..."
+    touch "$SCRIPT_DIR/crates/bifrost-admin/build.rs"
     cargo install --path crates/bifrost-cli --root "$INSTALL_DIR" --force
     clear_xattr "$INSTALL_DIR/bin/bifrost"
     mv "$INSTALL_DIR/bin/bifrost" "$INSTALL_DIR/bifrost"

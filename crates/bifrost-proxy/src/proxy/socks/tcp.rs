@@ -1538,7 +1538,9 @@ impl SocksHandler {
             }
         }
 
-        relay_result.map(|_| ()).map_err(|e| BifrostError::Network(e.to_string()))
+        relay_result
+            .map(|_| ())
+            .map_err(|e| BifrostError::Network(e.to_string()))
     }
 
     fn rewrite_http_host(&self, request: &[u8], old_host: &str, new_host: &str) -> Result<Vec<u8>> {

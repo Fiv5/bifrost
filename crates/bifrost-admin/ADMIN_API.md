@@ -203,6 +203,7 @@ GET /api/traffic
 | has_rule_hit             | boolean | 是否命中规则           |
 | header / header_contains | string  | 请求头或响应头包含     |
 | client_ip                | string  | 客户端 IP 包含         |
+| client_app               | string  | 客户端应用名称包含     |
 | limit                    | number  | 返回数量限制，默认 100 |
 | offset                   | number  | 分页偏移量             |
 
@@ -216,6 +217,7 @@ GET /api/traffic
   "records": [
     {
       "id": "req-123",
+      "sequence": 1,
       "timestamp": 1700000000000,
       "method": "GET",
       "url": "https://example.com/api",
@@ -228,12 +230,19 @@ GET /api/traffic
       "path": "/api",
       "protocol": "https",
       "client_ip": "127.0.0.1",
+      "client_app": "Safari",
+      "client_pid": 1234,
+      "client_path": "/Applications/Safari.app",
       "has_rule_hit": true,
       "matched_rule_count": 1,
       "matched_protocols": ["proxy"],
       "is_websocket": false,
       "is_sse": false,
-      "frame_count": 0
+      "is_h3": false,
+      "is_tunnel": false,
+      "frame_count": 0,
+      "start_time": "2024-01-01 12:00:00.000",
+      "end_time": "2024-01-01 12:00:00.150"
     }
   ]
 }
@@ -278,6 +287,7 @@ GET /api/traffic/{id}
 ```json
 {
   "id": "req-123",
+  "sequence": 1,
   "timestamp": 1700000000000,
   "method": "GET",
   "url": "https://example.com/api",
@@ -298,16 +308,23 @@ GET /api/traffic/{id}
   "request_headers": [["Content-Type", "application/json"]],
   "response_headers": [["Content-Type", "application/json"]],
   "client_ip": "127.0.0.1",
+  "client_app": "Safari",
+  "client_pid": 1234,
+  "client_path": "/Applications/Safari.app",
   "host": "example.com",
   "path": "/api",
   "protocol": "https",
   "is_tunnel": false,
+  "is_h3": false,
   "has_rule_hit": true,
   "matched_rules": [
     {
       "pattern": "example.com",
       "protocol": "proxy",
-      "value": "127.0.0.1:8080"
+      "value": "127.0.0.1:8080",
+      "rule_name": "default",
+      "raw": "example.com proxy://127.0.0.1:8080",
+      "line": 1
     }
   ]
 }
@@ -400,6 +417,20 @@ GET /api/traffic/{id}/frames/{frame_id}
 
 **响应**: 包含完整 payload 的帧详情。
 
+```json
+{
+  "frame": {
+    "frame_id": 1,
+    "direction": "send",
+    "frame_type": "text",
+    "timestamp": 1700000000000,
+    "payload_preview": "Hello...",
+    "payload_size": 100
+  },
+  "full_payload": "完整的帧内容"
+}
+```
+
 ### 2.9 订阅帧流 (SSE)
 
 ```
@@ -436,7 +467,74 @@ DELETE /api/traffic/{id}/frames/unsubscribe
 GET /api/metrics
 ```
 
-**响应**: 当前时刻的指标快照。
+**响应**:
+
+```json
+{
+  "timestamp": 1700000000000,
+  "memory_used": 52428800,
+  "memory_total": 17179869184,
+  "cpu_usage": 5.2,
+  "total_requests": 1000,
+  "active_connections": 50,
+  "bytes_sent": 1048576,
+  "bytes_received": 2097152,
+  "bytes_sent_rate": 10240.5,
+  "bytes_received_rate": 20480.3,
+  "qps": 15.5,
+  "max_qps": 100.0,
+  "max_bytes_sent_rate": 102400.0,
+  "max_bytes_received_rate": 204800.0,
+  "http": {
+    "requests": 500,
+    "bytes_sent": 524288,
+    "bytes_received": 1048576,
+    "active_connections": 20
+  },
+  "https": {
+    "requests": 400,
+    "bytes_sent": 419430,
+    "bytes_received": 838860,
+    "active_connections": 25
+  },
+  "tunnel": {
+    "requests": 50,
+    "bytes_sent": 52428,
+    "bytes_received": 104857,
+    "active_connections": 3
+  },
+  "ws": {
+    "requests": 20,
+    "bytes_sent": 20971,
+    "bytes_received": 41943,
+    "active_connections": 1
+  },
+  "wss": {
+    "requests": 30,
+    "bytes_sent": 31457,
+    "bytes_received": 62914,
+    "active_connections": 1
+  },
+  "h3": {
+    "requests": 0,
+    "bytes_sent": 0,
+    "bytes_received": 0,
+    "active_connections": 0
+  },
+  "h3s": {
+    "requests": 0,
+    "bytes_sent": 0,
+    "bytes_received": 0,
+    "active_connections": 0
+  },
+  "socks5": {
+    "requests": 0,
+    "bytes_sent": 0,
+    "bytes_received": 0,
+    "active_connections": 0
+  }
+}
+```
 
 **应用场景**: 实时监控面板展示。
 
@@ -454,6 +552,66 @@ GET /api/metrics/history
 
 **应用场景**: 绘制指标趋势图。
 
+### 3.3 获取应用指标统计
+
+```
+GET /api/metrics/apps
+```
+
+**响应**:
+
+```json
+[
+  {
+    "app_name": "Safari",
+    "requests": 500,
+    "active_connections": 10,
+    "bytes_sent": 524288,
+    "bytes_received": 1048576,
+    "http_requests": 200,
+    "https_requests": 250,
+    "tunnel_requests": 30,
+    "ws_requests": 10,
+    "wss_requests": 10,
+    "h3_requests": 0,
+    "h3s_requests": 0,
+    "socks5_requests": 0
+  }
+]
+```
+
+**应用场景**: 按客户端应用统计流量数据。
+
+### 3.4 获取主机指标统计
+
+```
+GET /api/metrics/hosts
+```
+
+**响应**:
+
+```json
+[
+  {
+    "host": "example.com",
+    "requests": 300,
+    "active_connections": 5,
+    "bytes_sent": 314572,
+    "bytes_received": 629145,
+    "http_requests": 100,
+    "https_requests": 180,
+    "tunnel_requests": 10,
+    "ws_requests": 5,
+    "wss_requests": 5,
+    "h3_requests": 0,
+    "h3s_requests": 0,
+    "socks5_requests": 0
+  }
+]
+```
+
+**应用场景**: 按目标主机统计流量数据。
+
 ---
 
 ## 4. System API - 系统信息
@@ -466,7 +624,18 @@ GET /api/metrics/history
 GET /api/system
 ```
 
-**响应**: 系统基本信息，包括启动时间、版本等。
+**响应**:
+
+```json
+{
+  "version": "0.1.0",
+  "rust_version": "1.75.0",
+  "os": "macos",
+  "arch": "aarch64",
+  "uptime_secs": 3600,
+  "pid": 12345
+}
+```
 
 ### 4.2 获取系统概览
 
@@ -479,8 +648,12 @@ GET /api/system/overview
 ```json
 {
   "system": {
-    "uptime_seconds": 3600,
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "rust_version": "1.75.0",
+    "os": "macos",
+    "arch": "aarch64",
+    "uptime_secs": 3600,
+    "pid": 12345
   },
   "metrics": {...},
   "rules": {
@@ -703,6 +876,14 @@ POST /api/whitelist/temporary
 DELETE /api/whitelist/temporary
 ```
 
+**请求体**:
+
+```json
+{
+  "ip": "192.168.1.100"
+}
+```
+
 ### 6.10 获取待授权列表
 
 ```
@@ -713,7 +894,17 @@ GET /api/whitelist/pending
 
 **应用场景**: 当有新 IP 尝试连接时，可以在 Web UI 中审批。
 
-### 6.11 批准授权
+### 6.11 订阅待授权事件 (SSE)
+
+```
+GET /api/whitelist/pending/stream
+```
+
+**响应**: Server-Sent Events 流，实时推送授权事件。
+
+**应用场景**: 实时监听新的访问授权请求。
+
+### 6.12 批准授权
 
 ```
 POST /api/whitelist/pending/approve
@@ -727,13 +918,21 @@ POST /api/whitelist/pending/approve
 }
 ```
 
-### 6.12 拒绝授权
+### 6.13 拒绝授权
 
 ```
 POST /api/whitelist/pending/reject
 ```
 
-### 6.13 清空待授权列表
+**请求体**:
+
+```json
+{
+  "ip": "192.168.1.100"
+}
+```
+
+### 6.14 清空待授权列表
 
 ```
 DELETE /api/whitelist/pending
@@ -785,6 +984,10 @@ GET /public/cert
 ```
 GET /public/cert/qrcode
 ```
+
+**查询参数**:
+
+- `ip`: 指定 IP 地址（可选）
 
 **响应**: SVG 格式的二维码图片。
 
@@ -840,6 +1043,15 @@ PUT /api/proxy/system
 }
 ```
 
+**用户取消授权时**:
+
+```json
+{
+  "error": "user_cancelled",
+  "message": "Authorization was cancelled by user."
+}
+```
+
 ### 8.3 获取系统代理支持状态
 
 ```
@@ -855,11 +1067,232 @@ GET /api/proxy/system/support
 }
 ```
 
+### 8.4 获取代理地址信息
+
+```
+GET /api/proxy/address
+```
+
+**响应**:
+
+```json
+{
+  "port": 9900,
+  "local_ips": ["192.168.1.100", "10.0.0.1"],
+  "addresses": [
+    {
+      "ip": "192.168.1.100",
+      "address": "192.168.1.100:9900",
+      "qrcode_url": "/_bifrost/public/proxy/qrcode?ip=192.168.1.100"
+    }
+  ]
+}
+```
+
+**应用场景**: 获取代理地址供客户端配置。
+
+### 8.5 获取代理地址二维码
+
+```
+GET /public/proxy/qrcode
+```
+
+**查询参数**:
+
+- `ip`: 指定 IP 地址（可选）
+
+**响应**: SVG 格式的二维码图片，包含代理地址。
+
+**应用场景**: 移动设备扫码配置代理。
+
 ---
 
-## 9. WebSocket Connections API
+## 9. Config API - 配置管理
 
-### 9.1 获取 WebSocket 连接列表
+用于管理代理服务的运行时配置。
+
+### 9.1 获取代理设置
+
+```
+GET /api/config
+```
+
+**响应**:
+
+```json
+{
+  "tls": {
+    "enable_tls_interception": true,
+    "intercept_exclude": ["*.apple.com"],
+    "intercept_include": [],
+    "app_intercept_exclude": ["Finder"],
+    "app_intercept_include": [],
+    "unsafe_ssl": false,
+    "disconnect_on_config_change": true
+  },
+  "port": 9900,
+  "host": "127.0.0.1"
+}
+```
+
+### 9.2 获取 TLS 配置
+
+```
+GET /api/config/tls
+```
+
+**响应**:
+
+```json
+{
+  "enable_tls_interception": true,
+  "intercept_exclude": ["*.apple.com"],
+  "intercept_include": [],
+  "app_intercept_exclude": ["Finder"],
+  "app_intercept_include": [],
+  "unsafe_ssl": false,
+  "disconnect_on_config_change": true
+}
+```
+
+### 9.3 更新 TLS 配置
+
+```
+PUT /api/config/tls
+```
+
+**请求体**:
+
+```json
+{
+  "enable_tls_interception": true,
+  "intercept_exclude": ["*.apple.com", "*.google.com"],
+  "intercept_include": [],
+  "app_intercept_exclude": [],
+  "app_intercept_include": [],
+  "unsafe_ssl": false,
+  "disconnect_on_config_change": true
+}
+```
+
+| 字段                        | 类型     | 必填 | 说明                             |
+| --------------------------- | -------- | ---- | -------------------------------- |
+| enable_tls_interception     | boolean  | 否   | 是否启用 TLS 拦截                |
+| intercept_exclude           | string[] | 否   | 排除的域名模式列表               |
+| intercept_include           | string[] | 否   | 包含的域名模式列表               |
+| app_intercept_exclude       | string[] | 否   | 排除的应用名称列表               |
+| app_intercept_include       | string[] | 否   | 包含的应用名称列表               |
+| unsafe_ssl                  | boolean  | 否   | 是否跳过 SSL 证书验证            |
+| disconnect_on_config_change | boolean  | 否   | 配置变更时是否断开受影响的连接   |
+
+**应用场景**: 动态调整 TLS 拦截配置，无需重启服务。
+
+### 9.4 获取性能配置
+
+```
+GET /api/config/performance
+```
+
+**响应**:
+
+```json
+{
+  "traffic": {
+    "max_records": 5000,
+    "max_body_memory_size": 524288,
+    "max_body_buffer_size": 10485760,
+    "file_retention_days": 7
+  },
+  "body_store_stats": {
+    "memory_used": 1048576,
+    "file_count": 100,
+    "total_size": 10485760
+  },
+  "traffic_store_stats": {
+    "total_records": 5000,
+    "total_records_processed": 10000
+  },
+  "frame_store_stats": {
+    "total_frames": 1000,
+    "total_size": 524288
+  }
+}
+```
+
+### 9.5 更新性能配置
+
+```
+PUT /api/config/performance
+```
+
+**请求体**:
+
+```json
+{
+  "max_records": 10000,
+  "max_body_memory_size": 1048576,
+  "max_body_buffer_size": 20971520,
+  "file_retention_days": 3
+}
+```
+
+| 字段                 | 类型   | 必填 | 说明                            |
+| -------------------- | ------ | ---- | ------------------------------- |
+| max_records          | number | 否   | 最大流量记录数                  |
+| max_body_memory_size | number | 否   | 单个请求体最大内存缓存大小      |
+| max_body_buffer_size | number | 否   | 请求体缓冲区最大大小            |
+| file_retention_days  | number | 否   | 文件保留天数（最大 7 天）       |
+
+### 9.6 清除缓存
+
+```
+DELETE /api/config/performance/clear-cache
+```
+
+**响应**:
+
+```json
+{
+  "body_cache_removed": 100,
+  "traffic_cache_removed": 5000,
+  "frame_cache_removed": 500,
+  "message": "Successfully cleared 100 body cache files, 5000 traffic records, and 500 frame files"
+}
+```
+
+**应用场景**: 释放磁盘空间，清理历史数据。
+
+### 9.7 按域名断开连接
+
+```
+POST /api/config/connections/disconnect
+```
+
+**请求体**:
+
+```json
+{
+  "domain": "example.com"
+}
+```
+
+**响应**:
+
+```json
+{
+  "success": true,
+  "disconnected_count": 5,
+  "message": "Disconnected 5 connection(s) matching 'example.com'"
+}
+```
+
+**应用场景**: 强制断开特定域名的所有连接，用于调试或清理。
+
+---
+
+## 10. WebSocket Connections API
+
+### 10.1 获取 WebSocket 连接列表
 
 ```
 GET /api/websocket/connections
@@ -892,37 +1325,157 @@ GET /api/websocket/connections
 
 ---
 
+## 11. Push API - WebSocket 推送
+
+用于 Web UI 实时数据推送。
+
+### 11.1 建立 WebSocket 连接
+
+```
+GET /api/push (WebSocket Upgrade)
+```
+
+**查询参数**:
+
+| 参数            | 类型    | 说明                   |
+| --------------- | ------- | ---------------------- |
+| last_traffic_id | string  | 最后获取的流量记录 ID  |
+| pending_ids     | string  | 待更新的记录 ID 列表   |
+| need_overview   | boolean | 是否需要系统概览       |
+| need_metrics    | boolean | 是否需要指标数据       |
+| need_history    | boolean | 是否需要历史指标       |
+| history_limit   | number  | 历史指标数量限制       |
+
+**推送消息类型**:
+
+```json
+{
+  "type": "connected",
+  "data": {
+    "client_id": 1,
+    "message": "WebSocket connection established"
+  }
+}
+```
+
+```json
+{
+  "type": "traffic_update",
+  "data": {
+    "new_records": [...],
+    "updated_records": [...]
+  }
+}
+```
+
+```json
+{
+  "type": "metrics",
+  "data": {...}
+}
+```
+
+**应用场景**: Web UI 实时接收流量、指标等更新。
+
+---
+
+## 12. App Icon API - 应用图标
+
+用于获取客户端应用程序图标（仅 macOS）。
+
+### 12.1 获取应用图标
+
+```
+GET /api/app-icon/{app_name}
+```
+
+**路径参数**:
+
+- `app_name`: 应用名称（需 URL 编码）
+
+**响应**:
+
+- Content-Type: `image/png`
+- 成功返回 PNG 格式图标
+- 失败返回 404
+
+**应用场景**: Web UI 显示客户端应用图标。
+
+---
+
 ## 数据结构参考
 
 ### TrafficRecord
 
 完整的流量记录，包含请求和响应的所有信息。
 
-| 字段             | 类型                | 说明              |
-| ---------------- | ------------------- | ----------------- |
-| id               | string              | 唯一标识          |
-| timestamp        | number              | 时间戳（毫秒）    |
-| method           | string              | HTTP 方法         |
-| url              | string              | 完整 URL          |
-| status           | number              | HTTP 状态码       |
-| content_type     | string?             | 响应 Content-Type |
-| request_size     | number              | 请求大小（字节）  |
-| response_size    | number              | 响应大小（字节）  |
-| duration_ms      | number              | 总耗时（毫秒）    |
-| timing           | RequestTiming?      | 详细耗时          |
-| request_headers  | [string, string][]? | 请求头            |
-| response_headers | [string, string][]? | 响应头            |
-| client_ip        | string              | 客户端 IP         |
-| host             | string              | 主机名            |
-| path             | string              | 路径              |
-| protocol         | string              | 协议 (http/https) |
-| is_tunnel        | boolean             | 是否为隧道连接    |
-| has_rule_hit     | boolean             | 是否命中规则      |
-| matched_rules    | MatchedRule[]?      | 命中的规则列表    |
-| is_websocket     | boolean             | 是否为 WebSocket  |
-| is_sse           | boolean             | 是否为 SSE        |
-| socket_status    | SocketStatus?       | Socket 状态       |
-| frame_count      | number              | 帧数量            |
+| 字段                 | 类型                | 说明              |
+| -------------------- | ------------------- | ----------------- |
+| id                   | string              | 唯一标识          |
+| sequence             | number              | 序列号            |
+| timestamp            | number              | 时间戳（毫秒）    |
+| method               | string              | HTTP 方法         |
+| url                  | string              | 完整 URL          |
+| status               | number              | HTTP 状态码       |
+| content_type         | string?             | 响应 Content-Type |
+| request_content_type | string?             | 请求 Content-Type |
+| request_size         | number              | 请求大小（字节）  |
+| response_size        | number              | 响应大小（字节）  |
+| duration_ms          | number              | 总耗时（毫秒）    |
+| timing               | RequestTiming?      | 详细耗时          |
+| request_headers      | [string, string][]? | 请求头            |
+| response_headers     | [string, string][]? | 响应头            |
+| client_ip            | string              | 客户端 IP         |
+| client_app           | string?             | 客户端应用名称    |
+| client_pid           | number?             | 客户端进程 ID     |
+| client_path          | string?             | 客户端应用路径    |
+| host                 | string              | 主机名            |
+| path                 | string              | 路径              |
+| protocol             | string              | 协议 (http/https) |
+| is_tunnel            | boolean             | 是否为隧道连接    |
+| is_h3                | boolean             | 是否为 HTTP/3     |
+| has_rule_hit         | boolean             | 是否命中规则      |
+| matched_rules        | MatchedRule[]?      | 命中的规则列表    |
+| is_websocket         | boolean             | 是否为 WebSocket  |
+| is_sse               | boolean             | 是否为 SSE        |
+| socket_status        | SocketStatus?       | Socket 状态       |
+| frame_count          | number              | 帧数量            |
+| last_frame_id        | number              | 最后帧 ID         |
+
+### TrafficSummary
+
+流量摘要，用于列表展示。
+
+| 字段               | 类型          | 说明             |
+| ------------------ | ------------- | ---------------- |
+| id                 | string        | 唯一标识         |
+| sequence           | number        | 序列号           |
+| timestamp          | number        | 时间戳（毫秒）   |
+| method             | string        | HTTP 方法        |
+| url                | string        | 完整 URL         |
+| status             | number        | HTTP 状态码      |
+| content_type       | string?       | 响应 Content-Type|
+| request_size       | number        | 请求大小（字节） |
+| response_size      | number        | 响应大小（字节） |
+| duration_ms        | number        | 总耗时（毫秒）   |
+| host               | string        | 主机名           |
+| path               | string        | 路径             |
+| protocol           | string        | 协议             |
+| client_ip          | string        | 客户端 IP        |
+| client_app         | string?       | 客户端应用名称   |
+| client_pid         | number?       | 客户端进程 ID    |
+| client_path        | string?       | 客户端应用路径   |
+| has_rule_hit       | boolean       | 是否命中规则     |
+| matched_rule_count | number        | 命中规则数量     |
+| matched_protocols  | string[]      | 命中的协议列表   |
+| is_websocket       | boolean       | 是否为 WebSocket |
+| is_sse             | boolean       | 是否为 SSE       |
+| is_h3              | boolean       | 是否为 HTTP/3    |
+| is_tunnel          | boolean       | 是否为隧道连接   |
+| frame_count        | number        | 帧数量           |
+| socket_status      | SocketStatus? | Socket 状态      |
+| start_time         | string        | 开始时间（格式化）|
+| end_time           | string?       | 结束时间（格式化）|
 
 ### RequestTiming
 
@@ -942,11 +1495,14 @@ GET /api/websocket/connections
 
 命中的规则信息。
 
-| 字段     | 类型   | 说明     |
-| -------- | ------ | -------- |
-| pattern  | string | 匹配模式 |
-| protocol | string | 规则协议 |
-| value    | string | 规则值   |
+| 字段      | 类型    | 说明         |
+| --------- | ------- | ------------ |
+| pattern   | string  | 匹配模式     |
+| protocol  | string  | 规则协议     |
+| value     | string  | 规则值       |
+| rule_name | string? | 规则文件名称 |
+| raw       | string? | 原始规则文本 |
+| line      | number? | 规则所在行号 |
 
 ### SocketStatus
 
@@ -962,6 +1518,46 @@ WebSocket/SSE 连接状态。
 | frame_count   | number  | 总帧数       |
 | close_code    | number? | 关闭码       |
 | close_reason  | string? | 关闭原因     |
+
+### MetricsSnapshot
+
+指标快照。
+
+| 字段                   | 类型               | 说明                 |
+| ---------------------- | ------------------ | -------------------- |
+| timestamp              | number             | 时间戳（毫秒）       |
+| memory_used            | number             | 内存使用量（字节）   |
+| memory_total           | number             | 系统总内存（字节）   |
+| cpu_usage              | number             | CPU 使用率（%）      |
+| total_requests         | number             | 总请求数             |
+| active_connections     | number             | 活跃连接数           |
+| bytes_sent             | number             | 发送字节数           |
+| bytes_received         | number             | 接收字节数           |
+| bytes_sent_rate        | number             | 发送速率（字节/秒）  |
+| bytes_received_rate    | number             | 接收速率（字节/秒）  |
+| qps                    | number             | 每秒请求数           |
+| max_qps                | number             | 历史最大 QPS         |
+| max_bytes_sent_rate    | number             | 历史最大发送速率     |
+| max_bytes_received_rate| number             | 历史最大接收速率     |
+| http                   | TrafficTypeMetrics | HTTP 流量指标        |
+| https                  | TrafficTypeMetrics | HTTPS 流量指标       |
+| tunnel                 | TrafficTypeMetrics | 隧道流量指标         |
+| ws                     | TrafficTypeMetrics | WebSocket 流量指标   |
+| wss                    | TrafficTypeMetrics | WSS 流量指标         |
+| h3                     | TrafficTypeMetrics | HTTP/3 流量指标      |
+| h3s                    | TrafficTypeMetrics | HTTPS/3 流量指标     |
+| socks5                 | TrafficTypeMetrics | SOCKS5 流量指标      |
+
+### TrafficTypeMetrics
+
+按协议类型的流量指标。
+
+| 字段               | 类型   | 说明       |
+| ------------------ | ------ | ---------- |
+| requests           | number | 请求数     |
+| bytes_sent         | number | 发送字节数 |
+| bytes_received     | number | 接收字节数 |
+| active_connections | number | 活跃连接数 |
 
 ### FrameDirection
 
@@ -985,3 +1581,17 @@ WebSocket/SSE 连接状态。
 | close        | 关闭帧   |
 | continuation | 续帧     |
 | sse          | SSE 事件 |
+
+### TlsConfig
+
+TLS 配置。
+
+| 字段                        | 类型     | 说明                           |
+| --------------------------- | -------- | ------------------------------ |
+| enable_tls_interception     | boolean  | 是否启用 TLS 拦截              |
+| intercept_exclude           | string[] | 排除的域名模式列表             |
+| intercept_include           | string[] | 包含的域名模式列表             |
+| app_intercept_exclude       | string[] | 排除的应用名称列表             |
+| app_intercept_include       | string[] | 包含的应用名称列表             |
+| unsafe_ssl                  | boolean  | 是否跳过 SSL 证书验证          |
+| disconnect_on_config_change | boolean  | 配置变更时是否断开受影响的连接 |

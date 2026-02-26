@@ -122,6 +122,14 @@ impl SystemProxyManager {
             return Ok(());
         }
 
+        self.force_disable()
+    }
+
+    pub fn force_disable(&mut self) -> Result<()> {
+        if !Self::is_supported() {
+            return Ok(());
+        }
+
         let proxy = Sysproxy {
             enable: false,
             host: String::new(),
@@ -145,7 +153,9 @@ impl SystemProxyManager {
         }
 
         self.is_set = false;
-        tracing::info!("System proxy disabled");
+        self.original_proxy = None;
+        self.remove_backup();
+        tracing::info!("System proxy force disabled");
 
         Ok(())
     }
@@ -255,6 +265,24 @@ impl SystemProxyManager {
         let backup: ProxyBackup = serde_json::from_str(&content).map_err(|e| {
             BifrostError::Config(format!("Failed to deserialize proxy backup: {}", e))
         })?;
+
+        if let Ok(current) = Self::get_current() {
+            if backup.host == current.host
+                && backup.port == current.port
+                && backup.enable == current.enable
+            {
+                tracing::warn!(
+                    "Backup config matches current proxy config (host={}, port={}), cleaning up invalid backup",
+                    backup.host,
+                    backup.port
+                );
+                self.remove_backup();
+                return Err(BifrostError::Config(
+                    "Invalid backup: matches current proxy config".to_string(),
+                ));
+            }
+        }
+
         Ok(backup.into())
     }
 
@@ -276,6 +304,21 @@ impl SystemProxyManager {
         let backup: ProxyBackup = serde_json::from_str(&content).map_err(|e| {
             BifrostError::Config(format!("Failed to deserialize proxy backup: {}", e))
         })?;
+
+        if let Ok(current) = Self::get_current() {
+            if backup.host == current.host
+                && backup.port == current.port
+                && backup.enable == current.enable
+            {
+                tracing::warn!(
+                    "Crash recovery: backup config matches current proxy config (host={}, port={}), cleaning up invalid backup",
+                    backup.host,
+                    backup.port
+                );
+                std::fs::remove_file(&backup_path)?;
+                return Ok(());
+            }
+        }
 
         let proxy: Sysproxy = backup.into();
         proxy.set_system_proxy().map_err(|e| {

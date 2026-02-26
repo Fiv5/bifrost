@@ -134,7 +134,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
         let result = if request.enabled {
             manager.enable(host, state.port, Some(&bypass))
         } else {
-            manager.restore()
+            manager.force_disable()
         };
 
         let final_result = match &result {
@@ -148,7 +148,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                         if request.enabled {
                             manager.enable_with_gui_auth(host, state.port, Some(&bypass))
                         } else {
-                            manager.restore_with_gui_auth()
+                            manager.disable_with_gui_auth()
                         }
                     }
                     #[cfg(not(target_os = "macos"))]
