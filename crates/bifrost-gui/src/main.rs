@@ -10,6 +10,17 @@ use bifrost_core::{init_logging_with_config, install_panic_hook, LogConfig, LogO
 use bifrost_storage::data_dir;
 use bifrost_tls::init_crypto_provider;
 
+fn load_icon() -> Option<egui::IconData> {
+    let icon_bytes = include_bytes!("../../../assets/bifrost.png");
+    let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Some(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
+}
+
 fn main() -> eframe::Result<()> {
     install_panic_hook();
     init_crypto_provider();
@@ -46,11 +57,17 @@ fn main() -> eframe::Result<()> {
         }
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1200.0, 800.0])
+        .with_min_inner_size([800.0, 600.0])
+        .with_title("Bifrost Proxy");
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
-            .with_title("Bifrost Proxy"),
+        viewport,
         centered: true,
         ..Default::default()
     };

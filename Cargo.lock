@@ -577,6 +577,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "ipnet",
+ "libc",
  "nix 0.28.0",
  "parking_lot",
  "regex 1.12.3",
@@ -585,6 +586,7 @@ dependencies = [
  "toml",
  "tracing",
  "urlencoding",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -655,6 +657,7 @@ dependencies = [
  "egui_extras",
  "egui_plot",
  "embed-resource",
+ "image",
  "open",
  "parking_lot",
  "rfd",

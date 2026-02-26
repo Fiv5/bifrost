@@ -1,7 +1,82 @@
-pub fn print_startup_help(port: u16) {
+const BIFROST_BANNER: &str = r#"
+    ____  _ ____                __
+   / __ )(_) __/_________  ____/ /_
+  / __  / / /_/ ___/ __ \/ ___/ __/
+ / /_/ / / __/ /  / /_/ (__  ) /_
+/_____/_/_/ /_/   \____/____/\__/
+
+"#;
+
+pub fn print_banner() {
+    if supports_color() {
+        print_rainbow_banner();
+    } else {
+        print!("{}", BIFROST_BANNER);
+    }
+}
+
+fn print_rainbow_banner() {
+    const ESC: &str = "\x1b[";
+    const RESET: &str = "\x1b[0m";
+
+    println!();
     println!(
-        r#"
-╭────────────────────────────────────────────────────────────────────────╮
+        "{}38;5;196m    ____  _ ____                __{}",
+        ESC, RESET
+    );
+    println!(
+        "{}38;5;208m   / __ )(_) __/_________  ____/ /_{}",
+        ESC, RESET
+    );
+    println!(
+        "{}38;5;226m  / __  / / /_/ ___/ __ \\/ ___/ __/{}",
+        ESC, RESET
+    );
+    println!("{}38;5;46m / /_/ / / __/ /  / /_/ (__  ) /_{}", ESC, RESET);
+    println!(
+        "{}38;5;21m/_____/_/_/ /_/   \\____/____/\\__/{}",
+        ESC, RESET
+    );
+    println!();
+}
+
+fn supports_color() -> bool {
+    if std::env::var("NO_COLOR").is_ok() {
+        return false;
+    }
+    if std::env::var("FORCE_COLOR").is_ok() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        if let Ok(term) = std::env::var("TERM") {
+            if term == "dumb" {
+                return false;
+            }
+        }
+        unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        let handle = std::io::stdout().as_raw_handle();
+        let mut mode: u32 = 0;
+        unsafe {
+            let result =
+                windows_sys::Win32::System::Console::GetConsoleMode(handle as isize, &mut mode);
+            result != 0
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+pub fn print_startup_help(port: u16) {
+    print_banner();
+    println!(
+        r#"╭────────────────────────────────────────────────────────────────────────╮
 │                       BIFROST PROXY COMMANDS                           │
 ╰────────────────────────────────────────────────────────────────────────╯
 

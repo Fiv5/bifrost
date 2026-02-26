@@ -118,6 +118,33 @@ impl Http3Server {
             let peer_addr = incoming.remote_address();
             debug!("HTTP/3 connection from {}", peer_addr);
 
+            let decision = {
+                let access_control = self.access_control.read().await;
+                access_control.check_access(&peer_addr.ip())
+            };
+
+            match decision {
+                bifrost_core::AccessDecision::Allow => {}
+                bifrost_core::AccessDecision::Deny => {
+                    warn!(
+                        "HTTP/3: Access denied for client {} (not in whitelist)",
+                        peer_addr.ip()
+                    );
+                    continue;
+                }
+                bifrost_core::AccessDecision::Prompt(ip) => {
+                    {
+                        let access_control = self.access_control.read().await;
+                        access_control.add_pending_authorization(ip);
+                    }
+                    warn!(
+                        "HTTP/3: Access pending approval for client {}",
+                        peer_addr.ip()
+                    );
+                    continue;
+                }
+            }
+
             let rules = Arc::clone(&self.rules);
             let tls_config = Arc::clone(&self.tls_config);
             let proxy_config = self.config.clone();
@@ -165,7 +192,7 @@ async fn handle_h3_connection(
     proxy_config: ProxyConfig,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Arc<DnsResolver>,
-    _access_control: Arc<RwLock<ClientAccessControl>>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
 ) -> Result<()> {
     let connection = incoming
         .await
@@ -184,6 +211,23 @@ async fn handle_h3_connection(
     loop {
         match h3_conn.accept().await {
             Ok(Some(resolver)) => {
+                {
+                    let ac = access_control.read().await;
+                    if !ac.is_loopback(&peer_addr.ip()) {
+                        let decision = ac.check_access(&peer_addr.ip());
+                        match decision {
+                            bifrost_core::AccessDecision::Allow => {}
+                            _ => {
+                                debug!(
+                                    "HTTP/3: Access denied for {} on existing connection (access control changed)",
+                                    peer_addr.ip()
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+
                 let (req, stream) = resolver.resolve_request().await.map_err(|e| {
                     BifrostError::Network(format!("Failed to resolve H3 request: {}", e))
                 })?;

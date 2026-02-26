@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bifrost_admin::{AdminState, TrafficRecord, TrafficType};
-use bifrost_core::{BifrostError, Result};
+use bifrost_core::{AccessDecision, BifrostError, ClientAccessControl, Result};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
@@ -50,6 +50,7 @@ pub struct UdpRelay {
     proxy_config: Option<ProxyConfig>,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
+    access_control: Option<Arc<RwLock<ClientAccessControl>>>,
     enable_quic_mitm: bool,
     #[cfg(feature = "http3")]
     #[allow(dead_code)]
@@ -67,10 +68,16 @@ impl UdpRelay {
             proxy_config: None,
             admin_state: None,
             dns_resolver: None,
+            access_control: None,
             enable_quic_mitm: false,
             #[cfg(feature = "http3")]
             quic_mitm_relay: None,
         }
+    }
+
+    pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
+        self.access_control = Some(access_control);
+        self
     }
 
     pub fn with_rules(mut self, rules: Arc<dyn RulesResolver>) -> Self {
@@ -133,6 +140,7 @@ impl UdpRelay {
         let rules = self.rules.clone();
         let dns_resolver = self.dns_resolver.clone();
         let admin_state = self.admin_state.clone();
+        let access_control = self.access_control.clone();
         let verbose = self
             .proxy_config
             .as_ref()
@@ -155,6 +163,7 @@ impl UdpRelay {
                                     &rules,
                                     &dns_resolver,
                                     &admin_state,
+                                    &access_control,
                                     verbose,
                                 ).await {
                                     debug!("UDP relay packet error from {}: {}", src_addr, e);
@@ -193,8 +202,38 @@ impl UdpRelay {
         rules: &Option<Arc<dyn RulesResolver>>,
         dns_resolver: &Option<Arc<DnsResolver>>,
         admin_state: &Option<Arc<AdminState>>,
+        access_control: &Option<Arc<RwLock<ClientAccessControl>>>,
         verbose: bool,
     ) -> Result<()> {
+        if let Some(ref ac) = access_control {
+            let decision = {
+                let access_control = ac.read().await;
+                access_control.check_access(&src_addr.ip())
+            };
+
+            match decision {
+                AccessDecision::Allow => {}
+                AccessDecision::Deny => {
+                    debug!(
+                        "SOCKS5 UDP: Access denied for client {} (not in whitelist)",
+                        src_addr.ip()
+                    );
+                    return Ok(());
+                }
+                AccessDecision::Prompt(ip) => {
+                    {
+                        let ac = access_control.as_ref().unwrap().read().await;
+                        ac.add_pending_authorization(ip);
+                    }
+                    debug!(
+                        "SOCKS5 UDP: Access pending approval for client {}",
+                        src_addr.ip()
+                    );
+                    return Ok(());
+                }
+            }
+        }
+
         if data.len() < 10 {
             return Err(BifrostError::Parse("UDP packet too short".to_string()));
         }

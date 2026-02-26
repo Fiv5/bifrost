@@ -331,7 +331,8 @@ impl SocksServer {
 
             let mut udp_relay = UdpRelay::new(udp_addr)
                 .with_rules(Arc::clone(&self.rules))
-                .with_admin_state(self.admin_state.clone());
+                .with_admin_state(self.admin_state.clone())
+                .with_access_control(Arc::clone(&self.access_control));
             let relay_addr = udp_relay.start().await?;
             info!("SOCKS5 UDP relay started on {}", relay_addr);
 

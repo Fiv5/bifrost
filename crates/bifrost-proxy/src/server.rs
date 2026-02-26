@@ -458,7 +458,9 @@ impl ProxyServer {
 
         if self.config.enable_socks {
             let udp_addr = SocketAddr::new(addr.ip(), addr.port());
-            let mut udp_relay = UdpRelay::new(udp_addr).with_rules(Arc::clone(&self.rules));
+            let mut udp_relay = UdpRelay::new(udp_addr)
+                .with_rules(Arc::clone(&self.rules))
+                .with_access_control(Arc::clone(&self.access_control));
             let udp_relay_started_addr = udp_relay.start().await?;
             {
                 let mut relay_addr = self.udp_relay_addr.write().await;
