@@ -4,6 +4,21 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version bump type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: "Pre-release identifier (e.g., alpha, beta, rc)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,8 +27,98 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
+            IS_PRERELEASE=$([[ "$TAG" =~ (alpha|beta|rc) ]] && echo "true" || echo "false")
+          else
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            LATEST_VERSION="${LATEST_TAG#v}"
+            
+            IFS='.' read -r MAJOR MINOR PATCH <<< "${LATEST_VERSION%%-*}"
+            MAJOR=${MAJOR:-0}
+            MINOR=${MINOR:-0}
+            PATCH=${PATCH:-0}
+            
+            case "${{ inputs.version_type }}" in
+              major)
+                MAJOR=$((MAJOR + 1))
+                MINOR=0
+                PATCH=0
+                ;;
+              minor)
+                MINOR=$((MINOR + 1))
+                PATCH=0
+                ;;
+              patch)
+                PATCH=$((PATCH + 1))
+                ;;
+            esac
+            
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            
+            if [[ -n "${{ inputs.prerelease }}" ]]; then
+              VERSION="${VERSION}-${{ inputs.prerelease }}"
+              IS_PRERELEASE="true"
+            else
+              IS_PRERELEASE="false"
+            fi
+            
+            TAG="v${VERSION}"
+          fi
+          
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          echo "📦 Version: ${VERSION}"
+          echo "🏷️  Tag: ${TAG}"
+          echo "🚀 Pre-release: ${IS_PRERELEASE}"
+
+      - name: Update Cargo.toml versions
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
+          
+          for crate_dir in crates/*/; do
+            if [[ -f "${crate_dir}Cargo.toml" ]]; then
+              sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "${crate_dir}Cargo.toml"
+            fi
+          done
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: bump version to ${VERSION}"
+          git push origin HEAD:main
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+
   build-cli:
     name: Build CLI (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,6 +131,10 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            archive: tar.gz
+            cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             archive: tar.gz
@@ -35,8 +144,13 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -82,19 +196,15 @@ jobs:
           SKIP_FRONTEND_BUILD: "1"
         run: cross build -p bifrost-cli --release --target ${{ matrix.target }}
 
-      - name: Get version
-        id: version
-        shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          ARCHIVE_NAME="bifrost-${{ steps.version.outputs.VERSION }}-${{ matrix.target }}"
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARCHIVE_NAME="bifrost-v${VERSION}-${{ matrix.target }}"
           mkdir -p "dist/${ARCHIVE_NAME}"
           cp "target/${{ matrix.target }}/release/bifrost" "dist/${ARCHIVE_NAME}/"
-          cp README.md LICENSE* "dist/${ARCHIVE_NAME}/" 2>/dev/null || true
+          cp README.md "dist/${ARCHIVE_NAME}/" 2>/dev/null || true
           cd dist
           tar -czvf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
           echo "ASSET=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
@@ -103,7 +213,8 @@ jobs:
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $ARCHIVE_NAME = "bifrost-${{ steps.version.outputs.VERSION }}-${{ matrix.target }}"
+          $VERSION = "${{ needs.prepare.outputs.version }}"
+          $ARCHIVE_NAME = "bifrost-v${VERSION}-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/${ARCHIVE_NAME}"
           Copy-Item "target/${{ matrix.target }}/release/bifrost.exe" "dist/${ARCHIVE_NAME}/"
           Copy-Item "README.md" "dist/${ARCHIVE_NAME}/" -ErrorAction SilentlyContinue
@@ -130,6 +241,7 @@ jobs:
 
   build-gui:
     name: Build GUI (${{ matrix.target }})
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -146,6 +258,8 @@ jobs:
             archive: zip
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -160,17 +274,13 @@ jobs:
       - name: Build GUI
         run: cargo build -p bifrost-gui --release --target ${{ matrix.target }}
 
-      - name: Get version
-        id: version
-        shell: bash
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
       - name: Create macOS App Bundle
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
           APP_NAME="Bifrost"
-          ARCHIVE_NAME="bifrost-gui-${{ steps.version.outputs.VERSION }}-${{ matrix.target }}"
+          ARCHIVE_NAME="bifrost-gui-v${VERSION}-${{ matrix.target }}"
           
           mkdir -p "dist/${APP_NAME}.app/Contents/MacOS"
           mkdir -p "dist/${APP_NAME}.app/Contents/Resources"
@@ -195,7 +305,7 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
-              <string>${{ steps.version.outputs.VERSION }}</string>
+              <string>${VERSION}</string>
               <key>CFBundleVersion</key>
               <string>1</string>
               <key>LSMinimumSystemVersion</key>
@@ -214,7 +324,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $ARCHIVE_NAME = "bifrost-gui-${{ steps.version.outputs.VERSION }}-${{ matrix.target }}"
+          $VERSION = "${{ needs.prepare.outputs.version }}"
+          $ARCHIVE_NAME = "bifrost-gui-v${VERSION}-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "dist/${ARCHIVE_NAME}"
           Copy-Item "target/${{ matrix.target }}/release/bifrost-gui.exe" "dist/${ARCHIVE_NAME}/"
           Compress-Archive -Path "dist/${ARCHIVE_NAME}" -DestinationPath "dist/${ARCHIVE_NAME}.zip"
@@ -240,19 +351,47 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build-cli, build-gui]
+    needs: [prepare, build-cli, build-gui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      - name: Generate changelog
+        id: changelog
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          
+          if [[ -n "$PREV_TAG" ]]; then
+            echo "## What's Changed" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            
+            echo "### 🚀 Features" >> CHANGELOG.md
+            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^feat" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            
+            echo "### 🐛 Bug Fixes" >> CHANGELOG.md
+            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^fix" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            
+            echo "### 📝 Other Changes" >> CHANGELOG.md
+            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --invert-grep --grep="^feat" --grep="^fix" >> CHANGELOG.md || true
+            echo "" >> CHANGELOG.md
+            
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> CHANGELOG.md
+          else
+            echo "🎉 Initial release!" > CHANGELOG.md
+          fi
 
       - name: Collect release assets
         run: |
@@ -261,33 +400,76 @@ jobs:
 
       - name: Create combined checksums
         run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
           cd release
-          cat *.sha256 > bifrost-${{ steps.version.outputs.VERSION }}-checksums.txt
+          cat *.sha256 > "bifrost-v${VERSION}-checksums.txt"
           rm -f *.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Bifrost ${{ steps.version.outputs.VERSION }}
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Bifrost ${{ needs.prepare.outputs.tag }}
           draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
-          generate_release_notes: true
+          prerelease: ${{ needs.prepare.outputs.is_prerelease == 'true' }}
+          body_path: CHANGELOG.md
+          append_body: true
           body: |
-            ## Downloads
-
-            ### CLI Version (Command-line with Web UI)
-            - Linux x64: `bifrost-${{ steps.version.outputs.VERSION }}-x86_64-unknown-linux-gnu.tar.gz`
-            - Linux ARM64: `bifrost-${{ steps.version.outputs.VERSION }}-aarch64-unknown-linux-gnu.tar.gz`
-            - macOS x64: `bifrost-${{ steps.version.outputs.VERSION }}-x86_64-apple-darwin.tar.gz`
-            - macOS ARM64: `bifrost-${{ steps.version.outputs.VERSION }}-aarch64-apple-darwin.tar.gz`
-            - Windows x64: `bifrost-${{ steps.version.outputs.VERSION }}-x86_64-pc-windows-msvc.zip`
-
-            ### GUI Version (Native Desktop App)
-            - macOS x64: `bifrost-gui-${{ steps.version.outputs.VERSION }}-x86_64-apple-darwin.tar.gz`
-            - macOS ARM64: `bifrost-gui-${{ steps.version.outputs.VERSION }}-aarch64-apple-darwin.tar.gz`
-            - Windows x64: `bifrost-gui-${{ steps.version.outputs.VERSION }}-x86_64-pc-windows-msvc.zip`
-
+            
+            ---
+            
+            ## 📥 Installation
+            
+            ### Quick Install (Recommended)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install-binary.sh | bash
+            ```
+            
+            ### Homebrew (macOS)
+            ```bash
+            brew tap hxfdarling/bifrost
+            brew install bifrost
+            ```
+            
+            ### Manual Download
+            
+            #### CLI Version (Command-line with Web UI)
+            | Platform | Architecture | Download |
+            |----------|--------------|----------|
+            | Linux | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz` |
+            | Linux | ARM64 | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-unknown-linux-gnu.tar.gz` |
+            | Linux | ARMv7 | `bifrost-${{ needs.prepare.outputs.tag }}-armv7-unknown-linux-gnueabihf.tar.gz` |
+            | macOS | Intel | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.tar.gz` |
+            | macOS | Apple Silicon | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.tar.gz` |
+            | Windows | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
+            | Windows | ARM64 | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip` |
+            
+            #### GUI Version (Native Desktop App)
+            | Platform | Architecture | Download |
+            |----------|--------------|----------|
+            | macOS | Intel | `bifrost-gui-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.tar.gz` |
+            | macOS | Apple Silicon | `bifrost-gui-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.tar.gz` |
+            | Windows | x64 | `bifrost-gui-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
+            
           files: |
             release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    if: needs.prepare.outputs.is_prerelease != 'true'
+    steps:
+      - name: Update Homebrew Formula
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: hxfdarling/homebrew-bifrost
+          event-type: update-formula
+          client-payload: |
+            {
+              "version": "${{ needs.prepare.outputs.version }}",
+              "tag": "${{ needs.prepare.outputs.tag }}"
+            }

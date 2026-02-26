@@ -26,19 +26,76 @@ rust/
 └── tests/                  # 端到端测试
 ```
 
-## 快速开始
+## 安装
 
-### 环境要求
+### 方式一：一键安装（推荐）
+
+使用 curl 一键安装脚本，自动检测平台和架构：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash
+```
+
+安装选项：
+
+```bash
+# 指定安装目录
+curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --dir /usr/local/bin
+
+# 安装特定版本
+curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
+
+# 同时安装 GUI 版本（macOS/Windows）
+curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --gui
+```
+
+### 方式二：Homebrew（macOS）
+
+```bash
+brew tap hxfdarling/bifrost
+brew install bifrost
+```
+
+### 方式三：从源码构建
+
+#### 环境要求
 
 - Rust 1.70+
 - Cargo
+- Node.js 18+ & pnpm（用于构建 Web UI）
 
-### 构建
+#### 构建步骤
 
 ```bash
-cd rust
+# 克隆仓库
+git clone https://github.com/hxfdarling/bifrost.git
+cd bifrost
+
+# 使用安装脚本（推荐）
+./install.sh
+
+# 或手动构建
+cd web && pnpm install && pnpm build && cd ..
 cargo build --release
 ```
+
+### 方式四：手动下载
+
+从 [Releases](https://github.com/hxfdarling/bifrost/releases) 页面下载预编译的二进制文件。
+
+**支持的平台：**
+
+| 平台 | 架构 | 文件 |
+|------|------|------|
+| Linux | x64 | `bifrost-vX.X.X-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux | ARM64 | `bifrost-vX.X.X-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux | ARMv7 | `bifrost-vX.X.X-armv7-unknown-linux-gnueabihf.tar.gz` |
+| macOS | Intel | `bifrost-vX.X.X-x86_64-apple-darwin.tar.gz` |
+| macOS | Apple Silicon | `bifrost-vX.X.X-aarch64-apple-darwin.tar.gz` |
+| Windows | x64 | `bifrost-vX.X.X-x86_64-pc-windows-msvc.zip` |
+| Windows | ARM64 | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip` |
+
+## 快速开始
 
 ### 运行
 
