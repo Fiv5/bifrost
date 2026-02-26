@@ -20,7 +20,7 @@ fn main() {
                 ),
             )
             .expect("Failed to write icon.rc");
-            embed_resource::compile(&rc_path, embed_resource::NONE);
+            let _ = embed_resource::compile(&rc_path, embed_resource::NONE);
         }
     }
 }

@@ -70,6 +70,7 @@ async fn test_socks5_connect() {
 
 #[tokio::test]
 async fn test_socks5_connect_with_domain() {
+    let mock_server = common::MockHttpServer::start().await;
     let (host, port) = start_socks5_server(false).await;
 
     let mut stream = TcpStream::connect(format!("{}:{}", host, port))
@@ -85,8 +86,8 @@ async fn test_socks5_connect_with_domain() {
     stream.read_exact(&mut auth_response).await.unwrap();
     assert_eq!(auth_response[0], SOCKS5_VERSION);
 
-    let domain = "example.com";
-    let target_port: u16 = 80;
+    let domain = "127.0.0.1";
+    let target_port: u16 = mock_server.port;
 
     let mut connect_req = vec![
         SOCKS5_VERSION,
@@ -101,12 +102,16 @@ async fn test_socks5_connect_with_domain() {
     stream.write_all(&connect_req).await.unwrap();
 
     let mut connect_response = [0u8; 10];
-    let _ = tokio::time::timeout(
+    let read_result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         stream.read(&mut connect_response),
     )
     .await;
 
+    assert!(
+        read_result.is_ok(),
+        "Read should not timeout when connecting to local server"
+    );
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
 
@@ -183,6 +188,7 @@ async fn test_socks5_auth_failure() {
 
 #[tokio::test]
 async fn test_socks5_domain() {
+    let mock_server = common::MockHttpServer::start().await;
     let (host, port) = start_socks5_server(false).await;
 
     let mut stream = TcpStream::connect(format!("{}:{}", host, port))
@@ -197,8 +203,8 @@ async fn test_socks5_domain() {
     let mut response = [0u8; 2];
     stream.read_exact(&mut response).await.unwrap();
 
-    let domain = "httpbin.org";
-    let target_port: u16 = 80;
+    let domain = "localhost";
+    let target_port: u16 = mock_server.port;
 
     let mut connect_req = vec![
         SOCKS5_VERSION,
@@ -213,17 +219,22 @@ async fn test_socks5_domain() {
     stream.write_all(&connect_req).await.unwrap();
 
     let mut connect_response = vec![0u8; 256];
-    let _ = tokio::time::timeout(
+    let read_result = tokio::time::timeout(
         tokio::time::Duration::from_secs(5),
         stream.read(&mut connect_response),
     )
     .await;
 
+    assert!(
+        read_result.is_ok(),
+        "Read should not timeout when connecting to local server"
+    );
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
 
 #[tokio::test]
 async fn test_socks5_ipv4_connect() {
+    let mock_server = common::MockHttpServer::start().await;
     let (host, port) = start_socks5_server(false).await;
 
     let mut stream = TcpStream::connect(format!("{}:{}", host, port))
@@ -239,7 +250,7 @@ async fn test_socks5_ipv4_connect() {
     stream.read_exact(&mut response).await.unwrap();
 
     let ip_bytes: [u8; 4] = [127, 0, 0, 1];
-    let target_port: u16 = 80;
+    let target_port: u16 = mock_server.port;
 
     let mut connect_req = vec![SOCKS5_VERSION, SOCKS5_CMD_CONNECT, 0x00, SOCKS5_ATYP_IPV4];
     connect_req.extend_from_slice(&ip_bytes);
@@ -248,12 +259,16 @@ async fn test_socks5_ipv4_connect() {
     stream.write_all(&connect_req).await.unwrap();
 
     let mut connect_response = [0u8; 10];
-    let _ = tokio::time::timeout(
+    let read_result = tokio::time::timeout(
         tokio::time::Duration::from_secs(2),
         stream.read(&mut connect_response),
     )
     .await;
 
+    assert!(
+        read_result.is_ok(),
+        "Read should not timeout when connecting to local server"
+    );
     assert_eq!(connect_response[0], SOCKS5_VERSION);
 }
 

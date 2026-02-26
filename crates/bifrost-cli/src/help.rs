@@ -62,8 +62,10 @@ fn supports_color() -> bool {
         let handle = std::io::stdout().as_raw_handle();
         let mut mode: u32 = 0;
         unsafe {
-            let result =
-                windows_sys::Win32::System::Console::GetConsoleMode(handle as isize, &mut mode);
+            let result = windows_sys::Win32::System::Console::GetConsoleMode(
+                handle as windows_sys::Win32::Foundation::HANDLE,
+                &mut mode,
+            );
             result != 0
         }
     }
