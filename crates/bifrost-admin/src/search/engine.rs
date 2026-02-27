@@ -402,9 +402,7 @@ impl SearchEngine {
             }
         }
 
-        if !filters.client_ips.is_empty()
-            && !filters.client_ips.contains(&record.client_ip)
-        {
+        if !filters.client_ips.is_empty() && !filters.client_ips.contains(&record.client_ip) {
             return false;
         }
 
