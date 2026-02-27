@@ -9,7 +9,11 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Tag, Tooltip, Badge, theme } from "antd";
-import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
+import {
+  ThunderboltOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+} from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 import AppIcon from "../AppIcon";
 import TrafficContextMenu from "./TrafficContextMenu";
@@ -450,6 +454,36 @@ const keyframesStyle = `
       transform: translateX(-50%) scale(1.05);
     }
   }
+  @keyframes fadeSlideIn {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes fadeSlideInCenter {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  }
+  @keyframes fadeSlideDownCenter {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  }
 `;
 
 export default function VirtualTrafficTable({
@@ -475,6 +509,8 @@ export default function VirtualTrafficTable({
   const isAtBottomRef = useRef(true);
   const [showNewIndicator, setShowNewIndicator] = useState(false);
   const initialScrollRestoredRef = useRef(false);
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
 
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -527,33 +563,31 @@ export default function VirtualTrafficTable({
   const handleScroll = useCallback(() => {
     if (!parentRef.current) return;
 
-    const { scrollTop } = parentRef.current;
+    const { scrollTop, scrollHeight, clientHeight } = parentRef.current;
     onScrollTopChange?.(scrollTop);
 
-    const isAtBottom = checkIsAtBottom();
+    const atTopNow = scrollTop < SCROLL_THRESHOLD;
+    const atBottomNow =
+      scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD;
 
-    if (isAtBottomRef.current !== isAtBottom) {
-      isAtBottomRef.current = isAtBottom;
-      onScrollPositionChange?.(isAtBottom);
+    setIsAtTop(atTopNow);
+    setIsAtBottom(atBottomNow);
 
-      if (isAtBottom) {
+    if (isAtBottomRef.current !== atBottomNow) {
+      isAtBottomRef.current = atBottomNow;
+      onScrollPositionChange?.(atBottomNow);
+
+      if (atBottomNow) {
         setShowNewIndicator(false);
       }
     }
 
     if (onLoadMore && hasMore) {
-      const { scrollHeight, clientHeight } = parentRef.current;
       if (scrollHeight - scrollTop - clientHeight < 200) {
         onLoadMore();
       }
     }
-  }, [
-    checkIsAtBottom,
-    onScrollPositionChange,
-    onLoadMore,
-    hasMore,
-    onScrollTopChange,
-  ]);
+  }, [onScrollPositionChange, onLoadMore, hasMore, onScrollTopChange]);
 
   useEffect(() => {
     if (
@@ -617,6 +651,13 @@ export default function VirtualTrafficTable({
     setShowNewIndicator(false);
     onScrollToBottom?.();
   }, [rowVirtualizer, data.length, onScrollToBottom]);
+
+  const handleScrollToTopClick = useCallback(() => {
+    rowVirtualizer.scrollToIndex(0, {
+      align: "start",
+      behavior: "smooth",
+    });
+  }, [rowVirtualizer]);
 
   const scrollToRow = useCallback(
     (index: number, smooth: boolean = true) => {
@@ -768,6 +809,33 @@ export default function VirtualTrafficTable({
         animation: "slideUp 0.3s ease-out",
         transition: "transform 0.2s, box-shadow 0.2s",
       },
+      scrollButton: {
+        position: "absolute" as const,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        backgroundColor: token.colorBgElevated,
+        color: token.colorTextSecondary,
+        borderRadius: "50%",
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
+        zIndex: 100,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        transition:
+          "opacity 0.3s ease, transform 0.3s ease, background-color 0.2s",
+      },
+      scrollToTopButton: {
+        top: 52,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+      scrollToBottomButton: {
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
     }),
     [token],
   );
@@ -833,7 +901,20 @@ export default function VirtualTrafficTable({
         </div>
       </div>
 
-      {showNewIndicator && newRecordsCount > 0 && (
+      {!isAtTop && data.length > 0 && (
+        <div
+          style={{
+            ...styles.scrollButton,
+            ...styles.scrollToTopButton,
+            animation: "fadeSlideDownCenter 0.3s ease-out",
+          }}
+          onClick={handleScrollToTopClick}
+        >
+          <ArrowUpOutlined style={{ fontSize: 14 }} />
+        </div>
+      )}
+
+      {showNewIndicator && newRecordsCount > 0 ? (
         <div
           style={{
             ...styles.newRecordsIndicator,
@@ -850,7 +931,18 @@ export default function VirtualTrafficTable({
           </Badge>
           <ArrowDownOutlined style={{ fontSize: 14 }} />
         </div>
-      )}
+      ) : !isAtBottom && data.length > 0 ? (
+        <div
+          style={{
+            ...styles.scrollButton,
+            ...styles.scrollToBottomButton,
+            animation: "fadeSlideInCenter 0.3s ease-out",
+          }}
+          onClick={handleScrollToBottomClick}
+        >
+          <ArrowDownOutlined style={{ fontSize: 14 }} />
+        </div>
+      ) : null}
 
       <TrafficContextMenu
         record={contextMenu.record}
