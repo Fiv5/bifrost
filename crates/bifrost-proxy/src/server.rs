@@ -779,10 +779,12 @@ async fn handle_request(
         .as_ref()
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
         .unwrap_or((None, None, None));
+    let need_async_resolve = client_process.is_none() && peer_addr.ip().is_loopback();
 
     let ctx = RequestContext::new()
         .with_client_process(client_app, client_pid, client_path)
         .with_client_ip(peer_addr.ip().to_string());
+    let record_id_for_async = ctx.id_str();
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
@@ -874,6 +876,20 @@ async fn handle_request(
 
     if let Some(ref state) = admin_state {
         state.metrics_collector.increment_requests();
+    }
+
+    if need_async_resolve {
+        if let Some(ref state) = admin_state {
+            let state_clone = state.clone();
+            let record_id = record_id_for_async.clone();
+            crate::utils::process_info::spawn_async_process_resolver(
+                peer_addr,
+                record_id.clone(),
+                move |id, process| {
+                    state_clone.update_client_process(&id, process.name, process.pid, process.path);
+                },
+            );
+        }
     }
 
     if method == Method::CONNECT {

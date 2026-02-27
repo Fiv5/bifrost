@@ -21,8 +21,10 @@ pub use data_dir::{data_dir, set_data_dir};
 pub use rules::{RuleFile, RulesStorage};
 pub use state::{RuntimeState, StateManager};
 pub use unified_config::{
-    AccessConfig as NewAccessConfig, AccessConfigUpdate, PathsConfig, ProxySettings, ServerConfig,
-    SocksAuthConfig, SystemProxyConfig as NewSystemProxyConfig, SystemProxyConfigUpdate, TlsConfig,
-    TlsConfigUpdate, TrafficConfig as NewTrafficConfig, TrafficConfigUpdate, UnifiedConfig,
+    AccessConfig as NewAccessConfig, AccessConfigUpdate, CollapsedSections, FilterPanelConfig,
+    PathsConfig, PinnedFilter, PinnedFilterType, ProxySettings, ServerConfig, SocksAuthConfig,
+    SystemProxyConfig as NewSystemProxyConfig, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate,
+    TrafficConfig as NewTrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate,
+    UnifiedConfig,
 };
 pub use values::{ValueEntry, ValuesStorage};

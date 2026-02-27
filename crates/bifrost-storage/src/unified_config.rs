@@ -13,6 +13,7 @@ pub struct UnifiedConfig {
     pub system_proxy: SystemProxyConfig,
     pub traffic: TrafficConfig,
     pub paths: PathsConfig,
+    pub ui: UiConfig,
 }
 
 impl UnifiedConfig {
@@ -25,6 +26,7 @@ impl UnifiedConfig {
             system_proxy: SystemProxyConfig::default(),
             traffic: TrafficConfig::default_for_data_dir(data_dir),
             paths: PathsConfig::default_for_data_dir(data_dir),
+            ui: UiConfig::default(),
         }
     }
 }
@@ -244,6 +246,55 @@ pub struct TrafficConfigUpdate {
     pub max_body_memory_size: Option<usize>,
     pub max_body_buffer_size: Option<usize>,
     pub file_retention_days: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PinnedFilterType {
+    ClientIp,
+    ClientApp,
+    #[default]
+    Domain,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PinnedFilter {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub filter_type: PinnedFilterType,
+    pub value: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FilterPanelConfig {
+    pub collapsed: bool,
+    pub width: u32,
+    pub collapsed_sections: CollapsedSections,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CollapsedSections {
+    pub pinned: bool,
+    pub client_ip: bool,
+    pub client_app: bool,
+    pub domain: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    pub pinned_filters: Vec<PinnedFilter>,
+    pub filter_panel: FilterPanelConfig,
+    pub detail_panel_collapsed: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UiConfigUpdate {
+    pub pinned_filters: Option<Vec<PinnedFilter>>,
+    pub filter_panel: Option<FilterPanelConfig>,
+    pub detail_panel_collapsed: Option<bool>,
 }
 
 #[cfg(test)]

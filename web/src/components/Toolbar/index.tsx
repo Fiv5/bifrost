@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  FilterOutlined,
 } from "@ant-design/icons";
 import type { ToolbarFilters } from "../../types";
 
@@ -14,6 +15,8 @@ interface ToolbarProps {
   systemProxySupported?: boolean;
   systemProxyLoading?: boolean;
   onSystemProxyToggle?: (enabled: boolean) => void;
+  filterPanelCollapsed?: boolean;
+  onFilterPanelToggle?: () => void;
   detailPanelCollapsed?: boolean;
   onDetailPanelToggle?: () => void;
 }
@@ -33,6 +36,8 @@ export default function Toolbar({
   systemProxySupported = true,
   systemProxyLoading,
   onSystemProxyToggle,
+  filterPanelCollapsed,
+  onFilterPanelToggle,
   detailPanelCollapsed,
   onDetailPanelToggle,
 }: ToolbarProps) {
@@ -72,6 +77,31 @@ export default function Toolbar({
       }}
     >
       <Space size={4}>
+        <Tooltip
+          title={
+            filterPanelCollapsed ? "Show filter panel" : "Hide filter panel"
+          }
+        >
+          <Button
+            type="text"
+            size="small"
+            icon={<FilterOutlined />}
+            onClick={onFilterPanelToggle}
+            style={{
+              color: filterPanelCollapsed
+                ? token.colorTextSecondary
+                : token.colorPrimary,
+            }}
+          />
+        </Tooltip>
+        <div
+          style={{
+            width: 1,
+            height: 16,
+            backgroundColor: token.colorBorderSecondary,
+            margin: "0 4px",
+          }}
+        />
         <Popconfirm
           title="Clear all traffic?"
           description="This action cannot be undone."

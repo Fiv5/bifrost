@@ -57,6 +57,29 @@ impl ProcessResolver {
         process
     }
 
+    pub fn resolve_with_retry(
+        &self,
+        peer_addr: &SocketAddr,
+        max_retries: u32,
+        delay_ms: u64,
+    ) -> Option<ClientProcess> {
+        let port = peer_addr.port();
+
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+
+            let process = self.lookup_process(peer_addr);
+            if process.is_some() {
+                self.update_cache(port, process.clone());
+                return process;
+            }
+        }
+
+        None
+    }
+
     fn get_from_cache(&self, port: u16) -> Option<Option<ClientProcess>> {
         let cache = self.cache.read().ok()?;
         if let Some(cached) = cache.get(&port) {
@@ -110,13 +133,25 @@ impl ProcessResolver {
 
         for socket in sockets {
             if let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info {
-                if tcp.local_port == port && tcp.state == TcpState::Established {
+                if tcp.local_port == port
+                    && matches!(
+                        tcp.state,
+                        TcpState::Established
+                            | TcpState::SynSent
+                            | TcpState::SynReceived
+                            | TcpState::FinWait1
+                            | TcpState::FinWait2
+                            | TcpState::CloseWait
+                            | TcpState::LastAck
+                    )
+                {
                     if let Some(&pid) = socket.associated_pids.first() {
                         let (name, path) = get_process_info(pid);
                         debug!(
                             port = port,
                             pid = pid,
                             name = %name,
+                            state = ?tcp.state,
                             "Resolved client process"
                         );
                         return Some(ClientProcess { pid, name, path });
@@ -292,6 +327,25 @@ lazy_static::lazy_static! {
 
 pub fn resolve_client_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
     PROCESS_RESOLVER.resolve(peer_addr)
+}
+
+pub fn resolve_client_process_with_retry(
+    peer_addr: &SocketAddr,
+    max_retries: u32,
+    delay_ms: u64,
+) -> Option<ClientProcess> {
+    PROCESS_RESOLVER.resolve_with_retry(peer_addr, max_retries, delay_ms)
+}
+
+pub fn spawn_async_process_resolver<F>(peer_addr: SocketAddr, record_id: String, callback: F)
+where
+    F: FnOnce(String, ClientProcess) + Send + 'static,
+{
+    std::thread::spawn(move || {
+        if let Some(process) = PROCESS_RESOLVER.resolve_with_retry(&peer_addr, 3, 10) {
+            callback(record_id, process);
+        }
+    });
 }
 
 pub fn format_client_info(peer_addr: &SocketAddr, process: Option<&ClientProcess>) -> String {

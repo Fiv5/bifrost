@@ -8,13 +8,15 @@ import {
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
-import { useTrafficStore, filterRecords } from "../../stores/useTrafficStore";
+import { useTrafficStore, filterRecords, type PanelFilters } from "../../stores/useTrafficStore";
 import { useProxyStore } from "../../stores/useProxyStore";
+import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
-import SplitPane from "../../components/SplitPane";
+import ThreeSplitPane from "../../components/ThreeSplitPane";
+import FilterPanel from "../../components/FilterPanel";
 import type {
   TrafficSummary,
   FilterCondition,
@@ -93,7 +95,20 @@ export default function Traffic() {
     fetchSystemProxy,
     toggleSystemProxy,
   } = useProxyStore();
-  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState(false);
+
+  const {
+    panelCollapsed: filterPanelCollapsed,
+    setPanelCollapsed: setFilterPanelCollapsed,
+    panelWidth: filterPanelWidth,
+    setPanelWidth: setFilterPanelWidth,
+    detailPanelCollapsed,
+    setDetailPanelCollapsed,
+    selectedClientIps,
+    selectedClientApps,
+    selectedDomains,
+    loadFromServer: loadFilterPanelConfig,
+    initialized: filterPanelInitialized,
+  } = useFilterPanelStore();
 
   const initializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
@@ -130,6 +145,7 @@ export default function Traffic() {
       startPolling();
     });
     fetchSystemProxy();
+    loadFilterPanelConfig();
 
     return () => {
       stopPolling();
@@ -141,6 +157,7 @@ export default function Traffic() {
     stopPolling,
     fetchSystemProxy,
     initFromUrl,
+    loadFilterPanelConfig,
   ]);
 
   useEffect(() => {
@@ -198,8 +215,12 @@ export default function Traffic() {
   );
 
   const handleDetailPanelToggle = useCallback(() => {
-    setDetailPanelCollapsed((prev) => !prev);
-  }, []);
+    setDetailPanelCollapsed(!detailPanelCollapsed);
+  }, [detailPanelCollapsed, setDetailPanelCollapsed]);
+
+  const handleFilterPanelToggle = useCallback(() => {
+    setFilterPanelCollapsed(!filterPanelCollapsed);
+  }, [filterPanelCollapsed, setFilterPanelCollapsed]);
 
   const handleDoubleClick = useCallback(
     async (record: TrafficSummary) => {
@@ -230,20 +251,29 @@ export default function Traffic() {
     [setScrollTop],
   );
 
+  const panelFilters = useMemo<PanelFilters>(() => ({
+    clientIps: selectedClientIps,
+    clientApps: selectedClientApps,
+    domains: selectedDomains,
+  }), [selectedClientIps, selectedClientApps, selectedDomains]);
+
   const filteredRecords = useMemo(() => {
-    return filterRecords(records, toolbarFilters, filterConditions);
-  }, [records, toolbarFilters, filterConditions]);
+    return filterRecords(records, toolbarFilters, filterConditions, panelFilters);
+  }, [records, toolbarFilters, filterConditions, panelFilters]);
 
   const clientInfo = useMemo(() => {
     const appSet = new Set<string>();
     const ipSet = new Set<string>();
+    const domainSet = new Set<string>();
     for (const record of records) {
       if (record.client_app) appSet.add(record.client_app);
       if (record.client_ip) ipSet.add(record.client_ip);
+      if (record.host) domainSet.add(record.host);
     }
     return {
       apps: Array.from(appSet).sort(),
       ips: Array.from(ipSet).sort(),
+      domains: Array.from(domainSet).sort(),
     };
   }, [records]);
 
@@ -266,8 +296,15 @@ export default function Traffic() {
         overflow: "hidden",
         backgroundColor: token.colorBgContainer,
       },
-      tableWrapper: {
+      centerWrapper: {
+        display: "flex",
+        flexDirection: "column",
         height: "100%",
+        overflow: "hidden",
+      },
+      tableWrapper: {
+        flex: 1,
+        minHeight: 0,
         backgroundColor: token.colorBgContainer,
       },
       detailWrapper: {
@@ -280,20 +317,8 @@ export default function Traffic() {
     [token],
   );
 
-  return (
-    <div style={styles.container}>
-      <Toolbar
-        filters={toolbarFilters}
-        onClear={handleClear}
-        onFilterChange={setToolbarFilters}
-        systemProxyEnabled={systemProxy?.enabled}
-        systemProxySupported={systemProxy?.supported}
-        systemProxyLoading={systemProxyLoading}
-        onSystemProxyToggle={handleSystemProxyToggle}
-        detailPanelCollapsed={detailPanelCollapsed}
-        onDetailPanelToggle={handleDetailPanelToggle}
-      />
-
+  const renderCenter = () => (
+    <div style={styles.centerWrapper}>
       {showFilterBar && (
         <div style={styles.filterBarWrapper}>
           <FilterBar
@@ -304,57 +329,76 @@ export default function Traffic() {
           />
         </div>
       )}
+      <div style={styles.tableWrapper}>
+        <VirtualTrafficTable
+          data={filteredRecords}
+          onSelect={handleSelect}
+          onDoubleClick={handleDoubleClick}
+          selectedId={selectedId}
+          hasMore={hasMore}
+          autoScroll={autoScroll}
+          onScrollPositionChange={handleScrollPositionChange}
+          newRecordsCount={newRecordsCount}
+          onScrollToBottom={handleScrollToBottom}
+          initialScrollTop={scrollTop}
+          onScrollTopChange={handleScrollTopChange}
+        />
+      </div>
+    </div>
+  );
+
+  const renderDetail = () => (
+    <div style={styles.detailWrapper}>
+      <TrafficDetail
+        record={currentRecord}
+        requestBody={requestBody}
+        responseBody={responseBody}
+        loading={detailLoading}
+      />
+    </div>
+  );
+
+  const renderFilterPanel = () => (
+    <FilterPanel
+      availableClientIps={clientInfo.ips}
+      availableClientApps={clientInfo.apps}
+      availableDomains={clientInfo.domains}
+    />
+  );
+
+  return (
+    <div style={styles.container}>
+      <Toolbar
+        filters={toolbarFilters}
+        onClear={handleClear}
+        onFilterChange={setToolbarFilters}
+        systemProxyEnabled={systemProxy?.enabled}
+        systemProxySupported={systemProxy?.supported}
+        systemProxyLoading={systemProxyLoading}
+        onSystemProxyToggle={handleSystemProxyToggle}
+        filterPanelCollapsed={filterPanelCollapsed}
+        onFilterPanelToggle={handleFilterPanelToggle}
+        detailPanelCollapsed={detailPanelCollapsed}
+        onDetailPanelToggle={handleDetailPanelToggle}
+      />
 
       <div style={styles.mainContent}>
-        {detailPanelCollapsed ? (
-          <div style={styles.tableWrapper}>
-            <VirtualTrafficTable
-              data={filteredRecords}
-              onSelect={handleSelect}
-              onDoubleClick={handleDoubleClick}
-              selectedId={selectedId}
-              hasMore={hasMore}
-              autoScroll={autoScroll}
-              onScrollPositionChange={handleScrollPositionChange}
-              newRecordsCount={newRecordsCount}
-              onScrollToBottom={handleScrollToBottom}
-              initialScrollTop={scrollTop}
-              onScrollTopChange={handleScrollTopChange}
-            />
-          </div>
-        ) : (
-          <SplitPane
-            defaultLeftWidth="55%"
-            minLeftWidth={400}
+        {filterPanelInitialized ? (
+          <ThreeSplitPane
+            left={renderFilterPanel()}
+            center={renderCenter()}
+            right={renderDetail()}
+            leftWidth={filterPanelWidth}
+            minLeftWidth={180}
+            maxLeftWidth={350}
+            minCenterWidth={400}
             minRightWidth={350}
-            left={
-              <div style={styles.tableWrapper}>
-                <VirtualTrafficTable
-                  data={filteredRecords}
-                  onSelect={handleSelect}
-                  onDoubleClick={handleDoubleClick}
-                  selectedId={selectedId}
-                  hasMore={hasMore}
-                  autoScroll={autoScroll}
-                  onScrollPositionChange={handleScrollPositionChange}
-                  newRecordsCount={newRecordsCount}
-                  onScrollToBottom={handleScrollToBottom}
-                  initialScrollTop={scrollTop}
-                  onScrollTopChange={handleScrollTopChange}
-                />
-              </div>
-            }
-            right={
-              <div style={styles.detailWrapper}>
-                <TrafficDetail
-                  record={currentRecord}
-                  requestBody={requestBody}
-                  responseBody={responseBody}
-                  loading={detailLoading}
-                />
-              </div>
-            }
+            leftCollapsed={filterPanelCollapsed}
+            rightCollapsed={detailPanelCollapsed}
+            onLeftWidthChange={setFilterPanelWidth}
           />
+        ) : (
+          <div style={{ flex: 1 }} />
         )}
       </div>
     </div>

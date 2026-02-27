@@ -216,12 +216,39 @@ const matchRecord = (
   return true;
 };
 
+export interface PanelFilters {
+  clientIps: string[];
+  clientApps: string[];
+  domains: string[];
+}
+
+const hasPanelFilters = (panel: PanelFilters): boolean => {
+  return panel.clientIps.length > 0 || panel.clientApps.length > 0 || panel.domains.length > 0;
+};
+
+const matchPanelFilters = (record: TrafficSummary, panel: PanelFilters): boolean => {
+  const clientIpMatch = panel.clientIps.length === 0
+    || panel.clientIps.includes(record.client_ip || '');
+
+  const clientAppMatch = panel.clientApps.length === 0
+    || panel.clientApps.includes(record.client_app || '');
+
+  const domainMatch = panel.domains.length === 0
+    || panel.domains.some(domain => (record.host || '').includes(domain));
+
+  return clientIpMatch && clientAppMatch && domainMatch;
+};
+
 export const filterRecords = (
   records: TrafficSummary[],
   toolbar: ToolbarFilters,
-  conditions: FilterCondition[]
+  conditions: FilterCondition[],
+  panel: PanelFilters = { clientIps: [], clientApps: [], domains: [] }
 ): TrafficSummary[] => {
-  if (!hasActiveFilters(toolbar, conditions)) {
+  const hasToolbarOrConditions = hasActiveFilters(toolbar, conditions);
+  const hasPanelActive = hasPanelFilters(panel);
+
+  if (!hasToolbarOrConditions && !hasPanelActive) {
     return records;
   }
 
@@ -232,7 +259,10 @@ export const filterRecords = (
 
   const result: TrafficSummary[] = [];
   for (const record of records) {
-    if (matchRecord(record, toolbar, compiledConditions, protocolSet, statusSet, typeSet)) {
+    const toolbarMatch = !hasToolbarOrConditions || matchRecord(record, toolbar, compiledConditions, protocolSet, statusSet, typeSet);
+    const panelMatch = !hasPanelActive || matchPanelFilters(record, panel);
+
+    if (toolbarMatch && panelMatch) {
       result.push(record);
     }
   }
@@ -362,10 +392,12 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
             }
           }
 
+          let actualNewCount = 0;
           for (const r of batch.newRecords) {
             if (!recordsMap.has(r.id)) {
               recordsMap.set(r.id, r);
               hasChanges = true;
+              actualNewCount++;
             }
           }
 
@@ -405,10 +437,9 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
           const lastRecord = batch.newRecords[batch.newRecords.length - 1];
           const newLastId = lastRecord?.id || prevState.lastId;
 
-          const newCount = batch.newRecords.length;
           const updatedNewRecordsCount = prevState.autoScroll
             ? 0
-            : prevState.newRecordsCount + newCount;
+            : prevState.newRecordsCount + actualNewCount;
 
           pushService.updateSubscription({
             last_traffic_id: newLastId || undefined,
@@ -510,10 +541,12 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
             }
           }
 
+          let actualNewCount = 0;
           for (const r of response.new_records) {
             if (!recordsMap.has(r.id)) {
               recordsMap.set(r.id, r);
               hasChanges = true;
+              actualNewCount++;
             }
           }
 
@@ -553,10 +586,9 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
           const lastRecord = response.new_records[response.new_records.length - 1];
           const newLastId = lastRecord?.id || prevState.lastId;
 
-          const newCount = response.new_records.length;
           const updatedNewRecordsCount = prevState.autoScroll
             ? 0
-            : prevState.newRecordsCount + newCount;
+            : prevState.newRecordsCount + actualNewCount;
 
           return {
             records: allRecords,

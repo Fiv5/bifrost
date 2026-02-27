@@ -152,6 +152,20 @@ impl AdminState {
         }
     }
 
+    pub fn update_client_process(
+        &self,
+        id: &str,
+        client_app: String,
+        client_pid: u32,
+        client_path: Option<String>,
+    ) {
+        self.update_traffic_by_id(id, move |record| {
+            record.client_app = Some(client_app.clone());
+            record.client_pid = Some(client_pid);
+            record.client_path = client_path.clone();
+        });
+    }
+
     pub fn with_rules_storage(mut self, storage: RulesStorage) -> Self {
         self.rules_storage = storage;
         self

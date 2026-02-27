@@ -1,4 +1,7 @@
-use bifrost_storage::{TlsConfigUpdate, TrafficConfigUpdate};
+use bifrost_storage::{
+    CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, TlsConfigUpdate,
+    TrafficConfigUpdate, UiConfigUpdate,
+};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +99,11 @@ pub async fn handle_config(
                 _ => method_not_allowed(),
             }
         }
+        "/api/config/ui" | "/api/config/ui/" => match method {
+            Method::GET => get_ui_config(state).await,
+            Method::PUT => update_ui_config(req, state).await,
+            _ => method_not_allowed(),
+        },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
 }
@@ -586,4 +594,223 @@ async fn update_tls_config(req: Request<Incoming>, state: SharedAdminState) -> R
     };
 
     json_response(&tls_config)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiPinnedFilterType {
+    ClientIp,
+    ClientApp,
+    Domain,
+}
+
+impl From<PinnedFilterType> for UiPinnedFilterType {
+    fn from(t: PinnedFilterType) -> Self {
+        match t {
+            PinnedFilterType::ClientIp => Self::ClientIp,
+            PinnedFilterType::ClientApp => Self::ClientApp,
+            PinnedFilterType::Domain => Self::Domain,
+        }
+    }
+}
+
+impl From<UiPinnedFilterType> for PinnedFilterType {
+    fn from(t: UiPinnedFilterType) -> Self {
+        match t {
+            UiPinnedFilterType::ClientIp => Self::ClientIp,
+            UiPinnedFilterType::ClientApp => Self::ClientApp,
+            UiPinnedFilterType::Domain => Self::Domain,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiPinnedFilter {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub filter_type: UiPinnedFilterType,
+    pub value: String,
+    pub label: String,
+}
+
+impl From<PinnedFilter> for UiPinnedFilter {
+    fn from(f: PinnedFilter) -> Self {
+        Self {
+            id: f.id,
+            filter_type: f.filter_type.into(),
+            value: f.value,
+            label: f.label,
+        }
+    }
+}
+
+impl From<UiPinnedFilter> for PinnedFilter {
+    fn from(f: UiPinnedFilter) -> Self {
+        Self {
+            id: f.id,
+            filter_type: f.filter_type.into(),
+            value: f.value,
+            label: f.label,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiCollapsedSections {
+    pub pinned: bool,
+    #[serde(rename = "clientIp")]
+    pub client_ip: bool,
+    #[serde(rename = "clientApp")]
+    pub client_app: bool,
+    pub domain: bool,
+}
+
+impl From<CollapsedSections> for UiCollapsedSections {
+    fn from(s: CollapsedSections) -> Self {
+        Self {
+            pinned: s.pinned,
+            client_ip: s.client_ip,
+            client_app: s.client_app,
+            domain: s.domain,
+        }
+    }
+}
+
+impl From<UiCollapsedSections> for CollapsedSections {
+    fn from(s: UiCollapsedSections) -> Self {
+        Self {
+            pinned: s.pinned,
+            client_ip: s.client_ip,
+            client_app: s.client_app,
+            domain: s.domain,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiFilterPanelConfig {
+    pub collapsed: bool,
+    pub width: u32,
+    #[serde(rename = "collapsedSections")]
+    pub collapsed_sections: UiCollapsedSections,
+}
+
+impl From<FilterPanelConfig> for UiFilterPanelConfig {
+    fn from(c: FilterPanelConfig) -> Self {
+        Self {
+            collapsed: c.collapsed,
+            width: c.width,
+            collapsed_sections: c.collapsed_sections.into(),
+        }
+    }
+}
+
+impl From<UiFilterPanelConfig> for FilterPanelConfig {
+    fn from(c: UiFilterPanelConfig) -> Self {
+        Self {
+            collapsed: c.collapsed,
+            width: c.width,
+            collapsed_sections: c.collapsed_sections.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfigResponse {
+    #[serde(rename = "pinnedFilters")]
+    pub pinned_filters: Vec<UiPinnedFilter>,
+    #[serde(rename = "filterPanel")]
+    pub filter_panel: UiFilterPanelConfig,
+    #[serde(rename = "detailPanelCollapsed")]
+    pub detail_panel_collapsed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateUiConfigRequest {
+    #[serde(rename = "pinnedFilters")]
+    pub pinned_filters: Option<Vec<UiPinnedFilter>>,
+    #[serde(rename = "filterPanel")]
+    pub filter_panel: Option<UiFilterPanelConfig>,
+    #[serde(rename = "detailPanelCollapsed")]
+    pub detail_panel_collapsed: Option<bool>,
+}
+
+async fn get_ui_config(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let ui_config = config_manager.get_ui_config().await;
+
+    let response = UiConfigResponse {
+        pinned_filters: ui_config
+            .pinned_filters
+            .into_iter()
+            .map(Into::into)
+            .collect(),
+        filter_panel: ui_config.filter_panel.into(),
+        detail_panel_collapsed: ui_config.detail_panel_collapsed,
+    };
+
+    json_response(&response)
+}
+
+async fn update_ui_config(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: UpdateUiConfigRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let update = UiConfigUpdate {
+        pinned_filters: request
+            .pinned_filters
+            .map(|filters| filters.into_iter().map(Into::into).collect()),
+        filter_panel: request.filter_panel.map(Into::into),
+        detail_panel_collapsed: request.detail_panel_collapsed,
+    };
+
+    match config_manager.update_ui_config(update).await {
+        Ok(ui_config) => {
+            tracing::info!("UI config updated and persisted");
+            let response = UiConfigResponse {
+                pinned_filters: ui_config
+                    .pinned_filters
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                filter_panel: ui_config.filter_panel.into(),
+                detail_panel_collapsed: ui_config.detail_panel_collapsed,
+            };
+            json_response(&response)
+        }
+        Err(e) => {
+            tracing::error!("Failed to persist UI config: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to save config: {}", e),
+            )
+        }
+    }
 }

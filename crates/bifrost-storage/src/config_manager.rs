@@ -9,7 +9,7 @@ use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
     AccessConfigUpdate, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig,
-    TrafficConfigUpdate, UnifiedConfig,
+    TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
 use crate::LegacyBifrostConfig;
@@ -173,6 +173,29 @@ impl ConfigManager {
         self.save_config(&config)?;
 
         Ok(config.traffic.clone())
+    }
+
+    pub async fn get_ui_config(&self) -> UiConfig {
+        let config = self.config.read().await;
+        config.ui.clone()
+    }
+
+    pub async fn update_ui_config(&self, update: UiConfigUpdate) -> Result<UiConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(pinned_filters) = update.pinned_filters {
+            config.ui.pinned_filters = pinned_filters;
+        }
+        if let Some(filter_panel) = update.filter_panel {
+            config.ui.filter_panel = filter_panel;
+        }
+        if let Some(detail_panel_collapsed) = update.detail_panel_collapsed {
+            config.ui.detail_panel_collapsed = detail_panel_collapsed;
+        }
+
+        self.save_config(&config)?;
+
+        Ok(config.ui.clone())
     }
 
     pub async fn save_rule(&self, rule: &RuleFile) -> Result<()> {
@@ -416,6 +439,7 @@ impl ConfigManager {
                 cert_dir: resolve_legacy_path(&legacy.cert_dir, data_dir),
                 traffic_dir: data_dir.join("traffic"),
             },
+            ui: UiConfig::default(),
         }
     }
 
