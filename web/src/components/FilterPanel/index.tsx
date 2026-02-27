@@ -1,6 +1,6 @@
-import { useMemo, type CSSProperties } from "react";
-import { theme, Typography, Button, Empty, Tooltip } from "antd";
-import { ClearOutlined } from "@ant-design/icons";
+import { useMemo, useState, type CSSProperties } from "react";
+import { theme, Typography, Button, Empty, Tooltip, Input } from "antd";
+import { ClearOutlined, SearchOutlined, CloseCircleFilled } from "@ant-design/icons";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
 import FilterSection from "./FilterSection";
 import PinnedFilters from "./PinnedFilters";
@@ -21,6 +21,7 @@ export default function FilterPanel({
   availableDomains,
 }: FilterPanelProps) {
   const { token } = theme.useToken();
+  const [searchKeyword, setSearchKeyword] = useState("");
   const {
     pinnedFilters,
     selectedClientIps,
@@ -57,6 +58,13 @@ export default function FilterPanel({
         padding: "8px 12px",
         borderBottom: `1px solid ${token.colorBorderSecondary}`,
         backgroundColor: token.colorBgLayout,
+        flexShrink: 0,
+        gap: 8,
+      },
+      searchWrapper: {
+        padding: "6px 8px",
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+        backgroundColor: token.colorBgContainer,
         flexShrink: 0,
       },
       title: {
@@ -104,6 +112,27 @@ export default function FilterPanel({
     return ip;
   };
 
+  const filteredClientIps = useMemo(() => {
+    if (!searchKeyword.trim()) return sortedClientIps;
+    const keyword = searchKeyword.toLowerCase();
+    return sortedClientIps.filter((ip) => getIpLabel(ip).toLowerCase().includes(keyword));
+  }, [sortedClientIps, searchKeyword]);
+
+  const filteredClientApps = useMemo(() => {
+    if (!searchKeyword.trim()) return sortedClientApps;
+    const keyword = searchKeyword.toLowerCase();
+    return sortedClientApps.filter((app) => app.toLowerCase().includes(keyword));
+  }, [sortedClientApps, searchKeyword]);
+
+  const filteredDomains = useMemo(() => {
+    if (!searchKeyword.trim()) return sortedDomains;
+    const keyword = searchKeyword.toLowerCase();
+    return sortedDomains.filter((domain) => domain.toLowerCase().includes(keyword));
+  }, [sortedDomains, searchKeyword]);
+
+  const hasSearchResults = filteredClientIps.length > 0 || filteredClientApps.length > 0 || filteredDomains.length > 0;
+  const isSearching = searchKeyword.trim().length > 0;
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -119,8 +148,27 @@ export default function FilterPanel({
           </Tooltip>
         )}
       </div>
+      <div style={styles.searchWrapper}>
+        <Input
+          placeholder="Search filters..."
+          prefix={<SearchOutlined style={{ color: token.colorTextSecondary }} />}
+          suffix={
+            searchKeyword && (
+              <CloseCircleFilled
+                style={{ color: token.colorTextQuaternary, cursor: "pointer" }}
+                onClick={() => setSearchKeyword("")}
+              />
+            )
+          }
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
+          allowClear={false}
+          size="small"
+          style={{ borderRadius: 6 }}
+        />
+      </div>
       <div style={styles.content}>
-        {pinnedFilters.length > 0 && (
+        {pinnedFilters.length > 0 && !isSearching && (
           <FilterSection
             title="Pinned"
             icon="📌"
@@ -131,105 +179,122 @@ export default function FilterPanel({
           </FilterSection>
         )}
 
-        <FilterSection
-          title="Client IP"
-          collapsed={collapsedSections.clientIp}
-          onToggle={() => setCollapsedSection("clientIp", !collapsedSections.clientIp)}
-          count={sortedClientIps.length}
-        >
-          {sortedClientIps.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="No clients"
-              style={{ margin: "12px 0" }}
-            />
-          ) : (
-            sortedClientIps.map((ip) => (
-              <FilterItem
-                key={ip}
-                label={getIpLabel(ip)}
-                value={ip}
-                type="client_ip"
-                selected={selectedClientIps.includes(ip)}
-                onSelect={() => toggleClientIp(ip)}
-                onPin={() =>
-                  addPinnedFilter({
-                    type: "client_ip",
-                    value: ip,
-                    label: getIpLabel(ip),
-                  })
-                }
-              />
-            ))
-          )}
-        </FilterSection>
+        {isSearching && !hasSearchResults && (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={`No filters matching "${searchKeyword}"`}
+            style={{ margin: "24px 0" }}
+          />
+        )}
 
-        <FilterSection
-          title="Applications"
-          collapsed={collapsedSections.clientApp}
-          onToggle={() => setCollapsedSection("clientApp", !collapsedSections.clientApp)}
-          count={sortedClientApps.length}
-        >
-          {sortedClientApps.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="No applications"
-              style={{ margin: "12px 0" }}
-            />
-          ) : (
-            sortedClientApps.map((app) => (
-              <FilterItem
-                key={app}
-                label={app}
-                value={app}
-                type="client_app"
-                selected={selectedClientApps.includes(app)}
-                onSelect={() => toggleClientApp(app)}
-                onPin={() =>
-                  addPinnedFilter({
-                    type: "client_app",
-                    value: app,
-                    label: app,
-                  })
-                }
-                icon={<AppIcon appName={app} size={16} />}
+        {(!isSearching || filteredClientIps.length > 0) && (
+          <FilterSection
+            title="Client IP"
+            collapsed={isSearching ? false : collapsedSections.clientIp}
+            onToggle={() => setCollapsedSection("clientIp", !collapsedSections.clientIp)}
+            count={isSearching ? filteredClientIps.length : sortedClientIps.length}
+          >
+            {filteredClientIps.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="No clients"
+                style={{ margin: "12px 0" }}
               />
-            ))
-          )}
-        </FilterSection>
+            ) : (
+              filteredClientIps.map((ip) => (
+                <FilterItem
+                  key={ip}
+                  label={getIpLabel(ip)}
+                  value={ip}
+                  type="client_ip"
+                  selected={selectedClientIps.includes(ip)}
+                  onSelect={() => toggleClientIp(ip)}
+                  onPin={() =>
+                    addPinnedFilter({
+                      type: "client_ip",
+                      value: ip,
+                      label: getIpLabel(ip),
+                    })
+                  }
+                  searchKeyword={searchKeyword}
+                />
+              ))
+            )}
+          </FilterSection>
+        )}
 
-        <FilterSection
-          title="Domains"
-          collapsed={collapsedSections.domain}
-          onToggle={() => setCollapsedSection("domain", !collapsedSections.domain)}
-          count={sortedDomains.length}
-        >
-          {sortedDomains.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="No domains"
-              style={{ margin: "12px 0" }}
-            />
-          ) : (
-            sortedDomains.map((domain) => (
-              <FilterItem
-                key={domain}
-                label={domain}
-                value={domain}
-                type="domain"
-                selected={selectedDomains.includes(domain)}
-                onSelect={() => toggleDomain(domain)}
-                onPin={() =>
-                  addPinnedFilter({
-                    type: "domain",
-                    value: domain,
-                    label: domain,
-                  })
-                }
+        {(!isSearching || filteredClientApps.length > 0) && (
+          <FilterSection
+            title="Applications"
+            collapsed={isSearching ? false : collapsedSections.clientApp}
+            onToggle={() => setCollapsedSection("clientApp", !collapsedSections.clientApp)}
+            count={isSearching ? filteredClientApps.length : sortedClientApps.length}
+          >
+            {filteredClientApps.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="No applications"
+                style={{ margin: "12px 0" }}
               />
-            ))
-          )}
-        </FilterSection>
+            ) : (
+              filteredClientApps.map((app) => (
+                <FilterItem
+                  key={app}
+                  label={app}
+                  value={app}
+                  type="client_app"
+                  selected={selectedClientApps.includes(app)}
+                  onSelect={() => toggleClientApp(app)}
+                  onPin={() =>
+                    addPinnedFilter({
+                      type: "client_app",
+                      value: app,
+                      label: app,
+                    })
+                  }
+                  icon={<AppIcon appName={app} size={16} />}
+                  searchKeyword={searchKeyword}
+                />
+              ))
+            )}
+          </FilterSection>
+        )}
+
+        {(!isSearching || filteredDomains.length > 0) && (
+          <FilterSection
+            title="Domains"
+            collapsed={isSearching ? false : collapsedSections.domain}
+            onToggle={() => setCollapsedSection("domain", !collapsedSections.domain)}
+            count={isSearching ? filteredDomains.length : sortedDomains.length}
+          >
+            {filteredDomains.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="No domains"
+                style={{ margin: "12px 0" }}
+              />
+            ) : (
+              filteredDomains.map((domain) => (
+                <FilterItem
+                  key={domain}
+                  label={domain}
+                  value={domain}
+                  type="domain"
+                  selected={selectedDomains.includes(domain)}
+                  onSelect={() => toggleDomain(domain)}
+                  onPin={() =>
+                    addPinnedFilter({
+                      type: "domain",
+                      value: domain,
+                      label: domain,
+                    })
+                  }
+                  searchKeyword={searchKeyword}
+                />
+              ))
+            )}
+          </FilterSection>
+        )}
       </div>
     </div>
   );

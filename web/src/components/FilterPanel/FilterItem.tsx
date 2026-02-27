@@ -13,6 +13,41 @@ interface FilterItemProps {
   onSelect: () => void;
   onPin: () => void;
   icon?: ReactNode;
+  searchKeyword?: string;
+}
+
+function HighlightText({
+  text,
+  keyword,
+  highlightColor,
+}: {
+  text: string;
+  keyword?: string;
+  highlightColor: string;
+}) {
+  if (!keyword || !keyword.trim()) {
+    return <>{text}</>;
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerKeyword = keyword.toLowerCase();
+  const index = lowerText.indexOf(lowerKeyword);
+
+  if (index === -1) {
+    return <>{text}</>;
+  }
+
+  const before = text.slice(0, index);
+  const match = text.slice(index, index + keyword.length);
+  const after = text.slice(index + keyword.length);
+
+  return (
+    <>
+      {before}
+      <span style={{ backgroundColor: highlightColor, borderRadius: 2 }}>{match}</span>
+      {after}
+    </>
+  );
 }
 
 export default function FilterItem({
@@ -23,6 +58,7 @@ export default function FilterItem({
   onSelect,
   onPin,
   icon,
+  searchKeyword,
 }: FilterItemProps) {
   const { token } = theme.useToken();
   const [isHovering, setIsHovering] = useState(false);
@@ -104,7 +140,9 @@ export default function FilterItem({
     >
       {icon && <span style={styles.icon}>{icon}</span>}
       <Tooltip title={label} placement="right" mouseEnterDelay={0.5}>
-        <span style={styles.label}>{label}</span>
+        <span style={styles.label}>
+          <HighlightText text={label} keyword={searchKeyword} highlightColor={token.colorWarningBg} />
+        </span>
       </Tooltip>
       {selected && <CheckOutlined style={styles.checkIcon} />}
       <Dropdown
