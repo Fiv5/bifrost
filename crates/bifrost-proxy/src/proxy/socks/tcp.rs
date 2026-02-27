@@ -1055,6 +1055,9 @@ impl SocksHandler {
                 }
                 bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
                 if let Some(ref state) = admin_state_send {
+                    state
+                        .metrics_collector
+                        .add_bytes_sent_by_type(TrafficType::Socks5, n as u64);
                     state.connection_monitor.update_traffic(
                         &req_id_send,
                         FrameDirection::Send,
@@ -1077,6 +1080,9 @@ impl SocksHandler {
                 }
                 bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
                 if let Some(ref state) = admin_state_recv {
+                    state
+                        .metrics_collector
+                        .add_bytes_received_by_type(TrafficType::Socks5, n as u64);
                     state.connection_monitor.update_traffic(
                         &req_id_recv,
                         FrameDirection::Receive,
@@ -1109,12 +1115,6 @@ impl SocksHandler {
         let total_received = bytes_received.load(Ordering::Relaxed);
 
         if let Some(ref state) = admin_state {
-            state
-                .metrics_collector
-                .add_bytes_sent_by_type(TrafficType::Socks5, total_sent);
-            state
-                .metrics_collector
-                .add_bytes_received_by_type(TrafficType::Socks5, total_received);
             state
                 .metrics_collector
                 .decrement_connections_by_type(TrafficType::Socks5);
@@ -1461,6 +1461,9 @@ impl SocksHandler {
                 }
                 bytes_sent_clone.fetch_add(n as u64, Ordering::Relaxed);
                 if let Some(ref state) = admin_state_send {
+                    state
+                        .metrics_collector
+                        .add_bytes_sent_by_type(TrafficType::Socks5, n as u64);
                     state.connection_monitor.update_traffic(
                         &req_id_send,
                         FrameDirection::Send,
@@ -1483,6 +1486,9 @@ impl SocksHandler {
                 }
                 bytes_received_clone.fetch_add(n as u64, Ordering::Relaxed);
                 if let Some(ref state) = admin_state_recv {
+                    state
+                        .metrics_collector
+                        .add_bytes_received_by_type(TrafficType::Socks5, n as u64);
                     state.connection_monitor.update_traffic(
                         &req_id_recv,
                         FrameDirection::Receive,
@@ -1507,12 +1513,6 @@ impl SocksHandler {
         let total_received = bytes_received.load(Ordering::Relaxed);
 
         if let Some(ref state) = admin_state {
-            state
-                .metrics_collector
-                .add_bytes_sent_by_type(TrafficType::Socks5, total_sent);
-            state
-                .metrics_collector
-                .add_bytes_received_by_type(TrafficType::Socks5, total_received);
             state
                 .metrics_collector
                 .decrement_connections_by_type(TrafficType::Socks5);
