@@ -292,6 +292,7 @@ export default function TrafficDetail({
             onSearch={setResponseSearch}
             isTunnel={record.is_tunnel}
             host={record.host}
+            clientApp={record.client_app}
           />
         ),
       },
@@ -351,6 +352,7 @@ export default function TrafficDetail({
             onSearch={setResponseSearch}
             isTunnel={record.is_tunnel}
             host={record.host}
+            clientApp={record.client_app}
           />
         ),
       },

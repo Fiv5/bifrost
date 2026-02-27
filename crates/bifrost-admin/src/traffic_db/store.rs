@@ -300,8 +300,9 @@ impl TrafficDbStore {
                     socket_blob.and_then(|b| bincode::deserialize(&b).ok());
 
                 let rules_blob: Option<Vec<u8>> = row.get(19)?;
-                let matched_rules: Vec<crate::traffic::MatchedRule> =
-                    rules_blob.and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
+                let matched_rules: Vec<crate::traffic::MatchedRule> = rules_blob
+                    .and_then(|b| bincode::deserialize(&b).ok())
+                    .unwrap_or_default();
                 let rc = matched_rules.len();
                 let rp: Vec<String> = matched_rules
                     .iter()
@@ -440,8 +441,9 @@ impl TrafficDbStore {
                 socket_blob.and_then(|b| bincode::deserialize(&b).ok());
 
             let rules_blob: Option<Vec<u8>> = row.get(19)?;
-            let matched_rules: Vec<crate::traffic::MatchedRule> =
-                rules_blob.and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
+            let matched_rules: Vec<crate::traffic::MatchedRule> = rules_blob
+                .and_then(|b| bincode::deserialize(&b).ok())
+                .unwrap_or_default();
             let rc = matched_rules.len();
             let rp: Vec<String> = matched_rules
                 .iter()

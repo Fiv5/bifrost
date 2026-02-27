@@ -1,6 +1,6 @@
 import { useMemo, useRef, useCallback } from "react";
 import { Table, Typography, theme, ConfigProvider, Button, Modal, message } from "antd";
-import { LockOutlined } from "@ant-design/icons";
+import { LockOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { SessionTargetSearchState } from "../../../../types";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
@@ -14,6 +14,7 @@ interface HeaderViewProps {
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   isTunnel?: boolean;
   host?: string;
+  clientApp?: string;
 }
 
 interface HeaderItem {
@@ -28,6 +29,7 @@ export const HeaderView = ({
   onSearch,
   isTunnel,
   host,
+  clientApp,
 }: HeaderViewProps) => {
   const { token } = theme.useToken();
   const tableRef = useRef<HTMLDivElement>(null);
@@ -66,6 +68,37 @@ export const HeaderView = ({
       },
     });
   }, [host]);
+
+  const handleAddAppToInterceptList = useCallback(() => {
+    if (!clientApp) {
+      message.error("No app found for this request");
+      return;
+    }
+
+    Modal.confirm({
+      title: "Add App to Intercept List",
+      content: `Add "${clientApp}" to app intercept list? This will enable HTTPS inspection for this app.`,
+      okText: "Add",
+      cancelText: "Cancel",
+      onOk: async () => {
+        try {
+          const currentConfig = await getTlsConfig();
+          if (currentConfig.app_intercept_include.includes(clientApp)) {
+            message.info(`"${clientApp}" is already in the app intercept list`);
+            return;
+          }
+
+          const newIncludeList = [...currentConfig.app_intercept_include, clientApp];
+          await updateTlsConfig({ app_intercept_include: newIncludeList });
+
+          message.success(`Added "${clientApp}" to app intercept list`);
+        } catch (error) {
+          message.error("Failed to add app to intercept list");
+          console.error(error);
+        }
+      },
+    });
+  }, [clientApp]);
 
   const dataSource = useMemo<HeaderItem[]>(() => {
     if (!headers) return [];
@@ -116,26 +149,43 @@ export const HeaderView = ({
   ];
 
   if (!headers || headers.length === 0) {
-    if (isTunnel && host) {
+    const showInterceptButton = isTunnel && host;
+    const showAppInterceptButton = isTunnel && clientApp;
+    const hasAnyButton = showInterceptButton || showAppInterceptButton;
+
+    if (hasAnyButton) {
       return (
         <div
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            gap: 12,
             minHeight: 200,
             backgroundColor: token.colorBgLayout,
             borderRadius: 4,
           }}
         >
-          <Button
-            type="primary"
-            icon={<LockOutlined />}
-            onClick={handleAddToInterceptList}
-            size="large"
-          >
-            Intercept this domain
-          </Button>
+          {showInterceptButton && (
+            <Button
+              type="primary"
+              icon={<LockOutlined />}
+              onClick={handleAddToInterceptList}
+              size="large"
+            >
+              Intercept this domain
+            </Button>
+          )}
+          {showAppInterceptButton && (
+            <Button
+              type="primary"
+              icon={<AppstoreOutlined />}
+              onClick={handleAddAppToInterceptList}
+              size="large"
+            >
+              Intercept this app
+            </Button>
+          )}
         </div>
       );
     }

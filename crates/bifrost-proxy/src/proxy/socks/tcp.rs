@@ -22,7 +22,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 use crate::protocol::ProtocolDetector;
-use crate::server::{full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig};
+use crate::proxy::http::should_intercept_tls;
+use crate::server::{
+    full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig, TlsInterceptConfig,
+};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
 use crate::utils::tee::store_request_body;
@@ -235,7 +238,7 @@ pub struct SocksServer {
     #[allow(dead_code)]
     udp_relay: Arc<RwLock<Option<UdpRelay>>>,
     tls_config: Option<Arc<TlsConfig>>,
-    enable_tls_intercept: bool,
+    tls_intercept_config: Option<TlsInterceptConfig>,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
     verbose_logging: bool,
@@ -256,7 +259,7 @@ impl SocksServer {
             udp_relay_addr: Arc::new(RwLock::new(None)),
             udp_relay: Arc::new(RwLock::new(None)),
             tls_config: None,
-            enable_tls_intercept: false,
+            tls_intercept_config: None,
             admin_state: None,
             dns_resolver: None,
             verbose_logging: false,
@@ -277,11 +280,11 @@ impl SocksServer {
     pub fn with_tls_intercept(
         mut self,
         tls_config: Arc<TlsConfig>,
-        enable: bool,
+        tls_intercept_config: TlsInterceptConfig,
         admin_state: Option<Arc<AdminState>>,
     ) -> Self {
         self.tls_config = Some(tls_config);
-        self.enable_tls_intercept = enable;
+        self.tls_intercept_config = Some(tls_intercept_config);
         self.admin_state = admin_state;
         self
     }
@@ -421,7 +424,7 @@ impl SocksServer {
             let udp_relay_addr = Arc::clone(&self.udp_relay_addr);
             let rules = Arc::clone(&self.rules);
             let tls_config = self.tls_config.clone();
-            let enable_tls_intercept = self.enable_tls_intercept;
+            let tls_intercept_config = self.tls_intercept_config.clone();
             let admin_state = self.admin_state.clone();
             let dns_resolver = self.dns_resolver.clone();
             let verbose_logging = self.verbose_logging;
@@ -442,9 +445,9 @@ impl SocksServer {
                     if let Some(dns) = dns_resolver {
                         handler = handler.with_dns_resolver(dns);
                     }
-                    if let Some(tls_cfg) = tls_config {
-                        handler =
-                            handler.with_tls_intercept(tls_cfg, enable_tls_intercept, admin_state);
+                    if let (Some(tls_cfg), Some(intercept_cfg)) = (tls_config, tls_intercept_config)
+                    {
+                        handler = handler.with_tls_intercept(tls_cfg, intercept_cfg, admin_state);
                     }
                     if let Err(e) = handler.handle().await {
                         error!("SOCKS5 error for {}: {}", peer_addr, e);
@@ -478,7 +481,7 @@ pub struct SocksHandler {
     udp_relay_addr: Option<SocketAddr>,
     rules: Option<Arc<dyn RulesResolver>>,
     tls_config: Option<Arc<TlsConfig>>,
-    enable_tls_intercept: bool,
+    tls_intercept_config: Option<TlsInterceptConfig>,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
     verbose_logging: bool,
@@ -505,7 +508,7 @@ impl SocksHandler {
             udp_relay_addr,
             rules: None,
             tls_config: None,
-            enable_tls_intercept: false,
+            tls_intercept_config: None,
             admin_state: None,
             dns_resolver: None,
             verbose_logging: false,
@@ -525,11 +528,11 @@ impl SocksHandler {
     pub fn with_tls_intercept(
         mut self,
         tls_config: Arc<TlsConfig>,
-        enable: bool,
+        tls_intercept_config: TlsInterceptConfig,
         admin_state: Option<Arc<AdminState>>,
     ) -> Self {
         self.tls_config = Some(tls_config);
-        self.enable_tls_intercept = enable;
+        self.tls_intercept_config = Some(tls_intercept_config);
         self.admin_state = admin_state;
         self
     }
@@ -909,16 +912,24 @@ impl SocksHandler {
         target_port: u16,
         original_url: &str,
     ) -> Result<()> {
-        let rule_tls_intercept = if let Some(ref rules) = self.rules {
+        let resolved_rules = if let Some(ref rules) = self.rules {
             let resolved = rules.resolve(original_url, "CONNECT");
             debug!(
                 "SOCKS5: Rule tls_intercept={:?} for {}",
                 resolved.tls_intercept, original_url
             );
-            resolved.tls_intercept
+            resolved
         } else {
-            None
+            crate::server::ResolvedRules::default()
         };
+
+        let client_process = resolve_client_process(&self.peer_addr);
+        let client_app = client_process.as_ref().map(|p| p.name.as_str());
+
+        debug!(
+            "SOCKS5: Client process for {}:{} - app={:?}",
+            target_host, target_port, client_app
+        );
 
         let mut peek_buf = [0u8; 16];
         let peek_len = self.stream().peek(&mut peek_buf).await.unwrap_or(0);
@@ -932,27 +943,38 @@ impl SocksHandler {
 
             match protocol {
                 Some(crate::protocol::TransportProtocol::Tls) => {
-                    let should_intercept = rule_tls_intercept.unwrap_or(self.enable_tls_intercept);
-                    if should_intercept {
-                        if let Some(ref tls_config) = self.tls_config {
-                            if tls_config.ca_cert.is_some() {
-                                debug!(
-                                    "SOCKS5: TLS interception enabled for {}:{} (rule={:?}, global={})",
-                                    target_host, target_port, rule_tls_intercept, self.enable_tls_intercept
-                                );
-                                let original_host = original_url
-                                    .strip_prefix("socks5://")
-                                    .and_then(|s| s.split(':').next())
-                                    .unwrap_or(target_host);
-                                return self
-                                    .relay_with_tls_intercept(
-                                        target_stream,
-                                        target_host,
-                                        target_port,
-                                        original_host,
-                                    )
-                                    .await;
-                            }
+                    if let (Some(ref tls_config), Some(ref tls_intercept_config)) =
+                        (&self.tls_config, &self.tls_intercept_config)
+                    {
+                        let do_intercept = should_intercept_tls(
+                            target_host,
+                            client_app,
+                            tls_intercept_config,
+                            tls_config,
+                            &resolved_rules,
+                        );
+                        if do_intercept {
+                            debug!(
+                                "SOCKS5: TLS interception enabled for {}:{} (client_app={:?}, rule={:?}, global={})",
+                                target_host, target_port, client_app, resolved_rules.tls_intercept, tls_intercept_config.enable_tls_interception
+                            );
+                            let original_host = original_url
+                                .strip_prefix("socks5://")
+                                .and_then(|s| s.split(':').next())
+                                .unwrap_or(target_host);
+                            return self
+                                .relay_with_tls_intercept(
+                                    target_stream,
+                                    target_host,
+                                    target_port,
+                                    original_host,
+                                )
+                                .await;
+                        } else {
+                            debug!(
+                                "SOCKS5: TLS passthrough for {}:{} (client_app={:?})",
+                                target_host, target_port, client_app
+                            );
                         }
                     }
                 }

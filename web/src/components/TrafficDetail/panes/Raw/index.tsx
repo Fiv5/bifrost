@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useCallback } from 'react';
 import { theme, Button, Modal, message } from 'antd';
-import { LockOutlined } from '@ant-design/icons';
+import { LockOutlined, AppstoreOutlined } from '@ant-design/icons';
 import type { SessionTargetSearchState } from '../../../../types';
 import { useTextSelection } from '../../hooks/useTextSelection';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
@@ -19,6 +19,7 @@ interface RawProps {
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   isTunnel?: boolean;
   host?: string;
+  clientApp?: string;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -59,6 +60,7 @@ export const Raw = ({
   onSearch,
   isTunnel,
   host,
+  clientApp,
 }: RawProps) => {
   const { token } = theme.useToken();
   const [showAll, setShowAll] = useState(false);
@@ -98,7 +100,39 @@ export const Raw = ({
     });
   }, [host]);
 
+  const handleAddAppToInterceptList = useCallback(() => {
+    if (!clientApp) {
+      message.error('No app found for this request');
+      return;
+    }
+
+    Modal.confirm({
+      title: 'Add App to Intercept List',
+      content: `Add "${clientApp}" to app intercept list? This will enable HTTPS inspection for this app.`,
+      okText: 'Add',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const currentConfig = await getTlsConfig();
+          if (currentConfig.app_intercept_include.includes(clientApp)) {
+            message.info(`"${clientApp}" is already in the app intercept list`);
+            return;
+          }
+
+          const newIncludeList = [...currentConfig.app_intercept_include, clientApp];
+          await updateTlsConfig({ app_intercept_include: newIncludeList });
+
+          message.success(`Added "${clientApp}" to app intercept list`);
+        } catch (error) {
+          message.error('Failed to add app to intercept list');
+          console.error(error);
+        }
+      },
+    });
+  }, [clientApp]);
+
   const showInterceptButton = type === 'response' && isTunnel && host;
+  const showAppInterceptButton = type === 'response' && isTunnel && clientApp;
   const isTunnelResponse = type === 'response' && isTunnel;
 
   useMarkSearch(
@@ -139,6 +173,7 @@ export const Raw = ({
 
   const hasNoData = (!headers || headers.length === 0) && !body && !status;
   if (isTunnelResponse && hasNoData) {
+    const hasAnyButton = showInterceptButton || showAppInterceptButton;
     return (
       <div
         ref={wrapperRef}
@@ -146,20 +181,35 @@ export const Raw = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
+          gap: 12,
           minHeight: 200,
           backgroundColor: token.colorBgLayout,
           borderRadius: 4,
         }}
       >
-        {showInterceptButton ? (
-          <Button
-            type="primary"
-            icon={<LockOutlined />}
-            onClick={handleAddToInterceptList}
-            size="large"
-          >
-            Intercept this domain
-          </Button>
+        {hasAnyButton ? (
+          <>
+            {showInterceptButton && (
+              <Button
+                type="primary"
+                icon={<LockOutlined />}
+                onClick={handleAddToInterceptList}
+                size="large"
+              >
+                Intercept this domain
+              </Button>
+            )}
+            {showAppInterceptButton && (
+              <Button
+                type="primary"
+                icon={<AppstoreOutlined />}
+                onClick={handleAddAppToInterceptList}
+                size="large"
+              >
+                Intercept this app
+              </Button>
+            )}
+          </>
         ) : (
           <div style={{ color: token.colorTextSecondary }}>
             No response data for tunnel connection

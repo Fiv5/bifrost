@@ -492,8 +492,7 @@ impl ProxyServer {
                 enable_udp: true,
                 udp_port: None,
             };
-            let enable_tls_intercept =
-                self.config.enable_tls_interception && self.tls_config.ca_cert.is_some();
+            let tls_intercept_config = TlsInterceptConfig::from_proxy_config(&self.config);
             let socks_server = SocksServer::new(socks_config)
                 .with_rules(Arc::clone(&self.rules))
                 .with_access_control(Arc::clone(&self.access_control))
@@ -502,7 +501,7 @@ impl ProxyServer {
                 .with_dns_resolver(Arc::clone(&self.dns_resolver))
                 .with_tls_intercept(
                     Arc::clone(&self.tls_config),
-                    enable_tls_intercept,
+                    tls_intercept_config,
                     self.admin_state.clone(),
                 );
 
@@ -616,8 +615,8 @@ impl ProxyServer {
                                     peer_addr
                                 );
                                 let stream = peekable.into_inner();
-                                let enable_tls_intercept = proxy_config.enable_tls_interception
-                                    && tls_config.ca_cert.is_some();
+                                let tls_intercept_config =
+                                    TlsInterceptConfig::from_proxy_config(&proxy_config);
                                 let current_udp_relay_addr = {
                                     let addr = udp_relay_addr.read().await;
                                     *addr
@@ -637,7 +636,7 @@ impl ProxyServer {
                                 .with_dns_resolver(Arc::clone(&dns_resolver))
                                 .with_tls_intercept(
                                     Arc::clone(&tls_config),
-                                    enable_tls_intercept,
+                                    tls_intercept_config,
                                     admin_state.clone(),
                                 );
                                 if let Err(e) = handler.handle().await {

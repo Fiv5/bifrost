@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Card,
@@ -29,6 +29,7 @@ import {
   Slider,
   Select,
   Table,
+  AutoComplete,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import {
@@ -921,6 +922,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 handleRemoveAppIncludePattern={handleRemoveAppIncludePattern}
                 handleAddAppExcludePattern={handleAddAppExcludePattern}
                 handleRemoveAppExcludePattern={handleRemoveAppExcludePattern}
+                appSuggestions={appMetrics.map((m) => m.app_name).filter((n) => n !== "Unknown")}
               />
             </Col>
 
@@ -2416,6 +2418,7 @@ interface TlsInterceptionPatternsCardProps {
   handleRemoveAppIncludePattern: (pattern: string) => void;
   handleAddAppExcludePattern: () => void;
   handleRemoveAppExcludePattern: (pattern: string) => void;
+  appSuggestions: string[];
 }
 
 function TlsInterceptionPatternsCard({
@@ -2437,8 +2440,16 @@ function TlsInterceptionPatternsCard({
   handleRemoveAppIncludePattern,
   handleAddAppExcludePattern,
   handleRemoveAppExcludePattern,
+  appSuggestions,
 }: TlsInterceptionPatternsCardProps) {
   const { token } = theme.useToken();
+
+  const appOptions = useMemo(() => {
+    return appSuggestions.map((app) => ({
+      value: app,
+      label: app,
+    }));
+  }, [appSuggestions]);
 
   return (
     <Card
@@ -2664,12 +2675,24 @@ function TlsInterceptionPatternsCard({
               prefix* (starts with), *suffix (ends with).
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
-              <Input
+              <AutoComplete
                 placeholder="Chrome*, *Browser, Postman"
                 value={newAppIncludePattern}
-                onChange={(e) => setNewAppIncludePattern(e.target.value)}
-                onPressEnter={handleAddAppIncludePattern}
+                options={appOptions}
+                onChange={(value) => setNewAppIncludePattern(value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleAddAppIncludePattern();
+                  }
+                }}
                 size="small"
+                style={{ flex: 1 }}
+                filterOption={(inputValue, option) =>
+                  option?.value
+                    .toLowerCase()
+                    .includes(inputValue.toLowerCase()) ?? false
+                }
+                allowClear
               />
               <Button
                 type="primary"
@@ -2745,12 +2768,24 @@ function TlsInterceptionPatternsCard({
               prefix* (starts with), *suffix (ends with).
             </Text>
             <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
-              <Input
+              <AutoComplete
                 placeholder="System*, *Agent, curl"
                 value={newAppExcludePattern}
-                onChange={(e) => setNewAppExcludePattern(e.target.value)}
-                onPressEnter={handleAddAppExcludePattern}
+                options={appOptions}
+                onChange={(value) => setNewAppExcludePattern(value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleAddAppExcludePattern();
+                  }
+                }}
                 size="small"
+                style={{ flex: 1 }}
+                filterOption={(inputValue, option) =>
+                  option?.value
+                    .toLowerCase()
+                    .includes(inputValue.toLowerCase()) ?? false
+                }
+                allowClear
               />
               <Button
                 type="primary"
