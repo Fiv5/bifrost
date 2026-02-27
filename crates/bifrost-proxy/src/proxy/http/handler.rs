@@ -208,8 +208,10 @@ pub async fn handle_http_request(
     let processed_uri = apply_url_rules(&uri, &resolved_rules, verbose_logging, ctx);
 
     let original_host = uri.host().unwrap_or("unknown").to_string();
-    let original_port = uri.port_u16().unwrap_or(80);
-    let (host, port) = extract_host_port(&processed_uri, &resolved_rules, false)?;
+    let is_https = uri.scheme_str() == Some("https") || uri.scheme_str() == Some("wss");
+    let default_port = if is_https { 443 } else { 80 };
+    let original_port = uri.port_u16().unwrap_or(default_port);
+    let (host, port) = extract_host_port(&processed_uri, &resolved_rules, is_https)?;
 
     if verbose_logging {
         if resolved_rules.host.is_some() {
@@ -366,7 +368,7 @@ pub async fn handle_http_request(
     let use_tls = matches!(
         resolved_rules.host_protocol,
         Some(Protocol::Https) | Some(Protocol::Wss)
-    );
+    ) || is_https;
 
     let (mut sender, tls_ms) = if use_tls {
         let tls_start = Instant::now();
