@@ -7,9 +7,12 @@ import Traffic from "./pages/Traffic";
 import Settings from "./pages/Settings";
 import Values from "./pages/Values";
 import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
+import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 
 export default function App() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
+
+  useGlobalDataSync();
 
   useEffect(() => {
     const cleanup = initThemeListener();

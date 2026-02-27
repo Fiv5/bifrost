@@ -1,102 +1,27 @@
 import { useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { message, theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
 import RuleEditor from './RuleEditor';
 import { useRulesStore } from '../../stores/useRulesStore';
 
-const RULE_PARAM = 'rule';
-const SEARCH_PARAM = 'q';
-
 export default function Rules() {
   const { token } = theme.useToken();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const {
-    error,
-    clearError,
-    rules,
-    selectedRuleName,
-    searchKeyword,
-    selectRule,
-    fetchRules,
-    setSearchKeyword,
-  } = useRulesStore();
+  const error = useRulesStore((state) => state.error);
+  const clearError = useRulesStore((state) => state.clearError);
+  const rules = useRulesStore((state) => state.rules);
+  const selectedRuleName = useRulesStore((state) => state.selectedRuleName);
+  const selectRule = useRulesStore((state) => state.selectRule);
 
-  const initializedRef = useRef(false);
-  const isUpdatingUrlRef = useRef(false);
+  const initRef = useRef(false);
 
   useEffect(() => {
-    fetchRules();
-  }, [fetchRules]);
-
-  useEffect(() => {
-    if (rules.length === 0) return;
-    if (initializedRef.current) return;
-
-    const ruleFromUrl = searchParams.get(RULE_PARAM);
-    const searchFromUrl = searchParams.get(SEARCH_PARAM);
-    
-    if (searchFromUrl) {
-      setSearchKeyword(searchFromUrl);
-    }
-    
-    if (ruleFromUrl) {
-      const exists = rules.some((r) => r.name === ruleFromUrl);
-      if (exists) {
-        selectRule(ruleFromUrl);
-      } else {
-        selectRule(rules[0].name);
-        isUpdatingUrlRef.current = true;
-        setSearchParams(
-          (prev) => {
-            prev.set(RULE_PARAM, rules[0].name);
-            return prev;
-          },
-          { replace: true }
-        );
-      }
-    } else {
+    if (initRef.current) return;
+    if (rules.length > 0 && !selectedRuleName) {
+      initRef.current = true;
       selectRule(rules[0].name);
-      isUpdatingUrlRef.current = true;
-      setSearchParams(
-        (prev) => {
-          prev.set(RULE_PARAM, rules[0].name);
-          return prev;
-        },
-        { replace: true }
-      );
     }
-    initializedRef.current = true;
-  }, [rules, searchParams, selectRule, setSearchParams, setSearchKeyword]);
-
-  useEffect(() => {
-    if (!initializedRef.current) return;
-    if (isUpdatingUrlRef.current) {
-      isUpdatingUrlRef.current = false;
-      return;
-    }
-    
-    isUpdatingUrlRef.current = true;
-    setSearchParams(
-      (prev) => {
-        if (selectedRuleName) {
-          prev.set(RULE_PARAM, selectedRuleName);
-        } else {
-          prev.delete(RULE_PARAM);
-        }
-        
-        if (searchKeyword) {
-          prev.set(SEARCH_PARAM, searchKeyword);
-        } else {
-          prev.delete(SEARCH_PARAM);
-        }
-        
-        return prev;
-      },
-      { replace: true }
-    );
-  }, [selectedRuleName, searchKeyword, setSearchParams]);
+  }, [rules, selectedRuleName, selectRule]);
 
   useEffect(() => {
     if (error) {

@@ -24,6 +24,7 @@ export default function RuleEditor() {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<MonacoEditor.ITextModel | null>(null);
   const saveRef = useRef<typeof saveCurrentRule | null>(null);
+  const isSettingValueRef = useRef(false);
   const currentRuleRef = useRef<{
     currentRule: typeof currentRule;
     selectedRuleName: typeof selectedRuleName;
@@ -41,6 +42,7 @@ export default function RuleEditor() {
   }, [currentRule, selectedRuleName, editingContent]);
 
   const handleChange = useCallback(() => {
+    if (isSettingValueRef.current) return;
     if (!modelRef.current || modelRef.current.isDisposed()) return;
     const selectedName = currentRuleRef.current?.selectedRuleName;
     if (!selectedName) return;
@@ -114,7 +116,9 @@ export default function RuleEditor() {
     }
 
     if (!currentRule) {
+      isSettingValueRef.current = true;
       modelRef.current.setValue("");
+      isSettingValueRef.current = false;
       return;
     }
 
@@ -123,7 +127,9 @@ export default function RuleEditor() {
     const currentContent = modelRef.current.getValue();
 
     if (currentContent !== content) {
+      isSettingValueRef.current = true;
       modelRef.current.setValue(content);
+      isSettingValueRef.current = false;
       editorRef.current.setScrollTop(0);
       editorRef.current.setScrollLeft(0);
     }

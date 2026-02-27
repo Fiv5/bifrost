@@ -107,7 +107,7 @@ const DEFAULT_TAB = "proxy";
 const VALID_TABS = ["proxy", "appearance", "certificate", "metrics", "access"];
 
 export default function Settings() {
-  const { overview, history, loading, error, fetchOverview, fetchHistory } =
+  const { overview, history, loading, error, fetchOverview } =
     useMetricsStore();
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const { token } = theme.useToken();
@@ -135,7 +135,6 @@ export default function Settings() {
   const {
     systemProxy,
     loading: systemProxyLoading,
-    fetchSystemProxy,
     toggleSystemProxy,
   } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
@@ -544,63 +543,27 @@ export default function Settings() {
     }
   };
 
-  const { enablePush, disablePush, usePush } = useMetricsStore();
-
   useEffect(() => {
-    fetchSystemProxy();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchProxyAddressInfo();
+    fetchAppMetricsData();
+    fetchHostMetricsData();
 
-    if (usePush) {
-      fetchOverview();
-      fetchHistory(3600);
-      fetchAppMetricsData();
-      fetchHostMetricsData();
-      enablePush({
-        needOverview: true,
-        needMetrics: true,
-        needHistory: true,
-        historyLimit: 3600,
-      });
-
-      const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
-      const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
-      return () => {
-        disablePush();
-        clearInterval(appMetricsInterval);
-        clearInterval(hostMetricsInterval);
-      };
-    } else {
-      fetchOverview();
-      fetchHistory(3600);
-      fetchAppMetricsData();
-      fetchHostMetricsData();
-      const interval = setInterval(fetchOverview, 1000);
-      const historyInterval = setInterval(() => fetchHistory(3600), 5000);
-      const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
-      const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
-      return () => {
-        clearInterval(interval);
-        clearInterval(historyInterval);
-        clearInterval(appMetricsInterval);
-        clearInterval(hostMetricsInterval);
-      };
-    }
+    const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
+    const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
+    return () => {
+      clearInterval(appMetricsInterval);
+      clearInterval(hostMetricsInterval);
+    };
   }, [
-    fetchOverview,
-    fetchHistory,
     fetchTlsConfig,
     fetchCertInfo,
     fetchPerformanceConfig,
     fetchAppMetricsData,
     fetchHostMetricsData,
     fetchProxyAddressInfo,
-    fetchSystemProxy,
-    enablePush,
-    disablePush,
-    usePush,
   ]);
 
   useEffect(() => {

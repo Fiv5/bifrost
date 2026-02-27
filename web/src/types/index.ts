@@ -68,6 +68,15 @@ export interface TrafficSummary {
   socket_status?: SocketStatus | null;
   start_time: string;
   end_time?: string | null;
+
+  _displayProtocol?: string;
+  _methodColor?: string;
+  _statusColor?: string;
+  _statusDotColor?: string;
+  _displaySize?: string;
+  _contentTypeShort?: string;
+  _clientDisplay?: string;
+  _clientTooltip?: string;
 }
 
 export interface TrafficRecord extends TrafficSummary {

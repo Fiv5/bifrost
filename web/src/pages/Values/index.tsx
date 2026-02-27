@@ -58,9 +58,7 @@ export default function Values() {
     if (searchFromUrl) {
       setSearchText(searchFromUrl);
     }
-
-    fetchValues();
-  }, [searchParams, fetchValues, setSearchText]);
+  }, [searchParams, setSearchText]);
 
   useEffect(() => {
     if (!initializedRef.current) return;

@@ -27,6 +27,8 @@ interface TrafficState {
   usePush: boolean;
   pushUnsubscribe: (() => void) | null;
   filterVersion: number;
+  initialized: boolean;
+  selectedId: string | undefined;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -43,6 +45,7 @@ interface TrafficState {
   clearCurrentRecord: () => void;
   initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => void;
   setScrollTop: (scrollTop: number) => void;
+  setSelectedId: (id: string | undefined) => void;
   handleTrafficPush: (data: TrafficUpdatesData) => void;
   enablePush: () => void;
   disablePush: () => void;
@@ -74,6 +77,95 @@ const contentTypeMap: Record<string, string[]> = {
   'Doc': ['html', 'text/html'],
   'Media': ['image', 'video', 'audio', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'mp4', 'webm', 'mp3', 'wav'],
   'SSE': ['event-stream', 'text/event-stream'],
+};
+
+const METHOD_COLORS: Record<string, string> = {
+  GET: "green",
+  POST: "blue",
+  PUT: "orange",
+  DELETE: "red",
+  PATCH: "purple",
+  OPTIONS: "default",
+  HEAD: "cyan",
+  CONNECT: "magenta",
+};
+
+const STATUS_DOT_COLORS: Record<string, string> = {
+  pending: "#d9d9d9",
+  info: "#73d13d",
+  success: "#52c41a",
+  redirect: "#faad14",
+  clientError: "#fa8c16",
+  serverError: "#f5222d",
+};
+
+const getStatusDotColor = (status: number): string => {
+  if (status === 0) return STATUS_DOT_COLORS.pending;
+  if (status >= 100 && status < 200) return STATUS_DOT_COLORS.info;
+  if (status >= 200 && status < 300) return STATUS_DOT_COLORS.success;
+  if (status >= 300 && status < 400) return STATUS_DOT_COLORS.redirect;
+  if (status >= 400 && status < 500) return STATUS_DOT_COLORS.clientError;
+  if (status >= 500) return STATUS_DOT_COLORS.serverError;
+  return STATUS_DOT_COLORS.pending;
+};
+
+const getStatusColor = (status: number): string => {
+  if (status >= 500) return "error";
+  if (status >= 400) return "warning";
+  if (status >= 300) return "processing";
+  if (status >= 200) return "success";
+  return "default";
+};
+
+const formatSize = (bytes: number): string => {
+  if (bytes === 0) return "-";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
+  const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
+  const displayProtocol = isH3
+    ? 'H3'
+    : record.protocol?.replace("HTTP/", "").toUpperCase() || "-";
+
+  const methodColor = METHOD_COLORS[record.method?.toUpperCase()] || "default";
+  const statusColor = getStatusColor(record.status);
+  const statusDotColor = getStatusDotColor(record.status);
+
+  const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+    ? record.socket_status.send_bytes + record.socket_status.receive_bytes
+    : record.response_size;
+  const displaySize = formatSize(size);
+
+  const contentTypeShort = record.content_type?.split(";")[0]?.split("/").pop() || "-";
+
+  const clientApp = record.client_app || "";
+  const clientIp = record.client_ip || "";
+  const hasApp = Boolean(clientApp);
+  const clientDisplay = clientApp || clientIp || "-";
+  const clientTooltip = hasApp
+    ? `${clientApp} (PID: ${record.client_pid || "?"}, IP: ${clientIp || "?"})`
+    : clientIp || "-";
+
+  record._displayProtocol = displayProtocol;
+  record._methodColor = methodColor;
+  record._statusColor = statusColor;
+  record._statusDotColor = statusDotColor;
+  record._displaySize = displaySize;
+  record._contentTypeShort = contentTypeShort;
+  record._clientDisplay = clientDisplay;
+  record._clientTooltip = clientTooltip;
+
+  return record;
+};
+
+const preprocessRecords = (records: TrafficSummary[]): TrafficSummary[] => {
+  for (let i = 0; i < records.length; i++) {
+    preprocessRecord(records[i]);
+  }
+  return records;
 };
 
 const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]): boolean => {
@@ -293,6 +385,8 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   usePush: true,
   pushUnsubscribe: null,
   filterVersion: 0,
+  initialized: false,
+  selectedId: undefined,
 
   startPolling: () => {
     const state = get();
@@ -347,15 +441,18 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     if (state.paused) return;
     if (data.new_records.length === 0 && data.updated_records.length === 0) return;
 
+    const preprocessedNew = preprocessRecords(data.new_records);
+    const preprocessedUpdated = preprocessRecords(data.updated_records);
+
     if (pendingBatch) {
-      pendingBatch.newRecords.push(...data.new_records);
-      pendingBatch.updatedRecords.push(...data.updated_records);
+      pendingBatch.newRecords.push(...preprocessedNew);
+      pendingBatch.updatedRecords.push(...preprocessedUpdated);
       pendingBatch.serverTotal = data.server_total;
       pendingBatch.hasMore = data.has_more;
     } else {
       pendingBatch = {
-        newRecords: [...data.new_records],
-        updatedRecords: [...data.updated_records],
+        newRecords: [...preprocessedNew],
+        updatedRecords: [...preprocessedUpdated],
         serverTotal: data.server_total,
         hasMore: data.has_more,
       };
@@ -480,6 +577,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   },
 
   fetchInitialData: async () => {
+    const state = get();
+    if (state.initialized && state.records.length > 0) {
+      return;
+    }
+
     set({ loading: true, error: null });
     try {
       const filter: TrafficUpdatesFilter = {
@@ -487,19 +589,21 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       };
       const response = await api.getTrafficUpdates(filter);
 
+      const preprocessedRecords = preprocessRecords(response.new_records);
+
       const newPendingIds = new Set<string>();
       const newRecordsMap = new Map<string, TrafficSummary>();
-      for (const r of response.new_records) {
+      for (const r of preprocessedRecords) {
         newRecordsMap.set(r.id, r);
         if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
           newPendingIds.add(r.id);
         }
       }
 
-      const lastRecord = response.new_records[response.new_records.length - 1];
+      const lastRecord = preprocessedRecords[preprocessedRecords.length - 1];
 
       set({
-        records: response.new_records,
+        records: preprocessedRecords,
         recordsMap: newRecordsMap,
         serverTotal: response.server_total,
         hasMore: response.has_more,
@@ -507,6 +611,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         pendingIds: newPendingIds,
         loading: false,
         filterVersion: 0,
+        initialized: true,
       });
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -529,11 +634,14 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       const response = await api.getTrafficUpdates(filter);
 
       if (response.new_records.length > 0 || response.updated_records.length > 0) {
+        const preprocessedNew = preprocessRecords(response.new_records);
+        const preprocessedUpdated = preprocessRecords(response.updated_records);
+
         set((prevState) => {
           const recordsMap = prevState.recordsMap;
           let hasChanges = false;
 
-          for (const r of response.updated_records) {
+          for (const r of preprocessedUpdated) {
             const existing = recordsMap.get(r.id);
             if (!existing || existing.sequence !== r.sequence || existing.status !== r.status) {
               recordsMap.set(r.id, r);
@@ -542,7 +650,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
           }
 
           let actualNewCount = 0;
-          for (const r of response.new_records) {
+          for (const r of preprocessedNew) {
             if (!recordsMap.has(r.id)) {
               recordsMap.set(r.id, r);
               hasChanges = true;
@@ -552,14 +660,14 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
           const newPendingIds = prevState.pendingIds;
 
-          for (const r of response.updated_records) {
+          for (const r of preprocessedUpdated) {
             const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
             if (!isPending) {
               newPendingIds.delete(r.id);
             }
           }
 
-          for (const r of response.new_records) {
+          for (const r of preprocessedNew) {
             const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
             if (isPending) {
               newPendingIds.add(r.id);
@@ -583,7 +691,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
             allRecords = prevState.records;
           }
 
-          const lastRecord = response.new_records[response.new_records.length - 1];
+          const lastRecord = preprocessedNew[preprocessedNew.length - 1];
           const newLastId = lastRecord?.id || prevState.lastId;
 
           const updatedNewRecordsCount = prevState.autoScroll
@@ -657,6 +765,8 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         responseBody: null,
         loading: false,
         filterVersion: 0,
+        initialized: false,
+        selectedId: undefined,
       });
       return true;
     } catch (e) {
@@ -707,4 +817,6 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   },
 
   setScrollTop: (scrollTop: number) => set({ scrollTop }),
+
+  setSelectedId: (id: string | undefined) => set({ selectedId: id }),
 }));

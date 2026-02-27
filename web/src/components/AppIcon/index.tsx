@@ -1,18 +1,43 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type CSSProperties } from "react";
 import { Avatar } from "antd";
 import { AppstoreOutlined } from "@ant-design/icons";
 
 interface AppIconProps {
   appName: string;
   size?: number;
+  style?: CSSProperties;
 }
 
 const iconCache = new Map<string, string | null>();
+const pendingRequests = new Map<string, Promise<string | null>>();
 
-export const AppIcon: React.FC<AppIconProps> = ({ appName, size = 16 }) => {
-  const [iconUrl, setIconUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
+const fetchAppIcon = async (appName: string): Promise<string | null> => {
+  try {
+    const encodedName = encodeURIComponent(appName);
+    const response = await fetch(`/_bifrost/api/app-icon/${encodedName}`);
+    
+    if (response.ok) {
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      return url;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+export const AppIcon: React.FC<AppIconProps> = ({ appName, size = 16, style }) => {
+  const [iconUrl, setIconUrl] = useState<string | null>(() => {
+    return iconCache.get(appName) ?? null;
+  });
+  const [loading, setLoading] = useState(() => {
+    return !iconCache.has(appName) && Boolean(appName);
+  });
+  const [error, setError] = useState(() => {
+    const cached = iconCache.get(appName);
+    return cached === null || !appName;
+  });
 
   useEffect(() => {
     if (!appName) {
@@ -21,38 +46,43 @@ export const AppIcon: React.FC<AppIconProps> = ({ appName, size = 16 }) => {
       return;
     }
 
-    const cached = iconCache.get(appName);
-    if (cached !== undefined) {
-      setIconUrl(cached);
+    if (iconCache.has(appName)) {
+      const cached = iconCache.get(appName);
+      setIconUrl(cached ?? null);
       setLoading(false);
       setError(cached === null);
       return;
     }
 
-    const fetchIcon = async () => {
+    let cancelled = false;
+
+    const loadIcon = async () => {
+      let promise = pendingRequests.get(appName);
+      
+      if (!promise) {
+        promise = fetchAppIcon(appName);
+        pendingRequests.set(appName, promise);
+      }
+
       try {
-        const encodedName = encodeURIComponent(appName);
-        const response = await fetch(`/_bifrost/api/app-icon/${encodedName}`);
+        const url = await promise;
+        iconCache.set(appName, url);
         
-        if (response.ok) {
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          iconCache.set(appName, url);
+        if (!cancelled) {
           setIconUrl(url);
-          setError(false);
-        } else {
-          iconCache.set(appName, null);
-          setError(true);
+          setError(url === null);
+          setLoading(false);
         }
-      } catch {
-        iconCache.set(appName, null);
-        setError(true);
       } finally {
-        setLoading(false);
+        pendingRequests.delete(appName);
       }
     };
 
-    fetchIcon();
+    loadIcon();
+
+    return () => {
+      cancelled = true;
+    };
   }, [appName]);
 
   if (loading || error || !iconUrl) {
@@ -64,6 +94,7 @@ export const AppIcon: React.FC<AppIconProps> = ({ appName, size = 16 }) => {
           backgroundColor: "#f0f0f0",
           color: "#999",
           fontSize: size * 0.6,
+          ...style,
         }}
       />
     );
@@ -73,7 +104,7 @@ export const AppIcon: React.FC<AppIconProps> = ({ appName, size = 16 }) => {
     <Avatar
       size={size}
       src={iconUrl}
-      style={{ backgroundColor: "transparent" }}
+      style={{ backgroundColor: "transparent", ...style }}
     />
   );
 };

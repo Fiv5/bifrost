@@ -1,14 +1,19 @@
 import {
   useEffect,
-  useState,
   useCallback,
   useRef,
   useMemo,
+  useDeferredValue,
   type CSSProperties,
 } from "react";
 import { useSearchParams } from "react-router-dom";
 import { message, theme } from "antd";
-import { useTrafficStore, filterRecords, type PanelFilters } from "../../stores/useTrafficStore";
+import { useShallow } from "zustand/react/shallow";
+import {
+  useTrafficStore,
+  filterRecords,
+  type PanelFilters,
+} from "../../stores/useTrafficStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
@@ -62,21 +67,27 @@ const deserializeToolbar = (str: string): ToolbarFilters | null => {
 export default function Traffic() {
   const { token } = theme.useToken();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  const records = useTrafficStore((state) => state.records);
+  const hasMore = useTrafficStore((state) => state.hasMore);
+  const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
+  const filterConditions = useTrafficStore((state) => state.filterConditions);
+  const autoScroll = useTrafficStore((state) => state.autoScroll);
+  const newRecordsCount = useTrafficStore((state) => state.newRecordsCount);
+  const scrollTop = useTrafficStore((state) => state.scrollTop);
+  const selectedId = useTrafficStore((state) => state.selectedId);
+
+  const { currentRecord, requestBody, responseBody, detailLoading } =
+    useTrafficStore(
+      useShallow((state) => ({
+        currentRecord: state.currentRecord,
+        requestBody: state.requestBody,
+        responseBody: state.responseBody,
+        detailLoading: state.detailLoading,
+      })),
+    );
+
   const {
-    records,
-    currentRecord,
-    requestBody,
-    responseBody,
-    detailLoading,
-    hasMore,
-    toolbarFilters,
-    filterConditions,
-    autoScroll,
-    newRecordsCount,
-    scrollTop,
-    fetchInitialData,
-    startPolling,
-    stopPolling,
     fetchTrafficDetail,
     clearTraffic,
     setToolbarFilters,
@@ -85,32 +96,54 @@ export default function Traffic() {
     clearNewRecordsCount,
     initFromUrl,
     setScrollTop,
-  } = useTrafficStore();
+    setSelectedId,
+  } = useTrafficStore(
+    useShallow((state) => ({
+      fetchTrafficDetail: state.fetchTrafficDetail,
+      clearTraffic: state.clearTraffic,
+      setToolbarFilters: state.setToolbarFilters,
+      setFilterConditions: state.setFilterConditions,
+      setAutoScroll: state.setAutoScroll,
+      clearNewRecordsCount: state.clearNewRecordsCount,
+      initFromUrl: state.initFromUrl,
+      setScrollTop: state.setScrollTop,
+      setSelectedId: state.setSelectedId,
+    })),
+  );
 
-  const [selectedId, setSelectedId] = useState<string>();
-  const [showFilterBar] = useState(true);
-  const {
-    systemProxy,
-    loading: systemProxyLoading,
-    fetchSystemProxy,
-    toggleSystemProxy,
-  } = useProxyStore();
+  const showFilterBar = true;
+  const systemProxy = useProxyStore((state) => state.systemProxy);
+  const systemProxyLoading = useProxyStore((state) => state.loading);
+  const toggleSystemProxy = useProxyStore((state) => state.toggleSystemProxy);
 
-  const {
-    panelCollapsed: filterPanelCollapsed,
-    setPanelCollapsed: setFilterPanelCollapsed,
-    panelWidth: filterPanelWidth,
-    setPanelWidth: setFilterPanelWidth,
-    detailPanelCollapsed,
-    setDetailPanelCollapsed,
-    selectedClientIps,
-    selectedClientApps,
-    selectedDomains,
-    loadFromServer: loadFilterPanelConfig,
-    initialized: filterPanelInitialized,
-  } = useFilterPanelStore();
+  const filterPanelCollapsed = useFilterPanelStore(
+    (state) => state.panelCollapsed,
+  );
+  const setFilterPanelCollapsed = useFilterPanelStore(
+    (state) => state.setPanelCollapsed,
+  );
+  const filterPanelWidth = useFilterPanelStore((state) => state.panelWidth);
+  const setFilterPanelWidth = useFilterPanelStore(
+    (state) => state.setPanelWidth,
+  );
+  const detailPanelCollapsed = useFilterPanelStore(
+    (state) => state.detailPanelCollapsed,
+  );
+  const setDetailPanelCollapsed = useFilterPanelStore(
+    (state) => state.setDetailPanelCollapsed,
+  );
+  const selectedClientIps = useFilterPanelStore(
+    (state) => state.selectedClientIps,
+  );
+  const selectedClientApps = useFilterPanelStore(
+    (state) => state.selectedClientApps,
+  );
+  const selectedDomains = useFilterPanelStore((state) => state.selectedDomains);
+  const filterPanelInitialized = useFilterPanelStore(
+    (state) => state.initialized,
+  );
 
-  const initializedRef = useRef(false);
+  const urlInitializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
 
   const handleSystemProxyToggle = useCallback(
@@ -128,51 +161,37 @@ export default function Traffic() {
   );
 
   useEffect(() => {
-    if (initializedRef.current) return;
-    initializedRef.current = true;
+    if (urlInitializedRef.current) return;
+    urlInitializedRef.current = true;
 
     const filterParam = searchParams.get(FILTER_PARAM);
     const toolbarParam = searchParams.get(TOOLBAR_PARAM);
-
     const filtersFromUrl = deserializeFilters(filterParam || "");
     const toolbarFromUrl = deserializeToolbar(toolbarParam || "");
-
     if (filtersFromUrl.length > 0 || toolbarFromUrl) {
       initFromUrl(filtersFromUrl, toolbarFromUrl);
     }
-
-    fetchInitialData().then(() => {
-      startPolling();
-    });
-    fetchSystemProxy();
-    loadFilterPanelConfig();
-
-    return () => {
-      stopPolling();
-    };
-  }, [
-    searchParams,
-    fetchInitialData,
-    startPolling,
-    stopPolling,
-    fetchSystemProxy,
-    initFromUrl,
-    loadFilterPanelConfig,
-  ]);
+  }, [searchParams, initFromUrl]);
 
   useEffect(() => {
-    if (!initializedRef.current) return;
+    if (!urlInitializedRef.current) return;
     if (isUpdatingUrlRef.current) {
       isUpdatingUrlRef.current = false;
+      return;
+    }
+
+    const filterStr = serializeFilters(filterConditions);
+    const toolbarStr = serializeToolbar(toolbarFilters);
+    const currentFilterStr = searchParams.get(FILTER_PARAM) || "";
+    const currentToolbarStr = searchParams.get(TOOLBAR_PARAM) || "";
+
+    if (filterStr === currentFilterStr && toolbarStr === currentToolbarStr) {
       return;
     }
 
     isUpdatingUrlRef.current = true;
     setSearchParams(
       (prev) => {
-        const filterStr = serializeFilters(filterConditions);
-        const toolbarStr = serializeToolbar(toolbarFilters);
-
         if (filterStr) {
           prev.set(FILTER_PARAM, filterStr);
         } else {
@@ -189,14 +208,14 @@ export default function Traffic() {
       },
       { replace: true },
     );
-  }, [filterConditions, toolbarFilters, setSearchParams]);
+  }, [filterConditions, toolbarFilters, setSearchParams, searchParams]);
 
   const handleSelect = useCallback(
     async (record: TrafficSummary) => {
       setSelectedId(record.id);
       await fetchTrafficDetail(record.id);
     },
-    [fetchTrafficDetail],
+    [fetchTrafficDetail, setSelectedId],
   );
 
   const handleClear = useCallback(async () => {
@@ -205,7 +224,7 @@ export default function Traffic() {
       message.success("Traffic cleared");
       setSelectedId(undefined);
     }
-  }, [clearTraffic]);
+  }, [clearTraffic, setSelectedId]);
 
   const handleFilterConditionsChange = useCallback(
     (conditions: FilterCondition[]) => {
@@ -230,7 +249,12 @@ export default function Traffic() {
         setDetailPanelCollapsed(false);
       }
     },
-    [fetchTrafficDetail, detailPanelCollapsed],
+    [
+      fetchTrafficDetail,
+      detailPanelCollapsed,
+      setDetailPanelCollapsed,
+      setSelectedId,
+    ],
   );
 
   const handleScrollPositionChange = useCallback(
@@ -251,15 +275,32 @@ export default function Traffic() {
     [setScrollTop],
   );
 
-  const panelFilters = useMemo<PanelFilters>(() => ({
-    clientIps: selectedClientIps,
-    clientApps: selectedClientApps,
-    domains: selectedDomains,
-  }), [selectedClientIps, selectedClientApps, selectedDomains]);
+  const panelFilters = useMemo<PanelFilters>(
+    () => ({
+      clientIps: selectedClientIps,
+      clientApps: selectedClientApps,
+      domains: selectedDomains,
+    }),
+    [selectedClientIps, selectedClientApps, selectedDomains],
+  );
+
+  const deferredToolbarFilters = useDeferredValue(toolbarFilters);
+  const deferredFilterConditions = useDeferredValue(filterConditions);
+  const deferredPanelFilters = useDeferredValue(panelFilters);
 
   const filteredRecords = useMemo(() => {
-    return filterRecords(records, toolbarFilters, filterConditions, panelFilters);
-  }, [records, toolbarFilters, filterConditions, panelFilters]);
+    return filterRecords(
+      records,
+      deferredToolbarFilters,
+      deferredFilterConditions,
+      deferredPanelFilters,
+    );
+  }, [
+    records,
+    deferredToolbarFilters,
+    deferredFilterConditions,
+    deferredPanelFilters,
+  ]);
 
   const clientInfo = useMemo(() => {
     const appSet = new Set<string>();

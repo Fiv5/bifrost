@@ -21,6 +21,7 @@ interface FilterPanelState {
   detailPanelCollapsed: boolean;
   loading: boolean;
   initialized: boolean;
+  searchKeyword: string;
 
   addPinnedFilter: (filter: Omit<PinnedFilter, "id">) => void;
   removePinnedFilter: (id: string) => void;
@@ -39,6 +40,7 @@ interface FilterPanelState {
     collapsed: boolean
   ) => void;
   setDetailPanelCollapsed: (collapsed: boolean) => void;
+  setSearchKeyword: (keyword: string) => void;
   loadFromServer: () => Promise<void>;
   saveToServer: () => Promise<void>;
 }
@@ -64,6 +66,7 @@ export const useFilterPanelStore = create<FilterPanelState>((set, get) => ({
   detailPanelCollapsed: false,
   loading: false,
   initialized: false,
+  searchKeyword: "",
 
   addPinnedFilter: (filter) => {
     const state = get();
@@ -175,6 +178,8 @@ export const useFilterPanelStore = create<FilterPanelState>((set, get) => ({
       console.error("Failed to save detail panel collapsed state:", err);
     });
   },
+
+  setSearchKeyword: (keyword) => set({ searchKeyword: keyword }),
 
   loadFromServer: async () => {
     const state = get();

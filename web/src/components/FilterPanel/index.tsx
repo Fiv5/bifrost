@@ -1,13 +1,11 @@
-import { useMemo, useState, type CSSProperties } from "react";
-import { theme, Typography, Button, Empty, Tooltip, Input } from "antd";
+import { useMemo, type CSSProperties } from "react";
+import { theme, Button, Empty, Tooltip, Input } from "antd";
 import { ClearOutlined, SearchOutlined, CloseCircleFilled } from "@ant-design/icons";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
 import FilterSection from "./FilterSection";
 import PinnedFilters from "./PinnedFilters";
 import FilterItem from "./FilterItem";
 import AppIcon from "../AppIcon";
-
-const { Text } = Typography;
 
 interface FilterPanelProps {
   availableClientIps: string[];
@@ -21,19 +19,20 @@ export default function FilterPanel({
   availableDomains,
 }: FilterPanelProps) {
   const { token } = theme.useToken();
-  const [searchKeyword, setSearchKeyword] = useState("");
   const {
     pinnedFilters,
     selectedClientIps,
     selectedClientApps,
     selectedDomains,
     collapsedSections,
+    searchKeyword,
     toggleClientIp,
     toggleClientApp,
     toggleDomain,
     addPinnedFilter,
     setCollapsedSection,
     clearAllSelections,
+    setSearchKeyword,
   } = useFilterPanelStore();
 
   const hasSelections =
@@ -136,7 +135,7 @@ export default function FilterPanel({
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <Text style={styles.title}>Filters</Text>
+        <span style={styles.title}>Filters</span>
         {hasSelections && (
           <Tooltip title="Clear all selections">
             <Button

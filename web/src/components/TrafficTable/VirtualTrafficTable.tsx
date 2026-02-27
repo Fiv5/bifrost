@@ -8,13 +8,19 @@ import {
   type CSSProperties,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Tag, Typography, Tooltip, Badge, theme } from "antd";
+import { Tag, Tooltip, Badge, theme } from "antd";
 import { ThunderboltOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
 import AppIcon from "../AppIcon";
 import TrafficContextMenu from "./TrafficContextMenu";
 
-const { Text } = Typography;
+const ellipsisStyle: CSSProperties = {
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  display: "block",
+  maxWidth: "100%",
+};
 
 interface VirtualTrafficTableProps {
   data: TrafficSummary[];
@@ -37,54 +43,7 @@ const ROW_HEIGHT = 36;
 const SCROLL_THRESHOLD = 50;
 const TABLE_MIN_WIDTH = 1440;
 
-const STATUS_DOT_COLORS: Record<string, string> = {
-  pending: "#d9d9d9",
-  info: "#73d13d",
-  success: "#52c41a",
-  redirect: "#faad14",
-  clientError: "#fa8c16",
-  serverError: "#f5222d",
-};
-
-const getStatusDotColor = (status: number): string => {
-  if (status === 0) return STATUS_DOT_COLORS.pending;
-  if (status >= 100 && status < 200) return STATUS_DOT_COLORS.info;
-  if (status >= 200 && status < 300) return STATUS_DOT_COLORS.success;
-  if (status >= 300 && status < 400) return STATUS_DOT_COLORS.redirect;
-  if (status >= 400 && status < 500) return STATUS_DOT_COLORS.clientError;
-  if (status >= 500) return STATUS_DOT_COLORS.serverError;
-  return STATUS_DOT_COLORS.pending;
-};
-
-const getStatusColor = (status: number) => {
-  if (status >= 500) return "error";
-  if (status >= 400) return "warning";
-  if (status >= 300) return "processing";
-  if (status >= 200) return "success";
-  return "default";
-};
-
-const METHOD_COLORS: Record<string, string> = {
-  GET: "green",
-  POST: "blue",
-  PUT: "orange",
-  DELETE: "red",
-  PATCH: "purple",
-  OPTIONS: "default",
-  HEAD: "cyan",
-  CONNECT: "magenta",
-};
-
-const getMethodColor = (method: string) => {
-  return METHOD_COLORS[method.toUpperCase()] || "default";
-};
-
-const formatSize = (bytes: number) => {
-  if (bytes === 0) return "-";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-};
+const DEFAULT_STATUS_DOT_COLOR = "#d9d9d9";
 
 const formatSequence = (seq: number): string => {
   return seq.toString().padStart(4, "0");
@@ -125,9 +84,9 @@ const columns: ColumnDef[] = [
     width: 50,
     align: "right",
     render: (record) => (
-      <Text type="secondary" style={{ fontSize: 11, fontFamily: "monospace" }}>
+      <span style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}>
         {formatSequence(record.sequence)}
-      </Text>
+      </span>
     ),
   },
   {
@@ -136,45 +95,29 @@ const columns: ColumnDef[] = [
     width: 24,
     align: "center",
     render: (record) => (
-      <Tooltip
-        title={
-          record.status === 0
-            ? "Pending"
-            : record.has_rule_hit
-              ? `${record.status} - ${record.matched_rule_count} rule(s) matched`
-              : `Status: ${record.status}`
-        }
-      >
-        <div
-          style={{
-            width: 8,
-            height: 8,
-            borderRadius: "50%",
-            backgroundColor: getStatusDotColor(record.status),
-            transition: "background-color 0.3s",
-          }}
-        />
-      </Tooltip>
+      <div
+        title={record.status === 0 ? "Pending" : `Status: ${record.status}`}
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          backgroundColor: record._statusDotColor || DEFAULT_STATUS_DOT_COLOR,
+        }}
+      />
     ),
   },
   {
     key: "protocol",
     title: "Protocol",
     width: 70,
-    render: (record) => {
-      const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
-      const displayProtocol = isH3 
-        ? 'H3' 
-        : record.protocol?.replace("HTTP/", "").toUpperCase() || "-";
-      return (
-        <Tag 
-          color={isH3 ? "purple" : "default"} 
-          style={{ margin: 0, fontSize: 11 }}
-        >
-          {displayProtocol}
-        </Tag>
-      );
-    },
+    render: (record) => (
+      <Tag 
+        color={record.is_h3 ? "purple" : "default"} 
+        style={{ margin: 0, fontSize: 11 }}
+      >
+        {record._displayProtocol || record.protocol || "-"}
+      </Tag>
+    ),
   },
   {
     key: "method",
@@ -182,7 +125,7 @@ const columns: ColumnDef[] = [
     width: 70,
     render: (record) => (
       <Tag
-        color={getMethodColor(record.method)}
+        color={record._methodColor || "default"}
         style={{ margin: 0, fontSize: 11 }}
       >
         {record.method}
@@ -197,53 +140,46 @@ const columns: ColumnDef[] = [
     render: (record) =>
       record.status > 0 ? (
         <Tag
-          color={getStatusColor(record.status)}
+          color={record._statusColor || "default"}
           style={{ margin: 0, fontSize: 11 }}
         >
           {record.status}
         </Tag>
       ) : (
-        <Text type="secondary">-</Text>
+        <span style={{ color: "rgba(0, 0, 0, 0.45)" }}>-</span>
       ),
   },
   {
     key: "client",
     title: "Client",
     width: 140,
-    render: (record) => {
-      const clientApp = record.client_app || "";
-      const clientIp = record.client_ip || "";
-      const hasApp = Boolean(clientApp);
-      const display = clientApp || clientIp || "-";
-      const tooltip = hasApp
-        ? `${clientApp} (PID: ${record.client_pid || "?"}, IP: ${clientIp || "?"})`
-        : clientIp || "-";
-      return (
-        <Tooltip title={tooltip}>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {hasApp && <AppIcon appName={clientApp} size={16} />}
-            <Text
-              type="secondary"
-              style={{ fontSize: 11, lineHeight: "16px" }}
-              ellipsis
-            >
-              {display}
-            </Text>
-          </div>
-        </Tooltip>
-      );
-    },
+    render: (record) => (
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}
+        title={record._clientTooltip || record.client_ip || "-"}
+      >
+        {record.client_app && <AppIcon appName={record.client_app} size={16} style={{ flexShrink: 0 }} />}
+        <span
+          style={{
+            ...ellipsisStyle,
+            fontSize: 11,
+            lineHeight: "16px",
+            color: "rgba(0, 0, 0, 0.45)",
+          }}
+        >
+          {record._clientDisplay || record.client_app || record.client_ip || "-"}
+        </span>
+      </div>
+    ),
   },
   {
     key: "host",
     title: "Host",
     width: 160,
     render: (record) => (
-      <Tooltip title={record.host}>
-        <Text style={{ fontSize: 12 }} ellipsis>
-          {record.host}
-        </Text>
-      </Tooltip>
+      <span style={{ ...ellipsisStyle, fontSize: 12 }} title={record.host}>
+        {record.host}
+      </span>
     ),
   },
   {
@@ -252,43 +188,31 @@ const columns: ColumnDef[] = [
     width: "auto",
     minWidth: 250,
     render: (record) => (
-      <Tooltip title={record.path}>
-        <Text style={{ fontSize: 12 }} ellipsis>
-          {record.path}
-        </Text>
-      </Tooltip>
+      <span style={{ ...ellipsisStyle, fontSize: 12 }} title={record.path}>
+        {record.path}
+      </span>
     ),
   },
   {
     key: "content_type",
     title: "Type",
     width: 80,
-    render: (record) => {
-      const short = record.content_type?.split(";")[0]?.split("/").pop() || "-";
-      return (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {short}
-        </Text>
-      );
-    },
+    render: (record) => (
+      <span style={{ fontSize: 11, color: "rgba(0, 0, 0, 0.45)" }}>
+        {record._contentTypeShort || "-"}
+      </span>
+    ),
   },
   {
     key: "response_size",
     title: "Size",
     width: 65,
     align: "right",
-    render: (record) => {
-      const size =
-        (record.is_websocket || record.is_sse || record.is_tunnel) &&
-        record.socket_status
-          ? record.socket_status.send_bytes + record.socket_status.receive_bytes
-          : record.response_size;
-      return (
-        <Text type="secondary" style={{ fontSize: 11 }}>
-          {formatSize(size)}
-        </Text>
-      );
-    },
+    render: (record) => (
+      <span style={{ fontSize: 11, color: "rgba(0, 0, 0, 0.45)" }}>
+        {record._displaySize || "-"}
+      </span>
+    ),
   },
   {
     key: "duration_ms",
@@ -296,12 +220,14 @@ const columns: ColumnDef[] = [
     width: 55,
     align: "right",
     render: (record) => (
-      <Text
-        type={record.duration_ms > 1000 ? "warning" : "secondary"}
-        style={{ fontSize: 11 }}
+      <span
+        style={{
+          fontSize: 11,
+          color: record.duration_ms > 1000 ? "#faad14" : "rgba(0, 0, 0, 0.45)",
+        }}
       >
         {record.duration_ms > 0 ? `${record.duration_ms}ms` : "-"}
-      </Text>
+      </span>
     ),
   },
   {
@@ -309,14 +235,12 @@ const columns: ColumnDef[] = [
     title: "Start Time",
     width: 160,
     render: (record) => (
-      <Tooltip title={record.start_time}>
-        <Text
-          type="secondary"
-          style={{ fontSize: 11, fontFamily: "monospace" }}
-        >
-          {record.start_time || "-"}
-        </Text>
-      </Tooltip>
+      <span
+        style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}
+        title={record.start_time}
+      >
+        {record.start_time || "-"}
+      </span>
     ),
   },
   {
@@ -324,14 +248,12 @@ const columns: ColumnDef[] = [
     title: "End Time",
     width: 160,
     render: (record) => (
-      <Tooltip title={record.end_time || "-"}>
-        <Text
-          type="secondary"
-          style={{ fontSize: 11, fontFamily: "monospace" }}
-        >
-          {record.end_time || "-"}
-        </Text>
-      </Tooltip>
+      <span
+        style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}
+        title={record.end_time || "-"}
+      >
+        {record.end_time || "-"}
+      </span>
     ),
   },
   {
@@ -358,7 +280,7 @@ const columns: ColumnDef[] = [
           </Badge>
         </Tooltip>
       ) : (
-        <Text type="secondary">-</Text>
+        <span style={{ color: "rgba(0, 0, 0, 0.45)" }}>-</span>
       ),
   },
 ];
@@ -394,6 +316,7 @@ const baseCellStyle: CSSProperties = {
   height: "100%",
   maxHeight: ROW_HEIGHT,
   lineHeight: `${ROW_HEIGHT - 2}px`,
+  contain: "layout style paint",
 };
 
 interface TableRowProps {
@@ -556,7 +479,7 @@ export default function VirtualTrafficTable({
     count: data.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
-    overscan: 10,
+    overscan: 5,
     getItemKey: (index) => data[index]?.id ?? index,
   });
 
