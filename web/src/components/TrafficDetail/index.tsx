@@ -405,6 +405,7 @@ export default function TrafficDetail({
     if (effectiveResponseTab !== responseTab) {
       setResponseTab(effectiveResponseTab);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     record?.id,
     requestTabs,

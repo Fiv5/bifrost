@@ -66,7 +66,6 @@ export default function Traffic() {
     requestBody,
     responseBody,
     detailLoading,
-    paused,
     hasMore,
     toolbarFilters,
     filterConditions,
@@ -80,7 +79,6 @@ export default function Traffic() {
     clearTraffic,
     setToolbarFilters,
     setFilterConditions,
-    setPaused,
     setAutoScroll,
     clearNewRecordsCount,
     initFromUrl,
@@ -192,10 +190,6 @@ export default function Traffic() {
     }
   }, [clearTraffic]);
 
-  const handlePauseToggle = useCallback(() => {
-    setPaused(!paused);
-  }, [paused, setPaused]);
-
   const handleFilterConditionsChange = useCallback(
     (conditions: FilterCondition[]) => {
       setFilterConditions(conditions);
@@ -289,9 +283,7 @@ export default function Traffic() {
   return (
     <div style={styles.container}>
       <Toolbar
-        paused={paused}
         filters={toolbarFilters}
-        onPauseToggle={handlePauseToggle}
         onClear={handleClear}
         onFilterChange={setToolbarFilters}
         systemProxyEnabled={systemProxy?.enabled}

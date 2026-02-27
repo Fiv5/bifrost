@@ -44,7 +44,7 @@ const StatusBar = memo(function StatusBar() {
     return () => {
       disablePush();
     };
-  }, []);
+  }, [fetchSystemProxy, enablePush, disablePush]);
 
   const metrics = current || overview?.metrics;
 

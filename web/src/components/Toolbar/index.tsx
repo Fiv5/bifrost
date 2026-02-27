@@ -1,7 +1,5 @@
 import { Tag, Switch, Button, Popconfirm, Space, theme, Tooltip } from "antd";
 import {
-  PauseOutlined,
-  PlayCircleOutlined,
   DeleteOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
@@ -9,9 +7,7 @@ import {
 import type { ToolbarFilters } from "../../types";
 
 interface ToolbarProps {
-  paused: boolean;
   filters: ToolbarFilters;
-  onPauseToggle: () => void;
   onClear: () => void;
   onFilterChange: (filters: ToolbarFilters) => void;
   systemProxyEnabled?: boolean;
@@ -30,9 +26,7 @@ const filterGroups = {
 };
 
 export default function Toolbar({
-  paused,
   filters,
-  onPauseToggle,
   onClear,
   onFilterChange,
   systemProxyEnabled,
@@ -78,12 +72,6 @@ export default function Toolbar({
       }}
     >
       <Space size={4}>
-        <Button
-          type="text"
-          size="small"
-          icon={paused ? <PlayCircleOutlined /> : <PauseOutlined />}
-          onClick={onPauseToggle}
-        />
         <Popconfirm
           title="Clear all traffic?"
           description="This action cannot be undone."

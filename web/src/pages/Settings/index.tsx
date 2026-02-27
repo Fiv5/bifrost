@@ -597,6 +597,7 @@ export default function Settings() {
     fetchAppMetricsData,
     fetchHostMetricsData,
     fetchProxyAddressInfo,
+    fetchSystemProxy,
     enablePush,
     disablePush,
     usePush,

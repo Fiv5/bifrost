@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef, useEffect } from "react";
+import { useCallback, useState, useRef, useEffect, memo } from "react";
 import { Typography, Tooltip, Dropdown, message } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -42,7 +42,11 @@ const getStatusColor = (status: number): string => {
   return "#1890ff";
 };
 
-export const Header = ({ record }: HeaderProps) => {
+const HeaderContent = memo(function HeaderContent({
+  record,
+}: {
+  record: TrafficRecord;
+}) {
   const { method, status, url } = record;
   const statusText = STATUS_CODES[status] || "";
   const statusLabel = statusText ? `${status} ${statusText}` : String(status);
@@ -58,10 +62,6 @@ export const Header = ({ record }: HeaderProps) => {
       setIsOverflow(el.scrollWidth > el.clientWidth);
     }
   }, [url]);
-
-  useEffect(() => {
-    setExpanded(false);
-  }, [record.id]);
 
   const handleCopyUrl = useCallback(() => {
     navigator.clipboard.writeText(url);
@@ -189,4 +189,8 @@ export const Header = ({ record }: HeaderProps) => {
       </div>
     </div>
   );
+});
+
+export const Header = ({ record }: HeaderProps) => {
+  return <HeaderContent key={record.id} record={record} />;
 };
