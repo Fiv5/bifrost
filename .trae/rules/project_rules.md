@@ -33,15 +33,13 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --unsafe-ssl
 
 1. `RUST_LOG` 环境变量 - 支持精细化控制，如 `RUST_LOG=bifrost_proxy=debug,info`
 2. 命令行参数 `-l/--log-level` - 仅 bifrost-cli 支持
-3. `BIFROST_LOG_LEVEL` 环境变量 - 仅 bifrost-gui 支持
-4. 默认值 `info`
+3. 默认值 `info`
 
 ### 各入口点日志初始化规范
 
 | 入口点      | 初始化方式                     | 说明                              |
 | ----------- | ------------------------------ | --------------------------------- |
 | bifrost-cli | `init_logging(&cli.log_level)` | 使用 bifrost-core 统一函数        |
-| bifrost-gui | `init_logging(&log_level)`     | 从 `BIFROST_LOG_LEVEL` 读取       |
 | bifrost-e2e | `tracing_subscriber::fmt()`    | 从 `--verbose` 和 `RUST_LOG` 读取 |
 
 ### verbose_logging 双轨机制
@@ -68,7 +66,6 @@ let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
 
 - 日志初始化：`crates/bifrost-core/src/logging.rs`
 - CLI 入口：`crates/bifrost-cli/src/main.rs`
-- GUI 入口：`crates/bifrost-gui/src/main.rs`
 - E2E 入口：`crates/bifrost-e2e/src/main.rs`
 - ProxyConfig 定义：`crates/bifrost-proxy/src/server.rs`
 

@@ -9,7 +9,6 @@ members = [
   "crates/bifrost-storage",
   "crates/bifrost-admin",
   "crates/bifrost-cli",
-  "crates/bifrost-gui",
   "crates/bifrost-tests",
   "crates/bifrost-e2e",
 ]

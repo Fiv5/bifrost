@@ -206,8 +206,6 @@ show_help() {
     echo "Options:"
     echo "  --version <VERSION>   Install a specific version (e.g., v0.1.0)"
     echo "  --dir <PATH>          Installation directory (default: ~/.local/bin)"
-    echo "  --gui                 Also install GUI version (macOS/Windows only)"
-    echo "  --gui-only            Only install GUI version"
     echo "  --help                Show this help message"
     echo ""
     echo "Environment variables:"
@@ -217,11 +215,8 @@ show_help() {
     echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install-binary.sh | bash"
     echo "  curl -fsSL ... | bash -s -- --version v0.2.0"
     echo "  curl -fsSL ... | bash -s -- --dir /usr/local/bin"
-    echo "  curl -fsSL ... | bash -s -- --gui"
 }
 
-INSTALL_CLI=true
-INSTALL_GUI=false
 VERSION=""
 
 while [[ $# -gt 0 ]]; do
@@ -233,15 +228,6 @@ while [[ $# -gt 0 ]]; do
         --dir)
             INSTALL_DIR="$2"
             shift 2
-            ;;
-        --gui)
-            INSTALL_GUI=true
-            shift
-            ;;
-        --gui-only)
-            INSTALL_CLI=false
-            INSTALL_GUI=true
-            shift
             ;;
         --help)
             show_help
@@ -302,80 +288,45 @@ main() {
     tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" EXIT
 
-    if [[ "$INSTALL_CLI" == "true" ]]; then
-        print_step "Installing CLI..."
+    print_step "Installing CLI..."
 
-        local cli_archive="bifrost-${VERSION}-${target}.${ext}"
-        local cli_url="https://github.com/${REPO}/releases/download/${VERSION}/${cli_archive}"
-        local checksums_url="https://github.com/${REPO}/releases/download/${VERSION}/bifrost-${VERSION}-checksums.txt"
+    local cli_archive="bifrost-${VERSION}-${target}.${ext}"
+    local cli_url="https://github.com/${REPO}/releases/download/${VERSION}/${cli_archive}"
+    local checksums_url="https://github.com/${REPO}/releases/download/${VERSION}/bifrost-${VERSION}-checksums.txt"
 
-        download_file "$cli_url" "$tmpdir/$cli_archive"
+    download_file "$cli_url" "$tmpdir/$cli_archive"
 
-        print_step "Downloading checksums..."
-        download_file "$checksums_url" "$tmpdir/checksums.txt"
+    print_step "Downloading checksums..."
+    download_file "$checksums_url" "$tmpdir/checksums.txt"
 
-        local expected_checksum
-        expected_checksum=$(grep "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
-        if [[ -n "$expected_checksum" ]]; then
-            verify_checksum "$tmpdir/$cli_archive" "$expected_checksum"
-        else
-            print_warning "Checksum not found for $cli_archive, skipping verification"
-        fi
-
-        print_step "Extracting..."
-        extract_archive "$tmpdir/$cli_archive" "$tmpdir" "$os"
-
-        local extracted_dir="bifrost-${VERSION}-${target}"
-        local binary_name="bifrost"
-        [[ "$os" == "windows" ]] && binary_name="bifrost.exe"
-
-        if [[ -f "$tmpdir/$extracted_dir/$binary_name" ]]; then
-            cp "$tmpdir/$extracted_dir/$binary_name" "$INSTALL_DIR/$binary_name"
-        elif [[ -f "$tmpdir/$binary_name" ]]; then
-            cp "$tmpdir/$binary_name" "$INSTALL_DIR/$binary_name"
-        else
-            print_error "Binary not found in archive"
-            exit 1
-        fi
-
-        chmod +x "$INSTALL_DIR/$binary_name"
-        clear_xattr "$INSTALL_DIR/$binary_name"
-
-        print_success "CLI installed: $INSTALL_DIR/$binary_name"
+    local expected_checksum
+    expected_checksum=$(grep "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
+    if [[ -n "$expected_checksum" ]]; then
+        verify_checksum "$tmpdir/$cli_archive" "$expected_checksum"
+    else
+        print_warning "Checksum not found for $cli_archive, skipping verification"
     fi
 
-    if [[ "$INSTALL_GUI" == "true" ]]; then
-        if [[ "$os" != "darwin" && "$os" != "windows" ]]; then
-            print_warning "GUI is only available for macOS and Windows"
-        else
-            print_step "Installing GUI..."
+    print_step "Extracting..."
+    extract_archive "$tmpdir/$cli_archive" "$tmpdir" "$os"
 
-            local gui_archive="bifrost-gui-${VERSION}-${target}.${ext}"
-            local gui_url="https://github.com/${REPO}/releases/download/${VERSION}/${gui_archive}"
+    local extracted_dir="bifrost-${VERSION}-${target}"
+    local binary_name="bifrost"
+    [[ "$os" == "windows" ]] && binary_name="bifrost.exe"
 
-            download_file "$gui_url" "$tmpdir/$gui_archive"
-
-            print_step "Extracting GUI..."
-            extract_archive "$tmpdir/$gui_archive" "$tmpdir" "$os"
-
-            if [[ "$os" == "darwin" ]]; then
-                local app_dest="/Applications/Bifrost.app"
-                if [[ -d "$tmpdir/Bifrost.app" ]]; then
-                    rm -rf "$app_dest" 2>/dev/null || true
-                    cp -R "$tmpdir/Bifrost.app" "$app_dest"
-                    clear_xattr "$app_dest"
-                    print_success "GUI installed: $app_dest"
-                fi
-            elif [[ "$os" == "windows" ]]; then
-                local gui_binary="bifrost-gui.exe"
-                local extracted_dir="bifrost-gui-${VERSION}-${target}"
-                if [[ -f "$tmpdir/$extracted_dir/$gui_binary" ]]; then
-                    cp "$tmpdir/$extracted_dir/$gui_binary" "$INSTALL_DIR/$gui_binary"
-                    print_success "GUI installed: $INSTALL_DIR/$gui_binary"
-                fi
-            fi
-        fi
+    if [[ -f "$tmpdir/$extracted_dir/$binary_name" ]]; then
+        cp "$tmpdir/$extracted_dir/$binary_name" "$INSTALL_DIR/$binary_name"
+    elif [[ -f "$tmpdir/$binary_name" ]]; then
+        cp "$tmpdir/$binary_name" "$INSTALL_DIR/$binary_name"
+    else
+        print_error "Binary not found in archive"
+        exit 1
     fi
+
+    chmod +x "$INSTALL_DIR/$binary_name"
+    clear_xattr "$INSTALL_DIR/$binary_name"
+
+    print_success "CLI installed: $INSTALL_DIR/$binary_name"
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -407,23 +358,14 @@ main() {
     echo ""
     echo "Getting started:"
     echo ""
-    if [[ "$INSTALL_CLI" == "true" ]]; then
-        echo "  # Start proxy server"
-        echo "  bifrost start"
-        echo ""
-        echo "  # Start with custom port"
-        echo "  bifrost -p 8080 start"
-        echo ""
-        echo "  # Show help"
-        echo "  bifrost --help"
-    fi
-    if [[ "$INSTALL_GUI" == "true" ]]; then
-        echo ""
-        if [[ "$os" == "darwin" ]]; then
-            echo "  # Launch GUI"
-            echo "  open /Applications/Bifrost.app"
-        fi
-    fi
+    echo "  # Start proxy server"
+    echo "  bifrost start"
+    echo ""
+    echo "  # Start with custom port"
+    echo "  bifrost -p 8080 start"
+    echo ""
+    echo "  # Show help"
+    echo "  bifrost --help"
     echo ""
     echo "Documentation: https://github.com/${REPO}"
     echo ""

@@ -1,4 +1,4 @@
-.PHONY: all build build-release clean test lint fmt install-deps dev help setup build-cli build-gui
+.PHONY: all build build-release clean test lint fmt install-deps dev help setup build-cli
 
 # Default target
 all: build
@@ -14,10 +14,6 @@ build-release:
 # Build CLI only (command-line version with web UI)
 build-cli:
 	cargo build -p bifrost-cli --release
-
-# Build GUI only (native desktop version using egui)
-build-gui:
-	cargo build -p bifrost-gui --release
 
 # Build without frontend (for faster iteration on backend)
 build-backend:
@@ -94,14 +90,6 @@ package: build-release
 	@echo "Package created in dist/"
 	@ls -lh dist/
 
-# Run GUI application
-run-gui:
-	cargo run -p bifrost-gui
-
-# Run GUI application in release mode
-run-gui-release:
-	cargo run -p bifrost-gui --release
-
 # Show help
 help:
 	@echo "Bifrost Proxy Build System"
@@ -112,13 +100,10 @@ help:
 	@echo "  build          Build in debug mode (default)"
 	@echo "  build-release  Build in release mode (optimized)"
 	@echo "  build-cli      Build CLI version only (with web UI)"
-	@echo "  build-gui      Build GUI version only (native egui desktop)"
 	@echo "  build-backend  Build backend only (skip frontend)"
 	@echo "  build-frontend Build frontend only"
 	@echo "  run            Run proxy server in debug mode (CLI)"
 	@echo "  run-release    Run proxy server in release mode (CLI)"
-	@echo "  run-gui        Run GUI application in debug mode"
-	@echo "  run-gui-release Run GUI application in release mode"
 	@echo "  dev            Development mode with frontend hot reload"
 	@echo "  clean          Clean all build artifacts"
 	@echo "  test           Run all tests"

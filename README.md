@@ -96,9 +96,6 @@ curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-bin
 
 # 安装特定版本
 curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
-
-# 同时安装 GUI 版本（macOS/Windows）
-curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --gui
 ```
 
 ### 方式二：Homebrew（macOS）
@@ -494,7 +491,7 @@ let enabled_groups = state.enabled_groups();
 
 ## Values 变量系统
 
-Values 是一套统一的变量管理系统，用于在规则中使用可复用的变量。变量可以通过 CLI、Web 界面或 GUI 进行管理。
+Values 是一套统一的变量管理系统，用于在规则中使用可复用的变量。变量可以通过 CLI 或 Web 界面进行管理。
 
 ### 变量定义
 
@@ -744,7 +741,6 @@ git push origin v0.1.0
 每次发布会自动生成：
 
 - CLI 二进制文件（7 个平台）
-- GUI 应用程序（macOS/Windows）
 - SHA256 校验和文件
 - 自动生成的 CHANGELOG
 - Homebrew Formula 自动更新

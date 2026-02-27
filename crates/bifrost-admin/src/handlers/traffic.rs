@@ -428,10 +428,9 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
-        match tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned)).await {
-            Ok(r) => r,
-            Err(_) => None,
-        }
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
@@ -505,10 +504,9 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
-        match tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned)).await {
-            Ok(r) => r,
-            Err(_) => None,
-        }
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
@@ -537,10 +535,9 @@ async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBod
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
-        match tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned)).await {
-            Ok(r) => r,
-            Err(_) => None,
-        }
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {

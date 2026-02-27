@@ -28,8 +28,6 @@ print_error() {
 }
 
 INSTALL_DIR="${BIFROST_INSTALL_DIR:-$HOME/.local/bin}"
-INSTALL_CLI=true
-INSTALL_GUI=false
 
 show_help() {
     echo "Bifrost Installation Script"
@@ -37,8 +35,6 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --gui             Also build and install bifrost-gui"
-    echo "  --gui-only        Only build and install bifrost-gui"
     echo "  --dir <path>      Custom installation directory (default: ~/.local/bin)"
     echo "  --help            Show this help message"
     echo ""
@@ -47,22 +43,11 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0                     Build and install bifrost CLI"
-    echo "  $0 --gui               Build and install both CLI and GUI"
-    echo "  $0 --gui-only          Only build and install GUI"
     echo "  $0 --dir /usr/local/bin"
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --gui)
-            INSTALL_GUI=true
-            shift
-            ;;
-        --gui-only)
-            INSTALL_CLI=false
-            INSTALL_GUI=true
-            shift
-            ;;
         --dir)
             INSTALL_DIR="$2"
             shift 2
@@ -97,50 +82,38 @@ clear_xattr() {
     fi
 }
 
-if [ "$INSTALL_CLI" = true ]; then
-    print_step "Ensuring frontend is built..."
-    WEB_DIR="$SCRIPT_DIR/web"
-    DIST_DIR="$WEB_DIR/dist"
-    
-    if [ -d "$WEB_DIR" ]; then
-        if [ ! -d "$WEB_DIR/node_modules" ]; then
-            print_step "Installing frontend dependencies..."
-            (cd "$WEB_DIR" && pnpm install)
-        fi
-        
-        if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
-            print_step "Building frontend..."
-            (cd "$WEB_DIR" && pnpm run build)
-        fi
-        
-        if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
-            print_error "Frontend build failed or incomplete"
-            exit 1
-        fi
-        print_success "Frontend ready"
-    else
-        print_warning "Web directory not found, skipping frontend build"
+print_step "Ensuring frontend is built..."
+WEB_DIR="$SCRIPT_DIR/web"
+DIST_DIR="$WEB_DIR/dist"
+
+if [ -d "$WEB_DIR" ]; then
+    if [ ! -d "$WEB_DIR/node_modules" ]; then
+        print_step "Installing frontend dependencies..."
+        (cd "$WEB_DIR" && pnpm install)
     fi
-
-    print_step "Building and installing bifrost CLI (release mode)..."
-    touch "$SCRIPT_DIR/crates/bifrost-admin/build.rs"
-    cargo install --path crates/bifrost-cli --root "$INSTALL_DIR" --force
-    clear_xattr "$INSTALL_DIR/bin/bifrost"
-    mv "$INSTALL_DIR/bin/bifrost" "$INSTALL_DIR/bifrost"
-    rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
-    rm -f "$INSTALL_DIR/.crates.toml" "$INSTALL_DIR/.crates2.json" 2>/dev/null || true
-    print_success "bifrost CLI installed successfully"
+    
+    if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
+        print_step "Building frontend..."
+        (cd "$WEB_DIR" && pnpm run build)
+    fi
+    
+    if [ ! -f "$DIST_DIR/index.html" ] || [ ! -d "$DIST_DIR/assets" ]; then
+        print_error "Frontend build failed or incomplete"
+        exit 1
+    fi
+    print_success "Frontend ready"
+else
+    print_warning "Web directory not found, skipping frontend build"
 fi
 
-if [ "$INSTALL_GUI" = true ]; then
-    print_step "Building and installing bifrost GUI (release mode)..."
-    cargo install --path crates/bifrost-gui --root "$INSTALL_DIR" --force
-    clear_xattr "$INSTALL_DIR/bin/bifrost-gui"
-    mv "$INSTALL_DIR/bin/bifrost-gui" "$INSTALL_DIR/bifrost-gui"
-    rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
-    rm -f "$INSTALL_DIR/.crates.toml" "$INSTALL_DIR/.crates2.json" 2>/dev/null || true
-    print_success "bifrost-gui installed successfully"
-fi
+print_step "Building and installing bifrost CLI (release mode)..."
+touch "$SCRIPT_DIR/crates/bifrost-admin/build.rs"
+cargo install --path crates/bifrost-cli --root "$INSTALL_DIR" --force
+clear_xattr "$INSTALL_DIR/bin/bifrost"
+mv "$INSTALL_DIR/bin/bifrost" "$INSTALL_DIR/bifrost"
+rmdir "$INSTALL_DIR/bin" 2>/dev/null || true
+rm -f "$INSTALL_DIR/.crates.toml" "$INSTALL_DIR/.crates2.json" 2>/dev/null || true
+print_success "bifrost CLI installed successfully"
 
 check_path_configured() {
     case "$SHELL" in
@@ -199,12 +172,7 @@ print_success "Installation completed!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-if [ "$INSTALL_CLI" = true ]; then
-    echo "  bifrost:     $INSTALL_DIR/bifrost"
-fi
-if [ "$INSTALL_GUI" = true ]; then
-    echo "  bifrost-gui: $INSTALL_DIR/bifrost-gui"
-fi
+echo "  bifrost:     $INSTALL_DIR/bifrost"
 
 echo ""
 
@@ -237,12 +205,7 @@ else
     print_success "$INSTALL_DIR is already in your PATH"
     echo ""
     echo "You can now run:"
-    if [ "$INSTALL_CLI" = true ]; then
-        echo "  bifrost --help"
-    fi
-    if [ "$INSTALL_GUI" = true ]; then
-        echo "  bifrost-gui"
-    fi
+    echo "  bifrost --help"
 fi
 
 echo ""

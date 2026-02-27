@@ -75,20 +75,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 BIFROST_CLI="$INSTALL_DIR/bifrost"
-BIFROST_GUI="$INSTALL_DIR/bifrost-gui"
 
 CLI_EXISTS=false
-GUI_EXISTS=false
 
 if [ -f "$BIFROST_CLI" ]; then
     CLI_EXISTS=true
 fi
 
-if [ -f "$BIFROST_GUI" ]; then
-    GUI_EXISTS=true
-fi
-
-if [ "$CLI_EXISTS" = false ] && [ "$GUI_EXISTS" = false ]; then
+if [ "$CLI_EXISTS" = false ]; then
     print_warning "No Bifrost installation found in $INSTALL_DIR"
     exit 0
 fi
@@ -101,9 +95,6 @@ echo ""
 
 if [ "$CLI_EXISTS" = true ]; then
     echo "  $BIFROST_CLI"
-fi
-if [ "$GUI_EXISTS" = true ]; then
-    echo "  $BIFROST_GUI"
 fi
 
 if [ "$REMOVE_PATH_CONFIG" = true ]; then
@@ -129,12 +120,6 @@ if [ "$CLI_EXISTS" = true ]; then
     print_step "Removing bifrost CLI..."
     rm -f "$BIFROST_CLI"
     print_success "Removed $BIFROST_CLI"
-fi
-
-if [ "$GUI_EXISTS" = true ]; then
-    print_step "Removing bifrost GUI..."
-    rm -f "$BIFROST_GUI"
-    print_success "Removed $BIFROST_GUI"
 fi
 
 remove_path_from_rc() {
