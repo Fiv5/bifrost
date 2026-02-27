@@ -341,8 +341,13 @@ pub fn spawn_async_process_resolver<F>(peer_addr: SocketAddr, record_id: String,
 where
     F: FnOnce(String, ClientProcess) + Send + 'static,
 {
-    std::thread::spawn(move || {
-        if let Some(process) = PROCESS_RESOLVER.resolve_with_retry(&peer_addr, 3, 10) {
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            PROCESS_RESOLVER.resolve_with_retry(&peer_addr, 3, 10)
+        })
+        .await;
+
+        if let Ok(Some(process)) = result {
             callback(record_id, process);
         }
     });
