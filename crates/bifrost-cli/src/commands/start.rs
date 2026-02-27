@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bifrost_admin::{
-    start_async_traffic_processor, start_metrics_collector_task, start_push_tasks,
-    status_printer::TlsStatusInfo, AdminState, AsyncTrafficWriter, BodyStore, PushManager,
-    RuntimeConfig,
+    start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
+    BodyStore, PushManager, RuntimeConfig,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -471,11 +470,14 @@ pub fn run_foreground(
         )));
 
         let traffic_dir = bifrost_dir.join("traffic");
-        let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
-            traffic_dir,
-            stored_config.traffic.max_records,
-            Some(stored_config.traffic.file_retention_days * 24),
-        ));
+        let traffic_db_store = Arc::new(
+            bifrost_admin::TrafficDbStore::new(
+                traffic_dir,
+                stored_config.traffic.max_records,
+                Some(stored_config.traffic.file_retention_days * 24),
+            )
+            .expect("Failed to create traffic database"),
+        );
 
         let frame_store = bifrost_admin::FrameStore::new(
             bifrost_dir.clone(),
@@ -508,19 +510,9 @@ pub fn run_foreground(
 
         let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
-        let traffic_recorder = std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
-        let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
-        let _async_traffic_task = start_async_traffic_processor(
-            async_traffic_rx,
-            traffic_recorder.clone(),
-            Some(traffic_store.clone()),
-        );
-
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
-            .with_traffic_store_shared(traffic_store.clone())
-            .with_traffic_recorder_shared(traffic_recorder)
-            .with_async_traffic_writer(async_traffic_writer)
+            .with_traffic_db_store_shared(traffic_db_store.clone())
             .with_frame_store(frame_store)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
@@ -532,7 +524,7 @@ pub fn run_foreground(
             .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
             .with_app_icon_cache(app_icon_cache);
 
-        bifrost_admin::start_traffic_cleanup_task(traffic_store);
+        bifrost_admin::start_db_cleanup_task(traffic_db_store);
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let rules_storage_for_resolver = admin_state.rules_storage.clone();
@@ -738,11 +730,14 @@ pub fn run_daemon(
                 )));
 
                 let traffic_dir = bifrost_dir.join("traffic");
-                let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
-                    traffic_dir,
-                    stored_config.traffic.max_records,
-                    Some(stored_config.traffic.file_retention_days * 24),
-                ));
+                let traffic_db_store = Arc::new(
+                    bifrost_admin::TrafficDbStore::new(
+                        traffic_dir,
+                        stored_config.traffic.max_records,
+                        Some(stored_config.traffic.file_retention_days * 24),
+                    )
+                    .expect("Failed to create traffic database"),
+                );
 
                 let frame_store = bifrost_admin::FrameStore::new(
                     bifrost_dir.clone(),
@@ -773,20 +768,9 @@ pub fn run_daemon(
                 let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
                 let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
-                let traffic_recorder =
-                    std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
-                let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
-                let _async_traffic_task = start_async_traffic_processor(
-                    async_traffic_rx,
-                    traffic_recorder.clone(),
-                    Some(traffic_store.clone()),
-                );
-
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
-                    .with_traffic_store_shared(traffic_store.clone())
-                    .with_traffic_recorder_shared(traffic_recorder)
-                    .with_async_traffic_writer(async_traffic_writer)
+                    .with_traffic_db_store_shared(traffic_db_store.clone())
                     .with_frame_store(frame_store)
                     .with_runtime_config(runtime_config)
                     .with_connection_registry(connection_registry)
@@ -798,7 +782,7 @@ pub fn run_daemon(
                     .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
                     .with_app_icon_cache(app_icon_cache);
 
-                bifrost_admin::start_traffic_cleanup_task(traffic_store);
+                bifrost_admin::start_db_cleanup_task(traffic_db_store);
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let rules_storage_for_resolver = admin_state.rules_storage.clone();

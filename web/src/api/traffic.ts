@@ -1,5 +1,9 @@
-import { get, del } from './client';
-import type { TrafficListResponse, TrafficRecord, TrafficFilter, TrafficUpdatesFilter, TrafficUpdatesResponse, ApiResponse } from '../types';
+import { get, del, post } from './client';
+import type { TrafficListResponse, TrafficRecord, TrafficFilter, TrafficUpdatesFilter, TrafficUpdatesResponseCompact, ApiResponse, TrafficQueryRequest, TrafficQueryResponse } from '../types';
+
+export async function queryTraffic(request: TrafficQueryRequest): Promise<TrafficQueryResponse> {
+  return post<TrafficQueryResponse>('/traffic/query', request);
+}
 
 export async function getTrafficList(filter?: TrafficFilter): Promise<TrafficListResponse> {
   const params = new URLSearchParams();
@@ -14,7 +18,7 @@ export async function getTrafficList(filter?: TrafficFilter): Promise<TrafficLis
   return get<TrafficListResponse>(`/traffic${query ? `?${query}` : ''}`);
 }
 
-export async function getTrafficUpdates(filter?: TrafficUpdatesFilter): Promise<TrafficUpdatesResponse> {
+export async function getTrafficUpdates(filter?: TrafficUpdatesFilter): Promise<TrafficUpdatesResponseCompact> {
   const params = new URLSearchParams();
   if (filter) {
     Object.entries(filter).forEach(([key, value]) => {
@@ -24,7 +28,7 @@ export async function getTrafficUpdates(filter?: TrafficUpdatesFilter): Promise<
     });
   }
   const query = params.toString();
-  return get<TrafficUpdatesResponse>(`/traffic/updates${query ? `?${query}` : ''}`);
+  return get<TrafficUpdatesResponseCompact>(`/traffic/updates${query ? `?${query}` : ''}`);
 }
 
 export async function getTrafficDetail(id: string): Promise<TrafficRecord> {

@@ -137,7 +137,8 @@ export const Raw = ({
     bodyText = bodyText.substring(0, DEFAULT_SHOW_MAX_SIZE);
   }
 
-  if (isTunnelResponse) {
+  const hasNoData = (!headers || headers.length === 0) && !body && !status;
+  if (isTunnelResponse && hasNoData) {
     return (
       <div
         ref={wrapperRef}

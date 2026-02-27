@@ -127,6 +127,84 @@ export interface TrafficUpdatesResponse {
   server_total: number;
 }
 
+export interface TrafficUpdatesResponseCompact {
+  new_records: TrafficSummaryCompact[];
+  updated_records: TrafficSummaryCompact[];
+  has_more: boolean;
+  server_total: number;
+  server_sequence: number;
+}
+
+export interface TrafficSummaryCompact {
+  id: string;
+  seq: number;
+  ts: number;
+  m: string;
+  h: string;
+  p: string;
+  s: number;
+  ct?: string | null;
+  req_sz: number;
+  res_sz: number;
+  dur: number;
+  proto: string;
+  cip: string;
+  capp?: string | null;
+  cpid?: number | null;
+  flags: number;
+  fc: number;
+  ss?: SocketStatus | null;
+  st: string;
+  et?: string | null;
+}
+
+export const TrafficFlags = {
+  IS_TUNNEL: 1 << 0,
+  IS_WEBSOCKET: 1 << 1,
+  IS_SSE: 1 << 2,
+  IS_H3: 1 << 3,
+  HAS_RULE_HIT: 1 << 4,
+} as const;
+
+export interface TrafficDeltaData {
+  inserts: TrafficSummaryCompact[];
+  updates: TrafficSummaryCompact[];
+  has_more: boolean;
+  server_total: number;
+  server_sequence: number;
+}
+
+export interface TrafficQueryRequest {
+  cursor?: number;
+  limit?: number;
+  direction?: 'forward' | 'backward';
+  method?: string;
+  status?: number;
+  status_min?: number;
+  status_max?: number;
+  protocol?: string;
+  has_rule_hit?: boolean;
+  is_websocket?: boolean;
+  is_sse?: boolean;
+  is_h3?: boolean;
+  is_tunnel?: boolean;
+  host_contains?: string;
+  url_contains?: string;
+  path_contains?: string;
+  client_app?: string;
+  client_ip?: string;
+  content_type?: string;
+}
+
+export interface TrafficQueryResponse {
+  records: TrafficSummaryCompact[];
+  next_cursor: number | null;
+  prev_cursor: number | null;
+  has_more: boolean;
+  total: number;
+  server_sequence: number;
+}
+
 export interface TrafficUpdatesFilter extends TrafficFilter {
   after_id?: string;
   pending_ids?: string;

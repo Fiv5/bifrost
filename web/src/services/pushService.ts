@@ -1,5 +1,7 @@
 import type {
   TrafficSummary,
+  TrafficSummaryCompact,
+  TrafficDeltaData,
   SystemOverview,
   MetricsSnapshot,
 } from '../types';
@@ -10,6 +12,16 @@ export interface TrafficUpdatesData {
   has_more: boolean;
   server_total: number;
 }
+
+export interface TrafficUpdatesDataCompact {
+  new_records: TrafficSummaryCompact[];
+  updated_records: TrafficSummaryCompact[];
+  has_more: boolean;
+  server_total: number;
+  server_sequence: number;
+}
+
+export type { TrafficDeltaData };
 
 export interface OverviewData {
   system: SystemOverview['system'];
@@ -39,6 +51,7 @@ export interface ErrorData {
 
 export type PushMessageType =
   | 'traffic_updates'
+  | 'traffic_delta'
   | 'overview_update'
   | 'metrics_update'
   | 'history_update'
@@ -49,6 +62,7 @@ export interface PushMessage {
   type: PushMessageType;
   data:
     | TrafficUpdatesData
+    | TrafficDeltaData
     | OverviewData
     | MetricsData
     | HistoryData
@@ -58,6 +72,7 @@ export interface PushMessage {
 
 export interface ClientSubscription {
   last_traffic_id?: string;
+  last_sequence?: number;
   pending_ids?: string[];
   need_overview?: boolean;
   need_metrics?: boolean;
@@ -87,6 +102,7 @@ class PushService {
   private isManualClose = false;
 
   private trafficHandlers: Set<MessageHandler<TrafficUpdatesData>> = new Set();
+  private trafficDeltaHandlers: Set<MessageHandler<TrafficDeltaData>> = new Set();
   private overviewHandlers: Set<MessageHandler<OverviewData>> = new Set();
   private metricsHandlers: Set<MessageHandler<MetricsData>> = new Set();
   private historyHandlers: Set<MessageHandler<HistoryData>> = new Set();
@@ -202,6 +218,11 @@ class PushService {
         this.trafficHandlers.forEach((handler) => handler(data));
         break;
       }
+      case 'traffic_delta': {
+        const data = message.data as TrafficDeltaData;
+        this.trafficDeltaHandlers.forEach((handler) => handler(data));
+        break;
+      }
       case 'overview_update': {
         const data = message.data as OverviewData;
         this.overviewHandlers.forEach((handler) => handler(data));
@@ -279,6 +300,11 @@ class PushService {
   onTrafficUpdates(handler: MessageHandler<TrafficUpdatesData>): () => void {
     this.trafficHandlers.add(handler);
     return () => this.trafficHandlers.delete(handler);
+  }
+
+  onTrafficDelta(handler: MessageHandler<TrafficDeltaData>): () => void {
+    this.trafficDeltaHandlers.add(handler);
+    return () => this.trafficDeltaHandlers.delete(handler);
   }
 
   onOverviewUpdate(handler: MessageHandler<OverviewData>): () => void {

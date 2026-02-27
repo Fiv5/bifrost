@@ -136,16 +136,17 @@ export default function FilterPanel({
     <div style={styles.container}>
       <div style={styles.header}>
         <span style={styles.title}>Filters</span>
-        {hasSelections && (
-          <Tooltip title="Clear all selections">
-            <Button
-              type="text"
-              size="small"
-              icon={<ClearOutlined />}
-              onClick={clearAllSelections}
-            />
-          </Tooltip>
-        )}
+        <Tooltip title="Clear all selections">
+          <Button
+            type="text"
+            size="small"
+            icon={<ClearOutlined />}
+            onClick={clearAllSelections}
+            style={{
+              visibility: hasSelections ? "visible" : "hidden",
+            }}
+          />
+        </Tooltip>
       </div>
       <div style={styles.searchWrapper}>
         <Input

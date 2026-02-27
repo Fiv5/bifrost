@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { TrafficSummary, TrafficRecord, ToolbarFilters, FilterCondition, TrafficUpdatesFilter } from '../types';
+import type { TrafficSummary, TrafficRecord, ToolbarFilters, FilterCondition, TrafficUpdatesFilter, TrafficSummaryCompact, TrafficDeltaData } from '../types';
 import * as api from '../api';
 import pushService, { type TrafficUpdatesData } from '../services/pushService';
 
@@ -10,8 +10,10 @@ interface TrafficState {
   requestBody: string | null;
   responseBody: string | null;
   serverTotal: number;
+  serverSequence: number;
   hasMore: boolean;
   lastId: string | null;
+  lastSequence: number | null;
   pendingIds: Set<string>;
   toolbarFilters: ToolbarFilters;
   filterConditions: FilterCondition[];
@@ -26,9 +28,11 @@ interface TrafficState {
   scrollTop: number;
   usePush: boolean;
   pushUnsubscribe: (() => void) | null;
+  pushDeltaUnsubscribe: (() => void) | null;
   filterVersion: number;
   initialized: boolean;
   selectedId: string | undefined;
+  useDbMode: boolean;
 
   startPolling: () => void;
   stopPolling: () => void;
@@ -47,6 +51,7 @@ interface TrafficState {
   setScrollTop: (scrollTop: number) => void;
   setSelectedId: (id: string | undefined) => void;
   handleTrafficPush: (data: TrafficUpdatesData) => void;
+  handleTrafficDelta: (data: TrafficDeltaData) => void;
   enablePush: () => void;
   disablePush: () => void;
 }
@@ -361,6 +366,39 @@ export const filterRecords = (
   return result;
 };
 
+const compactToSummary = (c: TrafficSummaryCompact): TrafficSummary => {
+  const FLAGS = { IS_TUNNEL: 1, IS_WEBSOCKET: 2, IS_SSE: 4, IS_H3: 8, HAS_RULE_HIT: 16 };
+  return {
+    id: c.id,
+    sequence: c.seq,
+    timestamp: c.ts,
+    method: c.m,
+    host: c.h,
+    path: c.p,
+    status: c.s,
+    content_type: c.ct || null,
+    request_size: c.req_sz,
+    response_size: c.res_sz,
+    duration_ms: c.dur,
+    protocol: c.proto,
+    client_ip: c.cip,
+    client_app: c.capp || undefined,
+    client_pid: c.cpid || undefined,
+    is_tunnel: (c.flags & FLAGS.IS_TUNNEL) !== 0,
+    is_websocket: (c.flags & FLAGS.IS_WEBSOCKET) !== 0,
+    is_sse: (c.flags & FLAGS.IS_SSE) !== 0,
+    is_h3: (c.flags & FLAGS.IS_H3) !== 0,
+    has_rule_hit: (c.flags & FLAGS.HAS_RULE_HIT) !== 0,
+    matched_rule_count: 0,
+    matched_protocols: [],
+    frame_count: c.fc,
+    socket_status: c.ss || undefined,
+    url: `${c.proto === 'https' ? 'https' : 'http'}://${c.h}${c.p}`,
+    start_time: c.st,
+    end_time: c.et || undefined,
+  };
+};
+
 export const useTrafficStore = create<TrafficState>((set, get) => ({
   records: [],
   recordsMap: new Map(),
@@ -368,8 +406,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   requestBody: null,
   responseBody: null,
   serverTotal: 0,
+  serverSequence: 0,
   hasMore: false,
   lastId: null,
+  lastSequence: null,
   pendingIds: new Set(),
   toolbarFilters: { rule: [], protocol: [], type: [], status: [] },
   filterConditions: [],
@@ -384,9 +424,11 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   scrollTop: 0,
   usePush: true,
   pushUnsubscribe: null,
+  pushDeltaUnsubscribe: null,
   filterVersion: 0,
   initialized: false,
   selectedId: undefined,
+  useDbMode: true,
 
   startPolling: () => {
     const state = get();
@@ -414,26 +456,36 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
   enablePush: () => {
     const state = get();
-    if (state.pushUnsubscribe) return;
+    if (state.pushUnsubscribe || state.pushDeltaUnsubscribe) return;
 
     const subscription = {
       last_traffic_id: state.lastId || undefined,
+      last_sequence: state.lastSequence || undefined,
       pending_ids: Array.from(state.pendingIds),
     };
 
     pushService.connect(subscription);
+
     const unsubscribe = pushService.onTrafficUpdates((data) => {
       get().handleTrafficPush(data);
     });
-    set({ pushUnsubscribe: unsubscribe });
+
+    const unsubscribeDelta = pushService.onTrafficDelta((data) => {
+      get().handleTrafficDelta(data);
+    });
+
+    set({ pushUnsubscribe: unsubscribe, pushDeltaUnsubscribe: unsubscribeDelta });
   },
 
   disablePush: () => {
     const state = get();
     if (state.pushUnsubscribe) {
       state.pushUnsubscribe();
-      set({ pushUnsubscribe: null });
     }
+    if (state.pushDeltaUnsubscribe) {
+      state.pushDeltaUnsubscribe();
+    }
+    set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null });
   },
 
   handleTrafficPush: (data: TrafficUpdatesData) => {
@@ -576,6 +628,112 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
+  handleTrafficDelta: (data: TrafficDeltaData) => {
+    const state = get();
+    if (state.paused) return;
+    if (data.inserts.length === 0 && data.updates.length === 0) return;
+
+    const newRecords = data.inserts.map(c => preprocessRecord(compactToSummary(c)));
+    const updatedRecords = data.updates.map(c => preprocessRecord(compactToSummary(c)));
+
+    set((prevState) => {
+      const recordsMap = prevState.recordsMap;
+      let hasChanges = false;
+
+      for (const r of updatedRecords) {
+        const existing = recordsMap.get(r.id);
+        const socketStatusChanged =
+          existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
+          existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
+          existing?.socket_status?.is_open !== r.socket_status?.is_open;
+        if (!existing || existing.sequence !== r.sequence || existing.status !== r.status || socketStatusChanged) {
+          recordsMap.set(r.id, r);
+          hasChanges = true;
+        }
+      }
+
+      let actualNewCount = 0;
+      for (const r of newRecords) {
+        if (!recordsMap.has(r.id)) {
+          recordsMap.set(r.id, r);
+          hasChanges = true;
+          actualNewCount++;
+        }
+      }
+
+      const newPendingIds = prevState.pendingIds;
+
+      for (const r of updatedRecords) {
+        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+        if (!isPending) {
+          newPendingIds.delete(r.id);
+        }
+      }
+
+      for (const r of newRecords) {
+        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+        if (isPending) {
+          newPendingIds.add(r.id);
+        }
+      }
+
+      let allRecords: TrafficSummary[];
+      if (hasChanges) {
+        allRecords = Array.from(recordsMap.values());
+        allRecords.sort((a, b) => a.sequence - b.sequence);
+
+        if (allRecords.length > MAX_RECORDS) {
+          const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
+          for (const r of toRemove) {
+            recordsMap.delete(r.id);
+            newPendingIds.delete(r.id);
+          }
+          allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
+        }
+      } else {
+        allRecords = prevState.records;
+      }
+
+      const lastRecord = newRecords[newRecords.length - 1];
+      const newLastId = lastRecord?.id || prevState.lastId;
+      const newLastSeq = lastRecord?.sequence || prevState.lastSequence;
+
+      const updatedNewRecordsCount = prevState.autoScroll
+        ? 0
+        : prevState.newRecordsCount + actualNewCount;
+
+      pushService.updateSubscription({
+        last_sequence: newLastSeq || undefined,
+        pending_ids: Array.from(newPendingIds),
+      });
+
+      let updatedCurrentRecord = prevState.currentRecord;
+      if (updatedCurrentRecord) {
+        const updatedSummary = updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+        if (updatedSummary && updatedSummary.socket_status) {
+          updatedCurrentRecord = {
+            ...updatedCurrentRecord,
+            socket_status: updatedSummary.socket_status,
+            frame_count: updatedSummary.frame_count,
+          };
+        }
+      }
+
+      return {
+        records: allRecords,
+        recordsMap,
+        serverTotal: data.server_total,
+        serverSequence: data.server_sequence,
+        hasMore: data.has_more,
+        lastId: newLastId,
+        lastSequence: newLastSeq,
+        pendingIds: newPendingIds,
+        newRecordsCount: updatedNewRecordsCount,
+        currentRecord: updatedCurrentRecord,
+      };
+    });
+  },
+
   fetchInitialData: async () => {
     const state = get();
     if (state.initialized && state.records.length > 0) {
@@ -589,7 +747,8 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       };
       const response = await api.getTrafficUpdates(filter);
 
-      const preprocessedRecords = preprocessRecords(response.new_records);
+      const convertedRecords = response.new_records.map(compactToSummary);
+      const preprocessedRecords = preprocessRecords(convertedRecords);
 
       const newPendingIds = new Set<string>();
       const newRecordsMap = new Map<string, TrafficSummary>();
@@ -606,8 +765,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
         records: preprocessedRecords,
         recordsMap: newRecordsMap,
         serverTotal: response.server_total,
+        serverSequence: response.server_sequence,
         hasMore: response.has_more,
         lastId: lastRecord?.id || null,
+        lastSequence: lastRecord?.sequence || null,
         pendingIds: newPendingIds,
         loading: false,
         filterVersion: 0,
@@ -634,8 +795,10 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
       const response = await api.getTrafficUpdates(filter);
 
       if (response.new_records.length > 0 || response.updated_records.length > 0) {
-        const preprocessedNew = preprocessRecords(response.new_records);
-        const preprocessedUpdated = preprocessRecords(response.updated_records);
+        const convertedNew = response.new_records.map(compactToSummary);
+        const convertedUpdated = response.updated_records.map(compactToSummary);
+        const preprocessedNew = preprocessRecords(convertedNew);
+        const preprocessedUpdated = preprocessRecords(convertedUpdated);
 
         set((prevState) => {
           const recordsMap = prevState.recordsMap;

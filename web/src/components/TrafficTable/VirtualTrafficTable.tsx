@@ -55,7 +55,7 @@ interface ColumnDef {
   width: number | string;
   minWidth?: number;
   align?: "left" | "center" | "right";
-  render: (record: TrafficSummary) => React.ReactNode;
+  render: (record: TrafficSummary, textSecondary: string) => React.ReactNode;
 }
 
 const getColumnStyle = (col: ColumnDef): CSSProperties => {
@@ -83,8 +83,10 @@ const columns: ColumnDef[] = [
     title: "#",
     width: 50,
     align: "right",
-    render: (record) => (
-      <span style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}>
+    render: (record, textSecondary) => (
+      <span
+        style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
+      >
         {formatSequence(record.sequence)}
       </span>
     ),
@@ -111,8 +113,8 @@ const columns: ColumnDef[] = [
     title: "Protocol",
     width: 70,
     render: (record) => (
-      <Tag 
-        color={record.is_h3 ? "purple" : "default"} 
+      <Tag
+        color={record.is_h3 ? "purple" : "default"}
         style={{ margin: 0, fontSize: 11 }}
       >
         {record._displayProtocol || record.protocol || "-"}
@@ -137,7 +139,7 @@ const columns: ColumnDef[] = [
     title: "Status",
     width: 55,
     align: "center",
-    render: (record) =>
+    render: (record, textSecondary) =>
       record.status > 0 ? (
         <Tag
           color={record._statusColor || "default"}
@@ -146,28 +148,42 @@ const columns: ColumnDef[] = [
           {record.status}
         </Tag>
       ) : (
-        <span style={{ color: "rgba(0, 0, 0, 0.45)" }}>-</span>
+        <span style={{ color: textSecondary }}>-</span>
       ),
   },
   {
     key: "client",
     title: "Client",
     width: 140,
-    render: (record) => (
+    render: (record, textSecondary) => (
       <div
-        style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          overflow: "hidden",
+        }}
         title={record._clientTooltip || record.client_ip || "-"}
       >
-        {record.client_app && <AppIcon appName={record.client_app} size={16} style={{ flexShrink: 0 }} />}
+        {record.client_app && (
+          <AppIcon
+            appName={record.client_app}
+            size={16}
+            style={{ flexShrink: 0 }}
+          />
+        )}
         <span
           style={{
             ...ellipsisStyle,
             fontSize: 11,
             lineHeight: "16px",
-            color: "rgba(0, 0, 0, 0.45)",
+            color: textSecondary,
           }}
         >
-          {record._clientDisplay || record.client_app || record.client_ip || "-"}
+          {record._clientDisplay ||
+            record.client_app ||
+            record.client_ip ||
+            "-"}
         </span>
       </div>
     ),
@@ -176,8 +192,11 @@ const columns: ColumnDef[] = [
     key: "host",
     title: "Host",
     width: 160,
-    render: (record) => (
-      <span style={{ ...ellipsisStyle, fontSize: 12 }} title={record.host}>
+    render: (record, textSecondary) => (
+      <span
+        style={{ ...ellipsisStyle, fontSize: 12, color: textSecondary }}
+        title={record.host}
+      >
         {record.host}
       </span>
     ),
@@ -187,8 +206,11 @@ const columns: ColumnDef[] = [
     title: "Path",
     width: "auto",
     minWidth: 250,
-    render: (record) => (
-      <span style={{ ...ellipsisStyle, fontSize: 12 }} title={record.path}>
+    render: (record, textSecondary) => (
+      <span
+        style={{ ...ellipsisStyle, fontSize: 12, color: textSecondary }}
+        title={record.path}
+      >
         {record.path}
       </span>
     ),
@@ -197,8 +219,8 @@ const columns: ColumnDef[] = [
     key: "content_type",
     title: "Type",
     width: 80,
-    render: (record) => (
-      <span style={{ fontSize: 11, color: "rgba(0, 0, 0, 0.45)" }}>
+    render: (record, textSecondary) => (
+      <span style={{ fontSize: 11, color: textSecondary }}>
         {record._contentTypeShort || "-"}
       </span>
     ),
@@ -208,8 +230,8 @@ const columns: ColumnDef[] = [
     title: "Size",
     width: 65,
     align: "right",
-    render: (record) => (
-      <span style={{ fontSize: 11, color: "rgba(0, 0, 0, 0.45)" }}>
+    render: (record, textSecondary) => (
+      <span style={{ fontSize: 11, color: textSecondary }}>
         {record._displaySize || "-"}
       </span>
     ),
@@ -219,11 +241,11 @@ const columns: ColumnDef[] = [
     title: "Time",
     width: 55,
     align: "right",
-    render: (record) => (
+    render: (record, textSecondary) => (
       <span
         style={{
           fontSize: 11,
-          color: record.duration_ms > 1000 ? "#faad14" : "rgba(0, 0, 0, 0.45)",
+          color: record.duration_ms > 1000 ? "#faad14" : textSecondary,
         }}
       >
         {record.duration_ms > 0 ? `${record.duration_ms}ms` : "-"}
@@ -234,9 +256,9 @@ const columns: ColumnDef[] = [
     key: "start_time",
     title: "Start Time",
     width: 160,
-    render: (record) => (
+    render: (record, textSecondary) => (
       <span
-        style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}
+        style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
         title={record.start_time}
       >
         {record.start_time || "-"}
@@ -247,9 +269,9 @@ const columns: ColumnDef[] = [
     key: "end_time",
     title: "End Time",
     width: 160,
-    render: (record) => (
+    render: (record, textSecondary) => (
       <span
-        style={{ fontSize: 11, fontFamily: "monospace", color: "rgba(0, 0, 0, 0.45)" }}
+        style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
         title={record.end_time || "-"}
       >
         {record.end_time || "-"}
@@ -261,7 +283,7 @@ const columns: ColumnDef[] = [
     title: "Rules",
     width: 60,
     align: "center",
-    render: (record) =>
+    render: (record, textSecondary) =>
       record.has_rule_hit ? (
         <Tooltip
           title={
@@ -280,7 +302,7 @@ const columns: ColumnDef[] = [
           </Badge>
         </Tooltip>
       ) : (
-        <span style={{ color: "rgba(0, 0, 0, 0.45)" }}>-</span>
+        <span style={{ color: textSecondary }}>-</span>
       ),
   },
 ];
@@ -328,16 +350,20 @@ interface TableRowProps {
   selectedBg: string;
   evenBg: string;
   oddBg: string;
+  textSecondary: string;
   onRowClick: () => void;
   onRowDoubleClick: () => void;
   onRowContextMenu: (e: React.MouseEvent) => void;
 }
 
-const areRowPropsEqual = (prev: TableRowProps, next: TableRowProps): boolean => {
+const areRowPropsEqual = (
+  prev: TableRowProps,
+  next: TableRowProps,
+): boolean => {
   if (prev.isSelected !== next.isSelected) return false;
   if (prev.translateY !== next.translateY) return false;
   if (prev.rowIndex !== next.rowIndex) return false;
-  
+
   const prevRecord = prev.record;
   const nextRecord = next.record;
   if (prevRecord.id !== nextRecord.id) return false;
@@ -346,9 +372,17 @@ const areRowPropsEqual = (prev: TableRowProps, next: TableRowProps): boolean => 
   if (prevRecord.duration_ms !== nextRecord.duration_ms) return false;
   if (prevRecord.response_size !== nextRecord.response_size) return false;
   if (prevRecord.end_time !== nextRecord.end_time) return false;
-  if (prevRecord.socket_status?.send_bytes !== nextRecord.socket_status?.send_bytes) return false;
-  if (prevRecord.socket_status?.receive_bytes !== nextRecord.socket_status?.receive_bytes) return false;
-  
+  if (
+    prevRecord.socket_status?.send_bytes !==
+    nextRecord.socket_status?.send_bytes
+  )
+    return false;
+  if (
+    prevRecord.socket_status?.receive_bytes !==
+    nextRecord.socket_status?.receive_bytes
+  )
+    return false;
+
   return true;
 };
 
@@ -361,6 +395,7 @@ const TableRow = memo(function TableRow({
   selectedBg,
   evenBg,
   oddBg,
+  textSecondary,
   onRowClick,
   onRowDoubleClick,
   onRowContextMenu,
@@ -389,7 +424,7 @@ const TableRow = memo(function TableRow({
           key={col.key}
           style={{ ...baseCellStyle, ...columnStyles[colIndex] }}
         >
-          {col.render(record)}
+          {col.render(record, textSecondary)}
         </div>
       ))}
     </div>
@@ -786,6 +821,7 @@ export default function VirtualTrafficTable({
                     selectedBg={token.colorPrimaryBg}
                     evenBg={token.colorBgContainer}
                     oddBg={token.colorFillQuaternary}
+                    textSecondary={token.colorTextSecondary}
                     onRowClick={() => onSelect?.(record)}
                     onRowDoubleClick={() => onDoubleClick?.(record)}
                     onRowContextMenu={(e) => handleContextMenu(e, record)}

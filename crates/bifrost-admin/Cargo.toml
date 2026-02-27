@@ -33,6 +33,9 @@ regex = "1"
 dashmap = "6"
 futures-util = { version = "0.3", features = ["sink"] }
 sha1 = "0.10"
+rusqlite = { version = "0.33", features = ["bundled", "backup"] }
+bincode = "1.3"
+lru = "0.12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 icns = "0.3"

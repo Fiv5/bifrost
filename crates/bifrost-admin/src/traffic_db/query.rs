@@ -1,0 +1,197 @@
+use serde::{Deserialize, Serialize};
+
+use super::types::{TrafficFlags, TrafficSummaryCompact};
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    #[default]
+    Backward,
+    Forward,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct QueryParams {
+    pub cursor: Option<u64>,
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub direction: Direction,
+
+    pub method: Option<String>,
+    pub status: Option<u16>,
+    pub status_min: Option<u16>,
+    pub status_max: Option<u16>,
+    pub protocol: Option<String>,
+    pub has_rule_hit: Option<bool>,
+    pub is_websocket: Option<bool>,
+    pub is_sse: Option<bool>,
+    pub is_h3: Option<bool>,
+    pub is_tunnel: Option<bool>,
+
+    pub host_contains: Option<String>,
+    pub url_contains: Option<String>,
+    pub path_contains: Option<String>,
+    pub client_app: Option<String>,
+    pub client_ip: Option<String>,
+    pub content_type: Option<String>,
+
+    pub pending_ids: Option<Vec<String>>,
+}
+
+impl QueryParams {
+    pub fn build_where_clause(&self) -> (String, Vec<QueryValue>) {
+        let mut conditions = Vec::new();
+        let mut params: Vec<QueryValue> = Vec::new();
+
+        if let Some(cursor) = self.cursor {
+            match self.direction {
+                Direction::Forward => {
+                    conditions.push("sequence > ?".to_string());
+                    params.push(QueryValue::Int(cursor as i64));
+                }
+                Direction::Backward => {
+                    conditions.push("sequence < ?".to_string());
+                    params.push(QueryValue::Int(cursor as i64));
+                }
+            }
+        }
+
+        if let Some(ref method) = self.method {
+            conditions.push("method = ?".to_string());
+            params.push(QueryValue::Text(method.to_uppercase()));
+        }
+
+        if let Some(status) = self.status {
+            conditions.push("status = ?".to_string());
+            params.push(QueryValue::Int(status as i64));
+        }
+
+        if let Some(min) = self.status_min {
+            conditions.push("status >= ?".to_string());
+            params.push(QueryValue::Int(min as i64));
+        }
+
+        if let Some(max) = self.status_max {
+            conditions.push("status <= ?".to_string());
+            params.push(QueryValue::Int(max as i64));
+        }
+
+        if let Some(ref protocol) = self.protocol {
+            conditions.push("protocol = ?".to_string());
+            params.push(QueryValue::Text(protocol.to_lowercase()));
+        }
+
+        if let Some(true) = self.has_rule_hit {
+            conditions.push(format!("(flags & {}) != 0", TrafficFlags::HAS_RULE_HIT));
+        }
+        if let Some(false) = self.has_rule_hit {
+            conditions.push(format!("(flags & {}) = 0", TrafficFlags::HAS_RULE_HIT));
+        }
+
+        if let Some(true) = self.is_websocket {
+            conditions.push(format!("(flags & {}) != 0", TrafficFlags::IS_WEBSOCKET));
+        }
+
+        if let Some(true) = self.is_sse {
+            conditions.push(format!("(flags & {}) != 0", TrafficFlags::IS_SSE));
+        }
+
+        if let Some(true) = self.is_h3 {
+            conditions.push(format!("(flags & {}) != 0", TrafficFlags::IS_H3));
+        }
+
+        if let Some(true) = self.is_tunnel {
+            conditions.push(format!("(flags & {}) != 0", TrafficFlags::IS_TUNNEL));
+        }
+
+        if let Some(ref host) = self.host_contains {
+            conditions.push("host LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", host)));
+        }
+
+        if let Some(ref url) = self.url_contains {
+            conditions.push("url LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", url)));
+        }
+
+        if let Some(ref path) = self.path_contains {
+            conditions.push("path LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", path)));
+        }
+
+        if let Some(ref app) = self.client_app {
+            conditions.push("client_app LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", app)));
+        }
+
+        if let Some(ref ip) = self.client_ip {
+            conditions.push("client_ip LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", ip)));
+        }
+
+        if let Some(ref ct) = self.content_type {
+            conditions.push("content_type LIKE ?".to_string());
+            params.push(QueryValue::Text(format!("%{}%", ct)));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        (where_clause, params)
+    }
+
+    pub fn build_select_sql(&self) -> (String, Vec<QueryValue>) {
+        let (where_clause, params) = self.build_where_clause();
+
+        let order = match self.direction {
+            Direction::Forward => "ORDER BY sequence ASC",
+            Direction::Backward => "ORDER BY sequence DESC",
+        };
+
+        let limit = self.limit.unwrap_or(100);
+
+        let sql = format!(
+            "SELECT sequence, id, timestamp, host, method, status, protocol, \
+             url, path, content_type, request_size, response_size, duration_ms, \
+             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob \
+             FROM traffic_records{} {} LIMIT {}",
+            where_clause, order, limit
+        );
+
+        (sql, params)
+    }
+
+    pub fn build_count_sql(&self) -> (String, Vec<QueryValue>) {
+        let (where_clause, params) = self.build_where_clause();
+        let sql = format!("SELECT COUNT(*) FROM traffic_records{}", where_clause);
+        (sql, params)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum QueryValue {
+    Int(i64),
+    Text(String),
+}
+
+impl rusqlite::ToSql for QueryValue {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        match self {
+            QueryValue::Int(i) => i.to_sql(),
+            QueryValue::Text(s) => s.to_sql(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueryResult {
+    pub records: Vec<TrafficSummaryCompact>,
+    pub next_cursor: Option<u64>,
+    pub prev_cursor: Option<u64>,
+    pub has_more: bool,
+    pub total: usize,
+    pub server_sequence: u64,
+}

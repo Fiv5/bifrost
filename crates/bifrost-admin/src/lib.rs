@@ -13,6 +13,7 @@ mod state;
 mod static_files;
 pub mod status_printer;
 mod traffic;
+pub mod traffic_db;
 mod traffic_store;
 
 #[cfg(test)]
@@ -42,6 +43,10 @@ pub use state::{
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SharedTrafficRecorder, SocketStatus,
     TrafficRecord, TrafficRecorder,
+};
+pub use traffic_db::{
+    start_db_cleanup_task, Direction, QueryParams, QueryResult, SharedTrafficDbStore,
+    TrafficDbStats, TrafficDbStore, TrafficFlags, TrafficSummaryCompact,
 };
 pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,

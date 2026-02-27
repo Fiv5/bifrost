@@ -15,6 +15,7 @@ use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
+use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
@@ -64,6 +65,7 @@ impl RuntimeConfig {
 pub struct AdminState {
     pub traffic_recorder: SharedTrafficRecorder,
     pub traffic_store: Option<SharedTrafficStore>,
+    pub traffic_db_store: Option<SharedTrafficDbStore>,
     pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
     pub metrics_collector: SharedMetricsCollector,
     pub rules_storage: RulesStorage,
@@ -90,6 +92,7 @@ impl AdminState {
         Self {
             traffic_recorder: Arc::new(TrafficRecorder::default()),
             traffic_store: None,
+            traffic_db_store: None,
             async_traffic_writer: None,
             metrics_collector: Arc::new(MetricsCollector::default()),
             rules_storage: RulesStorage::default(),
@@ -129,6 +132,8 @@ impl AdminState {
     pub fn record_traffic(&self, record: crate::traffic::TrafficRecord) {
         if let Some(ref writer) = self.async_traffic_writer {
             writer.record(record);
+        } else if let Some(ref db_store) = self.traffic_db_store {
+            db_store.record(record);
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.record(record.clone());
@@ -144,6 +149,8 @@ impl AdminState {
     {
         if let Some(ref writer) = self.async_traffic_writer {
             writer.update_by_id(id, updater);
+        } else if let Some(ref db_store) = self.traffic_db_store {
+            db_store.update_by_id(id, updater);
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.update_by_id(id, updater.clone());
@@ -197,6 +204,16 @@ impl AdminState {
         let sequence = store.current_sequence();
         self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(store);
+        self
+    }
+
+    pub fn with_traffic_db_store(mut self, store: TrafficDbStore) -> Self {
+        self.traffic_db_store = Some(Arc::new(store));
+        self
+    }
+
+    pub fn with_traffic_db_store_shared(mut self, store: SharedTrafficDbStore) -> Self {
+        self.traffic_db_store = Some(store);
         self
     }
 
