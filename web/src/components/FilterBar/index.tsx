@@ -1,5 +1,5 @@
-import { Select, Input, Button, Space, AutoComplete } from "antd";
-import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
+import { Select, Input, Button, Space, AutoComplete, Tooltip } from "antd";
+import { PlusOutlined, DeleteOutlined, SearchOutlined } from "@ant-design/icons";
 import { useMemo } from "react";
 import type { FilterCondition } from "../../types";
 
@@ -8,6 +8,8 @@ interface FilterBarProps {
   onFiltersChange: (filters: FilterCondition[]) => void;
   availableClientApps?: string[];
   availableClientIps?: string[];
+  onSearchModeToggle?: () => void;
+  isSearchMode?: boolean;
 }
 
 const fieldOptions = [
@@ -17,10 +19,6 @@ const fieldOptions = [
   { value: "method", label: "Method" },
   { value: "client_app", label: "Client App" },
   { value: "client_ip", label: "Client IP" },
-  { value: "request_header", label: "Request Header" },
-  { value: "response_header", label: "Response Header" },
-  { value: "request_body", label: "Request Body" },
-  { value: "response_body", label: "Response Body" },
   { value: "content_type", label: "Content-Type" },
 ];
 
@@ -59,6 +57,8 @@ export default function FilterBar({
   onFiltersChange,
   availableClientApps = [],
   availableClientIps = [],
+  onSearchModeToggle,
+  isSearchMode = false,
 }: FilterBarProps) {
   const generateId = () =>
     `filter_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -187,17 +187,33 @@ export default function FilterBar({
           </Space>
         </div>
       ))}
-      {filters.length === 0 && (
-        <Button
-          type="dashed"
-          size="small"
-          icon={<PlusOutlined />}
-          onClick={handleAdd}
-          style={{ width: "100%" }}
-        >
-          Add Filter
-        </Button>
-      )}
+      <div style={{ ...styles.row, justifyContent: "space-between" }}>
+        {filters.length === 0 ? (
+          <Button
+            type="dashed"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={handleAdd}
+            style={{ flex: 1 }}
+          >
+            Add Filter
+          </Button>
+        ) : (
+          <div />
+        )}
+        {onSearchModeToggle && (
+          <Tooltip title="Search in body, headers, and URL content">
+            <Button
+              type={isSearchMode ? "primary" : "default"}
+              size="small"
+              icon={<SearchOutlined />}
+              onClick={onSearchModeToggle}
+            >
+              Fuzzy Search
+            </Button>
+          </Tooltip>
+        )}
+      </div>
     </div>
   );
 }

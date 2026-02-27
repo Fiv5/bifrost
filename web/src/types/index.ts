@@ -417,3 +417,57 @@ export interface KeyValueItem {
   id?: string;
   children?: KeyValueItem[];
 }
+
+export interface SearchScope {
+  request_body: boolean;
+  response_body: boolean;
+  request_headers: boolean;
+  response_headers: boolean;
+  url: boolean;
+  all: boolean;
+}
+
+export interface SearchFilterCondition {
+  field: string;
+  operator: string;
+  value: string;
+}
+
+export interface SearchFilters {
+  protocols: string[];
+  status_ranges: string[];
+  content_types: string[];
+  has_rule_hit?: boolean;
+  conditions: SearchFilterCondition[];
+  client_ips: string[];
+  client_apps: string[];
+  domains: string[];
+}
+
+export interface SearchRequest {
+  keyword: string;
+  scope: SearchScope;
+  filters: SearchFilters;
+  cursor?: number;
+  limit?: number;
+}
+
+export interface MatchLocation {
+  field: string;
+  preview: string;
+  offset: number;
+}
+
+export interface SearchResultItem {
+  record: TrafficSummaryCompact;
+  matches: MatchLocation[];
+}
+
+export interface SearchResponse {
+  results: SearchResultItem[];
+  total_searched: number;
+  total_matched: number;
+  next_cursor: number | null;
+  has_more: boolean;
+  search_id: string;
+}

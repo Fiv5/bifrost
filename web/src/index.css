@@ -46,3 +46,21 @@ body {
 [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
   background: #5a5a5a;
 }
+
+mark {
+  background-color: #ffe58f;
+  color: inherit;
+  padding: 0;
+}
+
+mark.mark-current {
+  background-color: #ffa940;
+}
+
+[data-theme="dark"] mark {
+  background-color: #614700;
+}
+
+[data-theme="dark"] mark.mark-current {
+  background-color: #874d00;
+}

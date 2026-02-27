@@ -8,6 +8,7 @@ mod handlers;
 mod metrics;
 pub mod push;
 mod router;
+pub mod search;
 mod security;
 mod state;
 mod static_files;
@@ -50,6 +51,11 @@ pub use traffic_db::{
 };
 pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
+};
+
+pub use search::{
+    FilterCondition, MatchLocation, SearchEngine, SearchFilters, SearchRequest, SearchResponse,
+    SearchResultItem, SearchScope,
 };
 
 pub const ADMIN_PATH_PREFIX: &str = "/_bifrost";

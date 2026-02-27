@@ -16,12 +16,14 @@ import {
 } from "../../stores/useTrafficStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
+import { useSearchStore } from "../../stores/useSearchStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
 import Toolbar from "../../components/Toolbar";
 import FilterBar from "../../components/FilterBar";
 import ThreeSplitPane from "../../components/ThreeSplitPane";
 import FilterPanel from "../../components/FilterPanel";
+import SearchMode from "../../components/SearchMode";
 import type {
   TrafficSummary,
   FilterCondition,
@@ -142,6 +144,9 @@ export default function Traffic() {
   const filterPanelInitialized = useFilterPanelStore(
     (state) => state.initialized,
   );
+
+  const searchMode = useSearchStore((state) => state.mode) as string;
+  const setSearchMode = useSearchStore((state) => state.setMode);
 
   const urlInitializedRef = useRef(false);
   const isUpdatingUrlRef = useRef(false);
@@ -275,6 +280,10 @@ export default function Traffic() {
     [setScrollTop],
   );
 
+  const handleSearchModeToggle = useCallback(() => {
+    setSearchMode(searchMode === "search" ? "normal" : "search");
+  }, [searchMode, setSearchMode]);
+
   const panelFilters = useMemo<PanelFilters>(
     () => ({
       clientIps: selectedClientIps,
@@ -360,30 +369,40 @@ export default function Traffic() {
 
   const renderCenter = () => (
     <div style={styles.centerWrapper}>
-      {showFilterBar && (
+      {showFilterBar && searchMode === "normal" && (
         <div style={styles.filterBarWrapper}>
           <FilterBar
             filters={filterConditions}
             onFiltersChange={handleFilterConditionsChange}
             availableClientApps={clientInfo.apps}
             availableClientIps={clientInfo.ips}
+            onSearchModeToggle={handleSearchModeToggle}
+            isSearchMode={searchMode === "search" as string}
           />
         </div>
       )}
       <div style={styles.tableWrapper}>
-        <VirtualTrafficTable
-          data={filteredRecords}
-          onSelect={handleSelect}
-          onDoubleClick={handleDoubleClick}
-          selectedId={selectedId}
-          hasMore={hasMore}
-          autoScroll={autoScroll}
-          onScrollPositionChange={handleScrollPositionChange}
-          newRecordsCount={newRecordsCount}
-          onScrollToBottom={handleScrollToBottom}
-          initialScrollTop={scrollTop}
-          onScrollTopChange={handleScrollTopChange}
-        />
+        {searchMode === "search" ? (
+          <SearchMode
+            onSelect={handleSelect}
+            onDoubleClick={handleDoubleClick}
+            selectedId={selectedId}
+          />
+        ) : (
+          <VirtualTrafficTable
+            data={filteredRecords}
+            onSelect={handleSelect}
+            onDoubleClick={handleDoubleClick}
+            selectedId={selectedId}
+            hasMore={hasMore}
+            autoScroll={autoScroll}
+            onScrollPositionChange={handleScrollPositionChange}
+            newRecordsCount={newRecordsCount}
+            onScrollToBottom={handleScrollToBottom}
+            initialScrollTop={scrollTop}
+            onScrollTopChange={handleScrollTopChange}
+          />
+        )}
       </div>
     </div>
   );

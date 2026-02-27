@@ -9,6 +9,7 @@ use crate::handlers::{
     metrics::handle_metrics,
     proxy::handle_proxy,
     rules::handle_rules,
+    search::handle_search,
     system::handle_system,
     traffic::handle_traffic,
     values::handle_values,
@@ -107,6 +108,8 @@ impl AdminRouter {
         } else if path.starts_with("/api/app-icon/") {
             debug!(path = %path, "Routing to app_icon handler");
             handle_app_icon(req, state, path).await
+        } else if path.starts_with("/api/search") {
+            handle_search(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

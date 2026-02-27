@@ -1,0 +1,288 @@
+import { useCallback, useMemo, type CSSProperties } from "react";
+import {
+  Input,
+  Button,
+  Checkbox,
+  Empty,
+  Spin,
+  Typography,
+  Space,
+  theme,
+} from "antd";
+import {
+  SearchOutlined,
+  CloseOutlined,
+  LoadingOutlined,
+} from "@ant-design/icons";
+import { useSearchStore, compactToSummary } from "../../stores/useSearchStore";
+import { useTrafficStore } from "../../stores/useTrafficStore";
+import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
+import type { SearchFilters, SearchResultItem, TrafficSummary } from "../../types";
+import SearchResultsList from "./SearchResultsList";
+
+const { Text } = Typography;
+
+interface SearchModeProps {
+  onSelect: (record: TrafficSummary) => void;
+  onDoubleClick: (record: TrafficSummary) => void;
+  selectedId?: string;
+}
+
+export default function SearchMode({
+  onSelect,
+  onDoubleClick,
+  selectedId,
+}: SearchModeProps) {
+  const { token } = theme.useToken();
+
+  const {
+    keyword,
+    scope,
+    results,
+    totalSearched,
+    totalMatched,
+    hasMore,
+    isSearching,
+    isLoadingMore,
+    setKeyword,
+    setScope,
+    search,
+    loadMore,
+    setMode,
+  } = useSearchStore();
+
+  const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
+  const filterConditions = useTrafficStore((state) => state.filterConditions);
+  const selectedClientIps = useFilterPanelStore((state) => state.selectedClientIps);
+  const selectedClientApps = useFilterPanelStore((state) => state.selectedClientApps);
+  const selectedDomains = useFilterPanelStore((state) => state.selectedDomains);
+
+  const buildFilters = useCallback((): SearchFilters => {
+    return {
+      protocols: toolbarFilters.protocol,
+      status_ranges: toolbarFilters.status,
+      content_types: toolbarFilters.type,
+      has_rule_hit: toolbarFilters.rule.length > 0 ? true : undefined,
+      conditions: filterConditions.map((c) => ({
+        field: c.field,
+        operator: c.operator,
+        value: c.value,
+      })),
+      client_ips: selectedClientIps,
+      client_apps: selectedClientApps,
+      domains: selectedDomains,
+    };
+  }, [
+    toolbarFilters,
+    filterConditions,
+    selectedClientIps,
+    selectedClientApps,
+    selectedDomains,
+  ]);
+
+  const handleSearch = useCallback(() => {
+    if (keyword.trim()) {
+      search(buildFilters());
+    }
+  }, [keyword, search, buildFilters]);
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter") {
+        handleSearch();
+      }
+    },
+    [handleSearch]
+  );
+
+  const handleLoadMore = useCallback(() => {
+    loadMore(buildFilters());
+  }, [loadMore, buildFilters]);
+
+  const handleExitSearch = useCallback(() => {
+    setMode("normal");
+  }, [setMode]);
+
+  const handleResultSelect = useCallback(
+    (item: SearchResultItem) => {
+      const summary = compactToSummary(item.record);
+      onSelect(summary);
+    },
+    [onSelect]
+  );
+
+  const handleResultDoubleClick = useCallback(
+    (item: SearchResultItem) => {
+      const summary = compactToSummary(item.record);
+      onDoubleClick(summary);
+    },
+    [onDoubleClick]
+  );
+
+  const styles = useMemo<Record<string, CSSProperties>>(
+    () => ({
+      container: {
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        overflow: "hidden",
+      },
+      header: {
+        padding: "12px 16px",
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+        backgroundColor: token.colorBgContainer,
+      },
+      searchRow: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        marginBottom: 8,
+      },
+      scopeRow: {
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        flexWrap: "wrap",
+      },
+      scopeLabel: {
+        color: token.colorTextSecondary,
+        fontSize: 12,
+      },
+      results: {
+        flex: 1,
+        overflow: "hidden",
+      },
+      statsRow: {
+        padding: "8px 16px",
+        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+        backgroundColor: token.colorBgLayout,
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+      },
+      emptyWrapper: {
+        flex: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      },
+    }),
+    [token]
+  );
+
+  const scopeOptions = [
+    { key: "all", label: "All" },
+    { key: "url", label: "URL" },
+    { key: "request_headers", label: "Req Headers" },
+    { key: "response_headers", label: "Res Headers" },
+    { key: "request_body", label: "Req Body" },
+    { key: "response_body", label: "Res Body" },
+  ];
+
+  return (
+    <div style={styles.container}>
+      <div style={styles.header}>
+        <div style={styles.searchRow}>
+          <Input
+            placeholder="Enter keyword to search all content..."
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onKeyDown={handleKeyDown}
+            prefix={<SearchOutlined style={{ color: token.colorTextSecondary }} />}
+            suffix={
+              keyword ? (
+                <CloseOutlined
+                  onClick={() => setKeyword("")}
+                  style={{ color: token.colorTextSecondary, cursor: "pointer" }}
+                />
+              ) : null
+            }
+            style={{ flex: 1 }}
+          />
+          <Button
+            type="primary"
+            onClick={handleSearch}
+            loading={isSearching}
+            icon={<SearchOutlined />}
+          >
+            Search
+          </Button>
+          <Button onClick={handleExitSearch}>Exit</Button>
+        </div>
+        <div style={styles.scopeRow}>
+          <span style={styles.scopeLabel}>Search in:</span>
+          {scopeOptions.map((opt) => (
+            <Checkbox
+              key={opt.key}
+              checked={
+                opt.key === "all"
+                  ? scope.all
+                  : scope[opt.key as keyof typeof scope]
+              }
+              onChange={(e) => {
+                if (opt.key === "all") {
+                  setScope({ all: e.target.checked });
+                } else {
+                  setScope({ [opt.key]: e.target.checked });
+                }
+              }}
+            >
+              {opt.label}
+            </Checkbox>
+          ))}
+        </div>
+      </div>
+
+      {results.length > 0 && (
+        <div style={styles.statsRow}>
+          <Space>
+            <Text type="secondary">
+              Found <Text strong>{totalMatched}</Text> matches
+            </Text>
+            <Text type="secondary">
+              (searched {totalSearched} records)
+            </Text>
+          </Space>
+          {hasMore && (
+            <Button
+              size="small"
+              onClick={handleLoadMore}
+              loading={isLoadingMore}
+            >
+              Load More
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div style={styles.results}>
+        {isSearching && results.length === 0 ? (
+          <div style={styles.emptyWrapper}>
+            <Spin indicator={<LoadingOutlined spin />} tip="Searching..." />
+          </div>
+        ) : results.length === 0 ? (
+          <div style={styles.emptyWrapper}>
+            <Empty
+              description={
+                keyword.trim()
+                  ? "No results found. Try a different keyword."
+                  : "Enter a keyword to search all traffic content."
+              }
+            />
+          </div>
+        ) : (
+          <SearchResultsList
+            results={results}
+            keyword={keyword}
+            selectedId={selectedId}
+            onSelect={handleResultSelect}
+            onDoubleClick={handleResultDoubleClick}
+            onLoadMore={handleLoadMore}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
