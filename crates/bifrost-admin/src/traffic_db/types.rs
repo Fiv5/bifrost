@@ -50,6 +50,9 @@ pub struct TrafficSummaryCompact {
     pub st: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub et: Option<String>,
+    pub rc: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rp: Vec<String>,
 }
 
 impl TrafficSummaryCompact {
@@ -78,6 +81,20 @@ impl TrafficSummaryCompact {
             None
         };
 
+        let (rc, rp) = match &record.matched_rules {
+            Some(rules) => {
+                let count = rules.len();
+                let protocols: Vec<String> = rules
+                    .iter()
+                    .map(|r| r.protocol.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                (count, protocols)
+            }
+            None => (0, vec![]),
+        };
+
         Self {
             id: record.id.clone(),
             seq: record.sequence,
@@ -99,6 +116,8 @@ impl TrafficSummaryCompact {
             ss: record.socket_status.clone(),
             st: start_time,
             et: end_time,
+            rc,
+            rp,
         }
     }
 

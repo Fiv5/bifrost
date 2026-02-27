@@ -156,6 +156,8 @@ export interface TrafficSummaryCompact {
   ss?: SocketStatus | null;
   st: string;
   et?: string | null;
+  rc: number;
+  rp: string[];
 }
 
 export const TrafficFlags = {

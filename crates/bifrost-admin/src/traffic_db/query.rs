@@ -156,7 +156,8 @@ impl QueryParams {
         let sql = format!(
             "SELECT sequence, id, timestamp, host, method, status, protocol, \
              url, path, content_type, request_size, response_size, duration_ms, \
-             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob \
+             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob, \
+             matched_rules_blob \
              FROM traffic_records{} {} LIMIT {}",
             where_clause, order, limit
         );

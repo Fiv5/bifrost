@@ -299,6 +299,17 @@ impl TrafficDbStore {
                 let socket_status: Option<SocketStatus> =
                     socket_blob.and_then(|b| bincode::deserialize(&b).ok());
 
+                let rules_blob: Option<Vec<u8>> = row.get(19)?;
+                let matched_rules: Vec<crate::traffic::MatchedRule> =
+                    rules_blob.and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
+                let rc = matched_rules.len();
+                let rp: Vec<String> = matched_rules
+                    .iter()
+                    .map(|r| r.protocol.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+
                 Ok(TrafficSummaryCompact {
                     seq: row.get::<_, i64>(0)? as u64,
                     id: row.get(1)?,
@@ -328,6 +339,8 @@ impl TrafficDbStore {
                             None
                         }
                     },
+                    rc,
+                    rp,
                 })
             })
             .map(|r| r.filter_map(|r| r.ok()).collect())
@@ -406,7 +419,8 @@ impl TrafficDbStore {
         let sql = format!(
             "SELECT sequence, id, timestamp, host, method, status, protocol, \
              url, path, content_type, request_size, response_size, duration_ms, \
-             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob \
+             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob, \
+             matched_rules_blob \
              FROM traffic_records WHERE id IN ({}) ORDER BY sequence DESC",
             placeholders.join(",")
         );
@@ -424,6 +438,17 @@ impl TrafficDbStore {
             let socket_blob: Option<Vec<u8>> = row.get(18)?;
             let socket_status: Option<SocketStatus> =
                 socket_blob.and_then(|b| bincode::deserialize(&b).ok());
+
+            let rules_blob: Option<Vec<u8>> = row.get(19)?;
+            let matched_rules: Vec<crate::traffic::MatchedRule> =
+                rules_blob.and_then(|b| bincode::deserialize(&b).ok()).unwrap_or_default();
+            let rc = matched_rules.len();
+            let rp: Vec<String> = matched_rules
+                .iter()
+                .map(|r| r.protocol.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
 
             Ok(TrafficSummaryCompact {
                 seq: row.get::<_, i64>(0)? as u64,
@@ -454,6 +479,8 @@ impl TrafficDbStore {
                         None
                     }
                 },
+                rc,
+                rp,
             })
         })
         .map(|r| r.filter_map(|r| r.ok()).collect())
