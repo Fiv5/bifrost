@@ -188,6 +188,8 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
+        env:
+          SKIP_FRONTEND_BUILD: "1"
         run: cargo build -p bifrost-cli --release --target ${{ matrix.target }}
 
       - name: Build (cross)
@@ -256,9 +258,6 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-            archive: zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -295,6 +294,8 @@ jobs:
           key: gui-${{ matrix.target }}
 
       - name: Build GUI
+        env:
+          SKIP_FRONTEND_BUILD: "1"
         run: cargo build -p bifrost-gui --release --target ${{ matrix.target }}
 
       - name: Create macOS App Bundle
@@ -476,7 +477,6 @@ jobs:
             | macOS | Intel | `bifrost-gui-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.tar.gz` |
             | macOS | Apple Silicon | `bifrost-gui-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.tar.gz` |
             | Windows | x64 | `bifrost-gui-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
-            | Windows | ARM64 | `bifrost-gui-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip` |
             
           files: |
             release/*
