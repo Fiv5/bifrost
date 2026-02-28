@@ -536,11 +536,15 @@ pub fn run_foreground(
         let connection_registry_for_resolver = admin_state.connection_registry.clone();
         let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
-        let stored_rules = load_stored_rules(&rules_storage_for_resolver);
+        let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
+        let mut merged_values = values.clone();
+        for (k, v) in inline_values {
+            merged_values.entry(k).or_insert(v);
+        }
         let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
             cli_rules,
             stored_rules,
-            values.clone(),
+            merged_values,
         ));
 
         log_resolver_rules(&resolver);
@@ -794,11 +798,15 @@ pub fn run_daemon(
                 let connection_registry_for_resolver = admin_state.connection_registry.clone();
                 let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
-                let stored_rules = load_stored_rules(&rules_storage_for_resolver);
+                let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
+                let mut merged_values = values.clone();
+                for (k, v) in inline_values {
+                    merged_values.entry(k).or_insert(v);
+                }
                 let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
                     cli_rules,
                     stored_rules,
-                    values.clone(),
+                    merged_values,
                 ));
 
                 log_resolver_rules(&resolver);
@@ -848,8 +856,11 @@ pub fn run_daemon(
     }
 }
 
-fn load_stored_rules(rules_storage: &bifrost_storage::RulesStorage) -> Vec<Rule> {
+fn load_stored_rules(
+    rules_storage: &bifrost_storage::RulesStorage,
+) -> (Vec<Rule>, HashMap<String, String>) {
     let mut stored_rules = Vec::new();
+    let mut inline_values = HashMap::new();
     tracing::info!(
         target: "bifrost_cli::rules",
         base_dir = %rules_storage.base_dir().display(),
@@ -859,18 +870,23 @@ fn load_stored_rules(rules_storage: &bifrost_storage::RulesStorage) -> Vec<Rule>
         Ok(rule_files) => {
             let stored_count = rule_files.len();
             for rule_file in rule_files {
-                match bifrost_core::parse_rules(&rule_file.content) {
-                    Ok(parsed) => {
+                let parser = bifrost_core::RuleParser::new();
+                match parser.parse_rules_with_inline_values(&rule_file.content) {
+                    Ok((parsed, file_inline_values)) => {
                         tracing::info!(
                             target: "bifrost_cli::rules",
                             file = %rule_file.name,
                             enabled = rule_file.enabled,
                             parsed_count = parsed.len(),
+                            inline_values_count = file_inline_values.len(),
                             "loaded rule file"
                         );
                         for mut rule in parsed {
                             rule.file = Some(rule_file.name.clone());
                             stored_rules.push(rule);
+                        }
+                        for (k, v) in file_inline_values {
+                            inline_values.entry(k).or_insert(v);
                         }
                     }
                     Err(e) => {
@@ -888,6 +904,7 @@ fn load_stored_rules(rules_storage: &bifrost_storage::RulesStorage) -> Vec<Rule>
                     target: "bifrost_cli::rules",
                     stored_files = stored_count,
                     total_rules = stored_rules.len(),
+                    inline_values_count = inline_values.len(),
                     "loaded rules from storage"
                 );
             }
@@ -900,7 +917,7 @@ fn load_stored_rules(rules_storage: &bifrost_storage::RulesStorage) -> Vec<Rule>
             );
         }
     }
-    stored_rules
+    (stored_rules, inline_values)
 }
 
 fn log_resolver_rules(resolver: &DynamicRulesResolver) {
@@ -960,11 +977,14 @@ fn spawn_rules_watcher_task(
                             "config change event received, reloading rules"
                         );
 
-                        let new_stored_rules = load_stored_rules(&rules_storage);
-                        let new_values = {
+                        let (new_stored_rules, inline_values) = load_stored_rules(&rules_storage);
+                        let mut new_values = {
                             use bifrost_core::ValueStore;
                             values_storage.read().as_hashmap()
                         };
+                        for (k, v) in inline_values {
+                            new_values.entry(k).or_insert(v);
+                        }
 
                         resolver.update_stored_rules(new_stored_rules, new_values);
 

@@ -153,15 +153,6 @@ fn resolve_rules_impl(
     ctx.req_headers = req_headers.clone();
     ctx.req_cookies = req_cookies.clone();
 
-    tracing::debug!(
-        target: "bifrost_proxy::rules",
-        url = %url,
-        method = %method,
-        host = %ctx.host,
-        path = %ctx.path,
-        "resolving rules for request"
-    );
-
     let core_result = resolver.resolve(&ctx);
 
     if core_result.rules.is_empty() {

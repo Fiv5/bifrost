@@ -1643,29 +1643,45 @@ async fn handle_socks5_intercepted_request(
 
     let request_url = if resolved.ignored {
         full_url.clone()
-    } else {
+    } else if let Some(ref host_rule) = resolved.host {
+        let host_rule_clean = host_rule.trim_end_matches('/');
+        let (h, p) = if let Some(idx) = host_rule_clean.find(':') {
+            let host_part = &host_rule_clean[..idx];
+            let port_part = host_rule_clean[idx + 1..]
+                .parse::<u16>()
+                .unwrap_or(target_port);
+            (host_part.to_string(), port_part)
+        } else {
+            let default_port = match resolved.host_protocol {
+                Some(bifrost_core::Protocol::Http) | Some(bifrost_core::Protocol::Ws) => 80,
+                _ => 443,
+            };
+            (host_rule_clean.to_string(), default_port)
+        };
+
         let target_protocol = resolved
             .host_protocol
             .unwrap_or(bifrost_core::Protocol::Https);
-        match target_protocol {
-            bifrost_core::Protocol::Http => {
-                format!("http://{}:{}{}", target_host, target_port, path)
+        let use_http = match target_protocol {
+            bifrost_core::Protocol::Http | bifrost_core::Protocol::Ws => true,
+            bifrost_core::Protocol::Host | bifrost_core::Protocol::XHost => p != 443 && p != 8443,
+            _ => false,
+        };
+        if use_http {
+            if p == 80 {
+                format!("http://{}{}", h, path)
+            } else {
+                format!("http://{}:{}{}", h, p, path)
             }
-            bifrost_core::Protocol::Https => {
-                if target_port == 443 {
-                    format!("https://{}{}", target_host, path)
-                } else {
-                    format!("https://{}:{}{}", target_host, target_port, path)
-                }
-            }
-            _ => {
-                if target_port == 443 {
-                    format!("https://{}{}", target_host, path)
-                } else {
-                    format!("https://{}:{}{}", target_host, target_port, path)
-                }
-            }
+        } else if p == 443 {
+            format!("https://{}{}", h, path)
+        } else {
+            format!("https://{}:{}{}", h, p, path)
         }
+    } else if target_port == 443 {
+        format!("https://{}{}", target_host, path)
+    } else {
+        format!("https://{}:{}{}", target_host, target_port, path)
     };
 
     debug!(

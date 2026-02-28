@@ -175,13 +175,6 @@ pub async fn handle_http_request(
         }
     }
 
-    if resolved_rules.ignored {
-        if verbose_logging {
-            info!("[{}] [IGNORED] request ignored by rule", ctx.id_str());
-        }
-        return forward_without_rules(req, admin_state, &resolved_rules, has_rules, ctx).await;
-    }
-
     if let Some(mock_response) =
         generate_mock_response(&resolved_rules, &uri, verbose_logging, ctx).await
     {
@@ -365,10 +358,16 @@ pub async fn handle_http_request(
         debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
     }
 
-    let use_tls = matches!(
-        resolved_rules.host_protocol,
-        Some(Protocol::Https) | Some(Protocol::Wss)
-    ) || is_https;
+    let use_tls = if resolved_rules.ignored {
+        is_https
+    } else {
+        match resolved_rules.host_protocol {
+            Some(Protocol::Http) | Some(Protocol::Ws) => false,
+            Some(Protocol::Https) | Some(Protocol::Wss) => true,
+            Some(Protocol::Host) | Some(Protocol::XHost) => port == 443 || port == 8443,
+            _ => is_https,
+        }
+    };
 
     let (mut sender, tls_ms) = if use_tls {
         let tls_start = Instant::now();
@@ -800,223 +799,6 @@ pub async fn handle_http_request(
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
 }
 
-async fn forward_without_rules(
-    req: Request<Incoming>,
-    admin_state: Option<Arc<AdminState>>,
-    resolved_rules: &ResolvedRules,
-    has_rules: bool,
-    ctx: &RequestContext,
-) -> Result<Response<BoxBody>> {
-    let start_time = Instant::now();
-    let method = req.method().to_string();
-    let uri = req.uri().clone();
-    let url = uri.to_string();
-    let record_url = if ctx.url.is_empty() {
-        url.clone()
-    } else {
-        ctx.url.clone()
-    };
-    let host = uri
-        .host()
-        .ok_or_else(|| BifrostError::Network("Missing host in URI".to_string()))?
-        .to_string();
-    let port = uri.port_u16().unwrap_or(80);
-
-    let connect_start = Instant::now();
-    let stream = TcpStream::connect(format!("{}:{}", host, port))
-        .await
-        .map_err(|e| {
-            BifrostError::Network(format!("Failed to connect to {}:{}: {}", host, port, e))
-        })?;
-    let connect_ms = connect_start.elapsed().as_millis() as u64;
-
-    if let Err(e) = stream.set_nodelay(true) {
-        debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
-    }
-
-    let io = TokioIo::new(stream);
-
-    let (mut sender, conn) = ClientBuilder::new()
-        .preserve_header_case(true)
-        .title_case_headers(true)
-        .handshake(io)
-        .await
-        .map_err(|e| BifrostError::Network(format!("Handshake failed: {}", e)))?;
-
-    tokio::spawn(async move {
-        if let Err(err) = conn.await {
-            error!("Connection failed: {:?}", err);
-        }
-    });
-
-    let (mut parts, body) = req.into_parts();
-
-    let req_headers: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-
-    let req_content_encoding = get_content_encoding(&req_headers);
-
-    let path = parts
-        .uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-
-    let new_uri: Uri = path
-        .parse()
-        .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
-
-    parts.uri = new_uri;
-
-    if !parts.headers.contains_key(hyper::header::HOST) {
-        let host_value = if port == 80 {
-            host.clone()
-        } else {
-            format!("{}:{}", host, port)
-        };
-        parts
-            .headers
-            .insert(hyper::header::HOST, host_value.parse().unwrap());
-    }
-
-    let body_bytes = body
-        .collect()
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
-        .to_bytes();
-
-    let outgoing_req = Request::from_parts(parts, full_body(body_bytes.clone()));
-
-    let send_start = Instant::now();
-    let res = sender
-        .send_request(outgoing_req)
-        .await
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
-    let wait_ms = send_start.elapsed().as_millis() as u64;
-
-    let (res_parts, res_body) = res.into_parts();
-
-    let res_headers: Vec<(String, String)> = res_parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-
-    let res_content_encoding = get_content_encoding(&res_headers);
-
-    let total_ms = start_time.elapsed().as_millis() as u64;
-    let record_id = format!(
-        "{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-
-    let traffic_type = get_traffic_type_from_url(&record_url);
-
-    if let Some(ref state) = admin_state {
-        state
-            .metrics_collector
-            .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
-        state
-            .metrics_collector
-            .increment_requests_by_type(traffic_type);
-
-        let mut record = TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
-        record.status = res_parts.status.as_u16();
-        record.content_type = res_parts
-            .headers
-            .get(hyper::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let res_headers: Vec<(String, String)> = res_parts
-            .headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
-        record.request_size =
-            calculate_request_size(&method, &record_url, &req_headers, body_bytes.len());
-        record.response_size = 0;
-        record.duration_ms = total_ms;
-        record.timing = Some(RequestTiming {
-            dns_ms: None,
-            connect_ms: Some(connect_ms),
-            tls_ms: None,
-            send_ms: None,
-            wait_ms: Some(wait_ms),
-            receive_ms: None,
-            total_ms,
-        });
-        record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers.clone());
-        record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
-        record.request_content_type = req_headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-            .map(|(_, v)| v.clone());
-        record.client_ip = ctx.client_ip.clone();
-        record.client_app = ctx.client_app.clone();
-        record.client_pid = ctx.client_pid;
-        record.client_path = ctx.client_path.clone();
-
-        let is_sse = is_sse_response(&res_parts);
-        if is_sse {
-            record.set_sse();
-            state.connection_monitor.register_connection(&record_id);
-        }
-
-        record.request_body_ref = store_request_body(
-            &admin_state,
-            &record_id,
-            &body_bytes,
-            req_content_encoding.as_deref(),
-        );
-
-        state.record_traffic(record);
-    }
-
-    if is_sse_response(&res_parts) {
-        let tee_body =
-            create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
-        Ok(Response::from_parts(res_parts, tee_body.boxed()))
-    } else {
-        let response_headers_size =
-            calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
-        let tee_body = create_tee_body_with_store(
-            res_body,
-            admin_state,
-            record_id,
-            None,
-            res_content_encoding,
-            Some(traffic_type),
-            response_headers_size,
-        );
-        Ok(Response::from_parts(res_parts, tee_body.boxed()))
-    }
-}
-
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
     let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::FOUND);
     let body = format!(
@@ -1039,16 +821,18 @@ fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody
 fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result<(String, u16)> {
     let default_port = get_default_port(&rules.host_protocol, is_https);
 
-    if let Some(ref host_rule) = rules.host {
-        let host_without_path = host_rule.split('/').next().unwrap_or(host_rule);
-        let parts: Vec<&str> = host_without_path.split(':').collect();
-        let host = parts[0].to_string();
-        let port = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(default_port)
-        } else {
-            default_port
-        };
-        return Ok((host, port));
+    if !rules.ignored {
+        if let Some(ref host_rule) = rules.host {
+            let host_without_path = host_rule.split('/').next().unwrap_or(host_rule);
+            let parts: Vec<&str> = host_without_path.split(':').collect();
+            let host = parts[0].to_string();
+            let port = if parts.len() > 1 {
+                parts[1].parse().unwrap_or(default_port)
+            } else {
+                default_port
+            };
+            return Ok((host, port));
+        }
     }
 
     let host = uri
