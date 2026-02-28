@@ -73,12 +73,17 @@ fn get_target_triple() -> Option<&'static str> {
     {
         Some("x86_64-pc-windows-msvc")
     }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        Some("aarch64-pc-windows-msvc")
+    }
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "linux", target_arch = "aarch64"),
         all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
     )))]
     {
         None

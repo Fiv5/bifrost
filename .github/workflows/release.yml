@@ -148,6 +148,9 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -351,6 +354,7 @@ jobs:
             | macOS | Intel | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.tar.gz` |
             | macOS | Apple Silicon | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.tar.gz` |
             | Windows | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
+            | Windows | ARM64 | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip` |
 
           files: |
             release/*
