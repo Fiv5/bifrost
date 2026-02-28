@@ -80,26 +80,23 @@ impl SystemProxyManager {
         self.save_backup(&current)?;
 
         let bypass_str = bypass.unwrap_or(DEFAULT_BYPASS);
-        let proxy = Sysproxy {
-            enable: true,
-            host: host.to_string(),
-            port,
-            bypass: bypass_str.to_string(),
-        };
-
-        proxy
-            .set_system_proxy()
-            .map_err(|e| BifrostError::Config(format!("Failed to set system proxy: {}", e)))?;
-
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) = set_macos_all_services_proxy(host, port, bypass_str) {
-                let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
-                    return Err(e);
-                }
-                tracing::warn!("Failed to set macOS proxies for all services: {}", e);
-            }
+            set_macos_all_services_proxy(host, port, bypass_str)?;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let proxy = Sysproxy {
+                enable: true,
+                host: host.to_string(),
+                port,
+                bypass: bypass_str.to_string(),
+            };
+
+            proxy
+                .set_system_proxy()
+                .map_err(|e| BifrostError::Config(format!("Failed to set system proxy: {}", e)))?;
         }
 
         self.is_set = true;
@@ -130,26 +127,23 @@ impl SystemProxyManager {
             return Ok(());
         }
 
-        let proxy = Sysproxy {
-            enable: false,
-            host: String::new(),
-            port: 0,
-            bypass: String::new(),
-        };
-
-        proxy
-            .set_system_proxy()
-            .map_err(|e| BifrostError::Config(format!("Failed to disable system proxy: {}", e)))?;
-
         #[cfg(target_os = "macos")]
         {
-            if let Err(e) = disable_macos_all_services_proxy() {
-                let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
-                    return Err(e);
-                }
-                tracing::warn!("Failed to disable macOS proxies for all services: {}", e);
-            }
+            disable_macos_all_services_proxy()?;
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let proxy = Sysproxy {
+                enable: false,
+                host: String::new(),
+                port: 0,
+                bypass: String::new(),
+            };
+
+            proxy.set_system_proxy().map_err(|e| {
+                BifrostError::Config(format!("Failed to disable system proxy: {}", e))
+            })?;
         }
 
         self.is_set = false;
@@ -180,33 +174,23 @@ impl SystemProxyManager {
                 bypass: String::new(),
             });
 
-        original
-            .set_system_proxy()
-            .map_err(|e| BifrostError::Config(format!("Failed to restore system proxy: {}", e)))?;
-
-        self.remove_backup();
-
         #[cfg(target_os = "macos")]
         {
             if original.enable {
-                if let Err(e) =
-                    set_macos_all_services_proxy(&original.host, original.port, &original.bypass)
-                {
-                    let msg = e.to_string();
-                    if msg.contains("RequiresAdmin") {
-                        return Err(e);
-                    }
-                    tracing::warn!("Failed to restore macOS proxies for all services: {}", e);
-                }
-            } else if let Err(e) = disable_macos_all_services_proxy() {
-                let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
-                    return Err(e);
-                }
-                tracing::warn!("Failed to disable macOS proxies for all services: {}", e);
+                set_macos_all_services_proxy(&original.host, original.port, &original.bypass)?;
+            } else {
+                disable_macos_all_services_proxy()?;
             }
         }
 
+        #[cfg(not(target_os = "macos"))]
+        {
+            original.set_system_proxy().map_err(|e| {
+                BifrostError::Config(format!("Failed to restore system proxy: {}", e))
+            })?;
+        }
+
+        self.remove_backup();
         self.is_set = false;
         tracing::info!(
             "System proxy restored to original state (enabled: {}, host: {}, port: {})",
