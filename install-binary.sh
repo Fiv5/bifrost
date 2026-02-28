@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="hxfdarling/bifrost"
+REPO="bifrost-proxy/bifrost"
 BINARY_NAME="bifrost"
 INSTALL_DIR="${BIFROST_INSTALL_DIR:-$HOME/.local/bin}"
 

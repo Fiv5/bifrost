@@ -5,9 +5,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/hxfdarling/bifrost/actions"><img src="https://github.com/hxfdarling/bifrost/workflows/CI/badge.svg" alt="CI Status"></a>
-  <a href="https://github.com/hxfdarling/bifrost/releases"><img src="https://img.shields.io/github/v/release/hxfdarling/bifrost" alt="Release"></a>
-  <a href="https://github.com/hxfdarling/bifrost/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://github.com/bifrost-proxy/bifrost/actions"><img src="https://github.com/bifrost-proxy/bifrost/workflows/CI/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/bifrost-proxy/bifrost/releases"><img src="https://img.shields.io/github/v/release/bifrost-proxy/bifrost" alt="Release"></a>
+  <a href="https://github.com/bifrost-proxy/bifrost/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
 Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
@@ -85,23 +85,23 @@ rust/
 使用 curl 一键安装脚本，自动检测平台和架构：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash
 ```
 
 安装选项：
 
 ```bash
 # 指定安装目录
-curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --dir /usr/local/bin
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --dir /usr/local/bin
 
 # 安装特定版本
-curl -fsSL https://raw.githubusercontent.com/hxfdarling/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
 ```
 
 ### 方式二：Homebrew（macOS）
 
 ```bash
-brew tap hxfdarling/bifrost
+brew tap bifrost-proxy/bifrost
 brew install bifrost
 ```
 
@@ -117,7 +117,7 @@ brew install bifrost
 
 ```bash
 # 克隆仓库
-git clone https://github.com/hxfdarling/bifrost.git
+git clone https://github.com/bifrost-proxy/bifrost.git
 cd bifrost
 
 # 使用安装脚本（推荐）
@@ -130,7 +130,7 @@ cargo build --release
 
 ### 方式四：手动下载
 
-从 [Releases](https://github.com/hxfdarling/bifrost/releases) 页面下载预编译的二进制文件。
+从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载预编译的二进制文件。
 
 **支持的平台：**
 

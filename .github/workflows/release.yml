@@ -83,7 +83,7 @@ jobs:
             
             TAG="v${VERSION}"
           fi
-          
+
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
@@ -96,13 +96,13 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
-          
+
           for crate_dir in crates/*/; do
             if [[ -f "${crate_dir}Cargo.toml" ]]; then
               sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "${crate_dir}Cargo.toml"
             fi
           done
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
@@ -258,9 +258,9 @@ jobs:
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
-          
+
           PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
-          
+
           if [[ -n "$PREV_TAG" ]]; then
             echo "## What's Changed" > CHANGELOG.md
             echo "" >> CHANGELOG.md
@@ -304,24 +304,24 @@ jobs:
           body_path: CHANGELOG.md
           append_body: true
           body: |
-            
+
             ---
-            
+
             ## 📥 Installation
-            
+
             ### Quick Install (Recommended)
             ```bash
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install-binary.sh | bash
             ```
-            
+
             ### Homebrew (macOS)
             ```bash
-            brew tap hxfdarling/bifrost
+            brew tap bifrost-proxy/bifrost
             brew install bifrost
             ```
-            
+
             ### Manual Download
-            
+
             | Platform | Architecture | Download |
             |----------|--------------|----------|
             | Linux | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz` |
@@ -330,7 +330,7 @@ jobs:
             | macOS | Intel | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.tar.gz` |
             | macOS | Apple Silicon | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.tar.gz` |
             | Windows | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
-            
+
           files: |
             release/*
         env:
@@ -345,7 +345,7 @@ jobs:
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: hxfdarling/homebrew-bifrost
+          repository: bifrost-proxy/homebrew-bifrost
           event-type: update-formula
           client-payload: |
             {

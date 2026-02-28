@@ -38,7 +38,7 @@ jobs:
           TAG="${{ steps.info.outputs.tag }}"
           VERSION="${{ steps.info.outputs.version }}"
           
-          curl -sL "https://github.com/hxfdarling/bifrost/releases/download/${TAG}/bifrost-${TAG}-checksums.txt" -o checksums.txt
+          curl -sL "https://github.com/bifrost-proxy/bifrost/releases/download/${TAG}/bifrost-${TAG}-checksums.txt" -o checksums.txt
           
           INTEL_SHA=$(grep "x86_64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
           ARM_SHA=$(grep "aarch64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
@@ -53,18 +53,18 @@ jobs:
           cat > Formula/bifrost.rb << EOF
           class Bifrost < Formula
             desc "High-performance HTTP/HTTPS/SOCKS5 proxy server written in Rust"
-            homepage "https://github.com/hxfdarling/bifrost"
+            homepage "https://github.com/bifrost-proxy/bifrost"
             version "${VERSION}"
             license "MIT"
 
             on_macos do
               on_intel do
-                url "https://github.com/hxfdarling/bifrost/releases/download/v#{version}/bifrost-v#{version}-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-x86_64-apple-darwin.tar.gz"
                 sha256 "${INTEL_SHA}"
               end
 
               on_arm do
-                url "https://github.com/hxfdarling/bifrost/releases/download/v#{version}/bifrost-v#{version}-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-aarch64-apple-darwin.tar.gz"
                 sha256 "${ARM_SHA}"
               end
             end

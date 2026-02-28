@@ -7,6 +7,5 @@ node_modules
 .bifrost-test*
 .bifrost-debug/
 e2e-tests/.test_results/
-.vscode
 .bifrost_test/
 .bifrost-*-test/
