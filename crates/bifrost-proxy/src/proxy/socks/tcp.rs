@@ -34,13 +34,23 @@ use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccess
 use super::super::http::{handle_http_request, SingleCertResolver};
 use super::udp::UdpRelay;
 
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 const SOCKS5_VERSION: u8 = 0x05;
 
 static SOCKS5_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+static SOCKS5_PROCESS_START_TS: LazyLock<u64> = LazyLock::new(|| {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+});
+
 fn generate_socks5_request_id() -> String {
-    let id = SOCKS5_REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("SOCKS-{:06}", id)
+    let seq = SOCKS5_REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+    format!("SOCKS-{:x}-{:06}", *SOCKS5_PROCESS_START_TS, seq)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

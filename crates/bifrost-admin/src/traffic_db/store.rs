@@ -58,7 +58,13 @@ impl TrafficDbStore {
             "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
         )?;
 
-        let current_seq = Self::get_max_sequence(&write_conn).unwrap_or(0);
+        let current_seq = match Self::resequence_records(&write_conn) {
+            Ok(count) => count,
+            Err(e) => {
+                tracing::warn!(error = %e, "[TRAFFIC_DB] Failed to resequence, using max sequence");
+                Self::get_max_sequence(&write_conn).unwrap_or(0)
+            }
+        };
 
         let (tx, _) = broadcast::channel(1024);
 
@@ -89,6 +95,37 @@ impl TrafficDbStore {
         .ok()
         .flatten()
         .map(|v| v as u64)
+    }
+
+    fn resequence_records(conn: &Connection) -> rusqlite::Result<u64> {
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM traffic_records", [], |row| row.get(0))?;
+
+        if count == 0 {
+            return Ok(0);
+        }
+
+        let mut stmt = conn.prepare("SELECT id FROM traffic_records ORDER BY sequence ASC")?;
+        let ids: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        for (idx, id) in ids.iter().enumerate() {
+            conn.execute(
+                "UPDATE traffic_records SET sequence = ? WHERE id = ?",
+                rusqlite::params![(idx + 1) as i64, id],
+            )?;
+        }
+
+        tracing::info!(
+            record_count = ids.len(),
+            "[TRAFFIC_DB] Resequenced existing records (1 to {})",
+            ids.len()
+        );
+
+        Ok(ids.len() as u64)
     }
 
     pub fn record(&self, mut record: TrafficRecord) {
@@ -537,15 +574,77 @@ impl TrafficDbStore {
     }
 
     pub fn clear(&self) {
+        self.clear_with_active_ids(&[]);
+    }
+
+    pub fn clear_with_active_ids(&self, active_connection_ids: &[String]) {
         let conn = self.write_conn.lock();
-        if let Err(e) = conn.execute("DELETE FROM traffic_records", []) {
-            tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear records");
+
+        let active_ids_set: std::collections::HashSet<&str> =
+            active_connection_ids.iter().map(|s| s.as_str()).collect();
+
+        let pending_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM traffic_records WHERE status = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
+        tracing::info!(
+            pending = pending_count,
+            active_connections = active_connection_ids.len(),
+            "[TRAFFIC_DB] Clearing traffic records, preserving active"
+        );
+
+        if active_connection_ids.is_empty() {
+            if let Err(e) = conn.execute("DELETE FROM traffic_records WHERE status != 0", []) {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear completed records");
+            }
+        } else {
+            let placeholders: String = active_connection_ids
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
+
+            let sql = format!(
+                "DELETE FROM traffic_records WHERE status != 0 AND id NOT IN ({})",
+                placeholders
+            );
+
+            if let Err(e) = conn.execute(
+                &sql,
+                rusqlite::params_from_iter(active_connection_ids.iter()),
+            ) {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear completed records");
+            }
         }
 
-        self.current_sequence.store(1, Ordering::SeqCst);
-        self.recent_cache.write().clear();
+        let mut cache = self.recent_cache.write();
+        let preserved_ids: Vec<String> = cache
+            .iter()
+            .filter(|(id, record)| {
+                record.status == 0
+                    || active_ids_set.contains(id.as_str())
+                    || (record.is_websocket
+                        && record.socket_status.as_ref().is_some_and(|s| s.is_open))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
 
-        tracing::info!("[TRAFFIC_DB] All records cleared");
+        let mut new_cache = LruCache::new(
+            std::num::NonZeroUsize::new(cache.cap().get())
+                .unwrap_or(std::num::NonZeroUsize::new(1000).unwrap()),
+        );
+        for id in preserved_ids {
+            if let Some(record) = cache.pop(&id) {
+                new_cache.put(id, record);
+            }
+        }
+        *cache = new_cache;
+
+        tracing::info!("[TRAFFIC_DB] Traffic records cleared (active preserved)");
     }
 
     fn maybe_cleanup(&self, conn: &Connection) {

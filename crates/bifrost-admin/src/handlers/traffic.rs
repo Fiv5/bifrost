@@ -466,8 +466,10 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 }
 
 async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
+    let active_connection_ids = state.connection_monitor.active_connection_ids();
+
     if let Some(ref db_store) = state.traffic_db_store {
-        db_store.clear();
+        db_store.clear_with_active_ids(&active_connection_ids);
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.clear();
         let new_sequence = traffic_store.current_sequence();

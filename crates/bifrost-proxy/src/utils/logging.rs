@@ -1,14 +1,22 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::LazyLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::server::ResolvedRules;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+static PROCESS_START_TS: LazyLock<u64> = LazyLock::new(|| {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+});
+
 pub fn generate_request_id() -> String {
-    let id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("REQ-{:06}", id)
+    let seq = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("REQ-{:x}-{:06}", *PROCESS_START_TS, seq)
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +62,7 @@ impl RequestContext {
     }
 
     pub fn id_str(&self) -> String {
-        format!("REQ-{:06}", self.id)
+        format!("REQ-{:x}-{:06}", *PROCESS_START_TS, self.id)
     }
 
     pub fn with_request_info(
