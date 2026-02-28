@@ -142,22 +142,31 @@ fn print_update_info(current: &str, cache: &VersionCache) {
 }
 
 fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
-    println!("{}", "Refreshing Homebrew tap...".bright_cyan());
+    println!("{}", "Updating Homebrew tap...".bright_cyan());
 
     let _ = Command::new("brew")
-        .args(["untap", "bifrost-proxy/bifrost"])
+        .args(["update", "--auto-update"])
+        .status();
+
+    let output = Command::new("brew")
+        .args(["--repository", "bifrost-proxy/bifrost"])
         .output();
 
-    let tap_status = Command::new("brew")
-        .args(["tap", "bifrost-proxy/bifrost"])
-        .status()
-        .map_err(BifrostError::Io)?;
-
-    if !tap_status.success() {
-        println!(
-            "{}",
-            "⚠ brew tap failed, trying upgrade anyway...".bright_yellow()
-        );
+    if let Ok(output) = output {
+        if output.status.success() {
+            if let Ok(tap_path) = String::from_utf8(output.stdout) {
+                let tap_path = tap_path.trim();
+                if !tap_path.is_empty() {
+                    println!("{}", "Fetching latest formula...".bright_cyan());
+                    let _ = Command::new("git")
+                        .args(["-C", tap_path, "fetch", "--all"])
+                        .status();
+                    let _ = Command::new("git")
+                        .args(["-C", tap_path, "reset", "--hard", "origin/main"])
+                        .status();
+                }
+            }
+        }
     }
 
     println!("{}", "Upgrading via Homebrew...".bright_cyan());
