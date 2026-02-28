@@ -106,7 +106,7 @@ fn main() {
             handle_system_proxy_command(&cli, action.clone())
         }
         Some(Commands::Value { action }) => handle_value_command(action),
-        Some(Commands::Upgrade { bump, dry_run }) => handle_upgrade(bump, dry_run),
+        Some(Commands::Upgrade { yes }) => handle_upgrade(yes),
         None => run_start(
             cli.port,
             cli.host.clone(),

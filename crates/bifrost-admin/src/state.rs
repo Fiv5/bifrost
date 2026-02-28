@@ -17,6 +17,7 @@ use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
+use crate::version_check::{SharedVersionChecker, VersionChecker};
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -83,6 +84,7 @@ pub struct AdminState {
     pub config_manager: Option<SharedConfigManager>,
     pub max_body_buffer_size: AtomicUsize,
     pub app_icon_cache: Option<SharedAppIconCache>,
+    pub version_checker: SharedVersionChecker,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -110,6 +112,7 @@ impl AdminState {
             config_manager: None,
             max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
             app_icon_cache: None,
+            version_checker: Arc::new(VersionChecker::new()),
         }
     }
 

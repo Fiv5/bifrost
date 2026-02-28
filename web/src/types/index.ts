@@ -471,3 +471,12 @@ export interface SearchResponse {
   has_more: boolean;
   search_id: string;
 }
+
+export interface VersionCheckResponse {
+  has_update: boolean;
+  current_version: string;
+  latest_version: string | null;
+  release_highlights: string[];
+  release_url: string | null;
+  checked_at: string | null;
+}

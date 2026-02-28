@@ -1,8 +1,10 @@
-import { useEffect, useMemo, memo, type CSSProperties } from "react";
-import { theme } from "antd";
+import { useEffect, useMemo, memo, useCallback, type CSSProperties } from "react";
+import { theme, Tooltip } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
+import { useVersionStore } from "../../stores/useVersionStore";
+import VersionModal from "../VersionModal";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -37,6 +39,11 @@ const StatusBar = memo(function StatusBar() {
   const disablePush = useMetricsStore((state) => state.disablePush);
   const systemProxy = useProxyStore((state) => state.systemProxy);
   const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
+  
+  const hasUpdate = useVersionStore((state) => state.hasUpdate);
+  const latestVersion = useVersionStore((state) => state.latestVersion);
+  const setModalVisible = useVersionStore((state) => state.setModalVisible);
+  const checkVersion = useVersionStore((state) => state.checkVersion);
 
   useEffect(() => {
     fetchSystemProxy();
@@ -85,6 +92,11 @@ const StatusBar = memo(function StatusBar() {
       running: systemProxy.enabled,
     };
   }, [systemProxy]);
+
+  const handleVersionClick = useCallback(() => {
+    checkVersion(true);
+    setModalVisible(true);
+  }, [checkVersion, setModalVisible]);
 
   const styles: Record<string, CSSProperties> = {
     container: {
@@ -165,77 +177,121 @@ const StatusBar = memo(function StatusBar() {
       height: 10,
       backgroundColor: token.colorBorderSecondary,
     },
+    versionButton: {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      cursor: "pointer",
+      padding: "2px 6px",
+      borderRadius: 3,
+      transition: "background-color 0.2s",
+    },
+    versionButtonHover: {
+      backgroundColor: token.colorFillSecondary,
+    },
+    updateDot: {
+      width: 6,
+      height: 6,
+      borderRadius: "50%",
+      backgroundColor: token.colorError,
+    },
+    updateArrow: {
+      fontSize: 10,
+      color: token.colorSuccess,
+    },
   };
 
+  const versionTooltip = hasUpdate
+    ? `New version available: v${latestVersion}`
+    : "Click to view version info";
+
   return (
-    <div style={styles.container}>
-      <div style={styles.item}>
-        <div style={styles.statusDot} />
-        <span style={styles.label}>Proxy:</span>
-        <span style={styles.valueStatus}>{proxyStatus.text}</span>
+    <>
+      <div style={styles.container}>
+        <div style={styles.item}>
+          <div style={styles.statusDot} />
+          <span style={styles.label}>Proxy:</span>
+          <span style={styles.valueStatus}>{proxyStatus.text}</span>
+        </div>
+
+        <div style={styles.separator} />
+
+        <div style={styles.item}>
+          <ArrowUpOutlined style={styles.rateUp} />
+          <span style={styles.valueRate}>{uploadRate}</span>
+        </div>
+
+        <div style={styles.item}>
+          <ArrowDownOutlined style={styles.rateDown} />
+          <span style={styles.valueRate}>{downloadRate}</span>
+        </div>
+
+        <div style={styles.separator} />
+
+        <div style={styles.item}>
+          <span style={styles.label}>Total:</span>
+          <span style={styles.valueTraffic}>{totalTraffic}</span>
+        </div>
+
+        <div style={styles.separator} />
+
+        <div style={styles.item}>
+          <span style={styles.label}>Conn:</span>
+          <span style={styles.valueNumber}>
+            {metrics?.active_connections ?? 0}
+          </span>
+        </div>
+
+        <div style={styles.item}>
+          <span style={styles.label}>Req:</span>
+          <span style={styles.valueNumber}>{metrics?.total_requests ?? 0}</span>
+        </div>
+
+        <div style={styles.separator} />
+
+        <div style={styles.item}>
+          <span style={styles.label}>Mem:</span>
+          <span style={styles.valueMem}>{memoryUsage}</span>
+        </div>
+
+        <div style={styles.item}>
+          <span style={styles.label}>CPU:</span>
+          <span style={styles.valueCpu}>{cpuUsage}</span>
+        </div>
+
+        <div style={styles.separator} />
+
+        <div style={styles.item}>
+          <span style={styles.label}>Uptime:</span>
+          <span style={styles.valueUptime}>{uptime}</span>
+        </div>
+
+        {overview?.system?.version && (
+          <>
+            <div style={{ flex: 1 }} />
+            <Tooltip title={versionTooltip}>
+              <div
+                style={styles.versionButton}
+                onClick={handleVersionClick}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = token.colorFillSecondary;
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                }}
+              >
+                {hasUpdate && <div style={styles.updateDot} />}
+                <span style={styles.value}>v{overview.system.version}</span>
+                {hasUpdate && (
+                  <ArrowUpOutlined style={styles.updateArrow} />
+                )}
+              </div>
+            </Tooltip>
+          </>
+        )}
       </div>
-
-      <div style={styles.separator} />
-
-      <div style={styles.item}>
-        <ArrowUpOutlined style={styles.rateUp} />
-        <span style={styles.valueRate}>{uploadRate}</span>
-      </div>
-
-      <div style={styles.item}>
-        <ArrowDownOutlined style={styles.rateDown} />
-        <span style={styles.valueRate}>{downloadRate}</span>
-      </div>
-
-      <div style={styles.separator} />
-
-      <div style={styles.item}>
-        <span style={styles.label}>Total:</span>
-        <span style={styles.valueTraffic}>{totalTraffic}</span>
-      </div>
-
-      <div style={styles.separator} />
-
-      <div style={styles.item}>
-        <span style={styles.label}>Conn:</span>
-        <span style={styles.valueNumber}>
-          {metrics?.active_connections ?? 0}
-        </span>
-      </div>
-
-      <div style={styles.item}>
-        <span style={styles.label}>Req:</span>
-        <span style={styles.valueNumber}>{metrics?.total_requests ?? 0}</span>
-      </div>
-
-      <div style={styles.separator} />
-
-      <div style={styles.item}>
-        <span style={styles.label}>Mem:</span>
-        <span style={styles.valueMem}>{memoryUsage}</span>
-      </div>
-
-      <div style={styles.item}>
-        <span style={styles.label}>CPU:</span>
-        <span style={styles.valueCpu}>{cpuUsage}</span>
-      </div>
-
-      <div style={styles.separator} />
-
-      <div style={styles.item}>
-        <span style={styles.label}>Uptime:</span>
-        <span style={styles.valueUptime}>{uptime}</span>
-      </div>
-
-      {overview?.system?.version && (
-        <>
-          <div style={{ flex: 1 }} />
-          <div style={styles.item}>
-            <span style={styles.value}>v{overview.system.version}</span>
-          </div>
-        </>
-      )}
-    </div>
+      <VersionModal />
+    </>
   );
 });
 

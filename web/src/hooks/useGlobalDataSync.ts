@@ -5,16 +5,19 @@ import { useValuesStore } from '../stores/useValuesStore';
 import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
+import { useVersionStore } from '../stores/useVersionStore';
 
 const PROXY_POLL_INTERVAL = 5000;
 const VALUES_POLL_INTERVAL = 10000;
 const RULES_POLL_INTERVAL = 10000;
+const VERSION_CHECK_INTERVAL = 60 * 60 * 1000;
 
 interface GlobalDataSyncState {
   initialized: boolean;
   proxyIntervalId: number | null;
   valuesIntervalId: number | null;
   rulesIntervalId: number | null;
+  versionCheckIntervalId: number | null;
 }
 
 const globalState: GlobalDataSyncState = {
@@ -22,6 +25,7 @@ const globalState: GlobalDataSyncState = {
   proxyIntervalId: null,
   valuesIntervalId: null,
   rulesIntervalId: null,
+  versionCheckIntervalId: null,
 };
 
 export function useGlobalDataSync() {
@@ -40,6 +44,7 @@ export function useGlobalDataSync() {
     const proxyStore = useProxyStore.getState();
     const filterPanelStore = useFilterPanelStore.getState();
     const metricsStore = useMetricsStore.getState();
+    const versionStore = useVersionStore.getState();
 
     const initializeGlobalData = async () => {
       await Promise.all([
@@ -50,6 +55,7 @@ export function useGlobalDataSync() {
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
         metricsStore.fetchHistory(3600),
+        versionStore.checkVersion(),
       ]);
 
       trafficStore.startPolling();
@@ -72,6 +78,18 @@ export function useGlobalDataSync() {
       globalState.rulesIntervalId = window.setInterval(() => {
         useRulesStore.getState().fetchRules();
       }, RULES_POLL_INTERVAL);
+
+      globalState.versionCheckIntervalId = window.setInterval(() => {
+        useVersionStore.getState().checkVersion();
+      }, VERSION_CHECK_INTERVAL);
+
+      const currentVersionStore = useVersionStore.getState();
+      if (currentVersionStore.shouldShowAutoModal()) {
+        currentVersionStore.setModalVisible(true);
+        if (currentVersionStore.latestVersion) {
+          currentVersionStore.markVersionSeen(currentVersionStore.latestVersion);
+        }
+      }
     };
 
     initializeGlobalData();
@@ -88,6 +106,10 @@ export function useGlobalDataSync() {
       if (globalState.rulesIntervalId) {
         clearInterval(globalState.rulesIntervalId);
         globalState.rulesIntervalId = null;
+      }
+      if (globalState.versionCheckIntervalId) {
+        clearInterval(globalState.versionCheckIntervalId);
+        globalState.versionCheckIntervalId = null;
       }
 
       useTrafficStore.getState().stopPolling();
@@ -109,6 +131,10 @@ export function resetGlobalDataSync() {
   if (globalState.rulesIntervalId) {
     clearInterval(globalState.rulesIntervalId);
     globalState.rulesIntervalId = null;
+  }
+  if (globalState.versionCheckIntervalId) {
+    clearInterval(globalState.versionCheckIntervalId);
+    globalState.versionCheckIntervalId = null;
   }
   globalState.initialized = false;
 }

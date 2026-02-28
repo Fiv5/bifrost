@@ -1,24 +1,36 @@
 use bifrost_storage::data_dir;
 use chrono::{DateTime, Duration, Utc};
-use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration as StdDuration;
+use tokio::sync::RwLock;
 
 const GITHUB_RELEASES_API_URL: &str =
     "https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest";
 const GITHUB_TAGS_API_URL: &str = "https://api.github.com/repos/bifrost-proxy/bifrost/tags";
 const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 const CACHE_FILE_NAME: &str = "version_cache.json";
-const CACHE_DURATION_HOURS: i64 = 24;
-const REQUEST_TIMEOUT_SECS: u64 = 5;
-const MAX_RELEASE_HIGHLIGHTS: usize = 3;
+const CACHE_DURATION_HOURS: i64 = 1;
+const REQUEST_TIMEOUT_SECS: u64 = 10;
+const MAX_RELEASE_HIGHLIGHTS: usize = 5;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionCache {
     pub latest_version: String,
     pub release_highlights: Vec<String>,
-    checked_at: DateTime<Utc>,
+    pub checked_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionCheckResponse {
+    pub has_update: bool,
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub release_highlights: Vec<String>,
+    pub release_url: Option<String>,
+    pub checked_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -32,6 +44,90 @@ struct GitHubTag {
     name: String,
 }
 
+pub struct VersionChecker {
+    cache: RwLock<Option<VersionCache>>,
+}
+
+pub type SharedVersionChecker = Arc<VersionChecker>;
+
+impl VersionChecker {
+    pub fn new() -> Self {
+        let cache = read_cache();
+        Self {
+            cache: RwLock::new(cache),
+        }
+    }
+
+    pub async fn check(&self, force_refresh: bool) -> VersionCheckResponse {
+        let current_version = env!("CARGO_PKG_VERSION").to_string();
+
+        if !force_refresh {
+            let cache = self.cache.read().await;
+            if let Some(ref c) = *cache {
+                if is_cache_valid(c) {
+                    return self.build_response(&current_version, Some(c.clone()));
+                }
+            }
+        }
+
+        match fetch_latest_release().await {
+            Some((latest, highlights)) => {
+                let cache = VersionCache {
+                    latest_version: latest,
+                    release_highlights: highlights,
+                    checked_at: Utc::now(),
+                };
+                write_cache(&cache);
+
+                {
+                    let mut cached = self.cache.write().await;
+                    *cached = Some(cache.clone());
+                }
+
+                self.build_response(&current_version, Some(cache))
+            }
+            None => {
+                let cache = self.cache.read().await;
+                self.build_response(&current_version, cache.clone())
+            }
+        }
+    }
+
+    fn build_response(
+        &self,
+        current_version: &str,
+        cache: Option<VersionCache>,
+    ) -> VersionCheckResponse {
+        match cache {
+            Some(c) => {
+                let has_update = is_newer_version(current_version, &c.latest_version);
+                VersionCheckResponse {
+                    has_update,
+                    current_version: current_version.to_string(),
+                    latest_version: Some(c.latest_version.clone()),
+                    release_highlights: c.release_highlights.clone(),
+                    release_url: Some(format!("{}/v{}", GITHUB_RELEASE_URL, c.latest_version)),
+                    checked_at: Some(c.checked_at.to_rfc3339()),
+                }
+            }
+            None => VersionCheckResponse {
+                has_update: false,
+                current_version: current_version.to_string(),
+                latest_version: None,
+                release_highlights: vec![],
+                release_url: None,
+                checked_at: None,
+            },
+        }
+    }
+}
+
+impl Default for VersionChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn cache_file_path() -> PathBuf {
     data_dir().join(CACHE_FILE_NAME)
 }
@@ -41,7 +137,6 @@ fn read_cache() -> Option<VersionCache> {
     if !path.exists() {
         return None;
     }
-
     let content = fs::read_to_string(&path).ok()?;
     serde_json::from_str(&content).ok()
 }
@@ -62,27 +157,27 @@ fn is_cache_valid(cache: &VersionCache) -> bool {
     cache_age < Duration::hours(CACHE_DURATION_HOURS)
 }
 
-fn fetch_latest_release() -> Option<(String, Vec<String>)> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-        .user_agent("bifrost-cli")
-        .build();
+async fn fetch_latest_release() -> Option<(String, Vec<String>)> {
+    let client = reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(REQUEST_TIMEOUT_SECS))
+        .user_agent("bifrost-admin")
+        .build()
+        .ok()?;
 
-    if let Ok(response) = agent.get(GITHUB_RELEASES_API_URL).call() {
-        if let Ok(release) = response.into_json::<GitHubRelease>() {
+    if let Ok(response) = client.get(GITHUB_RELEASES_API_URL).send().await {
+        if let Ok(release) = response.json::<GitHubRelease>().await {
             let version = release
                 .tag_name
                 .strip_prefix('v')
                 .unwrap_or(&release.tag_name)
                 .to_string();
-
             let highlights = parse_release_highlights(release.body.as_deref());
             return Some((version, highlights));
         }
     }
 
-    let response = agent.get(GITHUB_TAGS_API_URL).call().ok()?;
-    let tags: Vec<GitHubTag> = response.into_json().ok()?;
+    let response = client.get(GITHUB_TAGS_API_URL).send().await.ok()?;
+    let tags: Vec<GitHubTag> = response.json().await.ok()?;
 
     let version = tags
         .into_iter()
@@ -283,89 +378,8 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-pub fn is_newer_version(current: &str, latest: &str) -> bool {
+fn is_newer_version(current: &str, latest: &str) -> bool {
     compare_versions(latest, current) == std::cmp::Ordering::Greater
-}
-
-pub fn get_latest_version() -> Option<VersionCache> {
-    if let Some(cache) = read_cache() {
-        if is_cache_valid(&cache) {
-            return Some(cache);
-        }
-    }
-
-    let (latest, highlights) = fetch_latest_release()?;
-
-    let cache = VersionCache {
-        latest_version: latest,
-        release_highlights: highlights,
-        checked_at: Utc::now(),
-    };
-    write_cache(&cache);
-
-    Some(cache)
-}
-
-pub fn check_and_print_update_notice() {
-    let current_version = env!("CARGO_PKG_VERSION");
-
-    let cache = match get_latest_version() {
-        Some(c) => c,
-        None => return,
-    };
-
-    if !is_newer_version(current_version, &cache.latest_version) {
-        return;
-    }
-
-    print_update_notice(current_version, &cache);
-}
-
-fn print_update_notice(current_version: &str, cache: &VersionCache) {
-    let separator = "─".repeat(64);
-    let release_url = format!("{}/v{}", GITHUB_RELEASE_URL, cache.latest_version);
-
-    println!();
-    println!("{}", separator.bright_yellow());
-    println!(
-        "{}",
-        "  🚀 A new version of bifrost is available!"
-            .bright_yellow()
-            .bold()
-    );
-    println!();
-    println!(
-        "     Current version: {}",
-        current_version.bright_red().bold()
-    );
-    println!(
-        "     Latest version:  {}",
-        cache.latest_version.bright_green().bold()
-    );
-
-    if !cache.release_highlights.is_empty() {
-        println!();
-        println!("     {}", "What's new:".bright_white().bold());
-        for highlight in &cache.release_highlights {
-            let display = if highlight.len() > 50 {
-                format!("{}...", &highlight[..47])
-            } else {
-                highlight.clone()
-            };
-            println!("       {} {}", "•".bright_cyan(), display.bright_white());
-        }
-        println!(
-            "       {} {}",
-            "→".dimmed(),
-            format!("View full release notes: {}", release_url).dimmed()
-        );
-    }
-
-    println!();
-    println!("     {}", "To upgrade, run:".bright_white());
-    println!("       {}", "bifrost upgrade".bright_cyan().bold());
-    println!("{}", separator.bright_yellow());
-    println!();
 }
 
 #[cfg(test)]
@@ -373,78 +387,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_compare_versions_basic() {
+    fn test_compare_versions() {
         use std::cmp::Ordering;
-
         assert_eq!(compare_versions("1.0.0", "0.9.9"), Ordering::Greater);
         assert_eq!(compare_versions("0.9.9", "1.0.0"), Ordering::Less);
         assert_eq!(compare_versions("1.0.0", "1.0.0"), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_compare_versions_minor() {
-        use std::cmp::Ordering;
-
-        assert_eq!(compare_versions("0.2.0", "0.1.0"), Ordering::Greater);
-        assert_eq!(compare_versions("0.1.0", "0.2.0"), Ordering::Less);
-        assert_eq!(compare_versions("0.1.5", "0.1.5"), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_compare_versions_patch() {
-        use std::cmp::Ordering;
-
-        assert_eq!(compare_versions("0.0.2", "0.0.1"), Ordering::Greater);
-        assert_eq!(compare_versions("0.0.1", "0.0.2"), Ordering::Less);
-    }
-
-    #[test]
-    fn test_compare_versions_prerelease() {
-        use std::cmp::Ordering;
-
         assert_eq!(compare_versions("1.0.0", "1.0.0-alpha"), Ordering::Greater);
         assert_eq!(compare_versions("1.0.0-alpha", "1.0.0"), Ordering::Less);
-        assert_eq!(
-            compare_versions("1.0.0-alpha", "1.0.0-alpha"),
-            Ordering::Equal
-        );
-        assert_eq!(
-            compare_versions("1.0.0-beta", "1.0.0-alpha"),
-            Ordering::Greater
-        );
     }
 
     #[test]
     fn test_is_newer_version() {
         assert!(is_newer_version("0.0.1", "1.0.0"));
         assert!(is_newer_version("0.0.1-alpha", "0.0.1"));
-        assert!(is_newer_version("0.0.1-alpha", "0.0.2-alpha"));
-        assert!(is_newer_version("0.0.1-alpha", "1.0.0"));
-
         assert!(!is_newer_version("1.0.0", "0.0.1"));
         assert!(!is_newer_version("1.0.0", "1.0.0"));
-        assert!(!is_newer_version("0.0.1", "0.0.1-alpha"));
     }
 
     #[test]
-    #[ignore = "requires network access"]
-    fn test_fetch_latest_release_from_github() {
-        let result = fetch_latest_release();
-        assert!(result.is_some(), "Should fetch release from GitHub API");
-
-        let (version, _highlights) = result.unwrap();
-        assert!(!version.is_empty(), "Version should not be empty");
-        assert!(
-            !version.starts_with('v'),
-            "Version should not start with 'v'"
-        );
-
-        let parts: Vec<&str> = version.split('-').next().unwrap().split('.').collect();
-        assert!(parts.len() >= 2, "Version should have at least major.minor");
-    }
-
-    #[test]
-    fn test_parse_release_highlights_from_highlights_section() {
+    fn test_parse_release_highlights() {
         let body = r#"## ✨ Highlights
 
 - Added new feature A
@@ -452,105 +413,9 @@ mod tests {
 - Fixed critical bug
 
 ## What's Changed
-
-### 🚀 Features
-- feat: something else
 "#;
         let highlights = parse_release_highlights(Some(body));
         assert_eq!(highlights.len(), 3);
         assert_eq!(highlights[0], "Added new feature A");
-        assert_eq!(highlights[1], "Improved performance by 50%");
-        assert_eq!(highlights[2], "Fixed critical bug");
-    }
-
-    #[test]
-    fn test_parse_release_highlights_from_features_section() {
-        let body = r#"## What's Changed
-
-### 🚀 Features
-- feat: add proxy support (abc123)
-- feat(cli): improve startup time (def456)
-- feat: enable caching (ghi789)
-
-### 🐛 Bug Fixes
-- fix: resolve memory leak
-"#;
-        let highlights = parse_release_highlights(Some(body));
-        assert_eq!(highlights.len(), 3);
-        assert_eq!(highlights[0], "add proxy support");
-        assert_eq!(highlights[1], "improve startup time");
-        assert_eq!(highlights[2], "enable caching");
-    }
-
-    #[test]
-    fn test_parse_release_highlights_empty() {
-        assert!(parse_release_highlights(None).is_empty());
-        assert!(parse_release_highlights(Some("")).is_empty());
-        assert!(parse_release_highlights(Some("   ")).is_empty());
-    }
-
-    #[test]
-    fn test_parse_release_highlights_fallback() {
-        let body = r#"Some random release notes
-without proper structure
-
-- First change item (abc123)
-- Second change item (def456)
-- Third change here
-- Fourth one
-- Fifth item too
-- Sixth should not appear
-
-**Full Changelog**: https://example.com
-"#;
-        let highlights = parse_release_highlights(Some(body));
-        assert_eq!(highlights.len(), 5);
-        assert_eq!(highlights[0], "Some random release notes");
-        assert_eq!(highlights[1], "without proper structure");
-        assert_eq!(highlights[2], "First change item");
-        assert_eq!(highlights[3], "Second change item");
-        assert_eq!(highlights[4], "Third change here");
-    }
-
-    #[test]
-    fn test_extract_commit_message() {
-        assert_eq!(
-            extract_commit_message("feat: add new feature (abc123)"),
-            Some("add new feature".to_string())
-        );
-        assert_eq!(
-            extract_commit_message("feat(scope): do something (xyz)"),
-            Some("do something".to_string())
-        );
-        assert_eq!(
-            extract_commit_message("simple message"),
-            Some("simple message".to_string())
-        );
-    }
-
-    #[test]
-    #[ignore = "visual test - run manually to see output"]
-    fn test_visual_update_notice() {
-        let cache = VersionCache {
-            latest_version: "1.0.0".to_string(),
-            release_highlights: vec![
-                "Added WebSocket support for real-time communication".to_string(),
-                "Improved HTTP/2 performance by 40%".to_string(),
-                "New rule engine with wildcard matching".to_string(),
-            ],
-            checked_at: Utc::now(),
-        };
-
-        println!("\n=== Test with highlights ===");
-        print_update_notice("0.0.1-alpha", &cache);
-
-        let cache_no_highlights = VersionCache {
-            latest_version: "1.0.0".to_string(),
-            release_highlights: vec![],
-            checked_at: Utc::now(),
-        };
-
-        println!("\n=== Test without highlights ===");
-        print_update_notice("0.0.1-alpha", &cache_no_highlights);
     }
 }

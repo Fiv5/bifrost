@@ -16,6 +16,7 @@ pub mod status_printer;
 mod traffic;
 pub mod traffic_db;
 mod traffic_store;
+mod version_check;
 
 #[cfg(test)]
 mod tests;
@@ -57,6 +58,7 @@ pub use search::{
     FilterCondition, MatchLocation, SearchEngine, SearchFilters, SearchRequest, SearchResponse,
     SearchResultItem, SearchScope,
 };
+pub use version_check::{SharedVersionChecker, VersionCheckResponse, VersionChecker};
 
 pub const ADMIN_PATH_PREFIX: &str = "/_bifrost";
 pub const CERT_PUBLIC_PATH_PREFIX: &str = "/_bifrost/public/cert";

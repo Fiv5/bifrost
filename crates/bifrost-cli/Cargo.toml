@@ -38,6 +38,7 @@ futures = "0.3"
 ureq = { version = "2", features = ["json"] }
 chrono.workspace = true
 colored = "2"
+tempfile = "3"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28", features = ["signal", "process", "fs"] }

@@ -10,6 +10,7 @@ pub async fn handle_system(
     path: &str,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
+    let query = req.uri().query();
 
     match path {
         "/api/system" | "/api/system/" => match method {
@@ -18,6 +19,10 @@ pub async fn handle_system(
         },
         "/api/system/overview" => match method {
             Method::GET => get_overview(state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/system/version-check" => match method {
+            Method::GET => check_version(state, query).await,
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -67,4 +72,13 @@ async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
     });
 
     json_response(&overview)
+}
+
+async fn check_version(state: SharedAdminState, query: Option<&str>) -> Response<BoxBody> {
+    let force_refresh = query
+        .map(|q| q.contains("refresh=true") || q.contains("refresh=1"))
+        .unwrap_or(false);
+
+    let response = state.version_checker.check(force_refresh).await;
+    json_response(&response)
 }

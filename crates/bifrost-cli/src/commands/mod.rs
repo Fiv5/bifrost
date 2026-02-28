@@ -5,8 +5,8 @@ mod status;
 mod stop;
 mod system_proxy;
 mod update_check;
+mod upgrade;
 mod value;
-mod version;
 mod whitelist;
 
 pub use ca::*;
@@ -16,6 +16,6 @@ pub use status::*;
 pub use stop::*;
 pub use system_proxy::*;
 pub use update_check::*;
+pub use upgrade::*;
 pub use value::*;
-pub use version::*;
 pub use whitelist::*;
