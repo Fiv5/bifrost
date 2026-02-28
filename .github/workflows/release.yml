@@ -19,6 +19,10 @@ on:
         description: "Pre-release identifier (e.g., alpha, beta, rc)"
         required: false
         type: string
+      release_notes:
+        description: "Release notes (supports markdown, leave empty for auto-generated)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -256,28 +260,47 @@ jobs:
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
           TAG="${{ needs.prepare.outputs.tag }}"
+          RELEASE_NOTES='${{ inputs.release_notes }}'
 
           PREV_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
 
+          : > CHANGELOG.md
+
+          if [[ -n "$RELEASE_NOTES" ]]; then
+            echo "## ✨ Highlights" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "$RELEASE_NOTES" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+          fi
+
           if [[ -n "$PREV_TAG" ]]; then
-            echo "## What's Changed" > CHANGELOG.md
+            echo "## What's Changed" >> CHANGELOG.md
             echo "" >> CHANGELOG.md
             
-            echo "### 🚀 Features" >> CHANGELOG.md
-            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^feat" >> CHANGELOG.md || true
-            echo "" >> CHANGELOG.md
+            FEATURES=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^feat" 2>/dev/null || true)
+            if [[ -n "$FEATURES" ]]; then
+              echo "### 🚀 Features" >> CHANGELOG.md
+              echo "$FEATURES" >> CHANGELOG.md
+              echo "" >> CHANGELOG.md
+            fi
             
-            echo "### 🐛 Bug Fixes" >> CHANGELOG.md
-            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^fix" >> CHANGELOG.md || true
-            echo "" >> CHANGELOG.md
+            FIXES=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --grep="^fix" 2>/dev/null || true)
+            if [[ -n "$FIXES" ]]; then
+              echo "### 🐛 Bug Fixes" >> CHANGELOG.md
+              echo "$FIXES" >> CHANGELOG.md
+              echo "" >> CHANGELOG.md
+            fi
             
-            echo "### 📝 Other Changes" >> CHANGELOG.md
-            git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --invert-grep --grep="^feat" --grep="^fix" >> CHANGELOG.md || true
-            echo "" >> CHANGELOG.md
+            OTHERS=$(git log "${PREV_TAG}..${TAG}" --pretty=format:"- %s (%h)" --invert-grep --grep="^feat" --grep="^fix" 2>/dev/null || true)
+            if [[ -n "$OTHERS" ]]; then
+              echo "### 📝 Other Changes" >> CHANGELOG.md
+              echo "$OTHERS" >> CHANGELOG.md
+              echo "" >> CHANGELOG.md
+            fi
             
             echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}" >> CHANGELOG.md
-          else
-            echo "🎉 Initial release!" > CHANGELOG.md
+          elif [[ -z "$RELEASE_NOTES" ]]; then
+            echo "🎉 Initial release!" >> CHANGELOG.md
           fi
 
       - name: Collect release assets
