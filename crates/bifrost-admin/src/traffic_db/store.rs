@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::broadcast;
 
 use super::query::{Direction, QueryParams, QueryResult};
-use super::schema::{get_insert_sql, get_update_sql, init_database};
+use super::schema::{get_insert_sql, get_update_sql, init_database, InitError};
 use super::types::{encode_flags, TrafficDbStats, TrafficSummaryCompact};
 use crate::traffic::{SocketStatus, TrafficRecord};
 
@@ -50,8 +50,13 @@ impl TrafficDbStore {
             "[TRAFFIC_DB] Initializing SQLite traffic store"
         );
 
-        let write_conn = Connection::open(&db_path)?;
-        init_database(&write_conn)?;
+        let write_conn = match Self::open_or_reset_database(&db_path) {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to open database");
+                return Err(e);
+            }
+        };
 
         let read_conn = Connection::open(&db_path)?;
         read_conn.execute_batch(
@@ -86,6 +91,43 @@ impl TrafficDbStore {
             recent_cache: RwLock::new(LruCache::new(cache_size)),
             write_count: AtomicU64::new(0),
         })
+    }
+
+    fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {
+        let conn = Connection::open(db_path)?;
+
+        match init_database(&conn) {
+            Ok(()) => Ok(conn),
+            Err(InitError::VersionMismatch { current, expected }) => {
+                tracing::warn!(
+                    current_version = current,
+                    expected_version = expected,
+                    "[TRAFFIC_DB] Schema version mismatch, resetting database"
+                );
+                drop(conn);
+
+                let wal_path = db_path.with_extension("db-wal");
+                let shm_path = db_path.with_extension("db-shm");
+                if let Err(e) = fs::remove_file(db_path) {
+                    tracing::warn!(error = %e, "[TRAFFIC_DB] Failed to remove old database file");
+                }
+                if wal_path.exists() {
+                    fs::remove_file(&wal_path).ok();
+                }
+                if shm_path.exists() {
+                    fs::remove_file(&shm_path).ok();
+                }
+
+                let new_conn = Connection::open(db_path)?;
+                init_database(&new_conn).map_err(|e| match e {
+                    InitError::Sqlite(e) => e,
+                    InitError::VersionMismatch { .. } => rusqlite::Error::QueryReturnedNoRows,
+                })?;
+                tracing::info!("[TRAFFIC_DB] Database reset successfully");
+                Ok(new_conn)
+            }
+            Err(InitError::Sqlite(e)) => Err(e),
+        }
     }
 
     fn get_max_sequence(conn: &Connection) -> Option<u64> {
@@ -170,6 +212,14 @@ impl TrafficDbStore {
             .response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let orig_req_headers_blob = record
+            .original_request_headers
+            .as_ref()
+            .and_then(|h| bincode::serialize(h).ok());
+        let actual_res_headers_blob = record
+            .actual_response_headers
+            .as_ref()
+            .and_then(|h| bincode::serialize(h).ok());
 
         let result = conn.execute(
             get_insert_sql(),
@@ -202,6 +252,10 @@ impl TrafficDbStore {
                 socket_blob,
                 req_body_blob,
                 res_body_blob,
+                &record.actual_url,
+                &record.actual_host,
+                orig_req_headers_blob,
+                actual_res_headers_blob,
             ],
         );
 
@@ -277,6 +331,14 @@ impl TrafficDbStore {
             .response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let orig_req_headers_blob = record
+            .original_request_headers
+            .as_ref()
+            .and_then(|h| bincode::serialize(h).ok());
+        let actual_res_headers_blob = record
+            .actual_response_headers
+            .as_ref()
+            .and_then(|h| bincode::serialize(h).ok());
 
         let result = conn.execute(
             get_update_sql(),
@@ -299,6 +361,10 @@ impl TrafficDbStore {
                 socket_blob,
                 req_body_blob,
                 res_body_blob,
+                &record.actual_url,
+                &record.actual_host,
+                orig_req_headers_blob,
+                actual_res_headers_blob,
                 &record.id,
             ],
         );
@@ -310,7 +376,6 @@ impl TrafficDbStore {
 
     pub fn query(&self, params: &QueryParams) -> QueryResult {
         let conn = self.read_conn.lock();
-
         let (sql, values) = params.build_select_sql();
         let param_refs: Vec<&dyn rusqlite::ToSql> =
             values.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
@@ -534,6 +599,8 @@ impl TrafficDbStore {
         let socket_blob: Option<Vec<u8>> = row.get("socket_status_blob")?;
         let req_body_blob: Option<Vec<u8>> = row.get("request_body_ref_blob")?;
         let res_body_blob: Option<Vec<u8>> = row.get("response_body_ref_blob")?;
+        let orig_req_headers_blob: Option<Vec<u8>> = row.get("original_request_headers_blob")?;
+        let actual_res_headers_blob: Option<Vec<u8>> = row.get("actual_response_headers_blob")?;
 
         let flags: i32 = row.get("flags")?;
 
@@ -570,6 +637,12 @@ impl TrafficDbStore {
             socket_status: socket_blob.and_then(|b| bincode::deserialize(&b).ok()),
             request_body_ref: req_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
             response_body_ref: res_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            actual_url: row.get("actual_url")?,
+            actual_host: row.get("actual_host")?,
+            original_request_headers: orig_req_headers_blob
+                .and_then(|b| bincode::deserialize(&b).ok()),
+            actual_response_headers: actual_res_headers_blob
+                .and_then(|b| bincode::deserialize(&b).ok()),
         })
     }
 

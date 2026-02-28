@@ -9,7 +9,8 @@ pub use http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
 pub use logging::{
-    format_rules_detail, format_rules_summary, generate_request_id, truncate_body, RequestContext,
+    build_matched_rules, format_rules_detail, format_rules_summary, generate_request_id,
+    truncate_body, RequestContext,
 };
 pub use mock::{generate_mock_response, should_intercept_response};
 pub use process_info::{

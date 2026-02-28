@@ -389,9 +389,23 @@ impl UdpRelay {
                     );
                     record.status = 200;
                     record.protocol = "socks5-udp".to_string();
-                    record.host = host_str;
+                    record.host = host_str.clone();
                     record.is_tunnel = true;
                     record.client_ip = src_addr.ip().to_string();
+
+                    if let Some(ref rules) = rules {
+                        let scheme = if is_quic || dest_port == 443 {
+                            "https"
+                        } else {
+                            "http"
+                        };
+                        let url = format!("{}://{}:{}/", scheme, host_str, dest_port);
+                        let resolved_rules = rules.resolve(&url, "GET");
+                        record.has_rule_hit = !resolved_rules.rules.is_empty()
+                            || resolved_rules.host.is_some()
+                            || resolved_rules.proxy.is_some();
+                        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                    }
 
                     state.record_traffic(record);
 

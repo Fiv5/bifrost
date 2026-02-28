@@ -206,6 +206,7 @@ export default function TrafficDetail({
         children: (
           <HeaderView
             headers={record.request_headers}
+            originalHeaders={record.original_request_headers}
             searchValue={requestSearch}
             onSearch={setRequestSearch}
           />
@@ -288,6 +289,7 @@ export default function TrafficDetail({
         children: (
           <HeaderView
             headers={record.response_headers}
+            actualHeaders={record.actual_response_headers}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
             isTunnel={record.is_tunnel}

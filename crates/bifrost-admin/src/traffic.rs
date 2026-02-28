@@ -76,11 +76,8 @@ pub struct MatchedRule {
     pub pattern: String,
     pub protocol: String,
     pub value: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<usize>,
 }
 
@@ -134,6 +131,14 @@ pub struct TrafficRecord {
     pub host: String,
     pub path: String,
     pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_request_headers: Option<Vec<(String, String)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_response_headers: Option<Vec<(String, String)>>,
     #[serde(default)]
     pub is_tunnel: bool,
     #[serde(default)]
@@ -196,6 +201,10 @@ impl TrafficRecord {
             host,
             path,
             protocol,
+            actual_url: None,
+            actual_host: None,
+            original_request_headers: None,
+            actual_response_headers: None,
             is_tunnel: false,
             has_rule_hit: false,
             matched_rules: None,

@@ -1036,6 +1036,13 @@ impl SocksHandler {
         let peer_addr = self.peer_addr;
         let admin_state = self.admin_state.clone();
 
+        let original_url = format!("socks5://{}:{}", target_host, target_port);
+        let resolved_rules = if let Some(ref rules) = self.rules {
+            rules.resolve(&original_url, "CONNECT")
+        } else {
+            crate::server::ResolvedRules::default()
+        };
+
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         if let Some(ref state) = admin_state {
@@ -1074,6 +1081,10 @@ impl SocksHandler {
             record.client_app = client_app;
             record.client_pid = client_pid;
             record.client_path = client_path;
+            record.has_rule_hit = !resolved_rules.rules.is_empty()
+                || resolved_rules.host.is_some()
+                || resolved_rules.proxy.is_some();
+            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
             state.record_traffic(record);
             state.connection_monitor.register_connection(&req_id);
@@ -1413,6 +1424,11 @@ impl SocksHandler {
         let url = format!("http://{}:{}{}", target_host, target_port, path);
         debug!("[{}] SOCKS5 HTTP: {} {}", req_id, method, url);
 
+        let resolved_rules = rules.resolve(&url, method);
+        let has_rules = !resolved_rules.rules.is_empty()
+            || resolved_rules.host.is_some()
+            || resolved_rules.proxy.is_some();
+
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
         if let Some(ref state) = admin_state {
@@ -1460,6 +1476,8 @@ impl SocksHandler {
                 }
             }
 
+            record.has_rule_hit = has_rules;
+            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
             state.record_traffic(record);
             state.connection_monitor.register_connection(&req_id);
 
@@ -1469,10 +1487,8 @@ impl SocksHandler {
             );
         }
 
-        let resolved = rules.resolve(&url, method);
-
-        if let Some(ref host_rule) = resolved.host {
-            let new_host = host_rule.split(':').next().unwrap_or(host_rule);
+        if let Some(ref host_rule) = resolved_rules.host {
+            let new_host = host_rule.split(':').next().unwrap_or(host_rule).to_string();
             let new_port: u16 = host_rule
                 .split(':')
                 .nth(1)
@@ -1484,10 +1500,19 @@ impl SocksHandler {
                 req_id, new_host, new_port
             );
 
+            if let Some(ref state) = admin_state {
+                let actual_url = format!("http://{}:{}{}", new_host, new_port, path);
+                let actual_host = new_host.clone();
+                state.update_traffic_by_id(&req_id, move |record| {
+                    record.actual_url = Some(actual_url.clone());
+                    record.actual_host = Some(actual_host.clone());
+                });
+            }
+
             drop(target_stream);
             target_stream = TcpStream::connect(format!("{}:{}", new_host, new_port)).await?;
 
-            let modified_request = self.rewrite_http_host(request_data, target_host, new_host)?;
+            let modified_request = self.rewrite_http_host(request_data, target_host, &new_host)?;
             target_stream.write_all(&modified_request).await?;
         } else {
             target_stream.write_all(request_data).await?;

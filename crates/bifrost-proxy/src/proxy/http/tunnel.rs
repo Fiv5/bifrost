@@ -2,8 +2,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, ConnectionInfo, FrameDirection, FrameType, MatchedRule, RequestTiming,
-    TrafficRecord, TrafficType,
+    AdminState, ConnectionInfo, FrameDirection, FrameType, RequestTiming, TrafficRecord,
+    TrafficType,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -346,6 +346,8 @@ pub async fn handle_connect(
         record.client_app = client_app;
         record.client_pid = client_pid;
         record.client_path = client_path;
+        record.has_rule_hit = has_rules;
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         state.record_traffic(record);
 
         state.connection_monitor.register_connection(&req_id);
@@ -950,11 +952,13 @@ async fn handle_intercepted_request_with_protocol(
         method
     };
 
-    let req_headers: Vec<(String, String)> = parts
+    let original_req_headers: Vec<(String, String)> = parts
         .headers
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
+
+    let req_headers = original_req_headers.clone();
 
     let req_content_encoding = get_content_encoding(&req_headers);
 
@@ -1101,6 +1105,12 @@ async fn handle_intercepted_request_with_protocol(
                     .unwrap());
             }
         };
+
+    let final_req_headers: Vec<(String, String)> = outgoing_req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     if let Some(delay_ms) = resolved_rules.req_delay {
         if verbose_logging {
@@ -1295,13 +1305,13 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let res_headers: Vec<(String, String)> = res_parts
+    let original_res_headers: Vec<(String, String)> = res_parts
         .headers
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let res_content_encoding = get_content_encoding(&res_headers);
+    let res_content_encoding = get_content_encoding(&original_res_headers);
 
     let ctx = RequestContext::new()
         .with_request_info(
@@ -1317,6 +1327,12 @@ async fn handle_intercepted_request_with_protocol(
         .with_query_params(query_params.clone())
         .with_client_process(client_app.clone(), client_pid, client_path.clone());
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, &ctx);
+
+    let res_headers: Vec<(String, String)> = res_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
 
@@ -1400,9 +1416,28 @@ async fn handle_intercepted_request_with_protocol(
                 receive_ms: None,
                 total_ms,
             });
-            record.request_headers = Some(req_headers.clone());
-            record.response_headers = Some(res_headers.clone());
-            record.request_content_type = req_headers
+            record.request_headers = Some(final_req_headers.clone());
+            record.response_headers = Some(original_res_headers.clone());
+            if res_headers != original_res_headers {
+                record.actual_response_headers = Some(res_headers.clone());
+            }
+            record.original_request_headers = Some(original_req_headers.clone());
+            if actual_target_host != original_host || actual_target_port != original_port {
+                let actual_scheme = if actual_use_http { "http" } else { "https" };
+                let actual_url = if (actual_use_http && actual_target_port == 80)
+                    || (!actual_use_http && actual_target_port == 443)
+                {
+                    format!("{}://{}{}", actual_scheme, actual_target_host, path)
+                } else {
+                    format!(
+                        "{}://{}:{}{}",
+                        actual_scheme, actual_target_host, actual_target_port, path
+                    )
+                };
+                record.actual_url = Some(actual_url);
+                record.actual_host = Some(actual_target_host.clone());
+            }
+            record.request_content_type = final_req_headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
                 .map(|(_, v)| v.clone());
@@ -1421,24 +1456,7 @@ async fn handle_intercepted_request_with_protocol(
             }
 
             record.has_rule_hit = has_rules;
-            record.matched_rules = if resolved_rules.rules.is_empty() {
-                None
-            } else {
-                Some(
-                    resolved_rules
-                        .rules
-                        .iter()
-                        .map(|r| MatchedRule {
-                            pattern: r.pattern.clone(),
-                            protocol: format!("{:?}", r.protocol),
-                            value: r.value.clone(),
-                            rule_name: r.rule_name.clone(),
-                            raw: r.raw.clone(),
-                            line: r.line,
-                        })
-                        .collect(),
-                )
-            };
+            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
             record.request_body_ref = store_request_body(
                 &admin_state,
@@ -1539,9 +1557,28 @@ async fn handle_intercepted_request_with_protocol(
             receive_ms: Some(receive_ms),
             total_ms,
         });
-        record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers.clone());
-        record.request_content_type = req_headers
+        record.request_headers = Some(final_req_headers.clone());
+        record.response_headers = Some(original_res_headers.clone());
+        if res_headers != original_res_headers {
+            record.actual_response_headers = Some(res_headers.clone());
+        }
+        record.original_request_headers = Some(original_req_headers.clone());
+        if actual_target_host != original_host || actual_target_port != original_port {
+            let actual_scheme = if actual_use_http { "http" } else { "https" };
+            let actual_url = if (actual_use_http && actual_target_port == 80)
+                || (!actual_use_http && actual_target_port == 443)
+            {
+                format!("{}://{}{}", actual_scheme, actual_target_host, path)
+            } else {
+                format!(
+                    "{}://{}:{}{}",
+                    actual_scheme, actual_target_host, actual_target_port, path
+                )
+            };
+            record.actual_url = Some(actual_url);
+            record.actual_host = Some(actual_target_host.clone());
+        }
+        record.request_content_type = final_req_headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
             .map(|(_, v)| v.clone());
@@ -1560,24 +1597,7 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
         record.request_body_ref = store_request_body(
             &admin_state,
@@ -1640,6 +1660,19 @@ async fn handle_intercepted_request_with_protocol(
                 res_body_bytes.len(),
                 final_body.len()
             );
+        }
+    }
+
+    if let Some(ref state) = admin_state {
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            let decompressed_res =
+                crate::transform::decompress_body(&final_body, res_content_encoding.as_deref());
+            if let Some(body_ref) = store.store(req_id, "res", decompressed_res.as_ref()) {
+                state.update_traffic_by_id(req_id, move |record| {
+                    record.response_body_ref = Some(body_ref.clone());
+                });
+            }
         }
     }
 
@@ -1883,24 +1916,7 @@ async fn handle_intercepted_websocket(
         record.set_websocket();
 
         record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
         state.connection_monitor.register_connection(req_id);
         state.record_traffic(record);

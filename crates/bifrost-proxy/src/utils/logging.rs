@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use bifrost_admin::MatchedRule;
+
 use crate::server::ResolvedRules;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -178,6 +180,27 @@ pub fn format_rules_summary(rules: &ResolvedRules) -> String {
         "none".to_string()
     } else {
         parts.join(", ")
+    }
+}
+
+pub fn build_matched_rules(rules: &ResolvedRules) -> Option<Vec<MatchedRule>> {
+    let mut matched = Vec::new();
+
+    for rule in &rules.rules {
+        matched.push(MatchedRule {
+            pattern: rule.pattern.clone(),
+            protocol: format!("{:?}", rule.protocol),
+            value: rule.value.clone(),
+            rule_name: rule.rule_name.clone(),
+            raw: rule.raw.clone(),
+            line: rule.line,
+        });
+    }
+
+    if matched.is_empty() {
+        None
+    } else {
+        Some(matched)
     }
 }
 

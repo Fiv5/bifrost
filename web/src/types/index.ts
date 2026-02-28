@@ -88,6 +88,10 @@ export interface TrafficRecord extends TrafficSummary {
   request_content_type: string | null;
   timing?: RequestTiming | null;
   last_frame_id?: number;
+  actual_url?: string | null;
+  actual_host?: string | null;
+  original_request_headers?: [string, string][] | null;
+  actual_response_headers?: [string, string][] | null;
 }
 
 export type FrameDirection = 'send' | 'receive';

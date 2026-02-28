@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, FrameDirection, FrameType, MatchedRule, RequestTiming, TrafficRecord, TrafficType,
+    AdminState, FrameDirection, FrameType, RequestTiming, TrafficRecord, TrafficType,
 };
 use bifrost_core::{BifrostError, Result};
 
@@ -128,24 +128,7 @@ pub async fn handle_websocket_upgrade(
         });
         record.request_headers = Some(req_headers);
         record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.client_ip = peer_addr.ip().to_string();
         record.client_app = client_app;
         record.client_pid = client_pid;

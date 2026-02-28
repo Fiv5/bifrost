@@ -1,5 +1,5 @@
-import { useMemo, useRef, useCallback } from "react";
-import { Table, Typography, theme, ConfigProvider, Button, Modal, message } from "antd";
+import { useMemo, useRef, useCallback, useState } from "react";
+import { Table, Typography, theme, ConfigProvider, Button, Modal, message, Tag, Space, Radio } from "antd";
 import { LockOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { SessionTargetSearchState } from "../../../../types";
@@ -10,6 +10,8 @@ const { Text } = Typography;
 
 interface HeaderViewProps {
   headers: [string, string][] | null;
+  originalHeaders?: [string, string][] | null;
+  actualHeaders?: [string, string][] | null;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   isTunnel?: boolean;
@@ -25,6 +27,8 @@ interface HeaderItem {
 
 export const HeaderView = ({
   headers,
+  originalHeaders,
+  actualHeaders,
   searchValue,
   onSearch,
   isTunnel,
@@ -33,6 +37,9 @@ export const HeaderView = ({
 }: HeaderViewProps) => {
   const { token } = theme.useToken();
   const tableRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<'current' | 'original' | 'actual'>('current');
+
+  const hasModifications = !!(originalHeaders || actualHeaders);
 
   const handleAddToInterceptList = useCallback(() => {
     if (!host) {
@@ -100,14 +107,24 @@ export const HeaderView = ({
     });
   }, [clientApp]);
 
+  const displayHeaders = useMemo(() => {
+    if (viewMode === 'original' && originalHeaders) {
+      return originalHeaders;
+    }
+    if (viewMode === 'actual' && actualHeaders) {
+      return actualHeaders;
+    }
+    return headers;
+  }, [viewMode, headers, originalHeaders, actualHeaders]);
+
   const dataSource = useMemo<HeaderItem[]>(() => {
-    if (!headers) return [];
-    return headers.map(([name, value], index) => ({
+    if (!displayHeaders) return [];
+    return displayHeaders.map(([name, value], index) => ({
       key: String(index),
       name,
       value,
     }));
-  }, [headers]);
+  }, [displayHeaders]);
 
   const filteredData = useMemo(() => {
     if (!searchValue.value) return dataSource;
@@ -198,6 +215,31 @@ export const HeaderView = ({
 
   return (
     <div ref={tableRef}>
+      {hasModifications && (
+        <div style={{ marginBottom: 8 }}>
+          <Space>
+            <Radio.Group
+              value={viewMode}
+              onChange={(e) => setViewMode(e.target.value)}
+              size="small"
+            >
+              <Radio.Button value="current">
+                Current
+              </Radio.Button>
+              {originalHeaders && (
+                <Radio.Button value="original">
+                  <Tag color="blue" style={{ margin: 0, fontSize: 11 }}>Original</Tag>
+                </Radio.Button>
+              )}
+              {actualHeaders && (
+                <Radio.Button value="actual">
+                  <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>Actual</Tag>
+                </Radio.Button>
+              )}
+            </Radio.Group>
+          </Space>
+        </div>
+      )}
       <ConfigProvider
         theme={{
           components: {

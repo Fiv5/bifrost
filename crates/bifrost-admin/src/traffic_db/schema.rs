@@ -1,8 +1,48 @@
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
-pub fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
+#[derive(Debug)]
+pub enum InitError {
+    Sqlite(rusqlite::Error),
+    VersionMismatch { current: u32, expected: u32 },
+}
+
+impl From<rusqlite::Error> for InitError {
+    fn from(e: rusqlite::Error) -> Self {
+        InitError::Sqlite(e)
+    }
+}
+
+impl std::fmt::Display for InitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InitError::Sqlite(e) => write!(f, "SQLite error: {}", e),
+            InitError::VersionMismatch { current, expected } => {
+                write!(
+                    f,
+                    "Schema version mismatch: current={}, expected={}",
+                    current, expected
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for InitError {}
+
+pub fn check_schema_version(conn: &Connection) -> Result<(), InitError> {
+    let current_version = get_schema_version(conn);
+    if current_version != 0 && current_version != SCHEMA_VERSION {
+        return Err(InitError::VersionMismatch {
+            current: current_version,
+            expected: SCHEMA_VERSION,
+        });
+    }
+    Ok(())
+}
+
+pub fn init_database(conn: &Connection) -> Result<(), InitError> {
     conn.execute_batch(
         "
         PRAGMA journal_mode = WAL;
@@ -13,14 +53,28 @@ pub fn init_database(conn: &Connection) -> Result<(), rusqlite::Error> {
         ",
     )?;
 
+    check_schema_version(conn)?;
+
     conn.execute_batch(SCHEMA_SQL)?;
 
     conn.execute(
-        "INSERT OR IGNORE INTO metadata (key, value) VALUES ('schema_version', ?)",
+        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', ?)",
         [SCHEMA_VERSION.to_string()],
     )?;
 
     Ok(())
+}
+
+fn get_schema_version(conn: &Connection) -> u32 {
+    conn.query_row(
+        "SELECT value FROM metadata WHERE key = 'schema_version'",
+        [],
+        |row| {
+            let version_str: String = row.get(0)?;
+            Ok(version_str.parse::<u32>().unwrap_or(0))
+        },
+    )
+    .unwrap_or(0)
 }
 
 const SCHEMA_SQL: &str = r#"
@@ -52,7 +106,11 @@ CREATE TABLE IF NOT EXISTS traffic_records (
     matched_rules_blob BLOB,
     socket_status_blob BLOB,
     request_body_ref_blob BLOB,
-    response_body_ref_blob BLOB
+    response_body_ref_blob BLOB,
+    actual_url TEXT,
+    actual_host TEXT,
+    original_request_headers_blob BLOB,
+    actual_response_headers_blob BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_id ON traffic_records(id);
@@ -82,7 +140,9 @@ pub fn get_insert_sql() -> &'static str {
         flags, frame_count, last_frame_id,
         timing_blob, request_headers_blob, response_headers_blob,
         matched_rules_blob, socket_status_blob,
-        request_body_ref_blob, response_body_ref_blob
+        request_body_ref_blob, response_body_ref_blob,
+        actual_url, actual_host, original_request_headers_blob,
+        actual_response_headers_blob
     ) VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7,
         ?8, ?9, ?10, ?11,
@@ -91,7 +151,9 @@ pub fn get_insert_sql() -> &'static str {
         ?19, ?20, ?21,
         ?22, ?23, ?24,
         ?25, ?26,
-        ?27, ?28
+        ?27, ?28,
+        ?29, ?30, ?31,
+        ?32
     )
     "#
 }
@@ -116,7 +178,11 @@ pub fn get_update_sql() -> &'static str {
         matched_rules_blob = ?15,
         socket_status_blob = ?16,
         request_body_ref_blob = ?17,
-        response_body_ref_blob = ?18
-    WHERE id = ?19
+        response_body_ref_blob = ?18,
+        actual_url = ?19,
+        actual_host = ?20,
+        original_request_headers_blob = ?21,
+        actual_response_headers_blob = ?22
+    WHERE id = ?23
     "#
 }

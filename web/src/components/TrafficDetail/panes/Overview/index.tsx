@@ -83,24 +83,42 @@ const RuleCard = ({ rule, index }: { rule: MatchedRule; index: number }) => {
       }}
     >
       <div style={{ marginBottom: 2 }}>
-        <Tag color="blue" style={{ fontSize: 11 }}>#{index + 1}</Tag>
-        <Text strong style={{ fontSize: 12 }}>{source}</Text>
+        <Tag color="blue" style={{ fontSize: 11 }}>
+          #{index + 1}
+        </Tag>
+        <Text strong style={{ fontSize: 12 }}>
+          {source}
+        </Text>
       </div>
       <div style={{ marginBottom: 1 }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>Protocol: </Text>
-        <Tag color="green" style={{ fontSize: 11 }}>{rule.protocol}</Tag>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Protocol:{" "}
+        </Text>
+        <Tag color="green" style={{ fontSize: 11 }}>
+          {rule.protocol}
+        </Tag>
       </div>
       <div style={{ marginBottom: 1 }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>Pattern: </Text>
-        <Text code style={{ fontSize: 11 }}>{rule.pattern}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Pattern:{" "}
+        </Text>
+        <Text code style={{ fontSize: 11 }}>
+          {rule.pattern}
+        </Text>
       </div>
       <div style={{ marginBottom: 1 }}>
-        <Text type="secondary" style={{ fontSize: 12 }}>Value: </Text>
-        <Text code style={{ fontSize: 11 }}>{rule.value || "(empty)"}</Text>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Value:{" "}
+        </Text>
+        <Text code style={{ fontSize: 11 }}>
+          {rule.value || "(empty)"}
+        </Text>
       </div>
       {rule.raw && (
         <div>
-          <Text type="secondary" style={{ fontSize: 12 }}>Raw Rule:</Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Raw Rule:
+          </Text>
           <pre
             style={{
               fontFamily: "monospace",
@@ -212,10 +230,15 @@ const SocketStatusCard = ({
       }}
     >
       <div style={{ marginBottom: 2 }}>
-        <Tag color={status.is_open ? "green" : "default"} style={{ fontSize: 11 }}>
+        <Tag
+          color={status.is_open ? "green" : "default"}
+          style={{ fontSize: 11 }}
+        >
           {status.is_open ? "Connected" : "Closed"}
         </Tag>
-        <Tag color="blue" style={{ fontSize: 11 }}>{isWebSocket ? "WebSocket" : "SSE"}</Tag>
+        <Tag color="blue" style={{ fontSize: 11 }}>
+          {isWebSocket ? "WebSocket" : "SSE"}
+        </Tag>
       </div>
       <ConfigProvider
         theme={{
@@ -231,7 +254,13 @@ const SocketStatusCard = ({
           },
         }}
       >
-        <Descriptions column={2} size="small" bordered labelStyle={{ fontSize: 12 }} contentStyle={{ fontSize: 12 }}>
+        <Descriptions
+          column={2}
+          size="small"
+          bordered
+          labelStyle={{ fontSize: 12 }}
+          contentStyle={{ fontSize: 12 }}
+        >
           <Descriptions.Item label="Send Count">
             {status.send_count}
           </Descriptions.Item>
@@ -279,8 +308,15 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
       });
     }
 
-    if ((record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status) {
-      const connectionType = record.is_websocket ? "WebSocket" : record.is_sse ? "SSE" : "Tunnel";
+    if (
+      (record.is_websocket || record.is_sse || record.is_tunnel) &&
+      record.socket_status
+    ) {
+      const connectionType = record.is_websocket
+        ? "WebSocket"
+        : record.is_sse
+          ? "SSE"
+          : "Tunnel";
       items.push({
         key: "socket",
         label: (
@@ -331,7 +367,8 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
     return null;
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
-  const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
+  const isH3 =
+    record.is_h3 || record.protocol === "h3" || record.protocol === "h3s";
 
   return (
     <div ref={wrapperRef} style={{ fontSize: 12 }}>
@@ -365,6 +402,20 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
             >
               {record.url}
             </Paragraph>
+            {record.actual_url && (
+              <div style={{ marginTop: 4 }}>
+                <Tag color="orange" style={{ fontSize: 11, marginRight: 4 }}>
+                  Actual
+                </Tag>
+                <Paragraph
+                  style={{ margin: 0, maxWidth: "100%", display: "inline" }}
+                  ellipsis={{ rows: 2, expandable: true }}
+                  copyable
+                >
+                  {record.actual_url}
+                </Paragraph>
+              </div>
+            )}
           </Descriptions.Item>
           <Descriptions.Item label="Method">
             <Tag color="blue">{record.method}</Tag>
@@ -395,25 +446,40 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           <Descriptions.Item label="Protocol">
             {record.protocol}
           </Descriptions.Item>
-          <Descriptions.Item label="Host">{record.host}</Descriptions.Item>
+          <Descriptions.Item label="Host">
+            {record.host}
+            {record.actual_host && (
+              <span style={{ marginLeft: 8 }}>
+                <Tag color="orange" style={{ fontSize: 11, marginRight: 4 }}>
+                  Actual
+                </Tag>
+                {record.actual_host}
+              </span>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Path">{record.path}</Descriptions.Item>
           <Descriptions.Item label="Content Type">
             {record.content_type || "-"}
           </Descriptions.Item>
           <Descriptions.Item label="Client">
             {record.client_app ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  flexWrap: "wrap",
+                }}
+              >
                 <AppIcon appName={record.client_app} size={18} />
-                <Tag color="cyan" style={{ margin: 0 }}>{record.client_app}</Tag>
+                <Tag color="cyan" style={{ margin: 0 }}>
+                  {record.client_app}
+                </Tag>
                 {record.client_pid && (
-                  <Text type="secondary">
-                    PID: {record.client_pid}
-                  </Text>
+                  <Text type="secondary">PID: {record.client_pid}</Text>
                 )}
                 {record.client_ip && (
-                  <Text type="secondary">
-                    IP: {record.client_ip}
-                  </Text>
+                  <Text type="secondary">IP: {record.client_ip}</Text>
                 )}
               </div>
             ) : (
@@ -432,18 +498,24 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           contentStyle={{ fontSize: 12 }}
         >
           <Descriptions.Item label="Request Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
+            record.socket_status
               ? formatSize(record.socket_status.send_bytes)
               : formatSize(record.request_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Response Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
+            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
+            record.socket_status
               ? formatSize(record.socket_status.receive_bytes)
               : formatSize(record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Total Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
-              ? formatSize(record.socket_status.send_bytes + record.socket_status.receive_bytes)
+            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
+            record.socket_status
+              ? formatSize(
+                  record.socket_status.send_bytes +
+                    record.socket_status.receive_bytes,
+                )
               : formatSize(record.request_size + record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Duration">

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{AdminState, MatchedRule, RequestTiming, TrafficRecord, TrafficType};
+use bifrost_admin::{AdminState, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -225,15 +225,21 @@ pub async fn handle_http_request(
 
     let (mut parts, body) = req.into_parts();
 
-    let req_headers: Vec<(String, String)> = parts
+    let original_req_headers: Vec<(String, String)> = parts
         .headers
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let req_content_encoding = get_content_encoding(&req_headers);
+    let req_content_encoding = get_content_encoding(&original_req_headers);
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
+
+    let req_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     let content_length = parts
         .headers
@@ -449,15 +455,21 @@ pub async fn handle_http_request(
 
     let (mut res_parts, res_body) = res.into_parts();
 
-    let res_headers: Vec<(String, String)> = res_parts
+    let original_res_headers: Vec<(String, String)> = res_parts
         .headers
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
-    let res_content_encoding = get_content_encoding(&res_headers);
+    let res_content_encoding = get_content_encoding(&original_res_headers);
 
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
+
+    let res_headers: Vec<(String, String)> = res_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
 
@@ -532,11 +544,6 @@ pub async fn handle_http_request(
                 .get(hyper::header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
-            let res_headers: Vec<(String, String)> = res_parts
-                .headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect();
             record.request_size =
                 calculate_request_size(&method, &record_url, &req_headers, final_body.len());
             record.response_size = 0;
@@ -551,26 +558,12 @@ pub async fn handle_http_request(
                 total_ms,
             });
             record.request_headers = Some(req_headers.clone());
-            record.response_headers = Some(res_headers);
+            record.response_headers = Some(original_res_headers.clone());
+            if res_headers != original_res_headers {
+                record.actual_response_headers = Some(res_headers.clone());
+            }
             record.has_rule_hit = has_rules;
-            record.matched_rules = if resolved_rules.rules.is_empty() {
-                None
-            } else {
-                Some(
-                    resolved_rules
-                        .rules
-                        .iter()
-                        .map(|r| MatchedRule {
-                            pattern: r.pattern.clone(),
-                            protocol: format!("{:?}", r.protocol),
-                            value: r.value.clone(),
-                            rule_name: r.rule_name.clone(),
-                            raw: r.raw.clone(),
-                            line: r.line,
-                        })
-                        .collect(),
-                )
-            };
+            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
             record.request_content_type = req_headers
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
@@ -726,26 +719,40 @@ pub async fn handle_http_request(
             total_ms,
         });
         record.request_headers = Some(req_headers.clone());
-        record.response_headers = Some(res_headers.clone());
+        record.response_headers = Some(original_res_headers.clone());
+        if res_headers != original_res_headers {
+            record.actual_response_headers = Some(res_headers.clone());
+        }
+        record.original_request_headers = Some(original_req_headers.clone());
+        if host != original_host || port != original_port {
+            let actual_scheme = if use_tls { "https" } else { "http" };
+            let actual_url = if (use_tls && port == 443) || (!use_tls && port == 80) {
+                format!(
+                    "{}://{}{}",
+                    actual_scheme,
+                    host,
+                    processed_uri
+                        .path_and_query()
+                        .map(|pq| pq.as_str())
+                        .unwrap_or("/")
+                )
+            } else {
+                format!(
+                    "{}://{}:{}{}",
+                    actual_scheme,
+                    host,
+                    port,
+                    processed_uri
+                        .path_and_query()
+                        .map(|pq| pq.as_str())
+                        .unwrap_or("/")
+                )
+            };
+            record.actual_url = Some(actual_url);
+            record.actual_host = Some(host.clone());
+        }
         record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.request_content_type = req_headers
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
@@ -767,18 +774,16 @@ pub async fn handle_http_request(
             state.connection_monitor.register_connection(&ctx.id_str());
         }
 
-        record.request_body_ref = store_request_body(
-            &admin_state,
-            &ctx.id_str(),
-            &body_bytes,
-            req_content_encoding.as_deref(),
-        );
-
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
 
+            let decompressed_req_body =
+                decompress_body(&final_body, req_content_encoding.as_deref());
+            record.request_body_ref =
+                store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref());
+
             let decompressed_res_body =
-                decompress_body(&res_body_bytes, res_content_encoding.as_deref());
+                decompress_body(&final_res_body, res_content_encoding.as_deref());
             record.response_body_ref =
                 store.store(&ctx.id_str(), "res", decompressed_res_body.as_ref());
         }
@@ -979,24 +984,7 @@ async fn handle_http_websocket(
         record.request_headers = Some(req_headers);
         record.response_headers = Some(response_headers.clone());
         record.has_rule_hit = has_rules;
-        record.matched_rules = if resolved_rules.rules.is_empty() {
-            None
-        } else {
-            Some(
-                resolved_rules
-                    .rules
-                    .iter()
-                    .map(|r| bifrost_admin::MatchedRule {
-                        pattern: r.pattern.clone(),
-                        protocol: format!("{:?}", r.protocol),
-                        value: r.value.clone(),
-                        rule_name: r.rule_name.clone(),
-                        raw: r.raw.clone(),
-                        line: r.line,
-                    })
-                    .collect(),
-            )
-        };
+        record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.client_ip = ctx.client_ip.clone();
         record.client_app = ctx.client_app.clone();
         record.client_pid = ctx.client_pid;
