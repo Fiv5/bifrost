@@ -12,8 +12,9 @@ mod process;
 
 use cli::{Cli, Commands};
 use commands::{
-    handle_ca_command, handle_rule_command, handle_system_proxy_command, handle_value_command,
-    handle_whitelist_command, run_start, run_status, run_stop,
+    check_and_print_update_notice, handle_ca_command, handle_rule_command,
+    handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
+    run_start, run_status, run_stop,
 };
 
 fn main() {
@@ -45,6 +46,8 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    check_and_print_update_notice();
 
     let result = match cli.command {
         Some(Commands::Start {
@@ -103,6 +106,7 @@ fn main() {
             handle_system_proxy_command(&cli, action.clone())
         }
         Some(Commands::Value { action }) => handle_value_command(action),
+        Some(Commands::Upgrade { bump, dry_run }) => handle_upgrade(bump, dry_run),
         None => run_start(
             cli.port,
             cli.host.clone(),

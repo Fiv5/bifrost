@@ -295,6 +295,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: ValueCommands,
     },
+    #[command(about = "Upgrade project version (interactive bump selection)")]
+    Upgrade {
+        #[arg(
+            long,
+            help = "Bump type: patch, minor, major (skip interactive prompt)"
+        )]
+        bump: Option<String>,
+        #[arg(long, help = "Dry run without modifying files")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
