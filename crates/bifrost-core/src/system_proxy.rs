@@ -67,7 +67,7 @@ impl SystemProxyManager {
         }
 
         let current = Sysproxy::get_system_proxy().unwrap_or_else(|e| {
-            tracing::warn!("Failed to get current system proxy, using default: {}", e);
+            tracing::debug!(error = %e, "[SYSTEM_PROXY] Failed to get current proxy for backup");
             Sysproxy {
                 enable: false,
                 host: String::new(),
@@ -225,8 +225,15 @@ impl SystemProxyManager {
             ));
         }
 
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(proxy) = Self::parse_macos_proxy() {
+                return Ok(ProxyBackup::from(&proxy));
+            }
+        }
+
         let current = Sysproxy::get_system_proxy().unwrap_or_else(|e| {
-            tracing::warn!("Failed to get current system proxy, using default: {}", e);
+            tracing::debug!(error = %e, "[SYSTEM_PROXY] Failed to get system proxy");
             Sysproxy {
                 enable: false,
                 host: String::new(),
@@ -236,6 +243,60 @@ impl SystemProxyManager {
         });
 
         Ok(ProxyBackup::from(&current))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn parse_macos_proxy() -> Option<Sysproxy> {
+        let output = std::process::Command::new("scutil")
+            .arg("--proxy")
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut http_enable = false;
+        let mut https_enable = false;
+        let mut socks_enable = false;
+        let mut host = String::new();
+        let mut port: u16 = 0;
+        let mut bypass_list: Vec<String> = Vec::new();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if let Some((key, value)) = line.split_once(" : ") {
+                let key = key.trim();
+                let value = value.trim();
+                match key {
+                    "HTTPEnable" => http_enable = value == "1",
+                    "HTTPSEnable" => https_enable = value == "1",
+                    "SOCKSEnable" => socks_enable = value == "1",
+                    "HTTPProxy" | "HTTPSProxy" | "SOCKSProxy" => {
+                        if host.is_empty() {
+                            host = value.to_string();
+                        }
+                    }
+                    "HTTPPort" | "HTTPSPort" | "SOCKSPort" => {
+                        if port == 0 {
+                            port = value.parse().unwrap_or(0);
+                        }
+                    }
+                    _ => {}
+                }
+            } else if line.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                if let Some((_, value)) = line.split_once(" : ") {
+                    bypass_list.push(value.trim().to_string());
+                }
+            }
+        }
+
+        let enable = http_enable || https_enable || socks_enable;
+        let bypass = bypass_list.join(",");
+
+        Some(Sysproxy {
+            enable,
+            host,
+            port,
+            bypass,
+        })
     }
 
     pub fn is_set(&self) -> bool {
