@@ -157,16 +157,7 @@ pub fn check_and_print_update_notice() {
     );
     println!();
     println!("     {}", "To upgrade, run:".bright_white());
-    println!(
-        "       {}",
-        "cargo install bifrost --force".bright_cyan().bold()
-    );
-    println!();
-    println!("     {}", "Or update via source:".bright_white());
-    println!(
-        "       {}",
-        "git pull && cargo build --release".bright_cyan()
-    );
+    println!("       {}", "bifrost upgrade".bright_cyan().bold());
     println!("{}", separator.bright_yellow());
     println!();
 }
