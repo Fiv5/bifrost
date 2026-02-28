@@ -365,6 +365,8 @@ jobs:
     name: Update Homebrew Formula
     needs: [prepare, release]
     runs-on: ubuntu-latest
+    env:
+      MAX_VERSIONED_FORMULAS: 5
     steps:
       - name: Checkout homebrew-bifrost
         uses: actions/checkout@v4
@@ -384,25 +386,34 @@ jobs:
           echo "INTEL_SHA=${INTEL_SHA}" >> $GITHUB_ENV
           echo "ARM_SHA=${ARM_SHA}" >> $GITHUB_ENV
 
-      - name: Update Formula
+      - name: Generate formula content
+        id: formula
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
-          cat > homebrew-bifrost/Formula/bifrost.rb << EOF
-          class Bifrost < Formula
+          IS_PRERELEASE="${{ needs.prepare.outputs.is_prerelease }}"
+
+          generate_formula() {
+            local class_name="$1"
+            local version="$2"
+            local intel_sha="$3"
+            local arm_sha="$4"
+            
+            cat << FORMULA
+          class ${class_name} < Formula
             desc "High-performance HTTP/HTTPS/SOCKS5 proxy server written in Rust"
             homepage "https://github.com/bifrost-proxy/bifrost"
-            version "${VERSION}"
+            version "${version}"
             license "MIT"
 
             on_macos do
               on_intel do
                 url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-x86_64-apple-darwin.tar.gz"
-                sha256 "${INTEL_SHA}"
+                sha256 "${intel_sha}"
               end
 
               on_arm do
                 url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-aarch64-apple-darwin.tar.gz"
-                sha256 "${ARM_SHA}"
+                sha256 "${arm_sha}"
               end
             end
 
@@ -431,14 +442,48 @@ jobs:
               assert_match "bifrost", shell_output("#{bin}/bifrost --version")
             end
           end
-          EOF
+          FORMULA
+          }
+
+          generate_formula "Bifrost" "${VERSION}" "${INTEL_SHA}" "${ARM_SHA}" > homebrew-bifrost/Formula/bifrost.rb
+
+          if [[ "${IS_PRERELEASE}" != "true" ]]; then
+            BASE_VERSION="${VERSION%%-*}"
+            VERSIONED_CLASS_NAME="BifrostAT${BASE_VERSION//\./_}"
+            generate_formula "${VERSIONED_CLASS_NAME}" "${VERSION}" "${INTEL_SHA}" "${ARM_SHA}" > "homebrew-bifrost/Formula/bifrost@${BASE_VERSION}.rb"
+            echo "Created versioned formula: bifrost@${BASE_VERSION}.rb"
+          fi
+
+      - name: Cleanup old versioned formulas
+        run: |
+          cd homebrew-bifrost/Formula
+
+          VERSIONED_FORMULAS=$(ls -1 bifrost@*.rb 2>/dev/null | sort -V -r || true)
+          COUNT=0
+
+          for formula in $VERSIONED_FORMULAS; do
+            COUNT=$((COUNT + 1))
+            if [[ $COUNT -gt $MAX_VERSIONED_FORMULAS ]]; then
+              echo "Removing old formula: $formula"
+              rm -f "$formula"
+            fi
+          done
 
       - name: Commit and push
         working-directory: homebrew-bifrost
         run: |
           VERSION="${{ needs.prepare.outputs.version }}"
+          IS_PRERELEASE="${{ needs.prepare.outputs.is_prerelease }}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/bifrost.rb
-          git diff --cached --quiet || git commit -m "Update bifrost to v${VERSION}"
+          git add -A Formula/
+
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            COMMIT_MSG="Update bifrost to v${VERSION} (pre-release)"
+          else
+            COMMIT_MSG="Update bifrost to v${VERSION} and add versioned formula"
+          fi
+
+          git diff --cached --quiet || git commit -m "${COMMIT_MSG}"
           git push
