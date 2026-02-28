@@ -588,8 +588,8 @@ pub async fn handle_http_request(
             } else if is_sse {
                 record.set_sse();
                 state.connection_monitor.register_connection(&record_id);
-            } else {
-                record.is_tunnel = true;
+            } else if is_streaming {
+                record.set_streaming();
                 state.connection_monitor.register_connection(&record_id);
             }
 

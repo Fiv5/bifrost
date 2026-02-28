@@ -339,15 +339,79 @@ jobs:
     needs: [prepare, release]
     runs-on: ubuntu-latest
     steps:
-      - name: Update Homebrew Formula
-        uses: peter-evans/repository-dispatch@v3
+      - name: Checkout homebrew-bifrost
+        uses: actions/checkout@v4
         with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           repository: bifrost-proxy/homebrew-bifrost
-          event-type: update-formula
-          client-payload: |
-            {
-              "version": "${{ needs.prepare.outputs.version }}",
-              "tag": "${{ needs.prepare.outputs.tag }}",
-              "is_prerelease": "${{ needs.prepare.outputs.is_prerelease }}"
-            }
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-bifrost
+
+      - name: Download checksums
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          curl -sL "https://github.com/bifrost-proxy/bifrost/releases/download/${TAG}/bifrost-${TAG}-checksums.txt" -o checksums.txt
+
+          INTEL_SHA=$(grep "x86_64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+          ARM_SHA=$(grep "aarch64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+
+          echo "INTEL_SHA=${INTEL_SHA}" >> $GITHUB_ENV
+          echo "ARM_SHA=${ARM_SHA}" >> $GITHUB_ENV
+
+      - name: Update Formula
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          cat > homebrew-bifrost/Formula/bifrost.rb << EOF
+          class Bifrost < Formula
+            desc "High-performance HTTP/HTTPS/SOCKS5 proxy server written in Rust"
+            homepage "https://github.com/bifrost-proxy/bifrost"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              on_intel do
+                url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-x86_64-apple-darwin.tar.gz"
+                sha256 "${INTEL_SHA}"
+              end
+
+              on_arm do
+                url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-v#{version}-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_SHA}"
+              end
+            end
+
+            def install
+              bin.install "bifrost"
+            end
+
+            def caveats
+              <<~EOS
+                To start bifrost proxy server:
+                  bifrost start
+
+                To start with a specific port:
+                  bifrost -p 9900 start
+
+                To enable HTTPS interception, you may need to install the CA certificate:
+                  bifrost ca export
+                  # Then install the exported certificate to your system trust store
+
+                Web UI available at:
+                  http://127.0.0.1:<port>/_bifrost/
+              EOS
+            end
+
+            test do
+              assert_match "bifrost", shell_output("#{bin}/bifrost --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        working-directory: homebrew-bifrost
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/bifrost.rb
+          git diff --cached --quiet || git commit -m "Update bifrost to v${VERSION}"
+          git push

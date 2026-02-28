@@ -222,6 +222,10 @@ impl TrafficRecord {
         self.is_sse = true;
         self.socket_status = Some(SocketStatus::default());
     }
+
+    pub fn set_streaming(&mut self) {
+        self.socket_status = Some(SocketStatus::default());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
