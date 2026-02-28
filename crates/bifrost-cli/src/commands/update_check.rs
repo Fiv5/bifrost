@@ -12,7 +12,7 @@ const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/relea
 const CACHE_FILE_NAME: &str = "version_cache.json";
 const CACHE_DURATION_HOURS: i64 = 24;
 const REQUEST_TIMEOUT_SECS: u64 = 5;
-const MAX_RELEASE_HIGHLIGHTS: usize = 3;
+const MAX_RELEASE_HIGHLIGHTS: usize = 5;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionCache {
@@ -102,67 +102,136 @@ fn parse_release_highlights(body: Option<&str>) -> Vec<String> {
 
     let mut highlights = Vec::new();
 
-    if let Some(start) = body.find("## ✨ Highlights") {
-        let section = &body[start..];
-        let end = section[1..]
-            .find("\n## ")
-            .map(|i| i + 1)
-            .unwrap_or(section.len());
-        let section = &section[..end];
+    let normalize = |s: &str| -> String {
+        let mapped: String = s
+            .chars()
+            .filter(|c| !c.is_control())
+            .map(|c| match c {
+                '’' | '‘' => '\'',
+                _ => c,
+            })
+            .collect();
+        mapped
+            .to_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || c.is_whitespace() || *c == '\'')
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_string()
+    };
 
-        for line in section.lines().skip(1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if line.starts_with("## ") {
-                break;
-            }
-            let cleaned = line
-                .trim_start_matches("- ")
-                .trim_start_matches("* ")
-                .trim_start_matches("• ")
-                .trim();
-            if !cleaned.is_empty() {
-                highlights.push(cleaned.to_string());
-                if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
-                    return highlights;
+    let lines_iter = body.lines().enumerate().peekable();
+    for (idx, line) in lines_iter {
+        let l = line.trim();
+        if l.starts_with("## ") {
+            let title = normalize(l.trim_start_matches("## ").trim());
+            if title.contains("highlights")
+                || title.contains("what's new")
+                || title.contains("whats new")
+                || title.contains("what’s new")
+            {
+                let mut j = idx + 1;
+                while let Some(next_line) = body.lines().nth(j) {
+                    let nl = next_line.trim();
+                    if nl.starts_with("## ") {
+                        break;
+                    }
+                    if !nl.is_empty() {
+                        let cleaned = nl
+                            .trim_start_matches("- ")
+                            .trim_start_matches("* ")
+                            .trim_start_matches("• ")
+                            .trim();
+                        if !cleaned.is_empty() {
+                            highlights.push(cleaned.to_string());
+                            if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
+                                return highlights;
+                            }
+                        }
+                    }
+                    j += 1;
                 }
             }
         }
     }
 
     if highlights.is_empty() {
-        if let Some(start) = body.find("### 🚀 Features") {
-            let section = &body[start..];
-            let end = section[1..]
-                .find("\n### ")
-                .or_else(|| section[1..].find("\n## "))
-                .map(|i| i + 1)
-                .unwrap_or(section.len());
-            let section = &section[..end];
-
-            for line in section.lines().skip(1) {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if line.starts_with("### ") || line.starts_with("## ") {
-                    break;
-                }
-                if line.starts_with("- ") || line.starts_with("* ") {
-                    let cleaned = line
-                        .trim_start_matches("- ")
-                        .trim_start_matches("* ")
-                        .trim();
-                    if let Some(msg) = extract_commit_message(cleaned) {
-                        highlights.push(msg);
-                        if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
-                            return highlights;
+        let mut k = 0usize;
+        while k < body.lines().count() {
+            let ln = body.lines().nth(k).unwrap().trim();
+            if ln.starts_with("### ") {
+                let title = normalize(ln.trim_start_matches("### ").trim());
+                if title.contains("features")
+                    || title.contains("new features")
+                    || title.contains("improvements")
+                    || title.contains("enhancements")
+                {
+                    let mut t = k + 1;
+                    while let Some(nl) = body.lines().nth(t) {
+                        let nlt = nl.trim();
+                        if nlt.starts_with("### ") || nlt.starts_with("## ") {
+                            break;
                         }
+                        if nlt.starts_with("- ") || nlt.starts_with("* ") || nlt.starts_with("• ")
+                        {
+                            let cleaned = nlt
+                                .trim_start_matches("- ")
+                                .trim_start_matches("* ")
+                                .trim_start_matches("• ")
+                                .trim();
+                            if let Some(msg) = extract_commit_message(cleaned) {
+                                highlights.push(msg);
+                                if highlights.len() >= MAX_RELEASE_HIGHLIGHTS {
+                                    return highlights;
+                                }
+                            }
+                        }
+                        t += 1;
                     }
                 }
             }
+            k += 1;
+        }
+    }
+
+    if highlights.is_empty() {
+        let mut total_count = 0usize;
+        let mut k = 0usize;
+        while k < body.lines().count() {
+            let ln = body.lines().nth(k).unwrap().trim();
+            if ln.starts_with("### ") {
+                let mut t = k + 1;
+                while let Some(nl) = body.lines().nth(t) {
+                    let nlt = nl.trim();
+                    if nlt.starts_with("### ") || nlt.starts_with("## ") {
+                        break;
+                    }
+                    if nlt.starts_with("- ") || nlt.starts_with("* ") || nlt.starts_with("• ") {
+                        let cleaned = nlt
+                            .trim_start_matches("- ")
+                            .trim_start_matches("* ")
+                            .trim_start_matches("• ")
+                            .trim();
+                        if let Some(msg) = extract_any_commit_message(cleaned) {
+                            total_count += 1;
+                            if highlights.len() < MAX_RELEASE_HIGHLIGHTS {
+                                highlights.push(msg);
+                            }
+                        }
+                    }
+                    t += 1;
+                }
+            }
+            k += 1;
+        }
+        if total_count > MAX_RELEASE_HIGHLIGHTS {
+            highlights.push(format!(
+                "... and {} more",
+                total_count - MAX_RELEASE_HIGHLIGHTS
+            ));
         }
     }
 
@@ -249,6 +318,67 @@ fn extract_commit_message(line: &str) -> Option<String> {
     }
 }
 
+fn extract_any_commit_message(line: &str) -> Option<String> {
+    let cleaned = if let Some(idx) = line.rfind(" (") {
+        if line.ends_with(')') {
+            line[..idx].trim()
+        } else {
+            line
+        }
+    } else {
+        line
+    };
+
+    let prefixes = [
+        "feat: ",
+        "fix: ",
+        "chore: ",
+        "ci: ",
+        "docs: ",
+        "refactor: ",
+        "test: ",
+        "perf: ",
+        "style: ",
+        "build: ",
+    ];
+
+    let mut result = cleaned;
+    for prefix in prefixes {
+        if let Some(rest) = result.strip_prefix(prefix) {
+            result = rest;
+            break;
+        }
+    }
+
+    let scoped_prefixes = [
+        "feat(",
+        "fix(",
+        "chore(",
+        "ci(",
+        "docs(",
+        "refactor(",
+        "test(",
+        "perf(",
+        "style(",
+        "build(",
+    ];
+    for prefix in scoped_prefixes {
+        if result.starts_with(prefix) {
+            if let Some(idx) = result.find("): ") {
+                result = &result[idx + 3..];
+            }
+            break;
+        }
+    }
+
+    let result = result.trim();
+    if result.is_empty() {
+        None
+    } else {
+        Some(result.to_string())
+    }
+}
+
 fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let parse_version = |s: &str| -> (u32, u32, u32, String) {
         let (version_part, prerelease) = if let Some(idx) = s.find('-') {
@@ -303,6 +433,17 @@ pub fn get_latest_version() -> Option<VersionCache> {
     };
     write_cache(&cache);
 
+    Some(cache)
+}
+
+pub fn get_latest_version_fresh() -> Option<VersionCache> {
+    let (latest, highlights) = fetch_latest_release()?;
+    let cache = VersionCache {
+        latest_version: latest,
+        release_highlights: highlights,
+        checked_at: Utc::now(),
+    };
+    write_cache(&cache);
     Some(cache)
 }
 
@@ -513,6 +654,52 @@ without proper structure
     }
 
     #[test]
+    fn test_parse_release_highlights_plain_highlights() {
+        let body = r#"## Highlights
+
+- New rule engine
+- Faster startup
+- Better logs
+
+## What's Changed
+- other stuff
+"#;
+        let highlights = parse_release_highlights(Some(body));
+        assert_eq!(highlights.len(), 3);
+        assert_eq!(highlights[0], "New rule engine");
+        assert_eq!(highlights[1], "Faster startup");
+        assert_eq!(highlights[2], "Better logs");
+    }
+
+    #[test]
+    fn test_parse_release_highlights_whats_new_curly_apostrophe() {
+        let body = "## What’s New\n\n- A\n- B\n- C\n";
+        let highlights = parse_release_highlights(Some(body));
+        assert_eq!(highlights.len(), 3);
+        assert_eq!(highlights[0], "A");
+        assert_eq!(highlights[1], "B");
+        assert_eq!(highlights[2], "C");
+    }
+
+    #[test]
+    fn test_parse_release_highlights_features_no_emoji() {
+        let body = r#"## What's Changed
+
+### Features
+- feat: alpha (x1)
+- feat(cli): bravo (x2)
+- feat: charlie
+
+### Bug Fixes
+- nope
+"#;
+        let highlights = parse_release_highlights(Some(body));
+        assert_eq!(highlights.len(), 3);
+        assert_eq!(highlights[0], "alpha");
+        assert_eq!(highlights[1], "bravo");
+        assert_eq!(highlights[2], "charlie");
+    }
+    #[test]
     fn test_extract_commit_message() {
         assert_eq!(
             extract_commit_message("feat: add new feature (abc123)"),
@@ -526,6 +713,49 @@ without proper structure
             extract_commit_message("simple message"),
             Some("simple message".to_string())
         );
+    }
+
+    #[test]
+    fn test_extract_any_commit_message() {
+        assert_eq!(
+            extract_any_commit_message("fix(tls): 更新依赖版本并重构证书生成逻辑 (544f003)"),
+            Some("更新依赖版本并重构证书生成逻辑".to_string())
+        );
+        assert_eq!(
+            extract_any_commit_message("chore: bump version to 0.0.4-alpha (7c12d34)"),
+            Some("bump version to 0.0.4-alpha".to_string())
+        );
+        assert_eq!(
+            extract_any_commit_message("ci(workflow): 改进 Homebrew 公式更新流程 (e2c148a)"),
+            Some("改进 Homebrew 公式更新流程".to_string())
+        );
+        assert_eq!(
+            extract_any_commit_message("simple message"),
+            Some("simple message".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_release_highlights_bugfixes_only() {
+        let body = "## What's Changed\n\n### 🐛 Bug Fixes\n- fix(tls): 更新依赖版本并重构证书生成逻辑 (544f003)\n\n### 📝 Other Changes\n- chore: bump version to 0.0.4-alpha (7c12d34)\n- ci(workflow): 改进 Homebrew 公式更新流程 (e2c148a)\n- ci(workflows): 添加对 Windows ARM64 架构的支持 (abe47fa)\n\n**Full Changelog**: https://github.com/bifrost-proxy/bifrost/compare/v0.0.3-alpha...v0.0.4-alpha\n";
+        let highlights = parse_release_highlights(Some(body));
+        assert_eq!(
+            highlights.len(),
+            4,
+            "Should extract all 4 items from bug fixes and other changes sections"
+        );
+        assert!(highlights[0].contains("更新依赖版本"));
+        assert!(highlights[1].contains("bump version"));
+        assert!(highlights[2].contains("改进 Homebrew"));
+        assert!(highlights[3].contains("Windows ARM64"));
+    }
+
+    #[test]
+    fn test_parse_release_highlights_truncation() {
+        let body = "## What's Changed\n\n### 🐛 Bug Fixes\n- fix: item 1 (abc)\n- fix: item 2 (abc)\n- fix: item 3 (abc)\n- fix: item 4 (abc)\n- fix: item 5 (abc)\n- fix: item 6 (abc)\n- fix: item 7 (abc)\n";
+        let highlights = parse_release_highlights(Some(body));
+        assert_eq!(highlights.len(), 6, "Should show top 5 + '... and N more'");
+        assert!(highlights[5].contains("... and 2 more"));
     }
 
     #[test]

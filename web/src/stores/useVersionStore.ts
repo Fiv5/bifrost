@@ -6,6 +6,11 @@ import type { VersionCheckResponse } from "../types";
 const SEEN_VERSIONS_STORAGE_KEY = "bifrost-seen-versions";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
+interface CheckVersionOptions {
+  forceRefresh?: boolean;
+  skipCache?: boolean;
+}
+
 interface VersionState {
   hasUpdate: boolean;
   currentVersion: string;
@@ -17,7 +22,7 @@ interface VersionState {
   seenVersions: string[];
   modalVisible: boolean;
 
-  checkVersion: (forceRefresh?: boolean) => Promise<void>;
+  checkVersion: (options?: CheckVersionOptions) => Promise<void>;
   markVersionSeen: (version: string) => void;
   isVersionSeen: (version: string) => boolean;
   setModalVisible: (visible: boolean) => void;
@@ -37,10 +42,11 @@ export const useVersionStore = create<VersionState>()(
       seenVersions: [],
       modalVisible: false,
 
-      checkVersion: async (forceRefresh = false) => {
+      checkVersion: async (options: CheckVersionOptions = {}) => {
+        const { forceRefresh = false, skipCache = false } = options;
         const state = get();
 
-        if (!forceRefresh && state.lastChecked) {
+        if (!forceRefresh && !skipCache && state.lastChecked) {
           const elapsed = Date.now() - state.lastChecked;
           if (elapsed < CHECK_INTERVAL_MS) {
             return;

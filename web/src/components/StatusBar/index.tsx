@@ -94,7 +94,7 @@ const StatusBar = memo(function StatusBar() {
   }, [systemProxy]);
 
   const handleVersionClick = useCallback(() => {
-    checkVersion(true);
+    checkVersion({ forceRefresh: true });
     setModalVisible(true);
   }, [checkVersion, setModalVisible]);
 

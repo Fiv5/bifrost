@@ -6,7 +6,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::update_check::{get_latest_version, is_newer_version, VersionCache};
+use super::update_check::{
+    get_latest_version, get_latest_version_fresh, is_newer_version, VersionCache,
+};
 
 const GITHUB_RELEASE_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/tag";
 const GITHUB_DOWNLOAD_URL: &str = "https://github.com/bifrost-proxy/bifrost/releases/download";
@@ -311,15 +313,16 @@ pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
         format!("(current: v{})", current_version).dimmed()
     );
 
-    let cache = match get_latest_version() {
-        Some(c) => c,
-        None => {
-            println!(
-                "{}",
-                "⚠ Could not check for updates. Check your network connection.".bright_yellow()
-            );
-            return Ok(());
-        }
+    let cache = if let Some(c) = get_latest_version_fresh() {
+        c
+    } else if let Some(cached) = get_latest_version() {
+        cached
+    } else {
+        println!(
+            "{}",
+            "⚠ Could not check for updates. Check your network connection.".bright_yellow()
+        );
+        return Ok(());
     };
 
     if !is_newer_version(current_version, &cache.latest_version) {

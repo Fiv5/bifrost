@@ -55,7 +55,7 @@ export function useGlobalDataSync() {
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
         metricsStore.fetchHistory(3600),
-        versionStore.checkVersion(),
+        versionStore.checkVersion({ skipCache: true }),
       ]);
 
       trafficStore.startPolling();
@@ -80,15 +80,12 @@ export function useGlobalDataSync() {
       }, RULES_POLL_INTERVAL);
 
       globalState.versionCheckIntervalId = window.setInterval(() => {
-        useVersionStore.getState().checkVersion();
+        useVersionStore.getState().checkVersion({ skipCache: true });
       }, VERSION_CHECK_INTERVAL);
 
       const currentVersionStore = useVersionStore.getState();
-      if (currentVersionStore.shouldShowAutoModal()) {
+      if (currentVersionStore.hasUpdate) {
         currentVersionStore.setModalVisible(true);
-        if (currentVersionStore.latestVersion) {
-          currentVersionStore.markVersionSeen(currentVersionStore.latestVersion);
-        }
       }
     };
 
