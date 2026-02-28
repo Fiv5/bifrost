@@ -1,16 +1,36 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "bifrost")]
-#[command(version = "1.0.0")]
-#[command(about = "High-performance HTTP/HTTPS proxy written in Rust")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(disable_version_flag = true)]
+#[command(about = "High-performance HTTP/HTTPS/SOCKS5/HTTP3 proxy written in Rust")]
 #[command(
-    long_about = "High-performance HTTP/HTTPS proxy written in Rust with TLS interception support.\n\n\
+    long_about = "High-performance HTTP/HTTPS/SOCKS5/HTTP3 proxy written in Rust with TLS interception support.\n\n\
+Supported Protocols:\n\
+  • HTTP/1.1, HTTP/2, HTTP/3 (QUIC)\n\
+  • HTTPS (TLS 1.2/1.3, MITM interception)\n\
+  • SOCKS5 TCP/UDP (with authentication)\n\
+  • WebSocket (ws/wss)\n\
+  • CONNECT-UDP (MASQUE, RFC 9298)\n\
+  • gRPC, SSE\n\n\
 Running 'bifrost' without a subcommand is equivalent to 'bifrost start'."
 )]
 #[command(after_help = "\
+SUPPORTED PROTOCOLS:
+  HTTP/1.1          Full support
+  HTTP/2            Frame-level processing, multiplexing
+  HTTP/3 (QUIC)     Based on Quinn, supports 0-RTT
+  HTTPS             TLS 1.2/1.3, MITM interception
+  SOCKS5 TCP        Username/password authentication
+  SOCKS5 UDP        Full UDP ASSOCIATE support
+  WebSocket         ws:// and wss:// protocols
+  CONNECT-UDP       MASQUE protocol (RFC 9298)
+  gRPC              Based on HTTP/2
+  SSE               Server-Sent Events
+
 EXAMPLES:
     bifrost                      Start proxy with defaults (port 9900, TLS enabled)
     bifrost -p 8080              Start proxy on port 8080
@@ -40,23 +60,26 @@ start [OPTIONS]                   Start the proxy server (default)
   --socks5-port <PORT>                Separate SOCKS5 port (optional; default: share main port)
   -d, --daemon                        Run as background daemon
   --skip-cert-check                   Skip CA certificate check
-  --access-mode <MODE>              Access mode: local_only|whitelist|interactive|allow_all
-  --whitelist <IPS>                 Client IP whitelist (comma-separated, supports CIDR)
-  --allow-lan                       Allow LAN (private network) clients
-  --no-intercept                    Disable TLS/HTTPS interception
-  --intercept-exclude <DOMAINS>     Exclude domains from interception (supports wildcards)
-  --intercept-include <DOMAINS>     Force intercept domains (highest priority, overrides --no-intercept)
-  --unsafe-ssl                      Skip upstream TLS verification (dangerous)
-  --no-disconnect-on-config-change  Disable auto-disconnect when TLS config changes
-  --rules <RULE>                    Proxy rule (can be repeated)
-  --rules-file <PATH>               Path to rules file
-  --system-proxy                    Enable system proxy
-  --proxy-bypass <LIST>             System proxy bypass list
+  --access-mode <MODE>                Access mode: local_only|whitelist|interactive|allow_all
+  --whitelist <IPS>                   Client IP whitelist (comma-separated, supports CIDR)
+  --allow-lan                         Allow LAN (private network) clients
+  --no-intercept                      Disable TLS/HTTPS interception
+  --intercept-exclude <DOMAINS>       Exclude domains from interception (supports wildcards)
+  --intercept-include <DOMAINS>       Force intercept domains (highest priority)
+  --app-intercept-exclude <APPS>      Exclude apps from TLS interception (supports wildcards)
+  --app-intercept-include <APPS>      Force intercept apps (highest priority)
+  --unsafe-ssl                        Skip upstream TLS verification (dangerous)
+  --no-disconnect-on-config-change    Disable auto-disconnect when TLS config changes
+  --rules <RULE>                      Proxy rule (can be repeated)
+  --rules-file <PATH>                 Path to rules file
+  --system-proxy                      Enable system proxy
+  --proxy-bypass <LIST>               System proxy bypass list
 
   TLS Interception Priority (highest to lowest):
-    1. --intercept-include: Always intercept matched domains
-    2. --intercept-exclude: Never intercept matched domains
-    3. --no-intercept flag: Global switch (default: enabled)
+    1. Rule-based (tlsIntercept://, tlsPassthrough://)
+    2. --intercept-include / --app-intercept-include: Always intercept
+    3. --intercept-exclude / --app-intercept-exclude: Never intercept
+    4. --no-intercept flag: Global switch (default: enabled)
 
 stop                              Stop the running proxy
 
@@ -127,6 +150,9 @@ Manage values:
   bifrost value list
 ")]
 pub struct Cli {
+    #[arg(short = 'v', short_alias = 'V', long, action = ArgAction::Version, help = "Print version")]
+    pub version: (),
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 

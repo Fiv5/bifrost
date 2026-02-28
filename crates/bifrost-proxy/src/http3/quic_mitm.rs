@@ -195,8 +195,14 @@ impl QuicMitmRelay {
 
         if is_quic && enable_mitm && dest_port == 443 {
             if let Some(ref server_name) = sni {
-                let should_intercept =
-                    Self::should_intercept(server_name, dest_port, rules, proxy_config);
+                let should_intercept = Self::should_intercept(
+                    server_name,
+                    dest_port,
+                    rules,
+                    proxy_config,
+                    admin_state,
+                )
+                .await;
 
                 if should_intercept {
                     return Self::handle_quic_mitm(
@@ -220,13 +226,20 @@ impl QuicMitmRelay {
         Self::forward_raw_packet(relay_socket, payload, &dest_addr, dest_port, src_addr).await
     }
 
-    fn should_intercept(
+    async fn should_intercept(
         server_name: &str,
         port: u16,
         rules: &Arc<dyn RulesResolver>,
         proxy_config: &ProxyConfig,
+        admin_state: &Option<Arc<AdminState>>,
     ) -> bool {
-        if !proxy_config.enable_tls_interception {
+        let enable_tls_interception = if let Some(ref state) = admin_state {
+            state.runtime_config.read().await.enable_tls_interception
+        } else {
+            proxy_config.enable_tls_interception
+        };
+
+        if !enable_tls_interception {
             return false;
         }
 

@@ -82,6 +82,18 @@ pub fn print_startup_help(port: u16) {
 │                       BIFROST PROXY COMMANDS                           │
 ╰────────────────────────────────────────────────────────────────────────╯
 
+SUPPORTED PROTOCOLS
+  HTTP/1.1          Full support
+  HTTP/2            Frame-level processing, multiplexing
+  HTTP/3 (QUIC)     Based on Quinn, supports 0-RTT
+  HTTPS             TLS 1.2/1.3, MITM interception
+  SOCKS5 TCP        Username/password authentication
+  SOCKS5 UDP        Full UDP ASSOCIATE support
+  WebSocket         ws:// and wss:// protocols
+  CONNECT-UDP       MASQUE protocol (RFC 9298)
+  gRPC              Based on HTTP/2
+  SSE               Server-Sent Events
+
 PROXY CONTROL
   bifrost status                    Show proxy status
   bifrost stop                      Stop the running proxy
@@ -125,11 +137,31 @@ ACCESS CONTROL
   bifrost whitelist allow-lan <bool> Enable/disable LAN access
   bifrost whitelist status          Show access control settings
 
+START OPTIONS (bifrost start)
+  -p, --port <PORT>                   Unified proxy port for HTTP/HTTPS/SOCKS5
+  -H, --host <HOST>                   Listen address
+  --socks5-port <PORT>                Separate SOCKS5 port (optional)
+  -d, --daemon                        Run as background daemon
+  --skip-cert-check                   Skip CA certificate check
+  --access-mode <MODE>                Access mode: local_only|whitelist|interactive|allow_all
+  --whitelist <IPS>                   Client IP whitelist (comma-separated, supports CIDR)
+  --allow-lan                         Allow LAN (private network) clients
+  --rules <RULE>                      Proxy rule (can be repeated)
+  --rules-file <PATH>                 Path to rules file
+  --system-proxy                      Enable system proxy
+  --proxy-bypass <LIST>               System proxy bypass list
+
 TLS INTERCEPTION CONTROL
-  Start options:
+  Domain-based options:
     --no-intercept                    Disable TLS/HTTPS interception completely
     --intercept-exclude <DOMAINS>     Domains to skip interception (comma-separated)
-    --intercept-include <DOMAINS>     Force intercept domains (highest priority, comma-separated)
+    --intercept-include <DOMAINS>     Force intercept domains (highest priority)
+  
+  Application-based options:
+    --app-intercept-exclude <APPS>    Exclude apps from TLS interception (supports wildcards)
+    --app-intercept-include <APPS>    Force intercept apps (highest priority)
+  
+  Other options:
     --unsafe-ssl                      Skip upstream TLS cert verification (dangerous)
     --no-disconnect-on-config-change  Disable auto-disconnect when TLS config changes
 
@@ -139,8 +171,8 @@ TLS INTERCEPTION CONTROL
 
   TLS Interception Priority (highest to lowest):
     1. Rule-based (tlsIntercept://, tlsPassthrough://)
-    2. --intercept-include: Always intercept matched domains
-    3. --intercept-exclude: Never intercept matched domains
+    2. --intercept-include / --app-intercept-include: Always intercept
+    3. --intercept-exclude / --app-intercept-exclude: Never intercept
     4. --no-intercept flag: Global switch (default: enabled)
 
 ADMIN UI

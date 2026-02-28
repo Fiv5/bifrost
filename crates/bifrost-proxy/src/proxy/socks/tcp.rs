@@ -943,38 +943,56 @@ impl SocksHandler {
 
             match protocol {
                 Some(crate::protocol::TransportProtocol::Tls) => {
-                    if let (Some(ref tls_config), Some(ref tls_intercept_config)) =
-                        (&self.tls_config, &self.tls_intercept_config)
-                    {
-                        let do_intercept = should_intercept_tls(
-                            target_host,
-                            client_app,
-                            tls_intercept_config,
-                            tls_config,
-                            &resolved_rules,
-                        );
-                        if do_intercept {
-                            debug!(
-                                "SOCKS5: TLS interception enabled for {}:{} (client_app={:?}, rule={:?}, global={})",
-                                target_host, target_port, client_app, resolved_rules.tls_intercept, tls_intercept_config.enable_tls_interception
+                    if let Some(ref tls_config) = &self.tls_config {
+                        let tls_intercept_config: Option<TlsInterceptConfig> =
+                            if let Some(ref state) = self.admin_state {
+                                let runtime_config = state.runtime_config.read().await;
+                                Some(TlsInterceptConfig {
+                                    enable_tls_interception: runtime_config.enable_tls_interception,
+                                    intercept_exclude: runtime_config.intercept_exclude.clone(),
+                                    intercept_include: runtime_config.intercept_include.clone(),
+                                    app_intercept_exclude: runtime_config
+                                        .app_intercept_exclude
+                                        .clone(),
+                                    app_intercept_include: runtime_config
+                                        .app_intercept_include
+                                        .clone(),
+                                    unsafe_ssl: runtime_config.unsafe_ssl,
+                                })
+                            } else {
+                                self.tls_intercept_config.clone()
+                            };
+                        if let Some(ref tls_intercept_config) = tls_intercept_config {
+                            let do_intercept = should_intercept_tls(
+                                target_host,
+                                client_app,
+                                tls_intercept_config,
+                                tls_config,
+                                &resolved_rules,
                             );
-                            let original_host = original_url
-                                .strip_prefix("socks5://")
-                                .and_then(|s| s.split(':').next())
-                                .unwrap_or(target_host);
-                            return self
-                                .relay_with_tls_intercept(
-                                    target_stream,
-                                    target_host,
-                                    target_port,
-                                    original_host,
-                                )
-                                .await;
-                        } else {
-                            debug!(
-                                "SOCKS5: TLS passthrough for {}:{} (client_app={:?})",
-                                target_host, target_port, client_app
-                            );
+                            if do_intercept {
+                                debug!(
+                                    "SOCKS5: TLS interception enabled for {}:{} (client_app={:?}, rule={:?}, global={})",
+                                    target_host, target_port, client_app, resolved_rules.tls_intercept, tls_intercept_config.enable_tls_interception
+                                );
+                                let original_host = original_url
+                                    .strip_prefix("socks5://")
+                                    .and_then(|s| s.split(':').next())
+                                    .unwrap_or(target_host);
+                                return self
+                                    .relay_with_tls_intercept(
+                                        target_stream,
+                                        target_host,
+                                        target_port,
+                                        original_host,
+                                    )
+                                    .await;
+                            } else {
+                                debug!(
+                                    "SOCKS5: TLS passthrough for {}:{} (client_app={:?})",
+                                    target_host, target_port, client_app
+                                );
+                            }
                         }
                     }
                 }
@@ -1252,7 +1270,11 @@ impl SocksHandler {
         let admin_state_for_service = self.admin_state.clone();
         let dns_resolver = self.dns_resolver.clone();
         let verbose_logging = self.verbose_logging;
-        let unsafe_ssl = self.unsafe_ssl;
+        let unsafe_ssl = if let Some(ref state) = admin_state {
+            state.runtime_config.read().await.unsafe_ssl
+        } else {
+            self.unsafe_ssl
+        };
         let peer_addr = self.peer_addr;
         let target_host = target_host.to_string();
         let original_host = cert_host.to_string();
