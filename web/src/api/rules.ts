@@ -28,3 +28,7 @@ export async function enableRule(name: string): Promise<ApiResponse> {
 export async function disableRule(name: string): Promise<ApiResponse> {
   return put<ApiResponse>(`/rules/${encodeURIComponent(name)}/disable`);
 }
+
+export async function renameRule(oldName: string, newName: string): Promise<ApiResponse> {
+  return put<ApiResponse>(`/rules/${encodeURIComponent(oldName)}/rename`, { new_name: newName });
+}

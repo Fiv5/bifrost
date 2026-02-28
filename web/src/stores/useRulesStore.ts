@@ -19,6 +19,7 @@ interface RulesState {
   saveCurrentRule: () => Promise<boolean>;
   deleteRule: (name: string) => Promise<boolean>;
   toggleRule: (name: string, enabled: boolean) => Promise<boolean>;
+  renameRule: (oldName: string, newName: string) => Promise<boolean>;
   setEditingContent: (name: string, content: string) => void;
   setSearchKeyword: (keyword: string) => void;
   hasUnsavedChanges: (name: string) => boolean;
@@ -170,6 +171,33 @@ export const useRulesStore = create<RulesState>((set, get) => ({
         await api.disableRule(name);
       }
       await get().fetchRules();
+      return true;
+    } catch (e) {
+      set({ error: (e as Error).message, loading: false });
+      return false;
+    }
+  },
+
+  renameRule: async (oldName: string, newName: string) => {
+    set({ loading: true, error: null });
+    try {
+      await api.renameRule(oldName, newName);
+      const { selectedRuleName, editingContent } = get();
+      const newEditingContent = { ...editingContent };
+      if (newEditingContent[oldName] !== undefined) {
+        newEditingContent[newName] = newEditingContent[oldName];
+        delete newEditingContent[oldName];
+      }
+      await get().fetchRules();
+      if (selectedRuleName === oldName) {
+        set({
+          selectedRuleName: newName,
+          editingContent: newEditingContent,
+        });
+        await get().selectRule(newName);
+      } else {
+        set({ editingContent: newEditingContent });
+      }
       return true;
     } catch (e) {
       set({ error: (e as Error).message, loading: false });

@@ -33,6 +33,11 @@ struct UpdateRuleRequest {
     enabled: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RenameRuleRequest {
+    new_name: String,
+}
+
 pub async fn handle_rules(
     req: Request<Incoming>,
     state: SharedAdminState,
@@ -58,6 +63,11 @@ pub async fn handle_rules(
         } else if let Some(name) = name.strip_suffix("/disable") {
             match method {
                 Method::PUT => enable_rule(state, name, false).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some(name) = name.strip_suffix("/rename") {
+            match method {
+                Method::PUT => rename_rule(req, state, name).await,
                 _ => method_not_allowed(),
             }
         } else {
@@ -218,6 +228,62 @@ async fn enable_rule(state: SharedAdminState, name: &str, enabled: bool) -> Resp
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to update rule: {}", e),
         ),
+    }
+}
+
+async fn rename_rule(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    name: &str,
+) -> Response<BoxBody> {
+    if !state.rules_storage.exists(name) {
+        return error_response(StatusCode::NOT_FOUND, &format!("Rule '{}' not found", name));
+    }
+
+    let body = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: RenameRuleRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    if request.new_name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "New rule name is required");
+    }
+
+    if request.new_name == name {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "New name is the same as the old name",
+        );
+    }
+
+    match state.rules_storage.rename(name, &request.new_name) {
+        Ok(_) => {
+            notify_rules_changed(&state);
+            success_response(&format!(
+                "Rule '{}' renamed to '{}' successfully",
+                name, request.new_name
+            ))
+        }
+        Err(e) => {
+            let status = if e.to_string().contains("already exists") {
+                StatusCode::CONFLICT
+            } else if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            error_response(status, &format!("Failed to rename rule: {}", e))
+        }
     }
 }
 

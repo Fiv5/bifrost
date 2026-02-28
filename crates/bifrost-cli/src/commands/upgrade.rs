@@ -141,7 +141,25 @@ fn print_update_info(current: &str, cache: &VersionCache) {
     println!();
 }
 
-fn upgrade_via_homebrew() -> Result<(), BifrostError> {
+fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
+    println!("{}", "Refreshing Homebrew tap...".bright_cyan());
+
+    let _ = Command::new("brew")
+        .args(["untap", "bifrost-proxy/bifrost"])
+        .output();
+
+    let tap_status = Command::new("brew")
+        .args(["tap", "bifrost-proxy/bifrost"])
+        .status()
+        .map_err(BifrostError::Io)?;
+
+    if !tap_status.success() {
+        println!(
+            "{}",
+            "⚠ brew tap failed, trying upgrade anyway...".bright_yellow()
+        );
+    }
+
     println!("{}", "Upgrading via Homebrew...".bright_cyan());
 
     let status = Command::new("brew")
@@ -149,17 +167,61 @@ fn upgrade_via_homebrew() -> Result<(), BifrostError> {
         .status()
         .map_err(BifrostError::Io)?;
 
-    if status.success() {
-        println!(
-            "{}",
-            "✓ Upgrade completed successfully!".bright_green().bold()
-        );
-        Ok(())
-    } else {
-        Err(BifrostError::Network(
+    if !status.success() {
+        return Err(BifrostError::Network(
             "Homebrew upgrade failed. Try: brew update && brew upgrade bifrost".to_string(),
-        ))
+        ));
     }
+
+    let output = Command::new("brew")
+        .args(["info", "--json=v2", "bifrost"])
+        .output()
+        .map_err(BifrostError::Io)?;
+
+    if output.status.success() {
+        if let Ok(json_str) = String::from_utf8(output.stdout) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(version) = json["formulae"]
+                    .get(0)
+                    .and_then(|f| f["versions"]["stable"].as_str())
+                {
+                    if version == target_version {
+                        println!(
+                            "{}",
+                            "✓ Upgrade completed successfully!".bright_green().bold()
+                        );
+                        return Ok(());
+                    } else {
+                        println!(
+                            "{}",
+                            format!(
+                                "⚠ Homebrew formula version ({}) doesn't match target version ({}).",
+                                version, target_version
+                            )
+                            .bright_yellow()
+                        );
+                        println!(
+                            "{}",
+                            "  The Homebrew tap may not be updated yet. Please try again later or install manually:"
+                                .bright_yellow()
+                        );
+                        println!(
+                            "  {}",
+                            "curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash"
+                                .bright_cyan()
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    println!(
+        "{}",
+        "✓ Upgrade completed successfully!".bright_green().bold()
+    );
+    Ok(())
 }
 
 fn upgrade_via_script() -> Result<(), BifrostError> {
@@ -356,7 +418,7 @@ pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
     println!();
 
     match install_method {
-        InstallMethod::Homebrew => upgrade_via_homebrew(),
+        InstallMethod::Homebrew => upgrade_via_homebrew(&cache.latest_version),
         InstallMethod::Script => upgrade_via_script(),
         InstallMethod::Manual(path) => upgrade_manual(&path, &cache.latest_version),
         InstallMethod::Unknown => {

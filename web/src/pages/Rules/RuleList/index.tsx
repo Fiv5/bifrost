@@ -34,6 +34,7 @@ export default function RuleList() {
     createRule,
     deleteRule,
     toggleRule,
+    renameRule,
     setSearchKeyword,
     hasUnsavedChanges,
   } = useRulesStore();
@@ -88,8 +89,17 @@ export default function RuleList() {
 
   const handleRename = async () => {
     if (!renameTarget || !newName.trim()) return;
-    message.info('Rename is not supported yet');
-    setRenameModalVisible(false);
+    if (newName.trim() === renameTarget) {
+      setRenameModalVisible(false);
+      return;
+    }
+    const success = await renameRule(renameTarget, newName.trim());
+    if (success) {
+      message.success('Rule renamed');
+      setRenameModalVisible(false);
+      setRenameTarget(null);
+      setNewName('');
+    }
   };
 
   const getContextMenuItems = (name: string, enabled: boolean): MenuProps['items'] => [
