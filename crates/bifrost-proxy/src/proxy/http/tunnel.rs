@@ -25,7 +25,9 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use super::handler::{
-    needs_body_processing, needs_request_body_processing, parse_and_record_sse_events,
+    build_connection_error_response, build_overridden_error_response, needs_body_processing,
+    needs_request_body_processing, needs_response_override, parse_and_record_sse_events,
+    ConnectionErrorInfo,
 };
 use crate::dns::DnsResolver;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
@@ -1130,10 +1132,56 @@ async fn handle_intercepted_request_with_protocol(
                     "[{}] DNS resolution failed for {}: {}",
                     req_id, actual_target_host, e
                 );
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                let error_info = ConnectionErrorInfo {
+                    error_type: "DNS_LOOKUP_FAILED",
+                    error_message: format!("DNS Lookup Failed: {}", e),
+                    host: actual_target_host.clone(),
+                    request_url: original_uri.clone(),
+                };
+                let total_ms = start_time.elapsed().as_millis() as u64;
+                if let Some(ref state) = admin_state {
+                    let mut record = TrafficRecord::new(
+                        req_id.to_string(),
+                        method_str.clone(),
+                        original_uri.clone(),
+                    );
+                    record.status = if needs_response_override(&resolved_rules) {
+                        resolved_rules
+                            .status_code
+                            .or(resolved_rules.replace_status)
+                            .unwrap_or(502)
+                    } else {
+                        502
+                    };
+                    record.duration_ms = total_ms;
+                    record.host = original_host.to_string();
+                    record.request_headers = Some(final_req_headers.clone());
+                    record.original_request_headers = Some(original_req_headers.clone());
+                    record.has_rule_hit = has_rules;
+                    record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                    record.error_message = Some(format!("DNS Lookup Failed: {}", e));
+                    record.request_body_ref = store_request_body(
+                        &admin_state,
+                        req_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
+                    );
+                    state.record_traffic(record);
+                }
+                if needs_response_override(&resolved_rules) {
+                    if verbose_logging {
+                        info!(
+                            "[{}] [CONN_ERROR] DNS lookup failed, applying response override rules",
+                            req_id
+                        );
+                    }
+                    return Ok(build_overridden_error_response(
+                        &resolved_rules,
+                        502,
+                        &error_info,
+                    ));
+                }
+                return Ok(build_connection_error_response(502, &error_info));
             }
         };
     let dns_ms = dns_start.elapsed().as_millis() as u64;
@@ -1145,10 +1193,62 @@ async fn handle_intercepted_request_with_protocol(
                 "[{}] No addresses resolved for {}",
                 req_id, actual_target_host
             );
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
+            let error_info = ConnectionErrorInfo {
+                error_type: "DNS_NO_ADDRESSES",
+                error_message: format!(
+                    "DNS resolved but no addresses returned for {}",
+                    actual_target_host
+                ),
+                host: actual_target_host.clone(),
+                request_url: original_uri.clone(),
+            };
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            if let Some(ref state) = admin_state {
+                let mut record = TrafficRecord::new(
+                    req_id.to_string(),
+                    method_str.clone(),
+                    original_uri.clone(),
+                );
+                record.status = if needs_response_override(&resolved_rules) {
+                    resolved_rules
+                        .status_code
+                        .or(resolved_rules.replace_status)
+                        .unwrap_or(502)
+                } else {
+                    502
+                };
+                record.duration_ms = total_ms;
+                record.host = original_host.to_string();
+                record.request_headers = Some(final_req_headers.clone());
+                record.original_request_headers = Some(original_req_headers.clone());
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.error_message = Some(format!(
+                    "DNS resolved but no addresses for {}",
+                    actual_target_host
+                ));
+                record.request_body_ref = store_request_body(
+                    &admin_state,
+                    req_id,
+                    &body_bytes,
+                    req_content_encoding.as_deref(),
+                );
+                state.record_traffic(record);
+            }
+            if needs_response_override(&resolved_rules) {
+                if verbose_logging {
+                    info!(
+                        "[{}] [CONN_ERROR] No DNS addresses, applying response override rules",
+                        req_id
+                    );
+                }
+                return Ok(build_overridden_error_response(
+                    &resolved_rules,
+                    502,
+                    &error_info,
+                ));
+            }
+            return Ok(build_connection_error_response(502, &error_info));
         }
     };
 
@@ -1172,13 +1272,128 @@ async fn handle_intercepted_request_with_protocol(
                 "[{}] Failed to connect to {}:{} ({}): {}",
                 req_id, actual_target_host, actual_target_port, connect_addr, e
             );
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
+            let error_info = ConnectionErrorInfo {
+                error_type: "TCP_CONNECTION_FAILED",
+                error_message: format!("Connection Failed: {}", e),
+                host: actual_target_host.clone(),
+                request_url: original_uri.clone(),
+            };
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            if let Some(ref state) = admin_state {
+                let mut record = TrafficRecord::new(
+                    req_id.to_string(),
+                    method_str.clone(),
+                    original_uri.clone(),
+                );
+                record.status = if needs_response_override(&resolved_rules) {
+                    resolved_rules
+                        .status_code
+                        .or(resolved_rules.replace_status)
+                        .unwrap_or(502)
+                } else {
+                    502
+                };
+                record.duration_ms = total_ms;
+                record.host = original_host.to_string();
+                record.timing = Some(RequestTiming {
+                    dns_ms: Some(dns_ms),
+                    connect_ms: Some(connect_start.elapsed().as_millis() as u64),
+                    tls_ms: None,
+                    send_ms: None,
+                    wait_ms: None,
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.request_headers = Some(final_req_headers.clone());
+                record.original_request_headers = Some(original_req_headers.clone());
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.error_message = Some(format!("Connection Failed: {}", e));
+                record.request_body_ref = store_request_body(
+                    &admin_state,
+                    req_id,
+                    &body_bytes,
+                    req_content_encoding.as_deref(),
+                );
+                state.record_traffic(record);
+            }
+            if needs_response_override(&resolved_rules) {
+                if verbose_logging {
+                    info!(
+                        "[{}] [CONN_ERROR] TCP connection failed, applying response override rules",
+                        req_id
+                    );
+                }
+                return Ok(build_overridden_error_response(
+                    &resolved_rules,
+                    502,
+                    &error_info,
+                ));
+            }
+            return Ok(build_connection_error_response(502, &error_info));
         }
     };
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+
+    let build_conn_error_record_and_response =
+        |error_type: &'static str, error_msg: String, tls_ms: Option<u64>| {
+            let error_info = ConnectionErrorInfo {
+                error_type,
+                error_message: error_msg.clone(),
+                host: actual_target_host.clone(),
+                request_url: original_uri.clone(),
+            };
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            if let Some(ref state) = admin_state {
+                let mut record = TrafficRecord::new(
+                    req_id.to_string(),
+                    method_str.clone(),
+                    original_uri.clone(),
+                );
+                record.status = if needs_response_override(&resolved_rules) {
+                    resolved_rules
+                        .status_code
+                        .or(resolved_rules.replace_status)
+                        .unwrap_or(502)
+                } else {
+                    502
+                };
+                record.duration_ms = total_ms;
+                record.host = original_host.to_string();
+                record.timing = Some(RequestTiming {
+                    dns_ms: Some(dns_ms),
+                    connect_ms: Some(tcp_connect_ms),
+                    tls_ms,
+                    send_ms: None,
+                    wait_ms: None,
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.request_headers = Some(final_req_headers.clone());
+                record.original_request_headers = Some(original_req_headers.clone());
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.error_message = Some(error_msg);
+                record.request_body_ref = store_request_body(
+                    &admin_state,
+                    req_id,
+                    &body_bytes,
+                    req_content_encoding.as_deref(),
+                );
+                state.record_traffic(record);
+            }
+            if needs_response_override(&resolved_rules) {
+                if verbose_logging {
+                    info!(
+                        "[{}] [CONN_ERROR] {}, applying response override rules",
+                        req_id, error_type
+                    );
+                }
+                build_overridden_error_response(&resolved_rules, 502, &error_info)
+            } else {
+                build_connection_error_response(502, &error_info)
+            }
+        };
 
     let (response, tls_ms, wait_ms) = if actual_use_http {
         let io = TokioIo::new(stream);
@@ -1191,10 +1406,11 @@ async fn handle_intercepted_request_with_protocol(
             Ok(r) => r,
             Err(e) => {
                 error!("[{}] HTTP handshake failed: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                return Ok(build_conn_error_record_and_response(
+                    "HTTP_HANDSHAKE_FAILED",
+                    format!("HTTP Handshake Failed: {}", e),
+                    None,
+                ));
             }
         };
 
@@ -1209,10 +1425,11 @@ async fn handle_intercepted_request_with_protocol(
             Ok(r) => r,
             Err(e) => {
                 error!("[{}] Failed to send request: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                return Ok(build_conn_error_record_and_response(
+                    "REQUEST_FAILED",
+                    format!("Request Failed: {}", e),
+                    None,
+                ));
             }
         };
         let wait_ms = send_start.elapsed().as_millis() as u64;
@@ -1231,10 +1448,11 @@ async fn handle_intercepted_request_with_protocol(
                         "[{}] Invalid server name for TLS: {}",
                         req_id, actual_target_host
                     );
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"Bad Gateway".to_vec()))
-                        .unwrap());
+                    return Ok(build_conn_error_record_and_response(
+                        "TLS_SERVER_NAME_INVALID",
+                        format!("Invalid TLS Server Name: {}", actual_target_host),
+                        None,
+                    ));
                 }
             };
 
@@ -1242,10 +1460,12 @@ async fn handle_intercepted_request_with_protocol(
             Ok(s) => s,
             Err(e) => {
                 error!("[{}] TLS handshake failed: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                let tls_ms = tls_start.elapsed().as_millis() as u64;
+                return Ok(build_conn_error_record_and_response(
+                    "TLS_HANDSHAKE_FAILED",
+                    format!("TLS Handshake Failed: {}", e),
+                    Some(tls_ms),
+                ));
             }
         };
         let tls_ms = tls_start.elapsed().as_millis() as u64;
@@ -1260,10 +1480,11 @@ async fn handle_intercepted_request_with_protocol(
             Ok(r) => r,
             Err(e) => {
                 error!("[{}] HTTP handshake failed: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                return Ok(build_conn_error_record_and_response(
+                    "HTTP_HANDSHAKE_FAILED",
+                    format!("HTTP Handshake Failed: {}", e),
+                    Some(tls_ms),
+                ));
             }
         };
 
@@ -1278,10 +1499,11 @@ async fn handle_intercepted_request_with_protocol(
             Ok(r) => r,
             Err(e) => {
                 error!("[{}] Failed to send request: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+                return Ok(build_conn_error_record_and_response(
+                    "REQUEST_FAILED",
+                    format!("Request Failed: {}", e),
+                    Some(tls_ms),
+                ));
             }
         };
         let wait_ms = send_start.elapsed().as_millis() as u64;

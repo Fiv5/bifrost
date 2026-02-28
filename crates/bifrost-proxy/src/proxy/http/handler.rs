@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use bifrost_admin::{AdminState, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{protocol::Protocol, BifrostError, Result};
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::client::conn::http1::Builder as ClientBuilder;
@@ -112,6 +113,83 @@ pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
         || rules.css_append.is_some()
         || rules.css_prepend.is_some()
         || rules.css_body.is_some()
+}
+
+pub fn needs_response_override(rules: &ResolvedRules) -> bool {
+    rules.res_body.is_some() || rules.status_code.is_some() || rules.replace_status.is_some()
+}
+
+pub struct ConnectionErrorInfo {
+    pub error_type: &'static str,
+    pub error_message: String,
+    pub host: String,
+    pub request_url: String,
+}
+
+pub fn build_connection_error_response(
+    status_code: u16,
+    error_info: &ConnectionErrorInfo,
+) -> Response<BoxBody> {
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
+    let now = chrono::Local::now();
+    let date_str = now.format("%m/%d/%Y, %I:%M:%S %p").to_string();
+
+    let body = format!(
+        "Status: {}\nError: {}\nFrom: Bifrost@{}\nHost: {}\nDate: {}\nURL: {}",
+        status_code,
+        error_info.error_message,
+        hostname,
+        error_info.host,
+        date_str,
+        error_info.request_url,
+    );
+
+    Response::builder()
+        .status(hyper::StatusCode::from_u16(status_code).unwrap_or(hyper::StatusCode::BAD_GATEWAY))
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header("X-Bifrost-Error", error_info.error_type)
+        .body(full_body(body.into_bytes()))
+        .unwrap()
+}
+
+pub fn build_overridden_error_response(
+    rules: &ResolvedRules,
+    default_status: u16,
+    error_info: &ConnectionErrorInfo,
+) -> Response<BoxBody> {
+    let status_code = rules
+        .status_code
+        .or(rules.replace_status)
+        .unwrap_or(default_status);
+
+    let body = if let Some(ref res_body) = rules.res_body {
+        res_body.clone()
+    } else {
+        let hostname = gethostname::gethostname().to_string_lossy().to_string();
+        let now = chrono::Local::now();
+        let date_str = now.format("%m/%d/%Y, %I:%M:%S %p").to_string();
+
+        let body_str = format!(
+            "Status: {}\nError: {}\nFrom: Bifrost@{}\nHost: {}\nDate: {}\nURL: {}",
+            status_code,
+            error_info.error_message,
+            hostname,
+            error_info.host,
+            date_str,
+            error_info.request_url,
+        );
+        Bytes::from(body_str)
+    };
+
+    let mut response = Response::builder()
+        .status(hyper::StatusCode::from_u16(status_code).unwrap_or(hyper::StatusCode::BAD_GATEWAY));
+
+    if rules.res_body.is_none() {
+        response = response.header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8");
+        response = response.header("X-Bifrost-Error", error_info.error_type);
+    }
+
+    response.body(full_body(body.to_vec())).unwrap()
 }
 
 pub fn needs_request_body_processing(rules: &ResolvedRules) -> bool {
@@ -350,14 +428,74 @@ pub async fn handle_http_request(
     };
 
     let connect_start = Instant::now();
-    let stream = TcpStream::connect(format!("{}:{}", connect_host, port))
-        .await
-        .map_err(|e| {
-            BifrostError::Network(format!(
-                "Failed to connect to {}:{}: {}",
-                connect_host, port, e
-            ))
-        })?;
+    let stream = match TcpStream::connect(format!("{}:{}", connect_host, port)).await {
+        Ok(s) => s,
+        Err(e) => {
+            let error_msg = format!("Failed to connect to {}:{}: {}", connect_host, port, e);
+            error!("[{}] {}", ctx.id_str(), error_msg);
+
+            let error_info = ConnectionErrorInfo {
+                error_type: "TCP_CONNECTION_FAILED",
+                error_message: format!("Connection Failed: {}", e),
+                host: host.clone(),
+                request_url: url.clone(),
+            };
+
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            if let Some(ref state) = admin_state {
+                let mut record = TrafficRecord::new(
+                    ctx.id_str().to_string(),
+                    method.clone(),
+                    record_url.clone(),
+                );
+                record.status = if needs_response_override(&resolved_rules) {
+                    resolved_rules
+                        .status_code
+                        .or(resolved_rules.replace_status)
+                        .unwrap_or(502)
+                } else {
+                    502
+                };
+                record.duration_ms = total_ms;
+                record.host = original_host.clone();
+                record.timing = Some(RequestTiming {
+                    dns_ms,
+                    connect_ms: Some(connect_start.elapsed().as_millis() as u64),
+                    tls_ms: None,
+                    send_ms: None,
+                    wait_ms: None,
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.original_request_headers = Some(original_req_headers.clone());
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.error_message = Some(error_msg);
+                record.request_body_ref = store_request_body(
+                    &admin_state,
+                    &ctx.id_str(),
+                    &final_body,
+                    req_content_encoding.as_deref(),
+                );
+                state.record_traffic(record);
+            }
+
+            if needs_response_override(&resolved_rules) {
+                if verbose_logging {
+                    info!(
+                        "[{}] [CONN_ERROR] TCP connection failed, applying response override rules",
+                        ctx.id_str()
+                    );
+                }
+                return Ok(build_overridden_error_response(
+                    &resolved_rules,
+                    502,
+                    &error_info,
+                ));
+            }
+            return Ok(build_connection_error_response(502, &error_info));
+        }
+    };
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
     if let Err(e) = stream.set_nodelay(true) {
@@ -375,27 +513,117 @@ pub async fn handle_http_request(
         }
     };
 
+    let build_conn_error_and_record =
+        |error_type: &'static str, error_msg: String, err_tls_ms: Option<u64>| {
+            let error_info = ConnectionErrorInfo {
+                error_type,
+                error_message: error_msg.clone(),
+                host: host.clone(),
+                request_url: url.clone(),
+            };
+            let total_ms = start_time.elapsed().as_millis() as u64;
+            if let Some(ref state) = admin_state {
+                let mut record = TrafficRecord::new(
+                    ctx.id_str().to_string(),
+                    method.clone(),
+                    record_url.clone(),
+                );
+                record.status = if needs_response_override(&resolved_rules) {
+                    resolved_rules
+                        .status_code
+                        .or(resolved_rules.replace_status)
+                        .unwrap_or(502)
+                } else {
+                    502
+                };
+                record.duration_ms = total_ms;
+                record.host = original_host.clone();
+                record.timing = Some(RequestTiming {
+                    dns_ms,
+                    connect_ms: Some(tcp_connect_ms),
+                    tls_ms: err_tls_ms,
+                    send_ms: None,
+                    wait_ms: None,
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.original_request_headers = Some(original_req_headers.clone());
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.error_message = Some(error_msg);
+                record.request_body_ref = store_request_body(
+                    &admin_state,
+                    &ctx.id_str(),
+                    &final_body,
+                    req_content_encoding.as_deref(),
+                );
+                state.record_traffic(record);
+            }
+            if needs_response_override(&resolved_rules) {
+                if verbose_logging {
+                    info!(
+                        "[{}] [CONN_ERROR] {}, applying response override rules",
+                        ctx.id_str(),
+                        error_type
+                    );
+                }
+                build_overridden_error_response(&resolved_rules, 502, &error_info)
+            } else {
+                build_connection_error_response(502, &error_info)
+            }
+        };
+
     let (mut sender, tls_ms) = if use_tls {
         let tls_start = Instant::now();
         let tls_config = get_tls_client_config(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
-        let server_name = ServerName::try_from(host.clone())
-            .map_err(|_| BifrostError::Network(format!("Invalid server name for TLS: {}", host)))?;
+        let server_name = match ServerName::try_from(host.clone()) {
+            Ok(name) => name,
+            Err(_) => {
+                let error_msg = format!("Invalid server name for TLS: {}", host);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                return Ok(build_conn_error_and_record(
+                    "TLS_SERVER_NAME_INVALID",
+                    error_msg,
+                    None,
+                ));
+            }
+        };
 
-        let tls_stream = connector
-            .connect(server_name, stream)
-            .await
-            .map_err(|e| BifrostError::Network(format!("TLS handshake failed: {}", e)))?;
+        let tls_stream = match connector.connect(server_name, stream).await {
+            Ok(s) => s,
+            Err(e) => {
+                let error_msg = format!("TLS handshake failed: {}", e);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                let tls_ms = tls_start.elapsed().as_millis() as u64;
+                return Ok(build_conn_error_and_record(
+                    "TLS_HANDSHAKE_FAILED",
+                    error_msg,
+                    Some(tls_ms),
+                ));
+            }
+        };
         let tls_elapsed = tls_start.elapsed().as_millis() as u64;
 
         let io = TokioIo::new(tls_stream);
-        let (sender, conn) = ClientBuilder::new()
+        let (sender, conn) = match ClientBuilder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
             .handshake(io)
             .await
-            .map_err(|e| BifrostError::Network(format!("HTTP handshake failed: {}", e)))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("HTTP handshake failed: {}", e);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                return Ok(build_conn_error_and_record(
+                    "HTTP_HANDSHAKE_FAILED",
+                    error_msg,
+                    Some(tls_elapsed),
+                ));
+            }
+        };
 
         tokio::spawn(async move {
             if let Err(err) = conn.await {
@@ -406,12 +634,23 @@ pub async fn handle_http_request(
         (sender, Some(tls_elapsed))
     } else {
         let io = TokioIo::new(stream);
-        let (sender, conn) = ClientBuilder::new()
+        let (sender, conn) = match ClientBuilder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
             .handshake(io)
             .await
-            .map_err(|e| BifrostError::Network(format!("HTTP handshake failed: {}", e)))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("HTTP handshake failed: {}", e);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                return Ok(build_conn_error_and_record(
+                    "HTTP_HANDSHAKE_FAILED",
+                    error_msg,
+                    None,
+                ));
+            }
+        };
 
         tokio::spawn(async move {
             if let Err(err) = conn.await {
@@ -447,10 +686,18 @@ pub async fn handle_http_request(
     let outgoing_req = Request::from_parts(parts, full_body(final_body.clone()));
 
     let send_start = Instant::now();
-    let res = sender
-        .send_request(outgoing_req)
-        .await
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+    let res = match sender.send_request(outgoing_req).await {
+        Ok(r) => r,
+        Err(e) => {
+            let error_msg = format!("Request failed: {}", e);
+            error!("[{}] {}", ctx.id_str(), error_msg);
+            return Ok(build_conn_error_and_record(
+                "REQUEST_FAILED",
+                error_msg,
+                tls_ms,
+            ));
+        }
+    };
     let wait_ms = send_start.elapsed().as_millis() as u64;
 
     let (mut res_parts, res_body) = res.into_parts();

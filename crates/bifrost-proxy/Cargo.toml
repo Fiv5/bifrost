@@ -49,6 +49,7 @@ url = "2"
 mime_guess = "2"
 regex = "1"
 chrono = { version = "0.4", features = ["std"] }
+gethostname = "1"
 webpki-roots.workspace = true
 urlencoding = "2"
 hickory-resolver = "0.24"

@@ -110,7 +110,8 @@ CREATE TABLE IF NOT EXISTS traffic_records (
     actual_url TEXT,
     actual_host TEXT,
     original_request_headers_blob BLOB,
-    actual_response_headers_blob BLOB
+    actual_response_headers_blob BLOB,
+    error_message TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_id ON traffic_records(id);
@@ -142,7 +143,7 @@ pub fn get_insert_sql() -> &'static str {
         matched_rules_blob, socket_status_blob,
         request_body_ref_blob, response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
-        actual_response_headers_blob
+        actual_response_headers_blob, error_message
     ) VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7,
         ?8, ?9, ?10, ?11,
@@ -153,7 +154,7 @@ pub fn get_insert_sql() -> &'static str {
         ?25, ?26,
         ?27, ?28,
         ?29, ?30, ?31,
-        ?32
+        ?32, ?33
     )
     "#
 }
@@ -182,7 +183,8 @@ pub fn get_update_sql() -> &'static str {
         actual_url = ?19,
         actual_host = ?20,
         original_request_headers_blob = ?21,
-        actual_response_headers_blob = ?22
-    WHERE id = ?23
+        actual_response_headers_blob = ?22,
+        error_message = ?23
+    WHERE id = ?24
     "#
 }

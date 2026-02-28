@@ -159,6 +159,8 @@ pub struct TrafficRecord {
     pub frame_count: usize,
     #[serde(default)]
     pub last_frame_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 impl TrafficRecord {
@@ -215,6 +217,7 @@ impl TrafficRecord {
             socket_status: None,
             frame_count: 0,
             last_frame_id: 0,
+            error_message: None,
         }
     }
 

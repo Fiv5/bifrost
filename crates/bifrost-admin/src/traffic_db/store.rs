@@ -256,6 +256,7 @@ impl TrafficDbStore {
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
+                &record.error_message,
             ],
         );
 
@@ -365,6 +366,7 @@ impl TrafficDbStore {
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
+                &record.error_message,
                 &record.id,
             ],
         );
@@ -643,6 +645,7 @@ impl TrafficDbStore {
                 .and_then(|b| bincode::deserialize(&b).ok()),
             actual_response_headers: actual_res_headers_blob
                 .and_then(|b| bincode::deserialize(&b).ok()),
+            error_message: row.get("error_message")?,
         })
     }
 
