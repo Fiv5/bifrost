@@ -37,135 +37,138 @@ export default function VersionModal() {
     }
   }, []);
 
-  const styles = useMemo<Record<string, CSSProperties>>(() => ({
-    modalContent: {
-      padding: "8px 0",
-    },
-    header: {
-      display: "flex",
-      alignItems: "center",
-      gap: 12,
-      marginBottom: 20,
-    },
-    headerIcon: {
-      fontSize: 32,
-      color: hasUpdate ? token.colorPrimary : token.colorTextSecondary,
-    },
-    headerText: {
-      flex: 1,
-    },
-    headerTitle: {
-      fontSize: 18,
-      fontWeight: 600,
-      margin: 0,
-      color: token.colorText,
-    },
-    headerSubtitle: {
-      fontSize: 13,
-      color: token.colorTextSecondary,
-      margin: 0,
-    },
-    versionRow: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 16,
-      padding: "16px 0",
-      backgroundColor: token.colorFillQuaternary,
-      borderRadius: 8,
-      marginBottom: 16,
-    },
-    versionLabel: {
-      fontSize: 12,
-      color: token.colorTextSecondary,
-      marginBottom: 4,
-    },
-    versionValue: {
-      fontSize: 16,
-      fontWeight: 600,
-      fontFamily: "monospace",
-    },
-    versionCurrent: {
-      color: hasUpdate ? token.colorTextSecondary : token.colorSuccess,
-    },
-    versionLatest: {
-      color: token.colorSuccess,
-    },
-    arrow: {
-      fontSize: 18,
-      color: token.colorTextSecondary,
-    },
-    section: {
-      marginBottom: 16,
-    },
-    sectionTitle: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      fontSize: 14,
-      fontWeight: 600,
-      color: token.colorText,
-      marginBottom: 12,
-    },
-    highlightList: {
-      margin: 0,
-      paddingLeft: 20,
-    },
-    highlightItem: {
-      fontSize: 13,
-      color: token.colorTextSecondary,
-      lineHeight: 1.8,
-    },
-    commandBox: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "10px 12px",
-      backgroundColor: token.colorFillQuaternary,
-      borderRadius: 6,
-      border: `1px solid ${token.colorBorderSecondary}`,
-    },
-    command: {
-      flex: 1,
-      fontFamily: "monospace",
-      fontSize: 13,
-      color: token.colorText,
-    },
-    infoRow: {
-      display: "flex",
-      gap: 24,
-      flexWrap: "wrap" as const,
-    },
-    infoItem: {
-      display: "flex",
-      gap: 8,
-    },
-    infoLabel: {
-      fontSize: 13,
-      color: token.colorTextSecondary,
-    },
-    infoValue: {
-      fontSize: 13,
-      color: token.colorText,
-      fontFamily: "monospace",
-    },
-    successBadge: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "12px 16px",
-      backgroundColor: token.colorSuccessBg,
-      borderRadius: 6,
-      color: token.colorSuccess,
-      fontSize: 13,
-    },
-    releaseLink: {
-      display: "flex",
-      alignItems: "center",
-      gap: 6,
-      marginTop: 8,
-    },
-  }), [token, hasUpdate]);
+  const styles = useMemo<Record<string, CSSProperties>>(
+    () => ({
+      modalContent: {
+        padding: "8px 0",
+      },
+      header: {
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        marginBottom: 20,
+      },
+      headerIcon: {
+        fontSize: 32,
+        color: hasUpdate ? token.colorPrimary : token.colorTextSecondary,
+      },
+      headerText: {
+        flex: 1,
+      },
+      headerTitle: {
+        fontSize: 18,
+        fontWeight: 600,
+        margin: 0,
+        color: token.colorText,
+      },
+      headerSubtitle: {
+        fontSize: 13,
+        color: token.colorTextSecondary,
+        margin: 0,
+      },
+      versionRow: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 16,
+        padding: "16px 0",
+        backgroundColor: token.colorFillQuaternary,
+        borderRadius: 8,
+        marginBottom: 16,
+      },
+      versionLabel: {
+        fontSize: 12,
+        color: token.colorTextSecondary,
+        marginBottom: 4,
+      },
+      versionValue: {
+        fontSize: 16,
+        fontWeight: 600,
+        fontFamily: "monospace",
+      },
+      versionCurrent: {
+        color: hasUpdate ? token.colorTextSecondary : token.colorSuccess,
+      },
+      versionLatest: {
+        color: token.colorSuccess,
+      },
+      arrow: {
+        fontSize: 18,
+        color: token.colorTextSecondary,
+      },
+      section: {
+        marginBottom: 16,
+      },
+      sectionTitle: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 14,
+        fontWeight: 600,
+        color: token.colorText,
+        marginBottom: 12,
+      },
+      highlightList: {
+        margin: 0,
+        paddingLeft: 20,
+      },
+      highlightItem: {
+        fontSize: 13,
+        color: token.colorTextSecondary,
+        lineHeight: 1.8,
+      },
+      commandBox: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "10px 12px",
+        backgroundColor: token.colorFillQuaternary,
+        borderRadius: 6,
+        border: `1px solid ${token.colorBorderSecondary}`,
+      },
+      command: {
+        flex: 1,
+        fontFamily: "monospace",
+        fontSize: 13,
+        color: token.colorText,
+      },
+      infoRow: {
+        display: "flex",
+        gap: 24,
+        flexWrap: "wrap" as const,
+      },
+      infoItem: {
+        display: "flex",
+        gap: 8,
+      },
+      infoLabel: {
+        fontSize: 13,
+        color: token.colorTextSecondary,
+      },
+      infoValue: {
+        fontSize: 13,
+        color: token.colorText,
+        fontFamily: "monospace",
+      },
+      successBadge: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "12px 16px",
+        backgroundColor: token.colorSuccessBg,
+        borderRadius: 6,
+        color: token.colorSuccess,
+        fontSize: 13,
+      },
+      releaseLink: {
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        marginTop: 8,
+      },
+    }),
+    [token, hasUpdate],
+  );
 
   const renderUpdateContent = () => (
     <div style={styles.modalContent}>
@@ -252,9 +255,7 @@ export default function VersionModal() {
           <InfoCircleOutlined style={styles.headerIcon} />
           <div style={styles.headerText}>
             <p style={styles.headerTitle}>Version Information</p>
-            <p style={styles.headerSubtitle}>
-              Current installation details
-            </p>
+            <p style={styles.headerSubtitle}>Current installation details</p>
           </div>
         </div>
 
@@ -276,10 +277,6 @@ export default function VersionModal() {
                   {systemInfo.os} ({systemInfo.arch})
                 </span>
               </div>
-              <div style={styles.infoItem}>
-                <span style={styles.infoLabel}>Rust:</span>
-                <span style={styles.infoValue}>{systemInfo.rust_version}</span>
-              </div>
             </div>
           </div>
         )}
@@ -289,9 +286,30 @@ export default function VersionModal() {
           <span>You are running the latest version</span>
         </div>
 
+        {releaseHighlights.length > 0 && (
+          <>
+            <Divider style={{ margin: "16px 0" }} />
+            <div style={styles.section}>
+              <div style={styles.sectionTitle}>
+                <span>✨</span>
+                <span>Release Highlights</span>
+              </div>
+              <ul style={styles.highlightList}>
+                {releaseHighlights.map((highlight, index) => (
+                  <li key={index} style={styles.highlightItem}>
+                    {highlight}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </>
+        )}
+
         <div style={styles.releaseLink}>
           <Link
-            href="https://github.com/bifrost-proxy/bifrost/releases"
+            href={
+              releaseUrl || "https://github.com/bifrost-proxy/bifrost/releases"
+            }
             target="_blank"
           >
             <ExportOutlined /> View Release History

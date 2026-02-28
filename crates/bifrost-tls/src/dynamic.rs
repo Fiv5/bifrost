@@ -1,7 +1,7 @@
 use crate::ca::CertificateAuthority;
 use bifrost_core::error::{BifrostError, Result};
 use rcgen::{
-    Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyUsagePurpose, SanType,
+    CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose, SanType,
     PKCS_ECDSA_P256_SHA256,
 };
 use rustls::crypto::ring::sign::any_supported_type;
@@ -32,7 +32,10 @@ impl DynamicCertGenerator {
                     BifrostError::Tls(format!("Invalid IP address: {e}"))
                 })?)];
         } else {
-            params.subject_alt_names = vec![SanType::DnsName(domain.to_string())];
+            params.subject_alt_names =
+                vec![SanType::DnsName(domain.to_string().try_into().map_err(
+                    |e| BifrostError::Tls(format!("Invalid DNS name: {e}")),
+                )?)];
         }
 
         params.key_usages = vec![
@@ -43,20 +46,23 @@ impl DynamicCertGenerator {
             ExtendedKeyUsagePurpose::ServerAuth,
             ExtendedKeyUsagePurpose::ClientAuth,
         ];
-        params.alg = &PKCS_ECDSA_P256_SHA256;
 
-        let cert = Certificate::from_params(params)
-            .map_err(|e| BifrostError::Tls(format!("Failed to create certificate: {e}")))?;
+        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+            .map_err(|e| BifrostError::Tls(format!("Failed to generate key pair: {e}")))?;
 
-        let cert_der_vec = cert
-            .serialize_der_with_signer(&self.ca.certificate)
+        let ca_pem = self.ca.certificate.pem();
+        let issuer = Issuer::from_ca_cert_pem(&ca_pem, self.ca.key_pair())
+            .map_err(|e| BifrostError::Tls(format!("Failed to create issuer: {e}")))?;
+
+        let cert = params
+            .signed_by(&key_pair, &issuer)
             .map_err(|e| BifrostError::Tls(format!("Failed to sign certificate: {e}")))?;
 
-        let cert_der = CertificateDer::from(cert_der_vec);
+        let cert_der = CertificateDer::from(cert.der().to_vec());
         let ca_cert_der = self.ca.certificate_der()?;
 
         let key_der: PrivateKeyDer<'static> =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.serialize_private_key_der()));
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
 
         let signing_key = any_supported_type(&key_der)
             .map_err(|e| BifrostError::Tls(format!("Failed to create signing key: {e}")))?;

@@ -1209,9 +1209,6 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                   <Descriptions.Item label="Version">
                     <Text code>v{overview?.system.version}</Text>
                   </Descriptions.Item>
-                  <Descriptions.Item label="Rust Version">
-                    {overview?.system.rust_version || "Unknown"}
-                  </Descriptions.Item>
                   <Descriptions.Item label="OS">
                     {overview?.system.os} ({overview?.system.arch})
                   </Descriptions.Item>

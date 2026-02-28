@@ -12,6 +12,7 @@ use x509_parser::public_key::PublicKey;
 
 pub struct CertificateAuthority {
     pub certificate: Certificate,
+    pub key_pair: KeyPair,
 }
 
 impl std::fmt::Debug for CertificateAuthority {
@@ -23,26 +24,23 @@ impl std::fmt::Debug for CertificateAuthority {
 }
 
 impl CertificateAuthority {
-    pub fn new(certificate: Certificate) -> Self {
-        Self { certificate }
+    pub fn new(certificate: Certificate, key_pair: KeyPair) -> Self {
+        Self {
+            certificate,
+            key_pair,
+        }
     }
 
     pub fn certificate_der(&self) -> Result<CertificateDer<'static>> {
-        let der = self
-            .certificate
-            .serialize_der()
-            .map_err(|e| BifrostError::Tls(format!("Failed to serialize certificate: {e}")))?;
-        Ok(CertificateDer::from(der))
+        Ok(CertificateDer::from(self.certificate.der().to_vec()))
     }
 
     pub fn private_key_der(&self) -> PrivateKeyDer<'static> {
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            self.certificate.serialize_private_key_der(),
-        ))
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.key_pair.serialize_der()))
     }
 
     pub fn key_pair(&self) -> &KeyPair {
-        self.certificate.get_key_pair()
+        &self.key_pair
     }
 }
 
@@ -64,12 +62,15 @@ pub fn generate_root_ca() -> Result<CertificateAuthority> {
         ExtendedKeyUsagePurpose::ServerAuth,
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
-    params.alg = &PKCS_ECDSA_P256_SHA256;
 
-    let cert = Certificate::from_params(params)
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .map_err(|e| BifrostError::Tls(format!("Failed to generate key pair: {e}")))?;
+
+    let cert = params
+        .self_signed(&key_pair)
         .map_err(|e| BifrostError::Tls(format!("Failed to generate root certificate: {e}")))?;
 
-    Ok(CertificateAuthority::new(cert))
+    Ok(CertificateAuthority::new(cert, key_pair))
 }
 
 pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuthority> {
@@ -79,13 +80,55 @@ pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuth
     let key_pair = KeyPair::from_pem(&key_pem)
         .map_err(|e| BifrostError::Tls(format!("Failed to parse CA key: {e}")))?;
 
-    let params = CertificateParams::from_ca_cert_pem(&cert_pem, key_pair)
-        .map_err(|e| BifrostError::Tls(format!("Failed to parse CA certificate: {e}")))?;
+    let pem = parse_x509_pem(cert_pem.as_bytes())
+        .map_err(|e| BifrostError::Tls(format!("Failed to parse CA certificate PEM: {e}")))?
+        .1;
 
-    let cert = Certificate::from_params(params)
+    let parsed_cert = pem
+        .parse_x509()
+        .map_err(|e| BifrostError::Tls(format!("Failed to parse X.509 certificate: {e}")))?;
+
+    let mut params = CertificateParams::default();
+
+    for rdn in parsed_cert.subject().iter() {
+        for attr in rdn.iter() {
+            let oid_str = attr.attr_type().to_id_string();
+            if let Ok(value) = attr.as_str() {
+                match oid_str.as_str() {
+                    "2.5.4.3" => params.distinguished_name.push(DnType::CommonName, value),
+                    "2.5.4.10" => params
+                        .distinguished_name
+                        .push(DnType::OrganizationName, value),
+                    "2.5.4.11" => params
+                        .distinguished_name
+                        .push(DnType::OrganizationalUnitName, value),
+                    "2.5.4.6" => params.distinguished_name.push(DnType::CountryName, value),
+                    "2.5.4.8" => params
+                        .distinguished_name
+                        .push(DnType::StateOrProvinceName, value),
+                    "2.5.4.7" => params.distinguished_name.push(DnType::LocalityName, value),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::CrlSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    params.extended_key_usages = vec![
+        ExtendedKeyUsagePurpose::ServerAuth,
+        ExtendedKeyUsagePurpose::ClientAuth,
+    ];
+
+    let cert = params
+        .self_signed(&key_pair)
         .map_err(|e| BifrostError::Tls(format!("Failed to reconstruct CA certificate: {e}")))?;
 
-    Ok(CertificateAuthority::new(cert))
+    Ok(CertificateAuthority::new(cert, key_pair))
 }
 
 pub fn validate_ca_files(cert_path: &Path, key_path: &Path) -> Result<()> {
@@ -162,11 +205,8 @@ pub fn ensure_valid_ca(cert_path: &Path, key_path: &Path) -> Result<bool> {
 }
 
 pub fn save_root_ca(cert_path: &Path, key_path: &Path, ca: &CertificateAuthority) -> Result<()> {
-    let cert_pem = ca
-        .certificate
-        .serialize_pem()
-        .map_err(|e| BifrostError::Tls(format!("Failed to serialize certificate: {e}")))?;
-    let key_pem = ca.certificate.serialize_private_key_pem();
+    let cert_pem = ca.certificate.pem();
+    let key_pem = ca.key_pair.serialize_pem();
 
     if let Some(parent) = cert_path.parent() {
         fs::create_dir_all(parent)?;
@@ -388,7 +428,7 @@ mod tests {
     #[test]
     fn test_generate_root_ca() {
         let ca = generate_root_ca().expect("Failed to generate root CA");
-        let cert_pem = ca.certificate.serialize_pem().expect("Failed to serialize");
+        let cert_pem = ca.certificate.pem();
         assert!(cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(cert_pem.contains("END CERTIFICATE"));
     }

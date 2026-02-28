@@ -30,7 +30,7 @@ tokio = { version = "1.0", features = ["full"] }
 regex = "1.10"
 ipnet = "2.9"
 lazy_static = "1.4"
-rcgen = { version = "=0.12.1", features = ["pem", "x509-parser"] }
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2.1"
 lru = "0.16"
