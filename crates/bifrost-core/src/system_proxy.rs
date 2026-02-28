@@ -232,6 +232,20 @@ impl SystemProxyManager {
             }
         }
 
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(proxy) = Self::parse_windows_proxy() {
+                return Ok(ProxyBackup::from(&proxy));
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(proxy) = Self::parse_linux_proxy() {
+                return Ok(ProxyBackup::from(&proxy));
+            }
+        }
+
         let current = Sysproxy::get_system_proxy().unwrap_or_else(|e| {
             tracing::debug!(error = %e, "[SYSTEM_PROXY] Failed to get system proxy");
             Sysproxy {
@@ -290,6 +304,152 @@ impl SystemProxyManager {
 
         let enable = http_enable || https_enable || socks_enable;
         let bypass = bypass_list.join(",");
+
+        Some(Sysproxy {
+            enable,
+            host,
+            port,
+            bypass,
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    fn parse_windows_proxy() -> Option<Sysproxy> {
+        use std::process::Command;
+
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                "ProxyEnable",
+            ])
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let enable = stdout.contains("0x1");
+
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                "ProxyServer",
+            ])
+            .output()
+            .ok()?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let (host, port) = if let Some(line) = stdout.lines().find(|l| l.contains("ProxyServer")) {
+            if let Some(value) = line.split_whitespace().last() {
+                if let Some((h, p)) = value.split_once(':') {
+                    (h.to_string(), p.parse().unwrap_or(0))
+                } else {
+                    (value.to_string(), 0)
+                }
+            } else {
+                (String::new(), 0)
+            }
+        } else {
+            (String::new(), 0)
+        };
+
+        let output = Command::new("reg")
+            .args([
+                "query",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                "/v",
+                "ProxyOverride",
+            ])
+            .output()
+            .ok();
+
+        let bypass = output
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout
+                    .lines()
+                    .find(|l| l.contains("ProxyOverride"))
+                    .and_then(|line| line.split_whitespace().last())
+                    .map(|v| v.replace(';', ","))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        Some(Sysproxy {
+            enable,
+            host,
+            port,
+            bypass,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parse_linux_proxy() -> Option<Sysproxy> {
+        use std::process::Command;
+
+        let mode_output = Command::new("gsettings")
+            .args(["get", "org.gnome.system.proxy", "mode"])
+            .output()
+            .ok()?;
+
+        let mode = String::from_utf8_lossy(&mode_output.stdout)
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+
+        let enable = mode == "manual";
+
+        if !enable {
+            return Some(Sysproxy {
+                enable: false,
+                host: String::new(),
+                port: 0,
+                bypass: String::new(),
+            });
+        }
+
+        let host_output = Command::new("gsettings")
+            .args(["get", "org.gnome.system.proxy.http", "host"])
+            .output()
+            .ok()?;
+
+        let host = String::from_utf8_lossy(&host_output.stdout)
+            .trim()
+            .trim_matches('\'')
+            .to_string();
+
+        let port_output = Command::new("gsettings")
+            .args(["get", "org.gnome.system.proxy.http", "port"])
+            .output()
+            .ok()?;
+
+        let port: u16 = String::from_utf8_lossy(&port_output.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0);
+
+        let bypass_output = Command::new("gsettings")
+            .args(["get", "org.gnome.system.proxy", "ignore-hosts"])
+            .output()
+            .ok();
+
+        let bypass = bypass_output
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let s = stdout.trim();
+                if s.starts_with('[') && s.ends_with(']') {
+                    s[1..s.len() - 1]
+                        .split(',')
+                        .map(|v| v.trim().trim_matches('\'').to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                } else {
+                    String::new()
+                }
+            })
+            .unwrap_or_default();
 
         Some(Sysproxy {
             enable,
