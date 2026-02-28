@@ -44,35 +44,48 @@ fn main() {
 
     let node_modules = web_dir.join("node_modules");
     if !node_modules.exists() {
-        println!("cargo:warning=Installing frontend dependencies with pnpm...");
-        let pnpm_cmd = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-        let output = Command::new(pnpm_cmd)
-            .args(["install", "--frozen-lockfile"])
-            .current_dir(&web_dir)
-            .env("COREPACK_ENABLE_STRICT", "0")
-            .output()
-            .or_else(|_| {
-                Command::new(pnpm_cmd)
-                    .arg("install")
-                    .current_dir(&web_dir)
-                    .env("COREPACK_ENABLE_STRICT", "0")
-                    .output()
-            })
-            .expect("Failed to run pnpm install. Make sure pnpm is installed.");
+        if dist_dir.exists() && dist_dir.join("index.html").exists() {
+            println!("cargo:warning=node_modules not found but pre-built frontend exists, skipping install");
+        } else {
+            println!("cargo:warning=Installing frontend dependencies with pnpm...");
+            let pnpm_cmd = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+            let output = Command::new(pnpm_cmd)
+                .args(["install", "--frozen-lockfile"])
+                .current_dir(&web_dir)
+                .env("COREPACK_ENABLE_STRICT", "0")
+                .output()
+                .or_else(|_| {
+                    Command::new(pnpm_cmd)
+                        .arg("install")
+                        .current_dir(&web_dir)
+                        .env("COREPACK_ENABLE_STRICT", "0")
+                        .output()
+                });
 
-        if !output.status.success() {
-            eprintln!(
-                "pnpm install stdout: {}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            eprintln!(
-                "pnpm install stderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            panic!(
-                "pnpm install failed with exit code: {:?}",
-                output.status.code()
-            );
+            match output {
+                Ok(output) if output.status.success() => {}
+                Ok(output) => {
+                    eprintln!(
+                        "pnpm install stdout: {}",
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                    eprintln!(
+                        "pnpm install stderr: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    panic!(
+                        "pnpm install failed with exit code: {:?}",
+                        output.status.code()
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    panic!(
+                        "pnpm not found and no pre-built frontend. \
+                         Please install pnpm or set SKIP_FRONTEND_BUILD=1"
+                    );
+                }
+                Err(e) => panic!("Failed to run pnpm install: {:?}", e),
+            }
         }
     }
 
@@ -81,12 +94,30 @@ fn main() {
         web_dir.display()
     );
     let pnpm_cmd = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
-    let output = Command::new(pnpm_cmd)
+    let output = match Command::new(pnpm_cmd)
         .args(["run", "build"])
         .current_dir(&web_dir)
         .env("COREPACK_ENABLE_STRICT", "0")
         .output()
-        .expect("Failed to run pnpm run build");
+    {
+        Ok(output) => output,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("cargo:warning=pnpm not found, checking if dist already exists...");
+            if dist_dir.exists() && dist_dir.join("index.html").exists() {
+                println!(
+                    "cargo:warning=Pre-built frontend found at {}",
+                    dist_dir.display()
+                );
+                return;
+            }
+            panic!(
+                "pnpm not found and no pre-built frontend at {}. \
+                 Please install pnpm or build frontend first.",
+                dist_dir.display()
+            );
+        }
+        Err(e) => panic!("Failed to run pnpm run build: {:?}", e),
+    };
 
     if !output.status.success() {
         eprintln!(

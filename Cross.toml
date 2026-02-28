@@ -1,0 +1,5 @@
+[build.env]
+passthrough = [
+    "SKIP_FRONTEND_BUILD",
+    "CARGO_TERM_COLOR",
+]
