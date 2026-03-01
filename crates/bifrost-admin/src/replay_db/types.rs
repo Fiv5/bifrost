@@ -16,6 +16,15 @@ pub struct RuleConfig {
     pub selected_rules: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestType {
+    #[default]
+    Http,
+    Sse,
+    WebSocket,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BodyType {
@@ -85,6 +94,8 @@ pub struct ReplayRequest {
     pub group_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default)]
+    pub request_type: RequestType,
     pub method: String,
     pub url: String,
     pub headers: Vec<KeyValueItem>,
@@ -103,6 +114,7 @@ impl ReplayRequest {
             id: uuid::Uuid::new_v4().to_string(),
             group_id: None,
             name: None,
+            request_type: RequestType::Http,
             method,
             url,
             headers: Vec::new(),

@@ -1,4 +1,4 @@
-import React, { useCallback, useState, useMemo, useEffect, type CSSProperties } from "react";
+import { useCallback, useState, useMemo, useEffect, type CSSProperties } from "react";
 import { Input, Tree, Button, Dropdown, Empty, Typography, Tag, theme, Modal, message } from "antd";
 import {
   SearchOutlined,
@@ -73,10 +73,15 @@ export default function CollectionPanel() {
     deleteGroup,
     updateGroup,
     moveRequest,
+    uiState,
+    updateUIState,
   } = useReplayStore();
 
   const [searchText, setSearchText] = useState("");
-  const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
+  const expandedKeys = uiState.collectionExpandedKeys;
+  const setExpandedKeys = useCallback((keys: string[]) => {
+    updateUIState({ collectionExpandedKeys: keys });
+  }, [updateUIState]);
   const [newGroupModalVisible, setNewGroupModalVisible] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [editGroupId, setEditGroupId] = useState<string | null>(null);
@@ -87,12 +92,32 @@ export default function CollectionPanel() {
   }, [loadGroups]);
 
   useEffect(() => {
-    const groupKeys = groups.map(g => `group-${g.id}`);
-    setExpandedKeys(prev => {
-      const newKeys = groupKeys.filter(k => !prev.includes(k));
-      return [...prev, ...newKeys];
-    });
-  }, [groups]);
+    const { uiState: currentUIState } = useReplayStore.getState();
+    const currentKeys = currentUIState.collectionExpandedKeys;
+    const keysToAdd: string[] = [];
+    
+    if (groups.length > 0) {
+      const groupKeys = groups.map(g => `group-${g.id}`);
+      keysToAdd.push(...groupKeys.filter(k => !currentKeys.includes(k)));
+    }
+    
+    if (!currentKeys.includes('ungrouped')) {
+      keysToAdd.push('ungrouped');
+    }
+    
+    if (keysToAdd.length > 0) {
+      updateUIState({ collectionExpandedKeys: [...currentKeys, ...keysToAdd] });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups.map(g => g.id).join(','), updateUIState]);
+  
+  useEffect(() => {
+    const { uiState: current } = useReplayStore.getState();
+    if (!current.collectionExpandedKeys.includes('ungrouped')) {
+      updateUIState({ collectionExpandedKeys: [...current.collectionExpandedKeys, 'ungrouped'] });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleSelectRequest = useCallback((item: ReplayRequestSummary) => {
     selectRequest(item);

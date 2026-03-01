@@ -201,6 +201,33 @@ export interface RuleConfig {
 export type BodyType = 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary';
 export type RawType = 'json' | 'xml' | 'text' | 'javascript' | 'html';
 
+export type ConnectionType = 'http' | 'sse' | 'websocket';
+
+export interface SSEEvent {
+  id?: string;
+  event?: string;
+  data: string;
+  timestamp: number;
+}
+
+export interface WebSocketMessage {
+  id: string;
+  direction: 'send' | 'receive';
+  type: 'text' | 'binary' | 'ping' | 'pong' | 'close';
+  data: string;
+  timestamp: number;
+}
+
+export interface StreamingConnection {
+  id: string;
+  type: ConnectionType;
+  status: 'connecting' | 'connected' | 'disconnected' | 'error';
+  url: string;
+  startedAt: number;
+  endedAt?: number;
+  error?: string;
+}
+
 export interface ReplayKeyValueItem {
   id: string;
   key: string;
@@ -226,10 +253,13 @@ export interface ReplayGroup {
   updated_at: number;
 }
 
+export type RequestType = 'http' | 'sse' | 'websocket';
+
 export interface ReplayRequest {
   id: string;
   group_id?: string;
   name?: string;
+  request_type: RequestType;
   method: string;
   url: string;
   headers: ReplayKeyValueItem[];
@@ -244,6 +274,7 @@ export interface ReplayRequestSummary {
   id: string;
   group_id?: string;
   name?: string;
+  request_type: RequestType;
   method: string;
   url: string;
   is_saved: boolean;

@@ -72,6 +72,7 @@ fn test_all_protocols() {
         "tlsPassthrough",
         "passthrough",
         "delete",
+        "reqScript",
     ];
 
     for name in &protocol_names {
@@ -254,7 +255,7 @@ fn test_cidr_matching() {
 
 #[test]
 fn test_ip_exact_matching() {
-    let rules = parse_line("192.168.1.100 ignore://").unwrap();
+    let rules = parse_line("192.168.1.100 delete://").unwrap();
     let matcher = &rules[0].matcher;
 
     let result = matcher.matches("http://192.168.1.100/", "192.168.1.100", "/");
@@ -296,7 +297,7 @@ fn test_parse_rules_multiline() {
 # Comment line
 example.com host://127.0.0.1
 *.api.com proxy://proxy.local:8080
-192.168.1.1 ignore://
+192.168.1.1 delete://
 "#;
 
     let rules = parse_rules(text).unwrap();

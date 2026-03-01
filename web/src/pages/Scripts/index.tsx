@@ -560,6 +560,7 @@ function TestResultPanel({
             <pre
               style={{
                 background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
                 padding: 8,
                 borderRadius: 4,
                 fontSize: 12,
@@ -579,6 +580,7 @@ function TestResultPanel({
             <pre
               style={{
                 background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
                 padding: 8,
                 borderRadius: 4,
                 fontSize: 12,

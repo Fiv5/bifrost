@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -10,16 +11,19 @@ use super::schema::{
     get_update_request_sql, init_database, InitError,
 };
 use super::types::{
-    ReplayDbStats, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary, RuleConfig,
-    MAX_HISTORY, MAX_REQUESTS,
+    ReplayDbStats, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary, RequestType,
+    RuleConfig, MAX_HISTORY, MAX_REQUESTS,
 };
 
 pub type SharedReplayDbStore = Arc<ReplayDbStore>;
+
+const CLEANUP_CHECK_INTERVAL: usize = 100;
 
 pub struct ReplayDbStore {
     db_path: PathBuf,
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
+    insert_counter: AtomicUsize,
 }
 
 impl ReplayDbStore {
@@ -54,6 +58,7 @@ impl ReplayDbStore {
             db_path,
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
+            insert_counter: AtomicUsize::new(0),
         })
     }
 
@@ -62,34 +67,6 @@ impl ReplayDbStore {
 
         match init_database(&conn) {
             Ok(()) => Ok(conn),
-            Err(InitError::VersionMismatch { current, expected }) => {
-                tracing::warn!(
-                    current_version = current,
-                    expected_version = expected,
-                    "[REPLAY_DB] Schema version mismatch, resetting database"
-                );
-                drop(conn);
-
-                let wal_path = db_path.with_extension("db-wal");
-                let shm_path = db_path.with_extension("db-shm");
-                if let Err(e) = fs::remove_file(db_path) {
-                    tracing::warn!(error = %e, "[REPLAY_DB] Failed to remove old database file");
-                }
-                if wal_path.exists() {
-                    fs::remove_file(&wal_path).ok();
-                }
-                if shm_path.exists() {
-                    fs::remove_file(&shm_path).ok();
-                }
-
-                let new_conn = Connection::open(db_path)?;
-                init_database(&new_conn).map_err(|e| match e {
-                    InitError::Sqlite(e) => e,
-                    InitError::VersionMismatch { .. } => rusqlite::Error::QueryReturnedNoRows,
-                })?;
-                tracing::info!("[REPLAY_DB] Database reset successfully");
-                Ok(new_conn)
-            }
             Err(InitError::Sqlite(e)) => Err(e),
         }
     }
@@ -198,6 +175,7 @@ impl ReplayDbStore {
             .body
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let request_type = request_type_to_str(&request.request_type);
 
         let conn = self.write_conn.lock();
         conn.execute(
@@ -206,6 +184,7 @@ impl ReplayDbStore {
                 &request.id,
                 &request.group_id,
                 &request.name,
+                request_type,
                 &request.method,
                 &request.url,
                 headers_blob,
@@ -225,6 +204,7 @@ impl ReplayDbStore {
             .body
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let request_type = request_type_to_str(&request.request_type);
 
         let conn = self.write_conn.lock();
         conn.execute(
@@ -232,6 +212,7 @@ impl ReplayDbStore {
             params![
                 &request.group_id,
                 &request.name,
+                request_type,
                 &request.method,
                 &request.url,
                 headers_blob,
@@ -254,7 +235,7 @@ impl ReplayDbStore {
     pub fn get_request(&self, id: &str) -> Option<ReplayRequest> {
         let conn = self.read_conn.lock();
         conn.query_row(
-            "SELECT id, group_id, name, method, url, headers_blob, body_blob, is_saved, sort_order, created_at, updated_at FROM replay_requests WHERE id = ?",
+            "SELECT id, group_id, name, request_type, method, url, headers_blob, body_blob, is_saved, sort_order, created_at, updated_at FROM replay_requests WHERE id = ?",
             [id],
             Self::row_to_request,
         )
@@ -354,23 +335,25 @@ impl ReplayDbStore {
     }
 
     fn row_to_request(row: &rusqlite::Row) -> rusqlite::Result<ReplayRequest> {
-        let headers_blob: Option<Vec<u8>> = row.get(5)?;
-        let body_blob: Option<Vec<u8>> = row.get(6)?;
+        let request_type_str: String = row.get(3)?;
+        let headers_blob: Option<Vec<u8>> = row.get(6)?;
+        let body_blob: Option<Vec<u8>> = row.get(7)?;
 
         Ok(ReplayRequest {
             id: row.get(0)?,
             group_id: row.get(1)?,
             name: row.get(2)?,
-            method: row.get(3)?,
-            url: row.get(4)?,
+            request_type: str_to_request_type(&request_type_str),
+            method: row.get(4)?,
+            url: row.get(5)?,
             headers: headers_blob
                 .and_then(|b| bincode::deserialize(&b).ok())
                 .unwrap_or_default(),
             body: body_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            is_saved: row.get::<_, i32>(7)? != 0,
-            sort_order: row.get(8)?,
-            created_at: row.get::<_, i64>(9)? as u64,
-            updated_at: row.get::<_, i64>(10)? as u64,
+            is_saved: row.get::<_, i32>(8)? != 0,
+            sort_order: row.get(9)?,
+            created_at: row.get::<_, i64>(10)? as u64,
+            updated_at: row.get::<_, i64>(11)? as u64,
         })
     }
 
@@ -486,18 +469,39 @@ impl ReplayDbStore {
     }
 
     fn maybe_cleanup_history(&self, conn: &Connection) {
+        let counter = self.insert_counter.fetch_add(1, Ordering::Relaxed);
+        if !counter.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
+            return;
+        }
+
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM replay_history", [], |row| row.get(0))
             .unwrap_or(0);
 
         if count as usize > MAX_HISTORY {
             let excess = count as usize - MAX_HISTORY;
-            let _ = conn.execute(
+            match conn.execute(
                 "DELETE FROM replay_history WHERE id IN (
                     SELECT id FROM replay_history ORDER BY executed_at ASC LIMIT ?
                 )",
                 [excess as i64],
-            );
+            ) {
+                Ok(deleted) => {
+                    tracing::info!(
+                        deleted = deleted,
+                        total_before = count,
+                        max_limit = MAX_HISTORY,
+                        "[REPLAY_DB] Auto cleanup: removed {} oldest history records",
+                        deleted
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[REPLAY_DB] Failed to cleanup history records"
+                    );
+                }
+            }
         }
     }
 
@@ -518,5 +522,21 @@ impl ReplayDbStore {
         if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
             tracing::warn!(error = %e, "[REPLAY_DB] WAL checkpoint failed");
         }
+    }
+}
+
+fn request_type_to_str(rt: &RequestType) -> &'static str {
+    match rt {
+        RequestType::Http => "http",
+        RequestType::Sse => "sse",
+        RequestType::WebSocket => "websocket",
+    }
+}
+
+fn str_to_request_type(s: &str) -> RequestType {
+    match s {
+        "sse" => RequestType::Sse,
+        "websocket" => RequestType::WebSocket,
+        _ => RequestType::Http,
     }
 }

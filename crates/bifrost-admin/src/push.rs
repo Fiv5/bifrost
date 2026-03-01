@@ -42,6 +42,12 @@ pub enum PushMessage {
 
     #[serde(rename = "error")]
     Error(ErrorData),
+
+    #[serde(rename = "replay_request_updated")]
+    ReplayRequestUpdated(ReplayRequestUpdatedData),
+
+    #[serde(rename = "replay_history_updated")]
+    ReplayHistoryUpdated(ReplayHistoryUpdatedData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +102,20 @@ pub struct MetricsData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryData {
     pub history: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayRequestUpdatedData {
+    pub action: String,
+    pub request_id: Option<String>,
+    pub group_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayHistoryUpdatedData {
+    pub action: String,
+    pub request_id: String,
+    pub history_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -837,6 +857,56 @@ impl PushManager {
             client.send(PushMessage::MetricsUpdate(MetricsData {
                 metrics: serde_json::to_value(&metrics).unwrap_or_default(),
             }));
+        }
+    }
+
+    pub fn broadcast_replay_request_updated(
+        &self,
+        action: &str,
+        request_id: Option<&str>,
+        group_id: Option<&str>,
+    ) {
+        let msg = PushMessage::ReplayRequestUpdated(ReplayRequestUpdatedData {
+            action: action.to_string(),
+            request_id: request_id.map(|s| s.to_string()),
+            group_id: group_id.map(|s| s.to_string()),
+        });
+
+        let mut clients_to_remove = Vec::new();
+        for client_ref in self.clients.iter() {
+            let client = client_ref.value();
+            if !client.send(msg.clone()) {
+                clients_to_remove.push(client.id);
+            }
+        }
+
+        for client_id in clients_to_remove {
+            self.unregister_client(client_id);
+        }
+    }
+
+    pub fn broadcast_replay_history_updated(
+        &self,
+        action: &str,
+        request_id: &str,
+        history_id: Option<&str>,
+    ) {
+        let msg = PushMessage::ReplayHistoryUpdated(ReplayHistoryUpdatedData {
+            action: action.to_string(),
+            request_id: request_id.to_string(),
+            history_id: history_id.map(|s| s.to_string()),
+        });
+
+        let mut clients_to_remove = Vec::new();
+        for client_ref in self.clients.iter() {
+            let client = client_ref.value();
+            if !client.send(msg.clone()) {
+                clients_to_remove.push(client.id);
+            }
+        }
+
+        for client_id in clients_to_remove {
+            self.unregister_client(client_id);
         }
     }
 }

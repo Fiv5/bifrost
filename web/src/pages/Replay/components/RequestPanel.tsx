@@ -1,4 +1,11 @@
-import { useCallback, useState, useMemo, useEffect, useRef, type CSSProperties } from "react";
+import {
+  useCallback,
+  useState,
+  useMemo,
+  useEffect,
+  useRef,
+  type CSSProperties,
+} from "react";
 import {
   Input,
   Tabs,
@@ -23,8 +30,13 @@ import {
   SaveOutlined,
   SettingOutlined,
   CaretDownOutlined,
+  DisconnectOutlined,
+  LinkOutlined,
 } from "@ant-design/icons";
-import { useReplayStore, type RequestPanelTab } from "../../../stores/useReplayStore";
+import {
+  useReplayStore,
+  type RequestPanelTab,
+} from "../../../stores/useReplayStore";
 import { useRulesStore } from "../../../stores/useRulesStore";
 import CodeEditor from "./CodeEditor";
 import type {
@@ -32,6 +44,7 @@ import type {
   BodyType,
   RawType,
   RuleMode,
+  RequestType,
 } from "../../../types";
 
 const HTTP_METHODS = [
@@ -92,11 +105,15 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
     method = methodMatch[1].toUpperCase();
   }
 
-  const urlMatches = normalized.match(/curl\s+(?:.*?\s+)?['"]?(https?:\/\/[^\s'"]+)['"]?/i);
+  const urlMatches = normalized.match(
+    /curl\s+(?:.*?\s+)?['"]?(https?:\/\/[^\s'"]+)['"]?/i,
+  );
   if (urlMatches) {
     url = urlMatches[1];
   } else {
-    const simpleUrlMatch = normalized.match(/curl\s+['"]?(https?:\/\/[^\s'"]+)['"]?/i);
+    const simpleUrlMatch = normalized.match(
+      /curl\s+['"]?(https?:\/\/[^\s'"]+)['"]?/i,
+    );
     if (simpleUrlMatch) {
       url = simpleUrlMatch[1];
     }
@@ -117,7 +134,9 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
     }
   }
 
-  const dataMatch = normalized.match(/(?:-d|--data|--data-raw|--data-binary)\s+['"]([^'"]*)['"]/i);
+  const dataMatch = normalized.match(
+    /(?:-d|--data|--data-raw|--data-binary)\s+['"]([^'"]*)['"]/i,
+  );
   if (dataMatch) {
     bodyContent = dataMatch[1];
     if (!method || method === "GET") {
@@ -125,7 +144,9 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
     }
   }
 
-  const dataAltMatch = normalized.match(/(?:-d|--data|--data-raw|--data-binary)\s+([^\s-][^\s]*)/i);
+  const dataAltMatch = normalized.match(
+    /(?:-d|--data|--data-raw|--data-binary)\s+([^\s-][^\s]*)/i,
+  );
   if (!bodyContent && dataAltMatch) {
     bodyContent = dataAltMatch[1];
     if (!method || method === "GET") {
@@ -167,35 +188,55 @@ export default function RequestPanel() {
     currentRequest,
     ruleConfig,
     executing,
+    streamingConnection,
     uiState,
     updateCurrentRequest,
     saveRequest,
     executeRequest,
     setRuleConfig,
     updateUIState,
+    connectSSE,
+    connectWebSocket,
+    disconnectSSE,
+    disconnectWebSocket,
   } = useReplayStore();
 
   const { rules, fetchRules } = useRulesStore();
   const activeTab = uiState.requestPanelActiveTab;
+  const requestType = uiState.requestType;
   const saveModalVisible = uiState.saveModalVisible;
   const saveName = uiState.saveName;
   const ruleSelectVisible = uiState.ruleSelectVisible;
+  const isConnected = streamingConnection?.status === "connected";
+  const isConnecting = streamingConnection?.status === "connecting";
 
-  const setActiveTab = useCallback((tab: string) => {
-    updateUIState({ requestPanelActiveTab: tab as RequestPanelTab });
-  }, [updateUIState]);
+  const setActiveTab = useCallback(
+    (tab: string) => {
+      updateUIState({ requestPanelActiveTab: tab as RequestPanelTab });
+    },
+    [updateUIState],
+  );
 
-  const setSaveModalVisible = useCallback((visible: boolean) => {
-    updateUIState({ saveModalVisible: visible });
-  }, [updateUIState]);
+  const setSaveModalVisible = useCallback(
+    (visible: boolean) => {
+      updateUIState({ saveModalVisible: visible });
+    },
+    [updateUIState],
+  );
 
-  const setSaveName = useCallback((name: string) => {
-    updateUIState({ saveName: name });
-  }, [updateUIState]);
+  const setSaveName = useCallback(
+    (name: string) => {
+      updateUIState({ saveName: name });
+    },
+    [updateUIState],
+  );
 
-  const setRuleSelectVisible = useCallback((visible: boolean) => {
-    updateUIState({ ruleSelectVisible: visible });
-  }, [updateUIState]);
+  const setRuleSelectVisible = useCallback(
+    (visible: boolean) => {
+      updateUIState({ ruleSelectVisible: visible });
+    },
+    [updateUIState],
+  );
 
   const handleMethodChange = useCallback(
     (method: string) => {
@@ -507,32 +548,72 @@ export default function RequestPanel() {
           style={{ flex: 1, fontSize: 12 }}
           onPressEnter={handleSend}
         />
-        <Dropdown
-          menu={{
-            items: ruleMenuItems,
-            onClick: ({ key }) => handleRuleModeChange(key as RuleMode),
-          }}
-          trigger={["click"]}
-        >
-          <Button icon={<SettingOutlined />} size="small">
-            {getRuleModeLabel()}
-            <CaretDownOutlined />
-          </Button>
-        </Dropdown>
-        <Tooltip title="Save Request">
-          <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
-            Save
-          </Button>
-        </Tooltip>
-        <Button
-          type="primary"
-          icon={<SendOutlined />}
-          onClick={handleSend}
-          loading={executing}
+        <Select
+          value={requestType}
+          onChange={(v) => updateUIState({ requestType: v as RequestType })}
           size="small"
-        >
-          Send
-        </Button>
+          style={{ width: 100 }}
+          options={[
+            { label: "HTTP", value: "http" },
+            { label: "SSE", value: "sse" },
+            { label: "WebSocket", value: "websocket" },
+          ]}
+        />
+        {requestType === "http" ? (
+          <>
+            <Dropdown
+              menu={{
+                items: ruleMenuItems,
+                onClick: ({ key }) => handleRuleModeChange(key as RuleMode),
+              }}
+              trigger={["click"]}
+            >
+              <Button icon={<SettingOutlined />} size="small">
+                {getRuleModeLabel()}
+                <CaretDownOutlined />
+              </Button>
+            </Dropdown>
+            <Tooltip title="Save Request">
+              <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
+                Save
+              </Button>
+            </Tooltip>
+            <Button
+              type="primary"
+              icon={<SendOutlined />}
+              onClick={handleSend}
+              loading={executing}
+              size="small"
+            >
+              Send
+            </Button>
+          </>
+        ) : (
+          <>
+            {isConnected ? (
+              <Button
+                danger
+                icon={<DisconnectOutlined />}
+                onClick={
+                  requestType === "sse" ? disconnectSSE : disconnectWebSocket
+                }
+                size="small"
+              >
+                Disconnect
+              </Button>
+            ) : (
+              <Button
+                type="primary"
+                icon={<LinkOutlined />}
+                onClick={requestType === "sse" ? connectSSE : connectWebSocket}
+                loading={isConnecting}
+                size="small"
+              >
+                Connect
+              </Button>
+            )}
+          </>
+        )}
       </div>
 
       <div style={styles.tabsContainer}>

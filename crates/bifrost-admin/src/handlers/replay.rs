@@ -1,23 +1,30 @@
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use base64::Engine;
 use bytes::Bytes;
+use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use hyper::client::conn::http1::Builder as ClientBuilder;
-use hyper::{body::Incoming, Method, Request, Response, StatusCode, Uri};
+use hyper::{body::Incoming, upgrade, Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
+
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message, WebSocketStream};
 use tracing::{error, info, warn};
 
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
+use crate::push::SharedPushManager;
 use crate::replay_db::{
     KeyValueItem, ReplayBody, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary,
-    RuleConfig, MAX_CONCURRENT_REPLAYS, MAX_HISTORY, MAX_REQUESTS,
+    RequestType, RuleConfig, RuleMode, MAX_CONCURRENT_REPLAYS, MAX_HISTORY, MAX_REQUESTS,
 };
 use crate::state::SharedAdminState;
 use crate::traffic::{MatchedRule, RequestTiming, TrafficRecord};
@@ -33,6 +40,29 @@ pub struct ReplayExecuteRequest {
     pub rule_config: RuleConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayStreamRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEvent {
+    pub type_: String,
+    pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSocketMessage {
+    pub type_: String,
+    pub data: String,
+    pub timestamp: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,32 +90,43 @@ pub struct ReplayExecuteResponse {
 pub async fn handle_replay(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     path: &str,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
 
     if path == "/api/replay/execute" {
         match method {
-            Method::POST => execute_replay(req, state).await,
+            Method::POST => execute_replay(req, state, push_manager).await,
+            _ => method_not_allowed(),
+        }
+    } else if path == "/api/replay/execute/stream" {
+        match method {
+            Method::POST => execute_replay_stream(req, state, push_manager).await,
+            _ => method_not_allowed(),
+        }
+    } else if path == "/api/replay/execute/ws" {
+        match method {
+            Method::GET => execute_replay_websocket(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/replay/groups" || path == "/api/replay/groups/" {
         match method {
             Method::GET => list_groups(state).await,
-            Method::POST => create_group(req, state).await,
+            Method::POST => create_group(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if let Some(id) = path.strip_prefix("/api/replay/groups/") {
         match method {
             Method::GET => get_group(state, id).await,
             Method::PUT => update_group(req, state, id).await,
-            Method::DELETE => delete_group(state, id).await,
+            Method::DELETE => delete_group(state, push_manager, id).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/replay/requests" || path == "/api/replay/requests/" {
         match method {
             Method::GET => list_requests(req, state).await,
-            Method::POST => create_request(req, state).await,
+            Method::POST => create_request(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/replay/requests/count" {
@@ -102,8 +143,8 @@ pub async fn handle_replay(
         } else {
             match method {
                 Method::GET => get_request(state, rest).await,
-                Method::PUT => update_request(req, state, rest).await,
-                Method::DELETE => delete_request(state, rest).await,
+                Method::PUT => update_request(req, state, push_manager, rest).await,
+                Method::DELETE => delete_request(state, push_manager, rest).await,
                 _ => method_not_allowed(),
             }
         }
@@ -133,7 +174,11 @@ pub async fn handle_replay(
     }
 }
 
-async fn execute_replay(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+async fn execute_replay(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid body: {}", e)),
@@ -154,7 +199,7 @@ async fn execute_replay(req: Request<Incoming>, state: SharedAdminState) -> Resp
         }
     };
 
-    let result = execute_replay_inner(&state, execute_req).await;
+    let result = execute_replay_inner(&state, &push_manager, execute_req).await;
     drop(permit);
 
     match result {
@@ -175,6 +220,7 @@ async fn execute_replay(req: Request<Incoming>, state: SharedAdminState) -> Resp
 
 async fn execute_replay_inner(
     state: &SharedAdminState,
+    push_manager: &Option<SharedPushManager>,
     request: ReplayExecuteRequest,
 ) -> Result<ReplayExecuteResponse, String> {
     let start_time = Instant::now();
@@ -258,6 +304,7 @@ async fn execute_replay_inner(
     if let Some(request_id) = &request.request_id {
         record_history(
             state,
+            push_manager,
             request_id,
             &traffic_id,
             method,
@@ -414,6 +461,11 @@ where
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
+    let content_encoding = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, v)| v.clone());
+
     let body_bytes = response
         .into_body()
         .collect()
@@ -424,10 +476,73 @@ where
     let body = if body_bytes.is_empty() {
         None
     } else {
-        Some(String::from_utf8_lossy(&body_bytes).to_string())
+        let decompressed = decompress_body(&body_bytes, content_encoding.as_deref());
+        Some(String::from_utf8_lossy(&decompressed).to_string())
     };
 
     Ok((status, headers, body))
+}
+
+fn decompress_body(data: &[u8], content_encoding: Option<&str>) -> Bytes {
+    let encoding = match content_encoding {
+        Some(e) => e.to_lowercase(),
+        None => return Bytes::copy_from_slice(data),
+    };
+
+    let result = match encoding.as_str() {
+        "gzip" => decompress_gzip(data),
+        "deflate" => decompress_deflate(data),
+        "br" => decompress_brotli(data),
+        "zstd" => decompress_zstd(data),
+        _ => return Bytes::copy_from_slice(data),
+    };
+
+    match result {
+        Ok(decompressed) => Bytes::from(decompressed),
+        Err(e) => {
+            tracing::debug!(
+                encoding = %encoding,
+                error = %e,
+                "[REPLAY] Failed to decompress body"
+            );
+            Bytes::copy_from_slice(data)
+        }
+    }
+}
+
+fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = GzDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    Ok(decompressed)
+}
+
+fn decompress_deflate(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    if let Ok(result) = decompress_zlib(data) {
+        return Ok(result);
+    }
+    let mut decoder = DeflateDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    Ok(decompressed)
+}
+
+fn decompress_zlib(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decoder = ZlibDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    Ok(decompressed)
+}
+
+fn decompress_brotli(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let mut decompressed = Vec::new();
+    brotli::BrotliDecompress(&mut std::io::Cursor::new(data), &mut decompressed)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    Ok(decompressed)
+}
+
+fn decompress_zstd(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    zstd::stream::decode_all(std::io::Cursor::new(data))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -513,22 +628,34 @@ fn record_traffic(
         res_script_results: None,
     };
 
+    let request_body_ref = if let Some(body) = request.request.body.as_ref() {
+        if let Some(ref body_store) = state.body_store {
+            body_store.read().store(&traffic_id, "req", body.as_bytes())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let response_body_ref = if let Some(body) = response_body {
+        if let Some(ref body_store) = state.body_store {
+            body_store.read().store(&traffic_id, "res", body.as_bytes())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let mut record = record;
+    record.request_body_ref = request_body_ref;
+    record.response_body_ref = response_body_ref;
+
     if let Some(ref traffic_db) = state.traffic_db_store {
         traffic_db.record(record);
     } else if let Some(ref async_writer) = state.async_traffic_writer {
         async_writer.record(record);
-    }
-
-    if let Some(body) = request.request.body.as_ref() {
-        if let Some(ref body_store) = state.body_store {
-            let _ = body_store.read().store(&traffic_id, "req", body.as_bytes());
-        }
-    }
-
-    if let Some(body) = response_body {
-        if let Some(ref body_store) = state.body_store {
-            let _ = body_store.read().store(&traffic_id, "res", body.as_bytes());
-        }
     }
 
     traffic_id
@@ -537,6 +664,7 @@ fn record_traffic(
 #[allow(clippy::too_many_arguments)]
 fn record_history(
     state: &SharedAdminState,
+    push_manager: &Option<SharedPushManager>,
     request_id: &str,
     traffic_id: &str,
     method: &str,
@@ -546,6 +674,16 @@ fn record_history(
     rule_config: &RuleConfig,
 ) {
     if let Some(ref replay_db) = state.replay_db_store {
+        let request = replay_db.get_request(request_id);
+        let is_saved = request.as_ref().map(|r| r.is_saved).unwrap_or(false);
+
+        info!(
+            request_id = %request_id,
+            is_saved = %is_saved,
+            request_exists = %request.is_some(),
+            "[REPLAY] Recording history"
+        );
+
         let history = ReplayHistory::new(
             Some(request_id.to_string()),
             traffic_id.to_string(),
@@ -555,9 +693,42 @@ fn record_history(
             duration_ms,
             Some(rule_config.clone()),
         );
-        if let Err(e) = replay_db.create_history(&history) {
-            warn!(error = %e, "[REPLAY] Failed to record history");
+
+        if is_saved {
+            info!(
+                history_id = %history.id,
+                "[REPLAY] Saving history to database"
+            );
+            if let Err(e) = replay_db.create_history(&history) {
+                warn!(error = %e, "[REPLAY] Failed to record history");
+            } else {
+                info!(
+                    history_id = %history.id,
+                    "[REPLAY] History saved successfully"
+                );
+                if let Some(pm) = push_manager {
+                    pm.broadcast_replay_history_updated(
+                        "history_created",
+                        request_id,
+                        Some(&history.id),
+                    );
+                }
+            }
+        } else {
+            info!(
+                history_id = %history.id,
+                "[REPLAY] Request not saved, only broadcasting history event"
+            );
+            if let Some(pm) = push_manager {
+                pm.broadcast_replay_history_updated(
+                    "history_created",
+                    request_id,
+                    Some(&history.id),
+                );
+            }
         }
+    } else {
+        warn!("[REPLAY] replay_db_store is None, cannot record history");
     }
 }
 
@@ -601,7 +772,11 @@ struct CreateGroupRequest {
     parent_id: Option<String>,
 }
 
-async fn create_group(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+async fn create_group(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
         Some(s) => s,
         None => {
@@ -637,6 +812,10 @@ async fn create_group(req: Request<Incoming>, state: SharedAdminState) -> Respon
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to create group: {}", e),
         );
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated("group_created", None, Some(&group.id));
     }
 
     json_response(&group)
@@ -717,7 +896,11 @@ async fn update_group(
     json_response(&group)
 }
 
-async fn delete_group(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn delete_group(
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+    id: &str,
+) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
         Some(s) => s,
         None => {
@@ -733,6 +916,10 @@ async fn delete_group(state: SharedAdminState, id: &str) -> Response<BoxBody> {
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to delete group: {}", e),
         );
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated("group_deleted", None, Some(id));
     }
 
     success_response("Group deleted")
@@ -805,6 +992,8 @@ struct CreateRequestRequest {
     group_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    request_type: RequestType,
     method: String,
     url: String,
     #[serde(default)]
@@ -815,7 +1004,11 @@ struct CreateRequestRequest {
     is_saved: bool,
 }
 
-async fn create_request(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+async fn create_request(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
         Some(s) => s,
         None => {
@@ -852,6 +1045,7 @@ async fn create_request(req: Request<Incoming>, state: SharedAdminState) -> Resp
         id: uuid::Uuid::new_v4().to_string(),
         group_id: create_req.group_id,
         name: create_req.name,
+        request_type: create_req.request_type,
         method: create_req.method,
         url: create_req.url,
         headers: create_req.headers,
@@ -866,6 +1060,14 @@ async fn create_request(req: Request<Incoming>, state: SharedAdminState) -> Resp
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to create request: {}", e),
+        );
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated(
+            "request_created",
+            Some(&request.id),
+            request.group_id.as_deref(),
         );
     }
 
@@ -896,6 +1098,8 @@ struct UpdateRequestRequest {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
+    request_type: Option<RequestType>,
+    #[serde(default)]
     method: Option<String>,
     #[serde(default)]
     url: Option<String>,
@@ -912,6 +1116,7 @@ struct UpdateRequestRequest {
 async fn update_request(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     id: &str,
 ) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
@@ -945,6 +1150,9 @@ async fn update_request(
     if let Some(name) = update_req.name {
         request.name = Some(name);
     }
+    if let Some(request_type) = update_req.request_type {
+        request.request_type = request_type;
+    }
     if let Some(method) = update_req.method {
         request.method = method;
     }
@@ -972,10 +1180,22 @@ async fn update_request(
         );
     }
 
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated(
+            "request_updated",
+            Some(&request.id),
+            request.group_id.as_deref(),
+        );
+    }
+
     json_response(&request)
 }
 
-async fn delete_request(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn delete_request(
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+    id: &str,
+) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
         Some(s) => s,
         None => {
@@ -991,6 +1211,10 @@ async fn delete_request(state: SharedAdminState, id: &str) -> Response<BoxBody> 
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to delete request: {}", e),
         );
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated("request_deleted", Some(id), None);
     }
 
     success_response("Request deleted")
@@ -1173,4 +1397,551 @@ async fn get_stats(state: SharedAdminState) -> Response<BoxBody> {
 
     let stats = store.stats();
     json_response(&stats)
+}
+
+async fn execute_replay_stream(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    let body = match req.into_body().collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid body: {}", e)),
+    };
+
+    let stream_req: ReplayStreamRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let permit = match REPLAY_SEMAPHORE.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many concurrent replay requests",
+            )
+        }
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let replay_id = format!("replay-{}", REPLAY_SEQUENCE.fetch_add(1, Ordering::SeqCst));
+    let url = stream_req.url.clone();
+    let headers = stream_req.headers.clone();
+    let request_id = stream_req.request_id.clone();
+
+    tokio::spawn(async move {
+        let result = execute_sse_stream(
+            &state,
+            &push_manager,
+            &replay_id,
+            &url,
+            &headers,
+            request_id,
+            tx,
+        )
+        .await;
+        drop(permit);
+        if let Err(e) = result {
+            error!(error = %e, replay_id = %replay_id, "Failed to execute SSE stream");
+        }
+    });
+
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx).map(|event| {
+        let mut sse_event = String::from("event: message\n");
+        sse_event.push_str(&format!("data: {}\n", event));
+        sse_event.push('\n');
+        Ok::<_, hyper::Error>(hyper::body::Frame::data(Bytes::from(sse_event)))
+    });
+
+    let body = http_body_util::StreamBody::new(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .body(BodyExt::boxed(body))
+        .unwrap()
+}
+
+async fn execute_sse_stream(
+    state: &SharedAdminState,
+    push_manager: &Option<SharedPushManager>,
+    replay_id: &str,
+    url: &str,
+    headers: &[(String, String)],
+    request_id: Option<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) -> Result<(), String> {
+    info!(replay_id = %replay_id, url = %url, "Starting SSE stream");
+
+    let traffic_id = record_traffic_for_stream(state, replay_id, url, headers, true);
+
+    if let Some(ref req_id) = request_id {
+        record_history(
+            state,
+            push_manager,
+            req_id,
+            &traffic_id,
+            "GET",
+            url,
+            200,
+            0,
+            &RuleConfig {
+                mode: RuleMode::Enabled,
+                selected_rules: vec![],
+            },
+        );
+    }
+
+    // Use reqwest to handle SSE stream
+    let client = reqwest::Client::new();
+    let mut req_builder = client.get(url);
+
+    for (key, value) in headers {
+        req_builder = req_builder.header(key, value);
+    }
+
+    let response = req_builder
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("Request failed with status: {}", status));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    let mut current_event = StreamEvent {
+        type_: "message".to_string(),
+        data: String::new(),
+        id: None,
+    };
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("Failed to read chunk: {}", e))?;
+        buffer.extend_from_slice(&chunk);
+
+        while buffer.contains(&b'\n') {
+            if let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                let line = buffer.drain(..=pos).collect::<Vec<_>>();
+                let line_str = String::from_utf8_lossy(&line[..line.len() - 1]).to_string();
+
+                if line_str.is_empty() {
+                    if !current_event.data.is_empty() {
+                        let event_json = serde_json::to_string(&current_event).unwrap();
+                        let _ = tx.send(event_json);
+                        record_sse_event(state, replay_id, &traffic_id, &current_event);
+                    }
+                    current_event = StreamEvent {
+                        type_: "message".to_string(),
+                        data: String::new(),
+                        id: None,
+                    };
+                } else if let Some(event_type) = line_str.strip_prefix("event:") {
+                    current_event.type_ = event_type.trim().to_string();
+                } else if let Some(data) = line_str.strip_prefix("data:") {
+                    if !current_event.data.is_empty() {
+                        current_event.data.push('\n');
+                    }
+                    current_event.data.push_str(data.trim());
+                } else if let Some(id) = line_str.strip_prefix("id:") {
+                    current_event.id = Some(id.trim().to_string());
+                }
+            }
+        }
+    }
+
+    // Send any remaining event
+    if !current_event.data.is_empty() {
+        let event_json = serde_json::to_string(&current_event).unwrap();
+        tx.send(event_json).unwrap();
+        record_sse_event(state, replay_id, &traffic_id, &current_event);
+    }
+
+    info!(replay_id = %replay_id, traffic_id = %traffic_id, "SSE stream completed");
+    Ok(())
+}
+
+async fn execute_replay_websocket(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    use hyper::upgrade;
+    use tokio_tungstenite::WebSocketStream;
+
+    let upgrade_header = req
+        .headers()
+        .get("Upgrade")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !upgrade_header.eq_ignore_ascii_case("websocket") {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid upgrade header");
+    }
+
+    let ws_key = match req.headers().get("Sec-WebSocket-Key") {
+        Some(key) => key.to_str().unwrap_or("").to_string(),
+        None => {
+            return error_response(StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Key header");
+        }
+    };
+
+    let query = req.uri().query().unwrap_or("");
+    let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+
+    let url = match params.get("url") {
+        Some(url) => url.clone(),
+        None => return error_response(StatusCode::BAD_REQUEST, "Missing url parameter"),
+    };
+
+    let request_id = params.get("request_id").cloned();
+    let replay_id = format!("replay-{}", REPLAY_SEQUENCE.fetch_add(1, Ordering::SeqCst));
+
+    info!(replay_id = %replay_id, url = %url, "Starting WebSocket proxy");
+
+    let headers: Vec<(String, String)> = vec![];
+    let traffic_id = record_traffic_for_stream(&state, &replay_id, &url, &headers, false);
+
+    if let Some(ref req_id) = request_id {
+        record_history(
+            &state,
+            &push_manager,
+            req_id,
+            &traffic_id,
+            "GET",
+            &url,
+            200,
+            0,
+            &RuleConfig {
+                mode: RuleMode::Enabled,
+                selected_rules: vec![],
+            },
+        );
+    }
+
+    let accept_key = generate_accept_key(&ws_key);
+
+    tokio::spawn(async move {
+        let upgraded = match upgrade::on(req).await {
+            Ok(u) => u,
+            Err(e) => {
+                error!(error = %e, "WebSocket upgrade failed");
+                return;
+            }
+        };
+
+        let client_ws = WebSocketStream::from_raw_socket(
+            hyper_util::rt::TokioIo::new(upgraded),
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+
+        match connect_async(url).await {
+            Ok((server_ws, _)) => {
+                proxy_websocket(
+                    client_ws,
+                    server_ws,
+                    &replay_id,
+                    &traffic_id,
+                    request_id,
+                    &state,
+                )
+                .await;
+            }
+            Err(e) => {
+                error!(error = %e, replay_id = %replay_id, "Failed to connect to target WebSocket");
+                let (mut sender, _) = client_ws.split();
+                let error_msg = Message::Text(
+                    format!("Error: Failed to connect to target WebSocket: {}", e).into(),
+                );
+                let _ = sender.send(error_msg).await;
+            }
+        }
+
+        info!(replay_id = %replay_id, traffic_id = %traffic_id, "WebSocket proxy closed");
+    });
+
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("Upgrade", "websocket")
+        .header("Connection", "Upgrade")
+        .header("Sec-WebSocket-Accept", accept_key)
+        .header("Access-Control-Allow-Origin", "*")
+        .body(BoxBody::default())
+        .unwrap()
+}
+
+fn generate_accept_key(key: &str) -> String {
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use sha1::{Digest, Sha1};
+
+    const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(WS_GUID.as_bytes());
+    BASE64.encode(hasher.finalize())
+}
+
+async fn proxy_websocket(
+    client_ws: WebSocketStream<hyper_util::rt::TokioIo<upgrade::Upgraded>>,
+    server_ws: WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    replay_id: &str,
+    traffic_id: &str,
+    _request_id: Option<String>,
+    state: &SharedAdminState,
+) {
+    let (mut client_tx, mut client_rx) = client_ws.split();
+    let (mut server_tx, mut server_rx) = server_ws.split();
+
+    let replay_id_clone = replay_id.to_string();
+    let traffic_id_clone = traffic_id.to_string();
+    let state_clone = state.clone();
+
+    let client_to_server = tokio::spawn(async move {
+        while let Some(Ok(msg)) = client_rx.next().await {
+            match msg {
+                Message::Text(text) => {
+                    info!(replay_id = %replay_id_clone, "Client -> Server: {}", text);
+                    // Record message
+                    record_websocket_message(
+                        &state_clone,
+                        &replay_id_clone,
+                        &traffic_id_clone,
+                        &None,
+                        "send",
+                        &text,
+                    );
+                    if let Err(e) = server_tx.send(Message::Text(text)).await {
+                        error!(error = %e, replay_id = %replay_id_clone, "Failed to send to server");
+                        break;
+                    }
+                }
+                Message::Binary(data) => {
+                    info!(replay_id = %replay_id_clone, "Client -> Server: [Binary data]");
+                    // Record message
+                    record_websocket_message(
+                        &state_clone,
+                        &replay_id_clone,
+                        &traffic_id_clone,
+                        &None,
+                        "send_binary",
+                        &base64::engine::general_purpose::STANDARD.encode(&data),
+                    );
+                    if let Err(e) = server_tx.send(Message::Binary(data)).await {
+                        error!(error = %e, replay_id = %replay_id_clone, "Failed to send to server");
+                        break;
+                    }
+                }
+                Message::Ping(data) => {
+                    if let Err(_e) = server_tx.send(Message::Ping(data)).await {
+                        break;
+                    }
+                }
+                Message::Pong(data) => {
+                    if let Err(_e) = server_tx.send(Message::Pong(data)).await {
+                        break;
+                    }
+                }
+                Message::Close(_) => {
+                    let _ = server_tx.send(Message::Close(None)).await;
+                    break;
+                }
+                Message::Frame(_) => {}
+            }
+        }
+    });
+
+    let replay_id_clone2 = replay_id.to_string();
+    let traffic_id_clone2 = traffic_id.to_string();
+    let state_clone2 = state.clone();
+
+    let server_to_client = tokio::spawn(async move {
+        while let Some(Ok(msg)) = server_rx.next().await {
+            match msg {
+                Message::Text(text) => {
+                    info!(replay_id = %replay_id_clone2, "Server -> Client: {}", text);
+                    // Record message
+                    record_websocket_message(
+                        &state_clone2,
+                        &replay_id_clone2,
+                        &traffic_id_clone2,
+                        &None,
+                        "receive",
+                        &text,
+                    );
+                    if let Err(e) = client_tx.send(Message::Text(text)).await {
+                        error!(error = %e, replay_id = %replay_id_clone2, "Failed to send to client");
+                        break;
+                    }
+                }
+                Message::Binary(data) => {
+                    info!(replay_id = %replay_id_clone2, "Server -> Client: [Binary data]");
+                    // Record message
+                    record_websocket_message(
+                        &state_clone2,
+                        &replay_id_clone2,
+                        &traffic_id_clone2,
+                        &None,
+                        "receive_binary",
+                        &base64::engine::general_purpose::STANDARD.encode(&data),
+                    );
+                    if let Err(e) = client_tx.send(Message::Binary(data)).await {
+                        error!(error = %e, replay_id = %replay_id_clone2, "Failed to send to client");
+                        break;
+                    }
+                }
+                Message::Ping(data) => {
+                    if let Err(_e) = client_tx.send(Message::Ping(data)).await {
+                        break;
+                    }
+                }
+                Message::Pong(data) => {
+                    if let Err(_e) = client_tx.send(Message::Pong(data)).await {
+                        break;
+                    }
+                }
+                Message::Close(_) => {
+                    let _ = client_tx.send(Message::Close(None)).await;
+                    break;
+                }
+                Message::Frame(_) => {}
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = client_to_server => {}
+        _ = server_to_client => {}
+    }
+
+    info!(replay_id = %replay_id, traffic_id = %traffic_id, "WebSocket proxy closed");
+}
+
+fn record_traffic_for_stream(
+    state: &SharedAdminState,
+    replay_id: &str,
+    url: &str,
+    headers: &[(String, String)],
+    is_sse: bool,
+) -> String {
+    let traffic_id = format!("{}-{}", replay_id, uuid::Uuid::new_v4());
+    let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+
+    let uri: Uri = url.parse().unwrap_or_default();
+    let host = uri.host().unwrap_or("unknown").to_string();
+    let path = uri.path().to_string();
+    let is_https = uri.scheme_str() == Some("https");
+
+    let request_content_type = headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "content-type")
+        .map(|(_, v)| v.clone());
+
+    let record = TrafficRecord {
+        id: traffic_id.clone(),
+        sequence: 0,
+        timestamp,
+        host,
+        method: "GET".to_string(),
+        url: url.to_string(),
+        path,
+        status: 200,
+        protocol: if is_https { "https" } else { "http" }.to_string(),
+        content_type: None,
+        request_content_type,
+        request_size: 0,
+        response_size: 0,
+        duration_ms: 0,
+        client_ip: "127.0.0.1".to_string(),
+        client_app: Some("Bifrost Replay".to_string()),
+        client_pid: None,
+        client_path: None,
+        is_tunnel: false,
+        is_websocket: !is_sse,
+        is_sse,
+        is_h3: false,
+        has_rule_hit: false,
+        is_replay: true,
+        frame_count: 0,
+        last_frame_id: 0,
+        timing: None,
+        request_headers: Some(headers.to_vec()),
+        response_headers: None,
+        matched_rules: None,
+        socket_status: None,
+        request_body_ref: None,
+        response_body_ref: None,
+        actual_url: None,
+        actual_host: None,
+        original_request_headers: None,
+        actual_response_headers: None,
+        error_message: None,
+        req_script_results: None,
+        res_script_results: None,
+    };
+
+    if let Some(ref traffic_db) = state.traffic_db_store {
+        traffic_db.record(record);
+    } else if let Some(ref async_writer) = state.async_traffic_writer {
+        async_writer.record(record);
+    }
+
+    traffic_id
+}
+
+fn record_websocket_message(
+    state: &SharedAdminState,
+    replay_id: &str,
+    traffic_id: &str,
+    _request_id: &Option<String>,
+    direction: &str,
+    data: &str,
+) {
+    let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+    let message = WebSocketMessage {
+        type_: direction.to_string(),
+        data: data.to_string(),
+        timestamp,
+    };
+
+    // Store message in body store
+    if let Some(ref body_store) = state.body_store {
+        let message_json = serde_json::to_string(&message).unwrap();
+        let _ = body_store.read().store(
+            traffic_id,
+            &format!("ws_{}_{}", direction, timestamp),
+            message_json.as_bytes(),
+        );
+    }
+
+    info!(replay_id = %replay_id, traffic_id = %traffic_id, direction = %direction, timestamp = %timestamp, "Recorded WebSocket message");
+}
+
+fn record_sse_event(
+    state: &SharedAdminState,
+    replay_id: &str,
+    traffic_id: &str,
+    event: &StreamEvent,
+) {
+    let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+
+    // Store event in body store
+    if let Some(ref body_store) = state.body_store {
+        let event_json = serde_json::to_string(event).unwrap();
+        let _ = body_store.read().store(
+            traffic_id,
+            &format!("sse_{}_{}", event.type_, timestamp),
+            event_json.as_bytes(),
+        );
+    }
+
+    info!(replay_id = %replay_id, traffic_id = %traffic_id, event_type = %event.type_, "Recorded SSE event");
 }

@@ -49,6 +49,18 @@ export interface ErrorData {
   message: string;
 }
 
+export interface ReplayRequestUpdatedData {
+  action: string;
+  request_id?: string;
+  group_id?: string;
+}
+
+export interface ReplayHistoryUpdatedData {
+  action: string;
+  request_id: string;
+  history_id?: string;
+}
+
 export type PushMessageType =
   | 'traffic_updates'
   | 'traffic_delta'
@@ -56,18 +68,22 @@ export type PushMessageType =
   | 'metrics_update'
   | 'history_update'
   | 'connected'
-  | 'error';
+  | 'error'
+  | 'replay_request_updated'
+  | 'replay_history_updated';
 
 export interface PushMessage {
   type: PushMessageType;
   data:
-    | TrafficUpdatesData
-    | TrafficDeltaData
-    | OverviewData
-    | MetricsData
-    | HistoryData
-    | ConnectedData
-    | ErrorData;
+  | TrafficUpdatesData
+  | TrafficDeltaData
+  | OverviewData
+  | MetricsData
+  | HistoryData
+  | ConnectedData
+  | ErrorData
+  | ReplayRequestUpdatedData
+  | ReplayHistoryUpdatedData;
 }
 
 export interface ClientSubscription {
@@ -107,6 +123,8 @@ class PushService {
   private metricsHandlers: Set<MessageHandler<MetricsData>> = new Set();
   private historyHandlers: Set<MessageHandler<HistoryData>> = new Set();
   private connectionHandlers: Set<MessageHandler<{ connected: boolean; clientId?: number }>> = new Set();
+  private replayRequestHandlers: Set<MessageHandler<ReplayRequestUpdatedData>> = new Set();
+  private replayHistoryHandlers: Set<MessageHandler<ReplayHistoryUpdatedData>> = new Set();
 
   constructor(config: PushServiceConfig = {}) {
     this.config = {
@@ -243,6 +261,16 @@ class PushService {
         console.error('[PushService] Server error:', data.message);
         break;
       }
+      case 'replay_request_updated': {
+        const data = message.data as ReplayRequestUpdatedData;
+        this.replayRequestHandlers.forEach((handler) => handler(data));
+        break;
+      }
+      case 'replay_history_updated': {
+        const data = message.data as ReplayHistoryUpdatedData;
+        this.replayHistoryHandlers.forEach((handler) => handler(data));
+        break;
+      }
     }
   }
 
@@ -325,6 +353,16 @@ class PushService {
   onConnectionChange(handler: MessageHandler<{ connected: boolean; clientId?: number }>): () => void {
     this.connectionHandlers.add(handler);
     return () => this.connectionHandlers.delete(handler);
+  }
+
+  onReplayRequestUpdated(handler: MessageHandler<ReplayRequestUpdatedData>): () => void {
+    this.replayRequestHandlers.add(handler);
+    return () => this.replayRequestHandlers.delete(handler);
+  }
+
+  onReplayHistoryUpdated(handler: MessageHandler<ReplayHistoryUpdatedData>): () => void {
+    this.replayHistoryHandlers.add(handler);
+    return () => this.replayHistoryHandlers.delete(handler);
   }
 }
 

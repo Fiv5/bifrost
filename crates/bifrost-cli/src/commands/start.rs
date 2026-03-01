@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bifrost_admin::{
     start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
-    BodyStore, PushManager, ReplayDbStore, ReplayExecutor, RuntimeConfig,
+    BodyStore, PushManager, ReplayDbStore, RuntimeConfig,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};

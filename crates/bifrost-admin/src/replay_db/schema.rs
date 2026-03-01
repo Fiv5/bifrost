@@ -5,7 +5,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 #[derive(Debug)]
 pub enum InitError {
     Sqlite(rusqlite::Error),
-    VersionMismatch { current: u32, expected: u32 },
 }
 
 impl From<rusqlite::Error> for InitError {
@@ -18,29 +17,11 @@ impl std::fmt::Display for InitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InitError::Sqlite(e) => write!(f, "SQLite error: {}", e),
-            InitError::VersionMismatch { current, expected } => {
-                write!(
-                    f,
-                    "Schema version mismatch: current={}, expected={}",
-                    current, expected
-                )
-            }
         }
     }
 }
 
 impl std::error::Error for InitError {}
-
-pub fn check_schema_version(conn: &Connection) -> Result<(), InitError> {
-    let current_version = get_schema_version(conn);
-    if current_version != 0 && current_version != SCHEMA_VERSION {
-        return Err(InitError::VersionMismatch {
-            current: current_version,
-            expected: SCHEMA_VERSION,
-        });
-    }
-    Ok(())
-}
 
 pub fn init_database(conn: &Connection) -> Result<(), InitError> {
     conn.execute_batch(
@@ -54,8 +35,6 @@ pub fn init_database(conn: &Connection) -> Result<(), InitError> {
         ",
     )?;
 
-    check_schema_version(conn)?;
-
     conn.execute_batch(SCHEMA_SQL)?;
 
     conn.execute(
@@ -64,18 +43,6 @@ pub fn init_database(conn: &Connection) -> Result<(), InitError> {
     )?;
 
     Ok(())
-}
-
-fn get_schema_version(conn: &Connection) -> u32 {
-    conn.query_row(
-        "SELECT value FROM replay_metadata WHERE key = 'schema_version'",
-        [],
-        |row| {
-            let version_str: String = row.get(0)?;
-            Ok(version_str.parse::<u32>().unwrap_or(0))
-        },
-    )
-    .unwrap_or(0)
 }
 
 const SCHEMA_SQL: &str = r#"
@@ -96,6 +63,7 @@ CREATE TABLE IF NOT EXISTS replay_requests (
     id TEXT PRIMARY KEY NOT NULL,
     group_id TEXT,
     name TEXT,
+    request_type TEXT NOT NULL DEFAULT 'http',
     method TEXT NOT NULL,
     url TEXT NOT NULL,
     headers_blob BLOB,
@@ -136,10 +104,10 @@ CREATE TABLE IF NOT EXISTS replay_metadata (
 pub fn get_insert_request_sql() -> &'static str {
     r#"
     INSERT INTO replay_requests (
-        id, group_id, name, method, url,
+        id, group_id, name, request_type, method, url,
         headers_blob, body_blob, is_saved, sort_order,
         created_at, updated_at
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     "#
 }
 
@@ -148,14 +116,15 @@ pub fn get_update_request_sql() -> &'static str {
     UPDATE replay_requests SET
         group_id = ?1,
         name = ?2,
-        method = ?3,
-        url = ?4,
-        headers_blob = ?5,
-        body_blob = ?6,
-        is_saved = ?7,
-        sort_order = ?8,
-        updated_at = ?9
-    WHERE id = ?10
+        request_type = ?3,
+        method = ?4,
+        url = ?5,
+        headers_blob = ?6,
+        body_blob = ?7,
+        is_saved = ?8,
+        sort_order = ?9,
+        updated_at = ?10
+    WHERE id = ?11
     "#
 }
 

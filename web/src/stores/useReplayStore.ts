@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { message } from 'antd';
 import type {
   ReplayGroup,
@@ -10,18 +11,25 @@ import type {
   ReplayKeyValueItem,
   ReplayBody,
   TrafficRecord,
+  SSEEvent,
+  WebSocketMessage,
+  StreamingConnection,
 } from '../types';
 import * as replayApi from '../api/replay';
 import * as trafficApi from '../api/traffic';
+import { pushService } from '../services/pushService';
+
+import type { RequestType } from '../types';
 
 export type RequestPanelTab = 'params' | 'headers' | 'body' | 'history';
-export type ResponsePanelTab = 'body' | 'cookies' | 'headers' | 'rules';
+export type ResponsePanelTab = 'body' | 'cookies' | 'headers' | 'rules' | 'messages';
 export type ResponseViewMode = 'pretty' | 'raw' | 'preview';
 export type ResponseContentType = 'json' | 'xml' | 'html' | 'javascript' | 'css' | 'text';
 export type ReplayMode = 'composer' | 'history';
 
 interface ReplayUIState {
   mode: ReplayMode;
+  requestType: RequestType;
   requestPanelActiveTab: RequestPanelTab;
   responsePanelActiveTab: ResponsePanelTab;
   responseViewMode: ResponseViewMode;
@@ -34,6 +42,8 @@ interface ReplayUIState {
   collectionExpandedKeys: string[];
   historySearchText: string;
   selectedHistoryId: string | null;
+  wsMessageInput: string;
+  selectedRequestId: string | null;
 }
 
 interface ReplayState {
@@ -61,6 +71,12 @@ interface ReplayState {
   historyTotal: number;
   allHistoryTotal: number;
 
+  streamingConnection: StreamingConnection | null;
+  sseEvents: SSEEvent[];
+  wsMessages: WebSocketMessage[];
+  eventSourceRef: EventSource | null;
+  webSocketRef: WebSocket | null;
+
   uiState: ReplayUIState;
 
   createNewRequest: () => void;
@@ -85,6 +101,12 @@ interface ReplayState {
   importFromTraffic: (trafficId: string) => Promise<void>;
   setResponsePanelCollapsed: (collapsed: boolean) => void;
   updateUIState: (updates: Partial<ReplayUIState>) => void;
+  connectSSE: () => void;
+  disconnectSSE: () => void;
+  connectWebSocket: () => void;
+  disconnectWebSocket: () => void;
+  sendWebSocketMessage: (data: string, type?: 'text' | 'binary') => void;
+  clearStreamingMessages: () => void;
   reset: () => void;
 }
 
@@ -94,6 +116,7 @@ function generateId(): string {
 
 const defaultUIState: ReplayUIState = {
   mode: 'composer',
+  requestType: 'http',
   requestPanelActiveTab: 'params',
   responsePanelActiveTab: 'body',
   responseViewMode: 'pretty',
@@ -103,15 +126,18 @@ const defaultUIState: ReplayUIState = {
   ruleSelectVisible: false,
   collectionPanelSection: 'collections',
   collectionSearchText: '',
-  collectionExpandedKeys: ['saved'],
+  collectionExpandedKeys: ['saved', 'ungrouped'],
   historySearchText: '',
   selectedHistoryId: null,
+  wsMessageInput: '',
+  selectedRequestId: null,
 };
 
-function createEmptyRequest(): ReplayRequest {
+function createEmptyRequest(requestType: RequestType = 'http'): ReplayRequest {
   const now = Date.now();
   return {
     id: generateId(),
+    request_type: requestType,
     method: 'GET',
     url: '',
     headers: [
@@ -126,7 +152,9 @@ function createEmptyRequest(): ReplayRequest {
   };
 }
 
-export const useReplayStore = create<ReplayState>((set, get) => ({
+export const useReplayStore = create<ReplayState>()(
+  persist(
+    (set, get) => ({
   currentRequest: createEmptyRequest(),
   savedRequests: [],
   recentHistory: [],
@@ -145,6 +173,11 @@ export const useReplayStore = create<ReplayState>((set, get) => ({
   requestsTotal: 0,
   historyTotal: 0,
   allHistoryTotal: 0,
+  streamingConnection: null,
+  sseEvents: [],
+  wsMessages: [],
+  eventSourceRef: null,
+  webSocketRef: null,
   uiState: { ...defaultUIState },
 
   createNewRequest: () => {
@@ -462,10 +495,12 @@ export const useReplayStore = create<ReplayState>((set, get) => ({
     try {
       set({ loading: true });
       const fullRequest = await replayApi.getRequest(request.id);
+      const { uiState } = get();
       set({
         currentRequest: fullRequest,
         currentResponse: null,
         currentTrafficRecord: null,
+        uiState: { ...uiState, selectedRequestId: fullRequest.is_saved ? fullRequest.id : null },
       });
 
       if (fullRequest.is_saved) {
@@ -578,6 +613,7 @@ export const useReplayStore = create<ReplayState>((set, get) => ({
       const now = Date.now();
       const newRequest: ReplayRequest = {
         id: generateId(),
+        request_type: 'http',
         method: record.method,
         url: record.url,
         headers,
@@ -613,7 +649,308 @@ export const useReplayStore = create<ReplayState>((set, get) => ({
     set({ uiState: { ...uiState, ...updates } });
   },
 
+  connectSSE: async () => {
+    const { currentRequest, disconnectSSE } = get();
+    if (!currentRequest?.url) {
+      message.warning('Please enter a URL');
+      return;
+    }
+
+    disconnectSSE();
+
+    const connectionId = `sse-${Date.now()}`;
+    const connection: StreamingConnection = {
+      id: connectionId,
+      type: 'sse',
+      status: 'connecting',
+      url: currentRequest.url,
+      startedAt: Date.now(),
+    };
+
+    set({
+      streamingConnection: connection,
+      sseEvents: [],
+      responsePanelCollapsed: false,
+      uiState: { ...get().uiState, responsePanelActiveTab: 'messages' },
+    });
+
+    try {
+      const headers = currentRequest.headers
+        .filter(h => h.enabled)
+        .map(h => [h.key, h.value]);
+
+      const abortController = new AbortController();
+
+      const response = await fetch('/_bifrost/api/replay/execute/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          url: currentRequest.url,
+          headers,
+          request_id: currentRequest.is_saved ? currentRequest.id : undefined,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`SSE connection failed: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const sseController = {
+        close: () => {
+          abortController.abort();
+          reader.cancel().catch(() => { });
+        },
+      };
+
+      set({
+        eventSourceRef: sseController as unknown as EventSource,
+        streamingConnection: { ...connection, status: 'connected' },
+      });
+
+      let buffer = '';
+      let isRunning = true;
+
+      const processStream = async () => {
+        try {
+          while (isRunning) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += new TextDecoder().decode(value);
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line === '') continue;
+              if (line.startsWith('data: ')) {
+                const data = line.substring(6);
+                try {
+                  const eventData = JSON.parse(data);
+                  const sseEvent: SSEEvent = {
+                    id: eventData.id,
+                    event: eventData.event,
+                    data: typeof eventData.data === 'string' ? eventData.data : JSON.stringify(eventData.data),
+                    timestamp: Date.now(),
+                  };
+                  const { sseEvents } = get();
+                  set({ sseEvents: [...sseEvents, sseEvent] });
+                } catch {
+                  const sseEvent: SSEEvent = {
+                    data: data,
+                    timestamp: Date.now(),
+                  };
+                  const { sseEvents } = get();
+                  set({ sseEvents: [...sseEvents, sseEvent] });
+                }
+              }
+            }
+          }
+        } catch (e) {
+          if ((e as Error).name !== 'AbortError') {
+            console.error('SSE stream error:', e);
+          }
+        } finally {
+          isRunning = false;
+          const { streamingConnection } = get();
+          if (streamingConnection?.status === 'connected') {
+            set({
+              streamingConnection: { ...streamingConnection, status: 'disconnected', endedAt: Date.now() },
+              eventSourceRef: null,
+            });
+          }
+        }
+      };
+
+      processStream();
+    } catch (e) {
+      set({
+        streamingConnection: {
+          ...connection,
+          status: 'error',
+          error: String(e),
+          endedAt: Date.now(),
+        },
+        eventSourceRef: null,
+      });
+    }
+  },
+
+  disconnectSSE: () => {
+    const { eventSourceRef, streamingConnection } = get();
+    if (eventSourceRef) {
+      eventSourceRef.close();
+    }
+    set({
+      eventSourceRef: null,
+      streamingConnection: streamingConnection
+        ? { ...streamingConnection, status: 'disconnected', endedAt: Date.now() }
+        : null,
+    });
+  },
+
+  connectWebSocket: () => {
+    const { currentRequest, webSocketRef, disconnectWebSocket } = get();
+    if (!currentRequest?.url) {
+      message.warning('Please enter a URL');
+      return;
+    }
+
+    if (webSocketRef) {
+      disconnectWebSocket();
+    }
+
+    let wsUrl = currentRequest.url;
+    if (wsUrl.startsWith('http://')) {
+      wsUrl = wsUrl.replace('http://', 'ws://');
+    } else if (wsUrl.startsWith('https://')) {
+      wsUrl = wsUrl.replace('https://', 'wss://');
+    } else if (!wsUrl.startsWith('ws://') && !wsUrl.startsWith('wss://')) {
+      wsUrl = `ws://${wsUrl}`;
+    }
+
+    // 构建 Bifrost WebSocket 代理 URL
+    const proxyUrl = new URL('/_bifrost/api/replay/execute/ws', window.location.origin);
+    proxyUrl.searchParams.set('url', wsUrl);
+    if (currentRequest.is_saved) {
+      proxyUrl.searchParams.set('request_id', currentRequest.id);
+    }
+
+    // 替换为 WebSocket 协议
+    const wsProxyUrl = proxyUrl.toString().replace('http://', 'ws://').replace('https://', 'wss://');
+
+    const connectionId = `ws-${Date.now()}`;
+    const connection: StreamingConnection = {
+      id: connectionId,
+      type: 'websocket',
+      status: 'connecting',
+      url: wsUrl,
+      startedAt: Date.now(),
+    };
+
+    set({
+      streamingConnection: connection,
+      wsMessages: [],
+      responsePanelCollapsed: false,
+      uiState: { ...get().uiState, responsePanelActiveTab: 'messages' },
+    });
+
+    try {
+      const ws = new WebSocket(wsProxyUrl);
+
+      ws.onopen = () => {
+        set({
+          streamingConnection: { ...connection, status: 'connected' },
+        });
+        message.success('WebSocket connected');
+      };
+
+      ws.onmessage = (event) => {
+        const wsMessage: WebSocketMessage = {
+          id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          direction: 'receive',
+          type: typeof event.data === 'string' ? 'text' : 'binary',
+          data: typeof event.data === 'string' ? event.data : '[Binary Data]',
+          timestamp: Date.now(),
+        };
+        const { wsMessages } = get();
+        set({ wsMessages: [...wsMessages, wsMessage] });
+      };
+
+      ws.onclose = (event) => {
+        const { streamingConnection } = get();
+        set({
+          streamingConnection: streamingConnection
+            ? {
+              ...streamingConnection,
+              status: 'disconnected',
+              endedAt: Date.now(),
+              error: event.code !== 1000 ? `Closed: ${event.code} ${event.reason}` : undefined,
+            }
+            : null,
+          webSocketRef: null,
+        });
+      };
+
+      ws.onerror = () => {
+        const { streamingConnection } = get();
+        set({
+          streamingConnection: streamingConnection
+            ? {
+              ...streamingConnection,
+              status: 'error',
+              error: 'Connection error',
+              endedAt: Date.now(),
+            }
+            : null,
+          webSocketRef: null,
+        });
+      };
+
+      set({ webSocketRef: ws });
+    } catch (e) {
+      set({
+        streamingConnection: {
+          ...connection,
+          status: 'error',
+          error: String(e),
+          endedAt: Date.now(),
+        },
+      });
+    }
+  },
+
+  disconnectWebSocket: () => {
+    const { webSocketRef, streamingConnection } = get();
+    if (webSocketRef) {
+      webSocketRef.close(1000, 'User disconnected');
+      set({
+        webSocketRef: null,
+        streamingConnection: streamingConnection
+          ? { ...streamingConnection, status: 'disconnected', endedAt: Date.now() }
+          : null,
+      });
+    }
+  },
+
+  sendWebSocketMessage: (data: string, type: 'text' | 'binary' = 'text') => {
+    const { webSocketRef, wsMessages, streamingConnection } = get();
+    if (!webSocketRef || streamingConnection?.status !== 'connected') {
+      message.warning('WebSocket is not connected');
+      return;
+    }
+
+    try {
+      webSocketRef.send(data);
+      const wsMessage: WebSocketMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        direction: 'send',
+        type,
+        data,
+        timestamp: Date.now(),
+      };
+      set({ wsMessages: [...wsMessages, wsMessage] });
+    } catch (e) {
+      message.error(`Failed to send: ${e}`);
+    }
+  },
+
+  clearStreamingMessages: () => {
+    set({ sseEvents: [], wsMessages: [] });
+  },
+
   reset: () => {
+    const { disconnectSSE, disconnectWebSocket } = get();
+    disconnectSSE();
+    disconnectWebSocket();
     set({
       currentRequest: createEmptyRequest(),
       savedRequests: [],
@@ -624,6 +961,59 @@ export const useReplayStore = create<ReplayState>((set, get) => ({
       ruleConfig: { mode: 'enabled' },
       loading: false,
       executing: false,
+      streamingConnection: null,
+      sseEvents: [],
+      wsMessages: [],
     });
   },
-}));
+}),
+    {
+      name: 'bifrost-replay',
+      partialize: (state) => ({
+        uiState: {
+          collectionExpandedKeys: state.uiState.collectionExpandedKeys,
+          selectedRequestId: state.uiState.selectedRequestId,
+          requestPanelActiveTab: state.uiState.requestPanelActiveTab,
+          responsePanelActiveTab: state.uiState.responsePanelActiveTab,
+          responseViewMode: state.uiState.responseViewMode,
+        },
+      }),
+      merge: (persisted, current) => {
+        const persistedState = persisted as Partial<ReplayState>;
+        const mergedExpandedKeys = persistedState?.uiState?.collectionExpandedKeys || [];
+        if (!mergedExpandedKeys.includes('ungrouped')) {
+          mergedExpandedKeys.push('ungrouped');
+        }
+        return {
+          ...current,
+          uiState: {
+            ...current.uiState,
+            ...(persistedState?.uiState || {}),
+            collectionExpandedKeys: mergedExpandedKeys,
+          },
+        };
+      },
+    },
+  ),
+);
+
+pushService.onReplayRequestUpdated((data) => {
+  const { loadSavedRequests, loadGroups } = useReplayStore.getState();
+  console.log('[ReplayStore] Received replay_request_updated:', data);
+
+  if (data.action === 'group_created' || data.action === 'group_deleted') {
+    loadGroups();
+  }
+  if (data.action === 'request_created' || data.action === 'request_deleted' || data.action === 'request_updated') {
+    loadSavedRequests();
+  }
+});
+
+pushService.onReplayHistoryUpdated((data) => {
+  const { currentRequest, loadRecentHistory } = useReplayStore.getState();
+  console.log('[ReplayStore] Received replay_history_updated:', data);
+
+  if (currentRequest?.id && currentRequest.id === data.request_id) {
+    loadRecentHistory(data.request_id);
+  }
+});

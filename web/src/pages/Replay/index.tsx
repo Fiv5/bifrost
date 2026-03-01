@@ -65,16 +65,29 @@ export default function Replay() {
     loadGroups,
     loadAllHistory,
     updateUIState,
+    selectRequest,
   } = useReplayStore();
 
   const currentMode = uiState.mode;
   const canSwitchToHistory = currentRequest?.is_saved && currentRequest?.id;
 
   useEffect(() => {
-    loadSavedRequests();
-    loadRecentHistory();
-    loadGroups();
-  }, [loadSavedRequests, loadRecentHistory, loadGroups]);
+    const init = async () => {
+      await loadSavedRequests();
+      await loadGroups();
+      
+      const { uiState: currentUIState, savedRequests } = useReplayStore.getState();
+      if (currentUIState.selectedRequestId) {
+        const savedRequest = savedRequests.find(r => r.id === currentUIState.selectedRequestId);
+        if (savedRequest) {
+          await selectRequest(savedRequest);
+        }
+      }
+      
+      loadRecentHistory();
+    };
+    init();
+  }, [loadSavedRequests, loadRecentHistory, loadGroups, selectRequest]);
 
   const handleModeChange = (mode: ReplayMode) => {
     if (mode === "history") {

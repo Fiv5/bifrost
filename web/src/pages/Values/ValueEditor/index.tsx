@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useMemo,
+  useState,
   type CSSProperties,
 } from "react";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
@@ -83,7 +84,8 @@ export default function ValueEditor() {
   } = useValuesStore();
   const { resolvedTheme } = useThemeStore();
 
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerElement, setContainerElement] =
+    useState<HTMLDivElement | null>(null);
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const saveRef = useRef<typeof saveCurrentValue | null>(null);
   const isSettingValueRef = useRef(false);
@@ -135,10 +137,10 @@ export default function ValueEditor() {
   );
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerElement) return;
     if (editorRef.current) return;
 
-    const ed = MonacoEditor.create(containerRef.current, {
+    const ed = MonacoEditor.create(containerElement, {
       value: currentValueRef.current?.currentValue?.value || "",
       language: detectLanguage(
         currentValueRef.current?.currentValue?.value || "",
@@ -177,7 +179,7 @@ export default function ValueEditor() {
       ed.dispose();
       editorRef.current = null;
     };
-  }, [handleChange, handleSave, resolvedTheme]);
+  }, [containerElement, handleChange, handleSave, resolvedTheme]);
 
   useEffect(() => {
     if (!editorRef.current) return;
@@ -348,7 +350,7 @@ export default function ValueEditor() {
           </Tooltip>
         </Space>
       </div>
-      <div className={styles.editorContainer} ref={containerRef} />
+      <div className={styles.editorContainer} ref={setContainerElement} />
       <div className={styles.statusBar} style={toolbarStyles.toolbar}>
         <span className={styles.hint}>
           Use <code>{"{" + (currentValue?.name || "name") + "}"}</code> to

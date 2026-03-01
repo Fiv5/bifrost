@@ -122,7 +122,7 @@ impl AdminRouter {
                 )
             }
         } else if path.starts_with("/api/replay") {
-            handle_replay(req, state, path).await
+            handle_replay(req, state, push_manager, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }
