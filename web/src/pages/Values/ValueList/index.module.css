@@ -12,7 +12,10 @@
 }
 
 .header {
-  padding: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
   border-bottom: 1px solid #e8e8e8;
 }
 
@@ -20,22 +23,28 @@
   border-bottom-color: #303030;
 }
 
-.toolbar {
+.headerTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #373c41;
+}
+
+[data-theme="dark"] .headerTitle {
+  color: #e4e4e4;
+}
+
+.headerActions {
   display: flex;
   gap: 4px;
-  margin-bottom: 8px;
 }
 
-.searchInput {
-  background-color: #fafafa;
+.searchBox {
+  padding: 8px 12px;
+  border-bottom: 1px solid #e8e8e8;
 }
 
-[data-theme="dark"] .searchInput {
-  background-color: #1f1f1f;
-}
-
-.searchInput input {
-  background-color: transparent;
+[data-theme="dark"] .searchBox {
+  border-bottom-color: #303030;
 }
 
 .listContainer {

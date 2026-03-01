@@ -134,7 +134,8 @@ export default function RuleList() {
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <div className={styles.toolbar}>
+        <span className={styles.headerTitle}>Rules</span>
+        <div className={styles.headerActions}>
           <Tooltip title="New Rule">
             <Button
               type="text"
@@ -152,6 +153,8 @@ export default function RuleList() {
             />
           </Tooltip>
         </div>
+      </div>
+      <div className={styles.searchBox}>
         <Input
           size="small"
           placeholder="Search rules..."
@@ -159,7 +162,6 @@ export default function RuleList() {
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
-          className={styles.searchInput}
         />
       </div>
 

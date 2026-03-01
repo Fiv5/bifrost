@@ -137,7 +137,8 @@ export default function ValueList() {
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <div className={styles.toolbar}>
+        <span className={styles.headerTitle}>Values</span>
+        <div className={styles.headerActions}>
           <Tooltip title="New Value">
             <Button
               type="text"
@@ -155,6 +156,8 @@ export default function ValueList() {
             />
           </Tooltip>
         </div>
+      </div>
+      <div className={styles.searchBox}>
         <Input
           size="small"
           placeholder="Search values..."
@@ -162,7 +165,6 @@ export default function ValueList() {
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
-          className={styles.searchInput}
         />
       </div>
 

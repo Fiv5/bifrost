@@ -12,6 +12,7 @@ import {
   Empty,
   Dropdown,
   theme,
+  Tooltip,
 } from "antd";
 import type { MenuProps, TreeDataNode } from "antd";
 import {
@@ -38,7 +39,7 @@ import { useThemeStore } from "../../stores/useThemeStore";
 import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 const BIFROST_TYPES_REQUEST = `
 /**
@@ -289,38 +290,64 @@ function ScriptListPanel({
         borderRight: `1px solid ${token.colorBorderSecondary}`,
       }}
     >
-      <div style={{ padding: 12, flexShrink: 0 }}>
-        <div style={{ marginBottom: 12 }}>
-          <Input
-            placeholder="Search scripts..."
-            prefix={<SearchOutlined />}
-            value={searchValue}
-            onChange={(e) => onSearchChange(e.target.value)}
-            allowClear
-            size="small"
-          />
-        </div>
-
-        <Space>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "8px 12px",
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
+          flexShrink: 0,
+        }}
+      >
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: token.colorText,
+          }}
+        >
+          Scripts
+        </span>
+        <div style={{ display: "flex", gap: 4 }}>
           <Button
-            type="primary"
-            icon={<PlusOutlined />}
+            type="text"
             size="small"
+            icon={<PlusOutlined />}
             onClick={() => onNewScript("request")}
           >
-            Request
+            Req
           </Button>
           <Button
-            icon={<PlusOutlined />}
+            type="text"
             size="small"
+            icon={<PlusOutlined />}
             onClick={() => onNewScript("response")}
+            style={{ color: token.colorSuccess }}
           >
-            Response
+            Res
           </Button>
-        </Space>
+        </div>
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "0 12px 12px" }}>
+      <div
+        style={{
+          padding: "8px 12px",
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
+          flexShrink: 0,
+        }}
+      >
+        <Input
+          placeholder="Search scripts..."
+          prefix={<SearchOutlined />}
+          value={searchValue}
+          onChange={(e) => onSearchChange(e.target.value)}
+          allowClear
+          size="small"
+        />
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: "4px 0" }}>
         <Spin spinning={loading}>
           {treeData.length > 0 ? (
             <Tree
@@ -400,37 +427,56 @@ function EditorPanel({
           justifyContent: "space-between",
           alignItems: "center",
           flexShrink: 0,
-          borderBottom: `1px solid ${resolvedTheme === "dark" ? "#303030" : "#f0f0f0"}`,
+          borderBottom: `1px solid ${resolvedTheme === "dark" ? "#303030" : "#e8e8e8"}`,
+          backgroundColor: resolvedTheme === "dark" ? "#1f1f1f" : "#fafafa",
         }}
       >
-        <Space>
-          <Title level={5} style={{ margin: 0 }}>
+        <Space size={8}>
+          <Text
+            style={{
+              fontSize: 13,
+              fontWeight: 500,
+              fontFamily: "monospace",
+            }}
+          >
             {isNewScript ? "New Script" : selectedScript.name}
-          </Title>
-          <Tag color={selectedType === "request" ? "blue" : "green"}>
+          </Text>
+          <Tag
+            color={selectedType === "request" ? "blue" : "green"}
+            style={{ margin: 0 }}
+          >
             {selectedType}
           </Tag>
         </Space>
-        <Space>
-          <Button
-            icon={<PlayCircleOutlined />}
-            onClick={onTest}
-            loading={testing}
-          >
-            Test
-          </Button>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            onClick={onSave}
-            loading={saving}
-          >
-            Save
-          </Button>
+        <Space size={4}>
+          <Tooltip title="Test Script">
+            <Button
+              type="text"
+              size="small"
+              icon={<PlayCircleOutlined />}
+              onClick={onTest}
+              loading={testing}
+            />
+          </Tooltip>
+          <Tooltip title="Save (Cmd+S)">
+            <Button
+              type="text"
+              size="small"
+              icon={<SaveOutlined />}
+              onClick={onSave}
+              loading={saving}
+            />
+          </Tooltip>
           {!isNewScript && (
-            <Button danger icon={<DeleteOutlined />} onClick={onDelete}>
-              Delete
-            </Button>
+            <Tooltip title="Delete">
+              <Button
+                type="text"
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={onDelete}
+              />
+            </Tooltip>
           )}
         </Space>
       </div>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
-import { Empty, Spin, message } from "antd";
+import { Empty, Spin, message, Button, Tooltip, Space, theme } from "antd";
+import { SaveOutlined, CopyOutlined } from "@ant-design/icons";
 import BifrostEditor, {
   THEME_DARK,
   THEME_LIGHT,
@@ -10,6 +11,7 @@ import { useThemeStore } from "../../../stores/useThemeStore";
 import styles from "./index.module.css";
 
 export default function RuleEditor() {
+  const { token } = theme.useToken();
   const {
     currentRule,
     selectedRuleName,
@@ -56,6 +58,17 @@ export default function RuleEditor() {
     const success = await saveRef.current();
     if (success) {
       message.success("Saved");
+    }
+  }, []);
+
+  const handleCopy = useCallback(async () => {
+    if (!modelRef.current || modelRef.current.isDisposed()) return;
+    const content = modelRef.current.getValue();
+    try {
+      await navigator.clipboard.writeText(content);
+      message.success("Copied");
+    } catch {
+      message.error("Failed to copy");
     }
   }, []);
 
@@ -151,11 +164,36 @@ export default function RuleEditor() {
     );
   }
 
+  const hasChanges =
+    selectedRuleName && editingContent[selectedRuleName] !== undefined;
+
   return (
     <div className={styles.container}>
       <div className={styles.header}>
-        <span className={styles.title}>{currentRule?.name}</span>
-        {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
+        <div className={styles.titleSection}>
+          <span className={styles.title}>{currentRule?.name}</span>
+          {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
+        </div>
+        <Space size={4}>
+          <Tooltip title="Copy">
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={handleCopy}
+            />
+          </Tooltip>
+          <Tooltip title="Save (Cmd+S)">
+            <Button
+              type="text"
+              size="small"
+              icon={<SaveOutlined />}
+              onClick={handleSave}
+              disabled={!hasChanges}
+              style={{ color: hasChanges ? token.colorPrimary : undefined }}
+            />
+          </Tooltip>
+        </Space>
       </div>
       <div className={styles.editorContainer} ref={setContainerElement} />
     </div>

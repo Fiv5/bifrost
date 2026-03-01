@@ -181,11 +181,13 @@ export const useReplayStore = create<ReplayState>()(
   uiState: { ...defaultUIState },
 
   createNewRequest: () => {
+    const { uiState } = get();
     set({
       currentRequest: createEmptyRequest(),
       currentResponse: null,
       currentTrafficRecord: null,
       recentHistory: [],
+      uiState: { ...uiState, selectedRequestId: null, mode: 'composer' },
     });
   },
 
@@ -624,12 +626,14 @@ export const useReplayStore = create<ReplayState>()(
         updated_at: now,
       };
 
+      const { uiState } = get();
       set({
         currentRequest: newRequest,
         currentResponse: null,
         currentTrafficRecord: null,
         responsePanelCollapsed: true,
         recentHistory: [],
+        uiState: { ...uiState, selectedRequestId: null, mode: 'composer' },
       });
 
       message.success('Request imported from traffic');

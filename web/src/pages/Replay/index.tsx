@@ -205,13 +205,15 @@ export default function Replay() {
           isActive={currentMode === "composer"}
           onClick={() => handleModeChange("composer")}
         />
-        <ModeButton
-          mode="history"
-          icon={<HistoryOutlined style={{ fontSize: 16 }} />}
-          label="History"
-          isActive={currentMode === "history"}
-          onClick={() => handleModeChange("history")}
-        />
+        {canSwitchToHistory && (
+          <ModeButton
+            mode="history"
+            icon={<HistoryOutlined style={{ fontSize: 16 }} />}
+            label="History"
+            isActive={currentMode === "history"}
+            onClick={() => handleModeChange("history")}
+          />
+        )}
       </div>
     </div>
   );

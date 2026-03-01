@@ -57,6 +57,21 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 - 规则在线编辑
 - 请求/响应查看与重放
 
+### 📜 JavaScript 脚本引擎
+
+- 基于 **QuickJS** 的安全沙盒执行环境
+- 支持请求脚本 (`reqScript`) 和响应脚本 (`resScript`)
+- 内置超时控制和内存限制
+- 支持脚本在线编辑和测试
+
+### 🔄 请求重放与管理
+
+- **请求重放** - 支持 HTTP/HTTPS/SSE/WebSocket 请求重放
+- **请求集合** - 类似 Postman 的请求管理能力
+- **分组管理** - 支持嵌套文件夹组织请求
+- **历史记录** - 自动记录重放历史和执行结果
+- **规则集成** - 重放时可选择应用代理规则
+
 ### 🔐 安全特性
 
 - 访问控制（本地/白名单/交互式）
@@ -74,6 +89,7 @@ rust/
 │   ├── bifrost-tls/        # TLS 处理：CA 证书管理、动态证书生成
 │   ├── bifrost-storage/    # 存储层：配置和规则持久化
 │   ├── bifrost-script/     # 脚本引擎：基于 QuickJS 的 JavaScript 执行
+│   ├── bifrost-admin/      # 管理后台：Web UI、API、请求重放
 │   ├── bifrost-cli/        # 命令行工具
 │   └── bifrost-tests/      # 集成测试
 └── tests/                  # 端到端测试
@@ -194,14 +210,16 @@ http://127.0.0.1:9900/_bifrost/
 
 管理端提供以下功能：
 
-| 路径                      | 功能            |
-| ------------------------- | --------------- |
-| `/_bifrost/`              | Web UI 界面     |
-| `/_bifrost/api/rules/*`   | 规则管理 API    |
-| `/_bifrost/api/values/*`  | Values 管理 API |
-| `/_bifrost/api/traffic/*` | 流量记录 API    |
-| `/_bifrost/api/metrics/*` | 指标监控 API    |
-| `/_bifrost/api/system/*`  | 系统信息 API    |
+| 路径                       | 功能            |
+| -------------------------- | --------------- |
+| `/_bifrost/`               | Web UI 界面     |
+| `/_bifrost/api/rules/*`    | 规则管理 API    |
+| `/_bifrost/api/values/*`   | Values 管理 API |
+| `/_bifrost/api/traffic/*`  | 流量记录 API    |
+| `/_bifrost/api/metrics/*`  | 指标监控 API    |
+| `/_bifrost/api/system/*`   | 系统信息 API    |
+| `/_bifrost/api/scripts/*`  | 脚本管理 API    |
+| `/_bifrost/api/replay/*`   | 请求重放 API    |
 
 > **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
 
@@ -548,6 +566,11 @@ api.service.com dns://8.8.8.8,8.8.4.4
 example.com tlsIntercept://
 example.com tlsPassthrough://
 
+# 脚本修改
+
+example.com reqScript://modify-request
+example.com resScript://inject-data
+
 ```
 
 ### 支持的协议（71 种）
@@ -560,24 +583,234 @@ example.com tlsPassthrough://
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
 | 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace`, `forwardedFor` |
 | 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                     |
-| 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                                                          |
-| 高级     | `rulesFile`, `sniCallback`, `urlReplace`                                                                                                                                                   |
+| 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                          |
+| 高级     | `rulesFile`, `sniCallback`, `urlReplace`                                                                                                                              |
+
+## 脚本引擎
+
+Bifrost 内置基于 QuickJS 的 JavaScript 脚本引擎，支持通过脚本动态修改请求和响应。
+
+### 脚本类型
+
+| 类型        | 协议          | 说明                     |
+| ----------- | ------------- | ------------------------ |
+| 请求脚本    | `reqScript`   | 在请求发送前执行         |
+| 响应脚本    | `resScript`   | 在响应返回给客户端前执行 |
+
+### 脚本存储
+
+脚本文件存储在 `~/.bifrost/scripts/` 目录下：
+
+```
+~/.bifrost/scripts/
+├── request/           # 请求脚本目录
+│   ├── modify-auth.js
+│   └── add-headers.js
+└── response/          # 响应脚本目录
+    ├── inject-data.js
+    └── transform.js
+```
+
+### 请求脚本示例
+
+请求脚本接收 `request` 对象，返回修改后的请求数据：
+
+```javascript
+function main(request, context) {
+  return {
+    url: request.url,
+    method: request.method,
+    headers: {
+      ...request.headers,
+      'Authorization': 'Bearer ' + context.values.API_TOKEN,
+      'X-Custom-Header': 'custom-value'
+    },
+    body: request.body
+  };
+}
+```
+
+**request 对象结构：**
+
+| 属性      | 类型     | 说明         |
+| --------- | -------- | ------------ |
+| `url`     | string   | 请求 URL     |
+| `method`  | string   | HTTP 方法    |
+| `headers` | object   | 请求头       |
+| `body`    | string   | 请求体       |
+
+**context 对象结构：**
+
+| 属性            | 类型     | 说明                        |
+| --------------- | -------- | --------------------------- |
+| `values`        | object   | Values 变量（key-value）    |
+| `matched_rules` | string[] | 匹配到的规则列表            |
+
+### 响应脚本示例
+
+响应脚本接收 `response` 对象，返回修改后的响应数据：
+
+```javascript
+function main(response, context) {
+  let body = response.body;
+
+  if (response.headers['content-type']?.includes('application/json')) {
+    try {
+      let data = JSON.parse(body);
+      data.injected = true;
+      data.timestamp = Date.now();
+      body = JSON.stringify(data);
+    } catch (e) {
+      // 解析失败，保持原始 body
+    }
+  }
+
+  return {
+    status: response.status,
+    headers: {
+      ...response.headers,
+      'X-Modified-By': 'bifrost-script'
+    },
+    body: body
+  };
+}
+```
+
+**response 对象结构：**
+
+| 属性      | 类型     | 说明         |
+| --------- | -------- | ------------ |
+| `status`  | number   | HTTP 状态码  |
+| `headers` | object   | 响应头       |
+| `body`    | string   | 响应体       |
+
+### 脚本使用
+
+在规则中引用脚本：
+
+```
+# 使用请求脚本
+api.example.com reqScript://modify-auth
+
+# 使用响应脚本
+api.example.com resScript://inject-data
+
+# 同时使用请求和响应脚本
+api.example.com reqScript://add-headers resScript://transform
+```
+
+### 脚本 API
+
+通过管理端 API 管理脚本：
+
+| 方法   | 端点                                  | 说明         |
+| ------ | ------------------------------------- | ------------ |
+| GET    | `/_bifrost/api/scripts`               | 列出所有脚本 |
+| GET    | `/_bifrost/api/scripts/{type}/{name}` | 获取脚本内容 |
+| PUT    | `/_bifrost/api/scripts/{type}/{name}` | 保存脚本     |
+| DELETE | `/_bifrost/api/scripts/{type}/{name}` | 删除脚本     |
+| POST   | `/_bifrost/api/scripts/test`          | 测试脚本     |
+
+### 安全限制
+
+脚本引擎内置以下安全限制：
+
+| 限制项     | 默认值 | 说明                               |
+| ---------- | ------ | ---------------------------------- |
+| 执行超时   | 10 秒  | 脚本执行超时自动终止               |
+| 内存限制   | 16 MB  | 脚本内存使用上限                   |
+| 危险函数   | 禁用   | `eval`、`Function` 等已被移除     |
+
+## 请求重放与管理
+
+Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组织和重放 HTTP 请求。
+
+### 功能概览
+
+- **请求重放** - 支持 HTTP/HTTPS/SSE/WebSocket 请求的重放
+- **请求集合** - 保存和管理常用请求
+- **分组管理** - 使用文件夹组织请求，支持嵌套
+- **历史记录** - 自动记录重放历史
+- **规则集成** - 重放时可选择是否应用代理规则
+
+### 支持的请求类型
+
+| 类型      | 说明                          |
+| --------- | ----------------------------- |
+| HTTP      | 标准 HTTP/HTTPS 请求          |
+| SSE       | Server-Sent Events 流式请求   |
+| WebSocket | WebSocket 双向通信            |
+
+### 请求体格式
+
+| 格式                    | Content-Type                              |
+| ----------------------- | ----------------------------------------- |
+| JSON                    | `application/json`                        |
+| XML                     | `application/xml`                         |
+| Text                    | `text/plain`                              |
+| HTML                    | `text/html`                               |
+| JavaScript              | `application/javascript`                  |
+| Form Data               | `multipart/form-data`                     |
+| URL Encoded             | `application/x-www-form-urlencoded`       |
+| Binary                  | `application/octet-stream`                |
+
+### 规则配置
+
+重放请求时可以配置规则应用方式：
+
+| 模式       | 说明                                   |
+| ---------- | -------------------------------------- |
+| `enabled`  | 应用所有启用的规则                     |
+| `selected` | 仅应用选中的规则                       |
+| `none`     | 不应用任何规则（直接发送原始请求）     |
+
+### 重放 API
+
+| 方法   | 端点                                  | 说明             |
+| ------ | ------------------------------------- | ---------------- |
+| POST   | `/_bifrost/api/replay/execute`        | 执行 HTTP 重放   |
+| POST   | `/_bifrost/api/replay/execute/stream` | 执行 SSE 重放    |
+| GET    | `/_bifrost/api/replay/execute/ws`     | 执行 WebSocket   |
+| GET    | `/_bifrost/api/replay/groups`         | 列出分组         |
+| POST   | `/_bifrost/api/replay/groups`         | 创建分组         |
+| GET    | `/_bifrost/api/replay/requests`       | 列出请求         |
+| POST   | `/_bifrost/api/replay/requests`       | 保存请求         |
+| PUT    | `/_bifrost/api/replay/requests/{id}`  | 更新请求         |
+| DELETE | `/_bifrost/api/replay/requests/{id}`  | 删除请求         |
+| GET    | `/_bifrost/api/replay/history`        | 获取历史记录     |
+| DELETE | `/_bifrost/api/replay/history`        | 清空历史记录     |
+| GET    | `/_bifrost/api/replay/stats`          | 获取统计信息     |
+
+### 存储限制
+
+| 限制项         | 数量   |
+| -------------- | ------ |
+| 最大请求数     | 1000   |
+| 最大历史记录   | 10000  |
+| 最大并发重放   | 100    |
+
+### 数据存储
+
+请求集合数据存储在 `~/.bifrost/replay.db`（SQLite 数据库）。
 
 ## 配置
 
 默认配置文件位于 `~/.bifrost/`：
 
 ```
-
 ~/.bifrost/
-├── bifrost.pid # 进程 PID 文件
-├── bifrost.log # 日志文件
-├── bifrost.err # 错误日志
-├── rules/ # 规则文件目录
-├── values/ # Values 变量目录
-└── certs/ # 证书目录
-├── ca.crt # CA 证书
-└── ca.key # CA 私钥
+├── bifrost.pid     # 进程 PID 文件
+├── bifrost.log     # 日志文件
+├── bifrost.err     # 错误日志
+├── rules/          # 规则文件目录
+├── values/         # Values 变量目录
+├── scripts/        # 脚本目录
+│   ├── request/    # 请求脚本
+│   └── response/   # 响应脚本
+├── certs/          # 证书目录
+│   ├── ca.crt      # CA 证书
+│   └── ca.key      # CA 私钥
+└── replay.db       # 请求集合数据库
 
 ````
 
@@ -702,16 +935,18 @@ git push origin v0.1.0
 
 主要依赖：
 
-| 依赖      | 用途       |
-| --------- | ---------- |
-| `tokio`   | 异步运行时 |
-| `hyper`   | HTTP 库    |
-| `rustls`  | TLS 实现   |
-| `rcgen`   | 证书生成   |
-| `clap`    | 命令行解析 |
-| `serde`   | 序列化     |
-| `tracing` | 日志追踪   |
-| `regex`   | 正则表达式 |
+| 依赖      | 用途           |
+| --------- | -------------- |
+| `tokio`   | 异步运行时     |
+| `hyper`   | HTTP 库        |
+| `rustls`  | TLS 实现       |
+| `rcgen`   | 证书生成       |
+| `clap`    | 命令行解析     |
+| `serde`   | 序列化         |
+| `tracing` | 日志追踪       |
+| `regex`   | 正则表达式     |
+| `rquickjs`| JavaScript 引擎|
+| `rusqlite`| SQLite 数据库  |
 
 ## License
 
