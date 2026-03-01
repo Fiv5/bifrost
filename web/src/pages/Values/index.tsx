@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { message, theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import ValueList from './ValueList';
@@ -7,6 +8,7 @@ import { useValuesStore } from '../../stores/useValuesStore';
 
 export default function Values() {
   const { token } = theme.useToken();
+  const [searchParams, setSearchParams] = useSearchParams();
   const error = useValuesStore((state) => state.error);
   const clearError = useValuesStore((state) => state.clearError);
   const values = useValuesStore((state) => state.values);
@@ -14,9 +16,22 @@ export default function Values() {
   const selectValue = useValuesStore((state) => state.selectValue);
 
   const initRef = useRef(false);
+  const urlParamRef = useRef(false);
 
   useEffect(() => {
-    if (initRef.current) return;
+    const nameParam = searchParams.get('name');
+    if (nameParam && values.length > 0 && !urlParamRef.current) {
+      urlParamRef.current = true;
+      const exists = values.some(v => v.name === nameParam);
+      if (exists) {
+        selectValue(nameParam);
+        setSearchParams({}, { replace: true });
+      }
+    }
+  }, [searchParams, values, selectValue, setSearchParams]);
+
+  useEffect(() => {
+    if (initRef.current || urlParamRef.current) return;
     if (values.length > 0 && !selectedValueName) {
       initRef.current = true;
       selectValue(values[0].name);

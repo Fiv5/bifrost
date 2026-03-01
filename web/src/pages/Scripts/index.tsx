@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Tree,
   Button,
@@ -26,6 +27,8 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   SearchOutlined,
+  UpOutlined,
+  DownOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -413,7 +416,81 @@ function EditorPanel({
           justifyContent: "center",
         }}
       >
-        <Empty description="Select a script or create a new one" />
+        <div style={{ textAlign: "center", maxWidth: 560 }}>
+          <Empty description="Select a script or create a new one" />
+          <div
+            style={{
+              marginTop: 24,
+              padding: "16px 24px",
+              borderRadius: 8,
+              textAlign: "left",
+              background: resolvedTheme === "dark" ? "#1f1f1f" : "#fafafa",
+            }}
+          >
+            <Text strong style={{ display: "block", marginBottom: 12 }}>
+              How to use Scripts
+            </Text>
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: 20,
+                color: resolvedTheme === "dark" ? "#a6a6a6" : "#666",
+              }}
+            >
+              <li style={{ marginBottom: 8 }}>
+                <Text type="secondary">
+                  <b>Request scripts</b> run before forwarding to upstream -
+                  modify method, headers, or body
+                </Text>
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                <Text type="secondary">
+                  <b>Response scripts</b> run after receiving response - modify
+                  status, headers, or body
+                </Text>
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                <Text type="secondary">
+                  Use <code>log.info()</code>, <code>log.warn()</code> to debug
+                  your scripts
+                </Text>
+              </li>
+              <li style={{ marginBottom: 8 }}>
+                <Text type="secondary">
+                  Access <code>ctx.values</code> for custom configuration values
+                </Text>
+              </li>
+            </ul>
+            <Text
+              strong
+              style={{ display: "block", marginTop: 16, marginBottom: 8 }}
+            >
+              Bind scripts to rules
+            </Text>
+            <Text
+              type="secondary"
+              style={{ display: "block", marginBottom: 8 }}
+            >
+              In the <b>Rules</b> page, use <code>reqScript://</code> or{" "}
+              <code>resScript://</code> protocol:
+            </Text>
+            <pre
+              style={{
+                margin: 0,
+                padding: "8px 12px",
+                borderRadius: 4,
+                fontSize: 12,
+                background: resolvedTheme === "dark" ? "#141414" : "#f0f0f0",
+                color: resolvedTheme === "dark" ? "#d9d9d9" : "#434343",
+                overflow: "auto",
+              }}
+            >{`# Add auth header to API requests
+api.example.com reqScript://add-auth-header
+
+# Modify response for testing
+*.example.com resScript://mock-response`}</pre>
+          </div>
+        </div>
       </div>
     );
   }
@@ -544,24 +621,62 @@ function EditorPanel({
 
 function TestResultPanel({
   testResult,
+  isExpanded,
+  onToggle,
 }: {
   testResult: ScriptExecutionResult | null;
+  isExpanded: boolean;
+  onToggle: () => void;
 }) {
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
   const { token } = theme.useToken();
 
-  if (!testResult) {
+  if (!isExpanded) {
     return (
       <div
         style={{
-          height: "100%",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: token.colorTextSecondary,
+          position: "absolute",
+          bottom: 12,
+          right: 12,
+          zIndex: 10,
         }}
       >
-        <Text type="secondary">Run a test to see results here</Text>
+        <Tooltip title="Show Test Results">
+          <Button
+            type="default"
+            size="small"
+            icon={<UpOutlined />}
+            onClick={onToggle}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              backgroundColor: testResult
+                ? testResult.success
+                  ? token.colorSuccessBg
+                  : token.colorErrorBg
+                : undefined,
+              borderColor: testResult
+                ? testResult.success
+                  ? token.colorSuccess
+                  : token.colorError
+                : undefined,
+            }}
+          >
+            {testResult ? (
+              <>
+                {testResult.success ? (
+                  <CheckCircleOutlined style={{ color: token.colorSuccess }} />
+                ) : (
+                  <CloseCircleOutlined style={{ color: token.colorError }} />
+                )}
+                <span>Test Result</span>
+              </>
+            ) : (
+              <span>Test Results</span>
+            )}
+          </Button>
+        </Tooltip>
       </div>
     );
   }
@@ -582,96 +697,135 @@ function TestResultPanel({
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          justifyContent: "space-between",
         }}
       >
-        {testResult.success ? (
-          <CheckCircleOutlined style={{ color: "#52c41a" }} />
-        ) : (
-          <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
-        )}
-        <Text strong>Test Result ({testResult.duration_ms}ms)</Text>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {testResult ? (
+            <>
+              {testResult.success ? (
+                <CheckCircleOutlined style={{ color: "#52c41a" }} />
+              ) : (
+                <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
+              )}
+              <Text strong>Test Result ({testResult.duration_ms}ms)</Text>
+            </>
+          ) : (
+            <Text strong>Test Results</Text>
+          )}
+        </div>
+        <Tooltip title="Hide Test Results">
+          <Button
+            type="text"
+            size="small"
+            icon={<DownOutlined />}
+            onClick={onToggle}
+          />
+        </Tooltip>
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-        {testResult.error && (
-          <div style={{ marginBottom: 12 }}>
-            <Text type="danger">{testResult.error}</Text>
+        {!testResult ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              height: "100%",
+              color: token.colorTextSecondary,
+            }}
+          >
+            <Text type="secondary">Run a test to see results here</Text>
           </div>
-        )}
+        ) : (
+          <>
+            {testResult.error && (
+              <div style={{ marginBottom: 12 }}>
+                <Text type="danger">{testResult.error}</Text>
+              </div>
+            )}
 
-        {testResult.request_modifications && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong>Request Modifications:</Text>
-            <pre
-              style={{
-                background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
-                color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
-                padding: 8,
-                borderRadius: 4,
-                fontSize: 12,
-                overflow: "auto",
-                maxHeight: 150,
-                margin: "8px 0 0",
-              }}
-            >
-              {JSON.stringify(testResult.request_modifications, null, 2)}
-            </pre>
-          </div>
-        )}
+            {testResult.request_modifications && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong>Request Modifications:</Text>
+                <pre
+                  style={{
+                    background:
+                      resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                    color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
+                    padding: 8,
+                    borderRadius: 4,
+                    fontSize: 12,
+                    overflow: "auto",
+                    maxHeight: 150,
+                    margin: "8px 0 0",
+                  }}
+                >
+                  {JSON.stringify(testResult.request_modifications, null, 2)}
+                </pre>
+              </div>
+            )}
 
-        {testResult.response_modifications && (
-          <div style={{ marginBottom: 12 }}>
-            <Text strong>Response Modifications:</Text>
-            <pre
-              style={{
-                background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
-                color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
-                padding: 8,
-                borderRadius: 4,
-                fontSize: 12,
-                overflow: "auto",
-                maxHeight: 150,
-                margin: "8px 0 0",
-              }}
-            >
-              {JSON.stringify(testResult.response_modifications, null, 2)}
-            </pre>
-          </div>
-        )}
+            {testResult.response_modifications && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong>Response Modifications:</Text>
+                <pre
+                  style={{
+                    background:
+                      resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                    color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
+                    padding: 8,
+                    borderRadius: 4,
+                    fontSize: 12,
+                    overflow: "auto",
+                    maxHeight: 150,
+                    margin: "8px 0 0",
+                  }}
+                >
+                  {JSON.stringify(testResult.response_modifications, null, 2)}
+                </pre>
+              </div>
+            )}
 
-        <div>
-          <Text strong>Logs:</Text>
-          {testResult.logs.length > 0 ? (
-            <div
-              style={{
-                fontFamily: "monospace",
-                fontSize: 12,
-                marginTop: 8,
-              }}
-            >
-              {testResult.logs.map((logEntry: ScriptLogEntry, i: number) => (
-                <div key={i} style={{ marginBottom: 4 }}>
-                  <LogLevel level={logEntry.level} />
-                  <Text code style={{ marginLeft: 8 }}>
-                    {new Date(logEntry.timestamp).toLocaleTimeString()}
-                  </Text>
-                  <Text style={{ marginLeft: 8 }}>{logEntry.message}</Text>
+            <div>
+              <Text strong>Logs:</Text>
+              {testResult.logs.length > 0 ? (
+                <div
+                  style={{
+                    fontFamily: "monospace",
+                    fontSize: 12,
+                    marginTop: 8,
+                  }}
+                >
+                  {testResult.logs.map(
+                    (logEntry: ScriptLogEntry, i: number) => (
+                      <div key={i} style={{ marginBottom: 4 }}>
+                        <LogLevel level={logEntry.level} />
+                        <Text code style={{ marginLeft: 8 }}>
+                          {new Date(logEntry.timestamp).toLocaleTimeString()}
+                        </Text>
+                        <Text style={{ marginLeft: 8 }}>
+                          {logEntry.message}
+                        </Text>
+                      </div>
+                    ),
+                  )}
                 </div>
-              ))}
+              ) : (
+                <Text type="secondary" style={{ marginLeft: 8 }}>
+                  No logs
+                </Text>
+              )}
             </div>
-          ) : (
-            <Text type="secondary" style={{ marginLeft: 8 }}>
-              No logs
-            </Text>
-          )}
-        </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
 export default function ScriptsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     requestScripts,
     responseScripts,
@@ -700,10 +854,52 @@ export default function ScriptsPage() {
     string | null
   >(null);
   const [lastScriptsHash, setLastScriptsHash] = useState<string>("");
+  const [testResultExpanded, setTestResultExpanded] = useState(false);
+  const [lastTestResultTimestamp, setLastTestResultTimestamp] = useState<
+    number | null
+  >(null);
+  const urlParamRef = useRef(false);
 
   useEffect(() => {
     fetchScripts();
   }, [fetchScripts]);
+
+  /* eslint-disable react-hooks/set-state-in-effect -- Auto-expand test panel when new result arrives */
+  useEffect(() => {
+    if (testResult) {
+      const timestamp = testResult.duration_ms + Date.now();
+      if (lastTestResultTimestamp !== timestamp) {
+        setLastTestResultTimestamp(timestamp);
+        if (!testResultExpanded) {
+          setTestResultExpanded(true);
+        }
+      }
+    }
+  }, [testResult, lastTestResultTimestamp, testResultExpanded]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    const typeParam = searchParams.get("type") as ScriptType | null;
+    const nameParam = searchParams.get("name");
+    const scripts = [...requestScripts, ...responseScripts];
+
+    if (typeParam && nameParam && scripts.length > 0 && !urlParamRef.current) {
+      const exists = scripts.some(
+        (s) => s.script_type === typeParam && s.name === nameParam,
+      );
+      if (exists) {
+        urlParamRef.current = true;
+        selectScript(typeParam, nameParam);
+        setSearchParams({}, { replace: true });
+      }
+    }
+  }, [
+    searchParams,
+    requestScripts,
+    responseScripts,
+    selectScript,
+    setSearchParams,
+  ]);
 
   const allScripts = useMemo(
     () => [...requestScripts, ...responseScripts],
@@ -1098,9 +1294,19 @@ export default function ScriptsPage() {
     />
   );
 
-  const testResultPanel = <TestResultPanel testResult={testResult} />;
+  const handleToggleTestResult = useCallback(() => {
+    setTestResultExpanded((prev) => !prev);
+  }, []);
 
-  const rightPanel = (
+  const testResultPanel = (
+    <TestResultPanel
+      testResult={testResult}
+      isExpanded={testResultExpanded}
+      onToggle={handleToggleTestResult}
+    />
+  );
+
+  const rightPanel = testResultExpanded ? (
     <VerticalSplitPane
       top={editorPanel}
       bottom={testResultPanel}
@@ -1108,6 +1314,11 @@ export default function ScriptsPage() {
       minTopHeight={200}
       minBottomHeight={120}
     />
+  ) : (
+    <div style={{ height: "100%", position: "relative" }}>
+      {editorPanel}
+      {testResultPanel}
+    </div>
   );
 
   return (

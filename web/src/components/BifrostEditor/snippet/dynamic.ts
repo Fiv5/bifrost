@@ -1,16 +1,28 @@
 import { languages, editor, Position } from 'monaco-editor';
 import type { IRange } from 'monaco-editor';
 
+export type ReferenceType = 'value' | 'requestScript' | 'responseScript';
+export type NavigationType = 'page' | 'editor';
+
+export interface ReferenceLocation {
+  name: string;
+  type: ReferenceType;
+  navigationType: NavigationType;
+  uri?: string;
+}
+
 export interface DynamicCompletionData {
   values: string[];
   requestScripts: string[];
   responseScripts: string[];
+  referenceLocations: Map<string, ReferenceLocation>;
 }
 
 let dynamicData: DynamicCompletionData = {
   values: [],
   requestScripts: [],
   responseScripts: [],
+  referenceLocations: new Map(),
 };
 
 export const updateDynamicData = (data: Partial<DynamicCompletionData>) => {

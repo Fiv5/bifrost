@@ -4,8 +4,16 @@ import snippet, {
   updateDynamicData,
   getDynamicData,
   dynamicProvider,
-  type DynamicCompletionData,
-} from './snippet';
+  hoverProvider,
+  definitionProvider,
+  linkProvider,
+} from "./snippet";
+import type {
+  DynamicCompletionData,
+  ReferenceLocation,
+  NavigateCallback,
+} from "./snippet";
+import { setNavigateCallback } from "./snippet";
 import theme from './theme';
 import tokenizer from './tokenizer';
 
@@ -21,6 +29,9 @@ languages.setMonarchTokensProvider(LANGUAGE_BIFROST, tokenizer.language);
 
 languages.registerCompletionItemProvider(LANGUAGE_BIFROST, snippet.operator);
 languages.registerCompletionItemProvider(LANGUAGE_BIFROST, dynamicProvider);
+languages.registerHoverProvider(LANGUAGE_BIFROST, hoverProvider);
+languages.registerDefinitionProvider(LANGUAGE_BIFROST, definitionProvider);
+languages.registerLinkProvider(LANGUAGE_BIFROST, linkProvider);
 
 editor.defineTheme(theme.dark.name, theme.dark.config);
 editor.defineTheme(theme.light.name, theme.light.config);
@@ -64,7 +75,7 @@ editor.createModel = (
 export const THEME_DARK = theme.dark.name;
 export const THEME_LIGHT = theme.light.name;
 
-export { updateDynamicData, getDynamicData };
-export type { DynamicCompletionData };
+export { updateDynamicData, getDynamicData, setNavigateCallback };
+export type { DynamicCompletionData, ReferenceLocation, NavigateCallback };
 
 export default editor;

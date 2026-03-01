@@ -12,6 +12,10 @@ import type { CSSProperties } from "react";
 import { useEffect } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 import StatusBar from "../StatusBar";
+import {
+  setNavigateCallback,
+  type ReferenceLocation,
+} from "../BifrostEditor";
 
 interface MenuItem {
   key: string;
@@ -48,6 +52,18 @@ export default function AppLayout() {
       stopSSE();
     };
   }, [fetchPendingList, startSSE, stopSSE, requestNotificationPermission]);
+
+  useEffect(() => {
+    const handleNavigate = (location: ReferenceLocation) => {
+      if (location.uri) {
+        navigate(location.uri);
+      }
+    };
+    setNavigateCallback(handleNavigate);
+    return () => {
+      setNavigateCallback(null);
+    };
+  }, [navigate]);
 
   const styles: Record<string, CSSProperties> = {
     layout: {
