@@ -60,7 +60,7 @@ setup_test_env() {
     TEST_DATA_DIR=$(mktemp -d)
     info "临时数据目录: $TEST_DATA_DIR"
 
-    mkdir -p "${TEST_DATA_DIR}"/{rules,values,plugins,certs}
+    mkdir -p "${TEST_DATA_DIR}"/{rules,values,certs}
 
     cat > "${TEST_DATA_DIR}/config.toml" << 'TOML'
 [access]

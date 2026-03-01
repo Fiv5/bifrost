@@ -167,7 +167,7 @@ build_proxy() {
 }
 
 setup_data_dir() {
-    mkdir -p "${TEST_DATA_DIR}"/{rules,plugins,certs,values,traffic,body_cache}
+    mkdir -p "${TEST_DATA_DIR}"/{rules,certs,values,traffic,body_cache}
 
     if [[ -d "${SCRIPT_DIR}/values" ]]; then
         cp -f "${SCRIPT_DIR}/values"/*.txt "${TEST_DATA_DIR}/values/" 2>/dev/null || true

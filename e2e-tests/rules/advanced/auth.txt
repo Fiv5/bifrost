@@ -1,7 +1,6 @@
 # 认证和安全测试
 # A-10: auth 基本认证
 # A-11: forwardedFor 头
-# A-12: cipher TLS 选项
 
 # A-10 auth 协议 - 添加 Basic Auth
 test-auth.local http://127.0.0.1:3000 auth://username:password

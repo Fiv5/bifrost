@@ -3,12 +3,6 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
-    // 高级功能
-    G,
-    Style,
-    Rule,
-    Pipe,
-
     // 基础路由
     Host,
     XHost,
@@ -17,21 +11,10 @@ pub enum Protocol {
     Ws,
     Wss,
     Proxy,
-    Pac,
-    InternalProxy,
-    Https2HttpProxy,
-    Http2HttpsProxy,
     Redirect,
-    LocationHref,
     File,
     Tpl,
     RawFile,
-
-    // 过滤控制
-    Filter,
-    Ignore,
-    Enable,
-    Disable,
     Delete,
 
     // 请求修改
@@ -46,8 +29,6 @@ pub enum Protocol {
     ReqType,
     ReqCharset,
     ReqReplace,
-    ReqWrite,
-    ReqWriteRaw,
     Method,
     Auth,
     Ua,
@@ -67,13 +48,10 @@ pub enum Protocol {
     ResType,
     ResCharset,
     ResReplace,
-    ResWrite,
-    ResWriteRaw,
     ReplaceStatus,
     StatusCode,
     Cache,
     Attachment,
-    ResponseFor,
     ForwardedFor,
     Trailers,
     ResMerge,
@@ -94,16 +72,12 @@ pub enum Protocol {
     UrlReplace,
 
     // 脚本插件
-    Plugin,
     RulesFile,
+    ReqScript,
     ResScript,
-    FrameScript,
-    Log,
-    Weinre,
 
     // 高级功能
     SniCallback,
-    Cipher,
 
     // DNS 解析
     Dns,
@@ -111,6 +85,9 @@ pub enum Protocol {
     // TLS 拦截控制
     TlsIntercept,
     TlsPassthrough,
+
+    // 直连/透传
+    Passthrough,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,15 +99,6 @@ pub enum ProtocolCategory {
 }
 
 pub const MULTI_MATCH_PROTOCOLS: &[Protocol] = &[
-    Protocol::G,
-    Protocol::Ignore,
-    Protocol::Enable,
-    Protocol::Filter,
-    Protocol::Disable,
-    Protocol::Plugin,
-    Protocol::Delete,
-    Protocol::Style,
-    Protocol::Cipher,
     Protocol::Trailers,
     Protocol::UrlParams,
     Protocol::Params,
@@ -161,7 +129,9 @@ pub const MULTI_MATCH_PROTOCOLS: &[Protocol] = &[
     Protocol::JsPrepend,
     Protocol::CssPrepend,
     Protocol::RulesFile,
+    Protocol::ReqScript,
     Protocol::ResScript,
+    Protocol::Delete,
 ];
 
 pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
@@ -169,24 +139,17 @@ pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
     map.insert("ruleFile", "rulesFile");
     map.insert("ruleScript", "rulesFile");
     map.insert("rulesScript", "rulesFile");
-    map.insert("reqScript", "rulesFile");
     map.insert("reqRules", "rulesFile");
     map.insert("resRules", "resScript");
     map.insert("pathReplace", "urlReplace");
     map.insert("download", "attachment");
-    map.insert("skip", "ignore");
     map.insert("http-proxy", "proxy");
-    map.insert("xhttp-proxy", "xproxy");
     map.insert("status", "statusCode");
     map.insert("hosts", "host");
     map.insert("html", "htmlAppend");
     map.insert("js", "jsAppend");
     map.insert("reqMerge", "params");
-    map.insert("tlsOptions", "cipher");
     map.insert("css", "cssAppend");
-    map.insert("excludeFilter", "filter");
-    map.insert("includeFilter", "filter");
-    map.insert("P", "G");
     map
 }
 
@@ -212,8 +175,6 @@ const PURE_RES_PROTOCOLS: &[Protocol] = &[
     Protocol::ResBody,
     Protocol::ResAppend,
     Protocol::ResReplace,
-    Protocol::ResWrite,
-    Protocol::ResWriteRaw,
     Protocol::CssAppend,
     Protocol::HtmlAppend,
     Protocol::JsAppend,
@@ -223,41 +184,24 @@ const PURE_RES_PROTOCOLS: &[Protocol] = &[
     Protocol::CssPrepend,
     Protocol::HtmlPrepend,
     Protocol::JsPrepend,
-    Protocol::ResponseFor,
 ];
 
 impl Protocol {
     pub fn parse(s: &str) -> Option<Protocol> {
         let resolved = Self::resolve_alias(s);
         match resolved {
-            "G" => Some(Protocol::G),
-            "style" => Some(Protocol::Style),
             "host" => Some(Protocol::Host),
             "xhost" => Some(Protocol::XHost),
             "http" => Some(Protocol::Http),
             "https" => Some(Protocol::Https),
             "ws" => Some(Protocol::Ws),
             "wss" => Some(Protocol::Wss),
-            "rule" => Some(Protocol::Rule),
-            "pipe" => Some(Protocol::Pipe),
-            "weinre" => Some(Protocol::Weinre),
             "proxy" => Some(Protocol::Proxy),
-            "https2http-proxy" => Some(Protocol::Https2HttpProxy),
-            "http2https-proxy" => Some(Protocol::Http2HttpsProxy),
-            "internal-proxy" => Some(Protocol::InternalProxy),
-            "pac" => Some(Protocol::Pac),
             "redirect" => Some(Protocol::Redirect),
-            "locationHref" => Some(Protocol::LocationHref),
             "file" => Some(Protocol::File),
             "tpl" => Some(Protocol::Tpl),
             "rawfile" => Some(Protocol::RawFile),
-            "filter" => Some(Protocol::Filter),
-            "ignore" => Some(Protocol::Ignore),
-            "enable" => Some(Protocol::Enable),
-            "disable" => Some(Protocol::Disable),
             "delete" => Some(Protocol::Delete),
-            "log" => Some(Protocol::Log),
-            "plugin" => Some(Protocol::Plugin),
             "referer" => Some(Protocol::Referer),
             "auth" => Some(Protocol::Auth),
             "ua" => Some(Protocol::Ua),
@@ -270,10 +214,9 @@ impl Protocol {
             "cache" => Some(Protocol::Cache),
             "attachment" => Some(Protocol::Attachment),
             "forwardedFor" => Some(Protocol::ForwardedFor),
-            "responseFor" => Some(Protocol::ResponseFor),
             "rulesFile" => Some(Protocol::RulesFile),
+            "reqScript" => Some(Protocol::ReqScript),
             "resScript" => Some(Protocol::ResScript),
-            "frameScript" => Some(Protocol::FrameScript),
             "reqDelay" => Some(Protocol::ReqDelay),
             "resDelay" => Some(Protocol::ResDelay),
             "headerReplace" => Some(Protocol::HeaderReplace),
@@ -299,10 +242,6 @@ impl Protocol {
             "urlReplace" => Some(Protocol::UrlReplace),
             "reqReplace" => Some(Protocol::ReqReplace),
             "resReplace" => Some(Protocol::ResReplace),
-            "reqWrite" => Some(Protocol::ReqWrite),
-            "resWrite" => Some(Protocol::ResWrite),
-            "reqWriteRaw" => Some(Protocol::ReqWriteRaw),
-            "resWriteRaw" => Some(Protocol::ResWriteRaw),
             "cssAppend" => Some(Protocol::CssAppend),
             "htmlAppend" => Some(Protocol::HtmlAppend),
             "jsAppend" => Some(Protocol::JsAppend),
@@ -312,45 +251,29 @@ impl Protocol {
             "cssPrepend" => Some(Protocol::CssPrepend),
             "htmlPrepend" => Some(Protocol::HtmlPrepend),
             "jsPrepend" => Some(Protocol::JsPrepend),
-            "cipher" => Some(Protocol::Cipher),
             "sniCallback" => Some(Protocol::SniCallback),
             "dns" => Some(Protocol::Dns),
             "tlsIntercept" => Some(Protocol::TlsIntercept),
             "tlsPassthrough" => Some(Protocol::TlsPassthrough),
+            "passthrough" => Some(Protocol::Passthrough),
             _ => None,
         }
     }
 
     pub fn to_str(&self) -> &'static str {
         match self {
-            Protocol::G => "G",
-            Protocol::Style => "style",
             Protocol::Host => "host",
             Protocol::XHost => "xhost",
             Protocol::Http => "http",
             Protocol::Https => "https",
             Protocol::Ws => "ws",
             Protocol::Wss => "wss",
-            Protocol::Rule => "rule",
-            Protocol::Pipe => "pipe",
-            Protocol::Weinre => "weinre",
             Protocol::Proxy => "proxy",
-            Protocol::Https2HttpProxy => "https2http-proxy",
-            Protocol::Http2HttpsProxy => "http2https-proxy",
-            Protocol::InternalProxy => "internal-proxy",
-            Protocol::Pac => "pac",
             Protocol::Redirect => "redirect",
-            Protocol::LocationHref => "locationHref",
             Protocol::File => "file",
             Protocol::Tpl => "tpl",
             Protocol::RawFile => "rawfile",
-            Protocol::Filter => "filter",
-            Protocol::Ignore => "ignore",
-            Protocol::Enable => "enable",
-            Protocol::Disable => "disable",
             Protocol::Delete => "delete",
-            Protocol::Log => "log",
-            Protocol::Plugin => "plugin",
             Protocol::Referer => "referer",
             Protocol::Auth => "auth",
             Protocol::Ua => "ua",
@@ -363,10 +286,9 @@ impl Protocol {
             Protocol::Cache => "cache",
             Protocol::Attachment => "attachment",
             Protocol::ForwardedFor => "forwardedFor",
-            Protocol::ResponseFor => "responseFor",
             Protocol::RulesFile => "rulesFile",
+            Protocol::ReqScript => "reqScript",
             Protocol::ResScript => "resScript",
-            Protocol::FrameScript => "frameScript",
             Protocol::ReqDelay => "reqDelay",
             Protocol::ResDelay => "resDelay",
             Protocol::HeaderReplace => "headerReplace",
@@ -392,10 +314,6 @@ impl Protocol {
             Protocol::UrlReplace => "urlReplace",
             Protocol::ReqReplace => "reqReplace",
             Protocol::ResReplace => "resReplace",
-            Protocol::ReqWrite => "reqWrite",
-            Protocol::ResWrite => "resWrite",
-            Protocol::ReqWriteRaw => "reqWriteRaw",
-            Protocol::ResWriteRaw => "resWriteRaw",
             Protocol::CssAppend => "cssAppend",
             Protocol::HtmlAppend => "htmlAppend",
             Protocol::JsAppend => "jsAppend",
@@ -405,28 +323,19 @@ impl Protocol {
             Protocol::CssPrepend => "cssPrepend",
             Protocol::HtmlPrepend => "htmlPrepend",
             Protocol::JsPrepend => "jsPrepend",
-            Protocol::Cipher => "cipher",
             Protocol::SniCallback => "sniCallback",
             Protocol::Dns => "dns",
             Protocol::TlsIntercept => "tlsIntercept",
             Protocol::TlsPassthrough => "tlsPassthrough",
+            Protocol::Passthrough => "passthrough",
         }
     }
 
     pub fn category(&self) -> ProtocolCategory {
         match self {
-            Protocol::Filter
-            | Protocol::Ignore
-            | Protocol::Enable
-            | Protocol::Disable
-            | Protocol::Delete
-            | Protocol::G
-            | Protocol::Style
-            | Protocol::Plugin
-            | Protocol::Log
-            | Protocol::Weinre
-            | Protocol::TlsIntercept
-            | Protocol::TlsPassthrough => ProtocolCategory::Control,
+            Protocol::TlsIntercept | Protocol::TlsPassthrough | Protocol::Passthrough => {
+                ProtocolCategory::Control
+            }
 
             Protocol::ReplaceStatus
             | Protocol::StatusCode
@@ -445,8 +354,6 @@ impl Protocol {
             | Protocol::ResBody
             | Protocol::ResAppend
             | Protocol::ResReplace
-            | Protocol::ResWrite
-            | Protocol::ResWriteRaw
             | Protocol::CssAppend
             | Protocol::HtmlAppend
             | Protocol::JsAppend
@@ -456,9 +363,7 @@ impl Protocol {
             | Protocol::CssPrepend
             | Protocol::HtmlPrepend
             | Protocol::JsPrepend
-            | Protocol::ResponseFor
-            | Protocol::ResScript
-            | Protocol::FrameScript => ProtocolCategory::Response,
+            | Protocol::ResScript => ProtocolCategory::Response,
 
             Protocol::ReqHeaders
             | Protocol::ReqBody
@@ -471,8 +376,6 @@ impl Protocol {
             | Protocol::ReqType
             | Protocol::ReqCharset
             | Protocol::ReqReplace
-            | Protocol::ReqWrite
-            | Protocol::ReqWriteRaw
             | Protocol::Method
             | Protocol::Auth
             | Protocol::Ua
@@ -480,6 +383,7 @@ impl Protocol {
             | Protocol::UrlParams
             | Protocol::Params
             | Protocol::RulesFile
+            | Protocol::ReqScript
             | Protocol::Dns => ProtocolCategory::Request,
 
             Protocol::Host
@@ -489,21 +393,14 @@ impl Protocol {
             | Protocol::Ws
             | Protocol::Wss
             | Protocol::Proxy
-            | Protocol::Pac
-            | Protocol::InternalProxy
-            | Protocol::Https2HttpProxy
-            | Protocol::Http2HttpsProxy
             | Protocol::Redirect
-            | Protocol::LocationHref
             | Protocol::File
             | Protocol::Tpl
             | Protocol::RawFile
-            | Protocol::Rule
-            | Protocol::Pipe
+            | Protocol::Delete
             | Protocol::HeaderReplace
             | Protocol::UrlReplace
             | Protocol::SniCallback
-            | Protocol::Cipher
             | Protocol::ForwardedFor => ProtocolCategory::Both,
         }
     }
@@ -517,17 +414,7 @@ impl Protocol {
     }
 
     pub fn is_res_protocol(&self) -> bool {
-        PURE_RES_PROTOCOLS.contains(self)
-            || matches!(
-                self,
-                Protocol::Filter
-                    | Protocol::Enable
-                    | Protocol::Disable
-                    | Protocol::Ignore
-                    | Protocol::Style
-                    | Protocol::Delete
-                    | Protocol::HeaderReplace
-            )
+        PURE_RES_PROTOCOLS.contains(self) || matches!(self, Protocol::HeaderReplace)
     }
 
     pub fn is_req_protocol(&self) -> bool {
@@ -553,29 +440,19 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 81] = [
-    Protocol::G,
-    Protocol::Style,
+pub const ALL_PROTOCOLS: [Protocol; 66] = [
     Protocol::Host,
+    Protocol::XHost,
     Protocol::Http,
     Protocol::Https,
     Protocol::Ws,
     Protocol::Wss,
-    Protocol::Rule,
-    Protocol::Pipe,
-    Protocol::Weinre,
     Protocol::Proxy,
-    Protocol::Https2HttpProxy,
-    Protocol::Http2HttpsProxy,
-    Protocol::InternalProxy,
-    Protocol::Pac,
-    Protocol::Filter,
-    Protocol::Ignore,
-    Protocol::Enable,
-    Protocol::Disable,
+    Protocol::Redirect,
+    Protocol::File,
+    Protocol::Tpl,
+    Protocol::RawFile,
     Protocol::Delete,
-    Protocol::Log,
-    Protocol::Plugin,
     Protocol::Referer,
     Protocol::Auth,
     Protocol::Ua,
@@ -588,10 +465,9 @@ pub const ALL_PROTOCOLS: [Protocol; 81] = [
     Protocol::Cache,
     Protocol::Attachment,
     Protocol::ForwardedFor,
-    Protocol::ResponseFor,
     Protocol::RulesFile,
+    Protocol::ReqScript,
     Protocol::ResScript,
-    Protocol::FrameScript,
     Protocol::ReqDelay,
     Protocol::ResDelay,
     Protocol::HeaderReplace,
@@ -617,10 +493,6 @@ pub const ALL_PROTOCOLS: [Protocol; 81] = [
     Protocol::UrlReplace,
     Protocol::ReqReplace,
     Protocol::ResReplace,
-    Protocol::ReqWrite,
-    Protocol::ResWrite,
-    Protocol::ReqWriteRaw,
-    Protocol::ResWriteRaw,
     Protocol::CssAppend,
     Protocol::HtmlAppend,
     Protocol::JsAppend,
@@ -630,11 +502,11 @@ pub const ALL_PROTOCOLS: [Protocol; 81] = [
     Protocol::CssPrepend,
     Protocol::HtmlPrepend,
     Protocol::JsPrepend,
-    Protocol::Cipher,
     Protocol::SniCallback,
     Protocol::Dns,
     Protocol::TlsIntercept,
     Protocol::TlsPassthrough,
+    Protocol::Passthrough,
 ];
 
 #[cfg(test)]
@@ -643,34 +515,24 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 81);
+        assert_eq!(ALL_PROTOCOLS.len(), 66);
     }
 
     #[test]
     fn test_all_protocols_parse() {
         let protocol_names = [
-            "G",
-            "style",
             "host",
+            "xhost",
             "http",
             "https",
             "ws",
             "wss",
-            "rule",
-            "pipe",
-            "weinre",
             "proxy",
-            "https2http-proxy",
-            "http2https-proxy",
-            "internal-proxy",
-            "pac",
-            "filter",
-            "ignore",
-            "enable",
-            "disable",
+            "redirect",
+            "file",
+            "tpl",
+            "rawfile",
             "delete",
-            "log",
-            "plugin",
             "referer",
             "auth",
             "ua",
@@ -683,10 +545,9 @@ mod tests {
             "cache",
             "attachment",
             "forwardedFor",
-            "responseFor",
             "rulesFile",
+            "reqScript",
             "resScript",
-            "frameScript",
             "reqDelay",
             "resDelay",
             "headerReplace",
@@ -712,10 +573,6 @@ mod tests {
             "urlReplace",
             "reqReplace",
             "resReplace",
-            "reqWrite",
-            "resWrite",
-            "reqWriteRaw",
-            "resWriteRaw",
             "cssAppend",
             "htmlAppend",
             "jsAppend",
@@ -725,11 +582,12 @@ mod tests {
             "cssPrepend",
             "htmlPrepend",
             "jsPrepend",
-            "cipher",
             "sniCallback",
             "dns",
             "tlsIntercept",
             "tlsPassthrough",
+            "passthrough",
+            "delete",
         ];
 
         for name in &protocol_names {
@@ -737,7 +595,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 81);
+        assert_eq!(protocol_names.len(), 67);
     }
 
     #[test]
@@ -754,34 +612,25 @@ mod tests {
         assert_eq!(Protocol::resolve_alias("ruleFile"), "rulesFile");
         assert_eq!(Protocol::resolve_alias("ruleScript"), "rulesFile");
         assert_eq!(Protocol::resolve_alias("rulesScript"), "rulesFile");
-        assert_eq!(Protocol::resolve_alias("reqScript"), "rulesFile");
         assert_eq!(Protocol::resolve_alias("reqRules"), "rulesFile");
         assert_eq!(Protocol::resolve_alias("resRules"), "resScript");
         assert_eq!(Protocol::resolve_alias("pathReplace"), "urlReplace");
         assert_eq!(Protocol::resolve_alias("download"), "attachment");
-        assert_eq!(Protocol::resolve_alias("skip"), "ignore");
         assert_eq!(Protocol::resolve_alias("http-proxy"), "proxy");
-        assert_eq!(Protocol::resolve_alias("xhttp-proxy"), "xproxy");
         assert_eq!(Protocol::resolve_alias("status"), "statusCode");
         assert_eq!(Protocol::resolve_alias("hosts"), "host");
         assert_eq!(Protocol::resolve_alias("xhost"), "xhost");
         assert_eq!(Protocol::resolve_alias("html"), "htmlAppend");
         assert_eq!(Protocol::resolve_alias("js"), "jsAppend");
         assert_eq!(Protocol::resolve_alias("reqMerge"), "params");
-        assert_eq!(Protocol::resolve_alias("tlsOptions"), "cipher");
         assert_eq!(Protocol::resolve_alias("css"), "cssAppend");
-        assert_eq!(Protocol::resolve_alias("excludeFilter"), "filter");
-        assert_eq!(Protocol::resolve_alias("includeFilter"), "filter");
-        assert_eq!(Protocol::resolve_alias("P"), "G");
+        assert_eq!(Protocol::resolve_alias("reqScript"), "reqScript");
     }
 
     #[test]
     fn test_alias_parse() {
         let resolved = Protocol::resolve_alias("hosts");
         assert_eq!(Protocol::parse(resolved), Some(Protocol::Host));
-
-        let resolved = Protocol::resolve_alias("skip");
-        assert_eq!(Protocol::parse(resolved), Some(Protocol::Ignore));
 
         let resolved = Protocol::resolve_alias("download");
         assert_eq!(Protocol::parse(resolved), Some(Protocol::Attachment));
@@ -798,15 +647,6 @@ mod tests {
 
     #[test]
     fn test_multi_match_protocols() {
-        assert!(Protocol::G.is_multi_match());
-        assert!(Protocol::Ignore.is_multi_match());
-        assert!(Protocol::Enable.is_multi_match());
-        assert!(Protocol::Filter.is_multi_match());
-        assert!(Protocol::Disable.is_multi_match());
-        assert!(Protocol::Plugin.is_multi_match());
-        assert!(Protocol::Delete.is_multi_match());
-        assert!(Protocol::Style.is_multi_match());
-        assert!(Protocol::Cipher.is_multi_match());
         assert!(Protocol::Trailers.is_multi_match());
         assert!(Protocol::UrlParams.is_multi_match());
         assert!(Protocol::Params.is_multi_match());
@@ -837,27 +677,18 @@ mod tests {
         assert!(Protocol::JsPrepend.is_multi_match());
         assert!(Protocol::CssPrepend.is_multi_match());
         assert!(Protocol::RulesFile.is_multi_match());
+        assert!(Protocol::ReqScript.is_multi_match());
         assert!(Protocol::ResScript.is_multi_match());
+        assert!(Protocol::Delete.is_multi_match());
 
         assert!(!Protocol::Host.is_multi_match());
         assert!(!Protocol::Proxy.is_multi_match());
-        assert!(!Protocol::Pac.is_multi_match());
         assert!(!Protocol::Method.is_multi_match());
         assert!(!Protocol::Auth.is_multi_match());
     }
 
     #[test]
     fn test_protocol_category_control() {
-        assert_eq!(Protocol::Filter.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Ignore.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Enable.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Disable.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Delete.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::G.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Style.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Plugin.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Log.category(), ProtocolCategory::Control);
-        assert_eq!(Protocol::Weinre.category(), ProtocolCategory::Control);
         assert_eq!(Protocol::TlsIntercept.category(), ProtocolCategory::Control);
         assert_eq!(
             Protocol::TlsPassthrough.category(),
@@ -878,8 +709,6 @@ mod tests {
         assert_eq!(Protocol::ReqType.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::ReqCharset.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::ReqReplace.category(), ProtocolCategory::Request);
-        assert_eq!(Protocol::ReqWrite.category(), ProtocolCategory::Request);
-        assert_eq!(Protocol::ReqWriteRaw.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Method.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Auth.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Ua.category(), ProtocolCategory::Request);
@@ -887,6 +716,7 @@ mod tests {
         assert_eq!(Protocol::UrlParams.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Params.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::RulesFile.category(), ProtocolCategory::Request);
+        assert_eq!(Protocol::ReqScript.category(), ProtocolCategory::Request);
     }
 
     #[test]
@@ -902,15 +732,12 @@ mod tests {
         assert_eq!(Protocol::ResType.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::ResCharset.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::ResReplace.category(), ProtocolCategory::Response);
-        assert_eq!(Protocol::ResWrite.category(), ProtocolCategory::Response);
-        assert_eq!(Protocol::ResWriteRaw.category(), ProtocolCategory::Response);
         assert_eq!(
             Protocol::ReplaceStatus.category(),
             ProtocolCategory::Response
         );
         assert_eq!(Protocol::Cache.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::Attachment.category(), ProtocolCategory::Response);
-        assert_eq!(Protocol::ResponseFor.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::Trailers.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::ResMerge.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::HtmlAppend.category(), ProtocolCategory::Response);
@@ -923,23 +750,15 @@ mod tests {
         assert_eq!(Protocol::CssPrepend.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::CssBody.category(), ProtocolCategory::Response);
         assert_eq!(Protocol::ResScript.category(), ProtocolCategory::Response);
-        assert_eq!(Protocol::FrameScript.category(), ProtocolCategory::Response);
     }
 
     #[test]
     fn test_protocol_category_both() {
         assert_eq!(Protocol::Host.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::Proxy.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Pac.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::InternalProxy.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Https2HttpProxy.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Http2HttpsProxy.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Rule.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Pipe.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::HeaderReplace.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::UrlReplace.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::SniCallback.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::Cipher.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::ForwardedFor.category(), ProtocolCategory::Both);
     }
 
@@ -949,12 +768,6 @@ mod tests {
         assert!(Protocol::ResBody.is_res_protocol());
         assert!(Protocol::ReplaceStatus.is_res_protocol());
         assert!(Protocol::Cache.is_res_protocol());
-        assert!(Protocol::Filter.is_res_protocol());
-        assert!(Protocol::Ignore.is_res_protocol());
-        assert!(Protocol::Enable.is_res_protocol());
-        assert!(Protocol::Disable.is_res_protocol());
-        assert!(Protocol::Style.is_res_protocol());
-        assert!(Protocol::Delete.is_res_protocol());
         assert!(Protocol::HeaderReplace.is_res_protocol());
     }
 
@@ -975,7 +788,6 @@ mod tests {
         assert_eq!(format!("{}", Protocol::Proxy), "proxy");
         assert_eq!(format!("{}", Protocol::ReqHeaders), "reqHeaders");
         assert_eq!(format!("{}", Protocol::ResHeaders), "resHeaders");
-        assert_eq!(format!("{}", Protocol::G), "G");
     }
 
     #[test]
@@ -997,23 +809,24 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 81);
+        assert_eq!(all.len(), 66);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
         assert!(all.contains(&Protocol::Ws));
         assert!(all.contains(&Protocol::Wss));
         assert!(all.contains(&Protocol::Proxy));
-        assert!(all.contains(&Protocol::G));
+        assert!(all.contains(&Protocol::Passthrough));
+        assert!(all.contains(&Protocol::ReqScript));
     }
 
     #[test]
     fn test_protocol_aliases_count() {
-        assert_eq!(PROTOCOL_ALIASES.len(), 21);
+        assert_eq!(PROTOCOL_ALIASES.len(), 14);
     }
 
     #[test]
     fn test_multi_match_protocols_count() {
-        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 40);
+        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 33);
     }
 }

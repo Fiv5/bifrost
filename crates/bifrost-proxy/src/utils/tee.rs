@@ -386,3 +386,21 @@ pub fn store_request_body(
     }
     None
 }
+
+pub fn store_response_body(
+    admin_state: &Option<Arc<AdminState>>,
+    record_id: &str,
+    body_data: &[u8],
+) -> Option<BodyRef> {
+    if body_data.is_empty() {
+        return None;
+    }
+
+    if let Some(ref state) = admin_state {
+        if let Some(ref body_store) = state.body_store {
+            let store = body_store.read();
+            return store.store(record_id, "res", body_data);
+        }
+    }
+    None
+}

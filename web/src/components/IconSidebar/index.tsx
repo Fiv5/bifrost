@@ -5,6 +5,7 @@ import {
   FileTextOutlined,
   TeamOutlined,
   SettingOutlined,
+  CodeOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 
@@ -17,6 +18,7 @@ interface MenuItem {
 const menuItems: MenuItem[] = [
   { key: "/network", icon: <GlobalOutlined />, label: "Network" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+  { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
   { key: "/group", icon: <TeamOutlined />, label: "Group" },
   { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
 ];

@@ -11,6 +11,15 @@ use bifrost_proxy::{
 };
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::collections::HashMap;
+
+fn extract_inline_content(value: &str) -> &str {
+    let trimmed = value.trim();
+    if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        value
+    }
+}
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -54,7 +63,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
 
             match protocol {
                 Protocol::Host => {
-                    result.host = Some(value.to_string());
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                    }
                 }
                 Protocol::ReqHeaders => {
                     if let Some(headers) = parse_header_value(value) {
@@ -115,26 +126,29 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::Proxy => {
                     result.proxy = Some(value.to_string());
                 }
-                Protocol::Ignore => {
-                    result.ignored = true;
-                }
                 Protocol::ReqPrepend => {
-                    result.req_prepend = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.req_prepend = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ReqAppend => {
-                    result.req_append = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.req_append = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ResPrepend => {
-                    result.res_prepend = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.res_prepend = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ResAppend => {
-                    result.res_append = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.res_append = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ReqBody => {
-                    result.req_body = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.req_body = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ResBody => {
-                    result.res_body = Some(bytes::Bytes::from(value.to_string()));
+                    let content = extract_inline_content(value);
+                    result.res_body = Some(bytes::Bytes::from(content.to_string()));
                 }
                 Protocol::ReqReplace => {
                     let parsed = parse_replace_value(value);
@@ -235,23 +249,33 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     result.dns_servers.push(value.to_string());
                 }
                 Protocol::XHost => {
-                    result.host = Some(value.to_string());
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                    }
                 }
                 Protocol::Http => {
-                    result.host = Some(value.to_string());
-                    result.host_protocol = Some(Protocol::Http);
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                        result.host_protocol = Some(Protocol::Http);
+                    }
                 }
                 Protocol::Https => {
-                    result.host = Some(value.to_string());
-                    result.host_protocol = Some(Protocol::Https);
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                        result.host_protocol = Some(Protocol::Https);
+                    }
                 }
                 Protocol::Ws => {
-                    result.host = Some(value.to_string());
-                    result.host_protocol = Some(Protocol::Ws);
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                        result.host_protocol = Some(Protocol::Ws);
+                    }
                 }
                 Protocol::Wss => {
-                    result.host = Some(value.to_string());
-                    result.host_protocol = Some(Protocol::Wss);
+                    if !result.ignored.host {
+                        result.host = Some(value.to_string());
+                        result.host_protocol = Some(Protocol::Wss);
+                    }
                 }
                 Protocol::TlsIntercept => {
                     result.tls_intercept = Some(true);
@@ -259,11 +283,99 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::TlsPassthrough => {
                     result.tls_intercept = Some(false);
                 }
+                Protocol::Passthrough => {
+                    result.ignored.host = true;
+                }
+                Protocol::Auth => {
+                    result.auth = Some(value.to_string());
+                }
+                Protocol::Delete => {
+                    let parsed = parse_delete_value(value);
+                    result.delete_req_headers.extend(parsed.req_headers);
+                    result.delete_res_headers.extend(parsed.res_headers);
+                }
+                Protocol::HeaderReplace => {
+                    if let Some(rules) = parse_header_replace_value(value) {
+                        result.header_replace.extend(rules);
+                    }
+                }
                 _ => {}
             }
         }
 
         result
+    }
+}
+
+struct ParsedDeleteValue {
+    req_headers: Vec<String>,
+    res_headers: Vec<String>,
+}
+
+fn parse_delete_value(value: &str) -> ParsedDeleteValue {
+    let mut result = ParsedDeleteValue {
+        req_headers: Vec::new(),
+        res_headers: Vec::new(),
+    };
+
+    for part in value.split('|') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        if let Some(header) = part.strip_prefix("req.") {
+            result.req_headers.push(header.to_string());
+        } else if let Some(header) = part.strip_prefix("res.") {
+            result.res_headers.push(header.to_string());
+        } else {
+            result.req_headers.push(part.to_string());
+            result.res_headers.push(part.to_string());
+        }
+    }
+
+    result
+}
+
+fn parse_header_replace_value(value: &str) -> Option<Vec<bifrost_proxy::HeaderReplaceRule>> {
+    use bifrost_proxy::{HeaderReplaceRule, HeaderReplaceTarget};
+
+    let mut rules = Vec::new();
+
+    for part in value.split('|') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        let (target, rest) = if let Some(rest) = part.strip_prefix("req.") {
+            (HeaderReplaceTarget::Request, rest)
+        } else if let Some(rest) = part.strip_prefix("res.") {
+            (HeaderReplaceTarget::Response, rest)
+        } else {
+            continue;
+        };
+
+        let colon_pos = rest.find(':')?;
+        let header_name = rest[..colon_pos].to_string();
+        let pattern_replacement = &rest[colon_pos + 1..];
+
+        let eq_pos = pattern_replacement.find('=')?;
+        let pattern = pattern_replacement[..eq_pos].to_string();
+        let replacement = pattern_replacement[eq_pos + 1..].to_string();
+
+        rules.push(HeaderReplaceRule {
+            target,
+            header_name,
+            pattern,
+            replacement,
+        });
+    }
+
+    if rules.is_empty() {
+        None
+    } else {
+        Some(rules)
     }
 }
 

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use bifrost_admin::{AdminState, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{protocol::Protocol, BifrostError, Result};
+use bifrost_script::{MatchedRuleInfo, RequestData, ResponseData, ScriptContext, ScriptType};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -29,7 +31,9 @@ use crate::utils::http_size::{
 };
 use crate::utils::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::utils::mock::{generate_mock_response, should_intercept_response};
-use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
+use crate::utils::tee::{
+    create_sse_tee_body, create_tee_body_with_store, store_request_body, store_response_body,
+};
 use crate::utils::url::apply_url_rules;
 
 const STREAMING_CONTENT_TYPES: &[&str] = &[
@@ -126,6 +130,22 @@ pub struct ConnectionErrorInfo {
     pub request_url: String,
 }
 
+fn build_error_body(status_code: u16, error_info: &ConnectionErrorInfo) -> Bytes {
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
+    let now = chrono::Local::now();
+    let date_str = now.format("%m/%d/%Y, %I:%M:%S %p").to_string();
+
+    Bytes::from(format!(
+        "Status: {}\nError: {}\nFrom: Bifrost@{}\nHost: {}\nDate: {}\nURL: {}",
+        status_code,
+        error_info.error_message,
+        hostname,
+        error_info.host,
+        date_str,
+        error_info.request_url,
+    ))
+}
+
 pub fn build_connection_error_response(
     status_code: u16,
     error_info: &ConnectionErrorInfo,
@@ -184,6 +204,15 @@ pub fn build_overridden_error_response(
     let mut response = Response::builder()
         .status(hyper::StatusCode::from_u16(status_code).unwrap_or(hyper::StatusCode::BAD_GATEWAY));
 
+    for (name, value) in &rules.res_headers {
+        if let (Ok(header_name), Ok(header_value)) = (
+            hyper::header::HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            response = response.header(header_name, header_value);
+        }
+    }
+
     if rules.res_body.is_none() {
         response = response.header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8");
         response = response.header("X-Bifrost-Error", error_info.error_type);
@@ -199,6 +228,180 @@ pub fn needs_request_body_processing(rules: &ResolvedRules) -> bool {
         || !rules.req_replace.is_empty()
         || !rules.req_replace_regex.is_empty()
         || rules.req_merge.is_some()
+}
+
+fn build_matched_rules_info(resolved_rules: &ResolvedRules) -> Vec<MatchedRuleInfo> {
+    resolved_rules
+        .rules
+        .iter()
+        .map(|r| MatchedRuleInfo {
+            pattern: r.pattern.clone(),
+            protocol: r.protocol.to_string(),
+            value: r.value.clone(),
+        })
+        .collect()
+}
+
+fn headers_to_hashmap(headers: &[(String, String)]) -> HashMap<String, String> {
+    headers.iter().cloned().collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_request_scripts(
+    admin_state: &Option<Arc<AdminState>>,
+    script_names: &[String],
+    ctx: &RequestContext,
+    resolved_rules: &ResolvedRules,
+    url: &str,
+    method: &mut String,
+    headers: &mut HashMap<String, String>,
+    body: &mut Option<String>,
+    values: &HashMap<String, String>,
+) -> Vec<bifrost_script::ScriptExecutionResult> {
+    if script_names.is_empty() {
+        return vec![];
+    }
+
+    let state = match admin_state {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    let manager = match &state.script_manager {
+        Some(m) => m,
+        None => return vec![],
+    };
+
+    let matched_rules = build_matched_rules_info(resolved_rules);
+    let (host, path, protocol) = parse_url_parts(url);
+
+    let mut request_data = RequestData {
+        url: url.to_string(),
+        method: method.clone(),
+        host,
+        path,
+        protocol,
+        client_ip: ctx.client_ip.clone(),
+        client_app: ctx.client_app.clone(),
+        headers: headers.clone(),
+        body: body.clone(),
+    };
+
+    let script_ctx = ScriptContext {
+        request_id: ctx.id_str().to_string(),
+        script_name: script_names.first().cloned().unwrap_or_default(),
+        script_type: ScriptType::Request,
+        values: values.clone(),
+        matched_rules,
+    };
+
+    let mgr = manager.read().await;
+    let results = mgr
+        .execute_request_scripts(script_names, &mut request_data, &script_ctx)
+        .await;
+
+    if results.iter().any(|r| r.success) {
+        *method = request_data.method;
+        *headers = request_data.headers;
+        *body = request_data.body;
+    }
+
+    results
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_response_scripts(
+    admin_state: &Option<Arc<AdminState>>,
+    script_names: &[String],
+    ctx: &RequestContext,
+    resolved_rules: &ResolvedRules,
+    request_url: &str,
+    request_method: &str,
+    request_headers: &HashMap<String, String>,
+    status: &mut u16,
+    status_text: &mut String,
+    headers: &mut HashMap<String, String>,
+    body: &mut Option<String>,
+    values: &HashMap<String, String>,
+) -> Vec<bifrost_script::ScriptExecutionResult> {
+    if script_names.is_empty() {
+        return vec![];
+    }
+
+    let state = match admin_state {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    let manager = match &state.script_manager {
+        Some(m) => m,
+        None => return vec![],
+    };
+
+    let matched_rules = build_matched_rules_info(resolved_rules);
+    let (host, path, protocol) = parse_url_parts(request_url);
+
+    let mut response_data = ResponseData {
+        status: *status,
+        status_text: status_text.clone(),
+        headers: headers.clone(),
+        body: body.clone(),
+        request: RequestData {
+            url: request_url.to_string(),
+            method: request_method.to_string(),
+            host,
+            path,
+            protocol,
+            client_ip: ctx.client_ip.clone(),
+            client_app: ctx.client_app.clone(),
+            headers: request_headers.clone(),
+            body: None,
+        },
+    };
+
+    let script_ctx = ScriptContext {
+        request_id: ctx.id_str().to_string(),
+        script_name: script_names.first().cloned().unwrap_or_default(),
+        script_type: ScriptType::Response,
+        values: values.clone(),
+        matched_rules,
+    };
+
+    let mgr = manager.read().await;
+    let results = mgr
+        .execute_response_scripts(script_names, &mut response_data, &script_ctx)
+        .await;
+
+    if results.iter().any(|r| r.success) {
+        *status = response_data.status;
+        *status_text = response_data.status_text;
+        *headers = response_data.headers;
+        *body = response_data.body;
+    }
+
+    results
+}
+
+fn parse_url_parts(url: &str) -> (String, String, String) {
+    if let Ok(parsed) = url::Url::parse(url) {
+        let host = parsed.host_str().unwrap_or("").to_string();
+        let path = parsed.path().to_string();
+        let protocol = parsed.scheme().to_string();
+        (host, path, protocol)
+    } else {
+        ("".to_string(), url.to_string(), "http".to_string())
+    }
+}
+
+async fn get_values_from_state(admin_state: &Option<Arc<AdminState>>) -> HashMap<String, String> {
+    use bifrost_core::ValueStore;
+    if let Some(state) = admin_state {
+        if let Some(values_storage) = &state.values_storage {
+            let storage = values_storage.read();
+            return storage.as_hashmap();
+        }
+    }
+    HashMap::new()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,7 +516,7 @@ pub async fn handle_http_request(
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
 
-    let req_headers: Vec<(String, String)> = parts
+    let mut req_headers: Vec<(String, String)> = parts
         .headers
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
@@ -379,8 +582,64 @@ pub async fn handle_http_request(
         };
     let _ = req_body_rules_skipped;
 
+    let state_values = get_values_from_state(&admin_state).await;
+    let mut values = resolved_rules.values.clone();
+    for (k, v) in state_values {
+        values.entry(k).or_insert(v);
+    }
+
+    let mut script_method = method.clone();
+    let mut script_headers = headers_to_hashmap(&req_headers);
+    let mut script_body = String::from_utf8(final_body.to_vec()).ok();
+
+    let req_script_results = execute_request_scripts(
+        &admin_state,
+        &resolved_rules.req_scripts,
+        ctx,
+        &resolved_rules,
+        &url,
+        &mut script_method,
+        &mut script_headers,
+        &mut script_body,
+        &values,
+    )
+    .await;
+
+    if !req_script_results.is_empty() && req_script_results.iter().any(|r| r.success) {
+        if let Ok(new_method) = script_method.parse() {
+            parts.method = new_method;
+        }
+
+        let mut new_headers = hyper::HeaderMap::new();
+        for (key, value) in &script_headers {
+            if let (Ok(name), Ok(val)) = (
+                hyper::header::HeaderName::from_bytes(key.as_bytes()),
+                hyper::header::HeaderValue::from_str(value),
+            ) {
+                new_headers.insert(name, val);
+            }
+        }
+        parts.headers = new_headers;
+
+        req_headers = script_headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+    }
+
+    let final_body =
+        if !req_script_results.is_empty() && req_script_results.iter().any(|r| r.success) {
+            if let Some(ref new_body) = script_body {
+                Bytes::from(new_body.clone())
+            } else {
+                final_body
+            }
+        } else {
+            final_body
+        };
+
     let dns_start = Instant::now();
-    let (connect_host, dns_ms) = if !resolved_rules.dns_servers.is_empty() {
+    let (connect_host, dns_ms, dns_error) = if !resolved_rules.dns_servers.is_empty() {
         if let Some(ref resolver) = dns_resolver {
             if verbose_logging {
                 info!(
@@ -402,14 +661,14 @@ pub async fn handle_http_request(
                             elapsed
                         );
                     }
-                    (ip.to_string(), Some(elapsed))
+                    (ip.to_string(), Some(elapsed), None)
                 }
                 Ok(None) => {
                     debug!(
                         "[{}] [DNS] custom DNS returned None, using original host",
                         ctx.id_str()
                     );
-                    (host.clone(), None)
+                    (host.clone(), None, None)
                 }
                 Err(e) => {
                     debug!(
@@ -417,26 +676,38 @@ pub async fn handle_http_request(
                         ctx.id_str(),
                         e
                     );
-                    (host.clone(), None)
+                    (host.clone(), None, Some(e.to_string()))
                 }
             }
         } else {
-            (host.clone(), None)
+            (host.clone(), None, None)
         }
     } else {
-        (host.clone(), None)
+        (host.clone(), None, None)
     };
 
     let connect_start = Instant::now();
     let stream = match TcpStream::connect(format!("{}:{}", connect_host, port)).await {
         Ok(s) => s,
         Err(e) => {
-            let error_msg = format!("Failed to connect to {}:{}: {}", connect_host, port, e);
+            let (error_type, error_message) = if let Some(ref dns_err) = dns_error {
+                (
+                    "DNS_LOOKUP_FAILED",
+                    format!("DNS Lookup Failed: {}", dns_err),
+                )
+            } else {
+                ("TCP_CONNECTION_FAILED", format!("Connection Failed: {}", e))
+            };
+            let error_msg = if let Some(ref dns_err) = dns_error {
+                format!("DNS lookup failed for {}: {}", host, dns_err)
+            } else {
+                format!("Failed to connect to {}:{}: {}", connect_host, port, e)
+            };
             error!("[{}] {}", ctx.id_str(), error_msg);
 
             let error_info = ConnectionErrorInfo {
-                error_type: "TCP_CONNECTION_FAILED",
-                error_message: format!("Connection Failed: {}", e),
+                error_type,
+                error_message,
                 host: host.clone(),
                 request_url: url.clone(),
             };
@@ -477,14 +748,27 @@ pub async fn handle_http_request(
                     &final_body,
                     req_content_encoding.as_deref(),
                 );
+
+                let response_body = if needs_response_override(&resolved_rules) {
+                    if let Some(ref res_body) = resolved_rules.res_body {
+                        res_body.clone()
+                    } else {
+                        build_error_body(record.status, &error_info)
+                    }
+                } else {
+                    build_error_body(502, &error_info)
+                };
+                record.response_body_ref =
+                    store_response_body(&admin_state, &ctx.id_str(), &response_body);
                 state.record_traffic(record);
             }
 
             if needs_response_override(&resolved_rules) {
                 if verbose_logging {
                     info!(
-                        "[{}] [CONN_ERROR] TCP connection failed, applying response override rules",
-                        ctx.id_str()
+                        "[{}] [CONN_ERROR] {} failed, applying response override rules",
+                        ctx.id_str(),
+                        error_type
                     );
                 }
                 return Ok(build_overridden_error_response(
@@ -502,7 +786,7 @@ pub async fn handle_http_request(
         debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
     }
 
-    let use_tls = if resolved_rules.ignored {
+    let use_tls = if resolved_rules.ignored.host {
         is_https
     } else {
         match resolved_rules.host_protocol {
@@ -515,9 +799,23 @@ pub async fn handle_http_request(
 
     let build_conn_error_and_record =
         |error_type: &'static str, error_msg: String, err_tls_ms: Option<u64>| {
+            let (final_error_type, final_error_message) = if let Some(ref dns_err) = dns_error {
+                (
+                    "DNS_LOOKUP_FAILED",
+                    format!("DNS Lookup Failed: {}", dns_err),
+                )
+            } else {
+                (error_type, error_msg.clone())
+            };
+            let final_error_msg = if let Some(ref dns_err) = dns_error {
+                format!("DNS lookup failed for {}: {}", host, dns_err)
+            } else {
+                error_msg
+            };
+
             let error_info = ConnectionErrorInfo {
-                error_type,
-                error_message: error_msg.clone(),
+                error_type: final_error_type,
+                error_message: final_error_message,
                 host: host.clone(),
                 request_url: url.clone(),
             };
@@ -550,13 +848,25 @@ pub async fn handle_http_request(
                 record.original_request_headers = Some(original_req_headers.clone());
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                record.error_message = Some(error_msg);
+                record.error_message = Some(final_error_msg);
                 record.request_body_ref = store_request_body(
                     &admin_state,
                     &ctx.id_str(),
                     &final_body,
                     req_content_encoding.as_deref(),
                 );
+
+                let response_body = if needs_response_override(&resolved_rules) {
+                    if let Some(ref res_body) = resolved_rules.res_body {
+                        res_body.clone()
+                    } else {
+                        build_error_body(record.status, &error_info)
+                    }
+                } else {
+                    build_error_body(502, &error_info)
+                };
+                record.response_body_ref =
+                    store_response_body(&admin_state, &ctx.id_str(), &response_body);
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -564,7 +874,7 @@ pub async fn handle_http_request(
                     info!(
                         "[{}] [CONN_ERROR] {}, applying response override rules",
                         ctx.id_str(),
-                        error_type
+                        final_error_type
                     );
                 }
                 build_overridden_error_response(&resolved_rules, 502, &error_info)
@@ -839,6 +1149,10 @@ pub async fn handle_http_request(
                 req_content_encoding.as_deref(),
             );
 
+            if !req_script_results.is_empty() {
+                record.req_script_results = Some(req_script_results.clone());
+            }
+
             state.record_traffic(record);
         }
 
@@ -905,6 +1219,59 @@ pub async fn handle_http_request(
             ctx,
         )
     };
+
+    let mut res_script_status = res_parts.status.as_u16();
+    let mut res_script_status_text = res_parts
+        .status
+        .canonical_reason()
+        .unwrap_or("OK")
+        .to_string();
+    let mut res_script_headers = headers_to_hashmap(&res_headers);
+    let mut res_script_body = String::from_utf8(final_res_body.to_vec()).ok();
+
+    let res_script_results = execute_response_scripts(
+        &admin_state,
+        &resolved_rules.res_scripts,
+        ctx,
+        &resolved_rules,
+        &url,
+        &method,
+        &headers_to_hashmap(&req_headers),
+        &mut res_script_status,
+        &mut res_script_status_text,
+        &mut res_script_headers,
+        &mut res_script_body,
+        &values,
+    )
+    .await;
+
+    if !res_script_results.is_empty() && res_script_results.iter().any(|r| r.success) {
+        if let Ok(new_status) = hyper::StatusCode::from_u16(res_script_status) {
+            res_parts.status = new_status;
+        }
+
+        let mut new_headers = hyper::HeaderMap::new();
+        for (key, value) in &res_script_headers {
+            if let (Ok(name), Ok(val)) = (
+                hyper::header::HeaderName::from_bytes(key.as_bytes()),
+                hyper::header::HeaderValue::from_str(value),
+            ) {
+                new_headers.insert(name, val);
+            }
+        }
+        res_parts.headers = new_headers;
+    }
+
+    let final_res_body =
+        if !res_script_results.is_empty() && res_script_results.iter().any(|r| r.success) {
+            if let Some(ref new_body) = res_script_body {
+                Bytes::from(new_body.clone())
+            } else {
+                final_res_body
+            }
+        } else {
+            final_res_body
+        };
 
     if res_body_bytes.len() != final_res_body.len() {
         res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
@@ -1035,6 +1402,13 @@ pub async fn handle_http_request(
                 store.store(&ctx.id_str(), "res", decompressed_res_body.as_ref());
         }
 
+        if !req_script_results.is_empty() {
+            record.req_script_results = Some(req_script_results.clone());
+        }
+        if !res_script_results.is_empty() {
+            record.res_script_results = Some(res_script_results.clone());
+        }
+
         state.record_traffic(record);
 
         if is_sse {
@@ -1073,7 +1447,7 @@ fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody
 fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result<(String, u16)> {
     let default_port = get_default_port(&rules.host_protocol, is_https);
 
-    if !rules.ignored {
+    if !rules.ignored.host {
         if let Some(ref host_rule) = rules.host {
             let host_without_path = host_rule.split('/').next().unwrap_or(host_rule);
             let parts: Vec<&str> = host_without_path.split(':').collect();

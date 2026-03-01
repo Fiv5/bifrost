@@ -254,6 +254,12 @@ impl CorsConfig {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct IgnoredFields {
+    pub host: bool,
+    pub all: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedRules {
     pub host: Option<String>,
     pub host_protocol: Option<Protocol>,
@@ -300,7 +306,7 @@ pub struct ResolvedRules {
     pub cache: Option<String>,
     pub attachment: Option<String>,
 
-    pub ignored: bool,
+    pub ignored: IgnoredFields,
 
     pub mock_file: Option<String>,
     pub mock_rawfile: Option<String>,
@@ -325,9 +331,37 @@ pub struct ResolvedRules {
     pub dns_servers: Vec<String>,
 
     pub tls_intercept: Option<bool>,
+
+    pub req_scripts: Vec<String>,
+    pub res_scripts: Vec<String>,
+
+    pub auth: Option<String>,
+    pub delete_req_headers: Vec<String>,
+    pub delete_res_headers: Vec<String>,
+    pub header_replace: Vec<HeaderReplaceRule>,
+
+    pub values: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeaderReplaceRule {
+    pub target: HeaderReplaceTarget,
+    pub header_name: String,
+    pub pattern: String,
+    pub replacement: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeaderReplaceTarget {
+    Request,
+    Response,
 }
 
 pub trait RulesResolver: Send + Sync {
+    fn values(&self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
     fn resolve(&self, url: &str, method: &str) -> ResolvedRules {
         self.resolve_with_context(
             url,

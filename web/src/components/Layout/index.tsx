@@ -5,6 +5,7 @@ import {
   FileTextOutlined,
   SettingOutlined,
   DatabaseOutlined,
+  CodeOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 import { useEffect } from "react";
@@ -21,6 +22,7 @@ const menuItems: MenuItem[] = [
   { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
+  { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
   { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
 ];
 

@@ -32,7 +32,7 @@ const genSnippetReplace = (operator: string) => {
   return [
     operator + '://{${1:block_var}}',
     operator +
-      `://{\${1:block_var}}
+    `://{\${1:block_var}}
 \`\`\`\${1:block_var}
 \${2:str}: \${3:replacement}
 /user=([^&])/ig: user=\\$1\\$1
@@ -56,30 +56,13 @@ const genSnippetFilenameAndVar = (operator: string) => {
 };
 
 const config: Operator[] = [
-  {
-    label: 'G',
-    detail: 'G://<group_name> - Rule group',
-    snippet: ['G://${1:group_name}'],
-  },
-  {
-    label: 'style',
-    detail: 'style://<style_options>',
-    snippet: [
-      'style://color=${1:red}',
-      'style://color=${1:red}&fontStyle=bold',
-      'style://(color=${1:red})',
-    ],
-  },
+
   {
     label: 'rule',
     detail: 'rule://<rule_name>',
     snippet: ['rule://${1:rule_name}'],
   },
-  {
-    label: 'pipe',
-    detail: 'pipe://<target>',
-    snippet: ['pipe://${1:target}'],
-  },
+
 
   {
     label: 'reqHeaders',
@@ -326,11 +309,7 @@ maxAge: 300000
     detail: 'forwardedFor://<ip>',
     snippet: ['forwardedFor://${1:ip}'],
   },
-  {
-    label: 'responseFor',
-    detail: 'responseFor://<ip>',
-    snippet: ['responseFor://${1:ip}'],
-  },
+
   {
     label: 'redirect',
     detail: 'redirect://<uri>',
@@ -448,26 +427,7 @@ maxAge: 300000
     snippet: genSnippetFilenameAndVar('js'),
   },
 
-  {
-    label: 'reqWrite',
-    detail: 'reqWrite://<filepath>',
-    snippet: ['reqWrite://${1:filepath}'],
-  },
-  {
-    label: 'resWrite',
-    detail: 'resWrite://<filepath>',
-    snippet: ['resWrite://${1:filepath}'],
-  },
-  {
-    label: 'reqWriteRaw',
-    detail: 'reqWriteRaw://<filepath>',
-    snippet: ['reqWriteRaw://${1:filepath}'],
-  },
-  {
-    label: 'resWriteRaw',
-    detail: 'resWriteRaw://<filepath>',
-    snippet: ['resWriteRaw://${1:filepath}'],
-  },
+
 
   {
     label: 'file',
@@ -489,11 +449,7 @@ maxAge: 300000
     detail: 'xrawfile://<path>',
     snippet: ['xrawfile://${1:path}'],
   },
-  {
-    label: 'tpl',
-    detail: 'tpl://<path> - Template file',
-    snippet: ['tpl://${1:path}', 'tpl://{${1:block_var}}'],
-  },
+
 
   {
     label: 'http',
@@ -544,26 +500,7 @@ maxAge: 300000
       'proxy://${1:username}:${2:password}@${3:ip}:${4:port}',
     ],
   },
-  {
-    label: 'http-proxy',
-    detail: 'http-proxy://<ip>:<port> - Alias for proxy',
-    snippet: ['http-proxy://${1:ip}:${2:port}'],
-  },
-  {
-    label: 'https2http-proxy',
-    detail: 'https2http-proxy://<ip>:<port>',
-    snippet: ['https2http-proxy://${1:ip}:${2:port}'],
-  },
-  {
-    label: 'http2https-proxy',
-    detail: 'http2https-proxy://<ip>:<port>',
-    snippet: ['http2https-proxy://${1:ip}:${2:port}'],
-  },
-  {
-    label: 'internal-proxy',
-    detail: 'internal-proxy://<ip>:<port>',
-    snippet: ['internal-proxy://${1:ip}:${2:port}'],
-  },
+
   {
     label: 'pac',
     detail: 'pac://<uri>',
@@ -586,24 +523,7 @@ maxAge: 300000
     detail: 'tlsPassthrough:// - Disable TLS interception',
     snippet: ['tlsPassthrough://'],
   },
-  {
-    label: 'cipher',
-    detail: 'cipher://<options> - TLS cipher options',
-    snippet: [
-      'cipher://${1:options}',
-      `cipher://{\${1:block_var}}
-\`\`\`\${1:block_var}
-minVersion: TLSv1.2
-maxVersion: TLSv1.3
-\`\`\`
-`,
-    ],
-  },
-  {
-    label: 'tlsOptions',
-    detail: 'tlsOptions://<options> - Alias for cipher',
-    snippet: ['tlsOptions://${1:options}'],
-  },
+
   {
     label: 'sniCallback',
     detail: 'sniCallback://<value>',
@@ -646,21 +566,7 @@ maxVersion: TLSv1.3
     snippet: ['frameScript://${1:filepath}'],
   },
 
-  {
-    label: 'log',
-    detail: 'log://<message>',
-    snippet: ['log://${1:message}', 'log://(${1:message})'],
-  },
-  {
-    label: 'weinre',
-    detail: 'weinre://<id>',
-    snippet: ['weinre://${1:id}'],
-  },
-  {
-    label: 'plugin',
-    detail: 'plugin://<name>',
-    snippet: ['plugin://${1:name}'],
-  },
+
 
   {
     label: 'includeFilter',
@@ -712,54 +618,8 @@ maxVersion: TLSv1.3
       ].map((v) => prefix + v);
     })(),
   },
-  {
-    label: 'filter',
-    detail: 'filter://<options>',
-    snippet: ['filter://${1:options}'],
-  },
 
-  {
-    label: 'ignore',
-    detail: 'ignore://[operators]',
-    snippet: [
-      'ignore://${1:operator}',
-      'ignore://${1:operator1}|${2:operator2}',
-      'ignore://*',
-      'ignore://-host|-rule',
-      'ignore://htmlAppend|htmlPrepend',
-    ],
-  },
-  {
-    label: 'skip',
-    detail: 'skip://[operators] - Alias for ignore',
-    snippet: ['skip://${1:operator}', 'skip://*'],
-  },
-  {
-    label: 'enable',
-    detail: 'enable://[operators]',
-    snippet: [
-      'enable://intercept',
-      'enable://h2',
-      'enable://capture',
-      'enable://abort',
-      'enable://${1:operator}',
-      'enable://${1:operator1}|${2:operator2}',
-    ],
-  },
-  {
-    label: 'disable',
-    detail: 'disable://[operators]',
-    snippet: [
-      'disable://intercept',
-      'disable://ignore',
-      'disable://csp',
-      'disable://ua',
-      'disable://https',
-      'disable://abort',
-      'disable://${1:operator}',
-      'disable://${1:operator1}|${2:operator2}',
-    ],
-  },
+
   {
     label: 'delete',
     detail: 'delete://<value>',

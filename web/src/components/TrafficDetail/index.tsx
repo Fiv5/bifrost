@@ -17,6 +17,7 @@ import { Raw } from "./panes/Raw";
 import { CookieView } from "./panes/Cookie";
 import { QueryView } from "./panes/Query";
 import { Messages } from "./panes/Messages";
+import ScriptLogsPane from "./panes/ScriptLogs";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -267,6 +268,14 @@ export default function TrafficDetail({
           />
         ),
       },
+      {
+        key: "Script",
+        label: "Script",
+        enable: !!(record.req_script_results && record.req_script_results.length > 0),
+        children: (
+          <ScriptLogsPane results={record.req_script_results || []} />
+        ),
+      },
     ];
   }, [
     record,
@@ -356,6 +365,14 @@ export default function TrafficDetail({
             host={record.host}
             clientApp={record.client_app}
           />
+        ),
+      },
+      {
+        key: "Script",
+        label: "Script",
+        enable: !!(record.res_script_results && record.res_script_results.length > 0),
+        children: (
+          <ScriptLogsPane results={record.res_script_results || []} />
         ),
       },
     ];

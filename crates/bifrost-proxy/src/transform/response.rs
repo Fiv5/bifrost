@@ -3,7 +3,7 @@ use hyper::http::response::Parts;
 use hyper::StatusCode;
 use tracing::info;
 
-use crate::server::{CorsConfig, ResolvedRules};
+use crate::server::{CorsConfig, HeaderReplaceTarget, ResolvedRules};
 use crate::utils::logging::RequestContext;
 
 pub fn apply_res_rules(
@@ -13,12 +13,74 @@ pub fn apply_res_rules(
     ctx: &RequestContext,
 ) {
     apply_res_status(parts, rules, verbose_logging, ctx);
+    apply_res_delete_headers(parts, rules, verbose_logging, ctx);
     apply_res_headers(parts, rules, verbose_logging, ctx);
     apply_res_cookies(parts, rules, verbose_logging, ctx);
     apply_res_attachment(parts, rules, verbose_logging, ctx);
+    apply_res_header_replace(parts, rules, verbose_logging, ctx);
 
     if rules.res_cors.is_enabled() {
         apply_res_cors(parts, &rules.res_cors, ctx, verbose_logging);
+    }
+}
+
+fn apply_res_delete_headers(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    for header_name in &rules.delete_res_headers {
+        if let Ok(name) = header_name.parse::<HeaderName>() {
+            let old_value = parts
+                .headers
+                .get(&name)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if parts.headers.remove(&name).is_some() && verbose_logging {
+                info!(
+                    "[{}] [RES_DELETE_HEADER] {} : \"{}\" -> (deleted)",
+                    ctx.id_str(),
+                    header_name,
+                    old_value.unwrap_or_default()
+                );
+            }
+        }
+    }
+}
+
+fn apply_res_header_replace(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    for rule in &rules.header_replace {
+        if rule.target != HeaderReplaceTarget::Response {
+            continue;
+        }
+
+        if let Ok(header_name) = rule.header_name.parse::<HeaderName>() {
+            if let Some(current_value) = parts.headers.get(&header_name) {
+                if let Ok(current_str) = current_value.to_str() {
+                    let new_value = current_str.replace(&rule.pattern, &rule.replacement);
+
+                    if let Ok(new_header_value) = new_value.parse::<HeaderValue>() {
+                        if verbose_logging {
+                            info!(
+                                "[{}] [RES_HEADER_REPLACE] {} : \"{}\" -> \"{}\"",
+                                ctx.id_str(),
+                                rule.header_name,
+                                current_str,
+                                new_value
+                            );
+                        }
+                        parts.headers.insert(header_name, new_header_value);
+                    }
+                }
+            }
+        }
     }
 }
 

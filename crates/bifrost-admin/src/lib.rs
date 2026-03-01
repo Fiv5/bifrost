@@ -31,6 +31,7 @@ pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
 };
 pub use frame_store::{FrameStore, FrameStoreStats, SharedFrameStore};
+pub use handlers::scripts::ScriptManager;
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
@@ -39,8 +40,8 @@ pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
 pub use state::{
-    AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedSystemProxyManager,
-    SharedValuesStorage,
+    AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedScriptManager,
+    SharedSystemProxyManager, SharedValuesStorage,
 };
 pub use traffic::{
     FrameDirection, FrameType, MatchedRule, RequestTiming, SharedTrafficRecorder, SocketStatus,

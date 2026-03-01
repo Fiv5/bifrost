@@ -196,49 +196,6 @@ www.example.com/old locationHref://https://www.example.com/new
 
 ---
 
-## responseFor
-
-为特定响应状态码设置条件处理。
-
-### 语法
-
-```
-pattern responseFor://status_code rules...
-```
-
-### 示例
-
-> ⚠️ **注意**：小括号内不能有空格，含空格内容必须使用块变量
-
-```bash
-# 404 时返回自定义页面（使用块变量）
-www.example.com responseFor://404 resBody://{custom-404}
-
-# 500 时替换响应（使用块变量）
-www.example.com responseFor://500 resBody://{custom-error} replaceStatus://200
-```
-
-块变量定义：
-
-````
-``` custom-404
-{"error": "custom 404"}
-```
-
-``` custom-error
-{"error": "custom error"}
-```
-````
-
-### 测试用例
-
-| 测试场景 | 规则                                            | 后端返回 | 预期              |
-| -------- | ----------------------------------------------- | -------- | ----------------- |
-| 404 处理 | `test.com responseFor://404 resBody://{custom}` | 404      | Body 为块变量内容 |
-| 非 404   | `test.com responseFor://404 resBody://{custom}` | 200      | 原始 Body         |
-
----
-
 ## 规则组合
 
 状态码规则可以与其他规则组合：

@@ -159,7 +159,6 @@ impl TrafficConfig {
 pub struct PathsConfig {
     pub rules_dir: PathBuf,
     pub values_dir: PathBuf,
-    pub plugins_dir: PathBuf,
     pub cert_dir: PathBuf,
     pub traffic_dir: PathBuf,
 }
@@ -170,7 +169,6 @@ impl Default for PathsConfig {
         Self {
             rules_dir: base.join("rules"),
             values_dir: base.join("values"),
-            plugins_dir: base.join("plugins"),
             cert_dir: base.join("certs"),
             traffic_dir: base.join("traffic"),
         }
@@ -182,7 +180,6 @@ impl PathsConfig {
         Self {
             rules_dir: data_dir.join("rules"),
             values_dir: data_dir.join("values"),
-            plugins_dir: data_dir.join("plugins"),
             cert_dir: data_dir.join("certs"),
             traffic_dir: data_dir.join("traffic"),
         }
@@ -191,7 +188,6 @@ impl PathsConfig {
     pub fn resolve_paths(&mut self, data_dir: &Path) {
         self.rules_dir = Self::resolve_single_path(&self.rules_dir, data_dir);
         self.values_dir = Self::resolve_single_path(&self.values_dir, data_dir);
-        self.plugins_dir = Self::resolve_single_path(&self.plugins_dir, data_dir);
         self.cert_dir = Self::resolve_single_path(&self.cert_dir, data_dir);
         self.traffic_dir = Self::resolve_single_path(&self.traffic_dir, data_dir);
     }
@@ -321,6 +317,7 @@ mod tests {
         assert_eq!(config.paths.rules_dir, temp_dir.path().join("rules"));
         assert_eq!(config.paths.values_dir, temp_dir.path().join("values"));
         assert_eq!(config.paths.cert_dir, temp_dir.path().join("certs"));
+        assert_eq!(config.paths.traffic_dir, temp_dir.path().join("traffic"));
     }
 
     #[test]
@@ -329,7 +326,6 @@ mod tests {
         let mut paths = PathsConfig {
             rules_dir: PathBuf::from("rules"),
             values_dir: PathBuf::from("values"),
-            plugins_dir: PathBuf::from("plugins"),
             cert_dir: PathBuf::from("certs"),
             traffic_dir: PathBuf::from("traffic"),
         };

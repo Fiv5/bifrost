@@ -353,52 +353,6 @@ www.example.com/report attachment://`report_${now}.pdf`
 
 ---
 
-## responseFor
-
-为特定状态码设置条件响应。
-
-### 语法
-
-```
-pattern responseFor://statusCode resBody://(content)      # 小括号格式（无空格）
-pattern responseFor://statusCode resBody://{varName}      # 引用内嵌值（推荐）
-```
-
-> ⚠️ **注意**：小括号内不能有空格，含空格内容必须使用块变量
-
-### 示例
-
-```bash
-# 针对 404 设置自定义响应（使用块变量）
-www.example.com responseFor://404 resBody://{not-found-response}
-
-# 针对 500 设置自定义响应（使用块变量）
-www.example.com responseFor://500 resBody://{error-response}
-
-# 简单内容（无空格）使用小括号
-www.example.com responseFor://404 resBody://({"error":"not_found"})
-```
-
-内嵌值定义：
-
-````
-``` not-found-response
-{"error": "Not Found"}
-```
-
-``` error-response
-Internal Server Error
-```
-````
-
-### 测试用例
-
-| 测试场景       | 规则                                                | 预期                             |
-| -------------- | --------------------------------------------------- | -------------------------------- |
-| 404 自定义响应 | `test.com responseFor://404 resBody://{custom-404}` | 当后端返回 404 时使用自定义 body |
-
----
-
 ## 规则组合
 
 响应修改规则可以组合使用：

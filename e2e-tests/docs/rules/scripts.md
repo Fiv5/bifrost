@@ -231,14 +231,17 @@ for (var i = 0; i < userId.length; i++) {
 ````
 
     hash = ((hash << 5) - hash) + userId.charCodeAt(i);
+
 }
 if (Math.abs(hash) % 100 < 50) {
-    rules.push('* host://experiment-a.example.com');
+rules.push('_ host://experiment-a.example.com');
 } else {
-    rules.push('* host://experiment-b.example.com');
+rules.push('_ host://experiment-b.example.com');
 }
+
 ```
-````
+
+```
 
 ### 2. 请求签名验证
 
@@ -303,4 +306,3 @@ rules.push('* resBody://{mockData}');
 
 - [reqRules](./reqRules.md) - 请求阶段批量规则（不支持脚本）
 - [resRules](./resRules.md) - 响应阶段批量规则（不支持脚本）
-- [插件开发](../extensions/dev.md) - 更复杂的定制需求

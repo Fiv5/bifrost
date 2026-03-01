@@ -161,7 +161,13 @@ pub struct TrafficRecord {
     pub last_frame_id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub req_script_results: Option<Vec<ScriptExecutionResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub res_script_results: Option<Vec<ScriptExecutionResult>>,
 }
+
+pub use bifrost_script::ScriptExecutionResult;
 
 impl TrafficRecord {
     pub fn new(id: String, method: String, url: String) -> Self {
@@ -218,6 +224,8 @@ impl TrafficRecord {
             frame_count: 0,
             last_frame_id: 0,
             error_message: None,
+            req_script_results: None,
+            res_script_results: None,
         }
     }
 

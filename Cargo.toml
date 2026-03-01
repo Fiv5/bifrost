@@ -4,13 +4,12 @@ members = [
   "crates/bifrost-core",
   "crates/bifrost-proxy",
   "crates/bifrost-tls",
-  "crates/bifrost-plugin",
-  "crates/bifrost-plugin-examples",
   "crates/bifrost-storage",
   "crates/bifrost-admin",
   "crates/bifrost-cli",
   "crates/bifrost-tests",
   "crates/bifrost-e2e",
+  "crates/bifrost-script",
 ]
 
 [workspace.package]
@@ -45,7 +44,7 @@ bytes = "1"
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
-reqwest = { version = "0.11", features = ["socks"] }
+reqwest = { version = "0.12", features = ["socks"] }
 uuid = { version = "1.10", features = ["v4"] }
 rand = "0.8"
 url = "2.5"

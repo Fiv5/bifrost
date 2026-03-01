@@ -9,6 +9,7 @@ use crate::handlers::{
     metrics::handle_metrics,
     proxy::handle_proxy,
     rules::handle_rules,
+    scripts::handle_scripts_request,
     search::handle_search,
     system::handle_system,
     traffic::handle_traffic,
@@ -110,6 +111,15 @@ impl AdminRouter {
             handle_app_icon(req, state, path).await
         } else if path.starts_with("/api/search") {
             handle_search(req, state, path).await
+        } else if path.starts_with("/api/scripts") {
+            if let Some(script_manager) = &state.script_manager {
+                handle_scripts_request(req, script_manager.clone(), path).await
+            } else {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Script manager not configured",
+                )
+            }
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

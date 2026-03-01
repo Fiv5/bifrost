@@ -11,7 +11,6 @@ publish = false
 bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
 bifrost-tls = { path = "../bifrost-tls" }
-bifrost-plugin = { path = "../bifrost-plugin" }
 bifrost-admin = { path = "../bifrost-admin" }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-rustls = "0.26"
@@ -21,7 +20,7 @@ hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
 parking_lot.workspace = true
-reqwest = { version = "0.11", features = ["socks"] }
+reqwest = { version = "0.12", features = ["socks"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
@@ -41,10 +40,6 @@ path = "../../tests/socks5_test.rs"
 [[test]]
 name = "rules_test"
 path = "../../tests/rules_test.rs"
-
-[[test]]
-name = "plugin_test"
-path = "../../tests/plugin_test.rs"
 
 [[test]]
 name = "tls_interception_test"

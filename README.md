@@ -15,49 +15,50 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 ## ✨ 特性
 
 ### 🚀 高性能
+
 - 基于 **Tokio** 异步运行时，支持高并发连接
 - 使用 **Hyper** HTTP 库，性能卓越
 - 智能连接池，减少连接建立开销
 
 ### 🌐 全协议支持
-| 协议 | 支持情况 | 说明 |
-|------|---------|------|
-| HTTP/1.1 | ✅ | 完整支持 |
-| HTTP/2 | ✅ | 帧级别处理，支持多路复用 |
-| HTTP/3 (QUIC) | ✅ | 基于 Quinn 实现，支持 0-RTT |
-| HTTPS | ✅ | TLS 1.2/1.3，支持 MITM 拦截 |
-| SOCKS5 TCP | ✅ | 支持用户名/密码认证 |
-| SOCKS5 UDP | ✅ | UDP ASSOCIATE 完整支持 |
-| WebSocket | ✅ | ws:// 和 wss:// 协议 |
-| CONNECT-UDP | ✅ | MASQUE 协议 (RFC 9298) |
-| gRPC | ✅ | 基于 HTTP/2 |
-| SSE | ✅ | Server-Sent Events |
+
+| 协议          | 支持情况 | 说明                        |
+| ------------- | -------- | --------------------------- |
+| HTTP/1.1      | ✅       | 完整支持                    |
+| HTTP/2        | ✅       | 帧级别处理，支持多路复用    |
+| HTTP/3 (QUIC) | ✅       | 基于 Quinn 实现，支持 0-RTT |
+| HTTPS         | ✅       | TLS 1.2/1.3，支持 MITM 拦截 |
+| SOCKS5 TCP    | ✅       | 支持用户名/密码认证         |
+| SOCKS5 UDP    | ✅       | UDP ASSOCIATE 完整支持      |
+| WebSocket     | ✅       | ws:// 和 wss:// 协议        |
+| CONNECT-UDP   | ✅       | MASQUE 协议 (RFC 9298)      |
+| gRPC          | ✅       | 基于 HTTP/2                 |
+| SSE           | ✅       | Server-Sent Events          |
 
 ### 🔒 TLS 拦截 (MITM)
+
 - 自动生成 CA 证书
 - 动态签发服务器证书（LRU 缓存优化）
 - 支持 SNI 检测
 - 可选择性拦截或透传特定域名
 
 ### 📝 强大的规则引擎
-- **74 种规则协议** - 覆盖路由、修改、注入、控制等场景
+
+- **72 种规则协议** - 覆盖路由、修改、注入、控制等场景
 - **多种匹配模式** - 域名、IP、正则、通配符、路径匹配
 - **请求/响应修改** - Headers、Body、Cookies、状态码等
 - **内容注入** - HTML/JS/CSS 注入
 - **流量控制** - 延迟、限速、Mock 响应
 
-### 🧩 插件系统
-- **22 种 Hook 点** - 覆盖请求/响应全生命周期
-- 支持 Rust 原生插件
-- 支持 Node.js 插件
-
 ### 🖥️ 管理界面
+
 - 内置 Web UI 管理界面
 - 实时流量监控
 - 规则在线编辑
 - 请求/响应查看与重放
 
 ### 🔐 安全特性
+
 - 访问控制（本地/白名单/交互式）
 - IP 白名单和 CIDR 支持
 - 局域网访问控制
@@ -71,8 +72,8 @@ rust/
 │   ├── bifrost-core/       # 核心库：规则解析、匹配器、协议定义
 │   ├── bifrost-proxy/      # 代理服务器：HTTP/SOCKS5 代理实现
 │   ├── bifrost-tls/        # TLS 处理：CA 证书管理、动态证书生成
-│   ├── bifrost-plugin/     # 插件系统：Rust/Node.js 插件管理
 │   ├── bifrost-storage/    # 存储层：配置和规则持久化
+│   ├── bifrost-script/     # 脚本引擎：基于 QuickJS 的 JavaScript 执行
 │   ├── bifrost-cli/        # 命令行工具
 │   └── bifrost-tests/      # 集成测试
 └── tests/                  # 端到端测试
@@ -134,15 +135,15 @@ cargo build --release
 
 **支持的平台：**
 
-| 平台 | 架构 | 文件 |
-|------|------|------|
-| Linux | x64 | `bifrost-vX.X.X-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux | ARM64 | `bifrost-vX.X.X-aarch64-unknown-linux-gnu.tar.gz` |
-| Linux | ARMv7 | `bifrost-vX.X.X-armv7-unknown-linux-gnueabihf.tar.gz` |
-| macOS | Intel | `bifrost-vX.X.X-x86_64-apple-darwin.tar.gz` |
-| macOS | Apple Silicon | `bifrost-vX.X.X-aarch64-apple-darwin.tar.gz` |
-| Windows | x64 | `bifrost-vX.X.X-x86_64-pc-windows-msvc.zip` |
-| Windows | ARM64 | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip` |
+| 平台    | 架构          | 文件                                                  |
+| ------- | ------------- | ----------------------------------------------------- |
+| Linux   | x64           | `bifrost-vX.X.X-x86_64-unknown-linux-gnu.tar.gz`      |
+| Linux   | ARM64         | `bifrost-vX.X.X-aarch64-unknown-linux-gnu.tar.gz`     |
+| Linux   | ARMv7         | `bifrost-vX.X.X-armv7-unknown-linux-gnueabihf.tar.gz` |
+| macOS   | Intel         | `bifrost-vX.X.X-x86_64-apple-darwin.tar.gz`           |
+| macOS   | Apple Silicon | `bifrost-vX.X.X-aarch64-apple-darwin.tar.gz`          |
+| Windows | x64           | `bifrost-vX.X.X-x86_64-pc-windows-msvc.zip`           |
+| Windows | ARM64         | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip`          |
 
 ## 快速开始
 
@@ -244,7 +245,7 @@ bifrost start --intercept-exclude "*.example.com,internal.corp.com"
 
 # 启动时指定规则
 bifrost start --rules "example.com host://127.0.0.1:3000"
-bifrost start --rules "api.test.com proxy://127.0.0.1:8080" --rules "*.cdn.com ignore://"
+bifrost start --rules "api.test.com proxy://127.0.0.1:8080" --rules "*.cdn.com tlsPassthrough://"
 
 # 从文件加载规则
 bifrost start --rules-file ./my-rules.txt
@@ -367,7 +368,7 @@ RUST_LOG=bifrost_proxy=debug,info bifrost start
 
 - **规则解析** (`rule/`) - 解析和管理代理规则
 - **匹配器** (`matcher/`) - URL 模式匹配（域名、IP、正则、通配符）
-- **协议定义** (`protocol.rs`) - 74 种协议操作类型
+- **协议定义** (`protocol.rs`) - 71 种协议操作类型
 
 ```rust
 use bifrost_core::{parse_rules, DomainMatcher, Protocol};
@@ -421,46 +422,6 @@ let ca = generate_root_ca()?;
 let generator = DynamicCertGenerator::new(ca);
 let cert = generator.generate("example.com")?;
 ```
-
-### bifrost-plugin
-
-插件系统：
-
-- **22 种 Hook 点** - 覆盖请求/响应全生命周期
-- **Rust 插件** - 原生高性能插件
-- **Node.js 插件** - 灵活的脚本插件
-
-```rust
-use bifrost_plugin::{BifrostPlugin, PluginHook, PluginManager};
-use async_trait::async_trait;
-
-struct MyPlugin;
-
-#[async_trait]
-impl BifrostPlugin for MyPlugin {
-    fn name(&self) -> &str { "my-plugin" }
-    fn hooks(&self) -> Vec<PluginHook> {
-        vec![PluginHook::Http, PluginHook::ReqRules]
-    }
-}
-
-let manager = PluginManager::new();
-manager.register_rust_plugin(MyPlugin)?;
-```
-
-**支持的 Hook 类型：**
-
-| 类别      | Hook                                                                  |
-| --------- | --------------------------------------------------------------------- |
-| 认证      | `Auth`                                                                |
-| TLS       | `Sni`                                                                 |
-| 界面      | `Ui`                                                                  |
-| HTTP      | `Http`                                                                |
-| 隧道      | `Tunnel`, `TunnelRules`, `TunnelReqRead/Write`, `TunnelResRead/Write` |
-| 规则      | `ReqRules`, `ResRules`                                                |
-| 请求      | `ReqRead`, `ReqWrite`, `ReqStats`                                     |
-| 响应      | `ResRead`, `ResWrite`, `ResStats`                                     |
-| WebSocket | `WsReqRead/Write`, `WsResRead/Write`                                  |
 
 ### bifrost-storage
 
@@ -582,26 +543,25 @@ example.com dns://8.8.8.8
 \*.internal.corp dns://192.168.1.1:53
 api.service.com dns://8.8.8.8,8.8.4.4
 
-# 过滤和控制
+# TLS 控制
 
-example.com enable://
-example.com disable://
-example.com ignore://
-example.com filter://keyword
+example.com tlsIntercept://
+example.com tlsPassthrough://
 
 ```
 
-### 支持的协议（74 种）
+### 支持的协议（71 种）
 
 | 分类     | 协议                                                                                                                                                                                                 |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 路由     | `host`, `proxy`, `pac`, `internal-proxy`, `https2http-proxy`, `http2https-proxy`                                                                                                                     |
+| 路由     | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                         |
 | DNS      | `dns`                                                                                                                                                                                                |
-| 控制     | `filter`, `ignore`, `enable`, `disable`, `delete`, `G`, `style`                                                                                                                                      |
+| 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                            |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
-| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`                      |
+| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace`, `forwardedFor` |
 | 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                     |
-| 高级     | `plugin`, `rulesFile`, `resScript`, `sniCallback`, `cipher`                                                                                                                                          |
+| 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                                                          |
+| 高级     | `rulesFile`, `sniCallback`, `urlReplace`                                                                                                                                                   |
 
 ## 配置
 
@@ -678,13 +638,6 @@ cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
 3. 在 `category()` 中指定协议分类
 4. 如果需要多匹配支持，添加到 `MULTI_MATCH_PROTOCOLS`
 
-### 添加新插件 Hook
-
-1. 在 `bifrost-plugin/src/hook.rs` 中添加新 Hook 枚举值
-2. 更新 `PluginHook::ALL` 数组
-3. 实现 `as_str` 和 `from_str` 方法
-4. 更新 `HOOK_COUNT` 常量
-
 ### 添加新匹配器
 
 1. 在 `bifrost-core/src/matcher/` 下创建新文件
@@ -726,15 +679,15 @@ git push origin v0.1.0
 
 ### 构建目标
 
-| 平台 | 架构 | Target | 产物格式 |
-|------|------|--------|----------|
-| Linux | x64 | `x86_64-unknown-linux-gnu` | `.tar.gz` |
-| Linux | ARM64 | `aarch64-unknown-linux-gnu` | `.tar.gz` |
-| Linux | ARMv7 | `armv7-unknown-linux-gnueabihf` | `.tar.gz` |
-| macOS | Intel | `x86_64-apple-darwin` | `.tar.gz` |
-| macOS | Apple Silicon | `aarch64-apple-darwin` | `.tar.gz` |
-| Windows | x64 | `x86_64-pc-windows-msvc` | `.zip` |
-| Windows | ARM64 | `aarch64-pc-windows-msvc` | `.zip` |
+| 平台    | 架构          | Target                          | 产物格式  |
+| ------- | ------------- | ------------------------------- | --------- |
+| Linux   | x64           | `x86_64-unknown-linux-gnu`      | `.tar.gz` |
+| Linux   | ARM64         | `aarch64-unknown-linux-gnu`     | `.tar.gz` |
+| Linux   | ARMv7         | `armv7-unknown-linux-gnueabihf` | `.tar.gz` |
+| macOS   | Intel         | `x86_64-apple-darwin`           | `.tar.gz` |
+| macOS   | Apple Silicon | `aarch64-apple-darwin`          | `.tar.gz` |
+| Windows | x64           | `x86_64-pc-windows-msvc`        | `.zip`    |
+| Windows | ARM64         | `aarch64-pc-windows-msvc`       | `.zip`    |
 
 ### 发布产物
 

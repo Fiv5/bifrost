@@ -180,9 +180,9 @@ mod tests {
         let rule = Rule::new(
             "!*.example.com".to_string(),
             matcher,
-            Protocol::Ignore,
+            Protocol::TlsPassthrough,
             "".to_string(),
-            "!*.example.com ignore://".to_string(),
+            "!*.example.com tlsPassthrough://".to_string(),
         );
 
         assert!(rule.is_negated());

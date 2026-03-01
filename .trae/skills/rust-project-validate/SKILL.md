@@ -15,10 +15,11 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 ## 执行内容
 
 1. 格式检查：`cargo fmt --all -- --check`
-2. 运行代理服务`cargo run --bin bifrost -- start -p 9900`，构造测试用例，进行端到端测试，覆盖 HTTP/1.1、HTTP/2、HTTPS、SOCKS5、CONNECT-UDP 等场景，覆盖 TLS 与非 TLS 情况，覆盖 TSL 解包和不解包场景，覆盖 HTTP/3 场景。
-3. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
-4. 运行测试：`cargo test --all-features`，务必按照修改范围执行，避免执行所有测试用例，造成测试用例执行时间过长，影响任务完成。
-5. 完整构建：`cargo build --all-targets --all-features`
+2. 运行代理服务`cargo run --bin bifrost -- start -p 9900`
+3. 构造测试用例，进行端到端测试，覆盖 HTTP/1.1、HTTP/2、HTTPS、SOCKS5、CONNECT-UDP 等场景，覆盖 TLS 与非 TLS 情况，覆盖 TSL 解包和不解包场景，覆盖 HTTP/3 场景。
+4. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
+5. 运行测试：`cargo test --all-features`，务必按照修改范围执行，避免执行所有测试用例，造成测试用例执行时间过长，影响任务完成。
+6. 完整构建：`cargo build --all-targets --all-features`
 
 如果任一步失败，立即停止并返回失败报告。
 
@@ -39,6 +40,7 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 ```
 cargo fmt --all -- --check # 检查代码格式是否符合规范
 cargo run --bin  bifrost -- start -p 9900 # 启动代理，并单独运行测试用例
+# 使用 curl 发起代理请求，检查功能.....
 cargo clippy --all-targets --all-features -- -D warnings # 检查代码是否符合 Rust 编码规范
 cargo test --all-features # 执行单元测试，按需执行
 cargo build --all-targets --all-features # 最终构建项目

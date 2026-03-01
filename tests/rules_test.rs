@@ -4,31 +4,20 @@ use bifrost_core::{DomainMatcher, MatchResult, Matcher, RegexMatcher, WildcardMa
 
 #[test]
 fn test_all_protocols() {
-    assert_eq!(ALL_PROTOCOLS.len(), 81, "Should have exactly 81 protocols");
+    assert_eq!(ALL_PROTOCOLS.len(), 66, "Should have exactly 66 protocols");
 
     let protocol_names = [
-        "G",
-        "style",
         "host",
+        "xhost",
         "http",
         "https",
         "ws",
         "wss",
-        "rule",
-        "pipe",
-        "weinre",
         "proxy",
-        "https2http-proxy",
-        "http2https-proxy",
-        "internal-proxy",
-        "pac",
-        "filter",
-        "ignore",
-        "enable",
-        "disable",
-        "delete",
-        "log",
-        "plugin",
+        "redirect",
+        "file",
+        "tpl",
+        "rawfile",
         "referer",
         "auth",
         "ua",
@@ -41,10 +30,8 @@ fn test_all_protocols() {
         "cache",
         "attachment",
         "forwardedFor",
-        "responseFor",
         "rulesFile",
         "resScript",
-        "frameScript",
         "reqDelay",
         "resDelay",
         "headerReplace",
@@ -70,10 +57,6 @@ fn test_all_protocols() {
         "urlReplace",
         "reqReplace",
         "resReplace",
-        "reqWrite",
-        "resWrite",
-        "reqWriteRaw",
-        "resWriteRaw",
         "cssAppend",
         "htmlAppend",
         "jsAppend",
@@ -83,11 +66,12 @@ fn test_all_protocols() {
         "cssPrepend",
         "htmlPrepend",
         "jsPrepend",
-        "cipher",
         "sniCallback",
         "dns",
         "tlsIntercept",
         "tlsPassthrough",
+        "passthrough",
+        "delete",
     ];
 
     for name in &protocol_names {
@@ -101,8 +85,8 @@ fn test_all_protocols() {
 
     assert_eq!(
         protocol_names.len(),
-        81,
-        "Test should cover all 81 protocols"
+        66,
+        "Test should cover all 66 protocols"
     );
 }
 
@@ -123,7 +107,6 @@ fn test_protocol_aliases() {
     let aliases = protocol_aliases();
 
     assert_eq!(aliases.get("hosts"), Some(&"host"));
-    assert_eq!(aliases.get("skip"), Some(&"ignore"));
     assert_eq!(aliases.get("status"), Some(&"statusCode"));
     assert_eq!(aliases.get("download"), Some(&"attachment"));
     assert_eq!(aliases.get("html"), Some(&"htmlAppend"));
@@ -136,8 +119,7 @@ fn test_multi_match_protocols() {
     assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::ReqHeaders));
     assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::ResHeaders));
     assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::ReqCookies));
-    assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::Plugin));
-    assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::Ignore));
+    assert!(MULTI_MATCH_PROTOCOLS.contains(&Protocol::Delete));
 
     assert!(!MULTI_MATCH_PROTOCOLS.contains(&Protocol::Host));
     assert!(!MULTI_MATCH_PROTOCOLS.contains(&Protocol::Proxy));
@@ -438,7 +420,7 @@ fn test_protocol_is_multi_match() {
     assert!(!Protocol::Proxy.is_multi_match());
     assert!(!Protocol::StatusCode.is_multi_match());
     assert!(Protocol::ReqHeaders.is_multi_match());
-    assert!(Protocol::Plugin.is_multi_match());
+    assert!(Protocol::Delete.is_multi_match());
 }
 
 #[test]

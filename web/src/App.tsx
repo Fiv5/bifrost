@@ -6,6 +6,7 @@ import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Settings from "./pages/Settings";
 import Values from "./pages/Values";
+import Scripts from "./pages/Scripts";
 import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
 import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="traffic" element={<Traffic />} />
             <Route path="rules" element={<Rules />} />
             <Route path="values" element={<Values />} />
+            <Route path="scripts" element={<Scripts />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Routes>

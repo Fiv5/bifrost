@@ -1666,7 +1666,7 @@ async fn handle_socks5_intercepted_request(
 
     let resolved = rules_resolver.resolve(&full_url, &method);
 
-    let request_url = if resolved.ignored {
+    let request_url = if resolved.ignored.host {
         full_url.clone()
     } else if let Some(ref host_rule) = resolved.host {
         let host_rule_clean = host_rule.trim_end_matches('/');
@@ -1710,8 +1710,8 @@ async fn handle_socks5_intercepted_request(
     };
 
     debug!(
-        "SOCKS5 TLS: Forwarding to {} (ignored: {})",
-        request_url, resolved.ignored
+        "SOCKS5 TLS: Forwarding to {} (ignored.host: {})",
+        request_url, resolved.ignored.host
     );
 
     let new_uri: Uri = request_url.parse().unwrap_or_else(|_| original_uri.clone());

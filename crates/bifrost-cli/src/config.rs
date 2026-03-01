@@ -16,7 +16,7 @@ pub fn init_config_dir() -> bifrost_core::Result<()> {
 
         std::fs::create_dir_all(&bifrost_dir)?;
 
-        let subdirs = ["rules", "values", "plugins", "certs"];
+        let subdirs = ["rules", "values", "certs"];
         for subdir in &subdirs {
             let path = bifrost_dir.join(subdir);
             std::fs::create_dir_all(&path)?;

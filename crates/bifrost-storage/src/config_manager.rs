@@ -322,14 +322,7 @@ impl ConfigManager {
     fn init_data_dir(dir: &Path) -> Result<()> {
         let is_new = !dir.exists();
         std::fs::create_dir_all(dir)?;
-        for subdir in [
-            "rules",
-            "values",
-            "plugins",
-            "certs",
-            "traffic",
-            "body_cache",
-        ] {
+        for subdir in ["rules", "values", "certs", "traffic", "body_cache"] {
             std::fs::create_dir_all(dir.join(subdir))?;
         }
         if is_new {
@@ -435,7 +428,6 @@ impl ConfigManager {
             paths: PathsConfig {
                 rules_dir: resolve_legacy_path(&legacy.rules_dir, data_dir),
                 values_dir: resolve_legacy_path(&legacy.values_dir, data_dir),
-                plugins_dir: resolve_legacy_path(&legacy.plugins_dir, data_dir),
                 cert_dir: resolve_legacy_path(&legacy.cert_dir, data_dir),
                 traffic_dir: data_dir.join("traffic"),
             },

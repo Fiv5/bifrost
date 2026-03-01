@@ -42,53 +42,51 @@
 
 ## 2. 请求修改协议 (Request Modification)
 
-| 协议          | 状态 | 测试文件                      | 说明           |
-| ------------- | ---- | ----------------------------- | -------------- |
-| `reqHeaders`  | ⚠️   | request_modify/headers.txt    | 请求头修改     |
-| `reqBody`     | 🔄   | request_modify/body.txt       | 请求体替换     |
-| `reqPrepend`  | 🔄   | request_modify/body.txt       | 请求体前置     |
-| `reqAppend`   | 🔄   | request_modify/body.txt       | 请求体追加     |
-| `reqReplace`  | 🔄   | request_modify/body.txt       | 请求体内容替换 |
-| `reqCookies`  | ⚠️   | request_modify/cookies.txt    | 请求 Cookie    |
-| `reqCors`     | ⚠️   | response_modify/cors.txt      | 请求 CORS      |
-| `reqDelay`    | ✅   | response_modify/delay.txt     | 请求延迟       |
-| `reqSpeed`    | 🔄   | advanced/speed.txt            | 请求速度限制   |
-| `reqType`     | 🔄   | advanced/content_type.txt     | 请求内容类型   |
-| `reqCharset`  | 🔄   | advanced/content_type.txt     | 请求字符集     |
-| `reqWrite`    | ❌   | -                             | 请求写入       |
-| `reqWriteRaw` | ❌   | -                             | 请求原始写入   |
-| `method`      | ✅   | request_modify/method.txt     | HTTP 方法      |
-| `auth`        | 🔄   | advanced/auth.txt             | 基本认证       |
-| `ua`          | ⚠️   | request_modify/ua.txt         | User-Agent     |
-| `referer`     | ✅   | request_modify/referer.txt    | Referer        |
-| `urlParams`   | 🔄   | request_modify/url_params.txt | URL 参数       |
-| `params`      | 🔄   | request_modify/url_params.txt | 参数合并       |
+| 协议         | 状态 | 测试文件                   | 说明           |
+| ------------ | ---- | -------------------------- | -------------- |
+| `reqHeaders` | ⚠️   | request_modify/headers.txt | 请求头修改     |
+| `reqBody`    | 🔄   | request_modify/body.txt    | 请求体替换     |
+| `reqPrepend` | 🔄   | request_modify/body.txt    | 请求体前置     |
+| `reqAppend`  | 🔄   | request_modify/body.txt    | 请求体追加     |
+| `reqReplace` | 🔄   | request_modify/body.txt    | 请求体内容替换 |
+| `reqCookies` | ⚠️   | request_modify/cookies.txt | 请求 Cookie    |
+| `reqCors`    | ⚠️   | response_modify/cors.txt   | 请求 CORS      |
+| `reqDelay`   | ✅   | response_modify/delay.txt  | 请求延迟       |
+| `reqSpeed`   | 🔄   | advanced/speed.txt         | 请求速度限制   |
+| `reqType`    | 🔄   | advanced/content_type.txt  | 请求内容类型   |
+| `reqCharset` | 🔄   | advanced/content_type.txt  | 请求字符集     |
+
+| `method` | ✅ | request_modify/method.txt | HTTP 方法 |
+| `auth` | 🔄 | advanced/auth.txt | 基本认证 |
+| `ua` | ⚠️ | request_modify/ua.txt | User-Agent |
+| `referer` | ✅ | request_modify/referer.txt | Referer |
+| `urlParams` | 🔄 | request_modify/url_params.txt | URL 参数 |
+| `params` | 🔄 | request_modify/url_params.txt | 参数合并 |
 
 ## 3. 响应修改协议 (Response Modification)
 
-| 协议            | 状态 | 测试文件                    | 说明            |
-| --------------- | ---- | --------------------------- | --------------- |
-| `resHeaders`    | ⚠️   | response_modify/headers.txt | 响应头修改      |
-| `resBody`       | ⚠️   | response_modify/body.txt    | 响应体替换      |
-| `resPrepend`    | 🔄   | response_modify/body.txt    | 响应体前置      |
-| `resAppend`     | 🔄   | response_modify/body.txt    | 响应体追加      |
-| `resReplace`    | 🔄   | response_modify/body.txt    | 响应体内容替换  |
-| `resCookies`    | ⚠️   | response_modify/cookies.txt | 响应 Cookie     |
-| `resCors`       | ⚠️   | response_modify/cors.txt    | 响应 CORS       |
-| `resDelay`      | ✅   | response_modify/delay.txt   | 响应延迟        |
-| `resSpeed`      | 🔄   | advanced/speed.txt          | 响应速度限制    |
-| `resType`       | 🔄   | advanced/content_type.txt   | 响应内容类型    |
-| `resCharset`    | 🔄   | advanced/content_type.txt   | 响应字符集      |
-| `resWrite`      | ❌   | -                           | 响应写入        |
-| `resWriteRaw`   | ❌   | -                           | 响应原始写入    |
-| `statusCode`    | ✅   | response_modify/status.txt  | 状态码设置      |
-| `replaceStatus` | ⚠️   | response_modify/status.txt  | 状态码替换      |
-| `cache`         | 🔄   | advanced/cache.txt          | 缓存控制        |
-| `attachment`    | 🔄   | advanced/cache.txt          | 附件下载        |
-| `forwardedFor`  | 🔄   | advanced/auth.txt           | X-Forwarded-For |
-| `trailers`      | ❌   | -                           | HTTP Trailers   |
-| `resMerge`      | ❌   | -                           | 响应合并        |
-| `headerReplace` | ❌   | -                           | 头部替换        |
+| 协议         | 状态 | 测试文件                    | 说明           |
+| ------------ | ---- | --------------------------- | -------------- |
+| `resHeaders` | ⚠️   | response_modify/headers.txt | 响应头修改     |
+| `resBody`    | ⚠️   | response_modify/body.txt    | 响应体替换     |
+| `resPrepend` | 🔄   | response_modify/body.txt    | 响应体前置     |
+| `resAppend`  | 🔄   | response_modify/body.txt    | 响应体追加     |
+| `resReplace` | 🔄   | response_modify/body.txt    | 响应体内容替换 |
+| `resCookies` | ⚠️   | response_modify/cookies.txt | 响应 Cookie    |
+| `resCors`    | ⚠️   | response_modify/cors.txt    | 响应 CORS      |
+| `resDelay`   | ✅   | response_modify/delay.txt   | 响应延迟       |
+| `resSpeed`   | 🔄   | advanced/speed.txt          | 响应速度限制   |
+| `resType`    | 🔄   | advanced/content_type.txt   | 响应内容类型   |
+| `resCharset` | 🔄   | advanced/content_type.txt   | 响应字符集     |
+
+| `statusCode` | ✅ | response_modify/status.txt | 状态码设置 |
+| `replaceStatus` | ⚠️ | response_modify/status.txt | 状态码替换 |
+| `cache` | 🔄 | advanced/cache.txt | 缓存控制 |
+| `attachment` | 🔄 | advanced/cache.txt | 附件下载 |
+| `forwardedFor` | 🔄 | advanced/auth.txt | X-Forwarded-For |
+| `trailers` | ❌ | - | HTTP Trailers |
+| `resMerge` | ❌ | - | 响应合并 |
+| `headerReplace` | ❌ | - | 头部替换 |
 
 ## 4. 内容注入协议 (Content Injection)
 
@@ -131,26 +129,11 @@
 | `includeFilter` | ⚠️   | control/include_filter.txt | 包含过滤器  |
 | `excludeFilter` | 🔄   | control/exclude_filter.txt | 排除过滤器  |
 
-## 7. 脚本与插件协议 (Scripts & Plugins)
-
-| 协议          | 状态 | 测试文件 | 说明        |
-| ------------- | ---- | -------- | ----------- |
-| `plugin`      | ❌   | -        | 插件协议    |
-| `rulesFile`   | ❌   | -        | 规则文件    |
-| `resScript`   | ❌   | -        | 响应脚本    |
-| `frameScript` | ❌   | -        | Frame 脚本  |
-| `log`         | ❌   | -        | 日志协议    |
-| `weinre`      | ❌   | -        | Weinre 调试 |
-| `rule`        | ❌   | -        | 规则引用    |
-| `pipe`        | ❌   | -        | 管道处理    |
-
 ## 8. 安全协议 (Security)
 
-| 协议          | 状态 | 测试文件 | 说明         |
-| ------------- | ---- | -------- | ------------ |
-| `cipher`      | ❌   | -        | TLS 加密选项 |
-| `sniCallback` | ❌   | -        | SNI 回调     |
-| `tlsOptions`  | ❌   | -        | cipher 别名  |
+| 协议          | 状态 | 测试文件 | 说明     |
+| ------------- | ---- | -------- | -------- |
+| `sniCallback` | ❌   | -        | SNI 回调 |
 
 ## 9. 模板变量 (Template Variables)
 
@@ -197,37 +180,38 @@
 
 ### CLI 测试 (test_values_cli.sh)
 
-| 测试类型        | 状态 | 说明               |
-| --------------- | ---- | ------------------ |
-| CLI set/get     | ✅   | 值设置和获取       |
-| CLI list        | ✅   | 列出所有值         |
-| CLI delete      | ✅   | 删除值             |
-| CLI import .txt | ✅   | 导入 txt 格式      |
-| CLI import .json| ✅   | 导入 json 格式     |
-| CLI import .kv  | ✅   | 导入 kv 格式       |
-| 多行值          | ✅   | 多行内容处理       |
-| 特殊字符        | ✅   | 特殊字符处理       |
-| Unicode 值      | ✅   | Unicode 字符支持   |
-| 空值            | ✅   | 空值处理           |
-| 值覆盖          | ✅   | 同名值覆盖         |
+| 测试类型         | 状态 | 说明             |
+| ---------------- | ---- | ---------------- |
+| CLI set/get      | ✅   | 值设置和获取     |
+| CLI list         | ✅   | 列出所有值       |
+| CLI delete       | ✅   | 删除值           |
+| CLI import .txt  | ✅   | 导入 txt 格式    |
+| CLI import .json | ✅   | 导入 json 格式   |
+| CLI import .kv   | ✅   | 导入 kv 格式     |
+| 多行值           | ✅   | 多行内容处理     |
+| 特殊字符         | ✅   | 特殊字符处理     |
+| Unicode 值       | ✅   | Unicode 字符支持 |
+| 空值             | ✅   | 空值处理         |
+| 值覆盖           | ✅   | 同名值覆盖       |
 
 ### 端到端测试 (test_values_e2e.sh)
 
 测试架构: `Client (curl) → Proxy (bifrost) → Mock Server (echo)`
 
-| 测试类型        | 状态 | 规则示例                           | 说明               |
-| --------------- | ---- | ---------------------------------- | ------------------ |
-| 内联响应体      | ✅   | resBody://\`{...}\`                | backticks 内联     |
-| 内联请求头      | ✅   | reqHeaders://\`X-Header:value\`    | 请求头内联         |
-| 内联响应头      | ✅   | resHeaders://\`X-Header:value\`    | 响应头内联         |
-| 值引用响应体    | ✅   | resBody://{mockResponse}           | 值文件引用         |
-| 值引用请求头    | ✅   | reqHeaders://{authHeaders}         | 请求头值引用       |
-| 值引用响应头    | ✅   | resHeaders://{customHeaders}       | 响应头值引用       |
-| 多值引用组合    | ✅   | reqHeaders://{a} resHeaders://{b}  | 多值组合           |
-| JSON 格式值     | ✅   | resBody://{jsonResponse}           | JSON 响应体        |
-| 多行头部值      | ✅   | reqHeaders://{multiHeaders}        | 多行请求头         |
+| 测试类型     | 状态 | 规则示例                          | 说明           |
+| ------------ | ---- | --------------------------------- | -------------- |
+| 内联响应体   | ✅   | resBody://\`{...}\`               | backticks 内联 |
+| 内联请求头   | ✅   | reqHeaders://\`X-Header:value\`   | 请求头内联     |
+| 内联响应头   | ✅   | resHeaders://\`X-Header:value\`   | 响应头内联     |
+| 值引用响应体 | ✅   | resBody://{mockResponse}          | 值文件引用     |
+| 值引用请求头 | ✅   | reqHeaders://{authHeaders}        | 请求头值引用   |
+| 值引用响应头 | ✅   | resHeaders://{customHeaders}      | 响应头值引用   |
+| 多值引用组合 | ✅   | reqHeaders://{a} resHeaders://{b} | 多值组合       |
+| JSON 格式值  | ✅   | resBody://{jsonResponse}          | JSON 响应体    |
+| 多行头部值   | ✅   | reqHeaders://{multiHeaders}       | 多行请求头     |
 
 **Values 测试文件清单** (`scripts/values/`):
+
 - `authHeaders.txt` - 认证头部测试值
 - `customHeaders.txt` - 自定义头部测试值
 - `mockResponse.txt` - Mock 响应体测试值
@@ -332,19 +316,12 @@
 1. `pac` - PAC 自动配置
 2. `headerReplace` - 头部替换
 3. `resMerge` - 响应合并
-4. `reqWrite/reqWriteRaw` - 请求写入
-5. `resWrite/resWriteRaw` - 响应写入
-6. 括号内容值来源 `({"ok":true})`
-7. 远程 URL 值来源
+4. 括号内容值来源 `({"ok":true})`
+5. 远程 URL 值来源
 
 ### 低优先级 (特殊场景)
 
 1. `trailers` - HTTP Trailers
-2. `plugin` - 插件系统
-3. `rulesFile` - 规则文件引用
-4. `resScript` - 响应脚本
-5. `cipher/tlsOptions` - TLS 选项
-6. `log` - 日志协议
-7. `weinre` - 调试工具
-8. `sniCallback` - SNI 回调
-9. `frameScript` - Frame 脚本
+2. `rulesFile` - 规则文件引用
+3. `resScript` - 响应脚本
+4. `sniCallback` - SNI 回调

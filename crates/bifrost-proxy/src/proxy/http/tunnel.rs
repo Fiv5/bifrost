@@ -838,9 +838,9 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let (actual_target_host, actual_target_port, actual_use_http) = if resolved_rules.ignored {
+    let (actual_target_host, actual_target_port, actual_use_http) = if resolved_rules.ignored.host {
         debug!(
-            "[{}] Ignore rule applied: request will be forwarded to original target {}:{}",
+            "[{}] Passthrough rule applied: request will be forwarded to original target {}:{}",
             req_id, original_host, original_port
         );
         (original_host.to_string(), original_port, false)
@@ -1971,9 +1971,9 @@ async fn handle_intercepted_websocket(
         || !resolved_rules.req_headers.is_empty()
         || !resolved_rules.res_headers.is_empty();
 
-    let (target_host, target_port, use_http) = if resolved_rules.ignored {
+    let (target_host, target_port, use_http) = if resolved_rules.ignored.host {
         debug!(
-            "[{}] [WS] Ignore rule applied: WebSocket will be forwarded to original target {}:{}",
+            "[{}] [WS] Passthrough rule applied: WebSocket will be forwarded to original target {}:{}",
             req_id, original_host, original_port
         );
         (original_host.to_string(), original_port, false)

@@ -51,7 +51,7 @@ pub async fn generate_mock_response(
     verbose_logging: bool,
     ctx: &RequestContext,
 ) -> Option<Response<BoxBody>> {
-    if rules.ignored {
+    if rules.ignored.all {
         return None;
     }
 

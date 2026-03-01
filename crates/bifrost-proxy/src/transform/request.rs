@@ -1,8 +1,9 @@
-use hyper::header::{HeaderName, HeaderValue};
+use base64::Engine;
+use hyper::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use hyper::http::request::Parts;
 use tracing::info;
 
-use crate::server::{CorsConfig, ResolvedRules};
+use crate::server::{CorsConfig, HeaderReplaceTarget, ResolvedRules};
 use crate::utils::logging::RequestContext;
 
 pub fn apply_req_rules(
@@ -11,14 +12,107 @@ pub fn apply_req_rules(
     verbose_logging: bool,
     ctx: &RequestContext,
 ) {
+    apply_req_delete_headers(parts, rules, verbose_logging, ctx);
     apply_req_headers(parts, rules, verbose_logging, ctx);
     apply_req_cookies(parts, rules, verbose_logging, ctx);
     apply_req_method(parts, rules, verbose_logging, ctx);
     apply_req_ua(parts, rules, verbose_logging, ctx);
     apply_req_referer(parts, rules, verbose_logging, ctx);
+    apply_req_auth(parts, rules, verbose_logging, ctx);
+    apply_req_header_replace(parts, rules, verbose_logging, ctx);
 
     if rules.req_cors.is_enabled() {
         apply_req_cors(parts, &rules.req_cors, verbose_logging, ctx);
+    }
+}
+
+fn apply_req_delete_headers(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    for header_name in &rules.delete_req_headers {
+        if let Ok(name) = header_name.parse::<HeaderName>() {
+            let old_value = parts
+                .headers
+                .get(&name)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if parts.headers.remove(&name).is_some() && verbose_logging {
+                info!(
+                    "[{}] [REQ_DELETE_HEADER] {} : \"{}\" -> (deleted)",
+                    ctx.id_str(),
+                    header_name,
+                    old_value.unwrap_or_default()
+                );
+            }
+        }
+    }
+}
+
+fn apply_req_auth(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref auth) = rules.auth {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(auth);
+        let header_value = format!("Basic {}", encoded);
+
+        if let Ok(value) = header_value.parse::<HeaderValue>() {
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "(none)".to_string());
+                info!(
+                    "[{}] [REQ_AUTH] Authorization : {} -> \"{}\"",
+                    ctx.id_str(),
+                    old_value,
+                    header_value
+                );
+            }
+            parts.headers.insert(AUTHORIZATION, value);
+        }
+    }
+}
+
+fn apply_req_header_replace(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    for rule in &rules.header_replace {
+        if rule.target != HeaderReplaceTarget::Request {
+            continue;
+        }
+
+        if let Ok(header_name) = rule.header_name.parse::<HeaderName>() {
+            if let Some(current_value) = parts.headers.get(&header_name) {
+                if let Ok(current_str) = current_value.to_str() {
+                    let new_value = current_str.replace(&rule.pattern, &rule.replacement);
+
+                    if let Ok(new_header_value) = new_value.parse::<HeaderValue>() {
+                        if verbose_logging {
+                            info!(
+                                "[{}] [REQ_HEADER_REPLACE] {} : \"{}\" -> \"{}\"",
+                                ctx.id_str(),
+                                rule.header_name,
+                                current_str,
+                                new_value
+                            );
+                        }
+                        parts.headers.insert(header_name, new_header_value);
+                    }
+                }
+            }
+        }
     }
 }
 

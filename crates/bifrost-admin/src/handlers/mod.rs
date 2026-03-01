@@ -5,6 +5,7 @@ pub mod frames;
 pub mod metrics;
 pub mod proxy;
 pub mod rules;
+pub mod scripts;
 pub mod search;
 pub mod system;
 pub mod traffic;

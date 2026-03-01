@@ -13,11 +13,14 @@ use crate::body_store::SharedBodyStore;
 use crate::connection_monitor::{ConnectionMonitor, SharedConnectionMonitor};
 use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
+use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
+
+pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
 
 pub type SharedAccessControl = Arc<RwLock<ClientAccessControl>>;
 pub type SharedValuesStorage = Arc<ParkingRwLock<ValuesStorage>>;
@@ -85,6 +88,7 @@ pub struct AdminState {
     pub max_body_buffer_size: AtomicUsize,
     pub app_icon_cache: Option<SharedAppIconCache>,
     pub version_checker: SharedVersionChecker,
+    pub script_manager: Option<SharedScriptManager>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -113,6 +117,7 @@ impl AdminState {
             max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
             app_icon_cache: None,
             version_checker: Arc::new(VersionChecker::new()),
+            script_manager: None,
         }
     }
 
@@ -307,6 +312,16 @@ impl AdminState {
 
     pub fn with_async_traffic_writer_shared(mut self, writer: SharedAsyncTrafficWriter) -> Self {
         self.async_traffic_writer = Some(writer);
+        self
+    }
+
+    pub fn with_script_manager(mut self, manager: ScriptManager) -> Self {
+        self.script_manager = Some(Arc::new(RwLock::new(manager)));
+        self
+    }
+
+    pub fn with_script_manager_shared(mut self, manager: SharedScriptManager) -> Self {
+        self.script_manager = Some(manager);
         self
     }
 }

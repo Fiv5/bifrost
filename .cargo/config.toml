@@ -1,0 +1,19 @@
+[build]
+rustflags = ["-C", "link-arg=-Wl,-ld_classic"]
+jobs = 16
+rustc-wrapper = "sccache"
+
+[profile.dev]
+split-debuginfo = "unpacked"
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[env]
+SKIP_FRONTEND_BUILD = { value = "1", force = false }

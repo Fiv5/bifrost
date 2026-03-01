@@ -79,6 +79,22 @@ export interface TrafficSummary {
   _clientTooltip?: string;
 }
 
+export interface ScriptLogEntry {
+  timestamp: number;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  args?: unknown[];
+}
+
+export interface ScriptExecutionResult {
+  script_name: string;
+  script_type: 'request' | 'response';
+  success: boolean;
+  error?: string;
+  duration_ms: number;
+  logs: ScriptLogEntry[];
+}
+
 export interface TrafficRecord extends TrafficSummary {
   request_headers: [string, string][] | null;
   response_headers: [string, string][] | null;
@@ -92,6 +108,8 @@ export interface TrafficRecord extends TrafficSummary {
   actual_host?: string | null;
   original_request_headers?: [string, string][] | null;
   actual_response_headers?: [string, string][] | null;
+  req_script_results?: ScriptExecutionResult[] | null;
+  res_script_results?: ScriptExecutionResult[] | null;
 }
 
 export type FrameDirection = 'send' | 'receive';

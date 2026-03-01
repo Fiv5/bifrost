@@ -220,6 +220,14 @@ impl TrafficDbStore {
             .actual_response_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
+        let req_script_results_blob = record
+            .req_script_results
+            .as_ref()
+            .and_then(|r| bincode::serialize(r).ok());
+        let res_script_results_blob = record
+            .res_script_results
+            .as_ref()
+            .and_then(|r| bincode::serialize(r).ok());
 
         let result = conn.execute(
             get_insert_sql(),
@@ -256,6 +264,8 @@ impl TrafficDbStore {
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
+                req_script_results_blob,
+                res_script_results_blob,
                 &record.error_message,
             ],
         );
@@ -340,6 +350,14 @@ impl TrafficDbStore {
             .actual_response_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
+        let req_script_results_blob = record
+            .req_script_results
+            .as_ref()
+            .and_then(|r| bincode::serialize(r).ok());
+        let res_script_results_blob = record
+            .res_script_results
+            .as_ref()
+            .and_then(|r| bincode::serialize(r).ok());
 
         let result = conn.execute(
             get_update_sql(),
@@ -366,6 +384,8 @@ impl TrafficDbStore {
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
+                req_script_results_blob,
+                res_script_results_blob,
                 &record.error_message,
                 &record.id,
             ],
@@ -603,6 +623,8 @@ impl TrafficDbStore {
         let res_body_blob: Option<Vec<u8>> = row.get("response_body_ref_blob")?;
         let orig_req_headers_blob: Option<Vec<u8>> = row.get("original_request_headers_blob")?;
         let actual_res_headers_blob: Option<Vec<u8>> = row.get("actual_response_headers_blob")?;
+        let req_script_results_blob: Option<Vec<u8>> = row.get("req_script_results_blob")?;
+        let res_script_results_blob: Option<Vec<u8>> = row.get("res_script_results_blob")?;
 
         let flags: i32 = row.get("flags")?;
 
@@ -646,6 +668,8 @@ impl TrafficDbStore {
             actual_response_headers: actual_res_headers_blob
                 .and_then(|b| bincode::deserialize(&b).ok()),
             error_message: row.get("error_message")?,
+            req_script_results: req_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            res_script_results: res_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
         })
     }
 

@@ -322,7 +322,7 @@ key1=value1&key2=value2&keyN=valueN
 | `ruleFile` / `ruleScript` / `reqScript` / `reqRules` | `rulesFile`  |
 | `resRules`                                           | `resScript`  |
 | `reqMerge`                                           | `params`     |
-| `tlsOptions`                                         | `cipher`     |
+
 
 ## 操作协议
 
@@ -330,7 +330,7 @@ key1=value1&key2=value2&keyN=valueN
 
 ### 控制类
 
-`filter`、`ignore`、`enable`、`disable`、`delete`、`G`、`style`、`plugin`、`log`
+`tlsIntercept`、`tlsPassthrough`、`passthrough`、`delete`
 
 ### 请求修改类
 
@@ -342,7 +342,7 @@ key1=value1&key2=value2&keyN=valueN
 
 ### 路由类
 
-`host`、`http`、`https`、`ws`、`wss`、`proxy`、`pac`、`redirect`、`file`、`tpl`
+`host`、`xhost`、`http`、`https`、`ws`、`wss`、`proxy`、`redirect`、`file`、`tpl`、`rawfile`
 
 ### 内容注入类
 

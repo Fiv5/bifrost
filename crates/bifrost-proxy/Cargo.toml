@@ -15,6 +15,7 @@ bifrost-core = { path = "../bifrost-core" }
 bifrost-admin = { path = "../bifrost-admin" }
 bifrost-storage = { path = "../bifrost-storage" }
 bifrost-tls = { path = "../bifrost-tls" }
+bifrost-script = { path = "../bifrost-script" }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io", "codec", "compat"] }
 tokio-rustls = "0.26"

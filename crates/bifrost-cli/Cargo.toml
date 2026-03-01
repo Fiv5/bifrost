@@ -20,7 +20,6 @@ bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
 bifrost-tls = { path = "../bifrost-tls" }
 bifrost-storage = { path = "../bifrost-storage" }
-bifrost-plugin = { path = "../bifrost-plugin" }
 parking_lot.workspace = true
 tracing.workspace = true
 tokio.workspace = true

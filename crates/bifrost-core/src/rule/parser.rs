@@ -531,7 +531,7 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                     && !is_target_address(&value)
                 {
                     let reconstructed_url = format!("{}://{}", proto_name.to_lowercase(), value);
-                    if patterns.iter().any(|p: &String| {
+                    if !patterns.iter().any(|p: &String| {
                         let pattern_url = if p.starts_with("http://")
                             || p.starts_with("https://")
                             || p.starts_with("ws://")
@@ -543,8 +543,6 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                         };
                         pattern_url == reconstructed_url
                     }) {
-                        protocol_values.push((Protocol::Ignore, String::new()));
-                    } else {
                         patterns.push(part.clone());
                     }
                 } else {
@@ -653,7 +651,7 @@ mod tests {
 example.com host://127.0.0.1
 *.api.com proxy://proxy.local:8080
 
-192.168.1.1 ignore://
+192.168.1.1 passthrough://
 "#;
         let rules = parse_rules(text).unwrap();
         assert_eq!(rules.len(), 3);
@@ -707,49 +705,9 @@ reqHeaders://{test=1}"#;
 
     #[test]
     fn test_parse_ip_pattern() {
-        let rules = parse_line("192.168.1.1 ignore://").unwrap();
+        let rules = parse_line("192.168.1.1 passthrough://").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "192.168.1.1");
-    }
-
-    #[test]
-    fn test_parse_identical_url_rule() {
-        let rules = parse_line("https://example.com/api/ https://example.com/api/").unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "https://example.com/api/");
-        assert_eq!(rules[0].protocol, Protocol::Ignore);
-    }
-
-    #[test]
-    fn test_parse_identical_url_rule_without_trailing_slash() {
-        let rules = parse_line("https://example.com/api https://example.com/api").unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "https://example.com/api");
-        assert_eq!(rules[0].protocol, Protocol::Ignore);
-    }
-
-    #[test]
-    fn test_parse_identical_http_url_rule() {
-        let rules = parse_line("http://example.com/api http://example.com/api").unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "http://example.com/api");
-        assert_eq!(rules[0].protocol, Protocol::Ignore);
-    }
-
-    #[test]
-    fn test_parse_identical_ws_url_rule() {
-        let rules = parse_line("ws://example.com/socket ws://example.com/socket").unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "ws://example.com/socket");
-        assert_eq!(rules[0].protocol, Protocol::Ignore);
-    }
-
-    #[test]
-    fn test_parse_identical_wss_url_rule() {
-        let rules = parse_line("wss://example.com/socket wss://example.com/socket").unwrap();
-        assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "wss://example.com/socket");
-        assert_eq!(rules[0].protocol, Protocol::Ignore);
     }
 
     #[test]
@@ -790,7 +748,7 @@ reqHeaders://{test=1}"#;
 
     #[test]
     fn test_parse_negated_pattern() {
-        let rules = parse_line("!*.example.com ignore://").unwrap();
+        let rules = parse_line("!*.example.com passthrough://").unwrap();
         assert_eq!(rules.len(), 1);
         assert!(rules[0].is_negated());
     }

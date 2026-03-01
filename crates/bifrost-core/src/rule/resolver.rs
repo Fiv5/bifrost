@@ -443,9 +443,6 @@ mod tests {
 
         let proxy_rules = result.get_by_protocol(Protocol::Proxy);
         assert_eq!(proxy_rules.len(), 1);
-
-        let ignore_rules = result.get_by_protocol(Protocol::Ignore);
-        assert!(ignore_rules.is_empty());
     }
 
     #[test]

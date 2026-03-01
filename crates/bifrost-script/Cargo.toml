@@ -1,0 +1,21 @@
+[package]
+name = "bifrost-script"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "JavaScript scripting engine for Bifrost proxy"
+
+[dependencies]
+rquickjs = { version = "0.9", features = ["bindgen", "futures", "macro"] }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+bifrost-core = { path = "../bifrost-core" }
+
+[dev-dependencies]
+tempfile = "3"
