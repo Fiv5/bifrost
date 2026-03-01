@@ -652,6 +652,7 @@ impl TrafficDbStore {
             is_sse: flags & 4 != 0,
             is_h3: flags & 8 != 0,
             has_rule_hit: flags & 16 != 0,
+            is_replay: flags & 32 != 0,
             frame_count: row.get::<_, i64>("frame_count")? as usize,
             last_frame_id: row.get::<_, i64>("last_frame_id")? as u64,
             timing: timing_blob.and_then(|b| bincode::deserialize(&b).ok()),

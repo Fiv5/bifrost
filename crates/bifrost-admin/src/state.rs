@@ -15,6 +15,8 @@ use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
+use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
+use crate::replay_executor::{ReplayExecutor, SharedReplayExecutor};
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
@@ -89,6 +91,8 @@ pub struct AdminState {
     pub app_icon_cache: Option<SharedAppIconCache>,
     pub version_checker: SharedVersionChecker,
     pub script_manager: Option<SharedScriptManager>,
+    pub replay_db_store: Option<SharedReplayDbStore>,
+    pub replay_executor: Option<SharedReplayExecutor>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -118,6 +122,8 @@ impl AdminState {
             app_icon_cache: None,
             version_checker: Arc::new(VersionChecker::new()),
             script_manager: None,
+            replay_db_store: None,
+            replay_executor: None,
         }
     }
 
@@ -322,6 +328,31 @@ impl AdminState {
 
     pub fn with_script_manager_shared(mut self, manager: SharedScriptManager) -> Self {
         self.script_manager = Some(manager);
+        self
+    }
+
+    pub fn with_replay_db_store(mut self, store: ReplayDbStore) -> Self {
+        self.replay_db_store = Some(Arc::new(store));
+        self
+    }
+
+    pub fn with_replay_db_store_shared(mut self, store: SharedReplayDbStore) -> Self {
+        self.replay_db_store = Some(store);
+        self
+    }
+
+    pub fn with_replay_db_store_shared_opt(mut self, store: Option<SharedReplayDbStore>) -> Self {
+        self.replay_db_store = store;
+        self
+    }
+
+    pub fn with_replay_executor(mut self, executor: ReplayExecutor) -> Self {
+        self.replay_executor = Some(Arc::new(executor));
+        self
+    }
+
+    pub fn with_replay_executor_shared(mut self, executor: SharedReplayExecutor) -> Self {
+        self.replay_executor = Some(executor);
         self
     }
 }

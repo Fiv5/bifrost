@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bifrost_admin::{
     start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
-    BodyStore, PushManager, RuntimeConfig,
+    BodyStore, PushManager, ReplayDbStore, ReplayExecutor, RuntimeConfig,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -516,6 +516,14 @@ pub fn run_foreground(
             tracing::warn!("Failed to initialize script manager: {}", e);
         }
 
+        let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                tracing::warn!("Failed to initialize replay store: {}", e);
+                None
+            }
+        };
+
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_traffic_db_store_shared(traffic_db_store.clone())
@@ -529,7 +537,8 @@ pub fn run_foreground(
             .with_config_manager(config_manager)
             .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
             .with_app_icon_cache(app_icon_cache)
-            .with_script_manager(script_manager);
+            .with_script_manager(script_manager)
+            .with_replay_db_store_shared_opt(replay_db_store);
 
         bifrost_admin::start_db_cleanup_task(traffic_db_store);
 

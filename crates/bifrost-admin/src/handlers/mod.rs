@@ -4,6 +4,7 @@ pub mod config;
 pub mod frames;
 pub mod metrics;
 pub mod proxy;
+pub mod replay;
 pub mod rules;
 pub mod scripts;
 pub mod search;

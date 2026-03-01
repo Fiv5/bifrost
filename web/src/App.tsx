@@ -4,6 +4,7 @@ import { ConfigProvider, theme } from "antd";
 import AppLayout from "./components/Layout";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
+import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/" element={<AppLayout />}>
             <Route index element={<Navigate to="/traffic" replace />} />
             <Route path="traffic" element={<Traffic />} />
+            <Route path="replay" element={<Replay />} />
             <Route path="rules" element={<Rules />} />
             <Route path="values" element={<Values />} />
             <Route path="scripts" element={<Scripts />} />

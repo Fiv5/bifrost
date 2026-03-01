@@ -8,6 +8,7 @@ use crate::handlers::{
     cors_preflight, error_response, frames,
     metrics::handle_metrics,
     proxy::handle_proxy,
+    replay::handle_replay,
     rules::handle_rules,
     scripts::handle_scripts_request,
     search::handle_search,
@@ -120,6 +121,8 @@ impl AdminRouter {
                     "Script manager not configured",
                 )
             }
+        } else if path.starts_with("/api/replay") {
+            handle_replay(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

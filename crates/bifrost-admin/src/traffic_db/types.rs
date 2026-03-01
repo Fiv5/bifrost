@@ -9,6 +9,7 @@ pub mod TrafficFlags {
     pub const IS_SSE: u32 = 1 << 2;
     pub const IS_H3: u32 = 1 << 3;
     pub const HAS_RULE_HIT: u32 = 1 << 4;
+    pub const IS_REPLAY: u32 = 1 << 5;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +73,9 @@ impl TrafficSummaryCompact {
         }
         if record.has_rule_hit {
             flags |= TrafficFlags::HAS_RULE_HIT;
+        }
+        if record.is_replay {
+            flags |= TrafficFlags::IS_REPLAY;
         }
 
         let start_time = format_timestamp_ms(record.timestamp);
@@ -140,6 +144,10 @@ impl TrafficSummaryCompact {
     pub fn has_rule_hit(&self) -> bool {
         self.flags & TrafficFlags::HAS_RULE_HIT != 0
     }
+
+    pub fn is_replay(&self) -> bool {
+        self.flags & TrafficFlags::IS_REPLAY != 0
+    }
 }
 
 fn format_timestamp_ms(timestamp_ms: u64) -> String {
@@ -169,6 +177,9 @@ pub fn encode_flags(record: &TrafficRecord) -> u32 {
     }
     if record.has_rule_hit {
         flags |= TrafficFlags::HAS_RULE_HIT;
+    }
+    if record.is_replay {
+        flags |= TrafficFlags::IS_REPLAY;
     }
     flags
 }

@@ -188,6 +188,114 @@ export const TrafficFlags = {
   IS_SSE: 1 << 2,
   IS_H3: 1 << 3,
   HAS_RULE_HIT: 1 << 4,
+  IS_REPLAY: 1 << 5,
+} as const;
+
+export type RuleMode = 'enabled' | 'selected' | 'none';
+
+export interface RuleConfig {
+  mode: RuleMode;
+  selected_rules?: string[];
+}
+
+export type BodyType = 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary';
+export type RawType = 'json' | 'xml' | 'text' | 'javascript' | 'html';
+
+export interface ReplayKeyValueItem {
+  id: string;
+  key: string;
+  value: string;
+  enabled: boolean;
+  description?: string;
+}
+
+export interface ReplayBody {
+  type: BodyType;
+  raw_type?: RawType;
+  content?: string;
+  form_data?: ReplayKeyValueItem[];
+  binary_file?: string;
+}
+
+export interface ReplayGroup {
+  id: string;
+  name: string;
+  parent_id?: string;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ReplayRequest {
+  id: string;
+  group_id?: string;
+  name?: string;
+  method: string;
+  url: string;
+  headers: ReplayKeyValueItem[];
+  body?: ReplayBody;
+  is_saved: boolean;
+  sort_order: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ReplayRequestSummary {
+  id: string;
+  group_id?: string;
+  name?: string;
+  method: string;
+  url: string;
+  is_saved: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ReplayHistory {
+  id: string;
+  request_id?: string;
+  traffic_id: string;
+  method: string;
+  url: string;
+  status: number;
+  duration_ms: number;
+  executed_at: number;
+  rule_config?: RuleConfig;
+}
+
+export interface ReplayExecuteRequest {
+  request: {
+    method: string;
+    url: string;
+    headers: [string, string][];
+    body?: string;
+  };
+  rule_config: RuleConfig;
+  request_id?: string;
+}
+
+export interface ReplayExecuteResponse {
+  traffic_id: string;
+  status: number;
+  headers: [string, string][];
+  body?: string;
+  duration_ms: number;
+  applied_rules: MatchedRule[];
+  error?: string;
+}
+
+export interface ReplayDbStats {
+  request_count: number;
+  history_count: number;
+  group_count: number;
+  db_size: number;
+  db_path: string;
+}
+
+export const REPLAY_LIMITS = {
+  MAX_REQUESTS: 1000,
+  MAX_HISTORY: 10000,
+  MAX_CONCURRENT: 100,
 } as const;
 
 export interface TrafficDeltaData {

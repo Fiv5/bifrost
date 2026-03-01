@@ -7,6 +7,8 @@ mod frame_store;
 mod handlers;
 mod metrics;
 pub mod push;
+pub mod replay_db;
+pub mod replay_executor;
 mod router;
 pub mod search;
 mod security;
@@ -55,6 +57,14 @@ pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
 };
 
+pub use replay_db::{
+    ReplayDbStore, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary, RuleConfig,
+    RuleMode, SharedReplayDbStore, MAX_CONCURRENT_REPLAYS, MAX_HISTORY, MAX_REQUESTS,
+};
+pub use replay_executor::{
+    ReplayError, ReplayExecuteRequest, ReplayExecuteResponse, ReplayExecutor, ReplayRequestData,
+    SharedReplayExecutor,
+};
 pub use search::{
     FilterCondition, MatchLocation, SearchEngine, SearchFilters, SearchRequest, SearchResponse,
     SearchResultItem, SearchScope,

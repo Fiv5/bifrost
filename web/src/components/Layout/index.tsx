@@ -6,6 +6,7 @@ import {
   SettingOutlined,
   DatabaseOutlined,
   CodeOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 import { useEffect } from "react";
@@ -20,6 +21,7 @@ interface MenuItem {
 
 const menuItems: MenuItem[] = [
   { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
+  { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
   { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
@@ -148,7 +150,9 @@ export default function AppLayout() {
                   }}
                   onClick={() => handleClick(item.key)}
                 >
-                  {active && <div style={styles.activeBorder as CSSProperties} />}
+                  {active && (
+                    <div style={styles.activeBorder as CSSProperties} />
+                  )}
                   {renderMenuIcon(item)}
                 </div>
               </Tooltip>

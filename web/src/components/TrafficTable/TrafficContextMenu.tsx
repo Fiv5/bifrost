@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Menu, message, Modal } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -6,12 +7,14 @@ import {
   CodeOutlined,
   DownloadOutlined,
   LockOutlined,
+  SendOutlined,
 } from '@ant-design/icons';
 import type { TrafficRecord, TrafficSummary } from '../../types';
 import { generateCurl } from '../../utils/curl';
 import { downloadHAR } from '../../utils/har';
 import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/traffic';
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../api/config';
+import { useReplayStore } from '../../stores/useReplayStore';
 
 interface TrafficContextMenuProps {
   record: TrafficSummary | null;
@@ -29,6 +32,8 @@ export default function TrafficContextMenu({
   selectedRecords = [],
 }: TrafficContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  const importFromTraffic = useReplayStore((state) => state.importFromTraffic);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -153,12 +158,28 @@ export default function TrafficContextMenu({
     });
   }, [record, onClose]);
 
+  const replayRequest = useCallback(async () => {
+    if (!record) return;
+    onClose();
+    await importFromTraffic(record.id);
+    navigate('/replay');
+  }, [record, onClose, importFromTraffic, navigate]);
+
   if (!visible || !record) return null;
 
   const isTunnel = record.is_tunnel || record.method === 'CONNECT';
   const hasMultipleSelected = selectedRecords.length > 1;
 
   const menuItems: MenuProps['items'] = [
+    ...(!isTunnel ? [
+      {
+        key: 'replay',
+        icon: <SendOutlined />,
+        label: 'Replay',
+        onClick: replayRequest,
+      },
+      { type: 'divider' as const },
+    ] : []),
     {
       key: 'copy-url',
       icon: <CopyOutlined />,

@@ -153,6 +153,8 @@ pub struct TrafficRecord {
     pub is_sse: bool,
     #[serde(default)]
     pub is_h3: bool,
+    #[serde(default)]
+    pub is_replay: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub socket_status: Option<SocketStatus>,
     #[serde(default)]
@@ -220,6 +222,7 @@ impl TrafficRecord {
             is_websocket: false,
             is_sse: false,
             is_h3: false,
+            is_replay: false,
             socket_status: None,
             frame_count: 0,
             last_frame_id: 0,

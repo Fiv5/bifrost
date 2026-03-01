@@ -6,6 +6,7 @@ import {
   TeamOutlined,
   SettingOutlined,
   CodeOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 
@@ -16,10 +17,11 @@ interface MenuItem {
 }
 
 const menuItems: MenuItem[] = [
-  { key: "/network", icon: <GlobalOutlined />, label: "Network" },
+  { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
+  { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
   { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
   { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
-  { key: "/group", icon: <TeamOutlined />, label: "Group" },
+  { key: "/values", icon: <TeamOutlined />, label: "Values" },
   { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
 ];
 
