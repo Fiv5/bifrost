@@ -855,28 +855,17 @@ export default function ScriptsPage() {
   >(null);
   const [lastScriptsHash, setLastScriptsHash] = useState<string>("");
   const [testResultExpanded, setTestResultExpanded] = useState(false);
-  const [lastTestResultTimestamp, setLastTestResultTimestamp] = useState<
-    number | null
-  >(null);
   const urlParamRef = useRef(false);
 
   useEffect(() => {
     fetchScripts();
   }, [fetchScripts]);
 
-  /* eslint-disable react-hooks/set-state-in-effect -- Auto-expand test panel when new result arrives */
   useEffect(() => {
-    if (testResult) {
-      const timestamp = testResult.duration_ms + Date.now();
-      if (lastTestResultTimestamp !== timestamp) {
-        setLastTestResultTimestamp(timestamp);
-        if (!testResultExpanded) {
-          setTestResultExpanded(true);
-        }
-      }
+    if (testResult && !testResultExpanded) {
+      setTestResultExpanded(true);
     }
-  }, [testResult, lastTestResultTimestamp, testResultExpanded]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  }, [testResult, testResultExpanded]);
 
   useEffect(() => {
     const typeParam = searchParams.get("type") as ScriptType | null;
