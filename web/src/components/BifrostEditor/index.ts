@@ -1,6 +1,11 @@
 import { editor, languages, Uri } from 'monaco-editor';
 
-import snippet from './snippet';
+import snippet, {
+  updateDynamicData,
+  getDynamicData,
+  dynamicProvider,
+  type DynamicCompletionData,
+} from './snippet';
 import theme from './theme';
 import tokenizer from './tokenizer';
 
@@ -15,6 +20,7 @@ languages.setLanguageConfiguration(LANGUAGE_BIFROST, tokenizer.config);
 languages.setMonarchTokensProvider(LANGUAGE_BIFROST, tokenizer.language);
 
 languages.registerCompletionItemProvider(LANGUAGE_BIFROST, snippet.operator);
+languages.registerCompletionItemProvider(LANGUAGE_BIFROST, dynamicProvider);
 
 editor.defineTheme(theme.dark.name, theme.dark.config);
 editor.defineTheme(theme.light.name, theme.light.config);
@@ -57,5 +63,8 @@ editor.createModel = (
 
 export const THEME_DARK = theme.dark.name;
 export const THEME_LIGHT = theme.light.name;
+
+export { updateDynamicData, getDynamicData };
+export type { DynamicCompletionData };
 
 export default editor;

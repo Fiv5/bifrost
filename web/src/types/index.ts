@@ -551,6 +551,7 @@ export interface SessionTargetSearchState {
   show?: boolean;
   total?: number;
   next?: number;
+  current?: number;
   tab?: string;
 }
 

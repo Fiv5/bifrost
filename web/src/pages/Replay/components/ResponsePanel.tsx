@@ -1,30 +1,50 @@
-import { useMemo, useCallback, type CSSProperties } from "react";
-import {
-  Tabs,
-  Tag,
-  Typography,
-  Empty,
-  Button,
-  Tooltip,
-  message,
-  Table,
-  theme,
-  ConfigProvider,
-} from "antd";
-import type { ColumnsType } from "antd/es/table";
-import {
-  CloseCircleOutlined,
-  CopyOutlined,
-  SaveOutlined,
-} from "@ant-design/icons";
+import { useMemo, useCallback, useEffect, type CSSProperties } from "react";
+import { Tag, Typography, Empty, theme } from "antd";
+import { CloseCircleOutlined } from "@ant-design/icons";
 import {
   useReplayStore,
   type ResponsePanelTab,
 } from "../../../stores/useReplayStore";
-import CodeViewer from "./CodeViewer";
+import type {
+  SessionTargetSearchState,
+  DisplayFormat,
+  RecordContentType,
+} from "../../../types";
+import { Panel } from "../../../components/TrafficDetail/Panel";
+import { HeaderView } from "../../../components/TrafficDetail/panes/Header";
+import { Body } from "../../../components/TrafficDetail/panes/Body";
+import { CookieView } from "../../../components/TrafficDetail/panes/Cookie";
+import { getContentTypeFromHeader } from "../../../components/TrafficDetail/helper/contentType";
 import MessagesPanel from "./MessagesPanel";
 
 const { Text } = Typography;
+
+const staticStyles: Record<string, CSSProperties> = {
+  emptyState: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    minHeight: 150,
+  },
+  errorState: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 12,
+    height: "100%",
+    minHeight: 150,
+    padding: 40,
+  },
+  emptyBody: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    minHeight: 100,
+  },
+};
 
 function getStatusText(status: number): string {
   const statusTexts: Record<number, string> = {
@@ -52,18 +72,135 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-interface HeaderItem {
-  key: string;
-  name: string;
-  value: string;
-}
+const hasSetCookies = (headers: [string, string][] | null): boolean => {
+  if (!headers) return false;
+  return headers.some(([name]) => name.toLowerCase() === "set-cookie");
+};
 
-interface RuleItem {
-  key: string;
+const initialSearchState: SessionTargetSearchState = {
+  value: "",
+  total: 0,
+  show: false,
+};
+
+interface MatchedRule {
   protocol: string;
   rule_name?: string;
   pattern: string;
   value: string;
+  line?: number;
+  raw?: string;
+}
+
+interface RuleCardProps {
+  rule: MatchedRule;
+  index: number;
+}
+
+function RuleCard({ rule, index }: RuleCardProps) {
+  const { token } = theme.useToken();
+  const source = rule.rule_name
+    ? `${rule.rule_name}${rule.line ? `:${rule.line}` : ""}`
+    : "Unknown";
+
+  return (
+    <div
+      style={{
+        padding: 6,
+        marginBottom: 4,
+        backgroundColor: token.colorBgLayout,
+        borderRadius: 4,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        fontSize: 12,
+      }}
+    >
+      <div style={{ marginBottom: 2 }}>
+        <Tag color="blue" style={{ fontSize: 11 }}>
+          #{index + 1}
+        </Tag>
+        <Text strong style={{ fontSize: 12 }}>
+          {source}
+        </Text>
+      </div>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Protocol:{" "}
+        </Text>
+        <Tag color="green" style={{ fontSize: 11 }}>
+          {rule.protocol}
+        </Tag>
+      </div>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Pattern:{" "}
+        </Text>
+        <Text code style={{ fontSize: 11 }}>
+          {rule.pattern}
+        </Text>
+      </div>
+      <div style={{ marginBottom: 1 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Value:{" "}
+        </Text>
+        <Text code style={{ fontSize: 11 }}>
+          {rule.value || "(empty)"}
+        </Text>
+      </div>
+      {rule.raw && (
+        <div>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Raw Rule:
+          </Text>
+          <pre
+            style={{
+              fontFamily: "monospace",
+              fontSize: 11,
+              padding: "2px 6px",
+              borderRadius: 4,
+              margin: "2px 0 0 0",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              backgroundColor: token.colorBgContainer,
+            }}
+          >
+            {rule.raw}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface MatchedRulesPaneProps {
+  rules: MatchedRule[];
+}
+
+function MatchedRulesPane({ rules }: MatchedRulesPaneProps) {
+  if (rules.length === 0) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: "100%",
+          minHeight: 100,
+        }}
+      >
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          No rules applied
+        </Text>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: 8 }}>
+      {rules.map((rule, index) => (
+        <RuleCard key={index} rule={rule} index={index} />
+      ))}
+    </div>
+  );
 }
 
 export default function ResponsePanel() {
@@ -77,13 +214,38 @@ export default function ResponsePanel() {
     uiState,
     updateUIState,
   } = useReplayStore();
+
   const activeTab = uiState.responsePanelActiveTab;
+  const searchState = uiState.responsePanelSearch || initialSearchState;
+  const displayFormat = uiState.responsePanelDisplayFormat || "HighLight";
+
   const hasStreamingContent =
     streamingConnection || sseEvents.length > 0 || wsMessages.length > 0;
 
   const setActiveTab = useCallback(
     (tab: string) => {
       updateUIState({ responsePanelActiveTab: tab as ResponsePanelTab });
+    },
+    [updateUIState],
+  );
+
+  const setSearchState = useCallback(
+    (v: Partial<SessionTargetSearchState>) => {
+      const currentSearch =
+        useReplayStore.getState().uiState.responsePanelSearch ||
+        initialSearchState;
+      updateUIState({
+        responsePanelSearch: { ...currentSearch, ...v },
+      });
+    },
+    [updateUIState],
+  );
+
+  const setDisplayFormat = useCallback(
+    (format: string) => {
+      updateUIState({
+        responsePanelDisplayFormat: format as DisplayFormat,
+      });
     },
     [updateUIState],
   );
@@ -102,14 +264,14 @@ export default function ResponsePanel() {
     return "default";
   }, [status]);
 
-  const responseHeaders = useMemo(() => {
+  const responseHeaders = useMemo<[string, string][]>(() => {
     return (
       currentResponse?.headers || currentTrafficRecord?.response_headers || []
     );
   }, [currentResponse, currentTrafficRecord]);
 
   const responseBody = useMemo(() => {
-    return currentResponse?.body || currentTrafficRecord?.response_body;
+    return currentResponse?.body || currentTrafficRecord?.response_body || null;
   }, [currentResponse, currentTrafficRecord]);
 
   const appliedRules = useMemo(() => {
@@ -119,114 +281,145 @@ export default function ResponsePanel() {
       []
     );
   }, [currentResponse?.applied_rules, currentTrafficRecord?.matched_rules]);
+
   const isEmpty = !currentResponse && !currentTrafficRecord;
 
-  const handleCopyHeaders = useCallback(async () => {
-    if (responseHeaders.length === 0) return;
-    const text = responseHeaders.map(([k, v]) => `${k}: ${v}`).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      message.success("Headers copied");
-    } catch {
-      message.error("Failed to copy");
+  const responseContentType = useMemo<RecordContentType>(() => {
+    return getContentTypeFromHeader(currentTrafficRecord?.content_type);
+  }, [currentTrafficRecord?.content_type]);
+
+  const tabs = useMemo(() => {
+    if (isEmpty) {
+      return [
+        {
+          key: "Body",
+          label: "Body",
+          children: (
+            <div style={staticStyles.emptyState}>
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="Send a request to see the response"
+              />
+            </div>
+          ),
+        },
+      ];
     }
-  }, [responseHeaders]);
 
-  const headerDataSource: HeaderItem[] = useMemo(() => {
-    return responseHeaders.map(([name, value], index) => ({
-      key: String(index),
-      name,
-      value,
-    }));
-  }, [responseHeaders]);
+    if (error) {
+      return [
+        {
+          key: "Body",
+          label: "Body",
+          children: (
+            <div style={staticStyles.errorState}>
+              <CloseCircleOutlined
+                style={{ fontSize: 32, color: token.colorError }}
+              />
+              <Text
+                type="danger"
+                style={{ fontSize: 13, textAlign: "center", maxWidth: 400 }}
+              >
+                {error}
+              </Text>
+            </div>
+          ),
+        },
+      ];
+    }
 
-  const headerColumns: ColumnsType<HeaderItem> = [
-    {
-      title: "Name",
-      dataIndex: "name",
-      key: "name",
-      width: 200,
-      render: (text: string) => (
-        <span
-          style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 500 }}
-        >
-          {text}
-        </span>
-      ),
-    },
-    {
-      title: "Value",
-      dataIndex: "value",
-      key: "value",
-      render: (text: string) => (
-        <span
-          style={{
-            fontFamily: "monospace",
-            fontSize: 12,
-            wordBreak: "break-all",
-          }}
-        >
-          {text}
-        </span>
-      ),
-    },
-  ];
+    return [
+      {
+        key: "Body",
+        label: "Body",
+        enable: !!responseBody,
+        children: responseBody ? (
+          <Body
+            data={responseBody}
+            contentType={responseContentType}
+            searchValue={searchState}
+            displayFormat={displayFormat}
+            onSearch={setSearchState}
+          />
+        ) : (
+          <div style={staticStyles.emptyBody}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              No response body
+            </Text>
+          </div>
+        ),
+      },
+      {
+        key: "Header",
+        label: `Header`,
+        children: (
+          <HeaderView
+            headers={responseHeaders}
+            searchValue={searchState}
+            onSearch={setSearchState}
+          />
+        ),
+      },
+      {
+        key: "Set-Cookie",
+        label: "Set-Cookie",
+        enable: hasSetCookies(responseHeaders),
+        children: (
+          <CookieView
+            headers={responseHeaders}
+            type="response"
+            searchValue={searchState}
+            onSearch={setSearchState}
+          />
+        ),
+      },
+      {
+        key: "Matched Rules",
+        label: `Matched Rules (${appliedRules.length})`,
+        enable: appliedRules.length > 0,
+        children: <MatchedRulesPane rules={appliedRules} />,
+      },
+      ...(hasStreamingContent
+        ? [
+            {
+              key: "Messages",
+              label: `Messages (${sseEvents.length + wsMessages.length})`,
+              children: <MessagesPanel />,
+            },
+          ]
+        : []),
+    ];
+  }, [
+    isEmpty,
+    error,
+    token.colorError,
+    responseBody,
+    responseContentType,
+    searchState,
+    displayFormat,
+    setSearchState,
+    responseHeaders,
+    appliedRules,
+    hasStreamingContent,
+    sseEvents.length,
+    wsMessages.length,
+  ]);
 
-  const ruleDataSource: RuleItem[] = useMemo(() => {
-    return appliedRules.map((rule, index) => ({
-      key: String(index),
-      protocol: rule.protocol,
-      rule_name: rule.rule_name,
-      pattern: rule.pattern,
-      value: rule.value,
-    }));
-  }, [appliedRules]);
+  useEffect(() => {
+    if (isEmpty || error) {
+      if (activeTab !== "Body") {
+        setActiveTab("Body");
+      }
+      return;
+    }
 
-  const ruleColumns: ColumnsType<RuleItem> = [
-    {
-      title: "Protocol",
-      dataIndex: "protocol",
-      key: "protocol",
-      width: 100,
-      render: (text: string) => <Tag color="blue">{text}</Tag>,
-    },
-    {
-      title: "Rule",
-      dataIndex: "rule_name",
-      key: "rule_name",
-      width: 150,
-      render: (text: string) => (
-        <span style={{ fontWeight: 500, fontSize: 12 }}>{text || "-"}</span>
-      ),
-    },
-    {
-      title: "Pattern",
-      dataIndex: "pattern",
-      key: "pattern",
-      render: (text: string) => (
-        <code
-          style={{
-            fontFamily: "monospace",
-            fontSize: 12,
-            color: token.colorPrimary,
-            backgroundColor: token.colorBgLayout,
-            padding: "2px 6px",
-            borderRadius: 4,
-          }}
-        >
-          {text}
-        </code>
-      ),
-    },
-    {
-      title: "Value",
-      dataIndex: "value",
-      key: "value",
-      render: (text: string) => (
-        <span style={{ fontSize: 12, wordBreak: "break-all" }}>{text}</span>
-      ),
-    },
-  ];
+    const enabledTabs = tabs.filter((tab) => tab.enable !== false);
+    const currentTabEnabled = enabledTabs.some((tab) => tab.key === activeTab);
+
+    if (!currentTabEnabled && enabledTabs.length > 0) {
+      setActiveTab(enabledTabs[0].key);
+    }
+  }, [isEmpty, error, tabs, activeTab, setActiveTab]);
 
   const styles: Record<string, CSSProperties> = {
     container: {
@@ -242,6 +435,7 @@ export default function ResponsePanel() {
       padding: "8px 12px",
       borderBottom: `1px solid ${token.colorBorderSecondary}`,
       backgroundColor: token.colorBgLayout,
+      flexShrink: 0,
     },
     statusBar: {
       display: "flex",
@@ -268,230 +462,15 @@ export default function ResponsePanel() {
       overflow: "hidden",
       display: "flex",
       flexDirection: "column",
-    },
-    emptyState: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      height: "100%",
-      minHeight: 150,
-    },
-    errorState: {
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 12,
-      height: "100%",
-      minHeight: 150,
-      padding: 40,
-    },
-    errorIcon: {
-      fontSize: 32,
-      color: token.colorError,
-    },
-    emptyBody: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      height: "100%",
-      minHeight: 100,
-    },
-    bodyContainer: {
-      height: "100%",
-      padding: 8,
-    },
-    tabContent: {
-      padding: 8,
-      height: "100%",
-      overflow: "auto",
-    },
-    cookieItem: {
-      padding: 12,
-      backgroundColor: token.colorBgLayout,
-      borderRadius: 4,
-      marginBottom: 8,
-    },
-    cookieValue: {
-      fontFamily: "Monaco, Menlo, Ubuntu Mono, Consolas, monospace",
-      fontSize: 12,
-      wordBreak: "break-all",
-      color: token.colorText,
+      padding: "0 8px",
     },
   };
-
-  const tabItems = [
-    {
-      key: "body",
-      label: "Body",
-      children: isEmpty ? (
-        <div style={styles.emptyState}>
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="Send a request to see the response"
-          />
-        </div>
-      ) : error ? (
-        <div style={styles.errorState}>
-          <CloseCircleOutlined style={styles.errorIcon} />
-          <Text
-            type="danger"
-            style={{ fontSize: 13, textAlign: "center", maxWidth: 400 }}
-          >
-            {error}
-          </Text>
-        </div>
-      ) : responseBody ? (
-        <div style={styles.bodyContainer}>
-          <CodeViewer content={responseBody} showToolbar={true} />
-        </div>
-      ) : (
-        <div style={styles.emptyBody}>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            No response body
-          </Text>
-        </div>
-      ),
-    },
-    {
-      key: "cookies",
-      label: "Cookies",
-      children: (
-        <div style={styles.tabContent}>
-          {(() => {
-            const cookieHeaders = responseHeaders.filter(
-              ([k]) => k.toLowerCase() === "set-cookie",
-            );
-            if (cookieHeaders.length === 0) {
-              return (
-                <div style={styles.emptyBody}>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    No cookies
-                  </Text>
-                </div>
-              );
-            }
-            return (
-              <div>
-                {cookieHeaders.map(([, value], index) => (
-                  <div key={index} style={styles.cookieItem}>
-                    <code style={styles.cookieValue}>{value}</code>
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
-        </div>
-      ),
-    },
-    {
-      key: "headers",
-      label: `Headers (${responseHeaders.length})`,
-      children:
-        responseHeaders.length > 0 ? (
-          <div style={styles.tabContent}>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                marginBottom: 8,
-              }}
-            >
-              <Tooltip title="Copy all headers">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<CopyOutlined />}
-                  onClick={handleCopyHeaders}
-                >
-                  Copy
-                </Button>
-              </Tooltip>
-            </div>
-            <ConfigProvider
-              theme={{
-                components: {
-                  Table: {
-                    cellPaddingBlockSM: 8,
-                    cellPaddingInlineSM: 12,
-                  },
-                },
-              }}
-            >
-              <Table
-                dataSource={headerDataSource}
-                columns={headerColumns}
-                rowKey="key"
-                pagination={false}
-                size="small"
-                style={{
-                  backgroundColor: token.colorBgLayout,
-                  borderRadius: 4,
-                }}
-              />
-            </ConfigProvider>
-          </div>
-        ) : (
-          <div style={styles.emptyBody}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              No headers
-            </Text>
-          </div>
-        ),
-    },
-    {
-      key: "rules",
-      label: `Matched Rules (${appliedRules.length})`,
-      children:
-        appliedRules.length > 0 ? (
-          <div style={styles.tabContent}>
-            <ConfigProvider
-              theme={{
-                components: {
-                  Table: {
-                    cellPaddingBlockSM: 8,
-                    cellPaddingInlineSM: 12,
-                  },
-                },
-              }}
-            >
-              <Table
-                dataSource={ruleDataSource}
-                columns={ruleColumns}
-                rowKey="key"
-                pagination={false}
-                size="small"
-                style={{
-                  backgroundColor: token.colorBgLayout,
-                  borderRadius: 4,
-                }}
-              />
-            </ConfigProvider>
-          </div>
-        ) : (
-          <div style={styles.emptyBody}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              No rules applied
-            </Text>
-          </div>
-        ),
-    },
-    ...(hasStreamingContent
-      ? [
-          {
-            key: "messages",
-            label: `Messages (${sseEvents.length + wsMessages.length})`,
-            children: <MessagesPanel />,
-          },
-        ]
-      : []),
-  ];
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <div style={styles.statusBar}>
-          {!isEmpty && (
+          {!isEmpty && !error && (
             <>
               <div style={styles.statusItem}>
                 <span style={styles.statusLabel}>Status:</span>
@@ -518,28 +497,18 @@ export default function ResponsePanel() {
             </>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {!isEmpty && responseBody && (
-            <Tooltip title="Save as example">
-              <Button type="text" size="small" icon={<SaveOutlined />}>
-                Save as example
-              </Button>
-            </Tooltip>
-          )}
-        </div>
       </div>
       <div style={styles.content}>
-        <Tabs
-          items={tabItems}
-          activeKey={activeTab}
-          onChange={setActiveTab}
-          size="small"
-          style={{ height: "100%" }}
-          tabBarStyle={{
-            margin: 0,
-            padding: "0 12px",
-            backgroundColor: token.colorBgLayout,
-          }}
+        <Panel
+          name="Response"
+          tabs={tabs}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          searchValue={searchState}
+          onSearch={setSearchState}
+          displayFormat={displayFormat}
+          onDisplayFormatChange={setDisplayFormat}
+          contentType={responseContentType}
         />
       </div>
     </div>

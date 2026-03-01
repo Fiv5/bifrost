@@ -2095,6 +2095,10 @@ async fn handle_intercepted_websocket(
     let sec_accept = extract_sec_websocket_accept(&response_str);
     let sec_protocol = extract_sec_websocket_protocol(&response_str);
 
+    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
+        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+        .unwrap_or(false);
+
     let total_ms = start_time.elapsed().as_millis() as u64;
 
     if let Some(ref state) = admin_state {
@@ -2163,6 +2167,7 @@ async fn handle_intercepted_websocket(
                     stream,
                     &req_id_owned,
                     admin_state_clone.clone(),
+                    compression_enabled,
                 )
                 .await
                 {
@@ -2305,6 +2310,7 @@ async fn websocket_bidirectional_generic_with_capture<S>(
     target: S,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    compression_enabled: bool,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -2335,11 +2341,17 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -2386,11 +2398,17 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Wss, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),

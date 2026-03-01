@@ -72,6 +72,7 @@ mod websocket_e2e {
                             }
                             let echo_frame = WebSocketFrame {
                                 fin: frame.fin,
+                                rsv1: frame.rsv1,
                                 opcode: frame.opcode,
                                 mask: None,
                                 payload: frame.payload,

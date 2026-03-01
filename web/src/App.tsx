@@ -10,11 +10,13 @@ import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
 import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
 import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
+import { useEditorCompletion } from "./hooks/useEditorCompletion";
 
 export default function App() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
 
   useGlobalDataSync();
+  useEditorCompletion();
 
   useEffect(() => {
     const cleanup = initThemeListener();

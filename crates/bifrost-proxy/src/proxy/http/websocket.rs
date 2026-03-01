@@ -15,7 +15,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
-use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
+use crate::protocol::{
+    extract_sec_websocket_extensions, parse_permessage_deflate, Opcode, WebSocketReader,
+    WebSocketWriter,
+};
 use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
@@ -93,8 +96,19 @@ pub async fn handle_websocket_upgrade(
 
     let sec_accept = extract_sec_websocket_accept(&response_str);
 
+    let compression_enabled = extract_sec_websocket_extensions(&response_str)
+        .map(|ext| parse_permessage_deflate(&ext))
+        .unwrap_or(false);
+
     let total_ms = start_time.elapsed().as_millis() as u64;
     let record_id = ctx.id_str();
+
+    if compression_enabled {
+        debug!(
+            "[WS] permessage-deflate compression enabled for {}",
+            record_id
+        );
+    }
 
     if let Some(ref state) = admin_state {
         state
@@ -148,6 +162,7 @@ pub async fn handle_websocket_upgrade(
                     target_stream,
                     &record_id_clone,
                     admin_state.clone(),
+                    compression_enabled,
                 )
                 .await
                 {
@@ -284,6 +299,7 @@ async fn websocket_bidirectional_with_capture(
     target: TcpStream,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    compression_enabled: bool,
 ) -> Result<()> {
     let client = TokioIo::new(upgraded);
     let (target_read, target_write) = target.into_split();
@@ -311,11 +327,17 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -362,11 +384,17 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -419,6 +447,7 @@ pub async fn websocket_bidirectional_generic_with_capture<S>(
     target: S,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
+    compression_enabled: bool,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -449,11 +478,17 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -500,11 +535,17 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let payload_for_record = if compression_enabled && frame.is_compressed() {
+                    frame.decompress_payload()
+                } else {
+                    frame.payload.clone()
+                };
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
                     opcode_to_frame_type(frame.opcode),
-                    &frame.payload,
+                    &payload_for_record,
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),

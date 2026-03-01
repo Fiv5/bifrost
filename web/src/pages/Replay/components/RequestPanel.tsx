@@ -247,9 +247,26 @@ export default function RequestPanel() {
 
   const handleUrlChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      updateCurrentRequest({ url: e.target.value });
+      const url = e.target.value;
+      updateCurrentRequest({ url });
+
+      if (url) {
+        const lowerUrl = url.toLowerCase();
+        if (lowerUrl.startsWith("ws://") || lowerUrl.startsWith("wss://")) {
+          if (requestType !== "websocket") {
+            updateUIState({ requestType: "websocket" });
+          }
+        } else if (
+          lowerUrl.startsWith("http://") ||
+          lowerUrl.startsWith("https://")
+        ) {
+          if (requestType === "websocket") {
+            updateUIState({ requestType: "http" });
+          }
+        }
+      }
     },
-    [updateCurrentRequest],
+    [updateCurrentRequest, requestType, updateUIState],
   );
 
   const handleUrlPaste = useCallback(
@@ -317,6 +334,7 @@ export default function RequestPanel() {
   const isUpdatingFromParamsRef = useRef(false);
   const lastUrlRef = useRef<string | undefined>(undefined);
 
+  /* eslint-disable react-hooks/set-state-in-effect -- Bidirectional sync between URL and query params requires setState in effect */
   useEffect(() => {
     if (isUpdatingFromParamsRef.current) {
       isUpdatingFromParamsRef.current = false;
@@ -336,8 +354,29 @@ export default function RequestPanel() {
       return;
     }
 
-    try {
-      const url = new URL(currentUrl);
+    const parseUrl = (urlStr: string): URL | null => {
+      try {
+        return new URL(urlStr);
+      } catch {
+        const lowerUrl = urlStr.toLowerCase();
+        if (
+          !lowerUrl.startsWith("http://") &&
+          !lowerUrl.startsWith("https://") &&
+          !lowerUrl.startsWith("ws://") &&
+          !lowerUrl.startsWith("wss://")
+        ) {
+          try {
+            return new URL("http://" + urlStr);
+          } catch {
+            return null;
+          }
+        }
+        return null;
+      }
+    };
+
+    const url = parseUrl(currentUrl);
+    if (url) {
       const params: ReplayKeyValueItem[] = [];
       url.searchParams.forEach((value, key) => {
         params.push({ id: generateId(), key, value, enabled: true });
@@ -346,12 +385,11 @@ export default function RequestPanel() {
         params.push({ id: generateId(), key: "", value: "", enabled: true });
       }
       setQueryParams(params);
-    } catch {
-      setQueryParams([{ id: generateId(), key: "", value: "", enabled: true }]);
     }
 
     isUpdatingFromUrlRef.current = false;
   }, [currentUrl]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const handleQueryParamsChange = useCallback(
     (params: ReplayKeyValueItem[]) => {
@@ -399,14 +437,14 @@ export default function RequestPanel() {
       setSaveName(currentRequest.name || "");
       setSaveModalVisible(true);
     }
-  }, [currentRequest, saveRequest]);
+  }, [currentRequest, saveRequest, setSaveName, setSaveModalVisible]);
 
   const handleSaveConfirm = useCallback(async () => {
     const success = await saveRequest(saveName || `Request ${Date.now()}`);
     if (success) {
       setSaveModalVisible(false);
     }
-  }, [saveRequest, saveName]);
+  }, [saveRequest, saveName, setSaveModalVisible]);
 
   const handleSend = useCallback(() => {
     if (!currentRequest?.url) {
@@ -425,7 +463,7 @@ export default function RequestPanel() {
         setRuleConfig({ mode, selected_rules: [] });
       }
     },
-    [setRuleConfig, fetchRules],
+    [setRuleConfig, fetchRules, setRuleSelectVisible],
   );
 
   const getRuleModeLabel = () => {

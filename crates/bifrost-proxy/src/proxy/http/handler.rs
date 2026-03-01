@@ -1574,6 +1574,10 @@ async fn handle_http_websocket(
 
     let (response_headers, sec_accept) = parse_websocket_response(&response_str);
 
+    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
+        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+        .unwrap_or(false);
+
     let total_ms = start_time.elapsed().as_millis() as u64;
     let record_id = ctx.id_str();
 
@@ -1626,6 +1630,7 @@ async fn handle_http_websocket(
                     target_stream,
                     &record_id_clone,
                     admin_state_clone.clone(),
+                    compression_enabled,
                 )
                 .await
                 {

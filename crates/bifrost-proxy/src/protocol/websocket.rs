@@ -1,7 +1,9 @@
+use std::io::Read;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use flate2::read::DeflateDecoder;
 use futures_util::Stream;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -39,6 +41,7 @@ impl Opcode {
 #[derive(Debug, Clone)]
 pub struct WebSocketFrame {
     pub fin: bool,
+    pub rsv1: bool,
     pub opcode: Opcode,
     pub mask: Option<[u8; 4]>,
     pub payload: Bytes,
@@ -48,6 +51,7 @@ impl WebSocketFrame {
     pub fn text(data: impl AsRef<str>) -> Self {
         Self {
             fin: true,
+            rsv1: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref().as_bytes()),
@@ -57,6 +61,7 @@ impl WebSocketFrame {
     pub fn binary(data: impl AsRef<[u8]>) -> Self {
         Self {
             fin: true,
+            rsv1: false,
             opcode: Opcode::Binary,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -66,6 +71,7 @@ impl WebSocketFrame {
     pub fn ping(data: impl AsRef<[u8]>) -> Self {
         Self {
             fin: true,
+            rsv1: false,
             opcode: Opcode::Ping,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -75,6 +81,7 @@ impl WebSocketFrame {
     pub fn pong(data: impl AsRef<[u8]>) -> Self {
         Self {
             fin: true,
+            rsv1: false,
             opcode: Opcode::Pong,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -89,6 +96,7 @@ impl WebSocketFrame {
         }
         Self {
             fin: true,
+            rsv1: false,
             opcode: Opcode::Close,
             mask: None,
             payload: payload.freeze(),
@@ -107,6 +115,9 @@ impl WebSocketFrame {
         let mut first_byte = self.opcode as u8;
         if self.fin {
             first_byte |= 0x80;
+        }
+        if self.rsv1 {
+            first_byte |= 0x40;
         }
         buf.put_u8(first_byte);
 
@@ -145,6 +156,7 @@ impl WebSocketFrame {
         let second_byte = data[1];
 
         let fin = (first_byte & 0x80) != 0;
+        let rsv1 = (first_byte & 0x40) != 0;
         let opcode = Opcode::from_u8(first_byte & 0x0F)?;
         let masked = (second_byte & 0x80) != 0;
         let payload_len_indicator = second_byte & 0x7F;
@@ -199,6 +211,7 @@ impl WebSocketFrame {
 
         let frame = WebSocketFrame {
             fin,
+            rsv1,
             opcode,
             mask,
             payload: Bytes::from(payload),
@@ -222,6 +235,50 @@ impl WebSocketFrame {
             None
         }
     }
+
+    pub fn decompress_payload(&self) -> Bytes {
+        if !self.rsv1 || self.payload.is_empty() {
+            return self.payload.clone();
+        }
+
+        let mut data = self.payload.to_vec();
+        data.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+
+        let mut decoder = DeflateDecoder::new(&data[..]);
+        let mut decompressed = Vec::new();
+        match decoder.read_to_end(&mut decompressed) {
+            Ok(_) => Bytes::from(decompressed),
+            Err(e) => {
+                tracing::debug!("[WS] Failed to decompress frame payload: {}", e);
+                self.payload.clone()
+            }
+        }
+    }
+
+    pub fn is_compressed(&self) -> bool {
+        self.rsv1
+    }
+}
+
+pub fn parse_permessage_deflate(extensions: &str) -> bool {
+    extensions
+        .split(',')
+        .any(|ext| ext.trim().starts_with("permessage-deflate"))
+}
+
+pub fn extract_sec_websocket_extensions(response: &str) -> Option<String> {
+    for line in response.lines() {
+        if line.to_lowercase().starts_with("sec-websocket-extensions:") {
+            return Some(
+                line.split(':')
+                    .skip(1)
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            );
+        }
+    }
+    None
 }
 
 const DEFAULT_MAX_FRAGMENT_BUFFER_SIZE: usize = 16 * 1024 * 1024;
@@ -288,6 +345,7 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                         let opcode = this.fragment_opcode.take().unwrap_or(Opcode::Text);
                         let complete_frame = WebSocketFrame {
                             fin: true,
+                            rsv1: false,
                             opcode,
                             mask: None,
                             payload: Bytes::from(std::mem::take(this.fragment_buffer)),
@@ -653,5 +711,129 @@ mod tests {
     fn test_frame_parse_incomplete_payload() {
         let data = [0x81, 0x05, 0x48]; // Text frame with 5 bytes, but only 1 byte payload
         assert!(WebSocketFrame::parse(&data).is_none());
+    }
+
+    #[test]
+    fn test_frame_rsv1_parsing() {
+        let mut buf = BytesMut::new();
+        buf.put_u8(0xC1);
+        buf.put_u8(0x05);
+        buf.extend_from_slice(b"hello");
+
+        let (frame, _) = WebSocketFrame::parse(&buf).unwrap();
+        assert!(frame.fin);
+        assert!(frame.rsv1);
+        assert_eq!(frame.opcode, Opcode::Text);
+        assert!(frame.is_compressed());
+    }
+
+    #[test]
+    fn test_frame_rsv1_encoding() {
+        let frame = WebSocketFrame {
+            fin: true,
+            rsv1: true,
+            opcode: Opcode::Text,
+            mask: None,
+            payload: Bytes::from("hello"),
+        };
+        let encoded = frame.encode();
+        assert_eq!(encoded[0], 0xC1);
+    }
+
+    #[test]
+    fn test_parse_permessage_deflate() {
+        assert!(parse_permessage_deflate("permessage-deflate"));
+        assert!(parse_permessage_deflate(
+            "permessage-deflate; client_max_window_bits"
+        ));
+        assert!(parse_permessage_deflate(
+            "permessage-deflate; server_no_context_takeover"
+        ));
+        assert!(!parse_permessage_deflate("x-webkit-deflate-frame"));
+        assert!(!parse_permessage_deflate(""));
+    }
+
+    #[test]
+    fn test_extract_sec_websocket_extensions() {
+        let response = "HTTP/1.1 101 Switching Protocols\r\n\
+                        Upgrade: websocket\r\n\
+                        Connection: Upgrade\r\n\
+                        Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+                        Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover\r\n\r\n";
+        let ext = extract_sec_websocket_extensions(response);
+        assert!(ext.is_some());
+        assert!(ext.unwrap().contains("permessage-deflate"));
+    }
+
+    #[test]
+    fn test_extract_sec_websocket_extensions_missing() {
+        let response = "HTTP/1.1 101 Switching Protocols\r\n\
+                        Upgrade: websocket\r\n\
+                        Connection: Upgrade\r\n\r\n";
+        let ext = extract_sec_websocket_extensions(response);
+        assert!(ext.is_none());
+    }
+
+    #[test]
+    fn test_decompress_payload_uncompressed() {
+        let frame = WebSocketFrame {
+            fin: true,
+            rsv1: false,
+            opcode: Opcode::Text,
+            mask: None,
+            payload: Bytes::from("hello"),
+        };
+        let decompressed = frame.decompress_payload();
+        assert_eq!(decompressed.as_ref(), b"hello");
+    }
+
+    #[test]
+    fn test_decompress_payload_compressed() {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"hello world hello world";
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let frame = WebSocketFrame {
+            fin: true,
+            rsv1: true,
+            opcode: Opcode::Text,
+            mask: None,
+            payload: Bytes::from(compressed),
+        };
+
+        let decompressed = frame.decompress_payload();
+        assert_eq!(decompressed.as_ref(), original);
+    }
+
+    #[test]
+    fn test_decompress_payload_rfc7692_format() {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"Hello";
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let mut compressed = encoder.finish().unwrap();
+
+        if compressed.ends_with(&[0x00, 0x00, 0xff, 0xff]) {
+            compressed.truncate(compressed.len() - 4);
+        }
+
+        let frame = WebSocketFrame {
+            fin: true,
+            rsv1: true,
+            opcode: Opcode::Text,
+            mask: None,
+            payload: Bytes::from(compressed),
+        };
+
+        let decompressed = frame.decompress_payload();
+        assert_eq!(decompressed.as_ref(), original);
     }
 }
