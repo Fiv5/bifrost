@@ -1,6 +1,5 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import {
-  Layout,
   Tree,
   Button,
   Space,
@@ -9,10 +8,10 @@ import {
   message,
   Modal,
   Input,
-  Card,
   Tag,
   Empty,
   Dropdown,
+  theme,
 } from "antd";
 import type { MenuProps, TreeDataNode } from "antd";
 import {
@@ -29,10 +28,16 @@ import {
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
-import type { ScriptType, ScriptLogEntry, ScriptInfo } from "../../api/scripts";
+import type {
+  ScriptType,
+  ScriptLogEntry,
+  ScriptInfo,
+  ScriptExecutionResult,
+} from "../../api/scripts";
 import { useThemeStore } from "../../stores/useThemeStore";
+import SplitPane from "../../components/SplitPane";
+import VerticalSplitPane from "../../components/VerticalSplitPane";
 
-const { Sider, Content } = Layout;
 const { Text, Title } = Typography;
 
 const BIFROST_TYPES_REQUEST = `
@@ -190,7 +195,6 @@ declare const log: BifrostLog;
 declare const console: BifrostLog;
 `;
 
-
 function LogLevel({ level }: { level: ScriptLogEntry["level"] }) {
   const colors: Record<string, string> = {
     debug: "default",
@@ -214,7 +218,10 @@ function HighlightText({
     return <span>{text}</span>;
   }
 
-  const regex = new RegExp(`(${highlight.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  const regex = new RegExp(
+    `(${highlight.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
+    "gi",
+  );
   const parts = text.split(regex);
 
   return (
@@ -235,14 +242,388 @@ function HighlightText({
           </span>
         ) : (
           <span key={index}>{part}</span>
-        )
+        ),
       )}
     </span>
   );
 }
 
-export default function ScriptsPage() {
+function ScriptListPanel({
+  searchValue,
+  onSearchChange,
+  onNewScript,
+  loading,
+  treeData,
+  expandedKeys,
+  autoExpandParent,
+  onExpand,
+  onSelect,
+  renderTreeTitle,
+  selectedKeys,
+}: {
+  searchValue: string;
+  onSearchChange: (value: string) => void;
+  onNewScript: (type: ScriptType) => void;
+  loading: boolean;
+  treeData: TreeDataNode[];
+  expandedKeys: React.Key[];
+  autoExpandParent: boolean;
+  onExpand: (keys: React.Key[]) => void;
+  onSelect: (
+    keys: React.Key[],
+    info: { node: { key: string; isLeaf?: boolean } },
+  ) => void;
+  renderTreeTitle: (nodeData: TreeDataNode) => React.ReactNode;
+  selectedKeys: string[];
+}) {
+  const { token } = theme.useToken();
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        background: resolvedTheme === "dark" ? "#141414" : "#fff",
+        borderRight: `1px solid ${token.colorBorderSecondary}`,
+      }}
+    >
+      <div style={{ padding: 12, flexShrink: 0 }}>
+        <div style={{ marginBottom: 12 }}>
+          <Input
+            placeholder="Search scripts..."
+            prefix={<SearchOutlined />}
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+            allowClear
+            size="small"
+          />
+        </div>
+
+        <Space>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            size="small"
+            onClick={() => onNewScript("request")}
+          >
+            Request
+          </Button>
+          <Button
+            icon={<PlusOutlined />}
+            size="small"
+            onClick={() => onNewScript("response")}
+          >
+            Response
+          </Button>
+        </Space>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: "0 12px 12px" }}>
+        <Spin spinning={loading}>
+          {treeData.length > 0 ? (
+            <Tree
+              showIcon
+              blockNode
+              treeData={treeData}
+              expandedKeys={expandedKeys}
+              autoExpandParent={autoExpandParent}
+              onExpand={onExpand}
+              onSelect={onSelect as Parameters<typeof Tree>["0"]["onSelect"]}
+              titleRender={renderTreeTitle}
+              selectedKeys={selectedKeys}
+            />
+          ) : searchValue ? (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="No matching scripts"
+            />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="No scripts yet"
+            />
+          )}
+        </Spin>
+      </div>
+    </div>
+  );
+}
+
+function EditorPanel({
+  selectedScript,
+  selectedType,
+  isNewScript,
+  editorContent,
+  onEditorChange,
+  onSave,
+  onDelete,
+  onTest,
+  saving,
+  testing,
+}: {
+  selectedScript: ScriptInfo | null;
+  selectedType: ScriptType;
+  isNewScript: boolean;
+  editorContent: string;
+  onEditorChange: (value: string) => void;
+  onSave: () => void;
+  onDelete: () => void;
+  onTest: () => void;
+  saving: boolean;
+  testing: boolean;
+}) {
+  const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+
+  if (!selectedScript) {
+    return (
+      <div
+        style={{
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Empty description="Select a script or create a new one" />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <div
+        style={{
+          padding: "8px 12px",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexShrink: 0,
+          borderBottom: `1px solid ${resolvedTheme === "dark" ? "#303030" : "#f0f0f0"}`,
+        }}
+      >
+        <Space>
+          <Title level={5} style={{ margin: 0 }}>
+            {isNewScript ? "New Script" : selectedScript.name}
+          </Title>
+          <Tag color={selectedType === "request" ? "blue" : "green"}>
+            {selectedType}
+          </Tag>
+        </Space>
+        <Space>
+          <Button
+            icon={<PlayCircleOutlined />}
+            onClick={onTest}
+            loading={testing}
+          >
+            Test
+          </Button>
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            onClick={onSave}
+            loading={saving}
+          >
+            Save
+          </Button>
+          {!isNewScript && (
+            <Button danger icon={<DeleteOutlined />} onClick={onDelete}>
+              Delete
+            </Button>
+          )}
+        </Space>
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0 }}>
+        <Editor
+          height="100%"
+          language="typescript"
+          theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
+          value={editorContent}
+          onChange={(value) => onEditorChange(value || "")}
+          beforeMount={(monaco) => {
+            monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+              target: monaco.languages.typescript.ScriptTarget.ES2020,
+              allowNonTsExtensions: true,
+              moduleResolution:
+                monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+              module: monaco.languages.typescript.ModuleKind.CommonJS,
+              noEmit: true,
+              strict: false,
+              allowJs: true,
+              checkJs: true,
+              noImplicitAny: false,
+              noUnusedLocals: false,
+              noUnusedParameters: false,
+            });
+            monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions(
+              {
+                noSemanticValidation: false,
+                noSyntaxValidation: false,
+              },
+            );
+            monaco.languages.typescript.typescriptDefaults.setExtraLibs([]);
+            const typeDefinition =
+              selectedType === "request"
+                ? BIFROST_TYPES_REQUEST
+                : BIFROST_TYPES_RESPONSE;
+            monaco.languages.typescript.typescriptDefaults.addExtraLib(
+              typeDefinition,
+              "bifrost.d.ts",
+            );
+          }}
+          key={selectedType}
+          options={{
+            minimap: { enabled: false },
+            fontSize: 13,
+            lineNumbers: "on",
+            scrollBeyondLastLine: false,
+            automaticLayout: true,
+            tabSize: 2,
+            quickSuggestions: true,
+            suggestOnTriggerCharacters: true,
+            parameterHints: { enabled: true },
+            wordBasedSuggestions: "currentDocument",
+            folding: true,
+            foldingHighlight: true,
+            showFoldingControls: "mouseover",
+            bracketPairColorization: { enabled: true },
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TestResultPanel({
+  testResult,
+}: {
+  testResult: ScriptExecutionResult | null;
+}) {
+  const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+  const { token } = theme.useToken();
+
+  if (!testResult) {
+    return (
+      <div
+        style={{
+          height: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: token.colorTextSecondary,
+        }}
+      >
+        <Text type="secondary">Run a test to see results here</Text>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "8px 12px",
+          flexShrink: 0,
+          borderBottom: `1px solid ${token.colorBorderSecondary}`,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+        }}
+      >
+        {testResult.success ? (
+          <CheckCircleOutlined style={{ color: "#52c41a" }} />
+        ) : (
+          <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
+        )}
+        <Text strong>Test Result ({testResult.duration_ms}ms)</Text>
+      </div>
+
+      <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
+        {testResult.error && (
+          <div style={{ marginBottom: 12 }}>
+            <Text type="danger">{testResult.error}</Text>
+          </div>
+        )}
+
+        {testResult.request_modifications && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong>Request Modifications:</Text>
+            <pre
+              style={{
+                background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                padding: 8,
+                borderRadius: 4,
+                fontSize: 12,
+                overflow: "auto",
+                maxHeight: 150,
+                margin: "8px 0 0",
+              }}
+            >
+              {JSON.stringify(testResult.request_modifications, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        {testResult.response_modifications && (
+          <div style={{ marginBottom: 12 }}>
+            <Text strong>Response Modifications:</Text>
+            <pre
+              style={{
+                background: resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                padding: 8,
+                borderRadius: 4,
+                fontSize: 12,
+                overflow: "auto",
+                maxHeight: 150,
+                margin: "8px 0 0",
+              }}
+            >
+              {JSON.stringify(testResult.response_modifications, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        <div>
+          <Text strong>Logs:</Text>
+          {testResult.logs.length > 0 ? (
+            <div
+              style={{
+                fontFamily: "monospace",
+                fontSize: 12,
+                marginTop: 8,
+              }}
+            >
+              {testResult.logs.map((logEntry: ScriptLogEntry, i: number) => (
+                <div key={i} style={{ marginBottom: 4 }}>
+                  <LogLevel level={logEntry.level} />
+                  <Text code style={{ marginLeft: 8 }}>
+                    {new Date(logEntry.timestamp).toLocaleTimeString()}
+                  </Text>
+                  <Text style={{ marginLeft: 8 }}>{logEntry.message}</Text>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Text type="secondary" style={{ marginLeft: 8 }}>
+              No logs
+            </Text>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ScriptsPage() {
   const {
     requestScripts,
     responseScripts,
@@ -267,22 +648,18 @@ export default function ScriptsPage() {
   const [searchValue, setSearchValue] = useState("");
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
   const [autoExpandParent, setAutoExpandParent] = useState(true);
-  const treeRef = useRef<any>(null);
+  const [lastSelectedScriptId, setLastSelectedScriptId] = useState<
+    string | null
+  >(null);
+  const [lastScriptsHash, setLastScriptsHash] = useState<string>("");
 
   useEffect(() => {
     fetchScripts();
   }, [fetchScripts]);
 
-  useEffect(() => {
-    if (selectedScript) {
-      setEditorContent(selectedScript.content);
-      setIsNewScript(!selectedScript.name);
-    }
-  }, [selectedScript]);
-
   const allScripts = useMemo(
     () => [...requestScripts, ...responseScripts],
-    [requestScripts, responseScripts]
+    [requestScripts, responseScripts],
   );
 
   const getAllFolderKeys = useCallback((scripts: ScriptInfo[]): string[] => {
@@ -299,22 +676,38 @@ export default function ScriptsPage() {
     return Array.from(folderSet);
   }, []);
 
-  useEffect(() => {
+  const currentScriptId = selectedScript
+    ? `${selectedType}/${selectedScript.name}`
+    : null;
+  if (currentScriptId !== lastSelectedScriptId) {
+    setLastSelectedScriptId(currentScriptId);
+    if (selectedScript) {
+      setEditorContent(selectedScript.content);
+      setIsNewScript(!selectedScript.name);
+    }
+  }
+
+  const scriptsHash = allScripts.map((s) => s.name).join(",");
+  if (scriptsHash !== lastScriptsHash) {
+    setLastScriptsHash(scriptsHash);
     const allFolderKeys = getAllFolderKeys(allScripts);
     setExpandedKeys(allFolderKeys);
-  }, [allScripts, getAllFolderKeys]);
+  }
 
   const getScriptsInFolder = useCallback(
     (folderPath: string): { type: ScriptType; name: string }[] => {
       const result: { type: ScriptType; name: string }[] = [];
       for (const script of allScripts) {
-        if (script.name.startsWith(folderPath + "/") || script.name === folderPath) {
+        if (
+          script.name.startsWith(folderPath + "/") ||
+          script.name === folderPath
+        ) {
           result.push({ type: script.script_type, name: script.name });
         }
       }
       return result;
     },
-    [allScripts]
+    [allScripts],
   );
 
   const handleSelectScript = useCallback(
@@ -330,7 +723,7 @@ export default function ScriptsPage() {
         setIsNewScript(false);
       }
     },
-    [selectScript]
+    [selectScript],
   );
 
   const handleExpand = useCallback((keys: React.Key[]) => {
@@ -357,7 +750,7 @@ export default function ScriptsPage() {
     const validName = /^[a-zA-Z0-9_\-/]+$/.test(newScriptName);
     if (!validName) {
       message.error(
-        "Script name can only contain letters, numbers, hyphens, underscores and slashes"
+        "Script name can only contain letters, numbers, hyphens, underscores and slashes",
       );
       return;
     }
@@ -403,7 +796,7 @@ export default function ScriptsPage() {
         },
       });
     },
-    [getScriptsInFolder, deleteScript]
+    [getScriptsInFolder, deleteScript],
   );
 
   const handleTest = useCallback(async () => {
@@ -415,7 +808,7 @@ export default function ScriptsPage() {
       createNewScript(type);
       setIsNewScript(true);
     },
-    [createNewScript]
+    [createNewScript],
   );
 
   const handleSearch = useCallback(
@@ -441,7 +834,7 @@ export default function ScriptsPage() {
         setExpandedKeys(allFolderKeys);
       }
     },
-    [allScripts, getAllFolderKeys]
+    [allScripts, getAllFolderKeys],
   );
 
   const buildTreeData = useCallback(
@@ -450,11 +843,13 @@ export default function ScriptsPage() {
       const rootItems: TreeDataNode[] = [];
 
       const filteredScripts = search
-        ? scripts.filter((s) => s.name.toLowerCase().includes(search.toLowerCase()))
+        ? scripts.filter((s) =>
+            s.name.toLowerCase().includes(search.toLowerCase()),
+          )
         : scripts;
 
       const sortedScripts = [...filteredScripts].sort((a, b) =>
-        a.name.localeCompare(b.name)
+        a.name.localeCompare(b.name),
       );
 
       for (const script of sortedScripts) {
@@ -502,7 +897,8 @@ export default function ScriptsPage() {
               parentChildren.push(folderNode);
             }
 
-            parentChildren = folderMap.get(currentPath)!.children as TreeDataNode[];
+            parentChildren = folderMap.get(currentPath)!
+              .children as TreeDataNode[];
           }
 
           parentChildren.push(scriptNode);
@@ -536,12 +932,12 @@ export default function ScriptsPage() {
 
       return sortNodes(rootItems);
     },
-    []
+    [],
   );
 
   const treeData = useMemo(
     () => buildTreeData(allScripts, searchValue),
-    [allScripts, searchValue, buildTreeData]
+    [allScripts, searchValue, buildTreeData],
   );
 
   const renderTreeTitle = useCallback(
@@ -612,294 +1008,71 @@ export default function ScriptsPage() {
         </Dropdown>
       );
     },
-    [expandedKeys, getScriptsInFolder, handleNewScript, handleDeleteFolder, deleteScript]
+    [
+      expandedKeys,
+      getScriptsInFolder,
+      handleNewScript,
+      handleDeleteFolder,
+      deleteScript,
+    ],
+  );
+
+  const leftPanel = (
+    <ScriptListPanel
+      searchValue={searchValue}
+      onSearchChange={handleSearch}
+      onNewScript={handleNewScript}
+      loading={loading}
+      treeData={treeData}
+      expandedKeys={expandedKeys}
+      autoExpandParent={autoExpandParent}
+      onExpand={handleExpand}
+      onSelect={handleSelectScript}
+      renderTreeTitle={renderTreeTitle}
+      selectedKeys={
+        selectedScript?.name ? [`${selectedType}/${selectedScript.name}`] : []
+      }
+    />
+  );
+
+  const editorPanel = (
+    <EditorPanel
+      selectedScript={selectedScript}
+      selectedType={selectedType}
+      isNewScript={isNewScript}
+      editorContent={editorContent}
+      onEditorChange={setEditorContent}
+      onSave={handleSave}
+      onDelete={handleDelete}
+      onTest={handleTest}
+      saving={saving}
+      testing={testing}
+    />
+  );
+
+  const testResultPanel = <TestResultPanel testResult={testResult} />;
+
+  const rightPanel = (
+    <VerticalSplitPane
+      top={editorPanel}
+      bottom={testResultPanel}
+      defaultTopHeight="60%"
+      minTopHeight={200}
+      minBottomHeight={120}
+    />
   );
 
   return (
-    <Layout style={{ height: "100%", background: "transparent" }}>
-      <Sider
-        width={280}
-        style={{
-          background: resolvedTheme === "dark" ? "#141414" : "#fff",
-          borderRight: `1px solid ${resolvedTheme === "dark" ? "#303030" : "#f0f0f0"}`,
-          padding: 12,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <div style={{ marginBottom: 12 }}>
-          <Input
-            placeholder="Search scripts..."
-            prefix={<SearchOutlined />}
-            value={searchValue}
-            onChange={(e) => handleSearch(e.target.value)}
-            allowClear
-            size="small"
-          />
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              size="small"
-              onClick={() => handleNewScript("request")}
-            >
-              Request
-            </Button>
-            <Button
-              icon={<PlusOutlined />}
-              size="small"
-              onClick={() => handleNewScript("response")}
-            >
-              Response
-            </Button>
-          </Space>
-        </div>
-
-        <div style={{ flex: 1, overflow: "auto" }}>
-          <Spin spinning={loading}>
-            {treeData.length > 0 ? (
-              <Tree
-                ref={treeRef}
-                showIcon
-                blockNode
-                treeData={treeData}
-                expandedKeys={expandedKeys}
-                autoExpandParent={autoExpandParent}
-                onExpand={handleExpand}
-                onSelect={handleSelectScript as any}
-                titleRender={renderTreeTitle}
-                selectedKeys={
-                  selectedScript?.name
-                    ? [`${selectedType}/${selectedScript.name}`]
-                    : []
-                }
-              />
-            ) : searchValue ? (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="No matching scripts"
-              />
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="No scripts yet"
-              />
-            )}
-          </Spin>
-        </div>
-      </Sider>
-
-      <Content style={{ padding: 16, overflow: "auto" }}>
-        {selectedScript ? (
-          <div
-            style={{ height: "100%", display: "flex", flexDirection: "column" }}
-          >
-            <div
-              style={{
-                marginBottom: 12,
-                display: "flex",
-                justifyContent: "space-between",
-              }}
-            >
-              <Space>
-                <Title level={5} style={{ margin: 0 }}>
-                  {isNewScript ? "New Script" : selectedScript.name}
-                </Title>
-                <Tag color={selectedType === "request" ? "blue" : "green"}>
-                  {selectedType}
-                </Tag>
-              </Space>
-              <Space>
-                <Button
-                  icon={<PlayCircleOutlined />}
-                  onClick={handleTest}
-                  loading={testing}
-                >
-                  Test
-                </Button>
-                <Button
-                  type="primary"
-                  icon={<SaveOutlined />}
-                  onClick={handleSave}
-                  loading={saving}
-                >
-                  Save
-                </Button>
-                {!isNewScript && (
-                  <Button
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={handleDelete}
-                  >
-                    Delete
-                  </Button>
-                )}
-              </Space>
-            </div>
-
-            <div style={{ flex: 1, minHeight: 300 }}>
-              <Editor
-                height="100%"
-                language="typescript"
-                theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
-                value={editorContent}
-                onChange={(value) => setEditorContent(value || "")}
-                beforeMount={(monaco) => {
-                  monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-                    target: monaco.languages.typescript.ScriptTarget.ES2020,
-                    allowNonTsExtensions: true,
-                    moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
-                    module: monaco.languages.typescript.ModuleKind.CommonJS,
-                    noEmit: true,
-                    strict: false,
-                    allowJs: true,
-                    checkJs: true,
-                    noImplicitAny: false,
-                    noUnusedLocals: false,
-                    noUnusedParameters: false,
-                  });
-                  monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
-                    noSemanticValidation: false,
-                    noSyntaxValidation: false,
-                  });
-                  monaco.languages.typescript.typescriptDefaults.setExtraLibs([]);
-                  const typeDefinition =
-                    selectedType === "request"
-                      ? BIFROST_TYPES_REQUEST
-                      : BIFROST_TYPES_RESPONSE;
-                  monaco.languages.typescript.typescriptDefaults.addExtraLib(
-                    typeDefinition,
-                    "bifrost.d.ts"
-                  );
-                }}
-                key={selectedType}
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 13,
-                  lineNumbers: "on",
-                  scrollBeyondLastLine: false,
-                  automaticLayout: true,
-                  tabSize: 2,
-                  quickSuggestions: true,
-                  suggestOnTriggerCharacters: true,
-                  parameterHints: { enabled: true },
-                  wordBasedSuggestions: "currentDocument",
-                  folding: true,
-                  foldingHighlight: true,
-                  showFoldingControls: "mouseover",
-                  bracketPairColorization: { enabled: true },
-                }}
-              />
-            </div>
-
-            {testResult && (
-              <Card
-                size="small"
-                title={
-                  <Space>
-                    {testResult.success ? (
-                      <CheckCircleOutlined style={{ color: "#52c41a" }} />
-                    ) : (
-                      <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
-                    )}
-                    <Text>Test Result ({testResult.duration_ms}ms)</Text>
-                  </Space>
-                }
-                style={{ marginTop: 12 }}
-              >
-                {testResult.error && (
-                  <div style={{ marginBottom: 8 }}>
-                    <Text type="danger">{testResult.error}</Text>
-                  </div>
-                )}
-
-                {testResult.request_modifications && (
-                  <div style={{ marginBottom: 12 }}>
-                    <Text strong>Request Modifications:</Text>
-                    <pre
-                      style={{
-                        background:
-                          resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
-                        padding: 8,
-                        borderRadius: 4,
-                        fontSize: 12,
-                        overflow: "auto",
-                        maxHeight: 150,
-                      }}
-                    >
-                      {JSON.stringify(
-                        testResult.request_modifications,
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                )}
-
-                {testResult.response_modifications && (
-                  <div style={{ marginBottom: 12 }}>
-                    <Text strong>Response Modifications:</Text>
-                    <pre
-                      style={{
-                        background:
-                          resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
-                        padding: 8,
-                        borderRadius: 4,
-                        fontSize: 12,
-                        overflow: "auto",
-                        maxHeight: 150,
-                      }}
-                    >
-                      {JSON.stringify(
-                        testResult.response_modifications,
-                        null,
-                        2
-                      )}
-                    </pre>
-                  </div>
-                )}
-
-                <div>
-                  <Text strong>Logs:</Text>
-                  {testResult.logs.length > 0 ? (
-                    <div
-                      style={{
-                        maxHeight: 200,
-                        overflow: "auto",
-                        fontFamily: "monospace",
-                        fontSize: 12,
-                        marginTop: 8,
-                      }}
-                    >
-                      {testResult.logs.map((log, i) => (
-                        <div key={i} style={{ marginBottom: 4 }}>
-                          <LogLevel level={log.level} />
-                          <Text code style={{ marginLeft: 8 }}>
-                            {new Date(log.timestamp).toLocaleTimeString()}
-                          </Text>
-                          <Text style={{ marginLeft: 8 }}>{log.message}</Text>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <Text type="secondary" style={{ marginLeft: 8 }}>
-                      No logs
-                    </Text>
-                  )}
-                </div>
-              </Card>
-            )}
-          </div>
-        ) : (
-          <Empty
-            description="Select a script or create a new one"
-            style={{ marginTop: 100 }}
-          />
-        )}
-      </Content>
+    <>
+      <div style={{ height: "100%", overflow: "hidden" }}>
+        <SplitPane
+          left={leftPanel}
+          right={rightPanel}
+          defaultLeftWidth="280px"
+          minLeftWidth={200}
+          minRightWidth={400}
+        />
+      </div>
 
       <Modal
         title="Save New Script"
@@ -919,6 +1092,6 @@ export default function ScriptsPage() {
           and slashes are allowed.
         </Text>
       </Modal>
-    </Layout>
+    </>
   );
 }

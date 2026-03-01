@@ -56,14 +56,6 @@ const genSnippetFilenameAndVar = (operator: string) => {
 };
 
 const config: Operator[] = [
-
-  {
-    label: 'rule',
-    detail: 'rule://<rule_name>',
-    snippet: ['rule://${1:rule_name}'],
-  },
-
-
   {
     label: 'reqHeaders',
     detail: 'reqHeaders://<value>',
@@ -315,11 +307,6 @@ maxAge: 300000
     detail: 'redirect://<uri>',
     snippet: ['redirect://(${1:uri})'],
   },
-  {
-    label: 'locationHref',
-    detail: 'locationHref://<uri>',
-    snippet: ['locationHref://(${1:uri})'],
-  },
 
   {
     label: 'headerReplace',
@@ -435,21 +422,10 @@ maxAge: 300000
     snippet: ['file://${1:path}', 'file://{${1:block_var}}'],
   },
   {
-    label: 'xfile',
-    detail: 'xfile://<path>',
-    snippet: ['xfile://${1:path}'],
-  },
-  {
     label: 'rawfile',
     detail: 'rawfile://<path>',
     snippet: ['rawfile://${1:path}'],
   },
-  {
-    label: 'xrawfile',
-    detail: 'xrawfile://<path>',
-    snippet: ['xrawfile://${1:path}'],
-  },
-
 
   {
     label: 'http',
@@ -499,12 +475,6 @@ maxAge: 300000
       'proxy://${1:ip}:${2:port}',
       'proxy://${1:username}:${2:password}@${3:ip}:${4:port}',
     ],
-  },
-
-  {
-    label: 'pac',
-    detail: 'pac://<uri>',
-    snippet: ['pac://(${1:uri})', 'pac://${1:filepath}'],
   },
 
   {
@@ -560,13 +530,6 @@ maxAge: 300000
     detail: 'resRules://<filepath> - Alias for resScript',
     snippet: ['resRules://${1:filepath}'],
   },
-  {
-    label: 'frameScript',
-    detail: 'frameScript://<filepath>',
-    snippet: ['frameScript://${1:filepath}'],
-  },
-
-
 
   {
     label: 'includeFilter',
