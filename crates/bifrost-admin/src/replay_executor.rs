@@ -143,7 +143,11 @@ impl ReplayExecutor {
         let (resolved_rules, applied_rules) = self.resolve_rules(&request.rule_config, url, method);
 
         let mock_response = self.check_mock_response(&resolved_rules);
-        let needs_real_request = self.needs_real_request(&resolved_rules);
+        let needs_real_request = if request.rule_config.mode == RuleMode::None {
+            true
+        } else {
+            self.needs_real_request(&resolved_rules)
+        };
 
         let mut timing = RequestTiming::default();
 

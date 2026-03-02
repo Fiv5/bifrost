@@ -699,12 +699,10 @@ export default function RequestPanel() {
           onChange={(values) =>
             setRuleConfig({ mode: "selected", selected_rules: values })
           }
-          options={rules
-            .filter((r) => r.enabled)
-            .map((r) => ({
-              label: r.name,
-              value: r.name,
-            }))}
+          options={rules.map((r) => ({
+            label: r.enabled ? r.name : `${r.name} (disabled)`,
+            value: r.name,
+          }))}
         />
       </Modal>
     </div>
