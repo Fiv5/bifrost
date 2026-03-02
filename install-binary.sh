@@ -13,7 +13,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 print_banner() {
-    echo -e "${CYAN}"
+    printf "%b" "${CYAN}"
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                                                           ║"
     echo "║   ____  _  __                _                            ║"
@@ -25,23 +25,23 @@ print_banner() {
     echo "║   High-performance HTTP/HTTPS/SOCKS5 Proxy Server         ║"
     echo "║                                                           ║"
     echo "╚═══════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+    printf "%b\n" "${NC}"
 }
 
 print_step() {
-    echo -e "${BLUE}==>${NC} $1"
+    printf "%b==>%b %s\n" "${BLUE}" "${NC}" "$1"
 }
 
 print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    printf "%b✓%b %s\n" "${GREEN}" "${NC}" "$1"
 }
 
 print_warning() {
-    echo -e "${YELLOW}!${NC} $1"
+    printf "%b!%b %s\n" "${YELLOW}" "${NC}" "$1"
 }
 
 print_error() {
-    echo -e "${RED}✗${NC} $1"
+    printf "%b✗%b %s\n" "${RED}" "${NC}" "$1"
 }
 
 detect_os() {
@@ -109,19 +109,53 @@ get_archive_ext() {
 
 get_latest_version() {
     local latest_url="https://api.github.com/repos/${REPO}/releases/latest"
-    local version
+    local all_releases_url="https://api.github.com/repos/${REPO}/releases"
+    local response version
 
     if command -v curl &> /dev/null; then
-        version=$(curl -sL "$latest_url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        response=$(curl -sL "$latest_url")
     elif command -v wget &> /dev/null; then
-        version=$(wget -qO- "$latest_url" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        response=$(wget -qO- "$latest_url")
     else
-        print_error "Neither curl nor wget found. Please install one of them."
+        print_error "Neither curl nor wget found. Please install one of them." >&2
         exit 1
     fi
 
+    if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
+        print_error "GitHub API rate limit exceeded" >&2
+        print_warning "Please try again later or specify a version manually:" >&2
+        echo "  curl -fsSL ... | bash -s -- --version v0.1.0" >&2
+        exit 1
+    fi
+
+    version=$(echo "$response" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+
     if [[ -z "$version" ]]; then
-        print_error "Failed to get latest version"
+        print_warning "No stable release found, checking for pre-releases..." >&2
+
+        if command -v curl &> /dev/null; then
+            response=$(curl -sL "$all_releases_url")
+        else
+            response=$(wget -qO- "$all_releases_url")
+        fi
+
+        if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
+            print_error "GitHub API rate limit exceeded" >&2
+            print_warning "Please try again later or specify a version manually:" >&2
+            echo "  curl -fsSL ... | bash -s -- --version v0.1.0" >&2
+            exit 1
+        fi
+
+        version=$(echo "$response" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
+
+    if [[ -z "$version" ]]; then
+        print_error "No releases found for ${REPO}" >&2
+        print_warning "The project may not have published any releases yet." >&2
+        echo "" >&2
+        echo "You can build from source instead:" >&2
+        echo "  git clone https://github.com/${REPO}.git" >&2
+        echo "  cd bifrost && ./install.sh" >&2
         exit 1
     fi
 
@@ -178,8 +212,14 @@ extract_archive() {
         windows)
             if command -v unzip &> /dev/null; then
                 unzip -q "$archive" -d "$dest"
+            elif command -v powershell.exe &> /dev/null; then
+                powershell.exe -Command "Expand-Archive -Path '$archive' -DestinationPath '$dest' -Force"
+            elif command -v pwsh &> /dev/null; then
+                pwsh -Command "Expand-Archive -Path '$archive' -DestinationPath '$dest' -Force"
             else
-                print_error "unzip not found, please install it"
+                print_error "Neither unzip nor PowerShell found"
+                print_warning "Please install unzip or use the PowerShell installer:"
+                echo "  irm https://raw.githubusercontent.com/${REPO}/main/install-binary.ps1 | iex"
                 exit 1
             fi
             ;;
