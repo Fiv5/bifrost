@@ -3,6 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=BIFROST_VERSION");
+    if let Ok(version) = env::var("BIFROST_VERSION") {
+        println!("cargo:rustc-env=CARGO_PKG_VERSION={}", version);
+    }
+
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let manifest_path = PathBuf::from(&manifest_dir);
     let web_dir = manifest_path
