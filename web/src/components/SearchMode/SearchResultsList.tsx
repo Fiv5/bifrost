@@ -272,6 +272,18 @@ export default function SearchResultsList({
                 >
                   {formatSize(record.res_sz)}
                 </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: token.colorTextSecondary,
+                    fontFamily: "monospace",
+                    minWidth: 70,
+                    textAlign: "right",
+                  }}
+                  title={record.st}
+                >
+                  {record.st || "-"}
+                </span>
                 {record.capp && (
                   <AppIcon appName={record.capp} size={14} />
                 )}
