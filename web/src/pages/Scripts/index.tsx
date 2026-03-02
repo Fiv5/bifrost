@@ -29,6 +29,8 @@ import {
   SearchOutlined,
   UpOutlined,
   DownOutlined,
+  ExportOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -41,6 +43,8 @@ import type {
 import { useThemeStore } from "../../stores/useThemeStore";
 import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
+import { ImportBifrostButton } from "../../components/ImportBifrostButton";
+import { useExportBifrost } from "../../hooks/useExportBifrost";
 
 const { Text } = Typography;
 
@@ -264,6 +268,9 @@ function ScriptListPanel({
   onSelect,
   renderTreeTitle,
   selectedKeys,
+  onImportSuccess,
+  onExportAll,
+  hasScripts,
 }: {
   searchValue: string;
   onSearchChange: (value: string) => void;
@@ -279,6 +286,9 @@ function ScriptListPanel({
   ) => void;
   renderTreeTitle: (nodeData: TreeDataNode) => React.ReactNode;
   selectedKeys: string[];
+  onImportSuccess: () => void;
+  onExportAll: () => void;
+  hasScripts: boolean;
 }) {
   const { token } = theme.useToken();
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
@@ -312,7 +322,7 @@ function ScriptListPanel({
         >
           Scripts
         </span>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           <Button
             type="text"
             size="small"
@@ -330,6 +340,23 @@ function ScriptListPanel({
           >
             Res
           </Button>
+          {hasScripts && (
+            <Tooltip title="Export All">
+              <Button
+                type="text"
+                size="small"
+                icon={<ExportOutlined />}
+                onClick={onExportAll}
+              />
+            </Tooltip>
+          )}
+          <ImportBifrostButton
+            expectedType="script"
+            onImportSuccess={onImportSuccess}
+            buttonText=""
+            buttonType="text"
+            size="small"
+          />
         </div>
       </div>
 
@@ -354,7 +381,6 @@ function ScriptListPanel({
         <Spin spinning={loading}>
           {treeData.length > 0 ? (
             <Tree
-              showIcon
               blockNode
               treeData={treeData}
               expandedKeys={expandedKeys}
@@ -405,6 +431,27 @@ function EditorPanel({
   testing: boolean;
 }) {
   const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+  const saveRef = useRef(onSave);
+
+  useEffect(() => {
+    saveRef.current = onSave;
+  }, [onSave]);
+
+  const handleEditorMount = useCallback(
+    (
+      editor: Parameters<
+        NonNullable<Parameters<typeof Editor>[0]["onMount"]>
+      >[0],
+      monaco: Parameters<
+        NonNullable<Parameters<typeof Editor>[0]["onMount"]>
+      >[1],
+    ) => {
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+        saveRef.current();
+      });
+    },
+    [],
+  );
 
   if (!selectedScript) {
     return (
@@ -565,6 +612,7 @@ api.example.com reqScript://add-auth-header
           theme={resolvedTheme === "dark" ? "vs-dark" : "light"}
           value={editorContent}
           onChange={(value) => onEditorChange(value || "")}
+          onMount={handleEditorMount}
           beforeMount={(monaco) => {
             monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
               target: monaco.languages.typescript.ScriptTarget.ES2020,
@@ -842,6 +890,7 @@ export default function ScriptsPage() {
     testScript,
     createNewScript,
   } = useScriptsStore();
+  const { exportFile } = useExportBifrost();
 
   const [editorContent, setEditorContent] = useState("");
   const [newScriptName, setNewScriptName] = useState("");
@@ -1045,6 +1094,24 @@ export default function ScriptsPage() {
     [createNewScript],
   );
 
+  const handleExport = useCallback(
+    async (scriptNames: string[]) => {
+      if (scriptNames.length === 0) return;
+      await exportFile("script", { script_names: scriptNames });
+    },
+    [exportFile],
+  );
+
+  const handleExportAll = useCallback(async () => {
+    const names = allScripts.map((s) => `${s.script_type}/${s.name}`);
+    if (names.length === 0) return;
+    await exportFile("script", { script_names: names });
+  }, [allScripts, exportFile]);
+
+  const handleImportSuccess = useCallback(() => {
+    fetchScripts();
+  }, [fetchScripts]);
+
   const handleSearch = useCallback(
     (value: string) => {
       setSearchValue(value);
@@ -1109,7 +1176,6 @@ export default function ScriptsPage() {
             </Space>
           ),
           key: `${script.script_type}/${script.name}`,
-          icon: <FileOutlined />,
           isLeaf: true,
         };
 
@@ -1182,6 +1248,7 @@ export default function ScriptsPage() {
       if (key.startsWith("folder:")) {
         const folderPath = key.replace("folder:", "");
         const scriptsInFolder = getScriptsInFolder(folderPath);
+        const scriptNames = scriptsInFolder.map((s) => `${s.type}/${s.name}`);
         menuItems = [
           {
             key: "new-request",
@@ -1195,6 +1262,14 @@ export default function ScriptsPage() {
           },
           { type: "divider" },
           {
+            key: "export-folder",
+            icon: <ExportOutlined />,
+            label: `Export Folder (${scriptsInFolder.length} scripts)`,
+            onClick: () => handleExport(scriptNames),
+            disabled: scriptsInFolder.length === 0,
+          },
+          { type: "divider" },
+          {
             key: "delete-folder",
             label: `Delete Folder (${scriptsInFolder.length} scripts)`,
             danger: true,
@@ -1205,7 +1280,15 @@ export default function ScriptsPage() {
         const [type, ...nameParts] = key.split("/");
         const scriptType = type as ScriptType;
         const scriptName = nameParts.join("/");
+        const fullName = `${scriptType}/${scriptName}`;
         menuItems = [
+          {
+            key: "export",
+            icon: <ExportOutlined />,
+            label: "Export",
+            onClick: () => handleExport([fullName]),
+          },
+          { type: "divider" },
           {
             key: "delete",
             label: "Delete",
@@ -1230,16 +1313,44 @@ export default function ScriptsPage() {
       const isExpanded = expandedKeys.includes(key);
 
       return (
-        <Dropdown menu={{ items: menuItems }} trigger={["contextMenu"]}>
-          <span style={{ display: "inline-flex", alignItems: "center" }}>
-            {isFolder && (
-              <span style={{ marginRight: 4 }}>
-                {isExpanded ? <FolderOpenOutlined /> : <FolderOutlined />}
-              </span>
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            width: "100%",
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              minWidth: 0,
+              flex: 1,
+            }}
+          >
+            {isFolder ? (
+              isExpanded ? (
+                <FolderOpenOutlined />
+              ) : (
+                <FolderOutlined />
+              )
+            ) : (
+              <FileOutlined />
             )}
             {nodeData.title as React.ReactNode}
           </span>
-        </Dropdown>
+          <Dropdown menu={{ items: menuItems }} trigger={["click"]}>
+            <Button
+              type="text"
+              size="small"
+              icon={<MoreOutlined />}
+              onClick={(e) => e.stopPropagation()}
+              style={{ flexShrink: 0 }}
+            />
+          </Dropdown>
+        </span>
       );
     },
     [
@@ -1247,6 +1358,7 @@ export default function ScriptsPage() {
       getScriptsInFolder,
       handleNewScript,
       handleDeleteFolder,
+      handleExport,
       deleteScript,
     ],
   );
@@ -1266,6 +1378,9 @@ export default function ScriptsPage() {
       selectedKeys={
         selectedScript?.name ? [`${selectedType}/${selectedScript.name}`] : []
       }
+      onImportSuccess={handleImportSuccess}
+      onExportAll={handleExportAll}
+      hasScripts={allScripts.length > 0}
     />
   );
 

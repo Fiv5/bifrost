@@ -1,14 +1,6 @@
-import { useMemo, useState } from 'react';
-import {
-  Input,
-  Button,
-  Dropdown,
-  Modal,
-  message,
-  Tooltip,
-  Spin,
-} from 'antd';
-import type { MenuProps } from 'antd';
+import { useMemo, useState, useCallback } from "react";
+import { Input, Button, Dropdown, Modal, message, Tooltip, Spin } from "antd";
+import type { MenuProps } from "antd";
 import {
   PlusOutlined,
   ReloadOutlined,
@@ -16,9 +8,13 @@ import {
   EditOutlined,
   DeleteOutlined,
   CopyOutlined,
-} from '@ant-design/icons';
-import { useValuesStore } from '../../../stores/useValuesStore';
-import styles from './index.module.css';
+  ExportOutlined,
+  MoreOutlined,
+} from "@ant-design/icons";
+import { useValuesStore } from "../../../stores/useValuesStore";
+import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
+import { useExportBifrost } from "../../../hooks/useExportBifrost";
+import styles from "./index.module.css";
 
 export default function ValueList() {
   const {
@@ -37,10 +33,12 @@ export default function ValueList() {
   } = useValuesStore();
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
-  const [newValueName, setNewValueName] = useState('');
+  const [newValueName, setNewValueName] = useState("");
   const [renameModalVisible, setRenameModalVisible] = useState(false);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
-  const [newName, setNewName] = useState('');
+  const [newName, setNewName] = useState("");
+  const [selectedValues, setSelectedValues] = useState<string[]>([]);
+  const { exportFile } = useExportBifrost();
 
   const filteredValues = useMemo(() => {
     if (!searchKeyword) return values;
@@ -48,34 +46,34 @@ export default function ValueList() {
     return values.filter(
       (v) =>
         v.name.toLowerCase().includes(keyword) ||
-        v.value.toLowerCase().includes(keyword)
+        v.value.toLowerCase().includes(keyword),
     );
   }, [values, searchKeyword]);
 
   const handleCreate = async () => {
     if (!newValueName.trim()) {
-      message.error('Value name is required');
+      message.error("Value name is required");
       return;
     }
-    const success = await createValue(newValueName.trim(), '');
+    const success = await createValue(newValueName.trim(), "");
     if (success) {
-      message.success('Value created');
+      message.success("Value created");
       setCreateModalVisible(false);
-      setNewValueName('');
+      setNewValueName("");
     }
   };
 
   const handleDelete = async (name: string) => {
     Modal.confirm({
-      title: 'Delete Value',
+      title: "Delete Value",
       content: `Are you sure to delete "${name}"?`,
-      okText: 'Delete',
-      okType: 'danger',
-      cancelText: 'Cancel',
+      okText: "Delete",
+      okType: "danger",
+      cancelText: "Cancel",
       onOk: async () => {
         const success = await deleteValue(name);
         if (success) {
-          message.success('Value deleted');
+          message.success("Value deleted");
         }
       },
     });
@@ -89,10 +87,10 @@ export default function ValueList() {
     }
     const success = await renameValue(renameTarget, newName.trim());
     if (success) {
-      message.success('Value renamed');
+      message.success("Value renamed");
       setRenameModalVisible(false);
       setRenameTarget(null);
-      setNewName('');
+      setNewName("");
     }
   };
 
@@ -101,38 +99,88 @@ export default function ValueList() {
       await navigator.clipboard.writeText(value);
       message.success(`Copied "${name}" to clipboard`);
     } catch {
-      message.error('Failed to copy');
+      message.error("Failed to copy");
     }
   };
 
-  const getContextMenuItems = (name: string, value: string): MenuProps['items'] => [
-    {
-      key: 'copy',
-      icon: <CopyOutlined />,
-      label: 'Copy Value',
-      onClick: () => handleCopy(name, value),
+  const handleExport = useCallback(
+    async (names: string[]) => {
+      if (names.length === 0) return;
+      await exportFile("values", { value_names: names });
     },
-    {
-      key: 'rename',
-      icon: <EditOutlined />,
-      label: 'Rename',
-      onClick: () => {
-        setRenameTarget(name);
-        setNewName(name);
-        setRenameModalVisible(true);
+    [exportFile],
+  );
+
+  const handleExportAll = useCallback(async () => {
+    await exportFile("values", {});
+  }, [exportFile]);
+
+  const handleImportSuccess = useCallback(() => {
+    fetchValues();
+  }, [fetchValues]);
+
+  const handleSelect = useCallback(
+    (name: string, isMultiSelect: boolean) => {
+      if (isMultiSelect) {
+        setSelectedValues((prev) =>
+          prev.includes(name)
+            ? prev.filter((n) => n !== name)
+            : [...prev, name],
+        );
+      } else {
+        setSelectedValues([]);
+        selectValue(name);
+      }
+    },
+    [selectValue],
+  );
+
+  const getContextMenuItems = (
+    name: string,
+    value: string,
+  ): MenuProps["items"] => {
+    const isSelected = selectedValues.includes(name);
+    const exportNames =
+      isSelected && selectedValues.length > 0 ? selectedValues : [name];
+
+    return [
+      {
+        key: "copy",
+        icon: <CopyOutlined />,
+        label: "Copy Value",
+        onClick: () => handleCopy(name, value),
       },
-    },
-    {
-      type: 'divider',
-    },
-    {
-      key: 'delete',
-      icon: <DeleteOutlined />,
-      label: 'Delete',
-      danger: true,
-      onClick: () => handleDelete(name),
-    },
-  ];
+      {
+        key: "rename",
+        icon: <EditOutlined />,
+        label: "Rename",
+        onClick: () => {
+          setRenameTarget(name);
+          setNewName(name);
+          setRenameModalVisible(true);
+        },
+      },
+      {
+        type: "divider",
+      },
+      {
+        key: "export",
+        icon: <ExportOutlined />,
+        label: `Export${exportNames.length > 1 ? ` (${exportNames.length})` : ""}`,
+        onClick: () => handleExport(exportNames),
+      },
+      {
+        type: "divider",
+      },
+      {
+        key: "delete",
+        icon: <DeleteOutlined />,
+        label: "Delete",
+        danger: true,
+        onClick: () => handleDelete(name),
+      },
+    ];
+  };
 
   return (
     <div className={styles.container}>
@@ -155,13 +203,28 @@ export default function ValueList() {
               onClick={() => fetchValues()}
             />
           </Tooltip>
+          <ImportBifrostButton
+            expectedType="values"
+            onImportSuccess={handleImportSuccess}
+            buttonText=""
+            buttonType="text"
+            size="small"
+          />
+          <Tooltip title="Export All">
+            <Button
+              type="text"
+              size="small"
+              icon={<ExportOutlined />}
+              onClick={handleExportAll}
+            />
+          </Tooltip>
         </div>
       </div>
       <div className={styles.searchBox}>
         <Input
           size="small"
           placeholder="Search values..."
-          prefix={<SearchOutlined style={{ color: '#999' }} />}
+          prefix={<SearchOutlined style={{ color: "#999" }} />}
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
@@ -177,42 +240,55 @@ export default function ValueList() {
           <div className={styles.list}>
             {filteredValues.map((item) => {
               const isSelected = selectedValueName === item.name;
-              const hasChanges = hasUnsavedChanges(item.name) || editingContent[item.name] !== undefined;
+              const hasChanges =
+                hasUnsavedChanges(item.name) ||
+                editingContent[item.name] !== undefined;
 
               return (
-                <Dropdown
+                <div
                   key={item.name}
-                  menu={{ items: getContextMenuItems(item.name, item.value) }}
-                  trigger={['contextMenu']}
+                  className={`${styles.item} ${isSelected ? styles.selected : ""} ${selectedValues.includes(item.name) ? styles.multiSelected : ""}`}
+                  onClick={(e) =>
+                    handleSelect(item.name, e.ctrlKey || e.metaKey)
+                  }
                 >
-                  <div
-                    className={`${styles.item} ${isSelected ? styles.selected : ''}`}
-                    onClick={() => selectValue(item.name)}
-                  >
-                    <div className={styles.itemContent}>
-                      <span className={styles.itemName} title={item.name}>
-                        {item.name}
-                      </span>
-                      <div className={styles.itemMeta}>
-                        {hasChanges && (
-                          <Tooltip title="Unsaved changes">
-                            <span className={styles.unsavedDot} />
-                          </Tooltip>
-                        )}
-                      </div>
-                    </div>
-                    <div className={styles.itemPreview} title={item.value}>
-                      {item.value.length > 30
-                        ? `${item.value.slice(0, 30).replace(/\n/g, '↵')}...`
-                        : item.value.replace(/\n/g, '↵')}
+                  <div className={styles.itemContent}>
+                    <span className={styles.itemName} title={item.name}>
+                      {item.name}
+                    </span>
+                    <div className={styles.itemMeta}>
+                      {hasChanges && (
+                        <Tooltip title="Unsaved changes">
+                          <span className={styles.unsavedDot} />
+                        </Tooltip>
+                      )}
+                      <Dropdown
+                        menu={{
+                          items: getContextMenuItems(item.name, item.value),
+                        }}
+                        trigger={["click"]}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MoreOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          className={styles.moreBtn}
+                        />
+                      </Dropdown>
                     </div>
                   </div>
-                </Dropdown>
+                  <div className={styles.itemPreview} title={item.value}>
+                    {item.value.length > 30
+                      ? `${item.value.slice(0, 30).replace(/\n/g, "↵")}...`
+                      : item.value.replace(/\n/g, "↵")}
+                  </div>
+                </div>
               );
             })}
             {filteredValues.length === 0 && !loading && (
               <div className={styles.empty}>
-                {searchKeyword ? 'No matching values' : 'No values yet'}
+                {searchKeyword ? "No matching values" : "No values yet"}
               </div>
             )}
           </div>
@@ -228,7 +304,7 @@ export default function ValueList() {
         open={createModalVisible}
         onCancel={() => {
           setCreateModalVisible(false);
-          setNewValueName('');
+          setNewValueName("");
         }}
         onOk={handleCreate}
         okText="Create"
@@ -249,7 +325,7 @@ export default function ValueList() {
         onCancel={() => {
           setRenameModalVisible(false);
           setRenameTarget(null);
-          setNewName('');
+          setNewName("");
         }}
         onOk={handleRename}
         okText="Rename"

@@ -84,12 +84,6 @@
 | Q040 | 设置 Cookie | `test.com reqCookies://{session: abc}` | Cookie 包含 session | ✅ |
 | Q041 | 多个 Cookie | `test.com reqCookies://{a: 1, b: 2}` | Cookie 包含多个值 | 🔨 |
 
-### forwardedFor 规则 🔨
-
-| 测试 ID | 测试名称 | 规则 | 预期结果 | 状态 |
-|---------|---------|------|---------|------|
-| Q050 | 设置 IP | `test.com forwardedFor://1.2.3.4` | X-Forwarded-For 被设置 | 🔨 |
-
 ### reqType 规则 🔨
 
 | 测试 ID | 测试名称 | 规则 | 预期结果 | 状态 |
@@ -370,6 +364,5 @@
 
 1. `reqDelay`/`resDelay` - 延迟
 2. `resSpeed` - 限速
-3. `forwardedFor` - IP 转发
-4. `headerReplace` - 头部替换
-5. `enable`/`disable` - 特性控制
+3. `headerReplace` - 头部替换
+4. `enable`/`disable` - 特性控制

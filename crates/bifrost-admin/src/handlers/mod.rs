@@ -1,4 +1,5 @@
 pub mod app_icon;
+pub mod bifrost_file;
 pub mod cert;
 pub mod config;
 pub mod frames;

@@ -17,11 +17,16 @@ pub fn apply_res_rules(
     apply_res_headers(parts, rules, verbose_logging, ctx);
     apply_res_cookies(parts, rules, verbose_logging, ctx);
     apply_res_attachment(parts, rules, verbose_logging, ctx);
+    apply_res_type(parts, rules, verbose_logging, ctx);
+    apply_res_charset(parts, rules, verbose_logging, ctx);
+    apply_res_cache(parts, rules, verbose_logging, ctx);
     apply_res_header_replace(parts, rules, verbose_logging, ctx);
 
     if rules.res_cors.is_enabled() {
         apply_res_cors(parts, &rules.res_cors, ctx, verbose_logging);
     }
+
+    apply_res_trailers(parts, rules, verbose_logging, ctx);
 }
 
 fn apply_res_delete_headers(
@@ -298,6 +303,100 @@ fn apply_res_attachment(
     }
 }
 
+fn apply_res_cache(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref cache_value) = rules.cache {
+        let cache_control = if let Ok(seconds) = cache_value.parse::<u64>() {
+            if seconds == 0 {
+                "no-cache, no-store, must-revalidate".to_string()
+            } else {
+                format!("max-age={}", seconds)
+            }
+        } else {
+            cache_value.clone()
+        };
+
+        if let Ok(value) = cache_control.parse::<HeaderValue>() {
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(hyper::header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "(none)".to_string());
+                info!(
+                    "[{}] [RES_CACHE] Cache-Control : {} -> \"{}\"",
+                    ctx.id_str(),
+                    old_value,
+                    cache_control
+                );
+            }
+            parts.headers.insert(hyper::header::CACHE_CONTROL, value);
+        }
+    }
+}
+
+fn apply_res_type(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref content_type) = rules.res_type {
+        if let Ok(value) = content_type.parse::<HeaderValue>() {
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "(none)".to_string());
+                info!(
+                    "[{}] [RES_TYPE] Content-Type : {} -> \"{}\"",
+                    ctx.id_str(),
+                    old_value,
+                    content_type
+                );
+            }
+            parts.headers.insert(hyper::header::CONTENT_TYPE, value);
+        }
+    }
+}
+
+fn apply_res_charset(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref charset) = rules.res_charset {
+        let current_ct = parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/plain");
+
+        let base_ct = current_ct.split(';').next().unwrap_or(current_ct).trim();
+        let new_ct = format!("{}; charset={}", base_ct, charset);
+
+        if let Ok(value) = new_ct.parse::<HeaderValue>() {
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_CHARSET] Content-Type : \"{}\" -> \"{}\"",
+                    ctx.id_str(),
+                    current_ct,
+                    new_ct
+                );
+            }
+            parts.headers.insert(hyper::header::CONTENT_TYPE, value);
+        }
+    }
+}
+
 fn extract_filename_from_url(pathname: &str) -> String {
     pathname
         .rsplit('/')
@@ -320,6 +419,44 @@ fn encode_content_disposition_filename(filename: &str) -> String {
             }
         })
         .collect()
+}
+
+fn apply_res_trailers(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if rules.trailers.is_empty() {
+        return;
+    }
+
+    let mut trailer_names: Vec<String> = Vec::new();
+
+    for (name, value) in &rules.trailers {
+        if let (Ok(_header_name), Ok(_header_value)) =
+            (name.parse::<HeaderName>(), value.parse::<HeaderValue>())
+        {
+            trailer_names.push(name.clone());
+            if verbose_logging {
+                info!("[{}] [RES_TRAILER] {} : \"{}\"", ctx.id_str(), name, value);
+            }
+        }
+    }
+
+    if !trailer_names.is_empty() {
+        let trailer_header = trailer_names.join(", ");
+        if let Ok(value) = trailer_header.parse::<HeaderValue>() {
+            parts.headers.insert(hyper::header::TRAILER, value);
+            if verbose_logging {
+                info!(
+                    "[{}] [RES_TRAILER] Trailer header: {}",
+                    ctx.id_str(),
+                    trailer_header
+                );
+            }
+        }
+    }
 }
 
 fn apply_res_cors(

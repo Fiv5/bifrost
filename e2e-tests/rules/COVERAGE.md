@@ -83,7 +83,6 @@
 | `replaceStatus` | ⚠️ | response_modify/status.txt | 状态码替换 |
 | `cache` | 🔄 | advanced/cache.txt | 缓存控制 |
 | `attachment` | 🔄 | advanced/cache.txt | 附件下载 |
-| `forwardedFor` | 🔄 | advanced/auth.txt | X-Forwarded-For |
 | `trailers` | ❌ | - | HTTP Trailers |
 | `resMerge` | ❌ | - | 响应合并 |
 | `headerReplace` | ❌ | - | 头部替换 |
@@ -129,13 +128,7 @@
 | `includeFilter` | ⚠️   | control/include_filter.txt | 包含过滤器  |
 | `excludeFilter` | 🔄   | control/exclude_filter.txt | 排除过滤器  |
 
-## 8. 安全协议 (Security)
-
-| 协议          | 状态 | 测试文件 | 说明     |
-| ------------- | ---- | -------- | -------- |
-| `sniCallback` | ❌   | -        | SNI 回调 |
-
-## 9. 模板变量 (Template Variables)
+## 8. 模板变量 (Template Variables)
 
 | 变量               | 状态 | 测试文件                   | 说明         |
 | ------------------ | ---- | -------------------------- | ------------ |
@@ -324,4 +317,3 @@
 1. `trailers` - HTTP Trailers
 2. `rulesFile` - 规则文件引用
 3. `resScript` - 响应脚本
-4. `sniCallback` - SNI 回调

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug)]
 pub enum InitError {
@@ -37,10 +37,60 @@ pub fn init_database(conn: &Connection) -> Result<(), InitError> {
 
     conn.execute_batch(SCHEMA_SQL)?;
 
+    run_migrations(conn)?;
+
     conn.execute(
         "INSERT OR REPLACE INTO replay_metadata (key, value) VALUES ('schema_version', ?)",
         [SCHEMA_VERSION.to_string()],
     )?;
+
+    Ok(())
+}
+
+fn run_migrations(conn: &Connection) -> Result<(), InitError> {
+    let current_version: u32 = conn
+        .query_row(
+            "SELECT value FROM replay_metadata WHERE key = 'schema_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    if current_version < 2 {
+        let has_request_type: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('replay_requests') WHERE name = 'request_type'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_request_type {
+            conn.execute(
+                "ALTER TABLE replay_requests ADD COLUMN request_type TEXT NOT NULL DEFAULT 'http'",
+                [],
+            )?;
+        }
+    }
+
+    if current_version < 3 {
+        let has_source: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('replay_requests') WHERE name = 'source'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+
+        if !has_source {
+            conn.execute(
+                "ALTER TABLE replay_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
+                [],
+            )?;
+        }
+    }
 
     Ok(())
 }
@@ -70,6 +120,7 @@ CREATE TABLE IF NOT EXISTS replay_requests (
     body_blob BLOB,
     is_saved INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'internal',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     FOREIGN KEY (group_id) REFERENCES replay_groups(id) ON DELETE SET NULL
@@ -106,8 +157,8 @@ pub fn get_insert_request_sql() -> &'static str {
     INSERT INTO replay_requests (
         id, group_id, name, request_type, method, url,
         headers_blob, body_blob, is_saved, sort_order,
-        created_at, updated_at
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        source, created_at, updated_at
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
     "#
 }
 
@@ -123,8 +174,9 @@ pub fn get_update_request_sql() -> &'static str {
         body_blob = ?7,
         is_saved = ?8,
         sort_order = ?9,
-        updated_at = ?10
-    WHERE id = ?11
+        source = ?10,
+        updated_at = ?11
+    WHERE id = ?12
     "#
 }
 

@@ -20,6 +20,8 @@ pub fn apply_req_rules(
     apply_req_referer(parts, rules, verbose_logging, ctx);
     apply_req_auth(parts, rules, verbose_logging, ctx);
     apply_req_header_replace(parts, rules, verbose_logging, ctx);
+    apply_req_type(parts, rules, verbose_logging, ctx);
+    apply_req_charset(parts, rules, verbose_logging, ctx);
 
     if rules.req_cors.is_enabled() {
         apply_req_cors(parts, &rules.req_cors, verbose_logging, ctx);
@@ -328,6 +330,63 @@ fn apply_req_referer(
                 );
             }
             parts.headers.insert(hyper::header::REFERER, header_value);
+        }
+    }
+}
+
+fn apply_req_type(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref content_type) = rules.req_type {
+        if let Ok(value) = content_type.parse::<HeaderValue>() {
+            if verbose_logging {
+                let old_value = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "(none)".to_string());
+                info!(
+                    "[{}] [REQ_TYPE] Content-Type : {} -> \"{}\"",
+                    ctx.id_str(),
+                    old_value,
+                    content_type
+                );
+            }
+            parts.headers.insert(hyper::header::CONTENT_TYPE, value);
+        }
+    }
+}
+
+fn apply_req_charset(
+    parts: &mut Parts,
+    rules: &ResolvedRules,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) {
+    if let Some(ref charset) = rules.req_charset {
+        let current_ct = parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/plain");
+
+        let base_ct = current_ct.split(';').next().unwrap_or(current_ct).trim();
+        let new_ct = format!("{}; charset={}", base_ct, charset);
+
+        if let Ok(value) = new_ct.parse::<HeaderValue>() {
+            if verbose_logging {
+                info!(
+                    "[{}] [REQ_CHARSET] Content-Type : \"{}\" -> \"{}\"",
+                    ctx.id_str(),
+                    current_ct,
+                    new_ct
+                );
+            }
+            parts.headers.insert(hyper::header::CONTENT_TYPE, value);
         }
     }
 }

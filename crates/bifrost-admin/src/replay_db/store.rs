@@ -11,8 +11,8 @@ use super::schema::{
     get_update_request_sql, init_database, InitError,
 };
 use super::types::{
-    ReplayDbStats, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary, RequestType,
-    RuleConfig, MAX_HISTORY, MAX_REQUESTS,
+    ReplayDbStats, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary, RequestSource,
+    RequestType, RuleConfig, MAX_HISTORY, MAX_REQUESTS,
 };
 
 pub type SharedReplayDbStore = Arc<ReplayDbStore>;
@@ -176,6 +176,7 @@ impl ReplayDbStore {
             .as_ref()
             .and_then(|b| serde_json::to_string(b).ok());
         let request_type = request_type_to_str(&request.request_type);
+        let source = request_source_to_str(&request.source);
 
         let conn = self.write_conn.lock();
         conn.execute(
@@ -191,6 +192,7 @@ impl ReplayDbStore {
                 body_json,
                 request.is_saved as i32,
                 request.sort_order,
+                source,
                 request.created_at as i64,
                 request.updated_at as i64,
             ],
@@ -205,6 +207,7 @@ impl ReplayDbStore {
             .as_ref()
             .and_then(|b| serde_json::to_string(b).ok());
         let request_type = request_type_to_str(&request.request_type);
+        let source = request_source_to_str(&request.source);
 
         let conn = self.write_conn.lock();
         conn.execute(
@@ -219,6 +222,7 @@ impl ReplayDbStore {
                 body_json,
                 request.is_saved as i32,
                 request.sort_order,
+                source,
                 request.updated_at as i64,
                 &request.id,
             ],
@@ -235,7 +239,7 @@ impl ReplayDbStore {
     pub fn get_request(&self, id: &str) -> Option<ReplayRequest> {
         let conn = self.read_conn.lock();
         conn.query_row(
-            "SELECT id, group_id, name, request_type, method, url, headers_blob, body_blob, is_saved, sort_order, created_at, updated_at FROM replay_requests WHERE id = ?",
+            "SELECT id, group_id, name, request_type, method, url, headers_blob, body_blob, is_saved, sort_order, source, created_at, updated_at FROM replay_requests WHERE id = ?",
             [id],
             Self::row_to_request,
         )
@@ -283,7 +287,7 @@ impl ReplayDbStore {
         };
 
         let sql = format!(
-            "SELECT id, group_id, name, method, url, is_saved, created_at, updated_at \
+            "SELECT id, group_id, name, method, url, is_saved, source, created_at, updated_at \
              FROM replay_requests {} ORDER BY updated_at DESC {}",
             where_clause, limit_clause
         );
@@ -296,6 +300,7 @@ impl ReplayDbStore {
         let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
         stmt.query_map(param_refs.as_slice(), |row| {
+            let source_str: String = row.get(6)?;
             Ok(ReplayRequestSummary {
                 id: row.get(0)?,
                 group_id: row.get(1)?,
@@ -303,8 +308,9 @@ impl ReplayDbStore {
                 method: row.get(3)?,
                 url: row.get(4)?,
                 is_saved: row.get::<_, i32>(5)? != 0,
-                created_at: row.get::<_, i64>(6)? as u64,
-                updated_at: row.get::<_, i64>(7)? as u64,
+                source: str_to_request_source(&source_str),
+                created_at: row.get::<_, i64>(7)? as u64,
+                updated_at: row.get::<_, i64>(8)? as u64,
             })
         })
         .map(|r| r.filter_map(|r| r.ok()).collect())
@@ -318,6 +324,19 @@ impl ReplayDbStore {
         })
         .map(|v| v as usize)
         .unwrap_or(0)
+    }
+
+    pub fn next_imported_sequence(&self) -> usize {
+        let conn = self.read_conn.lock();
+        conn.query_row(
+            "SELECT MAX(CAST(SUBSTR(id, 5) AS INTEGER)) FROM replay_requests WHERE id LIKE 'OUT-%'",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()
+        .map(|v| v as usize + 1)
+        .unwrap_or(1)
     }
 
     pub fn move_request_to_group(
@@ -338,6 +357,7 @@ impl ReplayDbStore {
         let request_type_str: String = row.get(3)?;
         let headers_json: Option<String> = row.get(6)?;
         let body_json: Option<String> = row.get(7)?;
+        let source_str: String = row.get(10)?;
 
         let headers = headers_json
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -356,8 +376,9 @@ impl ReplayDbStore {
             body,
             is_saved: row.get::<_, i32>(8)? != 0,
             sort_order: row.get(9)?,
-            created_at: row.get::<_, i64>(10)? as u64,
-            updated_at: row.get::<_, i64>(11)? as u64,
+            source: str_to_request_source(&source_str),
+            created_at: row.get::<_, i64>(11)? as u64,
+            updated_at: row.get::<_, i64>(12)? as u64,
         })
     }
 
@@ -542,5 +563,19 @@ fn str_to_request_type(s: &str) -> RequestType {
         "sse" => RequestType::Sse,
         "websocket" => RequestType::WebSocket,
         _ => RequestType::Http,
+    }
+}
+
+fn request_source_to_str(source: &RequestSource) -> &'static str {
+    match source {
+        RequestSource::Internal => "internal",
+        RequestSource::Imported => "imported",
+    }
+}
+
+fn str_to_request_source(s: &str) -> RequestSource {
+    match s {
+        "imported" => RequestSource::Imported,
+        _ => RequestSource::Internal,
     }
 }

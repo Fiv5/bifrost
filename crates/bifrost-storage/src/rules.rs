@@ -1,7 +1,9 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use bifrost_core::bifrost_file::{
+    BifrostFileParser, BifrostFileWriter, RuleFileMeta as BifrostRuleFileMeta,
+};
 use bifrost_core::{BifrostError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -11,22 +13,114 @@ pub struct RuleFile {
     pub content: String,
     pub enabled: bool,
     #[serde(default)]
-    pub metadata: HashMap<String, String>,
+    pub sort_order: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default = "default_version")]
+    pub version: String,
+    #[serde(default = "default_timestamp")]
+    pub created_at: String,
+    #[serde(default = "default_timestamp")]
+    pub updated_at: String,
+}
+
+fn default_version() -> String {
+    "1.0.0".to_string()
+}
+
+fn default_timestamp() -> String {
+    chrono::Utc::now().to_rfc3339()
 }
 
 impl RuleFile {
     pub fn new(name: impl Into<String>, content: impl Into<String>) -> Self {
+        let now = chrono::Utc::now().to_rfc3339();
         Self {
             name: name.into(),
             content: content.into(),
             enabled: true,
-            metadata: HashMap::new(),
+            sort_order: 0,
+            description: None,
+            version: "1.0.0".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
         }
     }
 
     pub fn with_enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
         self
+    }
+
+    pub fn with_sort_order(mut self, sort_order: i32) -> Self {
+        self.sort_order = sort_order;
+        self
+    }
+
+    pub fn with_description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    pub fn touch(&mut self) {
+        self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    fn to_bifrost_meta(&self) -> BifrostRuleFileMeta {
+        BifrostRuleFileMeta {
+            name: self.name.clone(),
+            enabled: self.enabled,
+            sort_order: self.sort_order,
+            version: self.version.clone(),
+            created_at: self.created_at.clone(),
+            updated_at: self.updated_at.clone(),
+            description: self.description.clone(),
+        }
+    }
+
+    fn from_bifrost(meta: BifrostRuleFileMeta, content: String) -> Self {
+        Self {
+            name: meta.name,
+            content,
+            enabled: meta.enabled,
+            sort_order: meta.sort_order,
+            description: meta.description,
+            version: meta.version,
+            created_at: meta.created_at,
+            updated_at: meta.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RuleSummary {
+    pub name: String,
+    pub enabled: bool,
+    pub sort_order: i32,
+    pub rule_count: usize,
+    pub description: Option<String>,
+    pub updated_at: String,
+}
+
+impl From<&RuleFile> for RuleSummary {
+    fn from(rule: &RuleFile) -> Self {
+        let rule_count = rule
+            .content
+            .lines()
+            .filter(|l| {
+                let trimmed = l.trim();
+                !trimmed.is_empty() && !trimmed.starts_with('#')
+            })
+            .count();
+
+        Self {
+            name: rule.name.clone(),
+            enabled: rule.enabled,
+            sort_order: rule.sort_order,
+            rule_count,
+            description: rule.description.clone(),
+            updated_at: rule.updated_at.clone(),
+        }
     }
 }
 
@@ -51,23 +145,47 @@ impl RulesStorage {
     }
 
     fn rule_path(&self, name: &str) -> PathBuf {
+        self.base_dir.join(format!("{}.bifrost", name))
+    }
+
+    fn legacy_rule_path(&self, name: &str) -> PathBuf {
         self.base_dir.join(format!("{}.json", name))
     }
 
     pub fn load(&self, name: &str) -> Result<RuleFile> {
-        let path = self.rule_path(name);
-        if !path.exists() {
-            return Err(BifrostError::NotFound(format!("Rule '{}' not found", name)));
+        let bifrost_path = self.rule_path(name);
+        let legacy_path = self.legacy_rule_path(name);
+
+        if bifrost_path.exists() {
+            let content = fs::read_to_string(&bifrost_path)?;
+            let file = BifrostFileParser::parse_rules(&content)
+                .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
+            Ok(RuleFile::from_bifrost(file.meta, file.content))
+        } else if legacy_path.exists() {
+            #[derive(Deserialize)]
+            struct LegacyRuleFile {
+                name: String,
+                content: String,
+                enabled: bool,
+            }
+            let content = fs::read_to_string(&legacy_path)?;
+            let legacy: LegacyRuleFile = serde_json::from_str(&content).map_err(|e| {
+                BifrostError::Parse(format!("Failed to parse legacy rule file: {}", e))
+            })?;
+
+            let rule = RuleFile::new(legacy.name, legacy.content).with_enabled(legacy.enabled);
+            self.save(&rule)?;
+            fs::remove_file(&legacy_path)?;
+            Ok(rule)
+        } else {
+            Err(BifrostError::NotFound(format!("Rule '{}' not found", name)))
         }
-        let content = fs::read_to_string(&path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))
     }
 
     pub fn save(&self, rule: &RuleFile) -> Result<()> {
         let path = self.rule_path(&rule.name);
-        let content = serde_json::to_string_pretty(rule)
-            .map_err(|e| BifrostError::Config(format!("Failed to serialize rule: {}", e)))?;
+        let meta = rule.to_bifrost_meta();
+        let content = BifrostFileWriter::write_rules(&meta, &rule.content);
         fs::write(&path, content)?;
         Ok(())
     }
@@ -77,9 +195,12 @@ impl RulesStorage {
         for entry in fs::read_dir(&self.base_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+            let ext = path.extension().and_then(|s| s.to_str());
+            if ext == Some("bifrost") || ext == Some("json") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    names.push(stem.to_string());
+                    if !names.contains(&stem.to_string()) {
+                        names.push(stem.to_string());
+                    }
                 }
             }
         }
@@ -88,11 +209,20 @@ impl RulesStorage {
     }
 
     pub fn delete(&self, name: &str) -> Result<()> {
-        let path = self.rule_path(name);
-        if !path.exists() {
+        let bifrost_path = self.rule_path(name);
+        let legacy_path = self.legacy_rule_path(name);
+
+        let exists = bifrost_path.exists() || legacy_path.exists();
+        if !exists {
             return Err(BifrostError::NotFound(format!("Rule '{}' not found", name)));
         }
-        fs::remove_file(&path)?;
+
+        if bifrost_path.exists() {
+            fs::remove_file(&bifrost_path)?;
+        }
+        if legacy_path.exists() {
+            fs::remove_file(&legacy_path)?;
+        }
         Ok(())
     }
 
@@ -109,21 +239,28 @@ impl RulesStorage {
 
         let mut rule = self.load(old)?;
         rule.name = new.to_string();
+        rule.touch();
         self.save(&rule)?;
         self.delete(old)?;
         Ok(())
     }
 
     pub fn exists(&self, name: &str) -> bool {
-        self.rule_path(name).exists()
+        self.rule_path(name).exists() || self.legacy_rule_path(name).exists()
     }
 
     pub fn load_all(&self) -> Result<Vec<RuleFile>> {
         let names = self.list()?;
         let mut rules = Vec::new();
         for name in names {
-            rules.push(self.load(&name)?);
+            match self.load(&name) {
+                Ok(rule) => rules.push(rule),
+                Err(e) => {
+                    tracing::warn!(name = %name, error = %e, "Failed to load rule file, skipping");
+                }
+            }
         }
+        rules.sort_by_key(|r| r.sort_order);
         Ok(rules)
     }
 
@@ -135,7 +272,36 @@ impl RulesStorage {
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
         let mut rule = self.load(name)?;
         rule.enabled = enabled;
+        rule.touch();
         self.save(&rule)
+    }
+
+    pub fn set_sort_order(&self, name: &str, sort_order: i32) -> Result<()> {
+        let mut rule = self.load(name)?;
+        rule.sort_order = sort_order;
+        rule.touch();
+        self.save(&rule)
+    }
+
+    pub fn update_content(&self, name: &str, content: String) -> Result<()> {
+        let mut rule = self.load(name)?;
+        rule.content = content;
+        rule.touch();
+        self.save(&rule)
+    }
+
+    pub fn list_summaries(&self) -> Result<Vec<RuleSummary>> {
+        let rules = self.load_all()?;
+        Ok(rules.iter().map(RuleSummary::from).collect())
+    }
+
+    pub fn reorder(&self, order: &[String]) -> Result<()> {
+        for (i, name) in order.iter().enumerate() {
+            if self.exists(name) {
+                self.set_sort_order(name, i as i32)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -166,6 +332,22 @@ mod tests {
         assert_eq!(loaded.name, "test");
         assert_eq!(loaded.content, "example.com resHeaders://x-test=1");
         assert!(loaded.enabled);
+    }
+
+    #[test]
+    fn test_save_creates_bifrost_file() {
+        let (temp_dir, storage) = setup();
+        let rule = RuleFile::new("test", "example.com proxy://localhost");
+        storage.save(&rule).unwrap();
+
+        let file_path = temp_dir.path().join("test.bifrost");
+        assert!(file_path.exists());
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(content.starts_with("01 rules"));
+        assert!(content.contains("[meta]"));
+        assert!(content.contains("name = \"test\""));
+        assert!(content.contains("---"));
     }
 
     #[test]
@@ -290,5 +472,58 @@ mod tests {
 
         let loaded = storage.load("test").unwrap();
         assert_eq!(loaded.content, "content2");
+    }
+
+    #[test]
+    fn test_sort_order() {
+        let (_temp_dir, storage) = setup();
+        storage
+            .save(&RuleFile::new("rule1", "c1").with_sort_order(2))
+            .unwrap();
+        storage
+            .save(&RuleFile::new("rule2", "c2").with_sort_order(0))
+            .unwrap();
+        storage
+            .save(&RuleFile::new("rule3", "c3").with_sort_order(1))
+            .unwrap();
+
+        let rules = storage.load_all().unwrap();
+        assert_eq!(rules[0].name, "rule2");
+        assert_eq!(rules[1].name, "rule3");
+        assert_eq!(rules[2].name, "rule1");
+    }
+
+    #[test]
+    fn test_reorder() {
+        let (_temp_dir, storage) = setup();
+        storage.save(&RuleFile::new("a", "ca")).unwrap();
+        storage.save(&RuleFile::new("b", "cb")).unwrap();
+        storage.save(&RuleFile::new("c", "cc")).unwrap();
+
+        storage
+            .reorder(&["c".to_string(), "a".to_string(), "b".to_string()])
+            .unwrap();
+
+        let rules = storage.load_all().unwrap();
+        assert_eq!(rules[0].name, "c");
+        assert_eq!(rules[1].name, "a");
+        assert_eq!(rules[2].name, "b");
+    }
+
+    #[test]
+    fn test_list_summaries() {
+        let (_temp_dir, storage) = setup();
+        storage
+            .save(
+                &RuleFile::new("test", "rule1\nrule2\n# comment\n")
+                    .with_description(Some("Test rules".to_string())),
+            )
+            .unwrap();
+
+        let summaries = storage.list_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].name, "test");
+        assert_eq!(summaries[0].rule_count, 2);
+        assert_eq!(summaries[0].description, Some("Test rules".to_string()));
     }
 }

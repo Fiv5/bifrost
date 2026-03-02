@@ -278,6 +278,7 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tokio-tungstenite",
+ "toml",
  "tracing",
  "url",
  "urlencoding",
@@ -334,6 +335,7 @@ dependencies = [
  "sysproxy",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -441,6 +443,7 @@ name = "bifrost-storage"
 version = "0.0.3-alpha"
 dependencies = [
  "bifrost-core",
+ "chrono",
  "dirs 5.0.1",
  "futures",
  "serde",

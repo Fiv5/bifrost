@@ -155,7 +155,6 @@ d](./routing.md#tunnel) |
 | `method` | 修改请求方法 | [request-modification.md](./request-modification.md#method) |
 | `reqCookies` | 设置请求 Cookie | [request-modification.md](./request-modification.md#reqcookies) |
 | `reqBody` | 设置请求 Body | [body-manipulation.md](./body-manipulation.md#reqbody) |
-| `forwardedFor` | 设置 X-Forwarded-For | [request-modification.md](./request-modification.md#forwardedfor) |
 | `reqType` | 设置请求 Content-Type | [request-modification.md](./request-modification.md#reqtype) |
 | `reqCharset` | 设置请求字符集 | [request-modification.md](./request-modification.md#reqcharset) |
 

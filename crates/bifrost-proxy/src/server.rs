@@ -296,7 +296,6 @@ pub struct ResolvedRules {
     pub url_params: Vec<(String, String)>,
     pub url_replace: Vec<(String, String)>,
 
-    pub forwarded_for: Option<String>,
     pub req_type: Option<String>,
     pub req_charset: Option<String>,
 
@@ -341,6 +340,8 @@ pub struct ResolvedRules {
     pub header_replace: Vec<HeaderReplaceRule>,
 
     pub values: std::collections::HashMap<String, String>,
+
+    pub trailers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]

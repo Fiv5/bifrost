@@ -145,13 +145,10 @@ test-cache.local http://127.0.0.1:3000 cache://max-age=3600
 # 3.15 attachment - 附件下载
 test-attachment.local http://127.0.0.1:3000 attachment://download.txt
 
-# 3.16 forwardedFor - X-Forwarded-For
-test-forwarded.local http://127.0.0.1:3000 forwardedFor://192.168.1.100
-
-# 3.17 resMerge - 响应合并 (JSON)
+# 3.16 resMerge - 响应合并 (JSON)
 test-res-merge.local http://127.0.0.1:3000 resMerge://({"merged":"data"})
 
-# 3.18 headerReplace - 头部内容替换
+# 3.17 headerReplace - 头部内容替换
 test-header-replace.local http://127.0.0.1:3000 headerReplace://res.content-type:text/plain=application/json
 
 # ============================================

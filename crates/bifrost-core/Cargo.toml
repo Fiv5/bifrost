@@ -23,6 +23,7 @@ once_cell.workspace = true
 serde.workspace = true
 sysproxy.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 lru.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }

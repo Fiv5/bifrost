@@ -606,7 +606,7 @@ fn validate_single_protocol_value(
         "reqdelay" | "resdelay" => validate_delay_value(clean_value, line_num, start_col, end_col),
         "reqspeed" | "resspeed" => validate_speed_value(clean_value, line_num, start_col, end_col),
         "method" => validate_http_method(clean_value, line_num, start_col, end_col),
-        "dns" | "forwardedfor" => validate_ip_address(clean_value, line_num, start_col, end_col),
+        "dns" => validate_ip_address(clean_value, line_num, start_col, end_col),
         "host" | "xhost" => validate_host_port(clean_value, line_num, start_col, end_col),
         _ => None,
     }

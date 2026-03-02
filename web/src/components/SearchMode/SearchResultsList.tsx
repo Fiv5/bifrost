@@ -1,3 +1,5 @@
+"use no memo";
+
 import { useRef, useCallback, useMemo, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Tag, theme } from "antd";
@@ -140,6 +142,7 @@ export default function SearchResultsList({
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: results.length,
     getScrollElement: () => parentRef.current,

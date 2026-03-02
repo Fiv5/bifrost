@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ConfigProvider, theme } from "antd";
 import AppLayout from "./components/Layout";
+import BifrostFileDropZone from "./components/BifrostFileDropZone";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";
@@ -41,17 +42,19 @@ export default function App() {
       }}
     >
       <BrowserRouter basename="/_bifrost">
-        <Routes>
-          <Route path="/" element={<AppLayout />}>
-            <Route index element={<Navigate to="/traffic" replace />} />
-            <Route path="traffic" element={<Traffic />} />
-            <Route path="replay" element={<Replay />} />
-            <Route path="rules" element={<Rules />} />
-            <Route path="values" element={<Values />} />
-            <Route path="scripts" element={<Scripts />} />
-            <Route path="settings" element={<Settings />} />
-          </Route>
-        </Routes>
+        <BifrostFileDropZone>
+          <Routes>
+            <Route path="/" element={<AppLayout />}>
+              <Route index element={<Navigate to="/traffic" replace />} />
+              <Route path="traffic" element={<Traffic />} />
+              <Route path="replay" element={<Replay />} />
+              <Route path="rules" element={<Rules />} />
+              <Route path="values" element={<Values />} />
+              <Route path="scripts" element={<Scripts />} />
+              <Route path="settings" element={<Settings />} />
+            </Route>
+          </Routes>
+        </BifrostFileDropZone>
       </BrowserRouter>
     </ConfigProvider>
   );

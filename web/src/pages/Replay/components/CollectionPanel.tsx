@@ -11,10 +11,13 @@ import {
   DeleteOutlined,
   EditOutlined,
   FolderAddOutlined,
+  ExportOutlined,
 } from "@ant-design/icons";
 import type { DataNode } from "antd/es/tree";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import type { ReplayRequestSummary, ReplayGroup } from "../../../types";
+import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
+import { useExportBifrost } from "../../../hooks/useExportBifrost";
 
 const { Text } = Typography;
 
@@ -83,6 +86,7 @@ export default function CollectionPanel() {
   const setExpandedKeys = useCallback((keys: string[]) => {
     updateUIState({ collectionExpandedKeys: keys });
   }, [updateUIState]);
+  const { exportFile } = useExportBifrost();
   const [newGroupModalVisible, setNewGroupModalVisible] = useState(false);
   const [newGroupName, setNewGroupName] = useState("");
   const [editGroupId, setEditGroupId] = useState<string | null>(null);
@@ -156,6 +160,26 @@ export default function CollectionPanel() {
   const handleMoveRequest = useCallback(async (requestId: string, groupId: string | null) => {
     await moveRequest(requestId, groupId);
   }, [moveRequest]);
+
+  const handleExportRequest = useCallback(async (requestIds: string[]) => {
+    if (requestIds.length === 0) return;
+    await exportFile("template", { request_ids: requestIds });
+  }, [exportFile]);
+
+  const handleExportGroup = useCallback(async (groupId: string) => {
+    await exportFile("template", { group_ids: [groupId] });
+  }, [exportFile]);
+
+  const handleExportAll = useCallback(async () => {
+    const allRequestIds = savedRequests.map(r => r.id);
+    if (allRequestIds.length === 0) return;
+    await exportFile("template", { request_ids: allRequestIds });
+  }, [savedRequests, exportFile]);
+
+  const handleImportSuccess = useCallback(async () => {
+    await loadGroups();
+    await useReplayStore.getState().loadSavedRequests();
+  }, [loadGroups]);
 
   const reorderGroups = useCallback(async (reorderedGroups: ReplayGroup[]) => {
     for (let i = 0; i < reorderedGroups.length; i++) {
@@ -309,7 +333,9 @@ export default function CollectionPanel() {
           <Dropdown
             menu={{
               items: [
+                { key: 'export', label: 'Export', icon: <ExportOutlined /> },
                 ...(groups.length > 0 ? [
+                  { type: 'divider' as const },
                   {
                     key: 'move',
                     label: 'Move to...',
@@ -325,7 +351,9 @@ export default function CollectionPanel() {
                 { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true },
               ],
               onClick: ({ key }) => {
-                if (key === 'delete') {
+                if (key === 'export') {
+                  handleExportRequest([req.id]);
+                } else if (key === 'delete') {
                   handleDeleteRequest(req.id);
                 } else if (key === 'move-ungrouped') {
                   handleMoveRequest(req.id, null);
@@ -349,7 +377,7 @@ export default function CollectionPanel() {
       ),
       isLeaf: true,
     };
-  }, [currentRequest, groups, handleSelectRequest, handleDeleteRequest, handleMoveRequest, styles, searchText, token]);
+  }, [currentRequest, groups, handleSelectRequest, handleDeleteRequest, handleMoveRequest, handleExportRequest, styles, searchText, token]);
 
   const treeData: DataNode[] = useMemo(() => {
     const nodes: DataNode[] = [];
@@ -375,12 +403,16 @@ export default function CollectionPanel() {
             <Dropdown
               menu={{
                 items: [
+                  { key: 'export', label: `Export (${groupRequests.length})`, icon: <ExportOutlined />, disabled: groupRequests.length === 0 },
+                  { type: 'divider' },
                   { key: 'rename', label: 'Rename', icon: <EditOutlined /> },
                   { type: 'divider' },
                   { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true },
                 ],
                 onClick: ({ key }) => {
-                  if (key === 'rename') {
+                  if (key === 'export') {
+                    handleExportGroup(group.id);
+                  } else if (key === 'rename') {
                     setEditGroupId(group.id);
                     setEditGroupName(group.name);
                   } else if (key === 'delete') {
@@ -425,7 +457,7 @@ export default function CollectionPanel() {
     }
 
     return nodes;
-  }, [groups, requestsByGroup, buildRequestNode, styles, handleDeleteGroup, searchText, expandedKeys]);
+  }, [groups, requestsByGroup, buildRequestNode, styles, handleDeleteGroup, handleExportGroup, searchText, expandedKeys]);
 
   const handleDrop: TreeProps<DataNode>['onDrop'] = useCallback(async (info: Parameters<NonNullable<TreeProps<DataNode>['onDrop']>>[0]) => {
     const dragKey = info.dragNode.key as string;
@@ -528,6 +560,22 @@ export default function CollectionPanel() {
             icon={<PlusOutlined />}
             onClick={createNewRequest}
             title="New Request"
+          />
+          {savedRequests.length > 0 && (
+            <Button
+              type="text"
+              size="small"
+              icon={<ExportOutlined />}
+              onClick={handleExportAll}
+              title="Export All"
+            />
+          )}
+          <ImportBifrostButton
+            expectedType="template"
+            onImportSuccess={handleImportSuccess}
+            buttonText=""
+            buttonType="text"
+            size="small"
           />
         </div>
       </div>

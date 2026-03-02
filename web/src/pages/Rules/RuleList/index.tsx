@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import {
   Input,
   Button,
@@ -18,8 +18,11 @@ import {
   EditOutlined,
   DeleteOutlined,
   PoweroffOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
 import { useRulesStore } from '../../../stores/useRulesStore';
+import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
+import { useExportBifrost } from '../../../hooks/useExportBifrost';
 import styles from './index.module.css';
 
 export default function RuleList() {
@@ -44,6 +47,8 @@ export default function RuleList() {
   const [renameModalVisible, setRenameModalVisible] = useState(false);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  const [selectedRules, setSelectedRules] = useState<string[]>([]);
+  const { exportFile } = useExportBifrost();
 
   const filteredRules = useMemo(() => {
     if (!searchKeyword) return rules;
@@ -102,34 +107,78 @@ export default function RuleList() {
     }
   };
 
-  const getContextMenuItems = (name: string, enabled: boolean): MenuProps['items'] => [
-    {
-      key: 'toggle',
-      icon: enabled ? <PoweroffOutlined /> : <CheckOutlined />,
-      label: enabled ? 'Disable' : 'Enable',
-      onClick: () => handleToggle(name, !enabled),
+  const handleExport = useCallback(
+    async (names: string[]) => {
+      if (names.length === 0) return;
+      const filename =
+        names.length === 1
+          ? `${names[0]}.bifrost`
+          : `bifrost-rules-${names.length}.bifrost`;
+      await exportFile('rules', { rule_names: names }, filename);
     },
-    {
-      key: 'rename',
-      icon: <EditOutlined />,
-      label: 'Rename',
-      onClick: () => {
-        setRenameTarget(name);
-        setNewName(name);
-        setRenameModalVisible(true);
+    [exportFile]
+  );
+
+  const handleImportSuccess = useCallback(() => {
+    fetchRules();
+  }, [fetchRules]);
+
+  const handleSelect = useCallback(
+    (name: string, isMultiSelect: boolean) => {
+      if (isMultiSelect) {
+        setSelectedRules((prev) =>
+          prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
+        );
+      } else {
+        setSelectedRules([]);
+        selectRule(name);
+      }
+    },
+    [selectRule]
+  );
+
+  const getContextMenuItems = (name: string, enabled: boolean): MenuProps['items'] => {
+    const isSelected = selectedRules.includes(name);
+    const exportNames = isSelected && selectedRules.length > 0 ? selectedRules : [name];
+
+    return [
+      {
+        key: 'toggle',
+        icon: enabled ? <PoweroffOutlined /> : <CheckOutlined />,
+        label: enabled ? 'Disable' : 'Enable',
+        onClick: () => handleToggle(name, !enabled),
       },
-    },
-    {
-      type: 'divider',
-    },
-    {
-      key: 'delete',
-      icon: <DeleteOutlined />,
-      label: 'Delete',
-      danger: true,
-      onClick: () => handleDelete(name),
-    },
-  ];
+      {
+        key: 'rename',
+        icon: <EditOutlined />,
+        label: 'Rename',
+        onClick: () => {
+          setRenameTarget(name);
+          setNewName(name);
+          setRenameModalVisible(true);
+        },
+      },
+      {
+        type: 'divider',
+      },
+      {
+        key: 'export',
+        icon: <ExportOutlined />,
+        label: `Export${exportNames.length > 1 ? ` (${exportNames.length})` : ''}`,
+        onClick: () => handleExport(exportNames),
+      },
+      {
+        type: 'divider',
+      },
+      {
+        key: 'delete',
+        icon: <DeleteOutlined />,
+        label: 'Delete',
+        danger: true,
+        onClick: () => handleDelete(name),
+      },
+    ];
+  };
 
   return (
     <div className={styles.container}>
@@ -152,6 +201,13 @@ export default function RuleList() {
               onClick={() => fetchRules()}
             />
           </Tooltip>
+          <ImportBifrostButton
+            expectedType="rules"
+            onImportSuccess={handleImportSuccess}
+            buttonText=""
+            buttonType="text"
+            size="small"
+          />
         </div>
       </div>
       <div className={styles.searchBox}>
@@ -183,8 +239,8 @@ export default function RuleList() {
                   trigger={['contextMenu']}
                 >
                   <div
-                    className={`${styles.item} ${isSelected ? styles.selected : ''}`}
-                    onClick={() => selectRule(rule.name)}
+                    className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
+                    onClick={(e) => handleSelect(rule.name, e.ctrlKey || e.metaKey)}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
                   >
                     <div className={styles.itemContent}>

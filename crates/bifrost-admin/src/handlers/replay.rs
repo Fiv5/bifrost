@@ -502,6 +502,7 @@ async fn create_request(
         body: create_req.body,
         is_saved: create_req.is_saved,
         sort_order: 0,
+        source: crate::replay_db::RequestSource::Internal,
         created_at: now,
         updated_at: now,
     };

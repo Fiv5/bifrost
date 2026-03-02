@@ -3,6 +3,7 @@ pub mod logging;
 pub mod mock;
 pub mod process_info;
 pub mod tee;
+pub mod throttle;
 pub mod url;
 
 pub use http_size::{
@@ -20,4 +21,5 @@ pub use tee::{
     create_sse_tee_body, create_tee_body_with_store, store_request_body, store_response_body,
     SseTeeBody, TeeBody,
 };
+pub use throttle::wrap_throttled_body;
 pub use url::{apply_url_params, apply_url_replace, apply_url_rules, build_redirect_uri};

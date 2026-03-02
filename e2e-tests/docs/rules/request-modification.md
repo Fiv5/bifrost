@@ -256,34 +256,6 @@ user_id: 12345
 
 ---
 
-## forwardedFor
-
-设置 X-Forwarded-For 请求头，用于传递客户端真实 IP。
-
-### 语法
-
-```
-pattern forwardedFor://ip_address
-```
-
-### 示例
-
-```bash
-# 设置单个 IP
-www.example.com forwardedFor://192.168.1.100
-
-# 设置 IP 链（无空格，或使用 URI 编码 %20 替代空格）
-www.example.com forwardedFor://192.168.1.100,10.0.0.1
-```
-
-### 测试用例
-
-| 测试场景 | 规则 | 预期 |
-|---------|------|------|
-| 设置 IP | `test.com forwardedFor://1.2.3.4` | X-Forwarded-For: 1.2.3.4 |
-
----
-
 ## reqType
 
 设置请求的 Content-Type 头部。

@@ -467,12 +467,29 @@ function getProtocolValueSuggestions(protocol: string, range: IRange): languages
       break;
 
     case 'rescharset':
+    case 'reqcharset':
       ['utf-8', 'gbk', 'gb2312', 'iso-8859-1', 'utf-16'].forEach((charset, index) => {
         suggestions.push({
           ...base,
           label: charset,
           detail: `${charset} encoding`,
           insertText: charset,
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'trailers':
+      [
+        { value: '{X-Checksum:abc123}', detail: 'Checksum trailer' },
+        { value: '{Server-Timing:total;dur=123}', detail: 'Server timing trailer' },
+        { value: '{X-Request-Id:req-001}', detail: 'Request ID trailer' },
+      ].forEach(({ value, detail }, index) => {
+        suggestions.push({
+          ...base,
+          label: value,
+          detail,
+          insertText: value,
           sortText: String(index).padStart(2, '0'),
         });
       });

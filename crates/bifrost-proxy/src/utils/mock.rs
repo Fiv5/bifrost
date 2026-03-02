@@ -135,6 +135,34 @@ fn build_status_response(status: u16, rules: &ResolvedRules) -> Response<BoxBody
 
     let mut builder = Response::builder().status(status_code);
 
+    if rules.res_type.is_some() || rules.res_charset.is_some() {
+        let base_ct = rules
+            .res_type
+            .as_deref()
+            .map(|ct| ct.split(';').next().unwrap_or(ct).trim())
+            .unwrap_or("text/plain");
+
+        let content_type = if let Some(ref charset) = rules.res_charset {
+            format!("{}; charset={}", base_ct, charset)
+        } else {
+            base_ct.to_string()
+        };
+        builder = builder.header(header::CONTENT_TYPE, content_type);
+    }
+
+    if let Some(ref cache_value) = rules.cache {
+        let cache_control = if let Ok(seconds) = cache_value.parse::<u64>() {
+            if seconds == 0 {
+                "no-cache, no-store, must-revalidate".to_string()
+            } else {
+                format!("max-age={}", seconds)
+            }
+        } else {
+            cache_value.clone()
+        };
+        builder = builder.header(header::CACHE_CONTROL, cache_control);
+    }
+
     for (key, value) in &rules.res_headers {
         builder = builder.header(key.as_str(), value.as_str());
     }

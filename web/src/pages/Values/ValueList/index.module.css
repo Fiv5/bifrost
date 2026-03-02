@@ -92,6 +92,14 @@
   border-left-color: #177ddc;
 }
 
+.item.multiSelected {
+  background-color: #f0f5ff;
+}
+
+[data-theme="dark"] .item.multiSelected {
+  background-color: #111a2c;
+}
+
 .itemContent {
   display: flex;
   align-items: center;
@@ -125,6 +133,15 @@
   height: 6px;
   border-radius: 50%;
   background-color: #faad14;
+}
+
+.moreBtn {
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.item:hover .moreBtn {
+  opacity: 1;
 }
 
 .itemPreview {

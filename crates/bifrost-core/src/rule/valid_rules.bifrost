@@ -186,10 +186,7 @@ cache.test cache://3600
 # 4.15 attachment - 下载附件
 attachment.test attachment://filename.zip
 
-# 4.16 forwardedFor - 转发IP
-forwarded-for.test forwardedFor://192.168.1.1
-
-# 4.17 trailers - 响应Trailers
+# 4.16 trailers - 响应Trailers
 trailers.test trailers://(X-Checksum: abc123)
 
 # 4.18 resMerge - 响应合并
@@ -276,11 +273,8 @@ dns.test dns://8.8.8.8
 # 10. 高级功能协议 (Advanced Protocols)
 # -----------------------------------------------------------------------------
 
-# 10.1 sniCallback - SNI回调
-sni-callback.test sniCallback://callback-function
-
 # -----------------------------------------------------------------------------
-# 11. 组合规则示例 (Combined Rules)
+# 10. 组合规则示例 (Combined Rules)
 # -----------------------------------------------------------------------------
 
 # 多协议组合

@@ -52,7 +52,6 @@ pub enum Protocol {
     StatusCode,
     Cache,
     Attachment,
-    ForwardedFor,
     Trailers,
     ResMerge,
     HeaderReplace,
@@ -75,9 +74,6 @@ pub enum Protocol {
     RulesFile,
     ReqScript,
     ResScript,
-
-    // 高级功能
-    SniCallback,
 
     // DNS 解析
     Dns,
@@ -213,7 +209,6 @@ impl Protocol {
             "method" => Some(Protocol::Method),
             "cache" => Some(Protocol::Cache),
             "attachment" => Some(Protocol::Attachment),
-            "forwardedFor" => Some(Protocol::ForwardedFor),
             "rulesFile" => Some(Protocol::RulesFile),
             "reqScript" => Some(Protocol::ReqScript),
             "resScript" => Some(Protocol::ResScript),
@@ -251,7 +246,6 @@ impl Protocol {
             "cssPrepend" => Some(Protocol::CssPrepend),
             "htmlPrepend" => Some(Protocol::HtmlPrepend),
             "jsPrepend" => Some(Protocol::JsPrepend),
-            "sniCallback" => Some(Protocol::SniCallback),
             "dns" => Some(Protocol::Dns),
             "tlsIntercept" => Some(Protocol::TlsIntercept),
             "tlsPassthrough" => Some(Protocol::TlsPassthrough),
@@ -285,7 +279,6 @@ impl Protocol {
             Protocol::Method => "method",
             Protocol::Cache => "cache",
             Protocol::Attachment => "attachment",
-            Protocol::ForwardedFor => "forwardedFor",
             Protocol::RulesFile => "rulesFile",
             Protocol::ReqScript => "reqScript",
             Protocol::ResScript => "resScript",
@@ -323,7 +316,6 @@ impl Protocol {
             Protocol::CssPrepend => "cssPrepend",
             Protocol::HtmlPrepend => "htmlPrepend",
             Protocol::JsPrepend => "jsPrepend",
-            Protocol::SniCallback => "sniCallback",
             Protocol::Dns => "dns",
             Protocol::TlsIntercept => "tlsIntercept",
             Protocol::TlsPassthrough => "tlsPassthrough",
@@ -399,9 +391,7 @@ impl Protocol {
             | Protocol::RawFile
             | Protocol::Delete
             | Protocol::HeaderReplace
-            | Protocol::UrlReplace
-            | Protocol::SniCallback
-            | Protocol::ForwardedFor => ProtocolCategory::Both,
+            | Protocol::UrlReplace => ProtocolCategory::Both,
         }
     }
 
@@ -440,7 +430,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 66] = [
+pub const ALL_PROTOCOLS: [Protocol; 64] = [
     Protocol::Host,
     Protocol::XHost,
     Protocol::Http,
@@ -464,7 +454,6 @@ pub const ALL_PROTOCOLS: [Protocol; 66] = [
     Protocol::Method,
     Protocol::Cache,
     Protocol::Attachment,
-    Protocol::ForwardedFor,
     Protocol::RulesFile,
     Protocol::ReqScript,
     Protocol::ResScript,
@@ -502,7 +491,6 @@ pub const ALL_PROTOCOLS: [Protocol; 66] = [
     Protocol::CssPrepend,
     Protocol::HtmlPrepend,
     Protocol::JsPrepend,
-    Protocol::SniCallback,
     Protocol::Dns,
     Protocol::TlsIntercept,
     Protocol::TlsPassthrough,
@@ -515,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 66);
+        assert_eq!(ALL_PROTOCOLS.len(), 64);
     }
 
     #[test]
@@ -544,7 +532,6 @@ mod tests {
             "method",
             "cache",
             "attachment",
-            "forwardedFor",
             "rulesFile",
             "reqScript",
             "resScript",
@@ -582,7 +569,6 @@ mod tests {
             "cssPrepend",
             "htmlPrepend",
             "jsPrepend",
-            "sniCallback",
             "dns",
             "tlsIntercept",
             "tlsPassthrough",
@@ -595,7 +581,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 67);
+        assert_eq!(protocol_names.len(), 65);
     }
 
     #[test]
@@ -758,8 +744,6 @@ mod tests {
         assert_eq!(Protocol::Proxy.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::HeaderReplace.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::UrlReplace.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::SniCallback.category(), ProtocolCategory::Both);
-        assert_eq!(Protocol::ForwardedFor.category(), ProtocolCategory::Both);
     }
 
     #[test]
@@ -809,7 +793,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 66);
+        assert_eq!(all.len(), 64);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));

@@ -628,18 +628,18 @@ rust/
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### 协议分类 (66 种)
+#### 协议分类 (64 种)
 
 | 分类     | 协议                                                                                                                                                                                                                                                                                                |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 基础路由 | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                                                                                                        |
 | TLS 控制 | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                                                                                                                           |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params`                                                                     |
-| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `replaceStatus`, `statusCode`, `cache`, `attachment`, `forwardedFor`, `trailers`, `resMerge`, `headerReplace` |
+| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `replaceStatus`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace` |
 | 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                                                                                                                    |
 | URL 处理 | `urlReplace`                                                                                                                                                                                                                                                                                        |
 | 脚本插件 | `rulesFile`, `resScript`                                                                                                                                                                                                                                                                            |
-| TLS 高级 | `sniCallback`, `dns`                                                                                                                                                                                                                                                                      |
+| DNS      | `dns`                                                                                                                                                                                                                                                                      |
 
 ### bifrost-proxy (代理服务器)
 

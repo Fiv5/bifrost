@@ -1,12 +1,5 @@
 # 认证和安全测试
 # A-10: auth 基本认证
-# A-11: forwardedFor 头
 
 # A-10 auth 协议 - 添加 Basic Auth
 test-auth.local http://127.0.0.1:3000 auth://username:password
-
-# A-11 forwardedFor - 设置 X-Forwarded-For 头
-test-forwarded.local http://127.0.0.1:3000 forwardedFor://192.168.1.100
-
-# A-12 多个 X-Forwarded-For (链式代理)
-test-forwarded-chain.local http://127.0.0.1:3000 forwardedFor://192.168.1.1,10.0.0.1

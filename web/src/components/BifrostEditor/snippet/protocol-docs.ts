@@ -157,14 +157,6 @@ export const PROTOCOL_DOCS: Record<string, ProtocolDoc> = {
     examples: ['dns://127.0.0.1', 'dns://192.168.1.100', 'dns://::1'],
     category: 'redirect',
   },
-  forwardedFor: {
-    name: 'forwardedFor',
-    description: 'Set the X-Forwarded-For header',
-    valueType: 'IP address',
-    valueDescription: 'Client IP address to forward',
-    examples: ['forwardedFor://192.168.1.1', 'forwardedFor://10.0.0.1'],
-    category: 'header',
-  },
   reqScript: {
     name: 'reqScript',
     description: 'Execute a request modification script',
@@ -291,6 +283,23 @@ export const PROTOCOL_DOCS: Record<string, ProtocolDoc> = {
     valueType: 'charset',
     valueDescription: 'Character encoding name',
     examples: ['resCharset://utf-8', 'resCharset://gbk', 'resCharset://iso-8859-1'],
+    category: 'header',
+  },
+  reqCharset: {
+    name: 'reqCharset',
+    description: 'Set request character encoding',
+    valueType: 'charset',
+    valueDescription: 'Character encoding name',
+    examples: ['reqCharset://utf-8', 'reqCharset://gbk', 'reqCharset://iso-8859-1'],
+    category: 'header',
+  },
+  trailers: {
+    name: 'trailers',
+    description: 'Add HTTP trailer headers to response',
+    valueType: 'key: value',
+    valueDescription: 'Trailer header name and value pairs',
+    valueSyntax: 'Use {key:value} or {key:value,key2:value2} for multiple trailers',
+    examples: ['trailers://({X-Checksum:abc123})', 'trailers://({Server-Timing:total;dur=123})'],
     category: 'header',
   },
   rulesFile: {

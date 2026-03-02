@@ -581,10 +581,10 @@ example.com resScript://inject-data
 | DNS      | `dns`                                                                                                                                                                                                |
 | 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                            |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
-| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace`, `forwardedFor` |
+| 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace` |
 | 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                     |
 | 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                          |
-| 高级     | `rulesFile`, `sniCallback`, `urlReplace`                                                                                                                              |
+| 高级     | `rulesFile`, `urlReplace`                                                                                                                              |
 
 ## 脚本引擎
 

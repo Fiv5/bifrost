@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Menu, message, Modal } from 'antd';
 import type { MenuProps } from 'antd';
@@ -8,6 +8,7 @@ import {
   DownloadOutlined,
   LockOutlined,
   SendOutlined,
+  ExportOutlined,
 } from '@ant-design/icons';
 import type { TrafficRecord, TrafficSummary } from '../../types';
 import { generateCurl } from '../../utils/curl';
@@ -15,6 +16,11 @@ import { downloadHAR } from '../../utils/har';
 import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/traffic';
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../api/config';
 import { useReplayStore } from '../../stores/useReplayStore';
+import { useExportBifrost } from '../../hooks/useExportBifrost';
+
+const MENU_WIDTH = 220;
+const MENU_ITEM_HEIGHT = 36;
+const DIVIDER_HEIGHT = 9;
 
 interface TrafficContextMenuProps {
   record: TrafficSummary | null;
@@ -34,6 +40,33 @@ export default function TrafficContextMenu({
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const importFromTraffic = useReplayStore((state) => state.importFromTraffic);
+  const { exportFile } = useExportBifrost();
+
+  const isTunnel = record?.is_tunnel || record?.method === 'CONNECT';
+
+  const adjustedPosition = useMemo(() => {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const padding = 8;
+
+    const menuItemCount = isTunnel ? 5 : 6;
+    const dividerCount = 1;
+    const estimatedMenuHeight =
+      menuItemCount * MENU_ITEM_HEIGHT + dividerCount * DIVIDER_HEIGHT + 8;
+
+    let newX = position.x;
+    let newY = position.y;
+
+    if (position.x + MENU_WIDTH > viewportWidth - padding) {
+      newX = Math.max(padding, position.x - MENU_WIDTH);
+    }
+
+    if (position.y + estimatedMenuHeight > viewportHeight - padding) {
+      newY = Math.max(padding, viewportHeight - estimatedMenuHeight - padding);
+    }
+
+    return { x: newX, y: newY };
+  }, [position, isTunnel]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -165,9 +198,17 @@ export default function TrafficContextMenu({
     navigate('/replay');
   }, [record, onClose, importFromTraffic, navigate]);
 
+  const exportAsBifrost = useCallback(async () => {
+    const recordsToExport = selectedRecords.length > 1 ? selectedRecords : (record ? [record] : []);
+    if (recordsToExport.length === 0) return;
+
+    const recordIds = recordsToExport.map((r) => r.id);
+    await exportFile('network', { record_ids: recordIds, include_body: true });
+    onClose();
+  }, [record, selectedRecords, exportFile, onClose]);
+
   if (!visible || !record) return null;
 
-  const isTunnel = record.is_tunnel || record.method === 'CONNECT';
   const hasMultipleSelected = selectedRecords.length > 1;
 
   const menuItems: MenuProps['items'] = [
@@ -198,6 +239,12 @@ export default function TrafficContextMenu({
       label: hasMultipleSelected ? `Download ${selectedRecords.length} requests as HAR` : 'Download as HAR',
       onClick: downloadAsHAR,
     },
+    {
+      key: 'export-bifrost',
+      icon: <ExportOutlined />,
+      label: hasMultipleSelected ? `Export ${selectedRecords.length} requests as .bifrost` : 'Export as .bifrost',
+      onClick: exportAsBifrost,
+    },
     ...(isTunnel ? [
       { type: 'divider' as const },
       {
@@ -214,8 +261,8 @@ export default function TrafficContextMenu({
       ref={menuRef}
       style={{
         position: 'fixed',
-        left: position.x,
-        top: position.y,
+        left: adjustedPosition.x,
+        top: adjustedPosition.y,
         zIndex: 1050,
         boxShadow: '0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12), 0 9px 28px 8px rgba(0, 0, 0, 0.05)',
         borderRadius: 8,

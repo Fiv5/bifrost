@@ -1,3 +1,5 @@
+"use no memo";
+
 import {
   useRef,
   useEffect,
@@ -546,6 +548,7 @@ export default function VirtualTrafficTable({
         ? [contextMenu.record]
         : [];
 
+  // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
     count: data.length,
     getScrollElement: () => parentRef.current,

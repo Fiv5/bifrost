@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RequestSource {
+    #[default]
+    Internal,
+    Imported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuleMode {
     #[default]
     Enabled,
@@ -106,6 +114,8 @@ pub struct ReplayRequest {
     pub body: Option<ReplayBody>,
     pub is_saved: bool,
     pub sort_order: i32,
+    #[serde(default)]
+    pub source: RequestSource,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -124,6 +134,7 @@ impl ReplayRequest {
             body: None,
             is_saved: false,
             sort_order: 0,
+            source: RequestSource::Internal,
             created_at: now,
             updated_at: now,
         }
@@ -188,6 +199,8 @@ pub struct ReplayRequestSummary {
     pub method: String,
     pub url: String,
     pub is_saved: bool,
+    #[serde(default)]
+    pub source: RequestSource,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -201,6 +214,7 @@ impl From<&ReplayRequest> for ReplayRequestSummary {
             method: req.method.clone(),
             url: req.url.clone(),
             is_saved: req.is_saved,
+            source: req.source,
             created_at: req.created_at,
             updated_at: req.updated_at,
         }

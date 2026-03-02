@@ -181,9 +181,6 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     let parsed = parse_replace_value(value);
                     result.url_replace.extend(parsed.string_rules);
                 }
-                Protocol::ForwardedFor => {
-                    result.forwarded_for = Some(value.to_string());
-                }
                 Protocol::ReqType => {
                     result.req_type = Some(value.to_string());
                 }

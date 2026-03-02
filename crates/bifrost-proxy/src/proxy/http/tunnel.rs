@@ -43,6 +43,7 @@ use crate::utils::http_size::{
 };
 use crate::utils::logging::{format_rules_summary, RequestContext};
 use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
+use crate::utils::throttle::wrap_throttled_body;
 
 use futures_util::StreamExt;
 
@@ -1121,6 +1122,12 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
+    if let Some(speed) = resolved_rules.req_speed {
+        if verbose_logging {
+            info!("[{}] [REQ_SPEED] Speed limit: {} bytes/s", req_id, speed);
+        }
+    }
+
     let dns_start = Instant::now();
     let resolved_addrs: Vec<std::net::SocketAddr> =
         match tokio::net::lookup_host(format!("{}:{}", actual_target_host, actual_target_port))
@@ -1697,10 +1704,17 @@ async fn handle_intercepted_request_with_protocol(
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
         }
 
+        if let Some(speed) = resolved_rules.res_speed {
+            if verbose_logging {
+                info!("[{}] [RES_SPEED] Speed limit: {} bytes/s", req_id, speed);
+            }
+        }
+
         if is_sse {
             let tee_body =
                 create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
+            return Ok(Response::from_parts(res_parts, final_body));
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
@@ -1713,7 +1727,8 @@ async fn handle_intercepted_request_with_protocol(
                 Some(traffic_type),
                 response_headers_size,
             );
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
+            return Ok(Response::from_parts(res_parts, final_body));
         }
     }
 
@@ -1856,6 +1871,12 @@ async fn handle_intercepted_request_with_protocol(
         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
     }
 
+    if let Some(speed) = resolved_rules.res_speed {
+        if verbose_logging {
+            info!("[{}] [RES_SPEED] Speed limit: {} bytes/s", req_id, speed);
+        }
+    }
+
     let res_content_type = res_parts
         .headers
         .get(hyper::header::CONTENT_TYPE)
@@ -1898,10 +1919,9 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    Ok(Response::from_parts(
-        res_parts,
-        full_body(final_body.to_vec()),
-    ))
+    let response_body =
+        wrap_throttled_body(full_body(final_body.to_vec()), resolved_rules.res_speed);
+    Ok(Response::from_parts(res_parts, response_body))
 }
 
 #[allow(clippy::too_many_arguments)]

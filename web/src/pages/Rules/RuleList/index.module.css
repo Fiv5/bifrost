@@ -92,6 +92,14 @@
   border-left-color: #177ddc;
 }
 
+.item.multiSelected {
+  background-color: #f0f5ff;
+}
+
+[data-theme="dark"] .item.multiSelected {
+  background-color: #111a2c;
+}
+
 .itemContent {
   display: flex;
   align-items: center;

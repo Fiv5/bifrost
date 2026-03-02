@@ -3,6 +3,7 @@ use tracing::debug;
 
 use crate::handlers::{
     app_icon::handle_app_icon,
+    bifrost_file::handle_bifrost_file,
     cert::{handle_cert, handle_cert_public, handle_proxy_public},
     config::handle_config,
     cors_preflight, error_response, frames,
@@ -126,6 +127,9 @@ impl AdminRouter {
             handle_replay(req, state, push_manager, path).await
         } else if path.starts_with("/api/syntax") {
             handle_syntax(req, state, path).await
+        } else if path.starts_with("/api/bifrost-file") {
+            let path_suffix = path.strip_prefix("/api/bifrost-file").unwrap_or("");
+            handle_bifrost_file(req, path_suffix, state.clone()).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }
