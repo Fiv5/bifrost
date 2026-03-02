@@ -13,8 +13,8 @@ pub use filter::{parse_filter, parse_line_props, Filter, LineProps};
 pub use group::{RuleGroup, RuleGroupManager};
 pub use parser::{
     parse_line, parse_rules, parse_rules_tolerant, validate_rules, validate_rules_with_context,
-    ParseError, ParseErrorSeverity, ParseResult, RuleParser, ScriptReference, ValidationResult,
-    VariableInfo,
+    CodeFix, ParseError, ParseErrorSeverity, ParseResult, RuleParser, ScriptReference,
+    ValidationResult, VariableInfo,
 };
 pub use resolver::{ResolvedRule, ResolvedRules, RulesResolver};
 pub use template::TemplateEngine;

@@ -1,10 +1,16 @@
-import { languages, editor, Position, Uri } from 'monaco-editor';
+import { languages, editor, Position } from 'monaco-editor';
 import type { IRange } from 'monaco-editor';
-import { getDynamicData, type ReferenceLocation, type ReferenceType, type NavigationType } from './dynamic';
+import { getDynamicData, type ReferenceLocation, type ReferenceType } from './dynamic';
+import { getProtocolDoc, formatProtocolHover } from './protocol-docs';
 
 export interface ReferenceMatch {
   name: string;
   type: ReferenceType;
+  range: IRange;
+}
+
+interface ProtocolMatch {
+  name: string;
   range: IRange;
 }
 
@@ -44,6 +50,37 @@ function findReferenceAtPosition(
           },
         };
       }
+    }
+  }
+
+  return null;
+}
+
+const PROTOCOL_PATTERN = /(\w+):\/\//g;
+
+function findProtocolAtPosition(
+  model: editor.ITextModel,
+  position: Position
+): ProtocolMatch | null {
+  const lineContent = model.getLineContent(position.lineNumber);
+  const column = position.column;
+
+  PROTOCOL_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = PROTOCOL_PATTERN.exec(lineContent)) !== null) {
+    const startCol = match.index + 1;
+    const endCol = match.index + match[0].length + 1;
+
+    if (column >= startCol && column <= endCol) {
+      return {
+        name: match[1],
+        range: {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: startCol,
+          endColumn: endCol,
+        },
+      };
     }
   }
 
@@ -142,6 +179,17 @@ export const hoverProvider: languages.HoverProvider = {
   ): languages.ProviderResult<languages.Hover> => {
     if (model.isDisposed()) return null;
 
+    const protocolMatch = findProtocolAtPosition(model, position);
+    if (protocolMatch) {
+      const result = getProtocolDoc(protocolMatch.name);
+      if (result) {
+        return {
+          range: protocolMatch.range,
+          contents: [{ value: formatProtocolHover(result) }],
+        };
+      }
+    }
+
     const reference = findReferenceAtPosition(model, position);
     if (!reference) return null;
 
@@ -164,7 +212,6 @@ export const hoverProvider: languages.HoverProvider = {
       },
     ];
 
-    console.log('[hoverProvider] returning hover:', { range: reference.range, contents });
     return {
       range: reference.range,
       contents,

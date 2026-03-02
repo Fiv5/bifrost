@@ -27,6 +27,14 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeFix {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<(usize, usize)>,
+    pub new_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseError {
     pub line: usize,
     pub start_column: usize,
@@ -39,6 +47,8 @@ pub struct ParseError {
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related_info: Option<VariableInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fixes: Vec<CodeFix>,
 }
 
 impl ParseError {
@@ -53,6 +63,7 @@ impl ParseError {
             suggestion: None,
             code: None,
             related_info: None,
+            fixes: Vec::new(),
         }
     }
 
@@ -71,6 +82,7 @@ impl ParseError {
             suggestion: None,
             code: None,
             related_info: None,
+            fixes: Vec::new(),
         }
     }
 
@@ -91,6 +103,16 @@ impl ParseError {
 
     pub fn with_related_info(mut self, info: VariableInfo) -> Self {
         self.related_info = Some(info);
+        self
+    }
+
+    pub fn with_fix(mut self, fix: CodeFix) -> Self {
+        self.fixes.push(fix);
+        self
+    }
+
+    pub fn with_fixes(mut self, fixes: Vec<CodeFix>) -> Self {
+        self.fixes = fixes;
         self
     }
 }
@@ -285,6 +307,7 @@ pub fn validate_rules_with_context(
         validate_variable_references(trimmed, line_num, &merged_values, &mut result);
         extract_script_references(trimmed, line_num, &mut result);
         validate_filter_values(trimmed, line_num, &mut result);
+        validate_protocol_values(trimmed, line_num, &mut result);
 
         match parse_line_with_values(trimmed, &merged_values) {
             Ok(rules) => {
@@ -521,6 +544,263 @@ fn validate_parentheses_content(line: &str, line_num: usize, result: &mut Valida
             result.warnings.push(warning);
         }
     }
+}
+
+fn validate_protocol_values(line: &str, line_num: usize, result: &mut ValidationResult) {
+    let protocol_pattern = regex::Regex::new(r"(\w+)://([^\s]+)").unwrap();
+
+    for cap in protocol_pattern.captures_iter(line) {
+        let protocol_name = &cap[1];
+        let value = &cap[2];
+        let value_start = cap.get(2).unwrap().start();
+        let value_end = cap.get(2).unwrap().end();
+
+        if let Some(error) =
+            validate_single_protocol_value(protocol_name, value, line_num, value_start, value_end)
+        {
+            let is_duplicate = result.warnings.iter().any(|w| {
+                w.line == line_num
+                    && w.start_column == error.start_column
+                    && w.end_column == error.end_column
+            }) || result.errors.iter().any(|e| {
+                e.line == line_num
+                    && e.start_column == error.start_column
+                    && e.end_column == error.end_column
+            });
+
+            if !is_duplicate {
+                match error.severity {
+                    ParseErrorSeverity::Error => result.errors.push(error),
+                    _ => result.warnings.push(error),
+                }
+            }
+        }
+    }
+}
+
+fn validate_single_protocol_value(
+    protocol_name: &str,
+    value: &str,
+    line_num: usize,
+    value_start: usize,
+    value_end: usize,
+) -> Option<ParseError> {
+    let clean_value = value
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .trim_start_matches('`')
+        .trim_end_matches('`');
+
+    if clean_value.starts_with('{') && clean_value.ends_with('}') {
+        return None;
+    }
+
+    let start_col = value_start + 1;
+    let end_col = value_end;
+
+    match protocol_name.to_lowercase().as_str() {
+        "statuscode" | "replacestatus" => {
+            validate_status_code(clean_value, line_num, start_col, end_col)
+        }
+        "cache" => validate_cache_value(clean_value, line_num, start_col, end_col),
+        "reqdelay" | "resdelay" => validate_delay_value(clean_value, line_num, start_col, end_col),
+        "reqspeed" | "resspeed" => validate_speed_value(clean_value, line_num, start_col, end_col),
+        "method" => validate_http_method(clean_value, line_num, start_col, end_col),
+        "dns" | "forwardedfor" => validate_ip_address(clean_value, line_num, start_col, end_col),
+        "host" | "xhost" => validate_host_port(clean_value, line_num, start_col, end_col),
+        _ => None,
+    }
+}
+
+fn validate_status_code(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    match value.parse::<u16>() {
+        Ok(code) if (100..600).contains(&code) => None,
+        Ok(code) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Invalid HTTP status code: {}. Status code must be between 100 and 599.", code))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E010")
+                .with_suggestion("Common status codes: 200 (OK), 201 (Created), 204 (No Content), 301 (Moved), 302 (Found), 400 (Bad Request), 401 (Unauthorized), 403 (Forbidden), 404 (Not Found), 500 (Server Error)")
+                .with_fixes(vec![
+                    CodeFix { title: "Change to 200 (OK)".to_string(), range: Some((start_col, end_col)), new_text: "200".to_string() },
+                    CodeFix { title: "Change to 404 (Not Found)".to_string(), range: Some((start_col, end_col)), new_text: "404".to_string() },
+                    CodeFix { title: "Change to 500 (Server Error)".to_string(), range: Some((start_col, end_col)), new_text: "500".to_string() },
+                ])
+        ),
+        Err(_) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Invalid status code value: '{}'. Expected a number.", value))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E010")
+                .with_suggestion("Status code must be a number between 100 and 599. Example: statusCode://200")
+                .with_fixes(vec![
+                    CodeFix { title: "Change to 200".to_string(), range: Some((start_col, end_col)), new_text: "200".to_string() },
+                    CodeFix { title: "Change to 404".to_string(), range: Some((start_col, end_col)), new_text: "404".to_string() },
+                ])
+        ),
+    }
+}
+
+fn validate_cache_value(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    let valid_keywords = ["no", "no-cache", "no-store"];
+    if valid_keywords.contains(&value.to_lowercase().as_str()) {
+        return None;
+    }
+    match value.parse::<u64>() {
+        Ok(0) => Some(
+            ParseError::with_range(line_num, start_col, end_col, "Cache duration cannot be 0. Use 'no' to disable caching.".to_string())
+                .with_severity(ParseErrorSeverity::Warning)
+                .with_code("E011")
+                .with_suggestion("Use 'no' to disable caching, or specify seconds > 0. Example: cache://3600 (1 hour)")
+        ),
+        Ok(_) => None,
+        Err(_) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Invalid cache value: '{}'. Expected a number (seconds) or 'no'/'no-cache'/'no-store'.", value))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E011")
+                .with_suggestion("Valid values: number (seconds), 'no', 'no-cache', 'no-store'. Example: cache://3600")
+        ),
+    }
+}
+
+fn validate_delay_value(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    match value.parse::<i64>() {
+        Ok(ms) if ms >= 0 => None,
+        Ok(ms) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Delay cannot be negative: {}ms.", ms))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E012")
+                .with_suggestion("Delay must be a non-negative number in milliseconds. Example: reqDelay://1000 (1 second)")
+        ),
+        Err(_) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Invalid delay value: '{}'. Expected a number in milliseconds.", value))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E012")
+                .with_suggestion("Delay must be a number in milliseconds. Example: reqDelay://500")
+        ),
+    }
+}
+
+fn validate_speed_value(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    match value.parse::<u64>() {
+        Ok(0) => Some(
+            ParseError::with_range(line_num, start_col, end_col, "Speed limit cannot be 0.".to_string())
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E013")
+                .with_suggestion("Speed must be greater than 0 (bytes per second). Example: reqSpeed://1024 (1 KB/s)")
+        ),
+        Ok(_) => None,
+        Err(_) => Some(
+            ParseError::with_range(line_num, start_col, end_col, format!("Invalid speed value: '{}'. Expected a number in bytes per second.", value))
+                .with_severity(ParseErrorSeverity::Error)
+                .with_code("E013")
+                .with_suggestion("Speed must be a positive number (bytes per second). Example: resSpeed://10240 (10 KB/s)")
+        ),
+    }
+}
+
+fn validate_http_method(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    let valid_methods = [
+        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT",
+    ];
+    if valid_methods.contains(&value.to_uppercase().as_str()) {
+        None
+    } else {
+        Some(
+            ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                format!("Unknown HTTP method: '{}'. ", value),
+            )
+            .with_severity(ParseErrorSeverity::Warning)
+            .with_code("E015")
+            .with_suggestion(format!(
+                "Standard HTTP methods: {}. Example: method://POST",
+                valid_methods.join(", ")
+            )),
+        )
+    }
+}
+
+fn validate_ip_address(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    use std::net::IpAddr;
+    if value.parse::<IpAddr>().is_ok() {
+        None
+    } else {
+        Some(
+            ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                format!("Invalid IP address: '{}'.", value),
+            )
+            .with_severity(ParseErrorSeverity::Error)
+            .with_code("E016")
+            .with_suggestion(
+                "Expected a valid IPv4 (e.g., 192.168.1.1) or IPv6 (e.g., ::1) address.",
+            ),
+        )
+    }
+}
+
+fn validate_host_port(
+    value: &str,
+    line_num: usize,
+    start_col: usize,
+    end_col: usize,
+) -> Option<ParseError> {
+    if let Some(colon_pos) = value.rfind(':') {
+        let port_str = &value[colon_pos + 1..];
+        if !port_str.is_empty() {
+            if let Ok(port) = port_str.parse::<u32>() {
+                if port > 65535 {
+                    return Some(
+                        ParseError::with_range(
+                            line_num,
+                            start_col,
+                            end_col,
+                            format!("Port number out of range: {}. Maximum is 65535.", port),
+                        )
+                        .with_severity(ParseErrorSeverity::Error)
+                        .with_code("E017")
+                        .with_suggestion(
+                            "Port must be between 0 and 65535. Example: host://example.com:8080",
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Result<Vec<Rule>> {
@@ -765,6 +1045,8 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
             }
 
             if backtick_count >= 3 {
+                let mut lines_consumed = 1;
+
                 while chars.peek() == Some(&' ') || chars.peek() == Some(&'\t') {
                     chars.next();
                 }
@@ -810,6 +1092,7 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
 
                     let trimmed = line.trim();
                     if trimmed == closing_pattern || trimmed.starts_with(&closing_pattern) {
+                        lines_consumed += 1;
                         if chars.peek() == Some(&'\r') {
                             chars.next();
                         }
@@ -818,6 +1101,8 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
                         }
                         break;
                     }
+
+                    lines_consumed += 1;
 
                     if !content.is_empty() {
                         content.push('\n');
@@ -840,6 +1125,10 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
 
                 if !key.is_empty() {
                     values.insert(key, content);
+                }
+
+                for _ in 0..lines_consumed {
+                    result.push('\n');
                 }
 
                 line_start = true;

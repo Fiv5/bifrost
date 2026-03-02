@@ -8,6 +8,13 @@ import {
   type UnifiedSyntaxInfo,
   type ProtocolValueSpec,
 } from './syntaxApi';
+import {
+  HTTP_STATUS_CODES,
+  HTTP_METHODS,
+  CACHE_VALUES,
+  CONTENT_TYPES,
+  getProtocolDoc,
+} from './protocol-docs';
 
 interface Operator extends Partial<languages.CompletionItem> {
   snippet: string[];
@@ -335,8 +342,166 @@ const createTemplateVars = (range: IRange): languages.CompletionItem[] => {
   return list;
 };
 
+interface EditorContext {
+  hasPattern: boolean;
+  currentProtocol: string | null;
+  afterProtocolSeparator: boolean;
+  inCodeBlock: boolean;
+}
+
+function analyzeContext(textBeforeCursor: string): EditorContext {
+  const inCodeBlock = /```\w*\s*$/.test(textBeforeCursor) || /```\w+[\s\S]*(?!```)$/.test(textBeforeCursor);
+
+  const protocolMatch = textBeforeCursor.match(/(\w+):\/\/(\S*)$/);
+  if (protocolMatch) {
+    return {
+      hasPattern: true,
+      currentProtocol: protocolMatch[1],
+      afterProtocolSeparator: true,
+      inCodeBlock,
+    };
+  }
+
+  const hasPattern = /^\s*\S+/.test(textBeforeCursor) && !textBeforeCursor.trim().startsWith('#');
+
+  return {
+    hasPattern,
+    currentProtocol: null,
+    afterProtocolSeparator: false,
+    inCodeBlock,
+  };
+}
+
+function getProtocolValueSuggestions(protocol: string, range: IRange): languages.CompletionItem[] {
+  const suggestions: languages.CompletionItem[] = [];
+  const base = {
+    kind: languages.CompletionItemKind.Value,
+    range,
+  };
+
+  const protocolLower = protocol.toLowerCase();
+
+  switch (protocolLower) {
+    case 'statuscode':
+    case 'replacestatus':
+      HTTP_STATUS_CODES.forEach(({ code, label }) => {
+        suggestions.push({
+          ...base,
+          label: String(code),
+          detail: label,
+          insertText: String(code),
+          sortText: String(code).padStart(3, '0'),
+        });
+      });
+      break;
+
+    case 'method':
+      HTTP_METHODS.forEach((method, index) => {
+        suggestions.push({
+          ...base,
+          label: method,
+          detail: `HTTP ${method} method`,
+          insertText: method,
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'cache':
+      CACHE_VALUES.forEach(({ value, label }, index) => {
+        suggestions.push({
+          ...base,
+          label: value,
+          detail: label,
+          insertText: value,
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'restype':
+    case 'reqtype':
+      CONTENT_TYPES.forEach(({ value, label }, index) => {
+        suggestions.push({
+          ...base,
+          label: value,
+          detail: label,
+          insertText: value,
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'reqdelay':
+    case 'resdelay':
+      [100, 200, 500, 1000, 2000, 3000, 5000].forEach((ms, index) => {
+        suggestions.push({
+          ...base,
+          label: String(ms),
+          detail: ms >= 1000 ? `${ms / 1000} second${ms > 1000 ? 's' : ''}` : `${ms} milliseconds`,
+          insertText: String(ms),
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'reqspeed':
+    case 'resspeed':
+      [1024, 10240, 51200, 102400, 512000, 1048576].forEach((bytes, index) => {
+        const kb = bytes / 1024;
+        suggestions.push({
+          ...base,
+          label: String(bytes),
+          detail: kb >= 1024 ? `${kb / 1024} MB/s` : `${kb} KB/s`,
+          insertText: String(bytes),
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'rescors':
+      suggestions.push(
+        { ...base, label: '*', detail: 'Allow all origins', insertText: '*', sortText: '0' },
+        { ...base, label: 'http://localhost:3000', detail: 'Local dev server', insertText: 'http://localhost:3000', sortText: '1' },
+      );
+      break;
+
+    case 'rescharset':
+      ['utf-8', 'gbk', 'gb2312', 'iso-8859-1', 'utf-16'].forEach((charset, index) => {
+        suggestions.push({
+          ...base,
+          label: charset,
+          detail: `${charset} encoding`,
+          insertText: charset,
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    default: {
+      const result = getProtocolDoc(protocol);
+      if (result && result.doc.examples.length > 0) {
+        result.doc.examples.forEach((example: string, index: number) => {
+          const value = example.split('://')[1] || '';
+          if (value) {
+            suggestions.push({
+              ...base,
+              label: value,
+              detail: `Example: ${example}`,
+              insertText: value,
+              sortText: String(index).padStart(2, '0'),
+            });
+          }
+        });
+      }
+    }
+  }
+
+  return suggestions;
+}
+
 const provider: languages.CompletionItemProvider = {
-  triggerCharacters: ['$', '{', ':'],
+  triggerCharacters: ['$', '{', ':', '/'],
   provideCompletionItems: (model: editor.ITextModel, position: Position) => {
     let suggestions: languages.CompletionItem[] = [];
     if (model.isDisposed()) {
@@ -353,6 +518,15 @@ const provider: languages.CompletionItemProvider = {
         startColumn: word.startColumn,
         endColumn: word.endColumn,
       };
+
+      const context = analyzeContext(textBeforeCursor);
+
+      if (context.afterProtocolSeparator && context.currentProtocol) {
+        suggestions = getProtocolValueSuggestions(context.currentProtocol, range);
+        if (suggestions.length > 0) {
+          return { suggestions };
+        }
+      }
 
       if (
         textBeforeCursor.endsWith('$') ||

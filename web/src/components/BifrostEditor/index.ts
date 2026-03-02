@@ -6,6 +6,8 @@ import snippet, {
   dynamicProvider,
   hoverProvider,
   definitionProvider,
+  codeActionProvider,
+  signatureHelpProvider,
   validateRules,
   setValidationMarkers,
   clearValidationMarkers,
@@ -42,6 +44,8 @@ languages.registerCompletionItemProvider(LANGUAGE_BIFROST, snippet.operator);
 languages.registerCompletionItemProvider(LANGUAGE_BIFROST, dynamicProvider);
 languages.registerHoverProvider(LANGUAGE_BIFROST, hoverProvider);
 languages.registerDefinitionProvider(LANGUAGE_BIFROST, definitionProvider);
+languages.registerCodeActionProvider(LANGUAGE_BIFROST, codeActionProvider);
+languages.registerSignatureHelpProvider(LANGUAGE_BIFROST, signatureHelpProvider);
 
 
 editor.defineTheme(theme.dark.name, theme.dark.config);

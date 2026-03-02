@@ -863,6 +863,7 @@ export default function ScriptsPage() {
 
   useEffect(() => {
     if (testResult && !testResultExpanded) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTestResultExpanded(true);
     }
   }, [testResult, testResultExpanded]);

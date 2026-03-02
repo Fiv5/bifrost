@@ -21,7 +21,7 @@ pub use panic_handler::{install_panic_hook, spawn_with_panic_guard};
 pub use protocol::*;
 pub use rule::{
     create_shared_store, parse_line, parse_rules, parse_rules_tolerant, validate_rules,
-    validate_rules_with_context, CompositeValueStore, MemoryValueStore, ParseError,
+    validate_rules_with_context, CodeFix, CompositeValueStore, MemoryValueStore, ParseError,
     ParseErrorSeverity, ParseResult, RequestContext, RequestContextBuilder, ResolvedRule,
     ResolvedRules, Rule, RuleGroup, RuleGroupManager, RuleParser, RulesResolver, ScriptReference,
     SharedValueStore, TemplateEngine, ValidationResult, ValueStore, VariableInfo,

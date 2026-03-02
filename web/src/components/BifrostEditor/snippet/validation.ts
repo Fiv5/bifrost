@@ -1,4 +1,5 @@
 import { editor, MarkerSeverity } from 'monaco-editor';
+import { setFixesForMarker, clearFixesCache, type CodeFix } from './codeAction';
 
 const MARKER_OWNER = 'bifrost-validation';
 
@@ -11,6 +12,7 @@ export interface ParseError {
   suggestion?: string;
   code?: string;
   related_info?: VariableInfo;
+  fixes?: CodeFix[];
 }
 
 export interface VariableInfo {
@@ -74,19 +76,34 @@ export function setValidationMarkers(
 ): void {
   if (model.isDisposed()) return;
 
+  const modelUri = model.uri.toString();
+  clearFixesCache(modelUri);
+
   const allIssues = [...result.errors, ...result.warnings];
-  const markers = allIssues.map((error) => ({
-    severity: severityToMarkerSeverity(error.severity),
-    message: error.suggestion
-      ? `${error.message}\n\nSuggestion: ${error.suggestion}`
-      : error.message,
-    startLineNumber: error.line,
-    startColumn: error.start_column,
-    endLineNumber: error.line,
-    endColumn: error.end_column + 1,
-    code: error.code || undefined,
-    source: 'bifrost',
-  }));
+  const markers = allIssues.map((error) => {
+    if (error.fixes && error.fixes.length > 0) {
+      setFixesForMarker(
+        modelUri,
+        error.line,
+        error.start_column,
+        error.end_column + 1,
+        error.fixes
+      );
+    }
+
+    return {
+      severity: severityToMarkerSeverity(error.severity),
+      message: error.suggestion
+        ? `${error.message}\n\nSuggestion: ${error.suggestion}`
+        : error.message,
+      startLineNumber: error.line,
+      startColumn: error.start_column,
+      endLineNumber: error.line,
+      endColumn: error.end_column + 1,
+      code: error.code || undefined,
+      source: 'bifrost',
+    };
+  });
 
   editor.setModelMarkers(model, MARKER_OWNER, markers);
 }
