@@ -91,48 +91,39 @@ function Get-Target {
 }
 
 function Get-LatestVersion {
-    $latestUrl = "https://api.github.com/repos/$REPO/releases/latest"
-    $allReleasesUrl = "https://api.github.com/repos/$REPO/releases"
+    $allReleasesUrl = "https://api.github.com/repos/$REPO/releases?per_page=10"
     
     try {
-        $response = Invoke-RestMethod -Uri $latestUrl -UseBasicParsing -ErrorAction SilentlyContinue
-        if ($response.tag_name) {
-            return $response.tag_name
-        }
+        $releases = Invoke-RestMethod -Uri $allReleasesUrl -UseBasicParsing -ErrorAction Stop
     }
     catch {
         if ($_.Exception.Message -match "rate limit") {
             Write-Error "GitHub API rate limit exceeded"
             Write-Warning "Please try again later or specify a version manually:"
-            Write-Host "  .\install-binary.ps1 -Version v0.1.0"
+            Write-Host "  .\install-binary.ps1 -Version v0.0.1-alpha"
             exit 1
         }
+        Write-Error "Failed to fetch releases: $_"
+        exit 1
+    }
+
+    if (-not $releases -or $releases.Count -eq 0) {
+        Write-Error "No releases found for $REPO"
+        Write-Warning "The project may not have published any releases yet."
+        Write-Host ""
+        Write-Host "You can build from source instead:"
+        Write-Host "  git clone https://github.com/$REPO.git"
+        Write-Host "  cd bifrost && cargo build --release"
+        exit 1
+    }
+
+    $stableRelease = $releases | Where-Object { -not $_.prerelease } | Select-Object -First 1
+    if ($stableRelease) {
+        return $stableRelease.tag_name
     }
 
     Write-Warning "No stable release found, checking for pre-releases..."
-    
-    try {
-        $releases = Invoke-RestMethod -Uri $allReleasesUrl -UseBasicParsing -ErrorAction SilentlyContinue
-        if ($releases -and $releases.Count -gt 0) {
-            return $releases[0].tag_name
-        }
-    }
-    catch {
-        if ($_.Exception.Message -match "rate limit") {
-            Write-Error "GitHub API rate limit exceeded"
-            Write-Warning "Please try again later or specify a version manually:"
-            Write-Host "  .\install-binary.ps1 -Version v0.1.0"
-            exit 1
-        }
-    }
-
-    Write-Error "No releases found for $REPO"
-    Write-Warning "The project may not have published any releases yet."
-    Write-Host ""
-    Write-Host "You can build from source instead:"
-    Write-Host "  git clone https://github.com/$REPO.git"
-    Write-Host "  cd bifrost && cargo build --release"
-    exit 1
+    return $releases[0].tag_name
 }
 
 function Get-FileHash256 {

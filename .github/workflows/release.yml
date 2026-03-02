@@ -95,10 +95,27 @@ jobs:
           echo "🏷️  Tag: ${TAG}"
           echo "🚀 Pre-release: ${IS_PRERELEASE}"
 
-      - name: Update Cargo.toml versions
+      - name: Check Cargo.toml version
+        id: cargo_version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "cargo_version=${CARGO_VERSION}" >> $GITHUB_OUTPUT
+
+          if [[ "${CARGO_VERSION}" == "${VERSION}" ]]; then
+            echo "✅ Cargo.toml version matches tag: ${VERSION}"
+          else
+            echo "ℹ️  Cargo.toml version (${CARGO_VERSION}) differs from tag (${VERSION})"
+            echo "   Version will be injected at build time via BIFROST_VERSION env var"
+          fi
+
+      - name: Update Cargo.toml versions (workflow_dispatch only)
         if: github.event_name == 'workflow_dispatch'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+
+          echo "🔄 Updating Cargo.toml versions to ${VERSION}..."
+
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" Cargo.toml
 
           for crate_dir in crates/*/; do
@@ -192,12 +209,14 @@ jobs:
         if: ${{ !matrix.cross }}
         env:
           SKIP_FRONTEND_BUILD: "1"
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
         run: cargo build -p bifrost-cli --release --target ${{ matrix.target }}
 
       - name: Build (cross)
         if: matrix.cross
         env:
           SKIP_FRONTEND_BUILD: "1"
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
         run: cross build -p bifrost-cli --release --target ${{ matrix.target }}
 
       - name: Package (Unix)

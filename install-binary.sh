@@ -37,11 +37,11 @@ print_success() {
 }
 
 print_warning() {
-    printf "%b!%b %s\n" "${YELLOW}" "${NC}" "$1"
+    printf "%b!%b %s\n" "${YELLOW}" "${NC}" "$1" >&2
 }
 
 print_error() {
-    printf "%b✗%b %s\n" "${RED}" "${NC}" "$1"
+    printf "%b✗%b %s\n" "${RED}" "${NC}" "$1" >&2
 }
 
 detect_os() {
@@ -108,50 +108,43 @@ get_archive_ext() {
 }
 
 get_latest_version() {
-    local latest_url="https://api.github.com/repos/${REPO}/releases/latest"
-    local all_releases_url="https://api.github.com/repos/${REPO}/releases"
-    local response version
+    local all_releases_url="https://api.github.com/repos/${REPO}/releases?per_page=10"
+    local response version is_prerelease
 
     if command -v curl &> /dev/null; then
-        response=$(curl -sL "$latest_url")
+        response=$(curl -sL "$all_releases_url")
     elif command -v wget &> /dev/null; then
-        response=$(wget -qO- "$latest_url")
+        response=$(wget -qO- "$all_releases_url")
     else
         print_error "Neither curl nor wget found. Please install one of them." >&2
         exit 1
     fi
 
     if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
-        print_error "GitHub API rate limit exceeded" >&2
-        print_warning "Please try again later or specify a version manually:" >&2
-        echo "  curl -fsSL ... | bash -s -- --version v0.1.0" >&2
+        print_error "GitHub API rate limit exceeded"
+        print_warning "Please try again later or specify a version manually:"
+        echo "  curl -fsSL ... | bash -s -- --version v0.0.1-alpha" >&2
         exit 1
     fi
 
+    if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"Not Found"'; then
+        print_error "Repository not found: ${REPO}"
+        exit 1
+    fi
+
+    version=$(echo "$response" | grep -B5 '"prerelease"[[:space:]]*:[[:space:]]*false' | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+
+    if [[ -n "$version" ]]; then
+        echo "$version"
+        return 0
+    fi
+
+    print_warning "No stable release found, checking for pre-releases..."
     version=$(echo "$response" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [[ -z "$version" ]]; then
-        print_warning "No stable release found, checking for pre-releases..." >&2
-
-        if command -v curl &> /dev/null; then
-            response=$(curl -sL "$all_releases_url")
-        else
-            response=$(wget -qO- "$all_releases_url")
-        fi
-
-        if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
-            print_error "GitHub API rate limit exceeded" >&2
-            print_warning "Please try again later or specify a version manually:" >&2
-            echo "  curl -fsSL ... | bash -s -- --version v0.1.0" >&2
-            exit 1
-        fi
-
-        version=$(echo "$response" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-    fi
-
-    if [[ -z "$version" ]]; then
-        print_error "No releases found for ${REPO}" >&2
-        print_warning "The project may not have published any releases yet." >&2
+        print_error "No releases found for ${REPO}"
+        print_warning "The project may not have published any releases yet."
         echo "" >&2
         echo "You can build from source instead:" >&2
         echo "  git clone https://github.com/${REPO}.git" >&2

@@ -1,32 +1,54 @@
 #!/bin/bash
-
 set -e
+
+BINARY_NAME="bifrost"
+DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+DEFAULT_DATA_DIR="$HOME/.bifrost"
+DEFAULT_CONFIG_DIR="$HOME/.config/bifrost"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
+print_banner() {
+    printf "%b" "${CYAN}"
+    echo "╔═══════════════════════════════════════════════════════════╗"
+    echo "║                                                           ║"
+    echo "║   Bifrost Uninstaller                                     ║"
+    echo "║                                                           ║"
+    echo "╚═══════════════════════════════════════════════════════════╝"
+    printf "%b\n" "${NC}"
+}
+
 print_step() {
-    echo -e "${BLUE}==>${NC} $1"
+    printf "%b==>%b %s\n" "${BLUE}" "${NC}" "$1"
 }
 
 print_success() {
-    echo -e "${GREEN}✓${NC} $1"
+    printf "%b✓%b %s\n" "${GREEN}" "${NC}" "$1"
 }
 
 print_warning() {
-    echo -e "${YELLOW}!${NC} $1"
+    printf "%b!%b %s\n" "${YELLOW}" "${NC}" "$1"
 }
 
 print_error() {
-    echo -e "${RED}✗${NC} $1"
+    printf "%b✗%b %s\n" "${RED}" "${NC}" "$1"
 }
 
-INSTALL_DIR="${BIFROST_INSTALL_DIR:-$HOME/.local/bin}"
-REMOVE_PATH_CONFIG=false
-FORCE=false
+detect_os() {
+    local os
+    os="$(uname -s)"
+    case "$os" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "darwin" ;;
+        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+        *)       echo "unknown" ;;
+    esac
+}
 
 show_help() {
     echo "Bifrost Uninstallation Script"
@@ -34,19 +56,20 @@ show_help() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --dir <path>      Custom installation directory (default: ~/.local/bin)"
-    echo "  --clean-path      Also remove PATH configuration from shell rc files"
-    echo "  --force           Skip confirmation prompt"
-    echo "  --help            Show this help message"
-    echo ""
-    echo "Environment variables:"
-    echo "  BIFROST_INSTALL_DIR    Custom installation directory"
+    echo "  --dir <PATH>          Installation directory (default: ~/.local/bin)"
+    echo "  --purge               Also remove configuration and data files"
+    echo "  --yes, -y             Skip confirmation prompts"
+    echo "  --help                Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                     Uninstall bifrost binaries"
-    echo "  $0 --clean-path        Uninstall and remove PATH configuration"
-    echo "  $0 --dir /usr/local/bin"
+    echo "  $0                    # Interactive uninstall"
+    echo "  $0 --purge            # Remove binary and all data"
+    echo "  $0 --yes --purge      # Non-interactive full removal"
 }
+
+INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+PURGE=false
+YES=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -54,12 +77,12 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
-        --clean-path)
-            REMOVE_PATH_CONFIG=true
+        --purge)
+            PURGE=true
             shift
             ;;
-        --force)
-            FORCE=true
+        --yes|-y)
+            YES=true
             shift
             ;;
         --help)
@@ -74,116 +97,131 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-BIFROST_CLI="$INSTALL_DIR/bifrost"
-
-CLI_EXISTS=false
-
-if [ -f "$BIFROST_CLI" ]; then
-    CLI_EXISTS=true
-fi
-
-if [ "$CLI_EXISTS" = false ]; then
-    print_warning "No Bifrost installation found in $INSTALL_DIR"
-    exit 0
-fi
-
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "The following files will be removed:"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-if [ "$CLI_EXISTS" = true ]; then
-    echo "  $BIFROST_CLI"
-fi
-
-if [ "$REMOVE_PATH_CONFIG" = true ]; then
-    echo ""
-    echo "PATH configuration will also be removed from shell rc files."
-fi
-
-echo ""
-
-if [ "$FORCE" = false ]; then
-    read -p "Are you sure you want to uninstall? [y/N] " -n 1 -r
-    echo ""
-    
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        print_warning "Uninstallation cancelled"
-        exit 0
-    fi
-fi
-
-echo ""
-
-if [ "$CLI_EXISTS" = true ]; then
-    print_step "Removing bifrost CLI..."
-    rm -f "$BIFROST_CLI"
-    print_success "Removed $BIFROST_CLI"
-fi
-
-remove_path_from_rc() {
-    local rc_file="$1"
-    
-    if [ ! -f "$rc_file" ]; then
-        return
+confirm() {
+    local prompt="$1"
+    if [[ "$YES" == "true" ]]; then
+        return 0
     fi
     
-    if grep -q "# Bifrost" "$rc_file" 2>/dev/null || grep -q "$INSTALL_DIR" "$rc_file" 2>/dev/null; then
-        print_step "Cleaning PATH from $rc_file..."
-        
-        local temp_file=$(mktemp)
-        local in_bifrost_block=false
-        local removed=false
-        
-        while IFS= read -r line || [[ -n "$line" ]]; do
-            if [[ "$line" == "# Bifrost" ]]; then
-                in_bifrost_block=true
-                removed=true
-                continue
-            fi
-            
-            if [ "$in_bifrost_block" = true ]; then
-                if [[ "$line" == *"$INSTALL_DIR"* ]]; then
-                    in_bifrost_block=false
-                    continue
-                fi
-                in_bifrost_block=false
-            fi
-            
-            echo "$line" >> "$temp_file"
-        done < "$rc_file"
-        
-        if [ "$removed" = true ]; then
-            sed -i.bak '/^$/N;/^\n$/d' "$temp_file" 2>/dev/null || sed -i '' '/^$/N;/^\n$/d' "$temp_file"
-            mv "$temp_file" "$rc_file"
-            rm -f "$rc_file.bak"
-            print_success "Removed PATH configuration from $rc_file"
-        else
-            rm -f "$temp_file"
-        fi
-    fi
+    printf "%s [y/N] " "$prompt"
+    read -r response
+    case "$response" in
+        [yY][eE][sS]|[yY]) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
-if [ "$REMOVE_PATH_CONFIG" = true ]; then
-    echo ""
-    print_step "Cleaning PATH configuration..."
+main() {
+    print_banner
+
+    local os binary_path
+    os=$(detect_os)
     
-    remove_path_from_rc "$HOME/.zshrc"
-    remove_path_from_rc "$HOME/.bashrc"
-    remove_path_from_rc "$HOME/.bash_profile"
-    remove_path_from_rc "$HOME/.profile"
-    remove_path_from_rc "$HOME/.config/fish/config.fish"
-fi
+    local binary_name="$BINARY_NAME"
+    [[ "$os" == "windows" ]] && binary_name="$BINARY_NAME.exe"
+    
+    binary_path="$INSTALL_DIR/$binary_name"
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-print_success "Uninstallation completed!"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+    print_step "Checking installation..."
 
-if [ "$REMOVE_PATH_CONFIG" = true ]; then
-    print_warning "Please restart your terminal for PATH changes to take effect"
-fi
+    local found_binary=false
+    local found_data=false
+    local found_config=false
 
-echo ""
+    if [[ -f "$binary_path" ]]; then
+        found_binary=true
+        echo "  Binary:  $binary_path"
+    fi
+
+    if [[ -d "$DEFAULT_DATA_DIR" ]]; then
+        found_data=true
+        echo "  Data:    $DEFAULT_DATA_DIR"
+    fi
+
+    if [[ -d "$DEFAULT_CONFIG_DIR" ]]; then
+        found_config=true
+        echo "  Config:  $DEFAULT_CONFIG_DIR"
+    fi
+
+    if [[ "$found_binary" == "false" && "$found_data" == "false" && "$found_config" == "false" ]]; then
+        print_warning "Bifrost is not installed or already uninstalled"
+        echo ""
+        echo "Checked locations:"
+        echo "  Binary: $binary_path"
+        echo "  Data:   $DEFAULT_DATA_DIR"
+        echo "  Config: $DEFAULT_CONFIG_DIR"
+        exit 0
+    fi
+
+    echo ""
+
+    if [[ "$PURGE" == "true" ]]; then
+        print_warning "This will remove the binary and ALL data/configuration files!"
+    fi
+
+    if ! confirm "Do you want to proceed with uninstallation?"; then
+        echo "Uninstallation cancelled."
+        exit 0
+    fi
+
+    echo ""
+
+    if [[ "$found_binary" == "true" ]]; then
+        print_step "Removing binary..."
+        rm -f "$binary_path"
+        print_success "Removed: $binary_path"
+    fi
+
+    if [[ "$PURGE" == "true" ]]; then
+        if [[ "$found_data" == "true" ]]; then
+            print_step "Removing data directory..."
+            rm -rf "$DEFAULT_DATA_DIR"
+            print_success "Removed: $DEFAULT_DATA_DIR"
+        fi
+
+        if [[ "$found_config" == "true" ]]; then
+            print_step "Removing config directory..."
+            rm -rf "$DEFAULT_CONFIG_DIR"
+            print_success "Removed: $DEFAULT_CONFIG_DIR"
+        fi
+    else
+        if [[ "$found_data" == "true" || "$found_config" == "true" ]]; then
+            echo ""
+            print_warning "Data and config files were preserved."
+            echo "  To remove them, run: $0 --purge"
+            if [[ "$found_data" == "true" ]]; then
+                echo "  Data:   $DEFAULT_DATA_DIR"
+            fi
+            if [[ "$found_config" == "true" ]]; then
+                echo "  Config: $DEFAULT_CONFIG_DIR"
+            fi
+        fi
+    fi
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_success "Uninstallation completed!"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    if [[ ":$PATH:" == *":$INSTALL_DIR:"* ]]; then
+        print_warning "You may want to remove $INSTALL_DIR from your PATH"
+        echo ""
+        echo "Edit your shell configuration file and remove the PATH entry:"
+        case "$SHELL" in
+            */fish)
+                echo "  ~/.config/fish/config.fish"
+                ;;
+            */zsh)
+                echo "  ~/.zshrc"
+                ;;
+            *)
+                echo "  ~/.bashrc"
+                ;;
+        esac
+    fi
+
+    echo ""
+}
+
+main "$@"
