@@ -177,44 +177,46 @@ pub async fn handle_replay(
 async fn execute_replay(
     req: Request<Incoming>,
     state: SharedAdminState,
-    push_manager: Option<SharedPushManager>,
+    _push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid body: {}", e)),
     };
 
-    let execute_req: ReplayExecuteRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
-    };
+    let execute_req: crate::replay_executor::ReplayExecuteRequest =
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e))
+            }
+        };
 
-    let permit = match REPLAY_SEMAPHORE.clone().try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
+    let executor = match state.get_replay_executor() {
+        Some(e) => e.clone(),
+        None => {
             return error_response(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many concurrent replay requests",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Replay executor not available",
             )
         }
     };
 
-    let result = execute_replay_inner(&state, &push_manager, execute_req).await;
-    drop(permit);
+    let result = executor.execute(execute_req).await;
 
     match result {
         Ok(response) => {
             #[derive(Serialize)]
             struct ExecuteResult {
                 success: bool,
-                data: ReplayExecuteResponse,
+                data: crate::replay_executor::ReplayExecuteResponse,
             }
             json_response(&ExecuteResult {
                 success: true,
                 data: response,
             })
         }
-        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
 }
 
@@ -1491,6 +1493,7 @@ async fn execute_sse_stream(
             &RuleConfig {
                 mode: RuleMode::Enabled,
                 selected_rules: vec![],
+                custom_rules: None,
             },
         );
     }
@@ -1622,6 +1625,7 @@ async fn execute_replay_websocket(
             &RuleConfig {
                 mode: RuleMode::Enabled,
                 selected_rules: vec![],
+                custom_rules: None,
             },
         );
     }

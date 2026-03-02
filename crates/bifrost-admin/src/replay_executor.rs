@@ -1,7 +1,11 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use bifrost_core::{
+    parse_rules, Protocol, RequestContext, ResolvedRules, Rule, RulesResolver, ValueStore,
+};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::client::conn::http1::Builder as ClientBuilder;
@@ -12,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::replay_db::{ReplayHistory, RuleConfig, RuleMode, MAX_CONCURRENT_REPLAYS};
 use crate::state::SharedAdminState;
@@ -136,59 +140,91 @@ impl ReplayExecutor {
         let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
         let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
 
-        let resolved_rules = self.resolve_rules(&request.rule_config, url, method);
+        let (resolved_rules, applied_rules) = self.resolve_rules(&request.rule_config, url, method);
 
-        let applied_rules: Vec<MatchedRule> = resolved_rules
-            .iter()
-            .map(|r| MatchedRule {
-                pattern: r.pattern.clone(),
-                protocol: r.protocol.clone(),
-                value: r.value.clone(),
-                rule_name: r.rule_name.clone(),
-                raw: r.raw.clone(),
-                line: r.line,
-            })
-            .collect();
+        let mock_response = self.check_mock_response(&resolved_rules);
+        let needs_real_request = self.needs_real_request(&resolved_rules);
 
         let mut timing = RequestTiming::default();
-        let dns_start = Instant::now();
 
-        let connect_addr = format!("{}:{}", host, port);
-        timing.dns_ms = Some(dns_start.elapsed().as_millis() as u64);
-
-        let connect_start = Instant::now();
-        let tcp_stream = TcpStream::connect(&connect_addr).await.map_err(|e| {
-            ReplayError::ConnectionFailed(format!("Failed to connect to {}: {}", connect_addr, e))
-        })?;
-        timing.connect_ms = Some(connect_start.elapsed().as_millis() as u64);
-
-        let (status, response_headers, response_body, tls_ms) = if is_https {
-            let tls_start = Instant::now();
-            let (s, h, b) = self
-                .send_https_request(
-                    tcp_stream,
+        let (status, response_headers, response_body) = if let Some(ref mock) = mock_response {
+            if !needs_real_request {
+                info!(
+                    replay_id = %replay_id,
+                    status = mock.status,
+                    rules_count = applied_rules.len(),
+                    "[REPLAY] Returning mock response from rules (no real request needed)"
+                );
+                timing.dns_ms = Some(0);
+                timing.connect_ms = Some(0);
+                timing.tls_ms = Some(0);
+                (mock.status, mock.headers.clone(), mock.body.clone())
+            } else {
+                match self
+                    .try_real_request(
+                        &host,
+                        port,
+                        is_https,
+                        method,
+                        path,
+                        &request.request.headers,
+                        request.request.body.as_deref(),
+                        &mut timing,
+                    )
+                    .await
+                {
+                    Ok((s, h, b)) => (s, h, b),
+                    Err(e) => {
+                        warn!(
+                            replay_id = %replay_id,
+                            error = %e,
+                            "[REPLAY] Real request failed, using mock response as fallback"
+                        );
+                        timing.dns_ms = Some(0);
+                        timing.connect_ms = Some(0);
+                        timing.tls_ms = Some(0);
+                        (mock.status, mock.headers.clone(), mock.body.clone())
+                    }
+                }
+            }
+        } else if needs_real_request {
+            match self
+                .try_real_request(
                     &host,
+                    port,
+                    is_https,
                     method,
                     path,
                     &request.request.headers,
                     request.request.body.as_deref(),
+                    &mut timing,
                 )
-                .await?;
-            (s, h, b, Some(tls_start.elapsed().as_millis() as u64))
+                .await
+            {
+                Ok((s, h, b)) => (s, h, b),
+                Err(e) => {
+                    error!(
+                        replay_id = %replay_id,
+                        error = %e,
+                        "[REPLAY] Request failed with no fallback rules"
+                    );
+                    return Err(e);
+                }
+            }
         } else {
-            let (s, h, b) = self
-                .send_http_request(
-                    tcp_stream,
-                    &host,
-                    method,
-                    path,
-                    &request.request.headers,
-                    request.request.body.as_deref(),
-                )
-                .await?;
-            (s, h, b, None)
+            info!(
+                replay_id = %replay_id,
+                "[REPLAY] No mock response and no real request needed, returning empty response"
+            );
+            timing.dns_ms = Some(0);
+            timing.connect_ms = Some(0);
+            timing.tls_ms = Some(0);
+            (
+                200,
+                vec![("content-type".to_string(), "text/plain".to_string())],
+                None,
+            )
         };
-        timing.tls_ms = tls_ms;
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         timing.total_ms = duration_ms;
@@ -238,14 +274,119 @@ impl ReplayExecutor {
         })
     }
 
+    fn check_mock_response(&self, resolved_rules: &ResolvedRules) -> Option<MockResponse> {
+        let mut status: Option<u16> = None;
+        let mut body: Option<String> = None;
+        let mut headers: Vec<(String, String)> = vec![];
+
+        for rule in &resolved_rules.rules {
+            match rule.rule.protocol {
+                Protocol::StatusCode | Protocol::ReplaceStatus => {
+                    if let Ok(code) = rule.resolved_value.parse::<u16>() {
+                        status = Some(code);
+                    }
+                }
+                Protocol::ResBody => {
+                    let content = extract_inline_content(&rule.resolved_value);
+                    body = Some(content);
+                }
+                Protocol::ResHeaders => {
+                    if let Some(parsed) = parse_headers(&rule.resolved_value) {
+                        headers.extend(parsed);
+                    }
+                }
+                Protocol::Host | Protocol::XHost => {}
+                _ => {}
+            }
+        }
+
+        if status.is_some() || body.is_some() {
+            let final_status = status.unwrap_or(200);
+            let mut final_headers = headers;
+
+            if !final_headers
+                .iter()
+                .any(|(k, _)| k.to_lowercase() == "content-type")
+            {
+                final_headers.push(("content-type".to_string(), "text/plain".to_string()));
+            }
+
+            Some(MockResponse {
+                status: final_status,
+                headers: final_headers,
+                body,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn needs_real_request(&self, resolved_rules: &ResolvedRules) -> bool {
+        for rule in &resolved_rules.rules {
+            match rule.rule.protocol {
+                Protocol::Host | Protocol::XHost | Protocol::Proxy => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn try_real_request(
+        &self,
+        host: &str,
+        port: u16,
+        is_https: bool,
+        method: &str,
+        path: &str,
+        headers: &[(String, String)],
+        body: Option<&str>,
+        timing: &mut RequestTiming,
+    ) -> Result<(u16, Vec<(String, String)>, Option<String>), ReplayError> {
+        let dns_start = Instant::now();
+        let connect_addr = format!("{}:{}", host, port);
+        timing.dns_ms = Some(dns_start.elapsed().as_millis() as u64);
+
+        let connect_start = Instant::now();
+        let tcp_stream = TcpStream::connect(&connect_addr).await.map_err(|e| {
+            ReplayError::ConnectionFailed(format!("Failed to connect to {}: {}", connect_addr, e))
+        })?;
+        timing.connect_ms = Some(connect_start.elapsed().as_millis() as u64);
+
+        let (status, response_headers, response_body, tls_ms) = if is_https {
+            let tls_start = Instant::now();
+            let (s, h, b) = self
+                .send_https_request(tcp_stream, host, method, path, headers, body)
+                .await?;
+            (s, h, b, Some(tls_start.elapsed().as_millis() as u64))
+        } else {
+            let (s, h, b) = self
+                .send_http_request(tcp_stream, host, method, path, headers, body)
+                .await?;
+            (s, h, b, None)
+        };
+        timing.tls_ms = tls_ms;
+
+        Ok((status, response_headers, response_body))
+    }
+
     fn resolve_rules(
         &self,
         rule_config: &RuleConfig,
         url: &str,
         method: &str,
-    ) -> Vec<ResolvedRuleInfo> {
+    ) -> (ResolvedRules, Vec<MatchedRule>) {
         match rule_config.mode {
-            RuleMode::None => vec![],
+            RuleMode::None => (ResolvedRules::default(), vec![]),
+            RuleMode::Custom => {
+                if let Some(ref custom_rules) = rule_config.custom_rules {
+                    self.resolve_custom_rules(custom_rules, url, method)
+                } else {
+                    (ResolvedRules::default(), vec![])
+                }
+            }
             RuleMode::Enabled | RuleMode::Selected => {
                 let rules_storage = &self.admin_state.rules_storage;
                 let selected = if rule_config.mode == RuleMode::Selected {
@@ -258,56 +399,174 @@ impl ReplayExecutor {
         }
     }
 
+    fn resolve_custom_rules(
+        &self,
+        custom_rules: &str,
+        url: &str,
+        method: &str,
+    ) -> (ResolvedRules, Vec<MatchedRule>) {
+        let rules = match parse_rules(custom_rules) {
+            Ok(r) => r
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| r.with_source("custom".to_string(), i + 1))
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                warn!(error = %e, "[REPLAY] Failed to parse custom rules");
+                return (ResolvedRules::default(), vec![]);
+            }
+        };
+
+        if rules.is_empty() {
+            return (ResolvedRules::default(), vec![]);
+        }
+
+        let values = self.load_values();
+        let resolver = RulesResolver::new(rules).with_values(values);
+        let ctx = RequestContext::from_url(url).with_method(method);
+        let resolved = resolver.resolve(&ctx);
+
+        let matched: Vec<MatchedRule> = resolved
+            .rules
+            .iter()
+            .map(|r| MatchedRule {
+                pattern: r.rule.pattern.clone(),
+                protocol: r.rule.protocol.to_str().to_string(),
+                value: r.resolved_value.clone(),
+                rule_name: r.rule.file.clone(),
+                raw: Some(r.rule.raw.clone()),
+                line: r.rule.line,
+            })
+            .collect();
+
+        (resolved, matched)
+    }
+
     fn resolve_from_storage(
         &self,
         rules_storage: &bifrost_storage::RulesStorage,
         url: &str,
         method: &str,
         selected_rules: Option<&Vec<String>>,
-    ) -> Vec<ResolvedRuleInfo> {
-        let mut result = vec![];
+    ) -> (ResolvedRules, Vec<MatchedRule>) {
+        let mut all_rules: Vec<Rule> = vec![];
 
         let rule_files = match rules_storage.load_all() {
             Ok(files) => files,
             Err(e) => {
                 warn!(error = %e, "[REPLAY] Failed to load rules");
-                return vec![];
+                return (ResolvedRules::default(), vec![]);
             }
         };
 
+        info!(
+            rule_files_count = rule_files.len(),
+            "[REPLAY] Loading rules from storage"
+        );
+
         for rule_file in rule_files {
             if !rule_file.enabled {
+                info!(
+                    rule_name = %rule_file.name,
+                    "[REPLAY] Skipping disabled rule file"
+                );
                 continue;
             }
 
             if let Some(selected) = selected_rules {
                 if !selected.contains(&rule_file.name) {
+                    info!(
+                        rule_name = %rule_file.name,
+                        "[REPLAY] Skipping unselected rule file"
+                    );
                     continue;
                 }
             }
 
-            if let Some(matched) =
-                self.match_rules_in_content(&rule_file.content, url, method, &rule_file.name)
-            {
-                result.extend(matched);
+            match parse_rules(&rule_file.content) {
+                Ok(parsed) => {
+                    info!(
+                        rule_name = %rule_file.name,
+                        parsed_count = parsed.len(),
+                        "[REPLAY] Parsed rule file"
+                    );
+                    let rules_with_source: Vec<Rule> = parsed
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, r)| r.with_source(rule_file.name.clone(), i + 1))
+                        .collect();
+                    all_rules.extend(rules_with_source);
+                }
+                Err(e) => {
+                    warn!(
+                        rule_name = %rule_file.name,
+                        error = %e,
+                        "[REPLAY] Failed to parse rule file"
+                    );
+                }
             }
         }
 
-        result
+        info!(total_rules = all_rules.len(), "[REPLAY] Total rules loaded");
+
+        if all_rules.is_empty() {
+            return (ResolvedRules::default(), vec![]);
+        }
+
+        let values = self.load_values();
+        let resolver = RulesResolver::new(all_rules.clone()).with_values(values);
+
+        let ctx = RequestContext::from_url(url).with_method(method);
+        info!(
+            url = %url,
+            host = %ctx.host,
+            path = %ctx.path,
+            "[REPLAY] Resolving rules for request"
+        );
+
+        let resolved = resolver.resolve(&ctx);
+        info!(
+            matched_count = resolved.rules.len(),
+            "[REPLAY] Rules matching completed"
+        );
+
+        for rule in &resolved.rules {
+            info!(
+                pattern = %rule.rule.pattern,
+                protocol = %rule.rule.protocol.to_str(),
+                value = %rule.resolved_value,
+                "[REPLAY] Matched rule"
+            );
+        }
+
+        let applied_rules: Vec<MatchedRule> = resolved
+            .rules
+            .iter()
+            .map(|r| MatchedRule {
+                pattern: r.rule.pattern.clone(),
+                protocol: r.rule.protocol.to_str().to_string(),
+                value: r.resolved_value.clone(),
+                rule_name: r.rule.file.clone(),
+                raw: Some(r.rule.raw.clone()),
+                line: r.rule.line,
+            })
+            .collect();
+
+        info!(
+            url = %url,
+            matched_count = applied_rules.len(),
+            "[REPLAY] Rules resolved"
+        );
+
+        (resolved, applied_rules)
     }
 
-    fn match_rules_in_content(
-        &self,
-        _content: &str,
-        _url: &str,
-        _method: &str,
-        rule_name: &str,
-    ) -> Option<Vec<ResolvedRuleInfo>> {
-        debug!(
-            rule_name = %rule_name,
-            "[REPLAY] Checking rules (simplified matching)"
-        );
-        None
+    fn load_values(&self) -> HashMap<String, String> {
+        if let Some(ref values_storage) = self.admin_state.values_storage {
+            let guard = values_storage.read();
+            return guard.as_hashmap();
+        }
+        HashMap::new()
     }
 
     async fn send_http_request(
@@ -591,13 +850,39 @@ impl ReplayExecutor {
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedRuleInfo {
-    pattern: String,
-    protocol: String,
-    value: String,
-    rule_name: Option<String>,
-    raw: Option<String>,
-    line: Option<usize>,
+struct MockResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Option<String>,
+}
+
+fn extract_inline_content(value: &str) -> String {
+    if value.starts_with('{') && value.ends_with('}') && value.len() > 1 {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_headers(value: &str) -> Option<Vec<(String, String)>> {
+    let mut result = vec![];
+    let content = extract_inline_content(value);
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(pos) = line.find(':') {
+            let key = line[..pos].trim().to_lowercase();
+            let val = line[pos + 1..].trim().to_string();
+            result.push((key, val));
+        }
+    }
+    if result.is_empty() {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 fn get_tls_client_config(unsafe_ssl: bool) -> rustls::ClientConfig {

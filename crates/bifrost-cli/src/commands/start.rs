@@ -565,6 +565,7 @@ pub fn run_foreground(
 
         log_resolver_rules(&resolver);
 
+        let unsafe_ssl = config.unsafe_ssl;
         let server = ProxyServer::new(config)
             .with_tls_config(tls_config)
             .with_admin_state(admin_state)
@@ -574,6 +575,13 @@ pub fn run_foreground(
             .admin_state()
             .cloned()
             .expect("admin_state should be set");
+
+        let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
+            admin_state_arc.clone(),
+            unsafe_ssl,
+        ));
+        admin_state_arc.set_replay_executor(replay_executor);
+
         let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
         let _push_tasks = start_push_tasks(push_manager.clone());
         let server = server.with_push_manager(push_manager);
@@ -834,6 +842,7 @@ pub fn run_daemon(
 
                 log_resolver_rules(&resolver);
 
+                let unsafe_ssl = config.unsafe_ssl;
                 let server = ProxyServer::new(config)
                     .with_tls_config(tls_config)
                     .with_admin_state(admin_state)
@@ -843,6 +852,13 @@ pub fn run_daemon(
                     .admin_state()
                     .cloned()
                     .expect("admin_state should be set");
+
+                let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
+                    admin_state_arc.clone(),
+                    unsafe_ssl,
+                ));
+                admin_state_arc.set_replay_executor(replay_executor);
+
                 let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
                 let _push_tasks = start_push_tasks(push_manager.clone());
                 let server = server.with_push_manager(push_manager);

@@ -6,6 +6,7 @@ pub enum RuleMode {
     #[default]
     Enabled,
     Selected,
+    Custom,
     None,
 }
 
@@ -14,6 +15,8 @@ pub struct RuleConfig {
     pub mode: RuleMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub selected_rules: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_rules: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

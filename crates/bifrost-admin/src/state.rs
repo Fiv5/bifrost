@@ -16,7 +16,8 @@ use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
-use crate::replay_executor::{ReplayExecutor, SharedReplayExecutor};
+use crate::replay_executor::SharedReplayExecutor;
+use once_cell::sync::OnceCell;
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
@@ -92,7 +93,7 @@ pub struct AdminState {
     pub version_checker: SharedVersionChecker,
     pub script_manager: Option<SharedScriptManager>,
     pub replay_db_store: Option<SharedReplayDbStore>,
-    pub replay_executor: Option<SharedReplayExecutor>,
+    pub replay_executor: OnceCell<SharedReplayExecutor>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -123,7 +124,7 @@ impl AdminState {
             version_checker: Arc::new(VersionChecker::new()),
             script_manager: None,
             replay_db_store: None,
-            replay_executor: None,
+            replay_executor: OnceCell::new(),
         }
     }
 
@@ -346,14 +347,12 @@ impl AdminState {
         self
     }
 
-    pub fn with_replay_executor(mut self, executor: ReplayExecutor) -> Self {
-        self.replay_executor = Some(Arc::new(executor));
-        self
+    pub fn set_replay_executor(&self, executor: SharedReplayExecutor) {
+        let _ = self.replay_executor.set(executor);
     }
 
-    pub fn with_replay_executor_shared(mut self, executor: SharedReplayExecutor) -> Self {
-        self.replay_executor = Some(executor);
-        self
+    pub fn get_replay_executor(&self) -> Option<&SharedReplayExecutor> {
+        self.replay_executor.get()
     }
 }
 
