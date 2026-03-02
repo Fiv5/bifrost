@@ -175,7 +175,7 @@ async fn handle_import(req: Request<Incoming>, state: SharedAdminState) -> Respo
 
     match file_type {
         BifrostFileType::Rules => import_rules(&content, &state).await,
-        BifrostFileType::Network => import_network(&content),
+        BifrostFileType::Network => import_network(&content, &state).await,
         BifrostFileType::Script => import_scripts(&content, &state).await,
         BifrostFileType::Values => import_values(&content, &state).await,
         BifrostFileType::Template => import_templates(&content, &state).await,
@@ -225,16 +225,138 @@ async fn import_rules(content: &str, state: &SharedAdminState) -> Response<BoxBo
     })
 }
 
-fn import_network(_content: &str) -> Response<BoxBody> {
+async fn import_network(content: &str, state: &SharedAdminState) -> Response<BoxBody> {
+    let traffic_db_store = match &state.traffic_db_store {
+        Some(store) => store.clone(),
+        None => {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Traffic database store not configured",
+            )
+        }
+    };
+
+    let file = match BifrostFileParser::parse_network(content) {
+        Ok(f) => f,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to parse network file: {}", e),
+            )
+        }
+    };
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut record_count = 0;
+
+    for network_record in &file.content {
+        let traffic_record = network_record_to_traffic_record(network_record);
+        traffic_db_store.record(traffic_record);
+        record_count += 1;
+    }
+
+    if record_count > 0 {
+        warnings.push(format!(
+            "Imported {} record(s) with 'OUT-' prefix IDs",
+            record_count
+        ));
+    }
+
     json_response(&ImportResponse {
         success: true,
         file_type: BifrostFileType::Network,
         data: ImportedData {
-            record_count: Some(0),
+            record_count: Some(record_count),
             ..Default::default()
         },
-        warnings: vec!["Network import is view-only, records are not persisted".to_string()],
+        warnings,
     })
+}
+
+fn network_record_to_traffic_record(record: &NetworkRecord) -> TrafficRecord {
+    let parsed_url = url::Url::parse(&record.url).ok();
+    let host = parsed_url
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .map(|h| h.to_string())
+        .unwrap_or_default();
+    let path = parsed_url
+        .as_ref()
+        .map(|u| {
+            let p = u.path();
+            if let Some(q) = u.query() {
+                format!("{}?{}", p, q)
+            } else {
+                p.to_string()
+            }
+        })
+        .unwrap_or_default();
+    let protocol = parsed_url
+        .as_ref()
+        .map(|u| u.scheme().to_uppercase())
+        .unwrap_or_else(|| "HTTP".to_string());
+
+    let matched_rules: Option<Vec<crate::traffic::MatchedRule>> =
+        record.matched_rules.as_ref().map(|rules| {
+            rules
+                .iter()
+                .map(|r| crate::traffic::MatchedRule {
+                    pattern: r.pattern.clone(),
+                    protocol: r.protocol.clone(),
+                    value: r.value.clone(),
+                    rule_name: None,
+                    raw: None,
+                    line: None,
+                })
+                .collect()
+        });
+
+    let has_rule_hit = matched_rules.as_ref().is_some_and(|r| !r.is_empty());
+
+    let imported_id = format!("OUT-{}", record.id);
+
+    TrafficRecord {
+        id: imported_id,
+        sequence: 0,
+        timestamp: record.timestamp,
+        method: record.method.clone(),
+        url: record.url.clone(),
+        status: record.status,
+        content_type: None,
+        request_size: record.request_body.as_ref().map_or(0, |b| b.len()),
+        response_size: record.response_body.as_ref().map_or(0, |b| b.len()),
+        duration_ms: record.duration_ms,
+        timing: None,
+        request_headers: record.request_headers.clone(),
+        response_headers: record.response_headers.clone(),
+        request_body_ref: None,
+        response_body_ref: None,
+        client_ip: "imported".to_string(),
+        client_app: Some("Bifrost Import".to_string()),
+        client_pid: None,
+        client_path: None,
+        host,
+        path,
+        protocol,
+        actual_url: None,
+        actual_host: None,
+        original_request_headers: None,
+        actual_response_headers: None,
+        is_tunnel: false,
+        has_rule_hit,
+        matched_rules,
+        request_content_type: None,
+        is_websocket: false,
+        is_sse: false,
+        is_h3: false,
+        is_replay: false,
+        socket_status: None,
+        frame_count: 0,
+        last_frame_id: 0,
+        error_message: None,
+        req_script_results: None,
+        res_script_results: None,
+    }
 }
 
 async fn import_scripts(content: &str, state: &SharedAdminState) -> Response<BoxBody> {
@@ -551,16 +673,6 @@ async fn handle_export_network(
     req: Request<Incoming>,
     state: SharedAdminState,
 ) -> Response<BoxBody> {
-    let traffic_store = match &state.traffic_store {
-        Some(ts) => ts.clone(),
-        None => {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Traffic store not configured",
-            )
-        }
-    };
-
     let request: ExportNetworkRequest = match read_json(req).await {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -570,7 +682,18 @@ async fn handle_export_network(
     let mut records: Vec<NetworkRecord> = Vec::new();
 
     for id in &request.record_ids {
-        if let Some(traffic) = traffic_store.get_by_id(id) {
+        let traffic = if let Some(ref db_store) = state.traffic_db_store {
+            db_store.get_by_id(id)
+        } else if let Some(ref traffic_store) = state.traffic_store {
+            traffic_store.get_by_id(id)
+        } else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Traffic store not configured",
+            );
+        };
+
+        if let Some(traffic) = traffic {
             records.push(traffic_to_network_record(&traffic, include_body, &state).await);
         }
     }

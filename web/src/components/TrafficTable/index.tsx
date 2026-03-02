@@ -265,16 +265,26 @@ export default function TrafficTable({
       pagination={false}
       size="small"
       scroll={{ x: "max-content", y: "calc(100vh - 150px)" }}
-      onRow={(record) => ({
-        onClick: () => onSelect?.(record),
-        style: {
-          cursor: "pointer",
-          background: record.id === selectedId ? "#e6f7ff" : undefined,
-        },
-      })}
-      rowClassName={(record) =>
-        record.id === selectedId ? "selected-row" : ""
-      }
+      onRow={(record) => {
+        const isImported = record.id.startsWith("OUT-") || record.client_app === "Bifrost Import";
+        return {
+          onClick: () => onSelect?.(record),
+          style: {
+            cursor: "pointer",
+            background: record.id === selectedId 
+              ? "#e6f7ff" 
+              : isImported 
+                ? "#fff7e6" 
+                : undefined,
+          },
+        };
+      }}
+      rowClassName={(record) => {
+        const isImported = record.id.startsWith("OUT-") || record.client_app === "Bifrost Import";
+        if (record.id === selectedId) return "selected-row";
+        if (isImported) return "imported-row";
+        return "";
+      }}
     />
   );
 }

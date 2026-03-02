@@ -178,6 +178,7 @@ const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]
     toolbar.protocol.length > 0 ||
     toolbar.status.length > 0 ||
     toolbar.type.length > 0 ||
+    toolbar.imported.length > 0 ||
     conditions.some(c => c.value);
 };
 
@@ -219,6 +220,13 @@ const matchRecord = (
 ): boolean => {
   if (toolbar.rule.length > 0 && !record.has_rule_hit) {
     return false;
+  }
+
+  if (toolbar.imported.length > 0) {
+    const isImported = record.id.startsWith('OUT-') || record.client_app === 'Bifrost Import';
+    if (!isImported) {
+      return false;
+    }
   }
 
   if (protocolSet.size > 0) {
@@ -411,7 +419,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   lastId: null,
   lastSequence: null,
   pendingIds: new Set(),
-  toolbarFilters: { rule: [], protocol: [], type: [], status: [] },
+  toolbarFilters: { rule: [], protocol: [], type: [], status: [], imported: [] },
   filterConditions: [],
   paused: false,
   loading: false,
@@ -975,7 +983,7 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
   initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => {
     set({
       filterConditions: filters,
-      toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [] },
+      toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [], imported: [] },
     });
   },
 

@@ -26,6 +26,7 @@ const filterGroups = {
   protocol: ["HTTP", "HTTPS", "WS", "WSS", "H3", "H3S"],
   type: ["JSON", "Form", "XML", "JS", "CSS", "Font", "Doc", "Media", "SSE"],
   status: ["1xx", "2xx", "3xx", "4xx", "5xx", "error"],
+  imported: ["Imported"],
 };
 
 export default function Toolbar({
@@ -156,6 +157,14 @@ export default function Toolbar({
           }}
         />
         {renderFilterGroup("status", filterGroups.status)}
+        <div
+          style={{
+            width: 1,
+            height: 14,
+            backgroundColor: token.colorBorderSecondary,
+          }}
+        />
+        {renderFilterGroup("imported", filterGroups.imported)}
       </div>
 
       <Space size={8}>

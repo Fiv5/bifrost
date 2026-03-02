@@ -5,6 +5,7 @@ import type { UploadProps, ButtonProps } from 'antd';
 import type { RcFile } from 'antd/es/upload';
 import { importFile, detectType } from '../../api/bifrost-file';
 import type { BifrostFileType, ImportResponse } from '../../api/bifrost-file';
+import { useTrafficStore } from '../../stores/useTrafficStore';
 
 interface ImportBifrostButtonProps {
   expectedType?: BifrostFileType;
@@ -49,6 +50,14 @@ export const ImportBifrostButton: React.FC<ImportBifrostButtonProps> = ({
           message.warning(`导入完成，有 ${result.warnings.length} 条警告`);
         } else {
           message.success('导入成功');
+        }
+
+        if (result.file_type === 'network') {
+          const trafficStore = useTrafficStore.getState();
+          trafficStore.setToolbarFilters({
+            ...trafficStore.toolbarFilters,
+            imported: ['Imported'],
+          });
         }
 
         onImportSuccess?.(result);

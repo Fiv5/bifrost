@@ -340,6 +340,37 @@ fn apply_res_cache(
     }
 }
 
+fn expand_content_type_shortcut(input: &str) -> &str {
+    match input.to_lowercase().as_str() {
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "javascript" | "mjs" => "application/javascript",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "txt" | "text" => "text/plain",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "eot" => "application/vnd.ms-fontobject",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "gzip" => "application/gzip",
+        "mp3" => "audio/mpeg",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "wasm" => "application/wasm",
+        "form" => "application/x-www-form-urlencoded",
+        "multipart" => "multipart/form-data",
+        _ => input,
+    }
+}
+
 fn apply_res_type(
     parts: &mut Parts,
     rules: &ResolvedRules,
@@ -347,7 +378,8 @@ fn apply_res_type(
     ctx: &RequestContext,
 ) {
     if let Some(ref content_type) = rules.res_type {
-        if let Ok(value) = content_type.parse::<HeaderValue>() {
+        let expanded = expand_content_type_shortcut(content_type);
+        if let Ok(value) = expanded.parse::<HeaderValue>() {
             if verbose_logging {
                 let old_value = parts
                     .headers
@@ -359,7 +391,7 @@ fn apply_res_type(
                     "[{}] [RES_TYPE] Content-Type : {} -> \"{}\"",
                     ctx.id_str(),
                     old_value,
-                    content_type
+                    expanded
                 );
             }
             parts.headers.insert(hyper::header::CONTENT_TYPE, value);

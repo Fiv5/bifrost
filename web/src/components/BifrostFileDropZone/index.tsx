@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Modal, Spin, message } from 'antd';
-import { useNavigate } from 'react-router-dom';
-import { UploadOutlined } from '@ant-design/icons';
-import { importFile } from '../../api/bifrost-file';
-import type { BifrostFileType } from '../../api/bifrost-file';
-import { useValuesStore } from '../../stores/useValuesStore';
-import { useScriptsStore } from '../../stores/useScriptsStore';
-import { useReplayStore } from '../../stores/useReplayStore';
-import { useRulesStore } from '../../stores/useRulesStore';
-import './style.css';
+import { useCallback, useEffect, useState } from "react";
+import { Modal, Spin, message } from "antd";
+import { useNavigate } from "react-router-dom";
+import { UploadOutlined } from "@ant-design/icons";
+import { importFile } from "../../api/bifrost-file";
+import type { BifrostFileType } from "../../api/bifrost-file";
+import { useValuesStore } from "../../stores/useValuesStore";
+import { useScriptsStore } from "../../stores/useScriptsStore";
+import { useReplayStore } from "../../stores/useReplayStore";
+import { useRulesStore } from "../../stores/useRulesStore";
+import { useTrafficStore } from "../../stores/useTrafficStore";
+import "./style.css";
 
 interface DropZoneProps {
   children: React.ReactNode;
@@ -16,27 +17,36 @@ interface DropZoneProps {
 }
 
 const fileTypeRoutes: Record<BifrostFileType, string> = {
-  rules: '/rules',
-  network: '/traffic',
-  script: '/scripts',
-  values: '/values',
-  template: '/replay',
+  rules: "/rules",
+  network: "/traffic",
+  script: "/scripts",
+  values: "/values",
+  template: "/replay",
 };
 
 const refreshStoreByType = async (fileType: BifrostFileType) => {
   switch (fileType) {
-    case 'values':
+    case "values":
       await useValuesStore.getState().fetchValues();
       break;
-    case 'script':
+    case "script":
       await useScriptsStore.getState().fetchScripts();
       break;
-    case 'template':
+    case "template":
       await useReplayStore.getState().loadGroups();
       await useReplayStore.getState().loadSavedRequests();
       break;
-    case 'rules':
+    case "rules":
       await useRulesStore.getState().fetchRules();
+      break;
+    case "network":
+      {
+        const trafficStore = useTrafficStore.getState();
+        trafficStore.setToolbarFilters({
+          ...trafficStore.toolbarFilters,
+          imported: ["Imported"],
+        });
+      }
       break;
     default:
       break;
@@ -55,7 +65,7 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
     e.preventDefault();
     e.stopPropagation();
 
-    if (e.dataTransfer?.types.includes('Files')) {
+    if (e.dataTransfer?.types.includes("Files")) {
       setIsDragging(true);
     }
   }, []);
@@ -80,10 +90,10 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
       setIsDragging(false);
 
       const files = Array.from(e.dataTransfer?.files || []);
-      const bifrostFiles = files.filter((f) => f.name.endsWith('.bifrost'));
+      const bifrostFiles = files.filter((f) => f.name.endsWith(".bifrost"));
 
       if (bifrostFiles.length === 0) {
-        message.warning('请拖入 .bifrost 格式的文件');
+        message.warning("请拖入 .bifrost 格式的文件");
         return;
       }
 
@@ -95,7 +105,9 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
           const result = await importFile(content);
 
           if (result.warnings && result.warnings.length > 0) {
-            message.warning(`导入 ${file.name} 完成，但有 ${result.warnings.length} 条警告`);
+            message.warning(
+              `导入 ${file.name} 完成，但有 ${result.warnings.length} 条警告`,
+            );
           } else {
             message.success(`导入 ${file.name} 成功`);
           }
@@ -114,18 +126,18 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
         setIsImporting(false);
       }
     },
-    [navigate, onImportSuccess]
+    [navigate, onImportSuccess],
   );
 
   useEffect(() => {
-    window.addEventListener('dragover', handleDragOver);
-    window.addEventListener('dragleave', handleDragLeave);
-    window.addEventListener('drop', handleDrop);
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
 
     return () => {
-      window.removeEventListener('dragover', handleDragOver);
-      window.removeEventListener('dragleave', handleDragLeave);
-      window.removeEventListener('drop', handleDrop);
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
     };
   }, [handleDragOver, handleDragLeave, handleDrop]);
 
@@ -142,8 +154,14 @@ export const BifrostFileDropZone: React.FC<DropZoneProps> = ({
         </div>
       )}
 
-      <Modal open={isImporting} footer={null} closable={false} centered width={200}>
-        <div style={{ textAlign: 'center', padding: 20 }}>
+      <Modal
+        open={isImporting}
+        footer={null}
+        closable={false}
+        centered
+        width={200}
+      >
+        <div style={{ textAlign: "center", padding: 20 }}>
           <Spin size="large" />
           <p style={{ marginTop: 16, marginBottom: 0 }}>正在导入...</p>
         </div>

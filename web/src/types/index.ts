@@ -407,6 +407,7 @@ export interface ToolbarFilters {
   protocol: string[];
   type: string[];
   status: string[];
+  imported: string[];
 }
 
 export interface FilterCondition {

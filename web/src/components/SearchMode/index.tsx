@@ -58,6 +58,9 @@ export default function SearchMode({
   const selectedDomains = useFilterPanelStore((state) => state.selectedDomains);
 
   const buildFilters = useCallback((): SearchFilters => {
+    const importedApps = toolbarFilters.imported.length > 0 ? ["Bifrost Import"] : [];
+    const allClientApps = [...new Set([...selectedClientApps, ...importedApps])];
+    
     return {
       protocols: toolbarFilters.protocol,
       status_ranges: toolbarFilters.status,
@@ -69,7 +72,7 @@ export default function SearchMode({
         value: c.value,
       })),
       client_ips: selectedClientIps,
-      client_apps: selectedClientApps,
+      client_apps: allClientApps,
       domains: selectedDomains,
     };
   }, [

@@ -44,13 +44,15 @@ export default function TrafficContextMenu({
 
   const isTunnel = record?.is_tunnel || record?.method === 'CONNECT';
 
+  const hasMultipleSelected = selectedRecords.length > 1;
+
   const adjustedPosition = useMemo(() => {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const padding = 8;
 
-    const menuItemCount = isTunnel ? 5 : 6;
-    const dividerCount = 1;
+    const menuItemCount = hasMultipleSelected ? 1 : (isTunnel ? 5 : 6);
+    const dividerCount = hasMultipleSelected ? 0 : 1;
     const estimatedMenuHeight =
       menuItemCount * MENU_ITEM_HEIGHT + dividerCount * DIVIDER_HEIGHT + 8;
 
@@ -66,7 +68,7 @@ export default function TrafficContextMenu({
     }
 
     return { x: newX, y: newY };
-  }, [position, isTunnel]);
+  }, [position, isTunnel, hasMultipleSelected]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -209,52 +211,59 @@ export default function TrafficContextMenu({
 
   if (!visible || !record) return null;
 
-  const hasMultipleSelected = selectedRecords.length > 1;
-
-  const menuItems: MenuProps['items'] = [
-    ...(!isTunnel ? [
-      {
-        key: 'replay',
-        icon: <SendOutlined />,
-        label: 'Replay',
-        onClick: replayRequest,
-      },
-      { type: 'divider' as const },
-    ] : []),
-    {
-      key: 'copy-url',
-      icon: <CopyOutlined />,
-      label: 'Copy URL',
-      onClick: copyUrl,
-    },
-    {
-      key: 'copy-curl',
-      icon: <CodeOutlined />,
-      label: 'Copy as cURL',
-      onClick: copyAsCurl,
-    },
-    {
-      key: 'download-har',
-      icon: <DownloadOutlined />,
-      label: hasMultipleSelected ? `Download ${selectedRecords.length} requests as HAR` : 'Download as HAR',
-      onClick: downloadAsHAR,
-    },
-    {
-      key: 'export-bifrost',
-      icon: <ExportOutlined />,
-      label: hasMultipleSelected ? `Export ${selectedRecords.length} requests as .bifrost` : 'Export as .bifrost',
-      onClick: exportAsBifrost,
-    },
-    ...(isTunnel ? [
-      { type: 'divider' as const },
-      {
-        key: 'add-intercept',
-        icon: <LockOutlined />,
-        label: 'Add to Intercept List',
-        onClick: addToInterceptList,
-      },
-    ] : []),
-  ];
+  const menuItems: MenuProps['items'] = hasMultipleSelected
+    ? [
+        {
+          key: 'export-bifrost',
+          icon: <ExportOutlined />,
+          label: `Export ${selectedRecords.length} requests as .bifrost`,
+          onClick: exportAsBifrost,
+        },
+      ]
+    : [
+        ...(!isTunnel ? [
+          {
+            key: 'replay',
+            icon: <SendOutlined />,
+            label: 'Replay',
+            onClick: replayRequest,
+          },
+          { type: 'divider' as const },
+        ] : []),
+        {
+          key: 'copy-url',
+          icon: <CopyOutlined />,
+          label: 'Copy URL',
+          onClick: copyUrl,
+        },
+        {
+          key: 'copy-curl',
+          icon: <CodeOutlined />,
+          label: 'Copy as cURL',
+          onClick: copyAsCurl,
+        },
+        {
+          key: 'download-har',
+          icon: <DownloadOutlined />,
+          label: 'Download as HAR',
+          onClick: downloadAsHAR,
+        },
+        {
+          key: 'export-bifrost',
+          icon: <ExportOutlined />,
+          label: 'Export as .bifrost',
+          onClick: exportAsBifrost,
+        },
+        ...(isTunnel ? [
+          { type: 'divider' as const },
+          {
+            key: 'add-intercept',
+            icon: <LockOutlined />,
+            label: 'Add to Intercept List',
+            onClick: addToInterceptList,
+          },
+        ] : []),
+      ];
 
   return (
     <div

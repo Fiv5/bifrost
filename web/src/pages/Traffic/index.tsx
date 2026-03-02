@@ -4,6 +4,7 @@ import {
   useRef,
   useMemo,
   useDeferredValue,
+  useState,
   type CSSProperties,
 } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -69,6 +70,7 @@ const deserializeToolbar = (str: string): ToolbarFilters | null => {
 export default function Traffic() {
   const { token } = theme.useToken();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const records = useTrafficStore((state) => state.records);
   const hasMore = useTrafficStore((state) => state.hasMore);
@@ -394,6 +396,8 @@ export default function Traffic() {
             onSelect={handleSelect}
             onDoubleClick={handleDoubleClick}
             selectedId={selectedId}
+            selectedIds={selectedIds}
+            onSelectedIdsChange={setSelectedIds}
             hasMore={hasMore}
             autoScroll={autoScroll}
             onScrollPositionChange={handleScrollPositionChange}

@@ -28,12 +28,15 @@ const ellipsisStyle: CSSProperties = {
   maxWidth: "100%",
 };
 
+type SetSelectedIds = (ids: string[] | ((prev: string[]) => string[])) => void;
+
 interface VirtualTrafficTableProps {
   data: TrafficSummary[];
   onSelect?: (record: TrafficSummary) => void;
   onDoubleClick?: (record: TrafficSummary) => void;
   selectedId?: string;
   selectedIds?: string[];
+  onSelectedIdsChange?: SetSelectedIds;
   onLoadMore?: () => void;
   hasMore?: boolean;
   autoScroll?: boolean;
@@ -350,14 +353,18 @@ const baseCellStyle: CSSProperties = {
 interface TableRowProps {
   record: TrafficSummary;
   isSelected: boolean;
+  isMultiSelected: boolean;
+  isImported: boolean;
   translateY: number;
   rowIndex: number;
   borderColor: string;
   selectedBg: string;
+  multiSelectedBg: string;
+  importedBg: string;
   evenBg: string;
   oddBg: string;
   textSecondary: string;
-  onRowClick: () => void;
+  onRowClick: (e: React.MouseEvent) => void;
   onRowDoubleClick: () => void;
   onRowContextMenu: (e: React.MouseEvent) => void;
 }
@@ -367,6 +374,8 @@ const areRowPropsEqual = (
   next: TableRowProps,
 ): boolean => {
   if (prev.isSelected !== next.isSelected) return false;
+  if (prev.isMultiSelected !== next.isMultiSelected) return false;
+  if (prev.isImported !== next.isImported) return false;
   if (prev.translateY !== next.translateY) return false;
   if (prev.rowIndex !== next.rowIndex) return false;
 
@@ -395,10 +404,14 @@ const areRowPropsEqual = (
 const TableRow = memo(function TableRow({
   record,
   isSelected,
+  isMultiSelected,
+  isImported,
   translateY,
   rowIndex,
   borderColor,
   selectedBg,
+  multiSelectedBg,
+  importedBg,
   evenBg,
   oddBg,
   textSecondary,
@@ -410,11 +423,15 @@ const TableRow = memo(function TableRow({
     ...baseRowStyle,
     borderBottom: `1px solid ${borderColor}`,
     transform: `translateY(${translateY}px)`,
-    backgroundColor: isSelected
-      ? selectedBg
-      : rowIndex % 2 === 0
-        ? evenBg
-        : oddBg,
+    backgroundColor: isMultiSelected
+      ? multiSelectedBg
+      : isSelected
+        ? selectedBg
+        : isImported
+          ? importedBg
+          : rowIndex % 2 === 0
+            ? evenBg
+            : oddBg,
   };
 
   return (
@@ -494,6 +511,7 @@ export default function VirtualTrafficTable({
   onDoubleClick,
   selectedId,
   selectedIds = [],
+  onSelectedIdsChange,
   onLoadMore,
   hasMore,
   autoScroll = true,
@@ -513,6 +531,7 @@ export default function VirtualTrafficTable({
   const initialScrollRestoredRef = useRef(false);
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const lastSelectedIndexRef = useRef<number | null>(null);
 
   const [contextMenu, setContextMenu] = useState<{
     visible: boolean;
@@ -528,18 +547,57 @@ export default function VirtualTrafficTable({
     (e: React.MouseEvent, record: TrafficSummary) => {
       e.preventDefault();
       e.stopPropagation();
+      if (selectedIds.length > 0 && !selectedIds.includes(record.id)) {
+        onSelectedIdsChange?.([]);
+      }
       setContextMenu({
         visible: true,
         record,
         position: { x: e.clientX, y: e.clientY },
       });
     },
-    [],
+    [selectedIds, onSelectedIdsChange],
   );
 
   const handleCloseContextMenu = useCallback(() => {
     setContextMenu((prev) => ({ ...prev, visible: false }));
   }, []);
+
+  const handleRowClick = useCallback(
+    (e: React.MouseEvent, record: TrafficSummary, index: number) => {
+      const isMeta = e.metaKey || e.ctrlKey;
+      const isShift = e.shiftKey;
+
+      if (isMeta) {
+        onSelectedIdsChange?.((prev) => {
+          let currentSelectedIds = [...prev];
+          if (currentSelectedIds.length === 0 && selectedId) {
+            currentSelectedIds = [selectedId];
+          }
+          return currentSelectedIds.includes(record.id)
+            ? currentSelectedIds.filter((id) => id !== record.id)
+            : [...currentSelectedIds, record.id];
+        });
+        lastSelectedIndexRef.current = index;
+      } else if (isShift && lastSelectedIndexRef.current !== null) {
+        const start = Math.min(lastSelectedIndexRef.current, index);
+        const end = Math.max(lastSelectedIndexRef.current, index);
+        const rangeIds = data.slice(start, end + 1).map((r) => r.id);
+        onSelectedIdsChange?.((prev) => {
+          let currentSelectedIds = [...prev];
+          if (currentSelectedIds.length === 0 && selectedId) {
+            currentSelectedIds = [selectedId];
+          }
+          return Array.from(new Set([...currentSelectedIds, ...rangeIds]));
+        });
+      } else {
+        onSelectedIdsChange?.([]);
+        lastSelectedIndexRef.current = index;
+        onSelect?.(record);
+      }
+    },
+    [data, selectedId, onSelectedIdsChange, onSelect],
+  );
 
   const selectedRecords =
     selectedIds.length > 0
@@ -886,14 +944,18 @@ export default function VirtualTrafficTable({
                     key={virtualRow.key}
                     record={record}
                     isSelected={record.id === selectedId}
+                    isMultiSelected={selectedIds.includes(record.id)}
+                    isImported={record.id.startsWith("OUT-") || record.client_app === "Bifrost Import"}
                     translateY={virtualRow.start}
                     rowIndex={virtualRow.index}
                     borderColor={token.colorBorderSecondary}
                     selectedBg={token.colorPrimaryBg}
+                    multiSelectedBg={token.colorInfoBg}
+                    importedBg="#fff7e6"
                     evenBg={token.colorBgContainer}
                     oddBg={token.colorFillQuaternary}
                     textSecondary={token.colorTextSecondary}
-                    onRowClick={() => onSelect?.(record)}
+                    onRowClick={(e) => handleRowClick(e, record, virtualRow.index)}
                     onRowDoubleClick={() => onDoubleClick?.(record)}
                     onRowContextMenu={(e) => handleContextMenu(e, record)}
                   />
