@@ -19,6 +19,7 @@ use tokio_rustls::TlsConnector;
 use tracing::{error, info, warn};
 
 use crate::replay_db::{ReplayHistory, RuleConfig, RuleMode, MAX_CONCURRENT_REPLAYS};
+use crate::request_rules::{apply_all_request_rules, build_applied_rules, AppliedRequest};
 use crate::state::SharedAdminState;
 use crate::traffic::{MatchedRule, RequestTiming, TrafficRecord};
 
@@ -132,7 +133,32 @@ impl ReplayExecutor {
             "[REPLAY] Starting replay request"
         );
 
-        let uri: Uri = url
+        let (resolved_rules, matched_rules) = self.resolve_rules(&request.rule_config, url, method);
+
+        let rules_to_apply = build_applied_rules(&resolved_rules);
+
+        let original_body = request.request.body.as_ref().map(|s| s.as_bytes());
+        let applied_request = apply_all_request_rules(
+            url,
+            method,
+            &request.request.headers,
+            original_body,
+            &rules_to_apply,
+            true,
+        )
+        .map_err(|e| ReplayError::Internal(format!("Failed to apply rules: {}", e)))?;
+
+        info!(
+            replay_id = %replay_id,
+            original_url = %url,
+            applied_url = %applied_request.url,
+            original_method = %method,
+            applied_method = %applied_request.method,
+            "[REPLAY] Applied request rules"
+        );
+
+        let uri: Uri = applied_request
+            .url
             .parse()
             .map_err(|e| ReplayError::InvalidUrl(format!("{}", e)))?;
 
@@ -143,8 +169,6 @@ impl ReplayExecutor {
             .to_string();
         let port = uri.port_u16().unwrap_or(if is_https { 443 } else { 80 });
         let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-
-        let (resolved_rules, applied_rules) = self.resolve_rules(&request.rule_config, url, method);
 
         let mock_response = self.check_mock_response(&resolved_rules);
         let needs_real_request = if request.rule_config.mode == RuleMode::None {
@@ -160,7 +184,7 @@ impl ReplayExecutor {
                 info!(
                     replay_id = %replay_id,
                     status = mock.status,
-                    rules_count = applied_rules.len(),
+                    rules_count = matched_rules.len(),
                     "[REPLAY] Returning mock response from rules (no real request needed)"
                 );
                 timing.dns_ms = Some(0);
@@ -168,15 +192,19 @@ impl ReplayExecutor {
                 timing.tls_ms = Some(0);
                 (mock.status, mock.headers.clone(), mock.body.clone())
             } else {
+                let body_str = applied_request
+                    .body
+                    .as_ref()
+                    .map(|b| String::from_utf8_lossy(b).to_string());
                 match self
                     .try_real_request(
                         &host,
                         port,
                         is_https,
-                        method,
+                        &applied_request.method,
                         path,
-                        &request.request.headers,
-                        request.request.body.as_deref(),
+                        &applied_request.headers,
+                        body_str.as_deref(),
                         &mut timing,
                     )
                     .await
@@ -199,14 +227,18 @@ impl ReplayExecutor {
             let timeout =
                 std::time::Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
+            let body_str = applied_request
+                .body
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).to_string());
             let request_future = self.try_real_request(
                 &host,
                 port,
                 is_https,
-                method,
+                &applied_request.method,
                 path,
-                &request.request.headers,
-                request.request.body.as_deref(),
+                &applied_request.headers,
+                body_str.as_deref(),
                 &mut timing,
             );
 
@@ -225,7 +257,7 @@ impl ReplayExecutor {
                         headers: vec![],
                         body: None,
                         duration_ms,
-                        applied_rules,
+                        applied_rules: matched_rules,
                         error: Some(e.to_string()),
                     });
                 }
@@ -246,7 +278,7 @@ impl ReplayExecutor {
                         headers: vec![],
                         body: None,
                         duration_ms,
-                        applied_rules,
+                        applied_rules: matched_rules,
                         error: Some(timeout_error),
                     });
                 }
@@ -276,11 +308,12 @@ impl ReplayExecutor {
             .record_traffic(
                 &replay_id,
                 &request,
+                &applied_request,
                 status,
                 &response_headers,
                 response_body.as_deref(),
                 duration_ms,
-                &applied_rules,
+                &matched_rules,
                 &timing,
             )
             .await;
@@ -312,7 +345,7 @@ impl ReplayExecutor {
             headers: response_headers,
             body: response_body,
             duration_ms,
-            applied_rules,
+            applied_rules: matched_rules,
             error: None,
         })
     }
@@ -811,6 +844,7 @@ impl ReplayExecutor {
         &self,
         replay_id: &str,
         request: &ReplayExecuteRequest,
+        applied_request: &AppliedRequest,
         status: u16,
         response_headers: &[(String, String)],
         response_body: Option<&str>,
@@ -821,8 +855,9 @@ impl ReplayExecutor {
         let traffic_id = format!("{}-{}", replay_id, uuid::Uuid::new_v4());
         let timestamp = chrono::Utc::now().timestamp_millis() as u64;
 
-        let url = &request.request.url;
-        let uri: Uri = url.parse().unwrap_or_default();
+        let original_url = &request.request.url;
+        let actual_url = &applied_request.url;
+        let uri: Uri = actual_url.parse().unwrap_or_default();
         let host = uri.host().unwrap_or("unknown").to_string();
         let path = uri.path().to_string();
         let is_https = uri.scheme_str() == Some("https");
@@ -832,19 +867,18 @@ impl ReplayExecutor {
             .find(|(k, _)| k.to_lowercase() == "content-type")
             .map(|(_, v)| v.clone());
 
-        let request_content_type = request
-            .request
+        let request_content_type = applied_request
             .headers
             .iter()
             .find(|(k, _)| k.to_lowercase() == "content-type")
             .map(|(_, v)| v.clone());
 
-        let request_size = request.request.body.as_ref().map(|b| b.len()).unwrap_or(0);
+        let request_size = applied_request.body.as_ref().map(|b| b.len()).unwrap_or(0);
         let response_size = response_body.map(|b| b.len()).unwrap_or(0);
 
-        let request_body_ref = if let Some(body) = request.request.body.as_ref() {
+        let request_body_ref = if let Some(ref body) = applied_request.body {
             if let Some(ref body_store) = self.admin_state.body_store {
-                body_store.read().store(&traffic_id, "req", body.as_bytes())
+                body_store.read().store(&traffic_id, "req", body)
             } else {
                 None
             }
@@ -862,13 +896,17 @@ impl ReplayExecutor {
             None
         };
 
+        let has_changes = actual_url != original_url
+            || applied_request.method != request.request.method
+            || applied_request.headers != request.request.headers;
+
         let record = TrafficRecord {
             id: traffic_id.clone(),
             sequence: 0,
             timestamp,
-            host,
-            method: request.request.method.clone(),
-            url: url.clone(),
+            host: host.clone(),
+            method: applied_request.method.clone(),
+            url: actual_url.clone(),
             path,
             status,
             protocol: if is_https { "https" } else { "http" }.to_string(),
@@ -890,7 +928,7 @@ impl ReplayExecutor {
             frame_count: 0,
             last_frame_id: 0,
             timing: Some(timing.clone()),
-            request_headers: Some(request.request.headers.clone()),
+            request_headers: Some(applied_request.headers.clone()),
             response_headers: Some(response_headers.to_vec()),
             matched_rules: if applied_rules.is_empty() {
                 None
@@ -900,9 +938,21 @@ impl ReplayExecutor {
             socket_status: None,
             request_body_ref,
             response_body_ref,
-            actual_url: None,
-            actual_host: None,
-            original_request_headers: None,
+            actual_url: if has_changes {
+                Some(actual_url.clone())
+            } else {
+                None
+            },
+            actual_host: if has_changes {
+                Some(host.clone())
+            } else {
+                None
+            },
+            original_request_headers: if has_changes {
+                Some(request.request.headers.clone())
+            } else {
+                None
+            },
             actual_response_headers: None,
             error_message: None,
             req_script_results: None,

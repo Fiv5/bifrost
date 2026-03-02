@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use base64::Engine;
+use bifrost_core::{parse_rules, RequestContext, Rule, RulesResolver, ValueStore};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -19,8 +21,9 @@ use crate::replay_db::{
     KeyValueItem, ReplayBody, ReplayGroup, ReplayHistory, ReplayRequest, ReplayRequestSummary,
     RequestType, RuleConfig, RuleMode, MAX_CONCURRENT_REPLAYS, MAX_HISTORY, MAX_REQUESTS,
 };
+use crate::request_rules::{apply_all_request_rules, build_applied_rules, AppliedRequest};
 use crate::state::SharedAdminState;
-use crate::traffic::TrafficRecord;
+use crate::traffic::{MatchedRule, TrafficRecord};
 
 static REPLAY_SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
     once_cell::sync::Lazy::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_REPLAYS)));
@@ -30,9 +33,19 @@ static REPLAY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayStreamRequest {
     pub url: String,
+    #[serde(default = "default_method")]
+    pub method: String,
     pub headers: Vec<(String, String)>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_config: Option<RuleConfig>,
+}
+
+fn default_method() -> String {
+    "GET".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -863,21 +876,9 @@ async fn execute_replay_stream(
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let replay_id = format!("replay-{}", REPLAY_SEQUENCE.fetch_add(1, Ordering::SeqCst));
-    let url = stream_req.url.clone();
-    let headers = stream_req.headers.clone();
-    let request_id = stream_req.request_id.clone();
 
     tokio::spawn(async move {
-        let result = execute_sse_stream(
-            &state,
-            &push_manager,
-            &replay_id,
-            &url,
-            &headers,
-            request_id,
-            tx,
-        )
-        .await;
+        let result = execute_sse_stream(&state, &push_manager, &replay_id, &stream_req, tx).await;
         drop(permit);
         if let Err(e) = result {
             error!(error = %e, replay_id = %replay_id, "Failed to execute SSE stream");
@@ -906,39 +907,87 @@ async fn execute_sse_stream(
     state: &SharedAdminState,
     push_manager: &Option<SharedPushManager>,
     replay_id: &str,
-    url: &str,
-    headers: &[(String, String)],
-    request_id: Option<String>,
+    stream_req: &ReplayStreamRequest,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) -> Result<(), String> {
-    info!(replay_id = %replay_id, url = %url, "Starting SSE stream");
+    let url = &stream_req.url;
+    let method = &stream_req.method;
 
-    let traffic_id = record_traffic_for_stream(state, replay_id, url, headers, true);
+    info!(replay_id = %replay_id, url = %url, method = %method, "Starting SSE stream");
 
-    if let Some(ref req_id) = request_id {
+    let rule_config = stream_req.rule_config.clone().unwrap_or(RuleConfig {
+        mode: RuleMode::None,
+        selected_rules: vec![],
+        custom_rules: None,
+    });
+
+    let (matched_rules, applied_request) = resolve_and_apply_rules(
+        state,
+        &rule_config,
+        url,
+        method,
+        &stream_req.headers,
+        stream_req.body.as_ref().map(|s| s.as_bytes()),
+    );
+
+    info!(
+        replay_id = %replay_id,
+        original_url = %url,
+        applied_url = %applied_request.url,
+        rules_count = matched_rules.len(),
+        "[SSE_REPLAY] Applied request rules"
+    );
+
+    #[derive(Serialize)]
+    struct ConnectionEvent {
+        type_: String,
+        traffic_id: String,
+        url: String,
+        applied_url: String,
+        applied_rules: Vec<MatchedRule>,
+    }
+
+    let traffic_id =
+        record_traffic_for_stream(state, replay_id, &applied_request, &matched_rules, true);
+
+    let conn_event = ConnectionEvent {
+        type_: "connection".to_string(),
+        traffic_id: traffic_id.clone(),
+        url: url.clone(),
+        applied_url: applied_request.url.clone(),
+        applied_rules: matched_rules.clone(),
+    };
+    let _ = tx.send(serde_json::to_string(&conn_event).unwrap());
+
+    if let Some(ref req_id) = stream_req.request_id {
         record_history(
             state,
             push_manager,
             req_id,
             &traffic_id,
-            "GET",
-            url,
+            &applied_request.method,
+            &applied_request.url,
             200,
             0,
-            &RuleConfig {
-                mode: RuleMode::Enabled,
-                selected_rules: vec![],
-                custom_rules: None,
-            },
+            &rule_config,
         );
     }
 
-    // Use reqwest to handle SSE stream
     let client = reqwest::Client::new();
-    let mut req_builder = client.get(url);
+    let mut req_builder = match applied_request.method.to_uppercase().as_str() {
+        "POST" => client.post(&applied_request.url),
+        "PUT" => client.put(&applied_request.url),
+        "PATCH" => client.patch(&applied_request.url),
+        "DELETE" => client.delete(&applied_request.url),
+        _ => client.get(&applied_request.url),
+    };
 
-    for (key, value) in headers {
+    for (key, value) in &applied_request.headers {
         req_builder = req_builder.header(key, value);
+    }
+
+    if let Some(ref body) = applied_request.body {
+        req_builder = req_builder.body(body.clone());
     }
 
     let response = req_builder
@@ -993,10 +1042,9 @@ async fn execute_sse_stream(
         }
     }
 
-    // Send any remaining event
     if !current_event.data.is_empty() {
         let event_json = serde_json::to_string(&current_event).unwrap();
-        tx.send(event_json).unwrap();
+        let _ = tx.send(event_json);
         record_sse_event(state, replay_id, &traffic_id, &current_event);
     }
 
@@ -1029,8 +1077,27 @@ async fn execute_replay_websocket(
         }
     };
 
+    let upgrade_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .filter(|(k, _)| {
+            let name = k.as_str().to_lowercase();
+            !matches!(
+                name.as_str(),
+                "upgrade"
+                    | "connection"
+                    | "sec-websocket-key"
+                    | "sec-websocket-version"
+                    | "sec-websocket-extensions"
+                    | "sec-websocket-protocol"
+                    | "host"
+            )
+        })
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     let query = req.uri().query().unwrap_or("");
-    let params: std::collections::HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes())
+    let params: HashMap<_, _> = url::form_urlencoded::parse(query.as_bytes())
         .into_owned()
         .collect();
 
@@ -1040,12 +1107,38 @@ async fn execute_replay_websocket(
     };
 
     let request_id = params.get("request_id").cloned();
+
+    let rule_config = if let Some(rule_config_str) = params.get("rule_config") {
+        serde_json::from_str(rule_config_str).unwrap_or(RuleConfig {
+            mode: RuleMode::None,
+            selected_rules: vec![],
+            custom_rules: None,
+        })
+    } else {
+        RuleConfig {
+            mode: RuleMode::None,
+            selected_rules: vec![],
+            custom_rules: None,
+        }
+    };
+
     let replay_id = format!("replay-{}", REPLAY_SEQUENCE.fetch_add(1, Ordering::SeqCst));
 
     info!(replay_id = %replay_id, url = %url, "Starting WebSocket proxy");
 
-    let headers: Vec<(String, String)> = vec![];
-    let traffic_id = record_traffic_for_stream(&state, &replay_id, &url, &headers, false);
+    let (matched_rules, applied_request) =
+        resolve_and_apply_rules(&state, &rule_config, &url, "GET", &upgrade_headers, None);
+
+    info!(
+        replay_id = %replay_id,
+        original_url = %url,
+        applied_url = %applied_request.url,
+        rules_count = matched_rules.len(),
+        "[WS_REPLAY] Applied request rules"
+    );
+
+    let traffic_id =
+        record_traffic_for_stream(&state, &replay_id, &applied_request, &matched_rules, false);
 
     if let Some(ref req_id) = request_id {
         record_history(
@@ -1054,18 +1147,15 @@ async fn execute_replay_websocket(
             req_id,
             &traffic_id,
             "GET",
-            &url,
+            &applied_request.url,
             200,
             0,
-            &RuleConfig {
-                mode: RuleMode::Enabled,
-                selected_rules: vec![],
-                custom_rules: None,
-            },
+            &rule_config,
         );
     }
 
     let accept_key = generate_accept_key(&ws_key);
+    let applied_url = applied_request.url.clone();
 
     tokio::spawn(async move {
         let upgraded = match upgrade::on(req).await {
@@ -1083,7 +1173,7 @@ async fn execute_replay_websocket(
         )
         .await;
 
-        match connect_async(url).await {
+        match connect_async(&applied_url).await {
             Ok((server_ws, _)) => {
                 proxy_websocket(
                     client_ws,
@@ -1264,39 +1354,210 @@ async fn proxy_websocket(
     info!(replay_id = %replay_id, traffic_id = %traffic_id, "WebSocket proxy closed");
 }
 
+fn resolve_and_apply_rules(
+    state: &SharedAdminState,
+    rule_config: &RuleConfig,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> (Vec<MatchedRule>, AppliedRequest) {
+    let (resolved_rules, matched_rules) = match rule_config.mode {
+        RuleMode::None => (bifrost_core::ResolvedRules::default(), vec![]),
+        RuleMode::Custom => {
+            if let Some(ref custom_rules) = rule_config.custom_rules {
+                resolve_custom_rules(state, custom_rules, url, method)
+            } else {
+                (bifrost_core::ResolvedRules::default(), vec![])
+            }
+        }
+        RuleMode::Enabled | RuleMode::Selected => {
+            let selected = if rule_config.mode == RuleMode::Selected {
+                Some(&rule_config.selected_rules)
+            } else {
+                None
+            };
+            resolve_from_storage(state, url, method, selected)
+        }
+    };
+
+    let rules_to_apply = build_applied_rules(&resolved_rules);
+
+    let applied_request =
+        match apply_all_request_rules(url, method, headers, body, &rules_to_apply, true) {
+            Ok(req) => req,
+            Err(e) => {
+                warn!(error = %e, "[REPLAY] Failed to apply rules, using original request");
+                AppliedRequest {
+                    url: url.to_string(),
+                    method: method.to_string(),
+                    headers: headers.to_vec(),
+                    body: body.map(Bytes::copy_from_slice),
+                }
+            }
+        };
+
+    (matched_rules, applied_request)
+}
+
+fn resolve_custom_rules(
+    state: &SharedAdminState,
+    custom_rules: &str,
+    url: &str,
+    method: &str,
+) -> (bifrost_core::ResolvedRules, Vec<MatchedRule>) {
+    let rules = match parse_rules(custom_rules) {
+        Ok(r) => r
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| r.with_source("custom".to_string(), i + 1))
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            warn!(error = %e, "[REPLAY] Failed to parse custom rules");
+            return (bifrost_core::ResolvedRules::default(), vec![]);
+        }
+    };
+
+    if rules.is_empty() {
+        return (bifrost_core::ResolvedRules::default(), vec![]);
+    }
+
+    let values = load_values(state);
+    let resolver = RulesResolver::new(rules).with_values(values);
+    let ctx = RequestContext::from_url(url).with_method(method);
+    let resolved = resolver.resolve(&ctx);
+
+    let matched: Vec<MatchedRule> = resolved
+        .rules
+        .iter()
+        .map(|r| MatchedRule {
+            pattern: r.rule.pattern.clone(),
+            protocol: r.rule.protocol.to_str().to_string(),
+            value: r.resolved_value.clone(),
+            rule_name: r.rule.file.clone(),
+            raw: Some(r.rule.raw.clone()),
+            line: r.rule.line,
+        })
+        .collect();
+
+    (resolved, matched)
+}
+
+fn resolve_from_storage(
+    state: &SharedAdminState,
+    url: &str,
+    method: &str,
+    selected_rules: Option<&Vec<String>>,
+) -> (bifrost_core::ResolvedRules, Vec<MatchedRule>) {
+    let rules_storage = &state.rules_storage;
+    let mut all_rules: Vec<Rule> = vec![];
+
+    let rule_files = match rules_storage.load_all() {
+        Ok(files) => files,
+        Err(e) => {
+            warn!(error = %e, "[REPLAY] Failed to load rules");
+            return (bifrost_core::ResolvedRules::default(), vec![]);
+        }
+    };
+
+    for rule_file in rule_files {
+        if !rule_file.enabled {
+            continue;
+        }
+
+        if let Some(selected) = selected_rules {
+            if !selected.contains(&rule_file.name) {
+                continue;
+            }
+        }
+
+        if let Ok(parsed) = parse_rules(&rule_file.content) {
+            let rules_with_source: Vec<Rule> = parsed
+                .into_iter()
+                .enumerate()
+                .map(|(i, r)| r.with_source(rule_file.name.clone(), i + 1))
+                .collect();
+            all_rules.extend(rules_with_source);
+        }
+    }
+
+    if all_rules.is_empty() {
+        return (bifrost_core::ResolvedRules::default(), vec![]);
+    }
+
+    let values = load_values(state);
+    let resolver = RulesResolver::new(all_rules).with_values(values);
+    let ctx = RequestContext::from_url(url).with_method(method);
+    let resolved = resolver.resolve(&ctx);
+
+    let matched: Vec<MatchedRule> = resolved
+        .rules
+        .iter()
+        .map(|r| MatchedRule {
+            pattern: r.rule.pattern.clone(),
+            protocol: r.rule.protocol.to_str().to_string(),
+            value: r.resolved_value.clone(),
+            rule_name: r.rule.file.clone(),
+            raw: Some(r.rule.raw.clone()),
+            line: r.rule.line,
+        })
+        .collect();
+
+    (resolved, matched)
+}
+
+fn load_values(state: &SharedAdminState) -> HashMap<String, String> {
+    if let Some(ref values_storage) = state.values_storage {
+        let guard = values_storage.read();
+        return guard.as_hashmap();
+    }
+    HashMap::new()
+}
+
 fn record_traffic_for_stream(
     state: &SharedAdminState,
     replay_id: &str,
-    url: &str,
-    headers: &[(String, String)],
+    applied_request: &AppliedRequest,
+    matched_rules: &[MatchedRule],
     is_sse: bool,
 ) -> String {
     let traffic_id = format!("{}-{}", replay_id, uuid::Uuid::new_v4());
     let timestamp = chrono::Utc::now().timestamp_millis() as u64;
 
-    let uri: Uri = url.parse().unwrap_or_default();
+    let uri: Uri = applied_request.url.parse().unwrap_or_default();
     let host = uri.host().unwrap_or("unknown").to_string();
     let path = uri.path().to_string();
     let is_https = uri.scheme_str() == Some("https");
 
-    let request_content_type = headers
+    let request_content_type = applied_request
+        .headers
         .iter()
         .find(|(k, _)| k.to_lowercase() == "content-type")
         .map(|(_, v)| v.clone());
+
+    let request_body_ref = if let Some(ref body) = applied_request.body {
+        if let Some(ref body_store) = state.body_store {
+            body_store.read().store(&traffic_id, "req", body)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let record = TrafficRecord {
         id: traffic_id.clone(),
         sequence: 0,
         timestamp,
         host,
-        method: "GET".to_string(),
-        url: url.to_string(),
+        method: applied_request.method.clone(),
+        url: applied_request.url.clone(),
         path,
         status: 200,
         protocol: if is_https { "https" } else { "http" }.to_string(),
         content_type: None,
         request_content_type,
-        request_size: 0,
+        request_size: applied_request.body.as_ref().map(|b| b.len()).unwrap_or(0),
         response_size: 0,
         duration_ms: 0,
         client_ip: "127.0.0.1".to_string(),
@@ -1307,16 +1568,20 @@ fn record_traffic_for_stream(
         is_websocket: !is_sse,
         is_sse,
         is_h3: false,
-        has_rule_hit: false,
+        has_rule_hit: !matched_rules.is_empty(),
         is_replay: true,
         frame_count: 0,
         last_frame_id: 0,
         timing: None,
-        request_headers: Some(headers.to_vec()),
+        request_headers: Some(applied_request.headers.clone()),
         response_headers: None,
-        matched_rules: None,
+        matched_rules: if matched_rules.is_empty() {
+            None
+        } else {
+            Some(matched_rules.to_vec())
+        },
         socket_status: None,
-        request_body_ref: None,
+        request_body_ref,
         response_body_ref: None,
         actual_url: None,
         actual_host: None,

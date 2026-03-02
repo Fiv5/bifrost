@@ -9,6 +9,7 @@ mod metrics;
 pub mod push;
 pub mod replay_db;
 pub mod replay_executor;
+pub mod request_rules;
 mod router;
 pub mod search;
 mod security;
@@ -64,6 +65,10 @@ pub use replay_db::{
 pub use replay_executor::{
     ReplayError, ReplayExecuteRequest, ReplayExecuteResponse, ReplayExecutor, ReplayRequestData,
     SharedReplayExecutor,
+};
+pub use request_rules::{
+    apply_all_request_rules, apply_host_rule, apply_url_rules, build_applied_rules, AppliedRequest,
+    AppliedRules,
 };
 pub use search::{
     FilterCondition, MatchLocation, SearchEngine, SearchFilters, SearchRequest, SearchResponse,

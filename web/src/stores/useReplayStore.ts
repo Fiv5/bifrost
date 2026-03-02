@@ -675,7 +675,7 @@ export const useReplayStore = create<ReplayState>()(
       },
 
       connectSSE: async () => {
-        const { currentRequest, disconnectSSE } = get();
+        const { currentRequest, ruleConfig, disconnectSSE } = get();
         if (!currentRequest?.url) {
           message.warning('Please enter a URL');
           return;
@@ -704,6 +704,19 @@ export const useReplayStore = create<ReplayState>()(
             .filter(h => h.enabled)
             .map(h => [h.key, h.value]);
 
+          let bodyContent: string | undefined;
+          if (currentRequest.body) {
+            if (currentRequest.body.type === 'raw' && currentRequest.body.content) {
+              bodyContent = currentRequest.body.content;
+            } else if (currentRequest.body.type === 'x-www-form-urlencoded' && currentRequest.body.form_data) {
+              const params = new URLSearchParams();
+              currentRequest.body.form_data
+                .filter(item => item.enabled && item.key)
+                .forEach(item => params.append(item.key, item.value));
+              bodyContent = params.toString();
+            }
+          }
+
           const abortController = new AbortController();
 
           const response = await fetch('/_bifrost/api/replay/execute/stream', {
@@ -713,8 +726,11 @@ export const useReplayStore = create<ReplayState>()(
             },
             body: JSON.stringify({
               url: currentRequest.url,
+              method: currentRequest.method || 'GET',
               headers,
+              body: bodyContent,
               request_id: currentRequest.is_saved ? currentRequest.id : undefined,
+              rule_config: ruleConfig,
             }),
             signal: abortController.signal,
           });
@@ -760,9 +776,23 @@ export const useReplayStore = create<ReplayState>()(
                     const data = line.substring(6);
                     try {
                       const eventData = JSON.parse(data);
+                      if (eventData.type_ === 'connection') {
+                        const { streamingConnection } = get();
+                        if (streamingConnection) {
+                          set({
+                            streamingConnection: {
+                              ...streamingConnection,
+                              trafficId: eventData.traffic_id,
+                              appliedUrl: eventData.applied_url,
+                              appliedRules: eventData.applied_rules,
+                            },
+                          });
+                        }
+                        continue;
+                      }
                       const sseEvent: SSEEvent = {
                         id: eventData.id,
-                        event: eventData.event,
+                        event: eventData.event || eventData.type_,
                         data: typeof eventData.data === 'string' ? eventData.data : JSON.stringify(eventData.data),
                         timestamp: Date.now(),
                       };
@@ -823,7 +853,7 @@ export const useReplayStore = create<ReplayState>()(
       },
 
       connectWebSocket: () => {
-        const { currentRequest, webSocketRef, disconnectWebSocket } = get();
+        const { currentRequest, ruleConfig, webSocketRef, disconnectWebSocket } = get();
         if (!currentRequest?.url) {
           message.warning('Please enter a URL');
           return;
@@ -842,12 +872,12 @@ export const useReplayStore = create<ReplayState>()(
           wsUrl = `ws://${wsUrl}`;
         }
 
-        // 构建 Bifrost WebSocket 代理 URL
         const proxyUrl = new URL('/_bifrost/api/replay/execute/ws', window.location.origin);
         proxyUrl.searchParams.set('url', wsUrl);
         if (currentRequest.is_saved) {
           proxyUrl.searchParams.set('request_id', currentRequest.id);
         }
+        proxyUrl.searchParams.set('rule_config', JSON.stringify(ruleConfig));
 
         // 替换为 WebSocket 协议
         const wsProxyUrl = proxyUrl.toString().replace('http://', 'ws://').replace('https://', 'wss://');

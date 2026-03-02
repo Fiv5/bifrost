@@ -226,6 +226,9 @@ export interface StreamingConnection {
   startedAt: number;
   endedAt?: number;
   error?: string;
+  trafficId?: string;
+  appliedUrl?: string;
+  appliedRules?: MatchedRule[];
 }
 
 export interface ReplayKeyValueItem {
