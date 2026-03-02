@@ -141,12 +141,10 @@ fn print_update_info(current: &str, cache: &VersionCache) {
     println!();
 }
 
-fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
-    println!("{}", "Updating Homebrew tap...".bright_cyan());
+const HOMEBREW_FORMULA_NAME: &str = "bifrost-proxy/bifrost/bifrost";
 
-    let _ = Command::new("brew")
-        .args(["update", "--auto-update"])
-        .status();
+fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
+    println!("{}", "Refreshing Homebrew tap...".bright_cyan());
 
     let output = Command::new("brew")
         .args(["--repository", "bifrost-proxy/bifrost"])
@@ -157,12 +155,11 @@ fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
             if let Ok(tap_path) = String::from_utf8(output.stdout) {
                 let tap_path = tap_path.trim();
                 if !tap_path.is_empty() {
-                    println!("{}", "Fetching latest formula...".bright_cyan());
                     let _ = Command::new("git")
-                        .args(["-C", tap_path, "fetch", "--all"])
+                        .args(["-C", tap_path, "fetch", "--all", "-q"])
                         .status();
                     let _ = Command::new("git")
-                        .args(["-C", tap_path, "reset", "--hard", "origin/main"])
+                        .args(["-C", tap_path, "reset", "--hard", "origin/main", "-q"])
                         .status();
                 }
             }
@@ -172,29 +169,46 @@ fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
     println!("{}", "Upgrading via Homebrew...".bright_cyan());
 
     let status = Command::new("brew")
-        .args(["upgrade", "bifrost"])
-        .status()
-        .map_err(BifrostError::Io)?;
+        .args(["reinstall", HOMEBREW_FORMULA_NAME])
+        .status();
 
-    if !status.success() {
-        return Err(BifrostError::Network(
-            "Homebrew upgrade failed. Try: brew update && brew upgrade bifrost".to_string(),
-        ));
+    let success = match status {
+        Ok(s) if s.success() => true,
+        _ => {
+            println!(
+                "{}",
+                "Standard install failed, trying --build-from-source...".bright_yellow()
+            );
+            let fallback_status = Command::new("brew")
+                .args(["reinstall", "--build-from-source", HOMEBREW_FORMULA_NAME])
+                .status()
+                .map_err(BifrostError::Io)?;
+            fallback_status.success()
+        }
+    };
+
+    if !success {
+        return Err(BifrostError::Network(format!(
+            "Homebrew upgrade failed. Try: brew reinstall {}",
+            HOMEBREW_FORMULA_NAME
+        )));
     }
 
     let output = Command::new("brew")
-        .args(["info", "--json=v2", "bifrost"])
+        .args(["info", "--json=v2", HOMEBREW_FORMULA_NAME])
         .output()
         .map_err(BifrostError::Io)?;
 
     if output.status.success() {
         if let Ok(json_str) = String::from_utf8(output.stdout) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let Some(version) = json["formulae"]
+                if let Some(installed) = json["formulae"]
                     .get(0)
-                    .and_then(|f| f["versions"]["stable"].as_str())
+                    .and_then(|f| f["installed"].as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|i| i["version"].as_str())
                 {
-                    if version == target_version {
+                    if installed == target_version {
                         println!(
                             "{}",
                             "✓ Upgrade completed successfully!".bright_green().bold()
@@ -204,8 +218,8 @@ fn upgrade_via_homebrew(target_version: &str) -> Result<(), BifrostError> {
                         println!(
                             "{}",
                             format!(
-                                "⚠ Homebrew formula version ({}) doesn't match target version ({}).",
-                                version, target_version
+                                "⚠ Installed version ({}) doesn't match target version ({}).",
+                                installed, target_version
                             )
                             .bright_yellow()
                         );
