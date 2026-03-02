@@ -224,6 +224,7 @@ export const useReplayStore = create<ReplayState>()(
           if (currentRequest.is_saved) {
             await replayApi.updateRequest(currentRequest.id, {
               name: name || currentRequest.name,
+              request_type: currentRequest.request_type,
               method: currentRequest.method,
               url: currentRequest.url,
               headers: currentRequest.headers,
@@ -233,6 +234,7 @@ export const useReplayStore = create<ReplayState>()(
           } else {
             const saved = await replayApi.createRequest({
               name: name || `Request ${Date.now()}`,
+              request_type: currentRequest.request_type,
               method: currentRequest.method,
               url: currentRequest.url,
               headers: currentRequest.headers,

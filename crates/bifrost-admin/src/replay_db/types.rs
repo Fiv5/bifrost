@@ -20,7 +20,7 @@ pub struct RuleConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "lowercase")]
 pub enum RequestType {
     #[default]
     Http,
@@ -28,8 +28,8 @@ pub enum RequestType {
     WebSocket,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum BodyType {
     #[default]
     None,
@@ -57,7 +57,7 @@ pub struct KeyValueItem {
     pub value: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 

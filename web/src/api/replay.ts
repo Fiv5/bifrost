@@ -10,6 +10,7 @@ import type {
   ReplayKeyValueItem,
   ReplayBody,
   RuleConfig,
+  RequestType,
 } from '../types';
 
 interface GroupsResponse {
@@ -99,6 +100,7 @@ export async function countRequests(): Promise<CountResponse> {
 export interface CreateRequestParams {
   group_id?: string;
   name?: string;
+  request_type?: RequestType;
   method: string;
   url: string;
   headers?: ReplayKeyValueItem[];
@@ -117,6 +119,7 @@ export async function getRequest(id: string): Promise<ReplayRequest> {
 export interface UpdateRequestParams {
   group_id?: string;
   name?: string;
+  request_type?: RequestType;
   method?: string;
   url?: string;
   headers?: ReplayKeyValueItem[];

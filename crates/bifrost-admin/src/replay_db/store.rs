@@ -170,11 +170,11 @@ impl ReplayDbStore {
             ));
         }
 
-        let headers_blob = bincode::serialize(&request.headers).ok();
-        let body_blob = request
+        let headers_json = serde_json::to_string(&request.headers).ok();
+        let body_json = request
             .body
             .as_ref()
-            .and_then(|b| bincode::serialize(b).ok());
+            .and_then(|b| serde_json::to_string(b).ok());
         let request_type = request_type_to_str(&request.request_type);
 
         let conn = self.write_conn.lock();
@@ -187,8 +187,8 @@ impl ReplayDbStore {
                 request_type,
                 &request.method,
                 &request.url,
-                headers_blob,
-                body_blob,
+                headers_json,
+                body_json,
                 request.is_saved as i32,
                 request.sort_order,
                 request.created_at as i64,
@@ -199,11 +199,11 @@ impl ReplayDbStore {
     }
 
     pub fn update_request(&self, request: &ReplayRequest) -> Result<(), rusqlite::Error> {
-        let headers_blob = bincode::serialize(&request.headers).ok();
-        let body_blob = request
+        let headers_json = serde_json::to_string(&request.headers).ok();
+        let body_json = request
             .body
             .as_ref()
-            .and_then(|b| bincode::serialize(b).ok());
+            .and_then(|b| serde_json::to_string(b).ok());
         let request_type = request_type_to_str(&request.request_type);
 
         let conn = self.write_conn.lock();
@@ -215,8 +215,8 @@ impl ReplayDbStore {
                 request_type,
                 &request.method,
                 &request.url,
-                headers_blob,
-                body_blob,
+                headers_json,
+                body_json,
                 request.is_saved as i32,
                 request.sort_order,
                 request.updated_at as i64,
@@ -336,8 +336,14 @@ impl ReplayDbStore {
 
     fn row_to_request(row: &rusqlite::Row) -> rusqlite::Result<ReplayRequest> {
         let request_type_str: String = row.get(3)?;
-        let headers_blob: Option<Vec<u8>> = row.get(6)?;
-        let body_blob: Option<Vec<u8>> = row.get(7)?;
+        let headers_json: Option<String> = row.get(6)?;
+        let body_json: Option<String> = row.get(7)?;
+
+        let headers = headers_json
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        let body = body_json.and_then(|s| serde_json::from_str(&s).ok());
 
         Ok(ReplayRequest {
             id: row.get(0)?,
@@ -346,10 +352,8 @@ impl ReplayDbStore {
             request_type: str_to_request_type(&request_type_str),
             method: row.get(4)?,
             url: row.get(5)?,
-            headers: headers_blob
-                .and_then(|b| bincode::deserialize(&b).ok())
-                .unwrap_or_default(),
-            body: body_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            headers,
+            body,
             is_saved: row.get::<_, i32>(8)? != 0,
             sort_order: row.get(9)?,
             created_at: row.get::<_, i64>(10)? as u64,
@@ -358,10 +362,10 @@ impl ReplayDbStore {
     }
 
     pub fn create_history(&self, history: &ReplayHistory) -> Result<(), rusqlite::Error> {
-        let rule_config_blob = history
+        let rule_config_json = history
             .rule_config
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_string(r).ok());
 
         let conn = self.write_conn.lock();
         conn.execute(
@@ -375,7 +379,7 @@ impl ReplayDbStore {
                 history.status as i32,
                 history.duration_ms as i64,
                 history.executed_at as i64,
-                rule_config_blob,
+                rule_config_json,
             ],
         )?;
 
@@ -432,9 +436,9 @@ impl ReplayDbStore {
         };
 
         stmt.query_map([], |row| {
-            let rule_config_blob: Option<Vec<u8>> = row.get(8)?;
+            let rule_config_json: Option<String> = row.get(8)?;
             let rule_config: Option<RuleConfig> =
-                rule_config_blob.and_then(|b| bincode::deserialize(&b).ok());
+                rule_config_json.and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(ReplayHistory {
                 id: row.get(0)?,
