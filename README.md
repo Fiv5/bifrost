@@ -10,7 +10,7 @@
   <a href="https://github.com/bifrost-proxy/bifrost/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
-Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。
+Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、插件扩展等高级功能。提供类似 postman 的请求管理和验证能力，无缝和代理能力集成。
 
 ## ✨ 特性
 
