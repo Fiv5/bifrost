@@ -9,6 +9,7 @@ export interface ReferenceLocation {
   type: ReferenceType;
   navigationType: NavigationType;
   uri?: string;
+  line?: number;
 }
 
 export interface DynamicCompletionData {
@@ -31,16 +32,36 @@ export const updateDynamicData = (data: Partial<DynamicCompletionData>) => {
 
 export const getDynamicData = (): DynamicCompletionData => dynamicData;
 
+export type LocalVariableGetter = () => Array<{ name: string; line: number }>;
+let getLocalVariables: LocalVariableGetter = () => [];
+
+export const setLocalVariablesGetter = (getter: LocalVariableGetter) => {
+  getLocalVariables = getter;
+};
+
 const createValueSuggestions = (range: IRange): languages.CompletionItem[] => {
-  return dynamicData.values.map((name) => ({
+  const globalSuggestions = dynamicData.values.map((name) => ({
     label: `{${name}}`,
     kind: languages.CompletionItemKind.Variable,
-    detail: `Value: ${name}`,
+    detail: `Global Value: ${name}`,
     documentation: `Reference to global value "${name}"`,
+    insertText: `{${name}}`,
+    range,
+    sortText: `1_${name}`,
+  }));
+
+  const localVars = getLocalVariables();
+  const localSuggestions = localVars.map(({ name, line }) => ({
+    label: `{${name}}`,
+    kind: languages.CompletionItemKind.Variable,
+    detail: `Local Variable: ${name} (line ${line})`,
+    documentation: `Reference to local variable "${name}" defined at line ${line}`,
     insertText: `{${name}}`,
     range,
     sortText: `0_${name}`,
   }));
+
+  return [...localSuggestions, ...globalSuggestions];
 };
 
 const createScriptSuggestions = (
@@ -89,16 +110,22 @@ export const dynamicProvider: languages.CompletionItemProvider = {
       endColumn: word.endColumn,
     };
 
-    const reqScriptMatch = textBeforeCursor.match(/reqScript:\/\/([^/\s]*)$/);
-    const resScriptMatch = textBeforeCursor.match(/resScript:\/\/([^/\s]*)$/);
+    const reqScriptMatch = textBeforeCursor.match(/reqScript:\/\/([^\s]*)$/);
+    const resScriptMatch = textBeforeCursor.match(/resScript:\/\/([^\s]*)$/);
 
     if (reqScriptMatch) {
+      const typedText = reqScriptMatch[1];
       const scriptRange: IRange = {
         ...range,
-        startColumn: position.column - reqScriptMatch[1].length,
+        startColumn: position.column - typedText.length,
       };
+      const filteredScripts = typedText
+        ? dynamicData.requestScripts.filter((name) =>
+            name.toLowerCase().includes(typedText.toLowerCase())
+          )
+        : dynamicData.requestScripts;
       return {
-        suggestions: dynamicData.requestScripts.map((name) => ({
+        suggestions: filteredScripts.map((name) => ({
           label: name,
           kind: languages.CompletionItemKind.Reference,
           detail: `Request Script: ${name}`,
@@ -111,12 +138,18 @@ export const dynamicProvider: languages.CompletionItemProvider = {
     }
 
     if (resScriptMatch) {
+      const typedText = resScriptMatch[1];
       const scriptRange: IRange = {
         ...range,
-        startColumn: position.column - resScriptMatch[1].length,
+        startColumn: position.column - typedText.length,
       };
+      const filteredScripts = typedText
+        ? dynamicData.responseScripts.filter((name) =>
+            name.toLowerCase().includes(typedText.toLowerCase())
+          )
+        : dynamicData.responseScripts;
       return {
-        suggestions: dynamicData.responseScripts.map((name) => ({
+        suggestions: filteredScripts.map((name) => ({
           label: name,
           kind: languages.CompletionItemKind.Reference,
           detail: `Response Script: ${name}`,
@@ -134,16 +167,30 @@ export const dynamicProvider: languages.CompletionItemProvider = {
         ...range,
         startColumn: position.column - valueRefMatch[0].length,
       };
+
+      const localVars = getLocalVariables();
+      const localSuggestions = localVars.map(({ name, line }) => ({
+        label: `{${name}}`,
+        kind: languages.CompletionItemKind.Variable,
+        detail: `Local Variable: ${name} (line ${line})`,
+        documentation: `Reference to local variable "${name}" defined at line ${line}`,
+        insertText: `{${name}}`,
+        range: valueRange,
+        sortText: `0_${name}`,
+      }));
+
+      const globalSuggestions = dynamicData.values.map((name) => ({
+        label: `{${name}}`,
+        kind: languages.CompletionItemKind.Variable,
+        detail: `Global Value: ${name}`,
+        documentation: `Reference to global value "${name}"`,
+        insertText: `{${name}}`,
+        range: valueRange,
+        sortText: `1_${name}`,
+      }));
+
       return {
-        suggestions: dynamicData.values.map((name) => ({
-          label: `{${name}}`,
-          kind: languages.CompletionItemKind.Variable,
-          detail: `Value: ${name}`,
-          documentation: `Reference to global value "${name}"`,
-          insertText: `{${name}}`,
-          range: valueRange,
-          sortText: `0_${name}`,
-        })),
+        suggestions: [...localSuggestions, ...globalSuggestions],
       };
     }
 

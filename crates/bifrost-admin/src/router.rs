@@ -12,6 +12,7 @@ use crate::handlers::{
     rules::handle_rules,
     scripts::handle_scripts_request,
     search::handle_search,
+    syntax::handle_syntax,
     system::handle_system,
     traffic::handle_traffic,
     values::handle_values,
@@ -123,6 +124,8 @@ impl AdminRouter {
             }
         } else if path.starts_with("/api/replay") {
             handle_replay(req, state, push_manager, path).await
+        } else if path.starts_with("/api/syntax") {
+            handle_syntax(req, state, path).await
         } else {
             error_response(StatusCode::NOT_FOUND, "API endpoint not found")
         }

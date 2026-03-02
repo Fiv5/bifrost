@@ -1,0 +1,237 @@
+# =============================================================================
+# INVALID RULES - 包含各种错误的规则示例
+# 用于验证解析器的错误提示功能
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 错误类型 1: 缺少协议 (E001 - No protocol found)
+# -----------------------------------------------------------------------------
+
+# 1.1 两个域名但没有协议
+error1-no-protocol.com another-domain.com
+
+# 1.2 只有域名没有目标
+error2-domain-only.com
+
+# 1.3 域名和路径但没有协议
+error3-with-path.com/api/v1 other.com/api/v2
+
+# 1.4 多个域名都没有协议
+error4-multiple.com second.com third.com
+
+# -----------------------------------------------------------------------------
+# 错误类型 2: 未知协议 (E002 - Unknown protocol)
+# -----------------------------------------------------------------------------
+
+# 2.1 完全错误的协议名
+error5-unknown.test unknownProtocol://value
+
+# 2.2 拼写错误的协议
+error6-typo.test htpp://localhost:8000/
+
+# 2.3 另一个拼写错误
+error7-typo2.test reqheader://(X-Test: value)
+
+# 2.4 大小写错误的协议
+error8-case.test HTTP://localhost:8000/
+
+# 2.5 不存在的协议
+error9-fake.test fakeproto://fake-value
+
+# 2.6 近似但错误的协议名
+error10-similar.test request://body
+
+# -----------------------------------------------------------------------------
+# 错误类型 3: 缺少pattern (E003 - No pattern found)
+# -----------------------------------------------------------------------------
+
+# 3.1 只有协议没有pattern
+http://localhost:8000/
+
+# -----------------------------------------------------------------------------
+# 错误类型 4: 无效正则表达式 (E004 - Invalid regex)
+# -----------------------------------------------------------------------------
+
+# 4.1 未闭合的括号
+/example\.com\(unclosed/ http://localhost:8000/
+
+# 4.2 无效的正则语法
+/[invalid[regex/ http://localhost:8000/
+
+# 4.3 空的正则表达式
+// http://localhost:8000/
+
+# -----------------------------------------------------------------------------
+# 错误类型 5: 协议值格式错误 (Various format errors)
+# -----------------------------------------------------------------------------
+
+# 5.1 statusCode非数字值
+error11-status.test statusCode://not-a-number
+
+# 5.2 delay非数字值
+error12-delay.test resDelay://invalid-delay
+
+# 5.3 speed非数字值
+error13-speed.test reqSpeed://fast
+
+# -----------------------------------------------------------------------------
+# 错误类型 6: 规则组合错误
+# -----------------------------------------------------------------------------
+
+# 6.1 不相关的URL作为目标
+https://example.com/api/ https://different.com/api/
+
+# 6.2 路径不匹配的URL
+https://example.com/path1 example.com/path2
+
+# -----------------------------------------------------------------------------
+# 错误类型 7: 混合错误
+# -----------------------------------------------------------------------------
+
+# 7.1 多个问题：未知协议+格式错误
+error14-mixed.test badproto://(invalid
+
+# 7.2 pattern有效但协议完全错误
+valid-pattern.test completely-wrong-protocol://
+
+# -----------------------------------------------------------------------------
+# 错误类型 8: 边界情况
+# -----------------------------------------------------------------------------
+
+# 8.1 空的协议值
+error15-empty.test host://
+
+# 8.2 特殊字符但不是有效规则
+@#$%^&*()
+
+# 8.3 看起来像规则但格式错误
+error16.test : value
+
+# -----------------------------------------------------------------------------
+# 有效规则用于对比（验证容错解析）
+# -----------------------------------------------------------------------------
+
+# 这些规则应该正常解析，验证错误不会影响其他规则
+valid-between-errors-1.test http://localhost:8000/
+valid-between-errors-2.test host://127.0.0.1:9000
+valid-between-errors-3.test reqHeaders://(X-Valid: true)
+valid-between-errors-4.test statusCode://200
+
+# -----------------------------------------------------------------------------
+# 更多无效规则
+# -----------------------------------------------------------------------------
+
+# 9.1 URL但目标是同类型URL（路径不同）
+https://example.com/a/ https://example.com/b/
+
+# 9.2 协议冲突
+error17-conflict.test http://a.com https://b.com
+
+# 9.3 无效的IP地址格式
+999.999.999.999 http://localhost/
+
+# 9.4 无效的端口
+example.com:99999 http://localhost/
+
+# 9.5 协议名包含非法字符
+error18.test proto@name://value
+
+# -----------------------------------------------------------------------------
+# 错误类型 10: 变量语法错误 (W001 - Undefined variable reference)
+# -----------------------------------------------------------------------------
+
+# 10.1 引用未定义的内嵌值变量
+error-undef-var.test resBody://{undefinedVar}
+
+# 10.2 引用另一个未定义的变量
+error-undef-var2.test reqHeaders://{missingHeaders}
+
+# 10.3 多个未定义变量引用
+error-multi-undef.test resBody://{var1} reqHeaders://{var2}
+
+# -----------------------------------------------------------------------------
+# 错误类型 11: 小括号内空格 (W002 - Spaces in parentheses)
+# -----------------------------------------------------------------------------
+
+# 11.1 JSON 中有空格
+error-paren-space1.test resBody://({"error": "not found"})
+
+# 11.2 Header 中有空格
+error-paren-space2.test resHeaders://(X-Key: value with space)
+
+# 11.3 Cookie 中有空格
+error-paren-space3.test resCookies://(name = value)
+
+# 11.4 URL 参数中有空格
+error-paren-space4.test urlParams://(key = value)
+
+# -----------------------------------------------------------------------------
+# 错误类型 12: 代码块语法错误 (E005 - Unclosed code block)
+# 注意: 这些错误会导致整个代码块内容被误解析
+# -----------------------------------------------------------------------------
+
+# 12.1 缺少闭合的代码块 - 这个错误会影响后续内容
+# 下面这个代码块故意不闭合，用于测试 E005 错误
+# ``` unclosedBlock
+# this content will never end
+# 注意：由于这会破坏解析，我们在测试用例中注释掉
+
+# 正确闭合的代码块用于对比
+``` validBlock
+this is valid content
+```
+
+# -----------------------------------------------------------------------------
+# 错误类型 13: 脚本引用错误 (W003 - Script not found)
+# 注意: 这些警告需要在运行时检查脚本是否存在
+# -----------------------------------------------------------------------------
+
+# 13.1 引用不存在的请求脚本
+error-script-req.test reqScript://nonExistentRequestScript
+
+# 13.2 引用不存在的响应脚本
+error-script-res.test resScript://nonExistentResponseScript
+
+# 13.3 请求脚本名包含特殊字符
+error-script-special.test reqScript://script@with#special
+
+# -----------------------------------------------------------------------------
+# 错误类型 14: Filter 值格式错误 (W004 - Invalid filter value)
+# -----------------------------------------------------------------------------
+
+# 14.1 无效的 HTTP 方法
+error-filter-method.test host://127.0.0.1 includeFilter://m:INVALID
+
+# 14.2 无效的状态码格式
+error-filter-status.test host://127.0.0.1 includeFilter://s:abc
+
+# 14.3 空的 header 名称
+error-filter-header.test host://127.0.0.1 includeFilter://h:
+
+# 14.4 无效的 IP 地址
+error-filter-ip.test host://127.0.0.1 includeFilter://i:not-an-ip
+
+# 14.5 无效的正则表达式
+error-filter-regex.test host://127.0.0.1 includeFilter:///[invalid/
+
+# 14.6 缺少等号的 header 匹配
+error-filter-reqh.test host://127.0.0.1 excludeFilter://reqH:Content-Type
+
+# 14.7 未知的 filter 前缀
+error-filter-unknown.test host://127.0.0.1 excludeFilter://x:value
+
+# -----------------------------------------------------------------------------
+# 验证规则（确保这些有效规则在错误规则之间正常解析）
+# -----------------------------------------------------------------------------
+
+final-valid-1.test http://localhost:8001/
+final-valid-2.test host://127.0.0.1:8002
+final-valid-3.test passthrough://
+
+# 有效的变量语法（用于对比）
+final-valid-tpl.test resHeaders://`(X-Time: ${now})`
+final-valid-ref.test resBody://{testValue}
+
+``` testValue
+test content
+```

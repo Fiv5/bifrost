@@ -6,6 +6,7 @@ import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
 import { useVersionStore } from '../stores/useVersionStore';
+import { syncDynamicData } from './useEditorCompletion';
 
 const PROXY_POLL_INTERVAL = 5000;
 const VALUES_POLL_INTERVAL = 10000;
@@ -82,6 +83,8 @@ export function useGlobalDataSync() {
       globalState.versionCheckIntervalId = window.setInterval(() => {
         useVersionStore.getState().checkVersion({ skipCache: true });
       }, VERSION_CHECK_INTERVAL);
+
+      syncDynamicData();
 
       const currentVersionStore = useVersionStore.getState();
       if (currentVersionStore.hasUpdate) {

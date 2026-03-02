@@ -1,0 +1,425 @@
+# =============================================================================
+# VALID RULES - 完整的正确规则示例
+# 覆盖所有匹配规则类型和所有支持的协议
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. 匹配规则类型 (Pattern Types)
+# -----------------------------------------------------------------------------
+
+# 1.1 精确域名匹配
+example.com http://localhost:8000/
+
+# 1.2 通配符域名匹配
+*.example.com http://localhost:8001/
+**.example.com http://localhost:8002/
+
+# 1.3 带端口匹配
+example.com:8080 http://localhost:8003/
+
+# 1.4 完整URL匹配
+http://example.com/api/ http://localhost:8004/
+https://example.com/api/ http://localhost:8005/
+
+# 1.5 路径匹配
+example.com/api/* http://localhost:8006/
+example.com/api/v1/** http://localhost:8007/
+
+# 1.6 正则表达式匹配
+/^api\.example\.com$/ http://localhost:8008/
+/example\.com\/api\/v[0-9]+/ http://localhost:8009/
+
+# 1.7 正则表达式 (忽略大小写)
+/API\.EXAMPLE\.COM/i http://localhost:8010/
+
+# 1.8 IP地址匹配
+192.168.1.1 http://localhost:8011/
+192.168.1.0/24 http://localhost:8012/
+
+# -----------------------------------------------------------------------------
+# 2. 基础路由协议 (Basic Routing Protocols)
+# -----------------------------------------------------------------------------
+
+# 2.1 host - 主机转发
+basic-host.test host://127.0.0.1:8000
+
+# 2.2 xhost - 扩展主机转发
+basic-xhost.test xhost://127.0.0.1:8001
+
+# 2.3 http - HTTP转发
+basic-http.test http://127.0.0.1:8002/
+
+# 2.4 https - HTTPS转发
+basic-https.test https://127.0.0.1:8003/
+
+# 2.5 ws - WebSocket转发
+basic-ws.test ws://127.0.0.1:8004/
+
+# 2.6 wss - 安全WebSocket转发
+basic-wss.test wss://127.0.0.1:8005/
+
+# 2.7 proxy - 代理转发
+basic-proxy.test proxy://127.0.0.1:8006
+
+# 2.8 redirect - 重定向
+basic-redirect.test redirect://https://new-site.com/
+
+# 2.9 file - 文件响应
+basic-file.test file:///path/to/response.json
+
+# 2.10 tpl - 模板响应
+basic-tpl.test tpl:///path/to/template.tpl
+
+# 2.11 rawfile - 原始文件响应
+basic-rawfile.test rawfile:///path/to/raw.txt
+
+# 2.12 delete - 删除匹配
+basic-delete.test delete://
+
+# 2.13 passthrough - 直通转发
+https://passthrough.test/api/ passthrough://
+
+# 2.14 passthrough - 相同URL语法
+https://passthrough2.test/api/ https://passthrough2.test/api/
+
+# -----------------------------------------------------------------------------
+# 3. 请求修改协议 (Request Modification Protocols)
+# -----------------------------------------------------------------------------
+
+# 3.1 reqHeaders - 请求头修改
+req-headers.test reqHeaders://(X-Custom: value)
+
+# 3.2 reqBody - 请求体修改
+req-body.test reqBody://{"key": "value"}
+
+# 3.3 reqPrepend - 请求体前置
+req-prepend.test reqPrepend://prefix-
+
+# 3.4 reqAppend - 请求体追加
+req-append.test reqAppend://-suffix
+
+# 3.5 reqCookies - 请求Cookie修改
+req-cookies.test reqCookies://(session=abc123)
+
+# 3.6 reqCors - 请求CORS
+req-cors.test reqCors://
+
+# 3.7 reqDelay - 请求延迟
+req-delay.test reqDelay://1000
+
+# 3.8 reqSpeed - 请求速度限制
+req-speed.test reqSpeed://1024
+
+# 3.9 reqType - 请求Content-Type
+req-type.test reqType://application/json
+
+# 3.10 reqCharset - 请求字符集
+req-charset.test reqCharset://utf-8
+
+# 3.11 reqReplace - 请求内容替换
+req-replace.test reqReplace://old/new/
+
+# 3.12 method - 请求方法修改
+method.test method://POST
+
+# 3.13 auth - 认证头
+auth.test auth://user:password
+
+# 3.14 ua - User-Agent修改
+ua.test ua://CustomAgent/1.0
+
+# 3.15 referer - Referer修改
+referer.test referer://https://origin.com/
+
+# 3.16 urlParams - URL参数
+url-params.test urlParams://(key=value)
+
+# 3.17 params - 合并参数
+params.test params://(param1=val1)
+
+# -----------------------------------------------------------------------------
+# 4. 响应修改协议 (Response Modification Protocols)
+# -----------------------------------------------------------------------------
+
+# 4.1 resHeaders - 响应头修改
+res-headers.test resHeaders://(X-Response: value)
+
+# 4.2 resBody - 响应体修改
+res-body.test resBody://{"response": "data"}
+
+# 4.3 resPrepend - 响应体前置
+res-prepend.test resPrepend://response-prefix-
+
+# 4.4 resAppend - 响应体追加
+res-append.test resAppend://-response-suffix
+
+# 4.5 resCookies - 响应Cookie设置
+res-cookies.test resCookies://(token=xyz789)
+
+# 4.6 resCors - 响应CORS
+res-cors.test resCors://
+
+# 4.7 resDelay - 响应延迟
+res-delay.test resDelay://500
+
+# 4.8 resSpeed - 响应速度限制
+res-speed.test resSpeed://512
+
+# 4.9 resType - 响应Content-Type
+res-type.test resType://text/html
+
+# 4.10 resCharset - 响应字符集
+res-charset.test resCharset://gbk
+
+# 4.11 resReplace - 响应内容替换
+res-replace.test resReplace://oldtext/newtext/
+
+# 4.12 replaceStatus - 替换状态码
+replace-status.test replaceStatus://200
+
+# 4.13 statusCode - 状态码
+status-code.test statusCode://404
+
+# 4.14 cache - 缓存控制
+cache.test cache://3600
+
+# 4.15 attachment - 下载附件
+attachment.test attachment://filename.zip
+
+# 4.16 forwardedFor - 转发IP
+forwarded-for.test forwardedFor://192.168.1.1
+
+# 4.17 trailers - 响应Trailers
+trailers.test trailers://(X-Checksum: abc123)
+
+# 4.18 resMerge - 响应合并
+res-merge.test resMerge://{"extra": "data"}
+
+# 4.19 headerReplace - 头部替换
+header-replace.test headerReplace://OldHeader/NewHeader/
+
+# -----------------------------------------------------------------------------
+# 5. 内容注入协议 (Content Injection Protocols)
+# -----------------------------------------------------------------------------
+
+# 5.1 htmlAppend - HTML追加
+html-append.test htmlAppend://<script>console.log('appended')</script>
+
+# 5.2 htmlPrepend - HTML前置
+html-prepend.test htmlPrepend://<!-- prepended -->
+
+# 5.3 htmlBody - HTML体替换
+html-body.test htmlBody://<html><body>replaced</body></html>
+
+# 5.4 jsAppend - JS追加
+js-append.test jsAppend://console.log('js appended');
+
+# 5.5 jsPrepend - JS前置
+js-prepend.test jsPrepend:///* prepended */
+
+# 5.6 jsBody - JS体替换
+js-body.test jsBody://function replaced() {}
+
+# 5.7 cssAppend - CSS追加
+css-append.test cssAppend://body { color: red; }
+
+# 5.8 cssPrepend - CSS前置
+css-prepend.test cssPrepend:///* prepended */
+
+# 5.9 cssBody - CSS体替换
+css-body.test cssBody://* { margin: 0; }
+
+# -----------------------------------------------------------------------------
+# 6. URL处理协议 (URL Processing Protocols)
+# -----------------------------------------------------------------------------
+
+# 6.1 urlReplace - URL替换
+url-replace.test urlReplace://old-path/new-path/
+
+# -----------------------------------------------------------------------------
+# 7. 脚本协议 (Script Protocols)
+# -----------------------------------------------------------------------------
+
+# 7.1 rulesFile - 规则文件
+rules-file.test rulesFile:///path/to/rules.txt
+
+# 7.2 reqScript - 请求脚本 (引用脚本名称)
+req-script.test reqScript://myRequestHandler
+
+# 7.3 resScript - 响应脚本 (引用脚本名称)
+res-script.test resScript://myResponseHandler
+
+# 7.4 reqScript - 文件路径方式
+req-script-path.test reqScript:///path/to/req_script.js
+
+# 7.5 resScript - 文件路径方式
+res-script-path.test resScript:///path/to/res_script.js
+
+# -----------------------------------------------------------------------------
+# 8. TLS控制协议 (TLS Control Protocols)
+# -----------------------------------------------------------------------------
+
+# 8.1 tlsIntercept - TLS拦截
+tls-intercept.test tlsIntercept://
+
+# 8.2 tlsPassthrough - TLS透传
+tls-passthrough.test tlsPassthrough://
+
+# -----------------------------------------------------------------------------
+# 9. DNS协议 (DNS Protocol)
+# -----------------------------------------------------------------------------
+
+# 9.1 dns - DNS解析
+dns.test dns://8.8.8.8
+
+# -----------------------------------------------------------------------------
+# 10. 高级功能协议 (Advanced Protocols)
+# -----------------------------------------------------------------------------
+
+# 10.1 sniCallback - SNI回调
+sni-callback.test sniCallback://callback-function
+
+# -----------------------------------------------------------------------------
+# 11. 组合规则示例 (Combined Rules)
+# -----------------------------------------------------------------------------
+
+# 多协议组合
+combined.test http://localhost:8000/ reqHeaders://(X-Combined: true) resHeaders://(X-Response: combined)
+
+# 带过滤器的规则
+filtered.test http://localhost:8001/ includeFilter://(*/api/*)
+
+# 带排除过滤器的规则
+excluded.test http://localhost:8002/ excludeFilter://(*/admin/*)
+
+# 行属性
+props.test http://localhost:8003/ lineProps://important
+
+# -----------------------------------------------------------------------------
+# 12. 协议别名示例 (Protocol Aliases)
+# -----------------------------------------------------------------------------
+
+# status = statusCode
+alias-status.test status://200
+
+# hosts = host
+alias-hosts.test hosts://127.0.0.1:8000
+
+# html = htmlAppend
+alias-html.test html://<div>appended</div>
+
+# js = jsAppend
+alias-js.test js://console.log('alias');
+
+# css = cssAppend
+alias-css.test css://body {}
+
+# download = attachment
+alias-download.test download://file.zip
+
+# http-proxy = proxy
+alias-http-proxy.test http-proxy://127.0.0.1:8080
+
+# pathReplace = urlReplace
+alias-path-replace.test pathReplace://old/new/
+
+# -----------------------------------------------------------------------------
+# 13. 内嵌值引用示例 (Value References)
+# -----------------------------------------------------------------------------
+
+# 13.1 基本内嵌值引用
+value-ref.test resBody://{jsonResponse}
+
+# 13.2 请求头使用内嵌值
+value-headers.test reqHeaders://{customHeaders}
+
+# 13.3 文件路径中的内嵌值
+value-file.test file://{responseFile}
+
+# -----------------------------------------------------------------------------
+# 14. 模板变量示例 (Template Variables)
+# -----------------------------------------------------------------------------
+
+# 14.1 基本模板变量 - 使用反引号
+tpl-now.test resHeaders://`(X-Timestamp: ${now})`
+
+# 14.2 随机数模板变量
+tpl-random.test resHeaders://`(X-Random: ${random})`
+
+# 14.3 UUID 模板变量
+tpl-uuid.test resHeaders://`(X-Request-Id: ${randomUUID})`
+
+# 14.4 URL 相关模板变量
+tpl-url.test resHeaders://`(X-Original-Host: ${url.hostname})`
+
+# 14.5 请求方法模板变量
+tpl-method.test resHeaders://`(X-Method: ${method})`
+
+# 14.6 客户端信息模板变量
+tpl-client.test resHeaders://`(X-Client-IP: ${clientIp})`
+
+# 14.7 随机整数范围
+tpl-random-int.test resHeaders://`(X-Random-Int: ${randomInt(100)})`
+
+# 14.8 随机整数区间
+tpl-random-range.test resHeaders://`(X-Random-Range: ${randomInt(10-100)})`
+
+# 14.9 请求头引用
+tpl-reqheader.test resHeaders://`(X-Original-UA: ${reqHeaders.user-agent})`
+
+# 14.10 Cookie 引用
+tpl-cookie.test resHeaders://`(X-Session: ${reqCookies.session})`
+
+# 14.11 查询参数引用
+tpl-query.test resHeaders://`(X-Param: ${query.id})`
+
+# 14.12 状态码模板变量
+tpl-status.test resHeaders://`(X-Status: ${statusCode})`
+
+# 14.13 版本号模板变量
+tpl-version.test resHeaders://`(X-Proxy-Version: ${version})`
+
+# 14.14 环境变量引用
+tpl-env.test resHeaders://`(X-Env: ${env.NODE_ENV})`
+
+# 14.15 正则捕获组引用
+/api\/users\/(\d+)/ resHeaders://`(X-User-Id: $1)`
+
+# 14.16 多个捕获组
+/api\/(\w+)\/(\d+)/ resHeaders://`(X-Resource: $1, X-Id: $2)`
+
+# -----------------------------------------------------------------------------
+# 15. 内嵌值定义 (Inline Value Definitions)
+# -----------------------------------------------------------------------------
+
+``` jsonResponse
+{"code": 0, "message": "success", "data": null}
+```
+
+``` customHeaders
+X-Custom: value
+X-Another: another-value
+```
+
+``` responseFile
+/path/to/response.json
+```
+
+# -----------------------------------------------------------------------------
+# 16. 小括号内容示例 - 无空格的正确用法 (W002 测试)
+# -----------------------------------------------------------------------------
+
+# 16.1 JSON 格式 - 无空格
+paren-json.test resBody://({"code":0,"msg":"ok"})
+
+# 16.2 Header 格式 - 无空格
+paren-header.test resHeaders://(X-Key:value)
+
+# 16.3 Cookie 格式 - 无空格
+paren-cookie.test resCookies://(session=abc;path=/)
+
+# 16.4 URL 参数 - 无空格
+paren-params.test urlParams://(key=value&key2=value2)
+
+# 16.5 使用反引号包裹时可以有空格（模板语法）
+paren-template.test resHeaders://`(X-Key: value with spaces)`

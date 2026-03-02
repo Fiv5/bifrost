@@ -1,6 +1,6 @@
 import { languages, editor, Position, Uri } from 'monaco-editor';
 import type { IRange } from 'monaco-editor';
-import { getDynamicData, type ReferenceLocation, type ReferenceType } from './dynamic';
+import { getDynamicData, type ReferenceLocation, type ReferenceType, type NavigationType } from './dynamic';
 
 export interface ReferenceMatch {
   name: string;
@@ -61,36 +61,37 @@ function getReferenceLocation(
   if (location) return location;
 
   switch (type) {
-    case 'value':
-      if (data.values.includes(name)) {
+    case 'value': {
+      const localVar = findLocalVariableDefinition(name);
+      if (localVar) {
         return {
           name,
           type: 'value',
-          navigationType: 'page',
-          uri: `/values?name=${encodeURIComponent(name)}`,
+          navigationType: 'editor',
+          line: localVar.line,
         };
       }
-      break;
+      return {
+        name,
+        type: 'value',
+        navigationType: 'page',
+        uri: `/values?name=${encodeURIComponent(name)}`,
+      };
+    }
     case 'requestScript':
-      if (data.requestScripts.includes(name)) {
-        return {
-          name,
-          type: 'requestScript',
-          navigationType: 'page',
-          uri: `/scripts?type=request&name=${encodeURIComponent(name)}`,
-        };
-      }
-      break;
+      return {
+        name,
+        type: 'requestScript',
+        navigationType: 'page',
+        uri: `/scripts?type=request&name=${encodeURIComponent(name)}`,
+      };
     case 'responseScript':
-      if (data.responseScripts.includes(name)) {
-        return {
-          name,
-          type: 'responseScript',
-          navigationType: 'page',
-          uri: `/scripts?type=response&name=${encodeURIComponent(name)}`,
-        };
-      }
-      break;
+      return {
+        name,
+        type: 'responseScript',
+        navigationType: 'page',
+        uri: `/scripts?type=response&name=${encodeURIComponent(name)}`,
+      };
   }
 
   return undefined;
@@ -115,6 +116,25 @@ export const setNavigateCallback = (callback: NavigateCallback | null) => {
   onNavigate = callback;
 };
 
+export const getNavigateCallback = (): NavigateCallback | null => onNavigate;
+
+export interface LocalVariableDefinition {
+  name: string;
+  line: number;
+}
+
+let localVariables: LocalVariableDefinition[] = [];
+
+export const setLocalVariables = (variables: LocalVariableDefinition[]) => {
+  localVariables = variables;
+};
+
+export const getLocalVariables = (): LocalVariableDefinition[] => localVariables;
+
+function findLocalVariableDefinition(name: string): LocalVariableDefinition | undefined {
+  return localVariables.find((v) => v.name === name);
+}
+
 export const hoverProvider: languages.HoverProvider = {
   provideHover: (
     model: editor.ITextModel,
@@ -134,22 +154,25 @@ export const hoverProvider: languages.HoverProvider = {
         ? "Go to definition"
         : "Jump to definition";
 
+    const displayTypeLabel = reference.type === 'value' && location.navigationType === 'editor'
+      ? 'Local Variable'
+      : typeLabel;
+    const hintText = '(F12 or Cmd+Click)';
     const contents = [
       {
-        value: `**${typeLabel}**: \`${reference.name}\``,
-      },
-      {
-        value: `[${actionText}](command:bifrost.navigateToReference?${encodeURIComponent(JSON.stringify(location))})`,
-        isTrusted: true,
+        value: `**${displayTypeLabel}**: \`${reference.name}\`\n\n${actionText} ${hintText}`,
       },
     ];
 
+    console.log('[hoverProvider] returning hover:', { range: reference.range, contents });
     return {
       range: reference.range,
       contents,
     };
   },
 };
+
+let pendingNavigation: ReferenceLocation | null = null;
 
 export const definitionProvider: languages.DefinitionProvider = {
   provideDefinition: (
@@ -164,58 +187,31 @@ export const definitionProvider: languages.DefinitionProvider = {
     const location = getReferenceLocation(reference.name, reference.type);
     if (!location) return null;
 
-    if (onNavigate) {
-      setTimeout(() => {
-        onNavigate?.(location);
-      }, 0);
+    if (location.navigationType === 'editor' && location.line !== undefined) {
+      pendingNavigation = null;
+      return {
+        uri: model.uri,
+        range: {
+          startLineNumber: location.line,
+          startColumn: 1,
+          endLineNumber: location.line,
+          endColumn: 1,
+        },
+      };
     }
 
+    pendingNavigation = location;
     return null;
   },
 };
 
-export const linkProvider: languages.LinkProvider = {
-  provideLinks: (
-    model: editor.ITextModel
-  ): languages.ProviderResult<languages.ILinksList> => {
-    if (model.isDisposed()) return { links: [] };
-
-    const links: languages.ILink[] = [];
-    const lineCount = model.getLineCount();
-
-    for (let lineNumber = 1; lineNumber <= lineCount; lineNumber++) {
-      const lineContent = model.getLineContent(lineNumber);
-
-      const patterns: { pattern: RegExp; type: ReferenceType }[] = [
-        { pattern: new RegExp(VALUE_REF_PATTERN.source, 'g'), type: 'value' },
-        { pattern: new RegExp(REQ_SCRIPT_PATTERN.source, 'g'), type: 'requestScript' },
-        { pattern: new RegExp(RES_SCRIPT_PATTERN.source, 'g'), type: 'responseScript' },
-      ];
-
-      for (const { pattern, type } of patterns) {
-        let match;
-        while ((match = pattern.exec(lineContent)) !== null) {
-          const name = match[1];
-          const location = getReferenceLocation(name, type);
-          if (!location) continue;
-
-          const startCol = match.index + 1;
-          const endCol = match.index + match[0].length + 1;
-
-          links.push({
-            range: {
-              startLineNumber: lineNumber,
-              endLineNumber: lineNumber,
-              startColumn: startCol,
-              endColumn: endCol,
-            },
-            tooltip: `Go to ${getTypeLabel(type)}: ${name}`,
-            url: Uri.parse(`command:bifrost.navigateToReference?${encodeURIComponent(JSON.stringify(location))}`),
-          });
-        }
-      }
-    }
-
-    return { links };
-  },
+export const executePendingNavigation = (): boolean => {
+  if (pendingNavigation && onNavigate) {
+    onNavigate(pendingNavigation);
+    pendingNavigation = null;
+    return true;
+  }
+  return false;
 };
+
+

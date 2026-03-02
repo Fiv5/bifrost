@@ -1,17 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
 import { Empty, Spin, message, Button, Tooltip, Space, theme } from "antd";
 import { SaveOutlined, CopyOutlined } from "@ant-design/icons";
 import BifrostEditor, {
   THEME_DARK,
   THEME_LIGHT,
+  createDebouncedValidator,
+  clearValidationMarkers,
+  setNavigateCallback,
+  setLocalVariables,
+  setLocalVariablesGetter,
+  type DebouncedValidator,
+  type ReferenceLocation,
 } from "../../../components/BifrostEditor";
 import { useRulesStore } from "../../../stores/useRulesStore";
 import { useThemeStore } from "../../../stores/useThemeStore";
+import { useValuesStore } from "../../../stores/useValuesStore";
 import styles from "./index.module.css";
 
 export default function RuleEditor() {
   const { token } = theme.useToken();
+  const navigate = useNavigate();
   const {
     currentRule,
     selectedRuleName,
@@ -22,11 +32,15 @@ export default function RuleEditor() {
     saveCurrentRule,
   } = useRulesStore();
   const { resolvedTheme } = useThemeStore();
+  const { values } = useValuesStore();
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<MonacoEditor.ITextModel | null>(null);
   const saveRef = useRef<typeof saveCurrentRule | null>(null);
+  const validatorRef = useRef<DebouncedValidator | null>(null);
   const isSettingValueRef = useRef(false);
+  const valuesRef = useRef(values);
+  const localVariablesRef = useRef<Array<{ name: string; line: number }>>([]);
   const currentRuleRef = useRef<{
     currentRule: typeof currentRule;
     selectedRuleName: typeof selectedRuleName;
@@ -35,9 +49,31 @@ export default function RuleEditor() {
   const [containerElement, setContainerElement] =
     useState<HTMLDivElement | null>(null);
 
+  const handleValidationComplete = useCallback(
+    (result: { defined_variables?: { name: string; defined_at?: number | null }[] }) => {
+      const localVars = (result.defined_variables || [])
+        .filter((v) => v.defined_at != null)
+        .map((v) => ({ name: v.name, line: v.defined_at! }));
+      setLocalVariables(localVars);
+      localVariablesRef.current = localVars;
+    },
+    []
+  );
+
+  useEffect(() => {
+    setLocalVariablesGetter(() => localVariablesRef.current);
+    return () => {
+      setLocalVariablesGetter(() => []);
+    };
+  }, []);
+
   useEffect(() => {
     saveRef.current = saveCurrentRule;
   }, [saveCurrentRule]);
+
+  useEffect(() => {
+    valuesRef.current = values;
+  }, [values]);
 
   useEffect(() => {
     currentRuleRef.current = { currentRule, selectedRuleName, editingContent };
@@ -51,7 +87,11 @@ export default function RuleEditor() {
 
     const content = modelRef.current.getValue();
     setEditingContent(selectedName, content);
-  }, [setEditingContent]);
+
+    if (validatorRef.current && modelRef.current) {
+      validatorRef.current.validate(modelRef.current, handleValidationComplete);
+    }
+  }, [setEditingContent, handleValidationComplete]);
 
   const handleSave = useCallback(async () => {
     if (!saveRef.current) return;
@@ -71,6 +111,22 @@ export default function RuleEditor() {
       message.error("Failed to copy");
     }
   }, []);
+
+  const handleNavigate = useCallback(
+    (location: ReferenceLocation) => {
+      if (location.navigationType === "page" && location.uri) {
+        navigate(location.uri);
+      }
+    },
+    [navigate]
+  );
+
+  useEffect(() => {
+    setNavigateCallback(handleNavigate);
+    return () => {
+      setNavigateCallback(null);
+    };
+  }, [handleNavigate]);
 
   useEffect(() => {
     if (!containerElement) return;
@@ -101,10 +157,29 @@ export default function RuleEditor() {
       handleChange();
     });
 
+    const getGlobalValues = () => {
+      const result: Record<string, string> = {};
+      for (const v of valuesRef.current) {
+        result[v.name] = v.value;
+      }
+      return result;
+    };
+
+    const validator = createDebouncedValidator(500, getGlobalValues);
+    validatorRef.current = validator;
+
+    if (initialContent) {
+      validator.validate(model, handleValidationComplete);
+    }
+
     editorRef.current = ed;
     modelRef.current = model;
 
     return () => {
+      validator.cancel();
+      validatorRef.current = null;
+      clearValidationMarkers(model);
+      setLocalVariables([]);
       changeDisposable.dispose();
       model.dispose();
       ed.dispose();
@@ -145,8 +220,12 @@ export default function RuleEditor() {
       isSettingValueRef.current = false;
       editorRef.current.setScrollTop(0);
       editorRef.current.setScrollLeft(0);
+
+      if (validatorRef.current && modelRef.current) {
+        validatorRef.current.validate(modelRef.current, handleValidationComplete);
+      }
     }
-  }, [currentRule, editingContent, containerElement]);
+  }, [currentRule, editingContent, containerElement, handleValidationComplete]);
 
   if (!selectedRuleName) {
     return (

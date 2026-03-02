@@ -910,32 +910,39 @@ fn load_stored_rules(
             let stored_count = rule_files.len();
             for rule_file in rule_files {
                 let parser = bifrost_core::RuleParser::new();
-                match parser.parse_rules_with_inline_values(&rule_file.content) {
-                    Ok((parsed, file_inline_values)) => {
-                        tracing::info!(
-                            target: "bifrost_cli::rules",
-                            file = %rule_file.name,
-                            enabled = rule_file.enabled,
-                            parsed_count = parsed.len(),
-                            inline_values_count = file_inline_values.len(),
-                            "loaded rule file"
-                        );
-                        for mut rule in parsed {
-                            rule.file = Some(rule_file.name.clone());
-                            stored_rules.push(rule);
-                        }
-                        for (k, v) in file_inline_values {
-                            inline_values.entry(k).or_insert(v);
-                        }
-                    }
-                    Err(e) => {
+                let (result, file_inline_values) =
+                    parser.parse_rules_tolerant_with_inline_values(&rule_file.content);
+
+                if !result.errors.is_empty() {
+                    for error in &result.errors {
                         tracing::warn!(
                             target: "bifrost_cli::rules",
                             file = %rule_file.name,
-                            error = %e,
-                            "failed to parse rule file"
+                            line = error.line,
+                            column = error.start_column,
+                            error = %error.message,
+                            suggestion = ?error.suggestion,
+                            "rule parse error (skipped)"
                         );
                     }
+                }
+
+                tracing::info!(
+                    target: "bifrost_cli::rules",
+                    file = %rule_file.name,
+                    enabled = rule_file.enabled,
+                    parsed_count = result.rules.len(),
+                    error_count = result.errors.len(),
+                    inline_values_count = file_inline_values.len(),
+                    "loaded rule file"
+                );
+
+                for mut rule in result.rules {
+                    rule.file = Some(rule_file.name.clone());
+                    stored_rules.push(rule);
+                }
+                for (k, v) in file_inline_values {
+                    inline_values.entry(k).or_insert(v);
                 }
             }
             if stored_count > 0 {

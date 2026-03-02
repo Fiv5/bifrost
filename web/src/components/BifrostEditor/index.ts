@@ -6,12 +6,23 @@ import snippet, {
   dynamicProvider,
   hoverProvider,
   definitionProvider,
-  linkProvider,
+  validateRules,
+  setValidationMarkers,
+  clearValidationMarkers,
+  createDebouncedValidator,
+  setLocalVariables,
+  executePendingNavigation,
+  setLocalVariablesGetter,
 } from "./snippet";
 import type {
   DynamicCompletionData,
   ReferenceLocation,
   NavigateCallback,
+  ParseError,
+  ValidationResult,
+  DebouncedValidator,
+  GlobalValuesGetter,
+  LocalVariableDefinition,
 } from "./snippet";
 import { setNavigateCallback } from "./snippet";
 import theme from './theme';
@@ -31,7 +42,7 @@ languages.registerCompletionItemProvider(LANGUAGE_BIFROST, snippet.operator);
 languages.registerCompletionItemProvider(LANGUAGE_BIFROST, dynamicProvider);
 languages.registerHoverProvider(LANGUAGE_BIFROST, hoverProvider);
 languages.registerDefinitionProvider(LANGUAGE_BIFROST, definitionProvider);
-languages.registerLinkProvider(LANGUAGE_BIFROST, linkProvider);
+
 
 editor.defineTheme(theme.dark.name, theme.dark.config);
 editor.defineTheme(theme.light.name, theme.light.config);
@@ -43,7 +54,7 @@ editor.create = (
   options?: editor.IStandaloneEditorConstructionOptions,
   override?: editor.IEditorOverrideServices
 ) => {
-  return originalCreate.call(
+  const instance = originalCreate.call(
     editor,
     domElement,
     {
@@ -63,6 +74,14 @@ editor.create = (
     },
     override
   );
+
+  instance.onMouseDown((e) => {
+    if (e.event.metaKey || e.event.ctrlKey) {
+      executePendingNavigation();
+    }
+  });
+
+  return instance;
 };
 
 const originalCreateModel = editor.createModel;
@@ -75,7 +94,9 @@ editor.createModel = (
 export const THEME_DARK = theme.dark.name;
 export const THEME_LIGHT = theme.light.name;
 
-export { updateDynamicData, getDynamicData, setNavigateCallback };
-export type { DynamicCompletionData, ReferenceLocation, NavigateCallback };
+export { updateDynamicData, getDynamicData, setNavigateCallback, setLocalVariables, setLocalVariablesGetter };
+export { validateRules, setValidationMarkers, clearValidationMarkers, createDebouncedValidator };
+export type { DynamicCompletionData, ReferenceLocation, NavigateCallback, LocalVariableDefinition };
+export type { ParseError, ValidationResult, DebouncedValidator, GlobalValuesGetter };
 
 export default editor;

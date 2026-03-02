@@ -1,0 +1,156 @@
+import { editor, MarkerSeverity } from 'monaco-editor';
+
+const MARKER_OWNER = 'bifrost-validation';
+
+export interface ParseError {
+  line: number;
+  start_column: number;
+  end_column: number;
+  message: string;
+  severity: 'error' | 'warning' | 'info' | 'hint';
+  suggestion?: string;
+  code?: string;
+  related_info?: VariableInfo;
+}
+
+export interface VariableInfo {
+  name: string;
+  source: string;
+  defined_at?: number;
+}
+
+export interface ScriptReference {
+  name: string;
+  script_type: string;
+  line: number;
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  rule_count: number;
+  errors: ParseError[];
+  warnings: ParseError[];
+  defined_variables: VariableInfo[];
+  script_references: ScriptReference[];
+}
+
+function severityToMarkerSeverity(severity: ParseError['severity']): MarkerSeverity {
+  switch (severity) {
+    case 'error':
+      return MarkerSeverity.Error;
+    case 'warning':
+      return MarkerSeverity.Warning;
+    case 'info':
+      return MarkerSeverity.Info;
+    case 'hint':
+      return MarkerSeverity.Hint;
+    default:
+      return MarkerSeverity.Error;
+  }
+}
+
+export async function validateRules(
+  content: string,
+  globalValues?: Record<string, string>
+): Promise<ValidationResult> {
+  const response = await fetch('/_bifrost/api/rules/validate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ content, global_values: globalValues || {} }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Validation request failed: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export function setValidationMarkers(
+  model: editor.ITextModel,
+  result: ValidationResult
+): void {
+  if (model.isDisposed()) return;
+
+  const allIssues = [...result.errors, ...result.warnings];
+  const markers = allIssues.map((error) => ({
+    severity: severityToMarkerSeverity(error.severity),
+    message: error.suggestion
+      ? `${error.message}\n\nSuggestion: ${error.suggestion}`
+      : error.message,
+    startLineNumber: error.line,
+    startColumn: error.start_column,
+    endLineNumber: error.line,
+    endColumn: error.end_column + 1,
+    code: error.code || undefined,
+    source: 'bifrost',
+  }));
+
+  editor.setModelMarkers(model, MARKER_OWNER, markers);
+}
+
+export function clearValidationMarkers(model: editor.ITextModel): void {
+  if (model.isDisposed()) return;
+  editor.setModelMarkers(model, MARKER_OWNER, []);
+}
+
+export type GlobalValuesGetter = () => Record<string, string>;
+
+export interface DebouncedValidator {
+  validate: (model: editor.ITextModel, onComplete?: (result: ValidationResult) => void) => void;
+  cancel: () => void;
+}
+
+export function createDebouncedValidator(
+  delayMs = 500,
+  getGlobalValues?: GlobalValuesGetter
+): DebouncedValidator {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  let abortController: AbortController | null = null;
+
+  const cancel = () => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+  };
+
+  const validate = (
+    model: editor.ITextModel,
+    onComplete?: (result: ValidationResult) => void
+  ) => {
+    cancel();
+
+    if (model.isDisposed()) return;
+
+    timeoutId = setTimeout(async () => {
+      if (model.isDisposed()) return;
+
+      abortController = new AbortController();
+      const content = model.getValue();
+      const globalValues = getGlobalValues?.() || {};
+
+      try {
+        const result = await validateRules(content, globalValues);
+        if (model.isDisposed()) return;
+
+        setValidationMarkers(model, result);
+        onComplete?.(result);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return;
+        }
+        console.error('Validation error:', error);
+        clearValidationMarkers(model);
+      }
+    }, delayMs);
+  };
+
+  return { validate, cancel };
+}

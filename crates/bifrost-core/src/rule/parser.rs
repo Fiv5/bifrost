@@ -3,11 +3,121 @@ use crate::matcher::factory::parse_pattern;
 use crate::protocol::Protocol;
 use crate::rule::filter::{parse_filter, parse_line_props, Filter, LineProps};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::types::Rule;
 use super::ValueStore;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ParseErrorSeverity {
+    Error,
+    Warning,
+    Info,
+    Hint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariableInfo {
+    pub name: String,
+    pub source: String,
+    pub defined_at: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParseError {
+    pub line: usize,
+    pub start_column: usize,
+    pub end_column: usize,
+    pub message: String,
+    pub severity: ParseErrorSeverity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub related_info: Option<VariableInfo>,
+}
+
+impl ParseError {
+    pub fn new(line: usize, content: &str, message: impl Into<String>) -> Self {
+        let content_len = content.len().max(1);
+        Self {
+            line,
+            start_column: 1,
+            end_column: content_len,
+            message: message.into(),
+            severity: ParseErrorSeverity::Error,
+            suggestion: None,
+            code: None,
+            related_info: None,
+        }
+    }
+
+    pub fn with_range(
+        line: usize,
+        start_column: usize,
+        end_column: usize,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            line,
+            start_column,
+            end_column,
+            message: message.into(),
+            severity: ParseErrorSeverity::Error,
+            suggestion: None,
+            code: None,
+            related_info: None,
+        }
+    }
+
+    pub fn with_severity(mut self, severity: ParseErrorSeverity) -> Self {
+        self.severity = severity;
+        self
+    }
+
+    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+        self.suggestion = Some(suggestion.into());
+        self
+    }
+
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    pub fn with_related_info(mut self, info: VariableInfo) -> Self {
+        self.related_info = Some(info);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParseResult {
+    pub rules: Vec<Rule>,
+    pub errors: Vec<ParseError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptReference {
+    pub name: String,
+    pub script_type: String,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ValidationResult {
+    pub valid: bool,
+    pub rule_count: usize,
+    pub errors: Vec<ParseError>,
+    pub warnings: Vec<ParseError>,
+    pub defined_variables: Vec<VariableInfo>,
+    #[serde(default)]
+    pub script_references: Vec<ScriptReference>,
+}
 
 const INCLUDE_FILTER_PREFIX: &str = "includeFilter://";
 const EXCLUDE_FILTER_PREFIX: &str = "excludeFilter://";
@@ -85,6 +195,32 @@ impl RuleParser {
 
         Ok((rules, inline_values))
     }
+
+    pub fn parse_rules_tolerant(&self, text: &str) -> ParseResult {
+        let mut merged_values = self.values.clone();
+        let text = extract_markdown_value_blocks(text, &mut merged_values);
+        parse_rules_tolerant_with_values(&text, &merged_values)
+    }
+
+    pub fn parse_rules_tolerant_with_inline_values(
+        &self,
+        text: &str,
+    ) -> (ParseResult, HashMap<String, String>) {
+        let mut merged_values = self.values.clone();
+        let text = extract_markdown_value_blocks(text, &mut merged_values);
+
+        let result = parse_rules_tolerant_with_values(&text, &merged_values);
+        let inline_values: HashMap<String, String> = merged_values
+            .into_iter()
+            .filter(|(k, _)| !self.values.contains_key(k))
+            .collect();
+
+        (result, inline_values)
+    }
+
+    pub fn validate_rules(&self, text: &str) -> Vec<ParseError> {
+        self.parse_rules_tolerant(text).errors
+    }
 }
 
 impl Default for RuleParser {
@@ -99,6 +235,292 @@ pub fn parse_line(line: &str) -> Result<Vec<Rule>> {
 
 pub fn parse_rules(text: &str) -> Result<Vec<Rule>> {
     parse_rules_with_values(text, &HashMap::new())
+}
+
+pub fn parse_rules_tolerant(text: &str) -> ParseResult {
+    parse_rules_tolerant_with_values(text, &HashMap::new())
+}
+
+pub fn validate_rules(text: &str) -> Vec<ParseError> {
+    validate_rules_with_context(text, &HashMap::new()).errors
+}
+
+pub fn validate_rules_with_context(
+    text: &str,
+    global_values: &HashMap<String, String>,
+) -> ValidationResult {
+    let mut result = ValidationResult::default();
+
+    let mut local_values: HashMap<String, String> = HashMap::new();
+    let mut value_definitions: HashMap<String, (usize, usize)> = HashMap::new();
+
+    validate_code_blocks(text, &mut result, &mut local_values, &mut value_definitions);
+
+    let mut merged_values = global_values.clone();
+    merged_values.extend(local_values.clone());
+
+    for name in merged_values.keys() {
+        let (line, source) = if let Some((start_line, _)) = value_definitions.get(name) {
+            (*start_line, "local".to_string())
+        } else {
+            (0, "global".to_string())
+        };
+        result.defined_variables.push(VariableInfo {
+            name: name.clone(),
+            source,
+            defined_at: if line > 0 { Some(line) } else { None },
+        });
+    }
+
+    let clean_text = extract_markdown_value_blocks(text, &mut HashMap::new());
+
+    for (line_num, line) in clean_text.lines().enumerate() {
+        let line_num = line_num + 1;
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        validate_variable_references(trimmed, line_num, &merged_values, &mut result);
+        extract_script_references(trimmed, line_num, &mut result);
+        validate_filter_values(trimmed, line_num, &mut result);
+
+        match parse_line_with_values(trimmed, &merged_values) {
+            Ok(rules) => {
+                result.rule_count += rules.len();
+            }
+            Err(e) => {
+                let error = create_detailed_parse_error(line_num, trimmed, &e);
+                result.errors.push(error);
+            }
+        }
+    }
+
+    result.valid = result.errors.is_empty();
+    result
+}
+
+fn validate_filter_values(line: &str, line_num: usize, result: &mut ValidationResult) {
+    let include_filter_re = regex::Regex::new(r"includeFilter://`?\(?([^)`\s]+)\)?`?").unwrap();
+    let exclude_filter_re = regex::Regex::new(r"excludeFilter://`?\(?([^)`\s]+)\)?`?").unwrap();
+
+    for cap in include_filter_re.captures_iter(line) {
+        let filter_value = &cap[1];
+        if let Err(e) = crate::syntax::validate_filter_value(filter_value) {
+            let warning = ParseError::with_range(line_num, 1, line.len(), e.message.clone())
+                .with_severity(ParseErrorSeverity::Warning)
+                .with_code("W004")
+                .with_suggestion(e.suggestion.unwrap_or_default());
+            result.warnings.push(warning);
+        }
+    }
+
+    for cap in exclude_filter_re.captures_iter(line) {
+        let filter_value = &cap[1];
+        if let Err(e) = crate::syntax::validate_filter_value(filter_value) {
+            let warning = ParseError::with_range(line_num, 1, line.len(), e.message.clone())
+                .with_severity(ParseErrorSeverity::Warning)
+                .with_code("W004")
+                .with_suggestion(e.suggestion.unwrap_or_default());
+            result.warnings.push(warning);
+        }
+    }
+}
+
+fn extract_script_references(line: &str, line_num: usize, result: &mut ValidationResult) {
+    let req_script_pattern = regex::Regex::new(r"reqScript://([^\s]+)").unwrap();
+    let res_script_pattern = regex::Regex::new(r"resScript://([^\s]+)").unwrap();
+
+    for cap in req_script_pattern.captures_iter(line) {
+        let script_name = cap[1].to_string();
+        result.script_references.push(ScriptReference {
+            name: script_name,
+            script_type: "request".to_string(),
+            line: line_num,
+        });
+    }
+
+    for cap in res_script_pattern.captures_iter(line) {
+        let script_name = cap[1].to_string();
+        result.script_references.push(ScriptReference {
+            name: script_name,
+            script_type: "response".to_string(),
+            line: line_num,
+        });
+    }
+}
+
+fn validate_code_blocks(
+    text: &str,
+    result: &mut ValidationResult,
+    local_values: &mut HashMap<String, String>,
+    value_definitions: &mut HashMap<String, (usize, usize)>,
+) {
+    let mut in_code_block = false;
+    let mut code_block_start: usize = 0;
+    let mut code_block_backticks: usize = 0;
+    let mut code_block_name = String::new();
+    let mut code_block_content = String::new();
+
+    for (line_num, line) in text.lines().enumerate() {
+        let line_num = line_num + 1;
+        let trimmed = line.trim();
+
+        if !in_code_block {
+            if trimmed.starts_with("```") {
+                let backtick_count = trimmed.chars().take_while(|c| *c == '`').count();
+                if backtick_count >= 3 {
+                    in_code_block = true;
+                    code_block_start = line_num;
+                    code_block_backticks = backtick_count;
+                    code_block_name = trimmed[backtick_count..].trim().to_string();
+                    code_block_content.clear();
+                }
+            }
+        } else {
+            let closing = "`".repeat(code_block_backticks);
+            if trimmed == closing || trimmed.starts_with(&closing) {
+                in_code_block = false;
+
+                if !code_block_name.is_empty() {
+                    let name_parts: Vec<&str> = code_block_name.split_whitespace().collect();
+                    let var_name = name_parts.first().unwrap_or(&"").to_string();
+                    if !var_name.is_empty() {
+                        local_values.insert(var_name.clone(), code_block_content.clone());
+                        value_definitions.insert(var_name, (code_block_start, line_num));
+                    }
+                }
+
+                code_block_name.clear();
+                code_block_content.clear();
+            } else {
+                if !code_block_content.is_empty() {
+                    code_block_content.push('\n');
+                }
+                code_block_content.push_str(line);
+            }
+        }
+    }
+
+    if in_code_block {
+        let error = ParseError::with_range(
+            code_block_start,
+            1,
+            3 + code_block_name.len(),
+            format!(
+                "Unclosed code block starting at line {}. Missing closing '{}' delimiter.",
+                code_block_start,
+                "`".repeat(code_block_backticks)
+            ),
+        )
+        .with_code("E005")
+        .with_suggestion(format!(
+            "Add '{}' on a new line to close the code block.",
+            "`".repeat(code_block_backticks)
+        ));
+        result.errors.push(error);
+    }
+}
+
+fn validate_variable_references(
+    line: &str,
+    line_num: usize,
+    merged_values: &HashMap<String, String>,
+    result: &mut ValidationResult,
+) {
+    let var_pattern = regex::Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_\-.]*)\}").unwrap();
+
+    for cap in var_pattern.captures_iter(line) {
+        let full_match = cap.get(0).unwrap();
+        let var_name = &cap[1];
+
+        if line[..full_match.start()].ends_with('$') {
+            continue;
+        }
+
+        if var_name.contains('.') {
+            continue;
+        }
+
+        if !merged_values.contains_key(var_name) {
+            let start_col = full_match.start() + 1;
+            let end_col = full_match.end();
+
+            let mut warning = ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                format!("Undefined variable reference: '{}'", var_name),
+            )
+            .with_severity(ParseErrorSeverity::Warning)
+            .with_code("W001")
+            .with_suggestion(format!(
+                "Define the variable '{}' using a code block:\n```{}\nyour content here\n```",
+                var_name, var_name
+            ));
+
+            let similar_vars: Vec<&String> = merged_values
+                .keys()
+                .filter(|k| k.to_lowercase().contains(&var_name.to_lowercase()))
+                .collect();
+
+            if !similar_vars.is_empty() {
+                warning.suggestion = Some(format!(
+                    "Did you mean one of these? {}. Or define a new variable '{}' using a code block.",
+                    similar_vars
+                        .iter()
+                        .map(|s| format!("'{}'", s))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    var_name
+                ));
+            }
+
+            result.warnings.push(warning);
+        }
+    }
+
+    validate_parentheses_content(line, line_num, result);
+}
+
+fn validate_parentheses_content(line: &str, line_num: usize, result: &mut ValidationResult) {
+    let paren_pattern = regex::Regex::new(r"://\(([^)]*)\)").unwrap();
+
+    for cap in paren_pattern.captures_iter(line) {
+        let content = &cap[1];
+        let full_match = cap.get(0).unwrap();
+
+        if content.contains(' ') && !content.starts_with('`') && !content.ends_with('`') {
+            let proto_end = line[..full_match.start()]
+                .rfind(char::is_whitespace)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let proto_part = &line[proto_end..full_match.end()];
+
+            let start_col = full_match.start() + 4;
+            let end_col = full_match.end() - 1;
+
+            let warning = ParseError::with_range(
+                line_num,
+                start_col,
+                end_col,
+                format!(
+                    "Parentheses content contains spaces: '{}'. This may cause parsing issues.",
+                    content
+                ),
+            )
+            .with_severity(ParseErrorSeverity::Warning)
+            .with_code("W002")
+            .with_suggestion(format!(
+                "Use a block variable instead:\n1. Define: ```myVar\n{}\n```\n2. Use: {}://{{myVar}}",
+                content,
+                proto_part.split("://").next().unwrap_or("protocol")
+            ));
+
+            result.warnings.push(warning);
+        }
+    }
 }
 
 fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Result<Vec<Rule>> {
@@ -238,6 +660,93 @@ fn parse_rules_with_values(text: &str, values: &HashMap<String, String>) -> Resu
     Ok(rules)
 }
 
+fn parse_rules_tolerant_with_values(text: &str, values: &HashMap<String, String>) -> ParseResult {
+    let mut merged_values = values.clone();
+    let text = extract_markdown_value_blocks(text, &mut merged_values);
+
+    let mut result = ParseResult::default();
+    let mut current_line = String::new();
+    let mut start_line_num = 1;
+    let mut in_line_block = false;
+    let mut line_block_content = String::new();
+    let mut line_block_start = 1;
+
+    let try_parse_line = |line_content: &str, line_num: usize, result: &mut ParseResult| {
+        match parse_line_with_values(line_content, &merged_values) {
+            Ok(parsed) => {
+                for mut rule in parsed {
+                    rule.line = Some(line_num);
+                    result.rules.push(rule);
+                }
+            }
+            Err(e) => {
+                let trimmed = line_content.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    let error = create_detailed_parse_error(line_num, line_content, &e);
+                    result.errors.push(error);
+                }
+            }
+        }
+    };
+
+    for (line_num, line) in text.lines().enumerate() {
+        let line_num = line_num + 1;
+        let trimmed = line.trim();
+
+        if in_line_block {
+            if trimmed == "`" {
+                in_line_block = false;
+                let block_line = line_block_content.trim().replace('\n', " ");
+                try_parse_line(&block_line, line_block_start, &mut result);
+                line_block_content.clear();
+            } else {
+                line_block_content.push_str(trimmed);
+                line_block_content.push('\n');
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("line`") {
+            in_line_block = true;
+            line_block_start = line_num;
+            let after_marker = trimmed.strip_prefix("line`").unwrap_or("");
+            if !after_marker.is_empty() {
+                line_block_content.push_str(after_marker);
+                line_block_content.push('\n');
+            }
+            continue;
+        }
+
+        if let Some(stripped) = trimmed.strip_suffix('\\') {
+            if current_line.is_empty() {
+                start_line_num = line_num;
+            }
+            current_line.push_str(stripped);
+            current_line.push(' ');
+            continue;
+        }
+
+        if !current_line.is_empty() {
+            current_line.push_str(trimmed);
+            try_parse_line(&current_line, start_line_num, &mut result);
+            current_line.clear();
+        } else {
+            try_parse_line(trimmed, line_num, &mut result);
+        }
+    }
+
+    if !current_line.is_empty() {
+        try_parse_line(&current_line, start_line_num, &mut result);
+    }
+
+    if in_line_block && !line_block_content.is_empty() {
+        let block_line = line_block_content.trim().replace('\n', " ");
+        try_parse_line(&block_line, line_block_start, &mut result);
+    }
+
+    result
+}
+
 fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String>) -> String {
     if !text.contains("```") {
         return text.to_string();
@@ -349,6 +858,81 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
     result
 }
 
+fn create_detailed_parse_error(
+    line_num: usize,
+    line_content: &str,
+    error: &BifrostError,
+) -> ParseError {
+    let error_msg = error.to_string();
+    let trimmed = line_content.trim();
+    let leading_spaces = line_content.len() - line_content.trim_start().len();
+
+    if error_msg.contains("No protocol found") {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let second_part = parts[1];
+            let second_start = line_content.find(second_part).unwrap_or(0) + 1;
+            let second_end = second_start + second_part.len();
+
+            return ParseError::with_range(line_num, second_start, second_end, &error_msg)
+                .with_code("E001")
+                .with_suggestion(format!(
+                    "Add a protocol prefix like 'http://', 'host://', or use 'passthrough://' for direct forwarding. Example: '{} http://localhost:8000/' or '{} passthrough://'",
+                    parts[0], parts[0]
+                ));
+        }
+        return ParseError::new(line_num, trimmed, &error_msg)
+            .with_code("E001")
+            .with_suggestion(
+                "Rule format: <pattern> <protocol>://<target>. Example: 'example.com http://localhost:8000/'",
+            );
+    }
+
+    if error_msg.contains("Unknown protocol") {
+        if let Some(proto_match) = PROTOCOL_REGEX.captures(trimmed) {
+            let proto = proto_match.get(1).map(|m| m.as_str()).unwrap_or("");
+            let proto_start = trimmed.find(&format!("{}://", proto)).unwrap_or(0);
+            let start_col = leading_spaces + proto_start + 1;
+            let end_col = start_col + proto.len() + 3;
+
+            return ParseError::with_range(line_num, start_col, end_col, &error_msg)
+                .with_code("E002")
+                .with_suggestion(format!(
+                    "Unknown protocol '{}'. Supported protocols: http, https, host, file, redirect, rewrite, reqHeaders, resHeaders, reqBody, resBody, statusCode, passthrough, tlsIntercept, tlsPassthrough, tunnel, ws, wss, etc.",
+                    proto
+                ));
+        }
+    }
+
+    if error_msg.contains("No pattern found") {
+        return ParseError::new(line_num, trimmed, &error_msg)
+            .with_code("E003")
+            .with_suggestion(
+                "Rule must start with a pattern (domain, URL path, or regex). Example: 'example.com http://localhost:8000/'",
+            );
+    }
+
+    if error_msg.contains("Invalid regex") {
+        if let Some(start) = trimmed.find('/') {
+            if let Some(end) = trimmed[start + 1..].find('/') {
+                let regex_end = start + end + 2;
+                return ParseError::with_range(
+                    line_num,
+                    leading_spaces + start + 1,
+                    leading_spaces + regex_end + 1,
+                    &error_msg,
+                )
+                .with_code("E004")
+                .with_suggestion("Check regex syntax. Common issues: unescaped special characters, unbalanced parentheses, invalid quantifiers.");
+            }
+        }
+    }
+
+    ParseError::new(line_num, trimmed, &error_msg)
+        .with_code("E000")
+        .with_suggestion("Check rule syntax. Format: <pattern> <protocol>://<value>")
+}
+
 fn expand_inline_values(line: &str, values: &HashMap<String, String>) -> String {
     let mut result = line.to_string();
     let max_iterations = 10;
@@ -396,6 +980,7 @@ fn split_rule_parts(line: &str) -> Vec<String> {
     let mut in_backtick = false;
     let mut brace_depth = 0;
     let mut paren_depth = 0;
+    let mut prev_char: Option<char> = None;
     let mut chars = line.chars().peekable();
 
     while let Some(c) = chars.next() {
@@ -413,7 +998,7 @@ fn split_rule_parts(line: &str) -> Vec<String> {
                 in_regex = true;
                 current.push(c);
             }
-            '/' if in_regex => {
+            '/' if in_regex && prev_char != Some('\\') => {
                 current.push(c);
                 if let Some(&next) = chars.peek() {
                     if next == 'i' {
@@ -452,6 +1037,7 @@ fn split_rule_parts(line: &str) -> Vec<String> {
                 current.push(c);
             }
         }
+        prev_char = Some(c);
     }
 
     if !current.is_empty() {
@@ -478,6 +1064,42 @@ fn is_target_address(value: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_digit() || c == '.')
         || host_without_port.starts_with('[')
+}
+
+fn urls_match_for_passthrough(pattern_url: &str, target_url: &str) -> bool {
+    let normalize = |url: &str| -> String {
+        let url = url.trim_end_matches('/');
+        url.to_lowercase()
+    };
+    normalize(pattern_url) == normalize(target_url)
+}
+
+fn check_passthrough_without_protocol(part: &str, patterns: &[String]) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+
+    for pattern in patterns {
+        let protocol_prefix = if pattern.starts_with("https://") {
+            Some("https://")
+        } else if pattern.starts_with("http://") {
+            Some("http://")
+        } else if pattern.starts_with("wss://") {
+            Some("wss://")
+        } else if pattern.starts_with("ws://") {
+            Some("ws://")
+        } else {
+            None
+        };
+
+        if let Some(prefix) = protocol_prefix {
+            let reconstructed_url = format!("{}{}", prefix, part);
+            if urls_match_for_passthrough(pattern, &reconstructed_url) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult> {
@@ -531,7 +1153,7 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                     && !is_target_address(&value)
                 {
                     let reconstructed_url = format!("{}://{}", proto_name.to_lowercase(), value);
-                    if !patterns.iter().any(|p: &String| {
+                    let is_same_as_pattern = patterns.iter().any(|p: &String| {
                         let pattern_url = if p.starts_with("http://")
                             || p.starts_with("https://")
                             || p.starts_with("ws://")
@@ -541,8 +1163,11 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                         } else {
                             format!("{}://{}", proto_name.to_lowercase(), p)
                         };
-                        pattern_url == reconstructed_url
-                    }) {
+                        urls_match_for_passthrough(&pattern_url, &reconstructed_url)
+                    });
+                    if is_same_as_pattern {
+                        protocol_values.push((Protocol::Passthrough, String::new()));
+                    } else {
                         patterns.push(part.clone());
                     }
                 } else {
@@ -559,7 +1184,12 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
         } else if HOST_PORT_REGEX.is_match(part) {
             protocol_values.push((Protocol::Host, part.clone()));
         } else {
-            patterns.push(part.clone());
+            let is_passthrough = check_passthrough_without_protocol(part, &patterns);
+            if is_passthrough {
+                protocol_values.push((Protocol::Passthrough, String::new()));
+            } else {
+                patterns.push(part.clone());
+            }
         }
     }
 
@@ -694,6 +1324,22 @@ reqHeaders://{test=1}"#;
     fn test_split_rule_parts_with_regex_case_insensitive() {
         let parts = split_rule_parts("/test\\.com/i host://127.0.0.1");
         assert_eq!(parts, vec!["/test\\.com/i", "host://127.0.0.1"]);
+    }
+
+    #[test]
+    fn test_split_rule_parts_with_regex_escaped_slash() {
+        let parts = split_rule_parts(r"/example\.com\/api\/v[0-9]+/ http://localhost:8000/");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], r"/example\.com\/api\/v[0-9]+/");
+        assert_eq!(parts[1], "http://localhost:8000/");
+    }
+
+    #[test]
+    fn test_split_rule_parts_with_regex_multiple_escaped_slashes() {
+        let parts = split_rule_parts(r"/a\/b\/c\/d/ host://127.0.0.1");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], r"/a\/b\/c\/d/");
+        assert_eq!(parts[1], "host://127.0.0.1");
     }
 
     #[test]
@@ -1212,5 +1858,545 @@ new_value
         assert_eq!(parts[0], "*.test");
         assert_eq!(parts[1], "tlsIntercept://");
         assert_eq!(parts[2], "reqHeaders://(Auth: Bearer token)");
+    }
+
+    #[test]
+    fn test_parse_passthrough_same_url() {
+        let rules = parse_line("https://example.com/api/ https://example.com/api/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api/");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[0].value, "");
+    }
+
+    #[test]
+    fn test_parse_passthrough_same_url_without_trailing_slash() {
+        let rules = parse_line("https://example.com/api https://example.com/api").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[0].value, "");
+    }
+
+    #[test]
+    fn test_parse_passthrough_with_mismatched_trailing_slash() {
+        let rules = parse_line("https://example.com/api/ https://example.com/api").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api/");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[0].value, "");
+    }
+
+    #[test]
+    fn test_parse_passthrough_in_multi_rule_file() {
+        let content = r#"
+# BOE
+https://example.com/api/ https://example.com/api/
+https://example.com http://localhost:8000/
+wss://example.com/ ws://localhost:8000/
+"#;
+        let rules = parse_rules(content).unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[1].protocol, Protocol::Http);
+        assert_eq!(rules[2].protocol, Protocol::Ws);
+    }
+
+    #[test]
+    fn test_parse_different_url_not_passthrough() {
+        let rules = parse_line("https://example.com/api/ http://localhost:8000/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_ne!(rules[0].protocol, Protocol::Passthrough);
+    }
+
+    #[test]
+    fn test_parse_passthrough_without_protocol_prefix() {
+        let rules = parse_line("https://example.com/api/ example.com/api/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api/");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[0].value, "");
+    }
+
+    #[test]
+    fn test_parse_passthrough_without_protocol_prefix_no_trailing_slash() {
+        let rules = parse_line("https://example.com/api example.com/api").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+    }
+
+    #[test]
+    fn test_parse_passthrough_without_protocol_domain_only() {
+        let rules = parse_line("https://example.com example.com").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+    }
+
+    #[test]
+    fn test_parse_passthrough_ws_without_protocol() {
+        let rules = parse_line("wss://example.com/ws example.com/ws").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "wss://example.com/ws");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+    }
+
+    #[test]
+    fn test_parse_not_passthrough_different_path() {
+        let result = parse_line("https://example.com/api/ example.com/other/");
+        assert!(
+            result.is_err(),
+            "Should fail because different paths without protocol is invalid syntax"
+        );
+    }
+
+    #[test]
+    fn test_parse_passthrough_with_valid_redirect() {
+        let rules =
+            parse_line("https://example.com/api/ example.com/api/ http://localhost:8000/").unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(rules[1].protocol, Protocol::Http);
+    }
+
+    #[test]
+    fn test_parse_rules_tolerant_with_errors() {
+        let content = r#"
+# Valid rules
+example.com http://localhost:8000/
+test.local host://127.0.0.1:3000
+
+# Invalid rule - no protocol
+invalid.com another.com
+
+# Another valid rule
+valid.com http://localhost:9000/
+"#;
+        let result = parse_rules_tolerant(content);
+        assert_eq!(result.rules.len(), 3);
+        assert_eq!(result.errors.len(), 1);
+
+        let error = &result.errors[0];
+        assert!(error.message.contains("No protocol"));
+        assert_eq!(error.line, 7);
+        assert!(error.start_column > 0);
+        assert!(error.end_column > error.start_column);
+        assert!(error.suggestion.is_some());
+        assert!(error.code.is_some());
+        assert_eq!(error.code.as_ref().unwrap(), "E001");
+    }
+
+    #[test]
+    fn test_parse_rules_tolerant_all_valid() {
+        let content = r#"
+example.com http://localhost:8000/
+test.local host://127.0.0.1:3000
+"#;
+        let result = parse_rules_tolerant(content);
+        assert_eq!(result.rules.len(), 2);
+        assert!(result.errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rules_tolerant_with_passthrough() {
+        let content = r#"
+# Passthrough rule
+https://example.com/api/ https://example.com/api/
+# Redirect rule
+https://example.com http://localhost:8000/
+"#;
+        let result = parse_rules_tolerant(content);
+        assert_eq!(result.rules.len(), 2);
+        assert!(result.errors.is_empty());
+        assert_eq!(result.rules[0].protocol, Protocol::Passthrough);
+        assert_eq!(result.rules[1].protocol, Protocol::Http);
+    }
+
+    #[test]
+    fn test_validate_rules_returns_errors() {
+        let content = r#"
+valid.com http://localhost:8000/
+invalid.com another.com
+"#;
+        let errors = validate_rules(content);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].line, 3);
+    }
+
+    #[test]
+    fn test_validate_rules_no_errors() {
+        let content = r#"
+valid.com http://localhost:8000/
+test.local host://127.0.0.1:3000
+"#;
+        let errors = validate_rules(content);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_parse_error_detailed_info() {
+        let content = "  invalid.com another.com";
+        let result = parse_rules_tolerant(content);
+        assert_eq!(result.errors.len(), 1);
+
+        let error = &result.errors[0];
+        assert_eq!(error.line, 1);
+        assert!(error.start_column > 2);
+        assert!(error.suggestion.is_some());
+        let suggestion = error.suggestion.as_ref().unwrap();
+        assert!(suggestion.contains("http://") || suggestion.contains("passthrough://"));
+    }
+
+    #[test]
+    fn test_parse_error_severity() {
+        let content = "invalid.com another.com";
+        let result = parse_rules_tolerant(content);
+        assert_eq!(result.errors.len(), 1);
+        assert_eq!(result.errors[0].severity, ParseErrorSeverity::Error);
+    }
+
+    #[test]
+    fn test_parse_error_code() {
+        let content = "example.com unknownproto://value";
+        let result = parse_rules_tolerant(content);
+        if !result.errors.is_empty() {
+            let error = &result.errors[0];
+            assert!(error.code.is_some());
+        }
+    }
+
+    #[test]
+    fn test_valid_rules_file() {
+        let content = include_str!("valid_rules.bifrost");
+
+        println!("\n========== 验证有效规则文件 ==========");
+        println!("文件内容行数: {}", content.lines().count());
+
+        let result = parse_rules_tolerant(content);
+
+        println!("\n--- 解析结果 ---");
+        println!("成功解析规则数: {}", result.rules.len());
+        println!("错误数量: {}", result.errors.len());
+
+        if !result.errors.is_empty() {
+            println!("\n--- 错误详情 ---");
+            for error in &result.errors {
+                println!(
+                    "  Line {}, Col {}-{} [{}] ({}): {}",
+                    error.line,
+                    error.start_column,
+                    error.end_column,
+                    format!("{:?}", error.severity).to_lowercase(),
+                    error.code.as_deref().unwrap_or("N/A"),
+                    error.message
+                );
+                if let Some(ref suggestion) = error.suggestion {
+                    println!("    建议: {}", suggestion);
+                }
+            }
+        }
+
+        println!("\n--- 已解析的规则协议统计 ---");
+        let mut protocol_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for rule in &result.rules {
+            *protocol_counts
+                .entry(rule.protocol.to_str().to_string())
+                .or_insert(0) += 1;
+        }
+        let mut sorted: Vec<_> = protocol_counts.iter().collect();
+        sorted.sort_by(|a, b| b.1.cmp(a.1));
+        for (protocol, count) in sorted {
+            println!("  {}: {}", protocol, count);
+        }
+
+        assert!(
+            result.errors.is_empty(),
+            "有效规则文件不应该有解析错误，但发现 {} 个错误",
+            result.errors.len()
+        );
+        assert!(
+            result.rules.len() > 50,
+            "有效规则文件应该包含大量规则，但只解析到 {} 条",
+            result.rules.len()
+        );
+
+        println!("\n✓ 有效规则文件验证通过！共 {} 条规则", result.rules.len());
+    }
+
+    #[test]
+    fn test_invalid_rules_file() {
+        let content = include_str!("invalid_rules.bifrost");
+
+        println!("\n========== 验证无效规则文件 ==========");
+        println!("文件内容行数: {}", content.lines().count());
+
+        let result = parse_rules_tolerant(content);
+
+        println!("\n--- 解析结果 ---");
+        println!("成功解析规则数: {}", result.rules.len());
+        println!("错误数量: {}", result.errors.len());
+
+        println!("\n--- 错误详情 (Monaco 编辑器格式) ---");
+        for error in &result.errors {
+            println!(
+                "  Line {}, Col {}-{} [{}] ({}): {}",
+                error.line,
+                error.start_column,
+                error.end_column,
+                format!("{:?}", error.severity).to_lowercase(),
+                error.code.as_deref().unwrap_or("N/A"),
+                error.message
+            );
+            if let Some(ref suggestion) = error.suggestion {
+                println!("    建议: {}", suggestion);
+            }
+            println!();
+        }
+
+        println!("--- 容错解析验证 ---");
+        println!("在错误规则之间成功解析的有效规则:");
+        for rule in &result.rules {
+            println!(
+                "  ✓ {} -> {}://{}",
+                rule.pattern,
+                rule.protocol.to_str(),
+                rule.value
+            );
+        }
+
+        assert!(!result.errors.is_empty(), "无效规则文件应该包含解析错误");
+        assert!(
+            result.rules.len() >= 7,
+            "容错解析应该成功解析有效规则，但只解析到 {} 条",
+            result.rules.len()
+        );
+
+        println!(
+            "\n✓ 无效规则文件验证通过！检测到 {} 个错误，容错解析了 {} 条有效规则",
+            result.errors.len(),
+            result.rules.len()
+        );
+    }
+
+    #[test]
+    fn test_validate_unclosed_code_block() {
+        let content = r#"
+valid.com http://localhost:8000/
+
+``` jsonResponse
+{"code": 0}
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试未闭合代码块检测 ===");
+        println!("错误数量: {}", result.errors.len());
+        for error in &result.errors {
+            println!(
+                "  Line {}: [{}] {}",
+                error.line,
+                error.code.as_deref().unwrap_or("N/A"),
+                error.message
+            );
+        }
+
+        assert!(!result.valid, "未闭合代码块应该被检测为无效");
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.code == Some("E005".to_string())),
+            "应该有 E005 未闭合代码块错误"
+        );
+    }
+
+    #[test]
+    fn test_validate_undefined_variable() {
+        let content = r#"
+valid.com http://localhost:8000/
+ref.test resBody://{undefinedVar}
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试未定义变量检测 ===");
+        println!("警告数量: {}", result.warnings.len());
+        for warning in &result.warnings {
+            println!(
+                "  Line {}, Col {}-{}: [{}] {}",
+                warning.line,
+                warning.start_column,
+                warning.end_column,
+                warning.code.as_deref().unwrap_or("N/A"),
+                warning.message
+            );
+            if let Some(ref suggestion) = warning.suggestion {
+                println!("    建议: {}", suggestion);
+            }
+        }
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.code == Some("W001".to_string())),
+            "应该有 W001 未定义变量警告"
+        );
+    }
+
+    #[test]
+    fn test_validate_defined_variable() {
+        let content = r#"
+ref.test resBody://{myResponse}
+
+``` myResponse
+{"code": 0, "data": null}
+```
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试已定义变量 ===");
+        println!("规则数量: {}", result.rule_count);
+        println!("错误数量: {}", result.errors.len());
+        println!("警告数量: {}", result.warnings.len());
+        println!("定义的变量: {:?}", result.defined_variables);
+
+        assert!(result.valid, "使用已定义变量应该是有效的");
+        assert!(
+            result
+                .defined_variables
+                .iter()
+                .any(|v| v.name == "myResponse"),
+            "应该检测到 myResponse 变量定义"
+        );
+    }
+
+    #[test]
+    fn test_validate_with_global_values() {
+        let content = r#"
+ref.test resBody://{globalVar}
+"#;
+        let mut global_values = HashMap::new();
+        global_values.insert("globalVar".to_string(), "global content".to_string());
+
+        let result = validate_rules_with_context(content, &global_values);
+
+        println!("\n=== 测试全局变量引用 ===");
+        println!("规则数量: {}", result.rule_count);
+        println!("警告数量: {}", result.warnings.len());
+        println!("定义的变量: {:?}", result.defined_variables);
+
+        let global_var = result
+            .defined_variables
+            .iter()
+            .find(|v| v.name == "globalVar");
+        assert!(global_var.is_some(), "应该包含全局变量");
+        assert_eq!(
+            global_var.unwrap().source,
+            "global",
+            "变量来源应该是 global"
+        );
+    }
+
+    #[test]
+    fn test_validate_skip_template_variables() {
+        let content = "tpl.test resHeaders://`(X-Time: ${now})`\n";
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试模板变量不被误报 ===");
+        println!("警告数量: {}", result.warnings.len());
+
+        assert!(
+            !result.warnings.iter().any(|w| w.message.contains("now")),
+            "模板变量 ${{now}} 不应该被当作未定义变量"
+        );
+    }
+
+    #[test]
+    fn test_validate_parentheses_with_spaces() {
+        let content = r#"
+space.test resBody://(hello world)
+space2.test resHeaders://(X-Key: value with spaces)
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试小括号内空格检测 ===");
+        println!("警告数量: {}", result.warnings.len());
+        for warning in &result.warnings {
+            println!(
+                "  Line {}: [{}] {}",
+                warning.line,
+                warning.code.as_deref().unwrap_or("N/A"),
+                warning.message
+            );
+            if let Some(ref suggestion) = warning.suggestion {
+                println!("    建议: {}", suggestion);
+            }
+        }
+
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.code == Some("W002".to_string())),
+            "应该有 W002 小括号内空格警告"
+        );
+    }
+
+    #[test]
+    fn test_validate_parentheses_without_spaces() {
+        let content = r#"
+valid.test resBody://({"code":0})
+valid2.test resHeaders://(X-Key:value)
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试无空格的小括号内容 ===");
+        println!("警告数量: {}", result.warnings.len());
+
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.code == Some("W002".to_string())),
+            "无空格的小括号内容不应该有 W002 警告"
+        );
+    }
+
+    #[test]
+    fn test_validate_script_references() {
+        let content = r#"
+api.test reqScript://myRequestHandler
+api2.test resScript://myResponseHandler
+combined.test reqScript://reqHandler resScript://resHandler
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+
+        println!("\n=== 测试脚本引用提取 ===");
+        println!("规则数量: {}", result.rule_count);
+        println!("脚本引用数量: {}", result.script_references.len());
+        for script_ref in &result.script_references {
+            println!(
+                "  Line {}: {} script '{}'",
+                script_ref.line, script_ref.script_type, script_ref.name
+            );
+        }
+
+        assert_eq!(result.script_references.len(), 4, "应该检测到 4 个脚本引用");
+
+        let req_scripts: Vec<_> = result
+            .script_references
+            .iter()
+            .filter(|s| s.script_type == "request")
+            .collect();
+        let res_scripts: Vec<_> = result
+            .script_references
+            .iter()
+            .filter(|s| s.script_type == "response")
+            .collect();
+
+        assert_eq!(req_scripts.len(), 2, "应该有 2 个请求脚本引用");
+        assert_eq!(res_scripts.len(), 2, "应该有 2 个响应脚本引用");
     }
 }

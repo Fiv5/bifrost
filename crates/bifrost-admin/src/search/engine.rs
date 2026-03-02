@@ -228,8 +228,12 @@ impl SearchEngine {
     fn search_text(&self, text: &str, keyword: &str, field: &str) -> Option<MatchLocation> {
         let text_lower = text.to_lowercase();
         if let Some(pos) = text_lower.find(keyword) {
-            let start = pos.saturating_sub(MAX_PREVIEW_CONTEXT);
-            let end = (pos + keyword.len() + MAX_PREVIEW_CONTEXT).min(text.len());
+            let start = find_char_boundary(text, pos.saturating_sub(MAX_PREVIEW_CONTEXT), false);
+            let end = find_char_boundary(
+                text,
+                (pos + keyword.len() + MAX_PREVIEW_CONTEXT).min(text.len()),
+                true,
+            );
 
             let preview = if start > 0 || end < text.len() {
                 let prefix = if start > 0 { "..." } else { "" };
@@ -467,4 +471,30 @@ fn generate_search_id() -> String {
         .unwrap()
         .as_millis();
     format!("search_{}", timestamp)
+}
+
+fn find_char_boundary(s: &str, byte_index: usize, search_forward: bool) -> usize {
+    if byte_index >= s.len() {
+        return s.len();
+    }
+
+    if s.is_char_boundary(byte_index) {
+        return byte_index;
+    }
+
+    if search_forward {
+        for i in byte_index..s.len() {
+            if s.is_char_boundary(i) {
+                return i;
+            }
+        }
+        s.len()
+    } else {
+        for i in (0..byte_index).rev() {
+            if s.is_char_boundary(i) {
+                return i;
+            }
+        }
+        0
+    }
 }

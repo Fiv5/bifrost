@@ -1,7 +1,11 @@
+use bifrost_core::{
+    validate_rules_with_context, ParseError, ParseErrorSeverity, ScriptReference, VariableInfo,
+};
 use bifrost_storage::{ConfigChangeEvent, RuleFile};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::state::SharedAdminState;
@@ -11,6 +15,8 @@ struct RuleFileInfo {
     name: String,
     enabled: bool,
     rule_count: usize,
+    error_count: usize,
+    warning_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -38,6 +44,23 @@ struct RenameRuleRequest {
     new_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ValidateRuleRequest {
+    content: String,
+    #[serde(default)]
+    global_values: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ValidateRuleResponse {
+    valid: bool,
+    rule_count: usize,
+    errors: Vec<ParseError>,
+    warnings: Vec<ParseError>,
+    defined_variables: Vec<VariableInfo>,
+    script_references: Vec<ScriptReference>,
+}
+
 pub async fn handle_rules(
     req: Request<Incoming>,
     state: SharedAdminState,
@@ -49,6 +72,11 @@ pub async fn handle_rules(
         match method {
             Method::GET => list_rules(state).await,
             Method::POST => create_rule(req, state).await,
+            _ => method_not_allowed(),
+        }
+    } else if path == "/api/rules/validate" {
+        match method {
+            Method::POST => validate_rule(req, state).await,
             _ => method_not_allowed(),
         }
     } else if let Some(name) = path.strip_prefix("/api/rules/") {
@@ -88,14 +116,15 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
         Ok(rules) => {
             let infos: Vec<RuleFileInfo> = rules
                 .iter()
-                .map(|r| RuleFileInfo {
-                    name: r.name.clone(),
-                    enabled: r.enabled,
-                    rule_count: r
-                        .content
-                        .lines()
-                        .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
-                        .count(),
+                .map(|r| {
+                    let result = validate_rules_with_context(&r.content, &HashMap::new());
+                    RuleFileInfo {
+                        name: r.name.clone(),
+                        enabled: r.enabled,
+                        rule_count: result.rule_count,
+                        error_count: result.errors.len(),
+                        warning_count: result.warnings.len(),
+                    }
                 })
                 .collect();
             json_response(&infos)
@@ -105,6 +134,120 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
             &format!("Failed to list rules: {}", e),
         ),
     }
+}
+
+async fn validate_rule(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: ValidateRuleRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let content = request.content.clone();
+    let global_values = request.global_values.clone();
+
+    let validation_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        validate_rules_with_context(&content, &global_values)
+    }));
+
+    let mut result = match validation_result {
+        Ok(r) => r,
+        Err(e) => {
+            let panic_msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown panic during validation".to_string()
+            };
+
+            tracing::error!(
+                target: "bifrost_admin::rules",
+                error = %panic_msg,
+                "Validation panic caught - returning safe error response"
+            );
+
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Validation failed unexpectedly: {}", panic_msg),
+            );
+        }
+    };
+
+    if let Some(ref script_manager) = state.script_manager {
+        let manager = script_manager.read().await;
+        let engine = manager.engine();
+
+        let req_scripts: std::collections::HashSet<String> = engine
+            .list_scripts(bifrost_script::ScriptType::Request)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+
+        let res_scripts: std::collections::HashSet<String> = engine
+            .list_scripts(bifrost_script::ScriptType::Response)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+
+        for script_ref in &result.script_references {
+            let scripts = if script_ref.script_type == "request" {
+                &req_scripts
+            } else {
+                &res_scripts
+            };
+
+            if !scripts.contains(&script_ref.name) {
+                let warning = ParseError::with_range(
+                    script_ref.line,
+                    1,
+                    script_ref.name.len() + 15,
+                    format!(
+                        "Script '{}' not found. Available {} scripts: {}",
+                        script_ref.name,
+                        script_ref.script_type,
+                        if scripts.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            scripts.iter().cloned().collect::<Vec<_>>().join(", ")
+                        }
+                    ),
+                )
+                .with_severity(ParseErrorSeverity::Warning)
+                .with_code("W003")
+                .with_suggestion(format!(
+                    "Create a {} script named '{}' in the scripts directory, or use an existing script.",
+                    script_ref.script_type,
+                    script_ref.name
+                ));
+                result.warnings.push(warning);
+            }
+        }
+    }
+
+    let response = ValidateRuleResponse {
+        valid: result.valid,
+        rule_count: result.rule_count,
+        errors: result.errors,
+        warnings: result.warnings,
+        defined_variables: result.defined_variables,
+        script_references: result.script_references,
+    };
+
+    json_response(&response)
 }
 
 async fn create_rule(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

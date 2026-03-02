@@ -8,6 +8,7 @@ pub mod replay;
 pub mod rules;
 pub mod scripts;
 pub mod search;
+pub mod syntax;
 pub mod system;
 pub mod traffic;
 pub mod values;
