@@ -463,6 +463,7 @@ export default function ResponsePanel() {
       display: "flex",
       flexDirection: "column",
       padding: "0 8px",
+      minHeight: 0,
     },
   };
 

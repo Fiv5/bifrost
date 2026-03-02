@@ -135,15 +135,18 @@ export default function Replay() {
       overflow: "hidden",
       display: "flex",
       flexDirection: "column",
+      minHeight: 0,
     },
     requestPanel: {
-      height: "100%",
+      flex: 1,
+      minHeight: 0,
       overflow: "hidden",
       display: "flex",
       flexDirection: "column",
     },
     responsePanel: {
-      height: "100%",
+      flex: 1,
+      minHeight: 0,
       overflow: "hidden",
       display: "flex",
       flexDirection: "column",
@@ -155,8 +158,8 @@ export default function Replay() {
   };
 
   const composerContent = (
-    <Spin spinning={loading || executing} style={{ height: "100%" }}>
-      <div style={styles.centerArea}>
+    <div style={styles.centerArea}>
+      <Spin spinning={loading || executing} style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <VerticalSplitPane
           defaultTopHeight="55%"
           minTopHeight={200}
@@ -172,8 +175,8 @@ export default function Replay() {
             </div>
           }
         />
-      </div>
-    </Spin>
+      </Spin>
+    </div>
   );
 
   const historyContent = (

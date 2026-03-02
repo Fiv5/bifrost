@@ -143,6 +143,7 @@ export const Panel = ({
           <div
             style={{
               flex: 1,
+              minHeight: 0,
               overflow: 'auto',
             }}
           >

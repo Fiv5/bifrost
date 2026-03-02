@@ -42,6 +42,9 @@ export default function VerticalSplitPane({
       width: "100%",
       overflow: "hidden",
       flexShrink: 0,
+      minHeight: 0,
+      display: "flex",
+      flexDirection: "column",
       backgroundColor: token.colorBgContainer,
     },
     bottomPane: {
@@ -49,6 +52,8 @@ export default function VerticalSplitPane({
       width: "100%",
       overflow: "hidden",
       minHeight: 0,
+      display: "flex",
+      flexDirection: "column",
       backgroundColor: token.colorBgContainer,
     },
     divider: {

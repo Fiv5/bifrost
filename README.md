@@ -210,16 +210,16 @@ http://127.0.0.1:9900/_bifrost/
 
 管理端提供以下功能：
 
-| 路径                       | 功能            |
-| -------------------------- | --------------- |
-| `/_bifrost/`               | Web UI 界面     |
-| `/_bifrost/api/rules/*`    | 规则管理 API    |
-| `/_bifrost/api/values/*`   | Values 管理 API |
-| `/_bifrost/api/traffic/*`  | 流量记录 API    |
-| `/_bifrost/api/metrics/*`  | 指标监控 API    |
-| `/_bifrost/api/system/*`   | 系统信息 API    |
-| `/_bifrost/api/scripts/*`  | 脚本管理 API    |
-| `/_bifrost/api/replay/*`   | 请求重放 API    |
+| 路径                      | 功能            |
+| ------------------------- | --------------- |
+| `/_bifrost/`              | Web UI 界面     |
+| `/_bifrost/api/rules/*`   | 规则管理 API    |
+| `/_bifrost/api/values/*`  | Values 管理 API |
+| `/_bifrost/api/traffic/*` | 流量记录 API    |
+| `/_bifrost/api/metrics/*` | 指标监控 API    |
+| `/_bifrost/api/system/*`  | 系统信息 API    |
+| `/_bifrost/api/scripts/*` | 脚本管理 API    |
+| `/_bifrost/api/replay/*`  | 请求重放 API    |
 
 > **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
 
@@ -263,7 +263,7 @@ bifrost start --intercept-exclude "*.example.com,internal.corp.com"
 
 # 启动时指定规则
 bifrost start --rules "example.com host://127.0.0.1:3000"
-bifrost start --rules "api.test.com proxy://127.0.0.1:8080" --rules "*.cdn.com tlsPassthrough://"
+bifrost start --rules "api.test.com proxy://127.0.0.1:9900" --rules "*.cdn.com tlsPassthrough://"
 
 # 从文件加载规则
 bifrost start --rules-file ./my-rules.txt
@@ -349,7 +349,7 @@ bifrost value import <file>                 # 从文件导入 values (KEY=VALUE 
 # 系统代理管理
 bifrost system-proxy status                 # 查看系统代理状态
 bifrost system-proxy enable                 # 启用系统代理（使用全局端口）
-bifrost system-proxy enable --host 127.0.0.1 --port 8080  # 指定主机和端口
+bifrost system-proxy enable --host 127.0.0.1 --port 9900  # 指定主机和端口
 bifrost system-proxy enable --bypass "localhost,127.0.0.1,*.local"  # 配置绕过列表
 bifrost system-proxy disable                # 禁用系统代理
 ```
@@ -529,7 +529,7 @@ example.com host://127.0.0.1
 
 # 代理转发
 
-example.com proxy://proxy.server:8080
+example.com proxy://proxy.server:9900
 
 # 请求修改
 
@@ -602,14 +602,16 @@ Bifrost 内置基于 QuickJS 的 JavaScript 脚本引擎，支持通过脚本动
 脚本文件存储在 `~/.bifrost/scripts/` 目录下：
 
 ```
+
 ~/.bifrost/scripts/
-├── request/           # 请求脚本目录
-│   ├── modify-auth.js
-│   └── add-headers.js
-└── response/          # 响应脚本目录
-    ├── inject-data.js
-    └── transform.js
-```
+├── request/ # 请求脚本目录
+│ ├── modify-auth.js
+│ └── add-headers.js
+└── response/ # 响应脚本目录
+├── inject-data.js
+└── transform.js
+
+````
 
 ### 请求脚本示例
 
@@ -628,23 +630,23 @@ function main(request, context) {
     body: request.body
   };
 }
-```
+````
 
 **request 对象结构：**
 
-| 属性      | 类型     | 说明         |
-| --------- | -------- | ------------ |
-| `url`     | string   | 请求 URL     |
-| `method`  | string   | HTTP 方法    |
-| `headers` | object   | 请求头       |
-| `body`    | string   | 请求体       |
+| 属性      | 类型   | 说明      |
+| --------- | ------ | --------- |
+| `url`     | string | 请求 URL  |
+| `method`  | string | HTTP 方法 |
+| `headers` | object | 请求头    |
+| `body`    | string | 请求体    |
 
 **context 对象结构：**
 
-| 属性            | 类型     | 说明                        |
-| --------------- | -------- | --------------------------- |
-| `values`        | object   | Values 变量（key-value）    |
-| `matched_rules` | string[] | 匹配到的规则列表            |
+| 属性            | 类型     | 说明                     |
+| --------------- | -------- | ------------------------ |
+| `values`        | object   | Values 变量（key-value） |
+| `matched_rules` | string[] | 匹配到的规则列表         |
 
 ### 响应脚本示例
 
@@ -654,7 +656,7 @@ function main(request, context) {
 function main(response, context) {
   let body = response.body;
 
-  if (response.headers['content-type']?.includes('application/json')) {
+  if (response.headers["content-type"]?.includes("application/json")) {
     try {
       let data = JSON.parse(body);
       data.injected = true;
@@ -669,20 +671,20 @@ function main(response, context) {
     status: response.status,
     headers: {
       ...response.headers,
-      'X-Modified-By': 'bifrost-script'
+      "X-Modified-By": "bifrost-script",
     },
-    body: body
+    body: body,
   };
 }
 ```
 
 **response 对象结构：**
 
-| 属性      | 类型     | 说明         |
-| --------- | -------- | ------------ |
-| `status`  | number   | HTTP 状态码  |
-| `headers` | object   | 响应头       |
-| `body`    | string   | 响应体       |
+| 属性      | 类型   | 说明        |
+| --------- | ------ | ----------- |
+| `status`  | number | HTTP 状态码 |
+| `headers` | object | 响应头      |
+| `body`    | string | 响应体      |
 
 ### 脚本使用
 
@@ -715,11 +717,11 @@ api.example.com reqScript://add-headers resScript://transform
 
 脚本引擎内置以下安全限制：
 
-| 限制项     | 默认值 | 说明                               |
-| ---------- | ------ | ---------------------------------- |
-| 执行超时   | 10 秒  | 脚本执行超时自动终止               |
-| 内存限制   | 16 MB  | 脚本内存使用上限                   |
-| 危险函数   | 禁用   | `eval`、`Function` 等已被移除     |
+| 限制项   | 默认值 | 说明                          |
+| -------- | ------ | ----------------------------- |
+| 执行超时 | 10 秒  | 脚本执行超时自动终止          |
+| 内存限制 | 16 MB  | 脚本内存使用上限              |
+| 危险函数 | 禁用   | `eval`、`Function` 等已被移除 |
 
 ## 请求重放与管理
 
@@ -735,59 +737,59 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 
 ### 支持的请求类型
 
-| 类型      | 说明                          |
-| --------- | ----------------------------- |
-| HTTP      | 标准 HTTP/HTTPS 请求          |
-| SSE       | Server-Sent Events 流式请求   |
-| WebSocket | WebSocket 双向通信            |
+| 类型      | 说明                        |
+| --------- | --------------------------- |
+| HTTP      | 标准 HTTP/HTTPS 请求        |
+| SSE       | Server-Sent Events 流式请求 |
+| WebSocket | WebSocket 双向通信          |
 
 ### 请求体格式
 
-| 格式                    | Content-Type                              |
-| ----------------------- | ----------------------------------------- |
-| JSON                    | `application/json`                        |
-| XML                     | `application/xml`                         |
-| Text                    | `text/plain`                              |
-| HTML                    | `text/html`                               |
-| JavaScript              | `application/javascript`                  |
-| Form Data               | `multipart/form-data`                     |
-| URL Encoded             | `application/x-www-form-urlencoded`       |
-| Binary                  | `application/octet-stream`                |
+| 格式        | Content-Type                        |
+| ----------- | ----------------------------------- |
+| JSON        | `application/json`                  |
+| XML         | `application/xml`                   |
+| Text        | `text/plain`                        |
+| HTML        | `text/html`                         |
+| JavaScript  | `application/javascript`            |
+| Form Data   | `multipart/form-data`               |
+| URL Encoded | `application/x-www-form-urlencoded` |
+| Binary      | `application/octet-stream`          |
 
 ### 规则配置
 
 重放请求时可以配置规则应用方式：
 
-| 模式       | 说明                                   |
-| ---------- | -------------------------------------- |
-| `enabled`  | 应用所有启用的规则                     |
-| `selected` | 仅应用选中的规则                       |
-| `none`     | 不应用任何规则（直接发送原始请求）     |
+| 模式       | 说明                               |
+| ---------- | ---------------------------------- |
+| `enabled`  | 应用所有启用的规则                 |
+| `selected` | 仅应用选中的规则                   |
+| `none`     | 不应用任何规则（直接发送原始请求） |
 
 ### 重放 API
 
-| 方法   | 端点                                  | 说明             |
-| ------ | ------------------------------------- | ---------------- |
-| POST   | `/_bifrost/api/replay/execute`        | 执行 HTTP 重放   |
-| POST   | `/_bifrost/api/replay/execute/stream` | 执行 SSE 重放    |
-| GET    | `/_bifrost/api/replay/execute/ws`     | 执行 WebSocket   |
-| GET    | `/_bifrost/api/replay/groups`         | 列出分组         |
-| POST   | `/_bifrost/api/replay/groups`         | 创建分组         |
-| GET    | `/_bifrost/api/replay/requests`       | 列出请求         |
-| POST   | `/_bifrost/api/replay/requests`       | 保存请求         |
-| PUT    | `/_bifrost/api/replay/requests/{id}`  | 更新请求         |
-| DELETE | `/_bifrost/api/replay/requests/{id}`  | 删除请求         |
-| GET    | `/_bifrost/api/replay/history`        | 获取历史记录     |
-| DELETE | `/_bifrost/api/replay/history`        | 清空历史记录     |
-| GET    | `/_bifrost/api/replay/stats`          | 获取统计信息     |
+| 方法   | 端点                                  | 说明           |
+| ------ | ------------------------------------- | -------------- |
+| POST   | `/_bifrost/api/replay/execute`        | 执行 HTTP 重放 |
+| POST   | `/_bifrost/api/replay/execute/stream` | 执行 SSE 重放  |
+| GET    | `/_bifrost/api/replay/execute/ws`     | 执行 WebSocket |
+| GET    | `/_bifrost/api/replay/groups`         | 列出分组       |
+| POST   | `/_bifrost/api/replay/groups`         | 创建分组       |
+| GET    | `/_bifrost/api/replay/requests`       | 列出请求       |
+| POST   | `/_bifrost/api/replay/requests`       | 保存请求       |
+| PUT    | `/_bifrost/api/replay/requests/{id}`  | 更新请求       |
+| DELETE | `/_bifrost/api/replay/requests/{id}`  | 删除请求       |
+| GET    | `/_bifrost/api/replay/history`        | 获取历史记录   |
+| DELETE | `/_bifrost/api/replay/history`        | 清空历史记录   |
+| GET    | `/_bifrost/api/replay/stats`          | 获取统计信息   |
 
 ### 存储限制
 
-| 限制项         | 数量   |
-| -------------- | ------ |
-| 最大请求数     | 1000   |
-| 最大历史记录   | 10000  |
-| 最大并发重放   | 100    |
+| 限制项       | 数量  |
+| ------------ | ----- |
+| 最大请求数   | 1000  |
+| 最大历史记录 | 10000 |
+| 最大并发重放 | 100   |
 
 ### 数据存储
 
@@ -812,7 +814,7 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 │   └── ca.key      # CA 私钥
 └── replay.db       # 请求集合数据库
 
-````
+```
 
 ## 测试
 
@@ -828,7 +830,7 @@ cargo test --package bifrost-proxy
 cargo test --test http_proxy_test
 cargo test --test https_proxy_test
 cargo test --test socks5_test
-````
+```
 
 ## 开发
 
@@ -935,18 +937,18 @@ git push origin v0.1.0
 
 主要依赖：
 
-| 依赖      | 用途           |
-| --------- | -------------- |
-| `tokio`   | 异步运行时     |
-| `hyper`   | HTTP 库        |
-| `rustls`  | TLS 实现       |
-| `rcgen`   | 证书生成       |
-| `clap`    | 命令行解析     |
-| `serde`   | 序列化         |
-| `tracing` | 日志追踪       |
-| `regex`   | 正则表达式     |
-| `rquickjs`| JavaScript 引擎|
-| `rusqlite`| SQLite 数据库  |
+| 依赖       | 用途            |
+| ---------- | --------------- |
+| `tokio`    | 异步运行时      |
+| `hyper`    | HTTP 库         |
+| `rustls`   | TLS 实现        |
+| `rcgen`    | 证书生成        |
+| `clap`     | 命令行解析      |
+| `serde`    | 序列化          |
+| `tracing`  | 日志追踪        |
+| `regex`    | 正则表达式      |
+| `rquickjs` | JavaScript 引擎 |
+| `rusqlite` | SQLite 数据库   |
 
 ## License
 

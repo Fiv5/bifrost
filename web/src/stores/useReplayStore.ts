@@ -1,21 +1,22 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { message } from 'antd';
-import type {
-  ReplayGroup,
-  ReplayRequest,
-  ReplayRequestSummary,
-  ReplayHistory,
-  ReplayExecuteResponse,
-  RuleConfig,
-  ReplayKeyValueItem,
-  ReplayBody,
-  TrafficRecord,
-  SSEEvent,
-  WebSocketMessage,
-  StreamingConnection,
-  SessionTargetSearchState,
-  DisplayFormat,
+import {
+  DEFAULT_TIMEOUT_MS,
+  type ReplayGroup,
+  type ReplayRequest,
+  type ReplayRequestSummary,
+  type ReplayHistory,
+  type ReplayExecuteResponse,
+  type RuleConfig,
+  type ReplayKeyValueItem,
+  type ReplayBody,
+  type TrafficRecord,
+  type SSEEvent,
+  type WebSocketMessage,
+  type StreamingConnection,
+  type SessionTargetSearchState,
+  type DisplayFormat,
 } from '../types';
 import * as replayApi from '../api/replay';
 import * as trafficApi from '../api/traffic';
@@ -66,6 +67,7 @@ interface ReplayState {
   historyDetailLoading: boolean;
 
   ruleConfig: RuleConfig;
+  timeoutMs: number;
 
   loading: boolean;
   executing: boolean;
@@ -99,6 +101,7 @@ interface ReplayState {
   deleteHistory: (id: string) => Promise<boolean>;
   clearHistory: (requestId?: string) => Promise<boolean>;
   setRuleConfig: (config: RuleConfig) => void;
+  setTimeoutMs: (timeout: number) => void;
   selectRequest: (request: ReplayRequestSummary | ReplayRequest) => Promise<void>;
   selectHistory: (history: ReplayHistory) => Promise<void>;
   selectHistoryForDetail: (history: ReplayHistory) => Promise<void>;
@@ -173,6 +176,7 @@ export const useReplayStore = create<ReplayState>()(
       historyResponseBody: null,
       historyDetailLoading: false,
       ruleConfig: { mode: 'enabled' },
+      timeoutMs: DEFAULT_TIMEOUT_MS,
       loading: false,
       executing: false,
       responsePanelCollapsed: true,
@@ -251,7 +255,7 @@ export const useReplayStore = create<ReplayState>()(
       },
 
       executeRequest: async () => {
-        const { currentRequest, ruleConfig, loadRecentHistory } = get();
+        const { currentRequest, ruleConfig, timeoutMs, loadRecentHistory } = get();
         if (!currentRequest || !currentRequest.url) {
           message.warning('Please enter a URL');
           return;
@@ -285,7 +289,8 @@ export const useReplayStore = create<ReplayState>()(
             currentRequest.headers,
             bodyContent,
             ruleConfig,
-            currentRequest.is_saved ? currentRequest.id : undefined
+            currentRequest.is_saved ? currentRequest.id : undefined,
+            timeoutMs
           );
 
           const response = await replayApi.executeReplay(executeReq);
@@ -498,6 +503,10 @@ export const useReplayStore = create<ReplayState>()(
 
       setRuleConfig: (config) => {
         set({ ruleConfig: config });
+      },
+
+      setTimeoutMs: (timeout) => {
+        set({ timeoutMs: timeout });
       },
 
       selectRequest: async (request) => {

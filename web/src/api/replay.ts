@@ -182,7 +182,8 @@ export function buildReplayExecuteRequest(
   headers: ReplayKeyValueItem[],
   body: string | undefined,
   ruleConfig: RuleConfig,
-  requestId?: string
+  requestId?: string,
+  timeoutMs?: number
 ): ReplayExecuteRequest {
   const enabledHeaders: [string, string][] = headers
     .filter(h => h.enabled && h.key.trim())
@@ -197,5 +198,6 @@ export function buildReplayExecuteRequest(
     },
     rule_config: ruleConfig,
     request_id: requestId,
+    timeout_ms: timeoutMs,
   };
 }

@@ -63,11 +63,11 @@ cd rust/scripts
 
 ### 步骤 1: 确定测试类型
 
-| 类型 | 说明 | 创建方式 |
-|------|------|----------|
-| 规则测试 | 测试代理规则行为 | 在 `rules/` 目录下创建 `.txt` 规则文件 |
-| Admin API 测试 | 测试管理接口 | 在 `tests/` 目录下创建脚本 |
-| 独立 E2E 测试 | 自管理服务的完整测试 | 在 `scripts/` 目录下创建脚本 |
+| 类型           | 说明                 | 创建方式                               |
+| -------------- | -------------------- | -------------------------------------- |
+| 规则测试       | 测试代理规则行为     | 在 `rules/` 目录下创建 `.txt` 规则文件 |
+| Admin API 测试 | 测试管理接口         | 在 `tests/` 目录下创建脚本             |
+| 独立 E2E 测试  | 自管理服务的完整测试 | 在 `scripts/` 目录下创建脚本           |
 
 ### 步骤 2: 创建规则文件（规则测试）
 
@@ -141,15 +141,20 @@ main "$@"
 4. **边界条件**: 包括空值、特殊字符、大数据等边界情况
 5. **断言描述**: 断言描述应清晰说明测试目的
 
-## 调试技巧
+## 调试、端到端验证方法
 
 ```bash
+# 编译并启动代理服务
+RUST_LOG=debug BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 9900 --unsafe-ssl
+
 # 查看代理转发的请求详情
-curl -s --proxy http://127.0.0.1:18888 http://test.com/api | jq .
+curl -s --proxy http://127.0.0.1:9900 http://test.com/api | jq .
 
-# 启用详细日志
-RUST_LOG=debug BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --unsafe-ssl
+# 使用 curl 调用管理端接口
+curl -s -X POST http://127.0.0.1:9900/api/replay/execute -H "Content-Type: application/json" -d '{"request":{"method":"GET","url":"https://httpbin.org/get","headers":[["Accept","*/*"]]},"rule_config":{"mode":"enabled"}}'
+# 观察所有的日志：代理日志、管理端日志、接口日志、代理请求日志
+# 使用chrome mcp工具打开http://127.0.0.1:9900 验证交互功能
 
-# 单独测试特定规则
-BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 8080 --unsafe-ssl --rules-file ./e2e-tests/rules/your_test.txt
+# 特别说明提高验证效率的方法
+# 如果仅仅改动了 web 页面功能，不涉及管理端接口，那么只需要验证 web 页面功能是否正常即可。则启动代理服务后，可以单独启动 web 调试环境 pnpm dev ，，直接在浏览器中打开 http://127.0.0.1:3000 进行页面验证。
 ```

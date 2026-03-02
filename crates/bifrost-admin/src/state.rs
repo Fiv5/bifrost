@@ -17,11 +17,11 @@ use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
-use once_cell::sync::OnceCell;
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
+use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
 

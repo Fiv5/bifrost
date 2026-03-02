@@ -303,7 +303,10 @@ export interface ReplayExecuteRequest {
   };
   rule_config: RuleConfig;
   request_id?: string;
+  timeout_ms?: number;
 }
+
+export const DEFAULT_TIMEOUT_MS = 10_000;
 
 export interface ReplayExecuteResponse {
   traffic_id: string;

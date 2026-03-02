@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   Input,
+  InputNumber,
   Tabs,
   Button,
   Select,
@@ -32,6 +33,7 @@ import {
   CaretDownOutlined,
   DisconnectOutlined,
   LinkOutlined,
+  ClockCircleOutlined,
 } from "@ant-design/icons";
 import {
   useReplayStore,
@@ -39,12 +41,13 @@ import {
 } from "../../../stores/useReplayStore";
 import { useRulesStore } from "../../../stores/useRulesStore";
 import CodeEditor from "./CodeEditor";
-import type {
-  ReplayKeyValueItem,
-  BodyType,
-  RawType,
-  RuleMode,
-  RequestType,
+import {
+  DEFAULT_TIMEOUT_MS,
+  type ReplayKeyValueItem,
+  type BodyType,
+  type RawType,
+  type RuleMode,
+  type RequestType,
 } from "../../../types";
 
 const HTTP_METHODS = [
@@ -187,6 +190,7 @@ export default function RequestPanel() {
   const {
     currentRequest,
     ruleConfig,
+    timeoutMs,
     executing,
     streamingConnection,
     uiState,
@@ -194,6 +198,7 @@ export default function RequestPanel() {
     saveRequest,
     executeRequest,
     setRuleConfig,
+    setTimeoutMs,
     updateUIState,
     connectSSE,
     connectWebSocket,
@@ -466,6 +471,13 @@ export default function RequestPanel() {
     [setRuleConfig, fetchRules, setRuleSelectVisible],
   );
 
+  const handleTimeoutChange = useCallback(
+    (value: number | null) => {
+      setTimeoutMs(value ?? DEFAULT_TIMEOUT_MS);
+    },
+    [setTimeoutMs],
+  );
+
   const getRuleModeLabel = () => {
     switch (ruleConfig.mode) {
       case "enabled":
@@ -611,6 +623,19 @@ export default function RequestPanel() {
                 <CaretDownOutlined />
               </Button>
             </Dropdown>
+            <Tooltip title="Request Timeout (ms)">
+              <InputNumber
+                prefix={<ClockCircleOutlined style={{ color: token.colorTextSecondary }} />}
+                value={timeoutMs}
+                onChange={handleTimeoutChange}
+                min={1000}
+                max={300000}
+                step={1000}
+                size="small"
+                style={{ width: 120 }}
+                addonAfter="ms"
+              />
+            </Tooltip>
             <Tooltip title="Save Request">
               <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
                 Save

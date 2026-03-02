@@ -28,7 +28,11 @@ pub struct ReplayExecuteRequest {
     pub rule_config: RuleConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
+
+pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayRequestData {
@@ -192,27 +196,59 @@ impl ReplayExecutor {
                 }
             }
         } else if needs_real_request {
-            match self
-                .try_real_request(
-                    &host,
-                    port,
-                    is_https,
-                    method,
-                    path,
-                    &request.request.headers,
-                    request.request.body.as_deref(),
-                    &mut timing,
-                )
-                .await
-            {
-                Ok((s, h, b)) => (s, h, b),
-                Err(e) => {
+            let timeout =
+                std::time::Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+
+            let request_future = self.try_real_request(
+                &host,
+                port,
+                is_https,
+                method,
+                path,
+                &request.request.headers,
+                request.request.body.as_deref(),
+                &mut timing,
+            );
+
+            match tokio::time::timeout(timeout, request_future).await {
+                Ok(Ok((s, h, b))) => (s, h, b),
+                Ok(Err(e)) => {
+                    let duration_ms = start_time.elapsed().as_millis() as u64;
                     error!(
                         replay_id = %replay_id,
                         error = %e,
                         "[REPLAY] Request failed with no fallback rules"
                     );
-                    return Err(e);
+                    return Ok(ReplayExecuteResponse {
+                        traffic_id: String::new(),
+                        status: 0,
+                        headers: vec![],
+                        body: None,
+                        duration_ms,
+                        applied_rules,
+                        error: Some(e.to_string()),
+                    });
+                }
+                Err(_) => {
+                    let duration_ms = start_time.elapsed().as_millis() as u64;
+                    let timeout_error = format!(
+                        "Request timeout after {}ms",
+                        request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)
+                    );
+                    error!(
+                        replay_id = %replay_id,
+                        error = %timeout_error,
+                        "[REPLAY] Request timed out"
+                    );
+                    return Ok(ReplayExecuteResponse {
+                        traffic_id: String::new(),
+                        status: 0,
+                        headers: vec![],
+                        body: None,
+                        duration_ms,
+                        applied_rules,
+                        error: Some(timeout_error),
+                    });
                 }
             }
         } else {
@@ -229,6 +265,9 @@ impl ReplayExecutor {
                 None,
             )
         };
+
+        let (status, response_headers, response_body) =
+            self.apply_response_rules(&resolved_rules, status, response_headers, response_body);
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         timing.total_ms = duration_ms;
@@ -326,15 +365,61 @@ impl ReplayExecutor {
     }
 
     fn needs_real_request(&self, resolved_rules: &ResolvedRules) -> bool {
+        let mut has_mock_body_or_status = false;
+
         for rule in &resolved_rules.rules {
             match rule.rule.protocol {
                 Protocol::Host | Protocol::XHost | Protocol::Proxy => {
                     return true;
                 }
+                Protocol::ResHeaders => {
+                    return true;
+                }
+                Protocol::StatusCode | Protocol::ReplaceStatus | Protocol::ResBody => {
+                    has_mock_body_or_status = true;
+                }
                 _ => {}
             }
         }
-        false
+
+        !has_mock_body_or_status
+    }
+
+    fn apply_response_rules(
+        &self,
+        resolved_rules: &ResolvedRules,
+        status: u16,
+        mut headers: Vec<(String, String)>,
+        body: Option<String>,
+    ) -> (u16, Vec<(String, String)>, Option<String>) {
+        let mut final_status = status;
+        let mut final_body = body;
+
+        for rule in &resolved_rules.rules {
+            match rule.rule.protocol {
+                Protocol::ResHeaders => {
+                    if let Some(parsed) = parse_headers(&rule.resolved_value) {
+                        for (key, value) in parsed {
+                            let key_lower = key.to_lowercase();
+                            headers.retain(|(k, _)| k.to_lowercase() != key_lower);
+                            headers.push((key, value));
+                        }
+                    }
+                }
+                Protocol::StatusCode | Protocol::ReplaceStatus => {
+                    if let Ok(code) = rule.resolved_value.parse::<u16>() {
+                        final_status = code;
+                    }
+                }
+                Protocol::ResBody => {
+                    let content = extract_inline_content(&rule.resolved_value);
+                    final_body = Some(content);
+                }
+                _ => {}
+            }
+        }
+
+        (final_status, headers, final_body)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -757,6 +842,26 @@ impl ReplayExecutor {
         let request_size = request.request.body.as_ref().map(|b| b.len()).unwrap_or(0);
         let response_size = response_body.map(|b| b.len()).unwrap_or(0);
 
+        let request_body_ref = if let Some(body) = request.request.body.as_ref() {
+            if let Some(ref body_store) = self.admin_state.body_store {
+                body_store.read().store(&traffic_id, "req", body.as_bytes())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let response_body_ref = if let Some(body) = response_body {
+            if let Some(ref body_store) = self.admin_state.body_store {
+                body_store.read().store(&traffic_id, "res", body.as_bytes())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let record = TrafficRecord {
             id: traffic_id.clone(),
             sequence: 0,
@@ -793,8 +898,8 @@ impl ReplayExecutor {
                 Some(applied_rules.to_vec())
             },
             socket_status: None,
-            request_body_ref: None,
-            response_body_ref: None,
+            request_body_ref,
+            response_body_ref,
             actual_url: None,
             actual_host: None,
             original_request_headers: None,
@@ -808,18 +913,6 @@ impl ReplayExecutor {
             traffic_db.record(record);
         } else if let Some(ref async_writer) = self.admin_state.async_traffic_writer {
             async_writer.record(record);
-        }
-
-        if let Some(body) = request.request.body.as_ref() {
-            if let Some(ref body_store) = self.admin_state.body_store {
-                let _ = body_store.read().store(&traffic_id, "req", body.as_bytes());
-            }
-        }
-
-        if let Some(body) = response_body {
-            if let Some(ref body_store) = self.admin_state.body_store {
-                let _ = body_store.read().store(&traffic_id, "res", body.as_bytes());
-            }
         }
 
         traffic_id
@@ -869,23 +962,39 @@ fn extract_inline_content(value: &str) -> String {
 }
 
 fn parse_headers(value: &str) -> Option<Vec<(String, String)>> {
-    let mut result = vec![];
-    let content = extract_inline_content(value);
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        (&trimmed[1..trimmed.len() - 1], true)
+    } else {
+        (trimmed, trimmed.contains('\n') || trimmed.contains(':'))
+    };
+
+    let mut headers = Vec::new();
+
+    let delimiter = if content.contains('\n') { '\n' } else { ',' };
+    for part in content.split(delimiter) {
+        let part = part.trim();
+        if part.is_empty() {
             continue;
         }
-        if let Some(pos) = line.find(':') {
-            let key = line[..pos].trim().to_lowercase();
-            let val = line[pos + 1..].trim().to_string();
-            result.push((key, val));
+        let separator = if use_colon { ':' } else { '=' };
+        if let Some(pos) = part.find(separator) {
+            let key = part[..pos].trim().to_string();
+            let val = part[pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                headers.push((key, val));
+            }
         }
     }
-    if result.is_empty() {
+
+    if headers.is_empty() {
         None
     } else {
-        Some(result)
+        Some(headers)
     }
 }
 

@@ -16,7 +16,7 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 
 1. 格式检查：`cargo fmt --all -- --check`
 2. 运行代理服务`cargo run --bin bifrost -- start -p 9900`
-3. 构造测试用例，进行端到端测试，覆盖 HTTP/1.1、HTTP/2、HTTPS、SOCKS5、CONNECT-UDP 等场景，覆盖 TLS 与非 TLS 情况，覆盖 TSL 解包和不解包场景，覆盖 HTTP/3 场景。
+3. 构造测试用例，进行端到端测试(API 验证，和交互验证)，覆盖 HTTP/1.1、HTTP/2、HTTPS、SOCKS5、CONNECT-UDP 等场景，覆盖 TLS 与非 TLS 情况，覆盖 TSL 解包和不解包场景，覆盖 HTTP/3 场景。
 4. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
 5. 运行测试：`cargo test --all-features`，务必按照修改范围执行，避免执行所有测试用例，造成测试用例执行时间过长，影响任务完成。
 6. 完整构建：`cargo build --all-targets --all-features`

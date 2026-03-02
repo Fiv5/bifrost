@@ -1,5 +1,6 @@
 import { useCallback, useState, useMemo, useEffect, type CSSProperties } from "react";
 import { Input, Tree, Button, Dropdown, Empty, Typography, Tag, theme, Modal, message } from "antd";
+import type { TreeProps } from "antd";
 import {
   SearchOutlined,
   PlusOutlined,
@@ -13,7 +14,7 @@ import {
 } from "@ant-design/icons";
 import type { DataNode } from "antd/es/tree";
 import { useReplayStore } from "../../../stores/useReplayStore";
-import type { ReplayRequestSummary } from "../../../types";
+import type { ReplayRequestSummary, ReplayGroup } from "../../../types";
 
 const { Text } = Typography;
 
@@ -155,6 +156,20 @@ export default function CollectionPanel() {
   const handleMoveRequest = useCallback(async (requestId: string, groupId: string | null) => {
     await moveRequest(requestId, groupId);
   }, [moveRequest]);
+
+  const reorderGroups = useCallback(async (reorderedGroups: ReplayGroup[]) => {
+    for (let i = 0; i < reorderedGroups.length; i++) {
+      if (reorderedGroups[i].sort_order !== i) {
+        await updateGroup(reorderedGroups[i].id, reorderedGroups[i].name);
+      }
+    }
+    await loadGroups();
+  }, [updateGroup, loadGroups]);
+
+  const findGroupIdForRequest = useCallback((requestId: string): string | null => {
+    const request = savedRequests.find(r => r.id === requestId);
+    return request?.group_id || null;
+  }, [savedRequests]);
 
   const filteredRequests = useMemo(() => {
     if (!searchText) return savedRequests;
@@ -327,7 +342,6 @@ export default function CollectionPanel() {
               size="small"
               icon={<MoreOutlined />}
               onClick={(e) => e.stopPropagation()}
-              style={{ opacity: 0 }}
               className="tree-node-more-btn"
             />
           </Dropdown>
@@ -381,7 +395,6 @@ export default function CollectionPanel() {
                 size="small"
                 icon={<MoreOutlined />}
                 onClick={(e) => e.stopPropagation()}
-                style={{ opacity: 0 }}
                 className="tree-node-more-btn"
               />
             </Dropdown>
@@ -413,6 +426,89 @@ export default function CollectionPanel() {
 
     return nodes;
   }, [groups, requestsByGroup, buildRequestNode, styles, handleDeleteGroup, searchText, expandedKeys]);
+
+  const handleDrop: TreeProps<DataNode>['onDrop'] = useCallback(async (info: Parameters<NonNullable<TreeProps<DataNode>['onDrop']>>[0]) => {
+    const dragKey = info.dragNode.key as string;
+    const dropKey = info.node.key as string;
+    const dropPos = info.node.pos.split('-');
+    const dropPosition = info.dropPosition - Number(dropPos[dropPos.length - 1]);
+
+    if (dragKey.startsWith('req-')) {
+      const requestId = dragKey.replace('req-', '');
+      
+      if (dropKey.startsWith('group-')) {
+        const targetGroupId = dropKey.replace('group-', '');
+        await handleMoveRequest(requestId, targetGroupId);
+      } else if (dropKey === 'ungrouped') {
+        await handleMoveRequest(requestId, null);
+      } else if (dropKey.startsWith('req-')) {
+        const parentNode = treeData.find(node => 
+          node.children?.some(child => child.key === dropKey)
+        );
+        const parentKey = parentNode?.key as string | undefined;
+        let dropNodeGroupId: string | null = null;
+        
+        if (parentKey?.startsWith('group-')) {
+          dropNodeGroupId = parentKey.replace('group-', '');
+        }
+        
+        const currentGroupId = findGroupIdForRequest(requestId);
+        if (currentGroupId !== dropNodeGroupId) {
+          await handleMoveRequest(requestId, dropNodeGroupId);
+        }
+      }
+    } else if (dragKey.startsWith('group-')) {
+      const dragGroupId = dragKey.replace('group-', '');
+      const dragGroup = groups.find(g => g.id === dragGroupId);
+      if (!dragGroup) return;
+
+      if (dropKey.startsWith('group-') || dropKey === 'ungrouped') {
+        const newGroups = [...groups];
+        const dragIndex = newGroups.findIndex(g => g.id === dragGroupId);
+        
+        if (dropKey === 'ungrouped') {
+          newGroups.splice(dragIndex, 1);
+          newGroups.push(dragGroup);
+        } else {
+          const dropGroupId = dropKey.replace('group-', '');
+          const dropIndex = newGroups.findIndex(g => g.id === dropGroupId);
+          
+          newGroups.splice(dragIndex, 1);
+          const insertIndex = dropPosition === -1 ? dropIndex : dropIndex + 1;
+          newGroups.splice(insertIndex > dragIndex ? insertIndex - 1 : insertIndex, 0, dragGroup);
+        }
+
+        await reorderGroups(newGroups);
+      }
+    }
+  }, [handleMoveRequest, groups, treeData, findGroupIdForRequest, reorderGroups]);
+
+  const allowDrop: TreeProps<DataNode>['allowDrop'] = useCallback(({ dragNode, dropNode, dropPosition }: { dragNode: DataNode; dropNode: DataNode; dropPosition: number }) => {
+    const dragKey = dragNode.key as string;
+    const dropKey = dropNode.key as string;
+
+    if (dragKey.startsWith('req-')) {
+      if (dropKey.startsWith('group-') || dropKey === 'ungrouped') {
+        return true;
+      }
+      if (dropKey.startsWith('req-')) {
+        return dropPosition === 0;
+      }
+      return false;
+    }
+
+    if (dragKey.startsWith('group-')) {
+      if (dropKey.startsWith('group-')) {
+        return dropPosition !== 0;
+      }
+      if (dropKey === 'ungrouped') {
+        return dropPosition === -1;
+      }
+      return false;
+    }
+
+    return false;
+  }, []);
 
   return (
     <div style={styles.container}>
@@ -455,6 +551,15 @@ export default function CollectionPanel() {
             onExpand={(keys) => setExpandedKeys(keys as string[])}
             blockNode
             selectable={false}
+            draggable={{
+              icon: false,
+              nodeDraggable: (node) => {
+                const key = node.key as string;
+                return key !== 'ungrouped';
+              },
+            }}
+            allowDrop={allowDrop}
+            onDrop={handleDrop}
             style={{ backgroundColor: 'transparent' }}
           />
         ) : (
