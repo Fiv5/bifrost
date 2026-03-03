@@ -177,7 +177,7 @@ pub fn run_start(
     }
 
     let early_values = futures::executor::block_on(config_manager.values_as_hashmap());
-    let values_dir = stored_config.paths.values_dir.clone();
+    let values_dir = bifrost_dir.join("values");
     if !early_values.is_empty() {
         println!(
             "Loaded {} values from {}",
@@ -650,6 +650,12 @@ pub fn run_daemon(
     if let Some(socks5_port) = config.socks5_port {
         println!("SOCKS5 (separate): {}:{}", config.host, socks5_port);
     }
+    let admin_host = if config.host == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        &config.host
+    };
+    println!("Admin UI: http://{}:{}/", admin_host, config.port);
     println!("PID file: {}", get_pid_file()?.display());
     println!("Log file: {}", bifrost_dir.join("bifrost.log").display());
 
@@ -685,6 +691,10 @@ pub fn run_daemon(
 
             let _ = dup2(log_file.as_raw_fd(), 1);
             let _ = dup2(err_file.as_raw_fd(), 2);
+
+            if let Err(e) = bifrost_core::reinit_logging_for_daemon(&bifrost_dir) {
+                eprintln!("Warning: Failed to initialize logging for daemon: {}", e);
+            }
 
             let pid = std::process::id();
             write_pid(pid)?;
@@ -802,6 +812,14 @@ pub fn run_daemon(
                     tracing::warn!("Failed to initialize script manager: {}", e);
                 }
 
+                let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
+                    Ok(store) => Some(Arc::new(store)),
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize replay store: {}", e);
+                        None
+                    }
+                };
+
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
@@ -815,7 +833,8 @@ pub fn run_daemon(
                     .with_config_manager(config_manager)
                     .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
                     .with_app_icon_cache(app_icon_cache)
-                    .with_script_manager(script_manager);
+                    .with_script_manager(script_manager)
+                    .with_replay_db_store_shared_opt(replay_db_store);
 
                 bifrost_admin::start_db_cleanup_task(traffic_db_store);
 

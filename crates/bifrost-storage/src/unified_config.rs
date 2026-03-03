@@ -12,6 +12,7 @@ pub struct UnifiedConfig {
     pub proxy: ProxySettings,
     pub system_proxy: SystemProxyConfig,
     pub traffic: TrafficConfig,
+    #[serde(skip)]
     pub paths: PathsConfig,
     pub ui: UiConfig,
 }
@@ -25,9 +26,14 @@ impl UnifiedConfig {
             proxy: ProxySettings::default(),
             system_proxy: SystemProxyConfig::default(),
             traffic: TrafficConfig::default_for_data_dir(data_dir),
-            paths: PathsConfig::default_for_data_dir(data_dir),
+            paths: PathsConfig::for_data_dir(data_dir),
             ui: UiConfig::default(),
         }
+    }
+
+    pub fn with_data_dir(mut self, data_dir: &Path) -> Self {
+        self.paths = PathsConfig::for_data_dir(data_dir);
+        self
     }
 }
 
@@ -154,8 +160,7 @@ impl TrafficConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct PathsConfig {
     pub rules_dir: PathBuf,
     pub values_dir: PathBuf,
@@ -163,51 +168,14 @@ pub struct PathsConfig {
     pub traffic_dir: PathBuf,
 }
 
-impl Default for PathsConfig {
-    fn default() -> Self {
-        let base = crate::data_dir();
-        Self {
-            rules_dir: base.join("rules"),
-            values_dir: base.join("values"),
-            cert_dir: base.join("certs"),
-            traffic_dir: base.join("traffic"),
-        }
-    }
-}
-
 impl PathsConfig {
-    pub fn default_for_data_dir(data_dir: &Path) -> Self {
+    pub fn for_data_dir(data_dir: &Path) -> Self {
         Self {
             rules_dir: data_dir.join("rules"),
             values_dir: data_dir.join("values"),
             cert_dir: data_dir.join("certs"),
             traffic_dir: data_dir.join("traffic"),
         }
-    }
-
-    pub fn resolve_paths(&mut self, data_dir: &Path) {
-        self.rules_dir = Self::resolve_single_path(&self.rules_dir, data_dir);
-        self.values_dir = Self::resolve_single_path(&self.values_dir, data_dir);
-        self.cert_dir = Self::resolve_single_path(&self.cert_dir, data_dir);
-        self.traffic_dir = Self::resolve_single_path(&self.traffic_dir, data_dir);
-    }
-
-    fn resolve_single_path(path: &Path, data_dir: &Path) -> PathBuf {
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-
-        if path.starts_with(data_dir) {
-            return path.to_path_buf();
-        }
-
-        let path_str = path.to_string_lossy();
-        let data_dir_str = data_dir.to_string_lossy();
-        if path_str.contains(&*data_dir_str) {
-            return path.to_path_buf();
-        }
-
-        data_dir.join(path)
     }
 }
 
@@ -321,19 +289,14 @@ mod tests {
     }
 
     #[test]
-    fn test_paths_resolve() {
+    fn test_paths_for_data_dir() {
         let temp_dir = TempDir::new().unwrap();
-        let mut paths = PathsConfig {
-            rules_dir: PathBuf::from("rules"),
-            values_dir: PathBuf::from("values"),
-            cert_dir: PathBuf::from("certs"),
-            traffic_dir: PathBuf::from("traffic"),
-        };
-
-        paths.resolve_paths(temp_dir.path());
+        let paths = PathsConfig::for_data_dir(temp_dir.path());
 
         assert_eq!(paths.rules_dir, temp_dir.path().join("rules"));
         assert_eq!(paths.values_dir, temp_dir.path().join("values"));
+        assert_eq!(paths.cert_dir, temp_dir.path().join("certs"));
+        assert_eq!(paths.traffic_dir, temp_dir.path().join("traffic"));
     }
 
     #[test]

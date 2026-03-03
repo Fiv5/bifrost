@@ -40,8 +40,10 @@ impl ConfigManager {
         Self::init_data_dir(&data_dir)?;
 
         let config = Self::load_config_with_migration(&data_dir)?;
-        let rules_storage = RulesStorage::with_dir(config.paths.rules_dir.clone())?;
-        let values_storage = ValuesStorage::with_dir(config.paths.values_dir.clone())?;
+        let rules_dir = data_dir.join("rules");
+        let values_dir = data_dir.join("values");
+        let rules_storage = RulesStorage::with_dir(rules_dir)?;
+        let values_storage = ValuesStorage::with_dir(values_dir)?;
         let state_manager = StateManager::with_file(data_dir.join("state.json"))?;
 
         let (change_notifier, _) = broadcast::channel(100);
@@ -343,9 +345,8 @@ impl ConfigManager {
 
         let content = std::fs::read_to_string(&config_path)?;
 
-        if let Ok(mut config) = toml::from_str::<UnifiedConfig>(&content) {
-            config.paths.resolve_paths(data_dir);
-            return Ok(config);
+        if let Ok(config) = toml::from_str::<UnifiedConfig>(&content) {
+            return Ok(config.with_data_dir(data_dir));
         }
 
         if let Ok(legacy) = toml::from_str::<LegacyBifrostConfig>(&content) {
@@ -373,19 +374,6 @@ impl ConfigManager {
 
     fn migrate_from_legacy(legacy: &LegacyBifrostConfig, data_dir: &Path) -> UnifiedConfig {
         use crate::unified_config::*;
-
-        fn resolve_legacy_path(legacy_path: &std::path::Path, data_dir: &Path) -> PathBuf {
-            if legacy_path.is_absolute() {
-                legacy_path.to_path_buf()
-            } else {
-                let path_str = legacy_path.to_string_lossy();
-                if path_str.starts_with("./") || path_str.starts_with("../") {
-                    data_dir.join(legacy_path.strip_prefix("./").unwrap_or(legacy_path))
-                } else {
-                    data_dir.join(legacy_path)
-                }
-            }
-        }
 
         UnifiedConfig {
             server: ServerConfig {
@@ -425,12 +413,7 @@ impl ConfigManager {
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
                 file_retention_days: legacy.traffic.file_retention_days,
             },
-            paths: PathsConfig {
-                rules_dir: resolve_legacy_path(&legacy.rules_dir, data_dir),
-                values_dir: resolve_legacy_path(&legacy.values_dir, data_dir),
-                cert_dir: resolve_legacy_path(&legacy.cert_dir, data_dir),
-                traffic_dir: data_dir.join("traffic"),
-            },
+            paths: PathsConfig::for_data_dir(data_dir),
             ui: UiConfig::default(),
         }
     }

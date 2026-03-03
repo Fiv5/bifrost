@@ -23,27 +23,33 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let log_dir = cli
-        .log_dir
-        .clone()
-        .unwrap_or_else(|| data_dir().join("logs"));
+    let is_daemon_mode = matches!(&cli.command, Some(Commands::Start { daemon: true, .. }));
 
-    let log_outputs = LogOutput::parse(&cli.log_output);
-    let log_outputs = if log_outputs.is_empty() {
-        vec![LogOutput::Console, LogOutput::File]
+    let _log_guard = if is_daemon_mode {
+        None
     } else {
-        log_outputs
-    };
+        let log_dir = cli
+            .log_dir
+            .clone()
+            .unwrap_or_else(|| data_dir().join("logs"));
 
-    let log_config = LogConfig::new(cli.log_level.clone(), log_dir)
-        .with_outputs(log_outputs)
-        .with_retention_days(cli.log_retention_days);
+        let log_outputs = LogOutput::parse(&cli.log_output);
+        let log_outputs = if log_outputs.is_empty() {
+            vec![LogOutput::Console, LogOutput::File]
+        } else {
+            log_outputs
+        };
 
-    let _log_guard = match init_logging_with_config(&log_config) {
-        Ok(guard) => guard,
-        Err(e) => {
-            eprintln!("Failed to initialize logging: {}", e);
-            std::process::exit(1);
+        let log_config = LogConfig::new(cli.log_level.clone(), log_dir)
+            .with_outputs(log_outputs)
+            .with_retention_days(cli.log_retention_days);
+
+        match init_logging_with_config(&log_config) {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                eprintln!("Failed to initialize logging: {}", e);
+                std::process::exit(1);
+            }
         }
     };
 

@@ -261,6 +261,36 @@ pub fn init_logging_with_config(config: &LogConfig) -> Result<LogGuard> {
     })
 }
 
+pub fn reinit_logging_for_daemon(log_dir: &std::path::Path) -> Result<()> {
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+
+    let log_file_path = log_dir.join("bifrost.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)
+        .map_err(|e| BifrostError::Config(format!("Failed to open log file: {}", e)))?;
+
+    let filter = build_env_filter("info")?;
+
+    let file_layer = fmt::layer()
+        .with_writer(std::sync::Mutex::new(log_file).with_max_level(tracing::Level::TRACE))
+        .with_ansi(false)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .try_init()
+        .map_err(|e| {
+            BifrostError::Config(format!("Failed to reinitialize logging for daemon: {}", e))
+        })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

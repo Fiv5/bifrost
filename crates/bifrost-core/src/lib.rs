@@ -13,7 +13,10 @@ pub use access_control::{
     AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
 };
 pub use error::{BifrostError, Result};
-pub use logging::{init_logging, init_logging_with_config, LogConfig, LogGuard, LogOutput};
+pub use logging::{
+    init_logging, init_logging_with_config, reinit_logging_for_daemon, LogConfig, LogGuard,
+    LogOutput,
+};
 pub use matcher::{
     factory::parse_pattern, DomainMatcher, IpMatcher, MatchResult, Matcher, RegexMatcher,
     WildcardMatcher,
