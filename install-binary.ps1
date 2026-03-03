@@ -13,7 +13,7 @@
 .EXAMPLE
     irm https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.ps1 | iex
 .EXAMPLE
-    .\install-binary.ps1 -Version v0.0.7-alpha
+    .\install-binary.ps1 -Version v0.0.8-alpha
 .EXAMPLE
     .\install-binary.ps1 -InstallDir "C:\Tools\bifrost"
 #>
@@ -100,7 +100,7 @@ function Get-LatestVersion {
         if ($_.Exception.Message -match "rate limit") {
             Write-Error "GitHub API rate limit exceeded"
             Write-Warning "Please try again later or specify a version manually:"
-            Write-Host "  .\install-binary.ps1 -Version v0.0.7-alpha"
+            Write-Host "  .\install-binary.ps1 -Version v0.0.8-alpha"
             exit 1
         }
         Write-Error "Failed to fetch releases: $_"
