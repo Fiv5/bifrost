@@ -76,6 +76,26 @@ impl TrafficTypeCounters {
     }
 }
 
+struct CachedCpuMetrics {
+    memory_used: AtomicU64,
+    memory_total: AtomicU64,
+    smoothed_cpu_usage: RwLock<f32>,
+    last_raw_cpu_usage: RwLock<f32>,
+    last_refresh_time: AtomicU64,
+}
+
+impl Default for CachedCpuMetrics {
+    fn default() -> Self {
+        Self {
+            memory_used: AtomicU64::new(0),
+            memory_total: AtomicU64::new(0),
+            smoothed_cpu_usage: RwLock::new(0.0),
+            last_raw_cpu_usage: RwLock::new(0.0),
+            last_refresh_time: AtomicU64::new(0),
+        }
+    }
+}
+
 pub struct MetricsCollector {
     total_requests: AtomicU64,
     active_connections: AtomicU64,
@@ -99,6 +119,7 @@ pub struct MetricsCollector {
     max_qps: RwLock<f32>,
     max_bytes_sent_rate: RwLock<f32>,
     max_bytes_received_rate: RwLock<f32>,
+    cached_cpu: CachedCpuMetrics,
     http: TrafficTypeCounters,
     https: TrafficTypeCounters,
     tunnel: TrafficTypeCounters,
@@ -110,8 +131,10 @@ pub struct MetricsCollector {
 
 impl MetricsCollector {
     pub fn new(max_history: usize) -> Self {
-        let system = System::new_all();
+        let mut system = System::new_all();
         let pid = Pid::from_u32(std::process::id());
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]));
+        let memory_total = system.total_memory();
         Self {
             total_requests: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
@@ -135,6 +158,10 @@ impl MetricsCollector {
             max_qps: RwLock::new(0.0),
             max_bytes_sent_rate: RwLock::new(0.0),
             max_bytes_received_rate: RwLock::new(0.0),
+            cached_cpu: CachedCpuMetrics {
+                memory_total: AtomicU64::new(memory_total),
+                ..Default::default()
+            },
             http: TrafficTypeCounters::new(),
             https: TrafficTypeCounters::new(),
             tunnel: TrafficTypeCounters::new(),
@@ -212,17 +239,48 @@ impl MetricsCollector {
             .fetch_add(bytes, Ordering::Relaxed);
     }
 
-    pub fn get_current(&self) -> MetricsSnapshot {
+    pub fn refresh_cpu_metrics(&self) {
         let mut system = self.system.write();
         system.refresh_processes(ProcessesToUpdate::Some(&[self.pid]));
 
-        let (memory_used, cpu_usage) = if let Some(process) = system.process(self.pid) {
+        let (memory_used, raw_cpu_usage) = if let Some(process) = system.process(self.pid) {
             (process.memory(), process.cpu_usage())
         } else {
             (0, 0.0)
         };
 
-        let memory_total = system.total_memory();
+        self.cached_cpu
+            .memory_used
+            .store(memory_used, Ordering::Relaxed);
+
+        let smoothing_alpha: f32 = 0.3;
+        let mut smoothed = self.cached_cpu.smoothed_cpu_usage.write();
+        let mut last_raw = self.cached_cpu.last_raw_cpu_usage.write();
+
+        if *last_raw > 0.0 || raw_cpu_usage > 0.0 {
+            *smoothed = smoothing_alpha * raw_cpu_usage + (1.0 - smoothing_alpha) * *smoothed;
+        } else {
+            *smoothed = raw_cpu_usage;
+        }
+        *last_raw = raw_cpu_usage;
+
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        self.cached_cpu
+            .last_refresh_time
+            .store(now, Ordering::Relaxed);
+
+        tracing::trace!(
+            raw_cpu = raw_cpu_usage,
+            smoothed_cpu = *smoothed,
+            memory_used = memory_used,
+            "[METRICS] CPU metrics refreshed"
+        );
+    }
+
+    pub fn get_current(&self) -> MetricsSnapshot {
+        let memory_used = self.cached_cpu.memory_used.load(Ordering::Relaxed);
+        let memory_total = self.cached_cpu.memory_total.load(Ordering::Relaxed);
+        let cpu_usage = *self.cached_cpu.smoothed_cpu_usage.read();
 
         let now = chrono::Utc::now().timestamp_millis() as u64;
         let total_requests = self.total_requests.load(Ordering::Relaxed);
@@ -404,14 +462,28 @@ pub type SharedMetricsCollector = Arc<MetricsCollector>;
 pub fn start_metrics_collector_task(
     collector: SharedMetricsCollector,
     interval_secs: u64,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
+) -> Vec<JoinHandle<()>> {
+    let mut handles = Vec::new();
+
+    let collector_snapshot = collector.clone();
+    handles.push(tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
         loop {
             interval.tick().await;
-            collector.take_snapshot();
+            collector_snapshot.take_snapshot();
         }
-    })
+    }));
+
+    let collector_cpu = collector.clone();
+    handles.push(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            collector_cpu.refresh_cpu_metrics();
+        }
+    }));
+
+    handles
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
