@@ -1456,6 +1456,8 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                     });
                     if is_same_as_pattern {
                         protocol_values.push((Protocol::Passthrough, String::new()));
+                    } else if !patterns.is_empty() {
+                        protocol_values.push((protocol, value));
                     } else {
                         patterns.push(part.clone());
                     }
@@ -2687,5 +2689,50 @@ combined.test reqScript://reqHandler resScript://resHandler
 
         assert_eq!(req_scripts.len(), 2, "应该有 2 个请求脚本引用");
         assert_eq!(res_scripts.len(), 2, "应该有 2 个响应脚本引用");
+    }
+
+    #[test]
+    fn test_parse_wss_to_wss_forward() {
+        let rules = parse_line("wss://a.com wss://echo.websocket.org").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "wss://a.com");
+        assert_eq!(rules[0].protocol, Protocol::Wss);
+        assert_eq!(rules[0].value, "echo.websocket.org");
+    }
+
+    #[test]
+    fn test_parse_ws_to_ws_forward() {
+        let rules = parse_line("ws://a.com ws://echo.websocket.org").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "ws://a.com");
+        assert_eq!(rules[0].protocol, Protocol::Ws);
+        assert_eq!(rules[0].value, "echo.websocket.org");
+    }
+
+    #[test]
+    fn test_parse_wss_to_different_wss_with_path() {
+        let rules = parse_line("wss://a.com/path wss://b.com/other").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "wss://a.com/path");
+        assert_eq!(rules[0].protocol, Protocol::Wss);
+        assert_eq!(rules[0].value, "b.com/other");
+    }
+
+    #[test]
+    fn test_parse_http_to_http_forward() {
+        let rules = parse_line("http://a.com http://b.com").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://a.com");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "b.com");
+    }
+
+    #[test]
+    fn test_parse_https_to_https_forward() {
+        let rules = parse_line("https://a.com https://b.com").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://a.com");
+        assert_eq!(rules[0].protocol, Protocol::Https);
+        assert_eq!(rules[0].value, "b.com");
     }
 }

@@ -8,6 +8,7 @@ use url::Url;
 
 #[derive(Debug, Clone, Default)]
 pub struct AppliedRules {
+    pub forward_url: Option<String>,
     pub host: Option<String>,
     pub method: Option<String>,
     pub ua: Option<String>,
@@ -37,6 +38,24 @@ pub fn build_applied_rules(core_rules: &CoreResolvedRules) -> AppliedRules {
 
     for rule in &core_rules.rules {
         match rule.rule.protocol {
+            Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss => {
+                if applied.forward_url.is_none() {
+                    let scheme = match rule.rule.protocol {
+                        Protocol::Http => "http",
+                        Protocol::Https => "https",
+                        Protocol::Ws => "ws",
+                        Protocol::Wss => "wss",
+                        _ => continue,
+                    };
+                    let value = rule.resolved_value.trim_end_matches('/');
+                    let forward_url = if value.contains("://") {
+                        value.to_string()
+                    } else {
+                        format!("{}://{}", scheme, value)
+                    };
+                    applied.forward_url = Some(forward_url);
+                }
+            }
             Protocol::Host | Protocol::XHost => {
                 if applied.host.is_none() {
                     applied.host = Some(rule.resolved_value.clone());
@@ -199,13 +218,40 @@ pub fn apply_all_request_rules(
         );
     }
 
-    let url_after_host = apply_host_rule(original_url, applied_rules.host.as_deref())?;
+    let base_url = if let Some(ref forward_url) = applied_rules.forward_url {
+        let original_parsed =
+            Url::parse(original_url).map_err(|e| format!("Invalid original URL: {}", e))?;
+        let forward_parsed =
+            Url::parse(forward_url).map_err(|e| format!("Invalid forward URL: {}", e))?;
+
+        let mut new_url = forward_parsed.clone();
+        let original_path = original_parsed.path();
+        let forward_path = forward_parsed.path().trim_end_matches('/');
+        let combined_path = if forward_path.is_empty() {
+            original_path.to_string()
+        } else if original_path == "/" {
+            forward_path.to_string()
+        } else {
+            format!("{}{}", forward_path, original_path)
+        };
+        new_url.set_path(&combined_path);
+        new_url.set_query(original_parsed.query());
+
+        if verbose_logging {
+            info!(
+                "[REPLAY_RULES] Forward URL: {} -> {}",
+                original_url, new_url
+            );
+        }
+        new_url.to_string()
+    } else {
+        original_url.to_string()
+    };
+
+    let url_after_host = apply_host_rule(&base_url, applied_rules.host.as_deref())?;
 
     if verbose_logging && applied_rules.host.is_some() {
-        info!(
-            "[REPLAY_RULES] Host: {} -> {}",
-            original_url, url_after_host
-        );
+        info!("[REPLAY_RULES] Host: {} -> {}", base_url, url_after_host);
     }
 
     let final_url = apply_url_rules(&url_after_host, applied_rules);

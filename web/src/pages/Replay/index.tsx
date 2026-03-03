@@ -59,6 +59,7 @@ export default function Replay() {
     currentRequest,
     loading,
     executing,
+    streamingConnection,
     uiState,
     loadSavedRequests,
     loadRecentHistory,
@@ -157,9 +158,12 @@ export default function Replay() {
     },
   };
 
+  const isStreaming = streamingConnection?.status === "connected" || streamingConnection?.status === "connecting";
+  const showSpinner = loading || (executing && !isStreaming);
+
   const composerContent = (
     <div style={styles.centerArea}>
-      <Spin spinning={loading || executing} style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <Spin spinning={showSpinner} style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <VerticalSplitPane
           defaultTopHeight="55%"
           minTopHeight={200}

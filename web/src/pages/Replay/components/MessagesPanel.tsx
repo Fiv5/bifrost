@@ -1,5 +1,5 @@
-import { useCallback, useRef, useEffect, type CSSProperties } from "react";
-import { Input, Button, Empty, Tag, Tooltip, theme, Typography } from "antd";
+import { useCallback, useRef, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Input, Button, Empty, Tag, Tooltip, theme, Typography, Space } from "antd";
 import {
   SendOutlined,
   DeleteOutlined,
@@ -7,11 +7,47 @@ import {
   ClockCircleOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
+  CopyOutlined,
+  CheckOutlined,
+  ExpandOutlined,
+  CompressOutlined,
 } from "@ant-design/icons";
+import hljs from "highlight.js/lib/core";
+import json from "highlight.js/lib/languages/json";
+import "highlight.js/styles/github.css";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import type { SSEEvent, WebSocketMessage } from "../../../types";
 
+hljs.registerLanguage("json", json);
+
 const { Text } = Typography;
+
+const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
+  try {
+    const parsed = JSON.parse(text);
+    return { parsed, isJson: true };
+  } catch {
+    return { parsed: null, isJson: false };
+  }
+};
+
+const highlightJson = (text: string): string => {
+  try {
+    const result = hljs.highlight(text, { language: "json" });
+    return result.value;
+  } catch {
+    return text;
+  }
+};
+
+const copyToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 function formatTime(timestamp: number): string {
   const date = new Date(timestamp);
@@ -37,6 +73,37 @@ interface SSEEventItemProps {
 
 function SSEEventItem({ event }: SSEEventItemProps) {
   const { token } = theme.useToken();
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const { parsed, isJson } = useMemo(() => {
+    return parseJson(event.data);
+  }, [event.data]);
+
+  const formattedContent = useMemo(() => {
+    if (isJson && parsed !== null) {
+      return JSON.stringify(parsed, null, 2);
+    }
+    return event.data;
+  }, [isJson, parsed, event.data]);
+
+  const highlightedContent = useMemo(() => {
+    if (!isJson) return null;
+    return highlightJson(formattedContent);
+  }, [isJson, formattedContent]);
+
+  const handleCopy = async () => {
+    const success = await copyToClipboard(formattedContent);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  const shouldTruncate = !expanded && formattedContent.split("\n").length > 8;
+  const displayContent = shouldTruncate
+    ? formattedContent.split("\n").slice(0, 8).join("\n") + "\n..."
+    : formattedContent;
 
   return (
     <div
@@ -50,39 +117,100 @@ function SSEEventItem({ event }: SSEEventItemProps) {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          justifyContent: "space-between",
           marginBottom: 4,
         }}
       >
-        <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
-        <Text type="secondary" style={{ fontSize: 10 }}>
-          {formatTime(event.timestamp)}
+        <Space size={8} align="center">
+          <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
+          <Text type="secondary" style={{ fontSize: 10 }}>
+            {formatTime(event.timestamp)}
+          </Text>
+          {event.id && (
+            <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>
+              id: {event.id}
+            </Tag>
+          )}
+          {event.event && (
+            <Tag color="purple" style={{ fontSize: 10, margin: 0 }}>
+              {event.event}
+            </Tag>
+          )}
+          {isJson && (
+            <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
+              JSON
+            </Tag>
+          )}
+        </Space>
+        <Space size={4}>
+          <Tooltip title={copied ? "Copied!" : "Copy"}>
+            <Button
+              type="text"
+              size="small"
+              icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
+              onClick={handleCopy}
+              disabled={!event.data}
+              style={{ width: 24, height: 24 }}
+            />
+          </Tooltip>
+          {formattedContent.split("\n").length > 8 && (
+            <Tooltip title={expanded ? "Collapse" : "Expand"}>
+              <Button
+                type="text"
+                size="small"
+                icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
+                onClick={() => setExpanded(!expanded)}
+                style={{ width: 24, height: 24 }}
+              />
+            </Tooltip>
+          )}
+        </Space>
+      </div>
+      {event.data ? (
+        isJson && highlightedContent ? (
+          <pre
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              backgroundColor: token.colorBgLayout,
+              padding: "4px 8px",
+              borderRadius: 4,
+              maxHeight: expanded ? "none" : 200,
+              overflow: "auto",
+              lineHeight: 1.5,
+            }}
+          >
+            <code
+              dangerouslySetInnerHTML={{
+                __html: shouldTruncate
+                  ? highlightJson(displayContent)
+                  : highlightedContent,
+              }}
+            />
+          </pre>
+        ) : (
+          <div
+            style={{
+              fontFamily: "monospace",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              backgroundColor: token.colorBgLayout,
+              padding: "4px 8px",
+              borderRadius: 4,
+              maxHeight: expanded ? "none" : 200,
+              overflow: "auto",
+            }}
+          >
+            {displayContent}
+          </div>
+        )
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12, fontStyle: "italic" }}>
+          (empty data)
         </Text>
-        {event.id && (
-          <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>
-            id: {event.id}
-          </Tag>
-        )}
-        {event.event && (
-          <Tag color="purple" style={{ fontSize: 10, margin: 0 }}>
-            {event.event}
-          </Tag>
-        )}
-      </div>
-      <div
-        style={{
-          fontFamily: "monospace",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-all",
-          backgroundColor: token.colorBgLayout,
-          padding: "4px 8px",
-          borderRadius: 4,
-          maxHeight: 200,
-          overflow: "auto",
-        }}
-      >
-        {event.data}
-      </div>
+      )}
     </div>
   );
 }
@@ -94,6 +222,37 @@ interface WebSocketMessageItemProps {
 function WebSocketMessageItem({ message }: WebSocketMessageItemProps) {
   const { token } = theme.useToken();
   const isSend = message.direction === "send";
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const { parsed, isJson } = useMemo(() => {
+    return parseJson(message.data);
+  }, [message.data]);
+
+  const formattedContent = useMemo(() => {
+    if (isJson && parsed !== null) {
+      return JSON.stringify(parsed, null, 2);
+    }
+    return message.data;
+  }, [isJson, parsed, message.data]);
+
+  const highlightedContent = useMemo(() => {
+    if (!isJson) return null;
+    return highlightJson(formattedContent);
+  }, [isJson, formattedContent]);
+
+  const handleCopy = async () => {
+    const success = await copyToClipboard(formattedContent);
+    if (success) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  const shouldTruncate = !expanded && formattedContent.split("\n").length > 8;
+  const displayContent = shouldTruncate
+    ? formattedContent.split("\n").slice(0, 8).join("\n") + "\n..."
+    : formattedContent;
 
   return (
     <div
@@ -108,40 +267,101 @@ function WebSocketMessageItem({ message }: WebSocketMessageItemProps) {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          justifyContent: "space-between",
           marginBottom: 4,
         }}
       >
-        {isSend ? (
-          <ArrowUpOutlined style={{ color: token.colorPrimary, fontSize: 10 }} />
+        <Space size={8} align="center">
+          {isSend ? (
+            <ArrowUpOutlined style={{ color: token.colorPrimary, fontSize: 10 }} />
+          ) : (
+            <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
+          )}
+          <Tag
+            color={isSend ? "blue" : "green"}
+            style={{ fontSize: 10, margin: 0 }}
+          >
+            {isSend ? "SENT" : "RECEIVED"}
+          </Tag>
+          <Text type="secondary" style={{ fontSize: 10 }}>
+            {formatTime(message.timestamp)}
+          </Text>
+          <Tag style={{ fontSize: 10, margin: 0 }}>{message.type}</Tag>
+          {isJson && (
+            <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
+              JSON
+            </Tag>
+          )}
+        </Space>
+        <Space size={4}>
+          <Tooltip title={copied ? "Copied!" : "Copy"}>
+            <Button
+              type="text"
+              size="small"
+              icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
+              onClick={handleCopy}
+              disabled={!message.data}
+              style={{ width: 24, height: 24 }}
+            />
+          </Tooltip>
+          {formattedContent.split("\n").length > 8 && (
+            <Tooltip title={expanded ? "Collapse" : "Expand"}>
+              <Button
+                type="text"
+                size="small"
+                icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
+                onClick={() => setExpanded(!expanded)}
+                style={{ width: 24, height: 24 }}
+              />
+            </Tooltip>
+          )}
+        </Space>
+      </div>
+      {message.data ? (
+        isJson && highlightedContent ? (
+          <pre
+            style={{
+              margin: 0,
+              fontFamily: "monospace",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              padding: "4px 8px",
+              borderRadius: 4,
+              border: `1px solid ${token.colorBorderSecondary}`,
+              maxHeight: expanded ? "none" : 200,
+              overflow: "auto",
+              lineHeight: 1.5,
+            }}
+          >
+            <code
+              dangerouslySetInnerHTML={{
+                __html: shouldTruncate
+                  ? highlightJson(displayContent)
+                  : highlightedContent,
+              }}
+            />
+          </pre>
         ) : (
-          <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
-        )}
-        <Tag
-          color={isSend ? "blue" : "green"}
-          style={{ fontSize: 10, margin: 0 }}
-        >
-          {isSend ? "SENT" : "RECEIVED"}
-        </Tag>
-        <Text type="secondary" style={{ fontSize: 10 }}>
-          {formatTime(message.timestamp)}
+          <div
+            style={{
+              fontFamily: "monospace",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              padding: "4px 8px",
+              borderRadius: 4,
+              border: `1px solid ${token.colorBorderSecondary}`,
+              maxHeight: expanded ? "none" : 200,
+              overflow: "auto",
+            }}
+          >
+            {displayContent}
+          </div>
+        )
+      ) : (
+        <Text type="secondary" style={{ fontSize: 12, fontStyle: "italic" }}>
+          (empty data)
         </Text>
-        <Tag style={{ fontSize: 10, margin: 0 }}>{message.type}</Tag>
-      </div>
-      <div
-        style={{
-          fontFamily: "monospace",
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-all",
-          padding: "4px 8px",
-          borderRadius: 4,
-          border: `1px solid ${token.colorBorderSecondary}`,
-          maxHeight: 200,
-          overflow: "auto",
-        }}
-      >
-        {message.data}
-      </div>
+      )}
     </div>
   );
 }

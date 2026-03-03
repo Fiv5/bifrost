@@ -282,7 +282,7 @@ export default function ResponsePanel() {
     );
   }, [currentResponse?.applied_rules, currentTrafficRecord?.matched_rules]);
 
-  const isEmpty = !currentResponse && !currentTrafficRecord;
+  const isEmpty = !currentResponse && !currentTrafficRecord && !hasStreamingContent;
 
   const responseContentType = useMemo<RecordContentType>(() => {
     return getContentTypeFromHeader(currentTrafficRecord?.content_type);
@@ -471,7 +471,7 @@ export default function ResponsePanel() {
     <div style={styles.container}>
       <div style={styles.header}>
         <div style={styles.statusBar}>
-          {!isEmpty && !error && (
+          {!isEmpty && !error && status > 0 && (
             <>
               <div style={styles.statusItem}>
                 <span style={styles.statusLabel}>Status:</span>

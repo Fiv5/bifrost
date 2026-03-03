@@ -34,6 +34,7 @@ import {
   DisconnectOutlined,
   LinkOutlined,
   ClockCircleOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import {
   useReplayStore,
@@ -47,7 +48,6 @@ import {
   type BodyType,
   type RawType,
   type RuleMode,
-  type RequestType,
 } from "../../../types";
 
 const HTTP_METHODS = [
@@ -196,12 +196,12 @@ function normalizeUrl(url: string): string {
   if (!url || url.trim() === "") {
     return url;
   }
-  
+
   const trimmedUrl = url.trim();
   if (hasValidProtocol(trimmedUrl)) {
     return trimmedUrl;
   }
-  
+
   return `https://${trimmedUrl}`;
 }
 
@@ -209,11 +209,11 @@ function isValidUrl(url: string): boolean {
   if (!url || url.trim() === "") {
     return false;
   }
-  
+
   if (!hasValidProtocol(url)) {
     return false;
   }
-  
+
   try {
     new URL(url);
     return true;
@@ -237,10 +237,10 @@ export default function RequestPanel() {
     setRuleConfig,
     setTimeoutMs,
     updateUIState,
-    connectSSE,
     connectWebSocket,
     disconnectSSE,
     disconnectWebSocket,
+    cancelRequest,
   } = useReplayStore();
 
   const { rules, fetchRules } = useRulesStore();
@@ -335,7 +335,7 @@ export default function RequestPanel() {
       const normalizedUrl = normalizeUrl(url);
       if (normalizedUrl !== url) {
         updateCurrentRequest({ url: normalizedUrl });
-        
+
         const lowerUrl = normalizedUrl.toLowerCase();
         if (lowerUrl.startsWith("ws://") || lowerUrl.startsWith("wss://")) {
           if (requestType !== "websocket") {
@@ -517,20 +517,27 @@ export default function RequestPanel() {
       message.warning("Please enter a URL");
       return;
     }
-    
+
     let urlToUse = currentRequest.url;
     if (!hasValidProtocol(urlToUse)) {
       urlToUse = normalizeUrl(urlToUse);
       updateCurrentRequest({ url: urlToUse });
     }
-    
+
     if (!isValidUrl(urlToUse)) {
-      message.warning("Please enter a valid URL with protocol (http://, https://, ws://, or wss://)");
+      message.warning(
+        "Please enter a valid URL with protocol (http://, https://, ws://, or wss://)",
+      );
       return;
     }
-    
-    executeRequest();
-  }, [currentRequest, executeRequest, updateCurrentRequest]);
+
+    const lowerUrl = urlToUse.toLowerCase();
+    if (lowerUrl.startsWith("ws://") || lowerUrl.startsWith("wss://")) {
+      connectWebSocket();
+    } else {
+      executeRequest();
+    }
+  }, [currentRequest, executeRequest, updateCurrentRequest, connectWebSocket]);
 
   const handleRuleModeChange = useCallback(
     (mode: RuleMode) => {
@@ -672,89 +679,104 @@ export default function RequestPanel() {
           style={{ flex: 1, fontSize: 12 }}
           onPressEnter={handleSend}
         />
-        <Select
-          value={requestType}
-          onChange={(v) => updateUIState({ requestType: v as RequestType })}
-          size="small"
-          style={{ width: 100 }}
-          options={[
-            { label: "HTTP", value: "http" },
-            { label: "SSE", value: "sse" },
-            { label: "WebSocket", value: "websocket" },
-          ]}
-        />
-        {requestType === "http" ? (
-          <>
-            <Dropdown
-              menu={{
-                items: ruleMenuItems,
-                onClick: ({ key }) => handleRuleModeChange(key as RuleMode),
-              }}
-              trigger={["click"]}
-            >
-              <Button icon={<SettingOutlined />} size="small">
-                {getRuleModeLabel()}
-                <CaretDownOutlined />
-              </Button>
-            </Dropdown>
-            <Tooltip title="Request Timeout (ms)">
-              <InputNumber
-                prefix={<ClockCircleOutlined style={{ color: token.colorTextSecondary }} />}
-                value={timeoutMs}
-                onChange={handleTimeoutChange}
-                min={1000}
-                max={300000}
-                step={1000}
-                size="small"
-                style={{ width: 120 }}
-                addonAfter="ms"
-              />
-            </Tooltip>
-            <Tooltip title="Save Request">
-              <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
-                Save
-              </Button>
-            </Tooltip>
+        <Dropdown
+          menu={{
+            items: ruleMenuItems,
+            onClick: ({ key }) => handleRuleModeChange(key as RuleMode),
+          }}
+          trigger={["click"]}
+        >
+          <Button icon={<SettingOutlined />} size="small">
+            {getRuleModeLabel()}
+            <CaretDownOutlined />
+          </Button>
+        </Dropdown>
+        {requestType !== "websocket" && (
+          <Tooltip title="Request Timeout (ms)">
+            <InputNumber
+              prefix={
+                <ClockCircleOutlined
+                  style={{ color: token.colorTextSecondary }}
+                />
+              }
+              value={timeoutMs}
+              onChange={handleTimeoutChange}
+              min={1000}
+              max={300000}
+              step={1000}
+              size="small"
+              style={{ width: 120 }}
+              addonAfter="ms"
+            />
+          </Tooltip>
+        )}
+        <Tooltip title="Save Request">
+          <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
+            Save
+          </Button>
+        </Tooltip>
+        {requestType === "websocket" ? (
+          isConnected ? (
             <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSend}
-              loading={executing}
+              danger
+              icon={<DisconnectOutlined />}
+              onClick={disconnectWebSocket}
               size="small"
             >
-              Send
+              Disconnect
             </Button>
-          </>
+          ) : isConnecting ? (
+            <Button
+              danger
+              icon={<StopOutlined />}
+              onClick={cancelRequest}
+              size="small"
+            >
+              Cancel
+            </Button>
+          ) : (
+            <Button
+              type="primary"
+              icon={<LinkOutlined />}
+              onClick={connectWebSocket}
+              size="small"
+            >
+              Connect
+            </Button>
+          )
+        ) : isConnected ? (
+          <Button
+            danger
+            icon={<DisconnectOutlined />}
+            onClick={disconnectSSE}
+            size="small"
+          >
+            Disconnect
+          </Button>
+        ) : executing ? (
+          <Button
+            danger
+            icon={<StopOutlined />}
+            onClick={cancelRequest}
+            size="small"
+          >
+            Cancel
+          </Button>
         ) : (
-          <>
-            {isConnected ? (
-              <Button
-                danger
-                icon={<DisconnectOutlined />}
-                onClick={
-                  requestType === "sse" ? disconnectSSE : disconnectWebSocket
-                }
-                size="small"
-              >
-                Disconnect
-              </Button>
-            ) : (
-              <Button
-                type="primary"
-                icon={<LinkOutlined />}
-                onClick={requestType === "sse" ? connectSSE : connectWebSocket}
-                loading={isConnecting}
-                size="small"
-              >
-                Connect
-              </Button>
-            )}
-          </>
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            onClick={handleSend}
+            size="small"
+          >
+            Send
+          </Button>
         )}
       </div>
 
       <div style={styles.tabsContainer}>
         <Tabs
+          className="replay-request-tabs"
           activeKey={activeTab}
           onChange={setActiveTab}
           items={tabItems}
@@ -946,7 +968,7 @@ function KeyValueEditor({
   ];
 
   return (
-    <div style={{ padding: 8 }}>
+    <div style={{ padding: 8, height: "100%", overflow: "auto", minHeight: 0 }}>
       <ConfigProvider
         theme={{
           components: {

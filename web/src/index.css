@@ -72,3 +72,32 @@ mark.mark-current {
   flex-direction: column;
   min-height: 0;
 }
+
+.replay-request-tabs.ant-tabs {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.replay-request-tabs > .ant-tabs-nav {
+  flex: 0 0 auto;
+}
+
+.replay-request-tabs > .ant-tabs-content-holder {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.replay-request-tabs > .ant-tabs-content-holder > .ant-tabs-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.replay-request-tabs .ant-tabs-tabpane {
+  height: 100%;
+  min-height: 0;
+}
