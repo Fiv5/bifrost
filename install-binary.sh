@@ -123,7 +123,7 @@ get_latest_version() {
     if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
         print_error "GitHub API rate limit exceeded"
         print_warning "Please try again later or specify a version manually:"
-        echo "  curl -fsSL ... | bash -s -- --version v0.0.5-alpha" >&2
+        echo "  curl -fsSL ... | bash -s -- --version v0.0.6-alpha" >&2
         exit 1
     fi
 
@@ -246,7 +246,7 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install-binary.sh | bash"
-    echo "  curl -fsSL ... | bash -s -- --version v0.0.5-alpha"
+    echo "  curl -fsSL ... | bash -s -- --version v0.0.6-alpha"
     echo "  curl -fsSL ... | bash -s -- --dir /usr/local/bin"
 }
 
