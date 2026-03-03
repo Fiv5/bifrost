@@ -951,7 +951,7 @@ export default function VirtualTrafficTable({
                     borderColor={token.colorBorderSecondary}
                     selectedBg={token.colorPrimaryBg}
                     multiSelectedBg={token.colorInfoBg}
-                    importedBg="#fff7e6"
+                    importedBg={token.colorWarningBg}
                     evenBg={token.colorBgContainer}
                     oddBg={token.colorFillQuaternary}
                     textSecondary={token.colorTextSecondary}
