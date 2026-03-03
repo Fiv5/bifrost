@@ -144,9 +144,7 @@ update_version_files() {
         print_success "Updated: install-binary.ps1"
     fi
     
-    print_step "Updating Cargo.lock..."
-    cargo check --quiet 2>/dev/null || cargo check
-    print_success "Updated: Cargo.lock"
+
 }
 
 commit_and_tag() {
