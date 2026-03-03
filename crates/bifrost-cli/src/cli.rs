@@ -308,6 +308,40 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ConfigCommands>,
     },
+    #[command(about = "Search traffic records with advanced filtering")]
+    Search {
+        #[arg(help = "Search keyword (searches URL, headers, body)")]
+        keyword: Option<String>,
+        #[arg(short, long, help = "Interactive TUI mode (default if no keyword)")]
+        interactive: bool,
+        #[arg(short, long, default_value = "50", help = "Maximum results to return")]
+        limit: usize,
+        #[arg(
+            short,
+            long,
+            default_value = "table",
+            help = "Output format: table, compact, json, json-pretty"
+        )]
+        format: String,
+        #[arg(long, help = "Search only in URL/path")]
+        url: bool,
+        #[arg(long, help = "Search only in headers")]
+        headers: bool,
+        #[arg(long, help = "Search only in body")]
+        body: bool,
+        #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
+        status: Option<String>,
+        #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
+        method: Option<String>,
+        #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
+        protocol: Option<String>,
+        #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]
+        content_type: Option<String>,
+        #[arg(long, help = "Filter by domain pattern")]
+        domain: Option<String>,
+        #[arg(long, help = "Disable colored output")]
+        no_color: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]

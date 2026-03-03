@@ -14,8 +14,18 @@ use cli::{Cli, Commands};
 use commands::{
     check_and_print_update_notice, handle_ca_command, handle_config_command, handle_rule_command,
     handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
-    run_start, run_status, run_status_tui, run_stop,
+    run_search, run_start, run_status, run_status_tui, run_stop, OutputFormat, SearchOptions,
 };
+use process::read_runtime_port;
+
+const DEFAULT_PORT: u16 = 9900;
+
+fn get_effective_port(cli_port: u16) -> u16 {
+    if cli_port != DEFAULT_PORT {
+        return cli_port;
+    }
+    read_runtime_port().unwrap_or(DEFAULT_PORT)
+}
 
 fn main() {
     install_panic_hook();
@@ -119,7 +129,44 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         Some(Commands::Upgrade { yes }) => handle_upgrade(yes),
-        Some(Commands::Config { action }) => handle_config_command(action, "127.0.0.1", cli.port),
+        Some(Commands::Config { action }) => {
+            handle_config_command(action, "127.0.0.1", get_effective_port(cli.port))
+        }
+        Some(Commands::Search {
+            keyword,
+            interactive,
+            limit,
+            format,
+            url,
+            headers,
+            body,
+            status,
+            method,
+            protocol,
+            content_type,
+            domain,
+            no_color,
+        }) => {
+            let is_interactive = interactive || keyword.is_none();
+            let options = SearchOptions {
+                keyword: keyword.unwrap_or_default(),
+                port: get_effective_port(cli.port),
+                limit,
+                format: format.parse().unwrap_or(OutputFormat::Table),
+                interactive: is_interactive,
+                scope_url: url,
+                scope_headers: headers,
+                scope_body: body,
+                filter_status: status,
+                filter_method: method,
+                filter_protocol: protocol,
+                filter_content_type: content_type,
+                filter_domain: domain,
+                no_color,
+            };
+            let exit_code = run_search(options);
+            std::process::exit(exit_code);
+        }
         None => run_start(
             cli.port,
             cli.host.clone(),

@@ -40,6 +40,7 @@ colored = "2"
 tempfile = "3"
 ratatui = "0.29"
 crossterm = "0.28"
+atty = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28", features = ["signal", "process", "fs"] }

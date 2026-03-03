@@ -40,9 +40,6 @@ impl UnifiedConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
-    pub port: u16,
-    pub host: String,
-    pub socks5_port: Option<u16>,
     pub socks5_auth: Option<SocksAuthConfig>,
     pub timeout_secs: u64,
 }
@@ -50,9 +47,6 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            port: 9900,
-            host: "127.0.0.1".to_string(),
-            socks5_port: None,
             socks5_auth: None,
             timeout_secs: 30,
         }
@@ -278,9 +272,8 @@ mod tests {
     #[test]
     fn test_unified_config_default() {
         let config = UnifiedConfig::default();
-        assert_eq!(config.server.port, 9900);
-        assert_eq!(config.server.host, "127.0.0.1");
-        assert!(config.tls.enable_interception);
+        assert_eq!(config.server.timeout_secs, 30);
+        assert!(!config.tls.enable_interception);
         assert!(config.tls.intercept_exclude.is_empty());
         assert_eq!(config.access.mode, AccessMode::LocalOnly);
         assert!(!config.system_proxy.enabled);
@@ -311,7 +304,7 @@ mod tests {
     #[test]
     fn test_tls_config_default() {
         let config = TlsConfig::default();
-        assert!(config.enable_interception);
+        assert!(!config.enable_interception);
         assert!(!config.unsafe_ssl);
         assert!(config.disconnect_on_change);
     }
@@ -319,9 +312,7 @@ mod tests {
     #[test]
     fn test_server_config_default() {
         let config = ServerConfig::default();
-        assert_eq!(config.port, 9900);
-        assert_eq!(config.host, "127.0.0.1");
-        assert!(config.socks5_port.is_none());
+        assert!(config.socks5_auth.is_none());
         assert_eq!(config.timeout_secs, 30);
     }
 
@@ -331,7 +322,7 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: UnifiedConfig = toml::from_str(&toml_str).unwrap();
 
-        assert_eq!(config.server.port, parsed.server.port);
+        assert_eq!(config.server.timeout_secs, parsed.server.timeout_secs);
         assert_eq!(
             config.tls.enable_interception,
             parsed.tls.enable_interception

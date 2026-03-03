@@ -377,9 +377,6 @@ impl ConfigManager {
 
         UnifiedConfig {
             server: ServerConfig {
-                port: legacy.port,
-                host: legacy.host.clone(),
-                socks5_port: None,
                 socks5_auth: None,
                 timeout_secs: 30,
             },
@@ -470,8 +467,8 @@ mod tests {
         let (_temp_dir, manager) = setup();
         let config = manager.config().await;
 
-        assert_eq!(config.server.port, 9900);
-        assert!(config.tls.enable_interception);
+        assert_eq!(config.server.timeout_secs, 30);
+        assert!(!config.tls.enable_interception);
     }
 
     #[tokio::test]

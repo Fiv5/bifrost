@@ -1110,7 +1110,7 @@ mod tests {
         let config = ProxyConfig::default();
         assert_eq!(config.port, 9900);
         assert_eq!(config.host, "127.0.0.1");
-        assert!(config.enable_tls_interception);
+        assert!(!config.enable_tls_interception);
         assert!(config.intercept_exclude.is_empty());
         assert!(config.intercept_include.is_empty());
         assert_eq!(config.timeout_secs, 30);

@@ -17,7 +17,7 @@ use crate::commands::ca::{check_and_install_certificate, load_tls_config};
 use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
-use crate::process::{is_process_running, read_pid, remove_pid, write_pid};
+use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
@@ -270,7 +270,13 @@ pub fn run_foreground(
     config_manager: ConfigManager,
 ) -> bifrost_core::Result<()> {
     let pid = std::process::id();
-    write_pid(pid)?;
+    let runtime_info = RuntimeInfo {
+        pid,
+        port: config.port,
+        socks5_port: config.socks5_port,
+        host: Some(config.host.clone()),
+    };
+    write_runtime_info(&runtime_info)?;
 
     print_startup_help(config.port);
 
@@ -697,7 +703,13 @@ pub fn run_daemon(
             }
 
             let pid = std::process::id();
-            write_pid(pid)?;
+            let runtime_info = RuntimeInfo {
+                pid,
+                port: config.port,
+                socks5_port: config.socks5_port,
+                host: Some(config.host.clone()),
+            };
+            write_runtime_info(&runtime_info)?;
 
             let tls_config = load_tls_config(&config)?;
 

@@ -1,6 +1,7 @@
 mod ca;
 mod config;
 mod rule;
+mod search;
 mod start;
 mod status;
 mod status_tui;
@@ -14,6 +15,7 @@ mod whitelist;
 pub use ca::*;
 pub use config::handle_config_command;
 pub use rule::*;
+pub use search::{run_search, OutputFormat, SearchOptions};
 pub use start::*;
 pub use status::*;
 pub use status_tui::*;
