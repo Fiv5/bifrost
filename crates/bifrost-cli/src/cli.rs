@@ -269,7 +269,10 @@ pub enum Commands {
     #[command(about = "Stop the proxy server")]
     Stop,
     #[command(about = "Show proxy server status")]
-    Status,
+    Status {
+        #[arg(short, long, help = "Show interactive TUI dashboard")]
+        tui: bool,
+    },
     #[command(about = "Manage rules")]
     Rule {
         #[command(subcommand)]

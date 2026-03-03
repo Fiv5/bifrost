@@ -14,7 +14,7 @@ use cli::{Cli, Commands};
 use commands::{
     check_and_print_update_notice, handle_ca_command, handle_rule_command,
     handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
-    run_start, run_status, run_stop,
+    run_start, run_status, run_status_tui, run_stop,
 };
 
 fn main() {
@@ -104,7 +104,13 @@ fn main() {
             )
         }
         Some(Commands::Stop) => run_stop(),
-        Some(Commands::Status) => run_status(),
+        Some(Commands::Status { tui }) => {
+            if tui {
+                run_status_tui()
+            } else {
+                run_status()
+            }
+        }
         Some(Commands::Rule { action }) => handle_rule_command(action),
         Some(Commands::Ca { action }) => handle_ca_command(action),
         Some(Commands::Whitelist { action }) => handle_whitelist_command(action),

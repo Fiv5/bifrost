@@ -38,6 +38,8 @@ ureq = { version = "2", features = ["json"] }
 chrono.workspace = true
 colored = "2"
 tempfile = "3"
+ratatui = "0.29"
+crossterm = "0.28"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28", features = ["signal", "process", "fs"] }
