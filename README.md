@@ -901,11 +901,20 @@ cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
 
 版本号将自动计算（基于最新 tag 递增）。
 
-**方式二：推送 Tag**
+**方式二：使用发布脚本**
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+# 发布指定版本
+./release.sh 0.1.0
+
+# 自动递增 patch 版本 (0.0.1 -> 0.0.2)
+./release.sh --patch
+
+# 自动递增 minor 版本 (0.0.1 -> 0.1.0)
+./release.sh --minor
+
+# 预览发布（不实际执行）
+./release.sh --dry-run 1.0.0
 ```
 
 ### 构建目标
