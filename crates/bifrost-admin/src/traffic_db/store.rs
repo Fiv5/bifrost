@@ -750,6 +750,32 @@ impl TrafficDbStore {
         tracing::info!("[TRAFFIC_DB] Traffic records cleared (active preserved)");
     }
 
+    pub fn delete_by_ids(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+
+        let conn = self.write_conn.lock();
+
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("DELETE FROM traffic_records WHERE id IN ({})", placeholders);
+
+        match conn.execute(&sql, rusqlite::params_from_iter(ids.iter())) {
+            Ok(count) => {
+                tracing::info!(count = count, "[TRAFFIC_DB] Deleted traffic records by ids");
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to delete records by ids");
+            }
+        }
+
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut cache = self.recent_cache.write();
+        for id in &ids_set {
+            cache.pop(&id.to_string());
+        }
+    }
+
     fn maybe_cleanup(&self, conn: &Connection) {
         let max = self.max_records.load(Ordering::Relaxed);
 

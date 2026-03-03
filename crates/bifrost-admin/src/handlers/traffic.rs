@@ -58,7 +58,7 @@ pub async fn handle_traffic(
     if path == "/api/traffic" || path == "/api/traffic/" {
         match method {
             Method::GET => list_traffic(req, state).await,
-            Method::DELETE => clear_traffic(state).await,
+            Method::DELETE => clear_traffic(req, state).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/traffic/query" {
@@ -465,7 +465,87 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
     }
 }
 
-async fn clear_traffic(state: SharedAdminState) -> Response<BoxBody> {
+#[derive(Debug, serde::Deserialize)]
+struct ClearTrafficRequest {
+    ids: Option<Vec<String>>,
+}
+
+async fn clear_traffic(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => bytes::Bytes::new(),
+    };
+
+    let request: ClearTrafficRequest = if body.is_empty() {
+        ClearTrafficRequest { ids: None }
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("[CLEAR_TRAFFIC] Failed to parse request body: {}", e);
+                ClearTrafficRequest { ids: None }
+            }
+        }
+    };
+
+    if let Some(ids) = request.ids {
+        if !ids.is_empty() {
+            return clear_traffic_by_ids(state, ids).await;
+        }
+    }
+
+    clear_all_traffic(state).await
+}
+
+async fn clear_traffic_by_ids(state: SharedAdminState, ids: Vec<String>) -> Response<BoxBody> {
+    let active_connection_ids = state.connection_monitor.active_connection_ids();
+    let active_set: std::collections::HashSet<&String> = active_connection_ids.iter().collect();
+
+    let ids_to_delete: Vec<String> = ids
+        .into_iter()
+        .filter(|id| !active_set.contains(id))
+        .collect();
+
+    if ids_to_delete.is_empty() {
+        return success_response("No traffic records to clear (all are active connections)");
+    }
+
+    let count = ids_to_delete.len();
+
+    if let Some(ref db_store) = state.traffic_db_store {
+        db_store.delete_by_ids(&ids_to_delete);
+    } else if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.delete_by_ids(&ids_to_delete);
+    }
+    state.traffic_recorder.delete_by_ids(&ids_to_delete);
+
+    if let Some(ref body_store) = state.body_store {
+        let body_store_clone = body_store.clone();
+        let ids_for_body = ids_to_delete.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = body_store_clone.write().delete_by_ids(&ids_for_body) {
+                tracing::warn!("Failed to delete bodies: {}", e);
+            }
+        })
+        .await;
+    }
+
+    if let Some(ref frame_store) = state.frame_store {
+        let frame_store_clone = frame_store.clone();
+        let ids_for_frame = ids_to_delete.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = frame_store_clone.delete_by_ids(&ids_for_frame) {
+                tracing::warn!("Failed to delete frames: {}", e);
+            }
+        })
+        .await;
+    }
+
+    tracing::info!("[CLEAR_TRAFFIC] Deleted {} traffic records", count);
+    success_response(&format!("{} traffic records cleared successfully", count))
+}
+
+async fn clear_all_traffic(state: SharedAdminState) -> Response<BoxBody> {
     let active_connection_ids = state.connection_monitor.active_connection_ids();
 
     if let Some(ref db_store) = state.traffic_db_store {

@@ -23,7 +23,7 @@
 - 示例：
 
 ```bash
-BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- -p 9900 --unsafe-ssl
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 9900 --unsafe-ssl
 ```
 
 ## E2E 测试要求

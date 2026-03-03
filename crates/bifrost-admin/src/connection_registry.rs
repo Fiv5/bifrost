@@ -25,6 +25,7 @@ pub struct ConnectionInfo {
     pub host: String,
     pub port: u16,
     pub intercept_mode: bool,
+    pub client_app: Option<String>,
     pub established_at: Instant,
     cancel_tx: Option<oneshot::Sender<()>>,
 }
@@ -35,6 +36,7 @@ impl ConnectionInfo {
         host: String,
         port: u16,
         intercept_mode: bool,
+        client_app: Option<String>,
         cancel_tx: oneshot::Sender<()>,
     ) -> Self {
         Self {
@@ -42,6 +44,7 @@ impl ConnectionInfo {
             host,
             port,
             intercept_mode,
+            client_app,
             established_at: Instant::now(),
             cancel_tx: Some(cancel_tx),
         }
@@ -200,6 +203,15 @@ impl ConnectionRegistry {
         self.disconnect_affected(|info| info.intercept_mode == intercept_mode)
     }
 
+    pub fn disconnect_by_app(&self, app_name: &str) -> Vec<String> {
+        self.disconnect_affected(|info| {
+            info.client_app
+                .as_ref()
+                .map(|app| app == app_name)
+                .unwrap_or(false)
+        })
+    }
+
     pub fn list_connections(&self) -> Vec<(String, String, u16, bool)> {
         self.connections
             .iter()
@@ -211,6 +223,24 @@ impl ConnectionRegistry {
                         info.host.clone(),
                         info.port,
                         info.intercept_mode,
+                    )
+                },
+            )
+            .collect()
+    }
+
+    pub fn list_connections_full(&self) -> Vec<(String, String, u16, bool, Option<String>)> {
+        self.connections
+            .iter()
+            .map(
+                |entry: dashmap::mapref::multiple::RefMulti<'_, String, ConnectionInfo>| {
+                    let info: &ConnectionInfo = entry.value();
+                    (
+                        info.req_id.clone(),
+                        info.host.clone(),
+                        info.port,
+                        info.intercept_mode,
+                        info.client_app.clone(),
                     )
                 },
             )
@@ -272,6 +302,7 @@ mod tests {
             "api.example.com".to_string(),
             443,
             true,
+            Some("TestApp".to_string()),
             cancel_tx,
         );
 
@@ -292,6 +323,7 @@ mod tests {
             "api.example.com".to_string(),
             443,
             true,
+            Some("App1".to_string()),
             tx1,
         ));
 
@@ -301,6 +333,7 @@ mod tests {
             "api.other.com".to_string(),
             443,
             true,
+            Some("App2".to_string()),
             tx2,
         ));
 
@@ -310,12 +343,56 @@ mod tests {
             "cdn.example.com".to_string(),
             443,
             false,
+            None,
             tx3,
         ));
 
         assert_eq!(registry.active_count(), 3);
 
         let disconnected = registry.disconnect_by_host_pattern(&["*.example.com".to_string()]);
+        assert_eq!(disconnected.len(), 2);
+        assert!(disconnected.contains(&"req-001".to_string()));
+        assert!(disconnected.contains(&"req-003".to_string()));
+        assert_eq!(registry.active_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_by_app() {
+        let registry = ConnectionRegistry::new(true);
+
+        let (tx1, _rx1) = oneshot::channel();
+        registry.register(ConnectionInfo::new(
+            "req-001".to_string(),
+            "api.example.com".to_string(),
+            443,
+            true,
+            Some("Safari".to_string()),
+            tx1,
+        ));
+
+        let (tx2, _rx2) = oneshot::channel();
+        registry.register(ConnectionInfo::new(
+            "req-002".to_string(),
+            "api.other.com".to_string(),
+            443,
+            true,
+            Some("Chrome".to_string()),
+            tx2,
+        ));
+
+        let (tx3, _rx3) = oneshot::channel();
+        registry.register(ConnectionInfo::new(
+            "req-003".to_string(),
+            "cdn.example.com".to_string(),
+            443,
+            false,
+            Some("Safari".to_string()),
+            tx3,
+        ));
+
+        assert_eq!(registry.active_count(), 3);
+
+        let disconnected = registry.disconnect_by_app("Safari");
         assert_eq!(disconnected.len(), 2);
         assert!(disconnected.contains(&"req-001".to_string()));
         assert!(disconnected.contains(&"req-003".to_string()));
@@ -332,6 +409,7 @@ mod tests {
             "api.example.com".to_string(),
             443,
             true,
+            None,
             tx1,
         ));
 

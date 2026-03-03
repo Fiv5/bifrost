@@ -39,7 +39,7 @@ interface TrafficState {
   fetchUpdates: () => Promise<void>;
   fetchInitialData: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
-  clearTraffic: () => Promise<boolean>;
+  clearTraffic: (ids?: string[]) => Promise<boolean>;
   setToolbarFilters: (filters: ToolbarFilters) => void;
   setFilterConditions: (conditions: FilterCondition[]) => void;
   setPaused: (paused: boolean) => void;
@@ -921,25 +921,50 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
     }
   },
 
-  clearTraffic: async () => {
+  clearTraffic: async (ids?: string[]) => {
     set({ loading: true, error: null });
     try {
-      await api.clearTraffic();
-      set({
-        records: [],
-        recordsMap: new Map(),
-        serverTotal: 0,
-        hasMore: false,
-        lastId: null,
-        pendingIds: new Set(),
-        currentRecord: null,
-        requestBody: null,
-        responseBody: null,
-        loading: false,
-        filterVersion: 0,
-        initialized: false,
-        selectedId: undefined,
-      });
+      await api.clearTraffic(ids);
+      
+      if (ids && ids.length > 0) {
+        const idsToRemove = new Set(ids);
+        set((state) => {
+          const newRecordsMap = new Map(state.recordsMap);
+          const newPendingIds = new Set(state.pendingIds);
+          
+          for (const id of idsToRemove) {
+            newRecordsMap.delete(id);
+            newPendingIds.delete(id);
+          }
+          
+          const newRecords = Array.from(newRecordsMap.values());
+          newRecords.sort((a, b) => a.sequence - b.sequence);
+          
+          return {
+            records: newRecords,
+            recordsMap: newRecordsMap,
+            pendingIds: newPendingIds,
+            loading: false,
+            filterVersion: state.filterVersion + 1,
+          };
+        });
+      } else {
+        set({
+          records: [],
+          recordsMap: new Map(),
+          serverTotal: 0,
+          hasMore: false,
+          lastId: null,
+          pendingIds: new Set(),
+          currentRecord: null,
+          requestBody: null,
+          responseBody: null,
+          loading: false,
+          filterVersion: 0,
+          initialized: false,
+          selectedId: undefined,
+        });
+      }
       return true;
     } catch (e) {
       set({ error: (e as Error).message, loading: false });

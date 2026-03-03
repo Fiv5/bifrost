@@ -453,6 +453,22 @@ impl TrafficRecorder {
         self.sequence.store(1, Ordering::SeqCst);
     }
 
+    pub fn delete_by_ids(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+
+        let mut records = self.records.write();
+        records.retain(|r| !ids_set.contains(r.id.as_str()));
+
+        tracing::debug!(
+            count = ids.len(),
+            "[TRAFFIC_RECORDER] Deleted records by ids"
+        );
+    }
+
     pub fn count(&self) -> usize {
         self.records.read().len()
     }

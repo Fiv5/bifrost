@@ -10,7 +10,7 @@ export async function addToWhitelist(ipOrCidr: string): Promise<{ success: boole
 }
 
 export async function removeFromWhitelist(ipOrCidr: string): Promise<{ success: boolean; message: string }> {
-  return del('/whitelist', { data: { ip_or_cidr: ipOrCidr } });
+  return del('/whitelist', { ip_or_cidr: ipOrCidr });
 }
 
 export async function getAccessMode(): Promise<{ mode: AccessMode }> {
@@ -34,7 +34,7 @@ export async function addTemporary(ip: string): Promise<{ success: boolean; mess
 }
 
 export async function removeTemporary(ip: string): Promise<{ success: boolean; message: string }> {
-  return del('/whitelist/temporary', { data: { ip } });
+  return del('/whitelist/temporary', { ip });
 }
 
 export async function getPendingAuthorizations(): Promise<PendingAuth[]> {

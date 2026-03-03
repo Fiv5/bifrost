@@ -113,3 +113,7 @@ export interface DisconnectResponse {
 export async function disconnectByDomain(domain: string): Promise<DisconnectResponse> {
   return post<DisconnectResponse>('/config/connections/disconnect', { domain });
 }
+
+export async function disconnectByApp(app: string): Promise<DisconnectResponse> {
+  return post<DisconnectResponse>('/config/connections/disconnect-by-app', { app });
+}

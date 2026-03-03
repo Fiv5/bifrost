@@ -43,6 +43,7 @@ async fn test_connection_registry_unit() -> Result<(), String> {
         "api.example.com".to_string(),
         443,
         true,
+        Some("TestApp".to_string()),
         tx1,
     ));
 
@@ -52,6 +53,7 @@ async fn test_connection_registry_unit() -> Result<(), String> {
         "api.other.com".to_string(),
         443,
         true,
+        Some("OtherApp".to_string()),
         tx2,
     ));
 
@@ -61,6 +63,7 @@ async fn test_connection_registry_unit() -> Result<(), String> {
         "cdn.example.com".to_string(),
         443,
         false,
+        None,
         tx3,
     ));
 
@@ -96,6 +99,7 @@ async fn test_connection_registry_unit() -> Result<(), String> {
         "test.local".to_string(),
         443,
         true,
+        None,
         tx4,
     ));
 
@@ -124,6 +128,7 @@ async fn test_global_switch_disconnect() -> Result<(), String> {
         "api.example.com".to_string(),
         443,
         true,
+        None,
         tx1,
     ));
 
@@ -133,6 +138,7 @@ async fn test_global_switch_disconnect() -> Result<(), String> {
         "api.other.com".to_string(),
         443,
         false,
+        None,
         tx2,
     ));
 
@@ -170,6 +176,7 @@ async fn test_global_switch_disconnect() -> Result<(), String> {
         "cdn.test.com".to_string(),
         443,
         false,
+        None,
         tx3,
     ));
 
@@ -198,6 +205,7 @@ async fn test_exclude_list_disconnect() -> Result<(), String> {
         "api.example.com".to_string(),
         443,
         true,
+        None,
         tx1,
     ));
 
@@ -207,6 +215,7 @@ async fn test_exclude_list_disconnect() -> Result<(), String> {
         "cdn.example.com".to_string(),
         443,
         true,
+        None,
         tx2,
     ));
 
@@ -216,6 +225,7 @@ async fn test_exclude_list_disconnect() -> Result<(), String> {
         "api.other.net".to_string(),
         443,
         true,
+        None,
         tx3,
     ));
 
@@ -259,6 +269,7 @@ async fn test_include_list_disconnect() -> Result<(), String> {
         "api.force.local".to_string(),
         443,
         false,
+        None,
         tx1,
     ));
 
@@ -268,6 +279,7 @@ async fn test_include_list_disconnect() -> Result<(), String> {
         "cdn.force.local".to_string(),
         443,
         false,
+        None,
         tx2,
     ));
 
@@ -277,6 +289,7 @@ async fn test_include_list_disconnect() -> Result<(), String> {
         "api.other.net".to_string(),
         443,
         false,
+        None,
         tx3,
     ));
 

@@ -99,6 +99,15 @@ pub async fn handle_config(
                 _ => method_not_allowed(),
             }
         }
+        "/api/config/connections/disconnect-by-app"
+        | "/api/config/connections/disconnect-by-app/" => match method {
+            Method::POST => disconnect_by_app(req, state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/connections" | "/api/config/connections/" => match method {
+            Method::GET => list_connections(state).await,
+            _ => method_not_allowed(),
+        },
         "/api/config/ui" | "/api/config/ui/" => match method {
             Method::GET => get_ui_config(state).await,
             Method::PUT => update_ui_config(req, state).await,
@@ -205,6 +214,95 @@ async fn disconnect_by_domain(
         },
     };
 
+    json_response(&response)
+}
+
+#[derive(Deserialize)]
+pub struct DisconnectByAppRequest {
+    pub app: String,
+}
+
+async fn disconnect_by_app(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: DisconnectByAppRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let app_name = request.app.trim();
+    if app_name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "App name cannot be empty");
+    }
+
+    let disconnected = state.connection_registry.disconnect_by_app(app_name);
+
+    let count = disconnected.len();
+    tracing::info!(
+        "Force disconnect by app '{}': {} connections closed",
+        app_name,
+        count
+    );
+
+    let response = DisconnectResponse {
+        success: true,
+        disconnected_count: count,
+        message: if count > 0 {
+            format!(
+                "Disconnected {} connection(s) for app '{}'",
+                count, app_name
+            )
+        } else {
+            format!("No active connections found for app '{}'", app_name)
+        },
+    };
+
+    json_response(&response)
+}
+
+#[derive(Serialize)]
+pub struct ConnectionInfoResponse {
+    pub req_id: String,
+    pub host: String,
+    pub port: u16,
+    pub intercept_mode: bool,
+    pub client_app: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ListConnectionsResponse {
+    pub connections: Vec<ConnectionInfoResponse>,
+    pub total: usize,
+}
+
+async fn list_connections(state: SharedAdminState) -> Response<BoxBody> {
+    let connections: Vec<ConnectionInfoResponse> = state
+        .connection_registry
+        .list_connections_full()
+        .into_iter()
+        .map(
+            |(req_id, host, port, intercept_mode, client_app)| ConnectionInfoResponse {
+                req_id,
+                host,
+                port,
+                intercept_mode,
+                client_app,
+            },
+        )
+        .collect();
+
+    let total = connections.len();
+    let response = ListConnectionsResponse { connections, total };
     json_response(&response)
 }
 

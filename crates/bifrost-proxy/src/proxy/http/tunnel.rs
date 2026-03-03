@@ -333,7 +333,14 @@ pub async fn handle_connect(
             .metrics_collector
             .increment_requests_by_type(TrafficType::Tunnel);
 
-        let conn_info = ConnectionInfo::new(req_id.clone(), host.clone(), port, false, cancel_tx);
+        let conn_info = ConnectionInfo::new(
+            req_id.clone(),
+            host.clone(),
+            port,
+            false,
+            client_app.clone(),
+            cancel_tx,
+        );
         state.connection_registry.register(conn_info);
 
         let mut record = TrafficRecord::new(
@@ -463,6 +470,7 @@ async fn handle_tls_interception(
             original_host_owned.clone(),
             original_port,
             true,
+            client_app.clone(),
             cancel_tx,
         );
         state.connection_registry.register(conn_info);

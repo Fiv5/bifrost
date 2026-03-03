@@ -163,6 +163,33 @@ impl BodyStore {
         Ok(removed_count)
     }
 
+    pub fn delete_by_ids(&self, ids: &[String]) -> std::io::Result<usize> {
+        if ids.is_empty() || !self.temp_dir.exists() {
+            return Ok(0);
+        }
+
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut removed_count = 0;
+
+        for entry in fs::read_dir(&self.temp_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
+                    let base_id = file_name.split('-').next().unwrap_or(file_name);
+                    if ids_set.contains(base_id) {
+                        if fs::remove_file(&path).is_ok() {
+                            removed_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        tracing::debug!(count = removed_count, "[BODY_STORE] Deleted bodies by ids");
+        Ok(removed_count)
+    }
+
     pub fn remove(&self, body_ref: &BodyRef) {
         if let BodyRef::File { path, .. } = body_ref {
             let _ = fs::remove_file(path);

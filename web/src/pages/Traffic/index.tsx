@@ -225,7 +225,7 @@ export default function Traffic() {
     [fetchTrafficDetail, setSelectedId],
   );
 
-  const handleClear = useCallback(async () => {
+  const handleClearAll = useCallback(async () => {
     const success = await clearTraffic();
     if (success) {
       message.success("Traffic cleared");
@@ -312,6 +312,16 @@ export default function Traffic() {
     deferredFilterConditions,
     deferredPanelFilters,
   ]);
+
+  const handleClearFiltered = useCallback(async () => {
+    const success = await clearTraffic(filteredRecords.map((r) => r.id));
+    if (success) {
+      message.success(`${filteredRecords.length} filtered traffic records cleared`);
+      if (selectedId && filteredRecords.some((r) => r.id === selectedId)) {
+        setSelectedId(undefined);
+      }
+    }
+  }, [clearTraffic, filteredRecords, selectedId, setSelectedId]);
 
   const clientInfo = useMemo(() => {
     const appSet = new Set<string>();
@@ -434,7 +444,9 @@ export default function Traffic() {
     <div style={styles.container}>
       <Toolbar
         filters={toolbarFilters}
-        onClear={handleClear}
+        onClearAll={handleClearAll}
+        onClearFiltered={handleClearFiltered}
+        filteredCount={filteredRecords.length}
         onFilterChange={setToolbarFilters}
         systemProxyEnabled={systemProxy?.enabled}
         systemProxySupported={systemProxy?.supported}

@@ -1,11 +1,12 @@
 ---
 name: "rust-project-validate"
-description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每次任务结束前必须调用。"
+description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每次任务结束前必须调用，重要的是必须在端到端测试之后执行，为提交代码做最后准备"
 ---
 
 # Rust 项目规范校验
 
-该技能在任务结束前执行一键规范校验，确保代码风格、静态检查、构建与测试均通过。
+必须：该技能在任务结束前执行一键规范校验，确保代码风格、静态检查、构建与测试均通过。
+避免：还没进行 api和交互测试的情况下，就开始执行规范校验，因为这时候代码可能还不是最终版本，还不能确保通过所有测试用例。
 
 ## 何时调用
 
@@ -15,11 +16,9 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 ## 执行内容
 
 1. 格式检查：`cargo fmt --all -- --check`
-2. 运行代理服务`cargo run --bin bifrost -- start -p 9900`
-3. 构造测试用例，进行端到端测试(API 验证，和交互验证)，覆盖 HTTP/1.1、HTTP/2、HTTPS、SOCKS5、CONNECT-UDP 等场景，覆盖 TLS 与非 TLS 情况，覆盖 TSL 解包和不解包场景，覆盖 HTTP/3 场景。
-4. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
-5. 运行测试：`cargo test --all-features`，务必按照修改范围执行，避免执行所有测试用例，造成测试用例执行时间过长，影响任务完成。
-6. 完整构建：`cargo build --all-targets --all-features`
+2. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
+3. 运行测试：`cargo test --all-features`，务必按照修改范围执行，避免执行所有测试用例，造成测试用例执行时间过长，影响任务完成。
+4. 完整构建：`cargo build --all-targets --all-features`
 
 如果任一步失败，立即停止并返回失败报告。
 
@@ -39,8 +38,6 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 
 ```
 cargo fmt --all -- --check # 检查代码格式是否符合规范
-cargo run --bin  bifrost -- start -p 9900 # 启动代理，并单独运行测试用例
-# 使用 curl 发起代理请求，检查功能.....
 cargo clippy --all-targets --all-features -- -D warnings # 检查代码是否符合 Rust 编码规范
 cargo test --all-features # 执行单元测试，按需执行
 cargo build --all-targets --all-features # 最终构建项目

@@ -1,15 +1,20 @@
-import { Tag, Switch, Button, Popconfirm, Space, theme, Tooltip } from "antd";
+import { Tag, Switch, Button, Space, theme, Tooltip, Dropdown, Modal } from "antd";
+import type { MenuProps } from "antd";
 import {
   DeleteOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   FilterOutlined,
+  DownOutlined,
+  ClearOutlined,
 } from "@ant-design/icons";
 import type { ToolbarFilters } from "../../types";
 
 interface ToolbarProps {
   filters: ToolbarFilters;
-  onClear: () => void;
+  onClearAll: () => void;
+  onClearFiltered: () => void;
+  filteredCount: number;
   onFilterChange: (filters: ToolbarFilters) => void;
   systemProxyEnabled?: boolean;
   systemProxySupported?: boolean;
@@ -31,7 +36,9 @@ const filterGroups = {
 
 export default function Toolbar({
   filters,
-  onClear,
+  onClearAll,
+  onClearFiltered,
+  filteredCount,
   onFilterChange,
   systemProxyEnabled,
   systemProxySupported = true,
@@ -43,6 +50,42 @@ export default function Toolbar({
   onDetailPanelToggle,
 }: ToolbarProps) {
   const { token } = theme.useToken();
+
+  const handleClearAll = () => {
+    Modal.confirm({
+      title: "Clear all traffic?",
+      content: "This action cannot be undone.",
+      okText: "Clear",
+      cancelText: "Cancel",
+      onOk: onClearAll,
+    });
+  };
+
+  const handleClearFiltered = () => {
+    Modal.confirm({
+      title: `Clear ${filteredCount} filtered requests?`,
+      content: "This will only clear requests matching current filter conditions. This action cannot be undone.",
+      okText: "Clear",
+      cancelText: "Cancel",
+      onOk: onClearFiltered,
+    });
+  };
+
+  const clearMenuItems: MenuProps["items"] = [
+    {
+      key: "all",
+      label: "Clear all",
+      icon: <DeleteOutlined />,
+      onClick: handleClearAll,
+    },
+    {
+      key: "filtered",
+      label: `Clear filtered (${filteredCount})`,
+      icon: <ClearOutlined />,
+      onClick: handleClearFiltered,
+      disabled: filteredCount === 0,
+    },
+  ];
 
   const handleTagClick = (group: keyof ToolbarFilters, tag: string) => {
     const currentTags = filters[group];
@@ -103,15 +146,16 @@ export default function Toolbar({
             margin: "0 4px",
           }}
         />
-        <Popconfirm
-          title="Clear all traffic?"
-          description="This action cannot be undone."
-          onConfirm={onClear}
-          okText="Clear"
-          cancelText="Cancel"
-        >
-          <Button type="text" size="small" icon={<DeleteOutlined />} />
-        </Popconfirm>
+        <Dropdown menu={{ items: clearMenuItems }} trigger={["click"]}>
+          <Button
+            type="text"
+            size="small"
+            icon={<DeleteOutlined />}
+            style={{ display: "flex", alignItems: "center", gap: 2 }}
+          >
+            <DownOutlined style={{ fontSize: 10 }} />
+          </Button>
+        </Dropdown>
         <div
           style={{
             width: 1,

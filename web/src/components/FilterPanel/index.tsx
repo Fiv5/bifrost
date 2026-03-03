@@ -1,7 +1,8 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo, useEffect, type CSSProperties } from "react";
 import { theme, Button, Empty, Tooltip, Input } from "antd";
 import { ClearOutlined, SearchOutlined, CloseCircleFilled } from "@ant-design/icons";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
+import { useTlsConfigStore } from "../../stores/useTlsConfigStore";
 import FilterSection from "./FilterSection";
 import PinnedFilters from "./PinnedFilters";
 import FilterItem from "./FilterItem";
@@ -19,6 +20,12 @@ export default function FilterPanel({
   availableDomains,
 }: FilterPanelProps) {
   const { token } = theme.useToken();
+  const { fetchConfig } = useTlsConfigStore();
+
+  useEffect(() => {
+    fetchConfig();
+  }, [fetchConfig]);
+
   const {
     pinnedFilters,
     selectedClientIps,

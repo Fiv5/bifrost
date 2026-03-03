@@ -37,8 +37,8 @@ export async function put<T>(url: string, data?: unknown, config?: AxiosRequestC
   return response.data;
 }
 
-export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
-  const response = await client.delete<T>(url, config);
+export async function del<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
+  const response = await client.delete<T>(url, { ...config, data });
   return response.data;
 }
 

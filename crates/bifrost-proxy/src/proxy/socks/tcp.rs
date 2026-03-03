@@ -1045,6 +1045,12 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let client_process = resolve_client_process(&peer_addr);
+        let (client_app, client_pid, client_path) = client_process
+            .as_ref()
+            .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+            .unwrap_or((None, None, None));
+
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
@@ -1058,15 +1064,10 @@ impl SocksHandler {
                 target_host.to_string(),
                 target_port,
                 false,
+                client_app.clone(),
                 cancel_tx,
             );
             state.connection_registry.register(conn_info);
-
-            let client_process = resolve_client_process(&peer_addr);
-            let (client_app, client_pid, client_path) = client_process
-                .as_ref()
-                .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
-                .unwrap_or((None, None, None));
 
             let mut record = TrafficRecord::new(
                 req_id.clone(),
@@ -1267,6 +1268,9 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let client_process = resolve_client_process(&self.peer_addr);
+        let client_app = client_process.as_ref().map(|p| p.name.clone());
+
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
@@ -1277,6 +1281,7 @@ impl SocksHandler {
                 cert_host.to_string(),
                 target_port,
                 true,
+                client_app.clone(),
                 cancel_tx,
             );
             state.connection_registry.register(conn_info);
@@ -1431,6 +1436,12 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let client_process = resolve_client_process(&peer_addr);
+        let (client_app, client_pid, client_path) = client_process
+            .as_ref()
+            .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+            .unwrap_or((None, None, None));
+
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
@@ -1444,15 +1455,10 @@ impl SocksHandler {
                 target_host.to_string(),
                 target_port,
                 true,
+                client_app.clone(),
                 cancel_tx,
             );
             state.connection_registry.register(conn_info);
-
-            let client_process = resolve_client_process(&peer_addr);
-            let (client_app, client_pid, client_path) = client_process
-                .as_ref()
-                .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
-                .unwrap_or((None, None, None));
 
             let mut record = TrafficRecord::new(req_id.clone(), method.to_string(), url.clone());
             record.status = 200;

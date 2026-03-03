@@ -171,10 +171,10 @@ cargo build --release
 cargo run --bin bifrost
 
 # 指定端口和监听地址（全局参数需放在子命令前）
-cargo run --bin bifrost -- -p 9000 -H 127.0.0.1
+cargo run --bin bifrost -- start -p 9000 -H 127.0.0.1
 
 # 启用 HTTP 和 SOCKS5 代理
-cargo run --bin bifrost -- -p 9900 --socks5-port 1080
+cargo run --bin bifrost -- start -p 9900 --socks5-port 1080
 
 # 守护进程模式
 cargo run --bin bifrost -- start --daemon

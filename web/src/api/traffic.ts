@@ -35,7 +35,10 @@ export async function getTrafficDetail(id: string): Promise<TrafficRecord> {
   return get<TrafficRecord>(`/traffic/${encodeURIComponent(id)}`);
 }
 
-export async function clearTraffic(): Promise<ApiResponse> {
+export async function clearTraffic(ids?: string[]): Promise<ApiResponse> {
+  if (ids && ids.length > 0) {
+    return del<ApiResponse>('/traffic', { ids });
+  }
   return del<ApiResponse>('/traffic');
 }
 

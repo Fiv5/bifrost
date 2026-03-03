@@ -217,6 +217,7 @@ where
             format!("{}:{}", target_host, target_port),
             target_port,
             false,
+            ctx.client_app.clone(),
             cancel_tx,
         );
         state.connection_registry.register(conn_info);

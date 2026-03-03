@@ -416,6 +416,45 @@ impl FrameStore {
         Ok(removed_count)
     }
 
+    pub fn delete_by_ids(&self, ids: &[String]) -> std::io::Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let frames_dir = self.frames_dir();
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut removed_count = 0;
+
+        if frames_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&frames_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            if ids_set.contains(file_stem) {
+                                if fs::remove_file(&path).is_ok() {
+                                    removed_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut metadata_cache = self.metadata_cache.write();
+        for id in ids {
+            metadata_cache.remove(id);
+        }
+
+        tracing::debug!(
+            count = removed_count,
+            "[FRAME_STORE] Deleted frame files by ids"
+        );
+
+        Ok(removed_count)
+    }
+
     pub fn stats(&self) -> FrameStoreStats {
         let frames_dir = self.frames_dir();
         let mut file_count = 0;
