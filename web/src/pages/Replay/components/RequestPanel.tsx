@@ -185,6 +185,43 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
   return result;
 }
 
+const VALID_URL_PROTOCOLS = ["http://", "https://", "ws://", "wss://"];
+
+function hasValidProtocol(url: string): boolean {
+  const lowerUrl = url.toLowerCase();
+  return VALID_URL_PROTOCOLS.some((protocol) => lowerUrl.startsWith(protocol));
+}
+
+function normalizeUrl(url: string): string {
+  if (!url || url.trim() === "") {
+    return url;
+  }
+  
+  const trimmedUrl = url.trim();
+  if (hasValidProtocol(trimmedUrl)) {
+    return trimmedUrl;
+  }
+  
+  return `https://${trimmedUrl}`;
+}
+
+function isValidUrl(url: string): boolean {
+  if (!url || url.trim() === "") {
+    return false;
+  }
+  
+  if (!hasValidProtocol(url)) {
+    return false;
+  }
+  
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default function RequestPanel() {
   const { token } = theme.useToken();
   const {
@@ -291,6 +328,30 @@ export default function RequestPanel() {
     },
     [updateCurrentRequest],
   );
+
+  const handleUrlBlur = useCallback(() => {
+    const url = currentRequest?.url;
+    if (url && url.trim() !== "") {
+      const normalizedUrl = normalizeUrl(url);
+      if (normalizedUrl !== url) {
+        updateCurrentRequest({ url: normalizedUrl });
+        
+        const lowerUrl = normalizedUrl.toLowerCase();
+        if (lowerUrl.startsWith("ws://") || lowerUrl.startsWith("wss://")) {
+          if (requestType !== "websocket") {
+            updateUIState({ requestType: "websocket" });
+          }
+        } else if (
+          lowerUrl.startsWith("http://") ||
+          lowerUrl.startsWith("https://")
+        ) {
+          if (requestType === "websocket") {
+            updateUIState({ requestType: "http" });
+          }
+        }
+      }
+    }
+  }, [currentRequest?.url, updateCurrentRequest, requestType, updateUIState]);
 
   const handleHeadersChange = useCallback(
     (headers: ReplayKeyValueItem[]) => {
@@ -456,8 +517,20 @@ export default function RequestPanel() {
       message.warning("Please enter a URL");
       return;
     }
+    
+    let urlToUse = currentRequest.url;
+    if (!hasValidProtocol(urlToUse)) {
+      urlToUse = normalizeUrl(urlToUse);
+      updateCurrentRequest({ url: urlToUse });
+    }
+    
+    if (!isValidUrl(urlToUse)) {
+      message.warning("Please enter a valid URL with protocol (http://, https://, ws://, or wss://)");
+      return;
+    }
+    
     executeRequest();
-  }, [currentRequest, executeRequest]);
+  }, [currentRequest, executeRequest, updateCurrentRequest]);
 
   const handleRuleModeChange = useCallback(
     (mode: RuleMode) => {
@@ -595,6 +668,7 @@ export default function RequestPanel() {
           value={currentRequest?.url || ""}
           onChange={handleUrlChange}
           onPaste={handleUrlPaste}
+          onBlur={handleUrlBlur}
           style={{ flex: 1, fontSize: 12 }}
           onPressEnter={handleSend}
         />

@@ -128,7 +128,7 @@ brew install bifrost
 
 - Rust 1.70+
 - Cargo
-- Node.js 18+ & pnpm（用于构建 Web UI）
+- Node.js 22+ & pnpm（用于构建 Web UI）
 
 #### 构建步骤
 
@@ -512,13 +512,10 @@ API_HOST=local.dev:3000
 
 example.com host://${API_HOST} # 优先使用块级变量
 
-```
-
+```markdown
 ## 规则语法
 
 Bifrost 支持类似其他代理工具的规则语法：
-
-```
 
 # 基本格式：pattern protocol://value
 
@@ -570,21 +567,20 @@ example.com tlsPassthrough://
 
 example.com reqScript://modify-request
 example.com resScript://inject-data
-
 ```
 
 ### 支持的协议（71 种）
 
-| 分类     | 协议                                                                                                                                                                                                 |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 路由     | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                         |
-| DNS      | `dns`                                                                                                                                                                                                |
-| 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                            |
-| 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params` |
+| 分类     | 协议                                                                                                                                                                                                                     |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 路由     | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                             |
+| DNS      | `dns`                                                                                                                                                                                                                    |
+| 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                                                |
+| 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params`                     |
 | 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace` |
-| 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                     |
-| 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                          |
-| 高级     | `rulesFile`, `urlReplace`                                                                                                                              |
+| 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                                         |
+| 脚本     | `reqScript`, `resScript` - 使用 JavaScript 脚本修改请求/响应                                                                                                                                                             |
+| 高级     | `rulesFile`, `urlReplace`                                                                                                                                                                                                |
 
 ## 脚本引擎
 
@@ -592,10 +588,10 @@ Bifrost 内置基于 QuickJS 的 JavaScript 脚本引擎，支持通过脚本动
 
 ### 脚本类型
 
-| 类型        | 协议          | 说明                     |
-| ----------- | ------------- | ------------------------ |
-| 请求脚本    | `reqScript`   | 在请求发送前执行         |
-| 响应脚本    | `resScript`   | 在响应返回给客户端前执行 |
+| 类型     | 协议        | 说明                     |
+| -------- | ----------- | ------------------------ |
+| 请求脚本 | `reqScript` | 在请求发送前执行         |
+| 响应脚本 | `resScript` | 在响应返回给客户端前执行 |
 
 ### 脚本存储
 
@@ -611,7 +607,7 @@ Bifrost 内置基于 QuickJS 的 JavaScript 脚本引擎，支持通过脚本动
 ├── inject-data.js
 └── transform.js
 
-````
+```
 
 ### 请求脚本示例
 
@@ -624,13 +620,13 @@ function main(request, context) {
     method: request.method,
     headers: {
       ...request.headers,
-      'Authorization': 'Bearer ' + context.values.API_TOKEN,
-      'X-Custom-Header': 'custom-value'
+      Authorization: "Bearer " + context.values.API_TOKEN,
+      "X-Custom-Header": "custom-value",
     },
-    body: request.body
+    body: request.body,
   };
 }
-````
+```
 
 **request 对象结构：**
 
