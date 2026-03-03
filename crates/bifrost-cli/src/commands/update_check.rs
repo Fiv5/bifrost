@@ -488,12 +488,7 @@ fn print_update_notice(current_version: &str, cache: &VersionCache) {
         println!();
         println!("     {}", "What's new:".bright_white().bold());
         for highlight in &cache.release_highlights {
-            let display = if highlight.len() > 50 {
-                format!("{}...", &highlight[..47])
-            } else {
-                highlight.clone()
-            };
-            println!("       {} {}", "•".bright_cyan(), display.bright_white());
+            println!("       {} {}", "•".bright_cyan(), highlight.bright_white());
         }
         println!(
             "       {} {}",

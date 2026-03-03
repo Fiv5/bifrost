@@ -578,14 +578,7 @@ fn render_rules_config(frame: &mut Frame, area: Rect, app: &App) {
         .values
         .iter()
         .take(10)
-        .map(|v| {
-            let display_value = if v.value.len() > 30 {
-                format!("{}...", &v.value[..30])
-            } else {
-                v.value.clone()
-            };
-            ListItem::new(format!("{}: {}", v.name, display_value))
-        })
+        .map(|v| ListItem::new(format!("{}: {}", v.name, v.value)))
         .collect();
 
     let values_list = List::new(values_items).block(

@@ -177,10 +177,8 @@ impl BodyStore {
             if path.is_file() {
                 if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
                     let base_id = file_name.split('-').next().unwrap_or(file_name);
-                    if ids_set.contains(base_id) {
-                        if fs::remove_file(&path).is_ok() {
-                            removed_count += 1;
-                        }
+                    if ids_set.contains(base_id) && fs::remove_file(&path).is_ok() {
+                        removed_count += 1;
                     }
                 }
             }

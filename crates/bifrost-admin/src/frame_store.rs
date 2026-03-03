@@ -431,10 +431,8 @@ impl FrameStore {
                     let path = entry.path();
                     if path.is_file() {
                         if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            if ids_set.contains(file_stem) {
-                                if fs::remove_file(&path).is_ok() {
-                                    removed_count += 1;
-                                }
+                            if ids_set.contains(file_stem) && fs::remove_file(&path).is_ok() {
+                                removed_count += 1;
                             }
                         }
                     }

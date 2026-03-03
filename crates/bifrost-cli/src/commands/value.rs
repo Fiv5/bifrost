@@ -17,12 +17,7 @@ pub fn handle_value_command(action: ValueCommands) -> bifrost_core::Result<()> {
                 println!("Values ({}):", entries.len());
                 println!("====================");
                 for entry in entries {
-                    let preview = if entry.value.len() > 50 {
-                        format!("{}...", &entry.value[..47])
-                    } else {
-                        entry.value.clone()
-                    };
-                    let preview = preview.replace('\n', "\\n");
+                    let preview = entry.value.replace('\n', "\\n");
                     println!("  {} = {}", entry.name, preview);
                 }
                 println!();
