@@ -303,6 +303,11 @@ pub enum Commands {
         #[arg(short = 'y', long, help = "Skip confirmation prompt")]
         yes: bool,
     },
+    #[command(about = "Manage runtime configuration")]
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigCommands>,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -421,5 +426,68 @@ pub enum ValueCommands {
     Import {
         #[arg(help = "File path (supports .txt, .kv, .json)")]
         file: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ConfigCommands {
+    #[command(about = "Show configuration (default when no subcommand provided)")]
+    Show {
+        #[arg(long, help = "Output in JSON format")]
+        json: bool,
+        #[arg(long, help = "Show specific section: tls, traffic, access")]
+        section: Option<String>,
+    },
+    #[command(about = "Get a configuration value")]
+    Get {
+        #[arg(help = "Configuration key (e.g., tls.enabled, traffic.max-records)")]
+        key: String,
+        #[arg(long, help = "Output in JSON format")]
+        json: bool,
+    },
+    #[command(about = "Set a configuration value")]
+    Set {
+        #[arg(help = "Configuration key")]
+        key: String,
+        #[arg(help = "Value to set (use comma-separated for lists)")]
+        value: String,
+    },
+    #[command(about = "Add item to a list configuration")]
+    Add {
+        #[arg(help = "Configuration key (must be a list type, e.g., tls.exclude)")]
+        key: String,
+        #[arg(help = "Value to add")]
+        value: String,
+    },
+    #[command(about = "Remove item from a list configuration")]
+    Remove {
+        #[arg(help = "Configuration key (must be a list type)")]
+        key: String,
+        #[arg(help = "Value to remove")]
+        value: String,
+    },
+    #[command(about = "Reset a configuration to default value")]
+    Reset {
+        #[arg(help = "Configuration key (use 'all' to reset everything)")]
+        key: String,
+        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        yes: bool,
+    },
+    #[command(about = "Clear all caches (body, traffic, frame)")]
+    ClearCache {
+        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        yes: bool,
+    },
+    #[command(about = "Disconnect connections by domain pattern")]
+    Disconnect {
+        #[arg(help = "Domain pattern to match")]
+        domain: String,
+    },
+    #[command(about = "Export configuration to file")]
+    Export {
+        #[arg(short, long, help = "Output file path (default: stdout)")]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = "toml", help = "Export format: json, toml")]
+        format: String,
     },
 }

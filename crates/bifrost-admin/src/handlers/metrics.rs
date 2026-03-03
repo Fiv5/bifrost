@@ -60,7 +60,6 @@ pub struct AppMetrics {
     pub ws_requests: u64,
     pub wss_requests: u64,
     pub h3_requests: u64,
-    pub h3s_requests: u64,
     pub socks5_requests: u64,
 }
 
@@ -111,7 +110,6 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
                 "ws" => entry.ws_requests += 1,
                 "wss" => entry.wss_requests += 1,
                 "h3" => entry.h3_requests += 1,
-                "h3s" => entry.h3s_requests += 1,
                 "socks5" => entry.socks5_requests += 1,
                 _ => {}
             }
@@ -137,7 +135,6 @@ pub struct HostMetrics {
     pub ws_requests: u64,
     pub wss_requests: u64,
     pub h3_requests: u64,
-    pub h3s_requests: u64,
     pub socks5_requests: u64,
 }
 
@@ -189,7 +186,6 @@ async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
                 "ws" => entry.ws_requests += 1,
                 "wss" => entry.wss_requests += 1,
                 "h3" => entry.h3_requests += 1,
-                "h3s" => entry.h3s_requests += 1,
                 "socks5" => entry.socks5_requests += 1,
                 _ => {}
             }

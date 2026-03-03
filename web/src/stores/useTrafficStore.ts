@@ -238,7 +238,6 @@ const matchRecord = (
     else if (protocolSet.has('WS') && record.is_websocket && protocol === 'WS') matched = true;
     else if (protocolSet.has('WSS') && record.is_websocket && protocol === 'WSS') matched = true;
     else if (protocolSet.has('H3') && (record.is_h3 || protocol === 'H3')) matched = true;
-    else if (protocolSet.has('H3S') && (record.is_h3 || protocol === 'H3S' || protocol === 'H3')) matched = true;
     if (!matched) return false;
   }
 
@@ -255,11 +254,12 @@ const matchRecord = (
   }
 
   if (typeSet.size > 0) {
-    const contentType = (record.content_type || '').toLowerCase();
+    const resContentType = (record.content_type || '').toLowerCase();
+    const reqContentType = (record.request_content_type || '').toLowerCase();
     let matched = false;
     for (const t of typeSet) {
       const patterns = contentTypeMap[t] || [t.toLowerCase()];
-      if (patterns.some(pattern => contentType.includes(pattern))) {
+      if (patterns.some(pattern => resContentType.includes(pattern) || reqContentType.includes(pattern))) {
         matched = true;
         break;
       }
@@ -385,6 +385,7 @@ const compactToSummary = (c: TrafficSummaryCompact): TrafficSummary => {
     path: c.p,
     status: c.s,
     content_type: c.ct || null,
+    request_content_type: c.req_ct || null,
     request_size: c.req_sz,
     response_size: c.res_sz,
     duration_ms: c.dur,

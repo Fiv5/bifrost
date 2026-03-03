@@ -12,7 +12,7 @@ mod process;
 
 use cli::{Cli, Commands};
 use commands::{
-    check_and_print_update_notice, handle_ca_command, handle_rule_command,
+    check_and_print_update_notice, handle_ca_command, handle_config_command, handle_rule_command,
     handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
     run_start, run_status, run_status_tui, run_stop,
 };
@@ -119,6 +119,7 @@ fn main() {
         }
         Some(Commands::Value { action }) => handle_value_command(action),
         Some(Commands::Upgrade { yes }) => handle_upgrade(yes),
+        Some(Commands::Config { action }) => handle_config_command(action, "127.0.0.1", cli.port),
         None => run_start(
             cli.port,
             cli.host.clone(),

@@ -35,6 +35,8 @@ pub struct TrafficSummaryCompact {
     pub s: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ct: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub req_ct: Option<String>,
     pub req_sz: usize,
     pub res_sz: usize,
     pub dur: u64,
@@ -108,6 +110,7 @@ impl TrafficSummaryCompact {
             p: record.path.clone(),
             s: record.status,
             ct: record.content_type.clone(),
+            req_ct: record.request_content_type.clone(),
             req_sz: record.request_size,
             res_sz: record.response_size,
             dur: record.duration_ms,

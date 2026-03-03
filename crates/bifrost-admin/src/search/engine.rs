@@ -13,7 +13,9 @@ use crate::traffic_db::{QueryParams, SharedTrafficDbStore, TrafficSummaryCompact
 
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
-const MAX_SEARCH_CANDIDATES: usize = 500;
+const SEARCH_BATCH_SIZE: usize = 200;
+const MAX_SEARCH_ITERATIONS: usize = 50;
+const MAX_TOTAL_SEARCHED: usize = 10000;
 
 pub struct SearchEngine {
     traffic_db: SharedTrafficDbStore,
@@ -56,62 +58,100 @@ impl SearchEngine {
             scope = ?request.scope,
             cursor = ?request.cursor,
             limit = batch_size,
-            "[SEARCH] Starting search"
-        );
-
-        let query_params = self.build_query_params(request);
-        let query_result = self.traffic_db.query(&query_params);
-
-        debug!(
-            candidates = query_result.records.len(),
-            total = query_result.total,
-            "[SEARCH] Got candidate records from database"
+            "[SEARCH] Starting iterative search"
         );
 
         let mut results = Vec::new();
-        let mut searched = 0;
-        let mut last_seq: Option<u64> = None;
+        let mut total_searched = 0;
+        let mut current_cursor = request.cursor;
+        let mut iterations = 0;
+        let mut db_has_more = true;
 
-        for compact in query_result.records.iter().take(MAX_SEARCH_CANDIDATES) {
-            searched += 1;
-            last_seq = Some(compact.seq);
+        while results.len() < batch_size
+            && iterations < MAX_SEARCH_ITERATIONS
+            && total_searched < MAX_TOTAL_SEARCHED
+            && db_has_more
+        {
+            iterations += 1;
 
-            if let Some(record) = self.traffic_db.get_by_id(&compact.id) {
-                if let Some(result) =
-                    self.search_record(&request.scope, &keyword_lower, &record, compact)
-                {
-                    results.push(result);
-                    if results.len() >= batch_size {
-                        break;
+            let query_params = self.build_query_params_with_cursor(request, current_cursor);
+            let query_result = self.traffic_db.query(&query_params);
+
+            if query_result.records.is_empty() {
+                db_has_more = false;
+                break;
+            }
+
+            debug!(
+                iteration = iterations,
+                candidates = query_result.records.len(),
+                current_results = results.len(),
+                total_searched = total_searched,
+                "[SEARCH] Processing batch"
+            );
+
+            for compact in &query_result.records {
+                total_searched += 1;
+                current_cursor = Some(compact.seq);
+
+                if !self.matches_filter_compact(compact, &request.filters) {
+                    continue;
+                }
+
+                if let Some(record) = self.traffic_db.get_by_id(&compact.id) {
+                    if !request.filters.conditions.is_empty()
+                        && !self.matches_conditions(&record, &request.filters.conditions)
+                    {
+                        continue;
+                    }
+
+                    if let Some(result) =
+                        self.search_record(&request.scope, &keyword_lower, &record, compact)
+                    {
+                        results.push(result);
+                        if results.len() >= batch_size {
+                            break;
+                        }
                     }
                 }
+
+                if total_searched >= MAX_TOTAL_SEARCHED {
+                    break;
+                }
             }
+
+            db_has_more = query_result.has_more;
         }
 
-        let has_more = searched < query_result.records.len() || query_result.has_more;
+        let has_more = db_has_more && total_searched < MAX_TOTAL_SEARCHED;
         let total_matched = results.len();
 
         debug!(
-            searched = searched,
+            iterations = iterations,
+            total_searched = total_searched,
             matched = total_matched,
             has_more = has_more,
-            "[SEARCH] Search completed"
+            "[SEARCH] Iterative search completed"
         );
 
         SearchResponse {
             results,
-            total_searched: searched,
+            total_searched,
             total_matched,
-            next_cursor: last_seq,
+            next_cursor: current_cursor,
             has_more,
             search_id,
         }
     }
 
-    fn build_query_params(&self, request: &SearchRequest) -> QueryParams {
+    fn build_query_params_with_cursor(
+        &self,
+        request: &SearchRequest,
+        cursor: Option<u64>,
+    ) -> QueryParams {
         let mut params = QueryParams {
-            cursor: request.cursor,
-            limit: Some(MAX_SEARCH_CANDIDATES),
+            cursor,
+            limit: Some(SEARCH_BATCH_SIZE),
             direction: crate::traffic_db::Direction::Backward,
             ..Default::default()
         };
@@ -125,7 +165,7 @@ impl SearchEngine {
         for protocol in &filters.protocols {
             match protocol.to_uppercase().as_str() {
                 "WS" | "WSS" => params.is_websocket = Some(true),
-                "H3" | "H3S" => params.is_h3 = Some(true),
+                "H3" => params.is_h3 = Some(true),
                 _ => {}
             }
         }
@@ -163,18 +203,6 @@ impl SearchEngine {
                 }
                 _ => {}
             }
-        }
-
-        if !filters.client_ips.is_empty() {
-            params.client_ip = Some(filters.client_ips[0].clone());
-        }
-
-        if !filters.client_apps.is_empty() {
-            params.client_app = Some(filters.client_apps[0].clone());
-        }
-
-        if !filters.domains.is_empty() {
-            params.host_contains = Some(filters.domains[0].clone());
         }
 
         params
@@ -372,45 +400,70 @@ impl SearchEngine {
         }
     }
 
-    pub fn matches_filter(&self, record: &TrafficRecord, filters: &SearchFilters) -> bool {
+    fn matches_filter_compact(
+        &self,
+        compact: &TrafficSummaryCompact,
+        filters: &SearchFilters,
+    ) -> bool {
+        use crate::TrafficFlags;
+
         if let Some(rule_hit) = filters.has_rule_hit {
-            if record.has_rule_hit != rule_hit {
+            let has_rule = (compact.flags & TrafficFlags::HAS_RULE_HIT) != 0;
+            if has_rule != rule_hit {
                 return false;
             }
         }
 
         if !filters.protocols.is_empty() {
-            let protocol_upper = record.protocol.to_uppercase();
+            let protocol_upper = compact.proto.to_uppercase();
+            let is_websocket = (compact.flags & TrafficFlags::IS_WEBSOCKET) != 0;
+            let is_sse = (compact.flags & TrafficFlags::IS_SSE) != 0;
+            let is_h3 = (compact.flags & TrafficFlags::IS_H3) != 0;
             let mut matched = false;
 
             for p in &filters.protocols {
                 match p.to_uppercase().as_str() {
                     "HTTP" => {
-                        if protocol_upper == "HTTP" || protocol_upper.starts_with("HTTP/1") {
+                        if protocol_upper == "HTTP"
+                            || protocol_upper == "HTTP/1.0"
+                            || protocol_upper == "HTTP/1.1"
+                        {
                             matched = true;
                             break;
                         }
                     }
                     "HTTPS" => {
-                        if protocol_upper == "HTTPS" {
+                        if protocol_upper == "HTTPS" || protocol_upper == "HTTP/2" {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    "H2" => {
+                        if protocol_upper.contains("HTTP/2") {
                             matched = true;
                             break;
                         }
                     }
                     "WS" => {
-                        if record.is_websocket && protocol_upper == "WS" {
+                        if is_websocket && protocol_upper == "WS" {
                             matched = true;
                             break;
                         }
                     }
                     "WSS" => {
-                        if record.is_websocket && protocol_upper == "WSS" {
+                        if is_websocket && protocol_upper == "WSS" {
                             matched = true;
                             break;
                         }
                     }
-                    "H3" | "H3S" => {
-                        if record.is_h3 {
+                    "H3" => {
+                        if is_h3 || protocol_upper == "H3" {
+                            matched = true;
+                            break;
+                        }
+                    }
+                    "SSE" => {
+                        if is_sse {
                             matched = true;
                             break;
                         }
@@ -425,7 +478,7 @@ impl SearchEngine {
         }
 
         if !filters.status_ranges.is_empty() {
-            let status = record.status;
+            let status = compact.s;
             let mut matched = false;
 
             for range in &filters.status_ranges {
@@ -476,25 +529,44 @@ impl SearchEngine {
         }
 
         if !filters.content_types.is_empty() {
-            let content_type = record.content_type.as_deref().unwrap_or("").to_lowercase();
+            let res_ct = compact.ct.as_deref().unwrap_or("").to_lowercase();
+            let req_ct = compact.req_ct.as_deref().unwrap_or("").to_lowercase();
             let mut matched = false;
 
             for ct in &filters.content_types {
                 let ct_lower = ct.to_lowercase();
-                let patterns = match ct_lower.as_str() {
-                    "json" => vec!["application/json", "text/json"],
-                    "form" => vec!["application/x-www-form-urlencoded", "multipart/form-data"],
-                    "xml" => vec!["application/xml", "text/xml"],
-                    "js" => vec!["application/javascript", "text/javascript"],
-                    "css" => vec!["text/css"],
-                    "font" => vec!["font/", "application/font"],
-                    "doc" => vec!["text/html", "application/xhtml"],
-                    "media" => vec!["image/", "video/", "audio/"],
+                let patterns: Vec<&str> = match ct_lower.as_str() {
+                    "json" => vec!["json", "application/json", "text/json"],
+                    "form" => vec![
+                        "form",
+                        "x-www-form-urlencoded",
+                        "multipart/form-data",
+                        "application/x-www-form-urlencoded",
+                    ],
+                    "xml" => vec!["xml", "application/xml", "text/xml"],
+                    "js" => vec!["javascript", "text/javascript", "application/javascript"],
+                    "css" => vec!["css", "text/css"],
+                    "font" => vec![
+                        "font",
+                        "woff",
+                        "woff2",
+                        "ttf",
+                        "otf",
+                        "eot",
+                        "font/",
+                        "application/font",
+                    ],
+                    "doc" => vec!["html", "text/html", "application/xhtml"],
+                    "media" => vec![
+                        "image", "video", "audio", "image/", "video/", "audio/", "png", "jpg",
+                        "jpeg", "gif", "webp", "svg", "mp4", "webm", "mp3", "wav",
+                    ],
+                    "sse" => vec!["event-stream", "text/event-stream"],
                     _ => vec![ct_lower.as_str()],
                 };
 
                 for pattern in patterns {
-                    if content_type.contains(pattern) {
+                    if res_ct.contains(pattern) || req_ct.contains(pattern) {
                         matched = true;
                         break;
                     }
@@ -510,30 +582,33 @@ impl SearchEngine {
             }
         }
 
-        if !filters.client_ips.is_empty() && !filters.client_ips.contains(&record.client_ip) {
+        if !filters.client_ips.is_empty() && !filters.client_ips.contains(&compact.cip) {
             return false;
         }
 
         if !filters.client_apps.is_empty() {
-            match &record.client_app {
+            match &compact.capp {
                 Some(app) if filters.client_apps.contains(app) => {}
                 _ => return false,
             }
         }
 
         if !filters.domains.is_empty() {
-            let host = &record.host;
+            let host = &compact.h;
             if !filters.domains.iter().any(|d| host.contains(d)) {
                 return false;
             }
         }
 
-        for condition in &filters.conditions {
+        true
+    }
+
+    fn matches_conditions(&self, record: &TrafficRecord, conditions: &[FilterCondition]) -> bool {
+        for condition in conditions {
             if !self.matches_condition(record, condition) {
                 return false;
             }
         }
-
         true
     }
 

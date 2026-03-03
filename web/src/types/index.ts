@@ -48,6 +48,7 @@ export interface TrafficSummary {
   url: string;
   status: number;
   content_type: string | null;
+  request_content_type?: string | null;
   request_size: number;
   response_size: number;
   duration_ms: number;
@@ -166,6 +167,7 @@ export interface TrafficSummaryCompact {
   p: string;
   s: number;
   ct?: string | null;
+  req_ct?: string | null;
   req_sz: number;
   res_sz: number;
   dur: number;

@@ -1,4 +1,5 @@
 mod ca;
+mod config;
 mod rule;
 mod start;
 mod status;
@@ -11,6 +12,7 @@ mod value;
 mod whitelist;
 
 pub use ca::*;
+pub use config::handle_config_command;
 pub use rule::*;
 pub use start::*;
 pub use status::*;

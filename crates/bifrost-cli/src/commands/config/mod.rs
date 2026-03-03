@@ -1,0 +1,809 @@
+mod client;
+mod display;
+mod keys;
+
+use std::io::Write;
+use std::path::PathBuf;
+
+use bifrost_core::{BifrostError, Result};
+
+use crate::cli::ConfigCommands;
+use client::{
+    ConfigApiClient, PerformanceConfigResponse, TlsConfigResponse, UpdatePerformanceConfigRequest,
+    UpdateTlsConfigRequest, WhitelistResponse,
+};
+use keys::{format_size, parse_bool, parse_list, parse_size, ConfigKey};
+
+pub fn handle_config_command(action: Option<ConfigCommands>, host: &str, port: u16) -> Result<()> {
+    let client = ConfigApiClient::new(host, port);
+
+    match action {
+        None => show_all_config(&client, false),
+        Some(ConfigCommands::Show { json, section }) => {
+            if let Some(sec) = section {
+                show_section_config(&client, &sec, json)
+            } else {
+                show_all_config(&client, json)
+            }
+        }
+        Some(ConfigCommands::Get { key, json }) => get_config_value(&client, &key, json),
+        Some(ConfigCommands::Set { key, value }) => set_config_value(&client, &key, &value),
+        Some(ConfigCommands::Add { key, value }) => add_list_item(&client, &key, &value),
+        Some(ConfigCommands::Remove { key, value }) => remove_list_item(&client, &key, &value),
+        Some(ConfigCommands::Reset { key, yes }) => reset_config(&client, &key, yes),
+        Some(ConfigCommands::ClearCache { yes }) => clear_cache(&client, yes),
+        Some(ConfigCommands::Disconnect { domain }) => disconnect_domain(&client, &domain),
+        Some(ConfigCommands::Export { output, format }) => export_config(&client, output, &format),
+    }
+}
+
+fn show_all_config(client: &ConfigApiClient, json: bool) -> Result<()> {
+    let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+    let perf = client
+        .get_performance_config()
+        .map_err(BifrostError::Config)?;
+    let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+
+    if json {
+        let combined = serde_json::json!({
+            "tls": tls,
+            "traffic": perf.traffic,
+            "access": {
+                "mode": whitelist.mode,
+                "allow_lan": whitelist.allow_lan,
+            }
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&combined)
+                .map_err(|e| BifrostError::Config(e.to_string()))?
+        );
+    } else {
+        display::print_full_config(&tls, &perf, &whitelist);
+    }
+    Ok(())
+}
+
+fn show_section_config(client: &ConfigApiClient, section: &str, json: bool) -> Result<()> {
+    match section.to_lowercase().as_str() {
+        "tls" => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&tls)
+                        .map_err(|e| BifrostError::Config(e.to_string()))?
+                );
+            } else {
+                display::print_tls_config(&tls);
+            }
+        }
+        "traffic" => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&perf)
+                        .map_err(|e| BifrostError::Config(e.to_string()))?
+                );
+            } else {
+                display::print_traffic_config(&perf);
+            }
+        }
+        "access" => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            if json {
+                let access = serde_json::json!({
+                    "mode": whitelist.mode,
+                    "allow_lan": whitelist.allow_lan,
+                    "whitelist": whitelist.whitelist,
+                    "temporary_whitelist": whitelist.temporary_whitelist,
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&access)
+                        .map_err(|e| BifrostError::Config(e.to_string()))?
+                );
+            } else {
+                display::print_access_config(&whitelist);
+            }
+        }
+        _ => {
+            return Err(BifrostError::Config(format!(
+                "Unknown section: '{}'. Available sections: tls, traffic, access",
+                section
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<()> {
+    let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
+
+    let value = match config_key {
+        ConfigKey::TlsEnabled => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(tls.enable_tls_interception)
+        }
+        ConfigKey::TlsUnsafeSsl => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(tls.unsafe_ssl)
+        }
+        ConfigKey::TlsDisconnectOnChange => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(tls.disconnect_on_config_change)
+        }
+        ConfigKey::TlsExclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.intercept_exclude)
+        }
+        ConfigKey::TlsInclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.intercept_include)
+        }
+        ConfigKey::TlsAppExclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.app_intercept_exclude)
+        }
+        ConfigKey::TlsAppInclude => {
+            let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+            serde_json::json!(tls.app_intercept_include)
+        }
+        ConfigKey::TrafficMaxRecords => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.max_records.into())
+        }
+        ConfigKey::TrafficMaxBodySize => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.max_body_memory_size.into())
+        }
+        ConfigKey::TrafficMaxBufferSize => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.max_body_buffer_size.into())
+        }
+        ConfigKey::TrafficRetentionDays => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.file_retention_days.into())
+        }
+        ConfigKey::AccessMode => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            serde_json::Value::String(whitelist.mode)
+        }
+        ConfigKey::AccessAllowLan => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(whitelist.allow_lan)
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value)
+                .map_err(|e| BifrostError::Config(e.to_string()))?
+        );
+    } else {
+        display::print_config_value(&config_key, &value);
+    }
+    Ok(())
+}
+
+fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<()> {
+    let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
+
+    match config_key {
+        ConfigKey::TlsEnabled => {
+            let enabled = parse_bool(value).map_err(BifrostError::Config)?;
+            let req = UpdateTlsConfigRequest {
+                enable_tls_interception: Some(enabled),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!(
+                "✓ TLS interception {}",
+                if enabled { "enabled" } else { "disabled" }
+            );
+        }
+        ConfigKey::TlsUnsafeSsl => {
+            let unsafe_ssl = parse_bool(value).map_err(BifrostError::Config)?;
+            let req = UpdateTlsConfigRequest {
+                unsafe_ssl: Some(unsafe_ssl),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ unsafe-ssl set to {}", unsafe_ssl);
+        }
+        ConfigKey::TlsDisconnectOnChange => {
+            let disconnect = parse_bool(value).map_err(BifrostError::Config)?;
+            let req = UpdateTlsConfigRequest {
+                disconnect_on_config_change: Some(disconnect),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ disconnect-on-change set to {}", disconnect);
+        }
+        ConfigKey::TlsExclude => {
+            let patterns = parse_list(value);
+            let req = UpdateTlsConfigRequest {
+                intercept_exclude: Some(patterns.clone()),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ TLS exclude list set to: {:?}", patterns);
+        }
+        ConfigKey::TlsInclude => {
+            let patterns = parse_list(value);
+            let req = UpdateTlsConfigRequest {
+                intercept_include: Some(patterns.clone()),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ TLS include list set to: {:?}", patterns);
+        }
+        ConfigKey::TlsAppExclude => {
+            let apps = parse_list(value);
+            let req = UpdateTlsConfigRequest {
+                app_intercept_exclude: Some(apps.clone()),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ TLS app exclude list set to: {:?}", apps);
+        }
+        ConfigKey::TlsAppInclude => {
+            let apps = parse_list(value);
+            let req = UpdateTlsConfigRequest {
+                app_intercept_include: Some(apps.clone()),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ TLS app include list set to: {:?}", apps);
+        }
+        ConfigKey::TrafficMaxRecords => {
+            let max = value
+                .parse::<usize>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let req = UpdatePerformanceConfigRequest {
+                max_records: Some(max),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ max-records set to {}", max);
+        }
+        ConfigKey::TrafficMaxBodySize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdatePerformanceConfigRequest {
+                max_body_memory_size: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ max-body-size set to {}", format_size(size));
+        }
+        ConfigKey::TrafficMaxBufferSize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdatePerformanceConfigRequest {
+                max_body_buffer_size: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ max-buffer-size set to {}", format_size(size));
+        }
+        ConfigKey::TrafficRetentionDays => {
+            let days = value
+                .parse::<u64>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            if days > 7 {
+                return Err(BifrostError::Config(
+                    "retention-days cannot exceed 7 days".to_string(),
+                ));
+            }
+            let req = UpdatePerformanceConfigRequest {
+                file_retention_days: Some(days),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ retention-days set to {} days", days);
+        }
+        ConfigKey::AccessMode => {
+            let valid_modes = ["allow_all", "local_only", "whitelist", "interactive"];
+            if !valid_modes.contains(&value) {
+                return Err(BifrostError::Config(format!(
+                    "Invalid access mode: '{}'. Valid modes: {}",
+                    value,
+                    valid_modes.join(", ")
+                )));
+            }
+            client
+                .set_access_mode(value)
+                .map_err(BifrostError::Config)?;
+            println!("✓ access mode set to {}", value);
+        }
+        ConfigKey::AccessAllowLan => {
+            let allow = parse_bool(value).map_err(BifrostError::Config)?;
+            client.set_allow_lan(allow).map_err(BifrostError::Config)?;
+            println!("✓ allow-lan set to {}", allow);
+        }
+    }
+    Ok(())
+}
+
+fn add_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<()> {
+    let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
+
+    if !config_key.is_list() {
+        return Err(BifrostError::Config(format!(
+            "'{}' is not a list configuration. Use 'set' instead.\n\nList configurations: tls.exclude, tls.include, tls.app-exclude, tls.app-include",
+            key
+        )));
+    }
+
+    let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+    let mut list = match config_key {
+        ConfigKey::TlsExclude => tls.intercept_exclude,
+        ConfigKey::TlsInclude => tls.intercept_include,
+        ConfigKey::TlsAppExclude => tls.app_intercept_exclude,
+        ConfigKey::TlsAppInclude => tls.app_intercept_include,
+        _ => unreachable!(),
+    };
+
+    if list.contains(&value.to_string()) {
+        println!("⚠ '{}' already exists in {}", value, key);
+        return Ok(());
+    }
+
+    list.push(value.to_string());
+
+    let req = match config_key {
+        ConfigKey::TlsExclude => UpdateTlsConfigRequest {
+            intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsInclude => UpdateTlsConfigRequest {
+            intercept_include: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsAppExclude => UpdateTlsConfigRequest {
+            app_intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsAppInclude => UpdateTlsConfigRequest {
+            app_intercept_include: Some(list),
+            ..Default::default()
+        },
+        _ => unreachable!(),
+    };
+
+    client
+        .update_tls_config(&req)
+        .map_err(BifrostError::Config)?;
+    println!("✓ Added '{}' to {}", value, key);
+    Ok(())
+}
+
+fn remove_list_item(client: &ConfigApiClient, key: &str, value: &str) -> Result<()> {
+    let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
+
+    if !config_key.is_list() {
+        return Err(BifrostError::Config(format!(
+            "'{}' is not a list configuration.\n\nList configurations: tls.exclude, tls.include, tls.app-exclude, tls.app-include",
+            key
+        )));
+    }
+
+    let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+    let mut list = match config_key {
+        ConfigKey::TlsExclude => tls.intercept_exclude,
+        ConfigKey::TlsInclude => tls.intercept_include,
+        ConfigKey::TlsAppExclude => tls.app_intercept_exclude,
+        ConfigKey::TlsAppInclude => tls.app_intercept_include,
+        _ => unreachable!(),
+    };
+
+    let original_len = list.len();
+    list.retain(|x| x != value);
+
+    if list.len() == original_len {
+        println!("⚠ '{}' not found in {}", value, key);
+        return Ok(());
+    }
+
+    let req = match config_key {
+        ConfigKey::TlsExclude => UpdateTlsConfigRequest {
+            intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsInclude => UpdateTlsConfigRequest {
+            intercept_include: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsAppExclude => UpdateTlsConfigRequest {
+            app_intercept_exclude: Some(list),
+            ..Default::default()
+        },
+        ConfigKey::TlsAppInclude => UpdateTlsConfigRequest {
+            app_intercept_include: Some(list),
+            ..Default::default()
+        },
+        _ => unreachable!(),
+    };
+
+    client
+        .update_tls_config(&req)
+        .map_err(BifrostError::Config)?;
+    println!("✓ Removed '{}' from {}", value, key);
+    Ok(())
+}
+
+fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
+    if key == "all" {
+        if !yes {
+            print!("This will reset ALL configurations to default values. Continue? [y/N] ");
+            std::io::stdout()
+                .flush()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let mut input = String::new();
+            std::io::stdin()
+                .read_line(&mut input)
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+
+        let tls_req = UpdateTlsConfigRequest {
+            enable_tls_interception: Some(true),
+            intercept_exclude: Some(vec![]),
+            intercept_include: Some(vec![]),
+            app_intercept_exclude: Some(vec![]),
+            app_intercept_include: Some(vec![]),
+            unsafe_ssl: Some(false),
+            disconnect_on_config_change: Some(true),
+        };
+        client
+            .update_tls_config(&tls_req)
+            .map_err(BifrostError::Config)?;
+
+        let perf_req = UpdatePerformanceConfigRequest {
+            max_records: Some(5000),
+            max_body_memory_size: Some(512 * 1024),
+            max_body_buffer_size: Some(10 * 1024 * 1024),
+            file_retention_days: Some(7),
+        };
+        client
+            .update_performance_config(&perf_req)
+            .map_err(BifrostError::Config)?;
+
+        client
+            .set_access_mode("local_only")
+            .map_err(BifrostError::Config)?;
+        client.set_allow_lan(false).map_err(BifrostError::Config)?;
+
+        println!("✓ All configurations reset to defaults");
+        return Ok(());
+    }
+
+    let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
+
+    if !yes {
+        print!("Reset '{}' to default value? [y/N] ", key);
+        std::io::stdout()
+            .flush()
+            .map_err(|e| BifrostError::Config(e.to_string()))?;
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| BifrostError::Config(e.to_string()))?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    match config_key {
+        ConfigKey::TlsEnabled => {
+            let req = UpdateTlsConfigRequest {
+                enable_tls_interception: Some(true),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.enabled reset to true");
+        }
+        ConfigKey::TlsUnsafeSsl => {
+            let req = UpdateTlsConfigRequest {
+                unsafe_ssl: Some(false),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.unsafe-ssl reset to false");
+        }
+        ConfigKey::TlsDisconnectOnChange => {
+            let req = UpdateTlsConfigRequest {
+                disconnect_on_config_change: Some(true),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.disconnect-on-change reset to true");
+        }
+        ConfigKey::TlsExclude => {
+            let req = UpdateTlsConfigRequest {
+                intercept_exclude: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.exclude reset to []");
+        }
+        ConfigKey::TlsInclude => {
+            let req = UpdateTlsConfigRequest {
+                intercept_include: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.include reset to []");
+        }
+        ConfigKey::TlsAppExclude => {
+            let req = UpdateTlsConfigRequest {
+                app_intercept_exclude: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.app-exclude reset to []");
+        }
+        ConfigKey::TlsAppInclude => {
+            let req = UpdateTlsConfigRequest {
+                app_intercept_include: Some(vec![]),
+                ..Default::default()
+            };
+            client
+                .update_tls_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ tls.app-include reset to []");
+        }
+        ConfigKey::TrafficMaxRecords => {
+            let req = UpdatePerformanceConfigRequest {
+                max_records: Some(5000),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.max-records reset to 5000");
+        }
+        ConfigKey::TrafficMaxBodySize => {
+            let req = UpdatePerformanceConfigRequest {
+                max_body_memory_size: Some(512 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.max-body-size reset to 512 KB");
+        }
+        ConfigKey::TrafficMaxBufferSize => {
+            let req = UpdatePerformanceConfigRequest {
+                max_body_buffer_size: Some(10 * 1024 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.max-buffer-size reset to 10 MB");
+        }
+        ConfigKey::TrafficRetentionDays => {
+            let req = UpdatePerformanceConfigRequest {
+                file_retention_days: Some(7),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.retention-days reset to 7");
+        }
+        ConfigKey::AccessMode => {
+            client
+                .set_access_mode("local_only")
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.mode reset to local_only");
+        }
+        ConfigKey::AccessAllowLan => {
+            client.set_allow_lan(false).map_err(BifrostError::Config)?;
+            println!("✓ access.allow-lan reset to false");
+        }
+    }
+    Ok(())
+}
+
+fn clear_cache(client: &ConfigApiClient, yes: bool) -> Result<()> {
+    if !yes {
+        print!("This will clear all cached data. Continue? [y/N] ");
+        std::io::stdout()
+            .flush()
+            .map_err(|e| BifrostError::Config(e.to_string()))?;
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| BifrostError::Config(e.to_string()))?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    let result = client.clear_cache().map_err(BifrostError::Config)?;
+    println!("✓ {}", result.message);
+    Ok(())
+}
+
+fn disconnect_domain(client: &ConfigApiClient, domain: &str) -> Result<()> {
+    let result = client
+        .disconnect_by_domain(domain)
+        .map_err(BifrostError::Config)?;
+    println!("✓ {}", result.message);
+    Ok(())
+}
+
+fn export_config(client: &ConfigApiClient, output: Option<PathBuf>, format: &str) -> Result<()> {
+    let tls = client.get_tls_config().map_err(BifrostError::Config)?;
+    let perf = client
+        .get_performance_config()
+        .map_err(BifrostError::Config)?;
+    let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+
+    let content = match format.to_lowercase().as_str() {
+        "json" => export_as_json(&tls, &perf, &whitelist)?,
+        "toml" => export_as_toml(&tls, &perf, &whitelist),
+        _ => {
+            return Err(BifrostError::Config(format!(
+                "Unsupported format: '{}'. Use 'json' or 'toml'",
+                format
+            )));
+        }
+    };
+
+    if let Some(path) = output {
+        std::fs::write(&path, &content).map_err(|e| BifrostError::Config(e.to_string()))?;
+        println!("✓ Configuration exported to {}", path.display());
+    } else {
+        println!("{}", content);
+    }
+
+    Ok(())
+}
+
+fn export_as_json(
+    tls: &TlsConfigResponse,
+    perf: &PerformanceConfigResponse,
+    whitelist: &WhitelistResponse,
+) -> Result<String> {
+    let combined = serde_json::json!({
+        "tls": {
+            "enabled": tls.enable_tls_interception,
+            "unsafe_ssl": tls.unsafe_ssl,
+            "disconnect_on_change": tls.disconnect_on_config_change,
+            "exclude": tls.intercept_exclude,
+            "include": tls.intercept_include,
+            "app_exclude": tls.app_intercept_exclude,
+            "app_include": tls.app_intercept_include,
+        },
+        "traffic": {
+            "max_records": perf.traffic.max_records,
+            "max_body_size": perf.traffic.max_body_memory_size,
+            "max_buffer_size": perf.traffic.max_body_buffer_size,
+            "retention_days": perf.traffic.file_retention_days,
+        },
+        "access": {
+            "mode": whitelist.mode,
+            "allow_lan": whitelist.allow_lan,
+        }
+    });
+    serde_json::to_string_pretty(&combined).map_err(|e| BifrostError::Config(e.to_string()))
+}
+
+fn export_as_toml(
+    tls: &TlsConfigResponse,
+    perf: &PerformanceConfigResponse,
+    whitelist: &WhitelistResponse,
+) -> String {
+    let mut output = String::new();
+
+    output.push_str("[tls]\n");
+    output.push_str(&format!(
+        "enable_interception = {}\n",
+        tls.enable_tls_interception
+    ));
+    output.push_str(&format!("unsafe_ssl = {}\n", tls.unsafe_ssl));
+    output.push_str(&format!(
+        "disconnect_on_change = {}\n",
+        tls.disconnect_on_config_change
+    ));
+    if !tls.intercept_exclude.is_empty() {
+        output.push_str(&format!(
+            "intercept_exclude = {:?}\n",
+            tls.intercept_exclude
+        ));
+    }
+    if !tls.intercept_include.is_empty() {
+        output.push_str(&format!(
+            "intercept_include = {:?}\n",
+            tls.intercept_include
+        ));
+    }
+    if !tls.app_intercept_exclude.is_empty() {
+        output.push_str(&format!(
+            "app_intercept_exclude = {:?}\n",
+            tls.app_intercept_exclude
+        ));
+    }
+    if !tls.app_intercept_include.is_empty() {
+        output.push_str(&format!(
+            "app_intercept_include = {:?}\n",
+            tls.app_intercept_include
+        ));
+    }
+    output.push('\n');
+
+    output.push_str("[traffic]\n");
+    output.push_str(&format!("max_records = {}\n", perf.traffic.max_records));
+    output.push_str(&format!(
+        "max_body_memory_size = {}\n",
+        perf.traffic.max_body_memory_size
+    ));
+    output.push_str(&format!(
+        "max_body_buffer_size = {}\n",
+        perf.traffic.max_body_buffer_size
+    ));
+    output.push_str(&format!(
+        "file_retention_days = {}\n",
+        perf.traffic.file_retention_days
+    ));
+    output.push('\n');
+
+    output.push_str("[access]\n");
+    output.push_str(&format!("mode = \"{}\"\n", whitelist.mode));
+    output.push_str(&format!("allow_lan = {}\n", whitelist.allow_lan));
+
+    output
+}

@@ -8,7 +8,6 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum BodyRef {
     Inline { data: String },
     File { path: String, size: usize },

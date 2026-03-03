@@ -521,12 +521,6 @@ GET /api/metrics
     "bytes_received": 0,
     "active_connections": 0
   },
-  "h3s": {
-    "requests": 0,
-    "bytes_sent": 0,
-    "bytes_received": 0,
-    "active_connections": 0
-  },
   "socks5": {
     "requests": 0,
     "bytes_sent": 0,
@@ -574,7 +568,6 @@ GET /api/metrics/apps
     "ws_requests": 10,
     "wss_requests": 10,
     "h3_requests": 0,
-    "h3s_requests": 0,
     "socks5_requests": 0
   }
 ]
@@ -604,7 +597,6 @@ GET /api/metrics/hosts
     "ws_requests": 5,
     "wss_requests": 5,
     "h3_requests": 0,
-    "h3s_requests": 0,
     "socks5_requests": 0
   }
 ]
@@ -1545,7 +1537,6 @@ WebSocket/SSE 连接状态。
 | ws                     | TrafficTypeMetrics | WebSocket 流量指标   |
 | wss                    | TrafficTypeMetrics | WSS 流量指标         |
 | h3                     | TrafficTypeMetrics | HTTP/3 流量指标      |
-| h3s                    | TrafficTypeMetrics | HTTPS/3 流量指标     |
 | socks5                 | TrafficTypeMetrics | SOCKS5 流量指标      |
 
 ### TrafficTypeMetrics

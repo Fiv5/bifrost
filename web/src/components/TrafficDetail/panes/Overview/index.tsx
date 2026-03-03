@@ -367,8 +367,7 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
     return null;
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
-  const isH3 =
-    record.is_h3 || record.protocol === "h3" || record.protocol === "h3s";
+  const isH3 = record.is_h3 || record.protocol === "h3";
 
   return (
     <div ref={wrapperRef} style={{ fontSize: 12 }}>

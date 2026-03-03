@@ -23,7 +23,7 @@ interface ToolbarProps {
 
 const filterGroups = {
   rule: ["Hit Rule"],
-  protocol: ["HTTP", "HTTPS", "WS", "WSS", "H3", "H3S"],
+  protocol: ["HTTP", "HTTPS", "WS", "WSS", "H3"],
   type: ["JSON", "Form", "XML", "JS", "CSS", "Font", "Doc", "Media", "SSE"],
   status: ["1xx", "2xx", "3xx", "4xx", "5xx", "error"],
   imported: ["Imported"],
