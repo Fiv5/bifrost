@@ -1,4 +1,6 @@
 use std::io::stdout;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -16,7 +18,7 @@ use ratatui::{
 };
 use serde::Deserialize;
 
-use crate::process::{is_process_running, read_pid};
+use crate::process::{is_process_running, read_pid, read_runtime_port};
 
 #[derive(Debug, Deserialize, Default, Clone)]
 struct TrafficTypeMetrics {
@@ -99,28 +101,38 @@ struct TlsConfig {
     unsafe_ssl: bool,
 }
 
+const SLOW_REFRESH_INTERVAL: u64 = 5;
+const CPU_HISTORY_SIZE: usize = 3600;
+const QPS_HISTORY_SIZE: usize = 60;
+
 struct App {
     port: u16,
     is_running: bool,
     pid: Option<u32>,
     metrics: MetricsSnapshot,
-    metrics_history: Vec<f64>,
+    qps_history: Vec<f64>,
+    cpu_history: Vec<f32>,
+    max_cpu: f32,
     rules: Vec<RuleGroup>,
     values: Vec<Value>,
     scripts: ScriptsResponse,
     config: Option<ConfigResponse>,
     selected_tab: usize,
     last_update: Instant,
+    last_slow_refresh: Instant,
+    refresh_count: u64,
 }
 
 impl App {
-    fn new(port: u16) -> Self {
+    fn new() -> Self {
         Self {
-            port,
+            port: read_runtime_port().unwrap_or(9900),
             is_running: false,
             pid: None,
             metrics: MetricsSnapshot::default(),
-            metrics_history: vec![0.0; 60],
+            qps_history: vec![0.0; QPS_HISTORY_SIZE],
+            cpu_history: vec![0.0; CPU_HISTORY_SIZE],
+            max_cpu: 0.0,
             rules: Vec::new(),
             values: Vec::new(),
             scripts: ScriptsResponse {
@@ -130,6 +142,8 @@ impl App {
             config: None,
             selected_tab: 0,
             last_update: Instant::now(),
+            last_slow_refresh: Instant::now() - Duration::from_secs(SLOW_REFRESH_INTERVAL),
+            refresh_count: 0,
         }
     }
 
@@ -138,32 +152,46 @@ impl App {
         self.is_running = self.pid.map(is_process_running).unwrap_or(false);
 
         if !self.is_running {
+            self.port = read_runtime_port().unwrap_or(9900);
             return;
         }
 
-        if let Some(metrics) = fetch_metrics(self.port) {
-            self.metrics_history.remove(0);
-            self.metrics_history.push(metrics.qps as f64);
-            self.metrics = metrics;
+        let need_slow_refresh =
+            self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
+
+        let port = self.port;
+        let (metrics, rules, values, scripts, config) =
+            fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
+
+        if let Some(m) = metrics {
+            self.qps_history.remove(0);
+            self.qps_history.push(m.qps as f64);
+
+            self.cpu_history.remove(0);
+            self.cpu_history.push(m.cpu_usage);
+            self.max_cpu = self.max_cpu.max(m.cpu_usage);
+
+            self.metrics = m;
         }
 
-        if let Some(rules) = fetch_rules(self.port) {
-            self.rules = rules;
+        if let Some(r) = rules {
+            self.rules = r;
+        }
+        if let Some(v) = values {
+            self.values = v;
+        }
+        if let Some(s) = scripts {
+            self.scripts = s;
+        }
+        if let Some(c) = config {
+            self.config = Some(c);
         }
 
-        if let Some(values) = fetch_values(self.port) {
-            self.values = values;
+        if need_slow_refresh {
+            self.last_slow_refresh = Instant::now();
         }
-
-        if let Some(scripts) = fetch_scripts(self.port) {
-            self.scripts = scripts;
-        }
-
-        if let Some(config) = fetch_config(self.port) {
-            self.config = Some(config);
-        }
-
         self.last_update = Instant::now();
+        self.refresh_count += 1;
     }
 
     fn next_tab(&mut self) {
@@ -179,55 +207,123 @@ impl App {
     }
 }
 
-fn fetch_metrics(port: u16) -> Option<MetricsSnapshot> {
+const HTTP_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn fetch_all_data(
+    port: u16,
+    need_slow_refresh: bool,
+    force_all: bool,
+) -> (
+    Option<MetricsSnapshot>,
+    Option<Vec<RuleGroup>>,
+    Option<Vec<Value>>,
+    Option<ScriptsResponse>,
+    Option<ConfigResponse>,
+) {
+    let (tx, rx) = mpsc::channel();
+
+    let tx_metrics = tx.clone();
+    thread::spawn(move || {
+        let _ = tx_metrics.send(("metrics", fetch_metrics(port)));
+    });
+
+    if need_slow_refresh || force_all {
+        let tx_rules = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_rules.send(("rules", fetch_rules(port)));
+        });
+
+        let tx_values = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_values.send(("values", fetch_values(port)));
+        });
+
+        let tx_scripts = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_scripts.send(("scripts", fetch_scripts(port)));
+        });
+
+        let tx_config = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_config.send(("config", fetch_config(port)));
+        });
+    }
+
+    drop(tx);
+
+    let mut metrics = None;
+    let mut rules = None;
+    let mut values = None;
+    let mut scripts = None;
+    let mut config = None;
+
+    for (key, data) in rx {
+        match key {
+            "metrics" => metrics = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "rules" => rules = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "values" => values = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "scripts" => scripts = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "config" => config = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            _ => {}
+        }
+    }
+
+    (metrics, rules, values, scripts, config)
+}
+
+fn fetch_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics", port);
-    ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    let result: Option<MetricsSnapshot> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
         .into_json()
-        .ok()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
-fn fetch_rules(port: u16) -> Option<Vec<RuleGroup>> {
+fn fetch_rules(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/rules", port);
-    ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    let result: Option<Vec<RuleGroup>> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
         .into_json()
-        .ok()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
-fn fetch_values(port: u16) -> Option<Vec<Value>> {
+fn fetch_values(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/values", port);
-    let resp: ValuesResponse = ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    let resp: Option<ValuesResponse> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
         .into_json()
-        .ok()?;
-    Some(resp.values)
+        .ok();
+    resp.map(|r| Box::new(r.values) as Box<dyn std::any::Any + Send>)
 }
 
-fn fetch_scripts(port: u16) -> Option<ScriptsResponse> {
+fn fetch_scripts(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/scripts", port);
-    ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    let result: Option<ScriptsResponse> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
         .into_json()
-        .ok()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
-fn fetch_config(port: u16) -> Option<ConfigResponse> {
+fn fetch_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/config", port);
-    ureq::get(&url)
-        .timeout(Duration::from_secs(1))
+    let result: Option<ConfigResponse> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
         .into_json()
-        .ok()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -259,14 +355,26 @@ fn format_rate(rate: f32) -> String {
     }
 }
 
-pub fn run_status_tui() -> bifrost_core::Result<()> {
-    let port = 9900;
+fn format_time_span(seconds: usize) -> String {
+    if seconds >= 3600 {
+        let hours = seconds / 3600;
+        let mins = (seconds % 3600) / 60;
+        format!("{}h{}m", hours, mins)
+    } else if seconds >= 60 {
+        let mins = seconds / 60;
+        let secs = seconds % 60;
+        format!("{}m{}s", mins, secs)
+    } else {
+        format!("{}s", seconds)
+    }
+}
 
+pub fn run_status_tui() -> bifrost_core::Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
-    let mut app = App::new(port);
+    let mut app = App::new();
     app.refresh();
 
     let tick_rate = Duration::from_millis(1000);
@@ -365,14 +473,16 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(7),
-            Constraint::Length(5),
+            Constraint::Length(6),
+            Constraint::Length(6),
             Constraint::Min(0),
         ])
         .split(area);
 
     render_system_metrics(frame, layout[0], app);
-    render_qps_sparkline(frame, layout[1], app);
-    render_connection_stats(frame, layout[2], app);
+    render_cpu_sparkline(frame, layout[1], app);
+    render_qps_sparkline(frame, layout[2], app);
+    render_connection_stats(frame, layout[3], app);
 }
 
 fn render_system_metrics(frame: &mut Frame, area: Rect, app: &App) {
@@ -444,13 +554,46 @@ fn render_system_metrics(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(download, layout[3]);
 }
 
+fn render_cpu_sparkline(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(2) as usize;
+    let data: Vec<u64> = if width > 0 && !app.cpu_history.is_empty() {
+        let step = app.cpu_history.len() / width.max(1);
+        let step = step.max(1);
+        app.cpu_history
+            .iter()
+            .rev()
+            .step_by(step)
+            .take(width)
+            .map(|&v| (v * 10.0) as u64)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        vec![0; width]
+    };
+
+    let total_samples = app.cpu_history.iter().filter(|&&v| v > 0.0).count();
+    let time_span = format_time_span(total_samples);
+
+    let sparkline = Sparkline::default()
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " CPU: {:.1}% (max: {:.1}%) | {} ",
+            app.metrics.cpu_usage, app.max_cpu, time_span
+        )))
+        .data(&data)
+        .max(1000)
+        .style(Style::default().fg(Color::Cyan));
+    frame.render_widget(sparkline, area);
+}
+
 fn render_qps_sparkline(frame: &mut Frame, area: Rect, app: &App) {
-    let data: Vec<u64> = app.metrics_history.iter().map(|&v| v as u64).collect();
+    let data: Vec<u64> = app.qps_history.iter().map(|&v| v as u64).collect();
     let max_qps = app.metrics.max_qps.max(1.0);
 
     let sparkline = Sparkline::default()
         .block(Block::default().borders(Borders::ALL).title(format!(
-            " QPS: {:.1} (max: {:.1}) ",
+            " QPS: {:.1} (max: {:.1}) | last 60s ",
             app.metrics.qps, max_qps
         )))
         .data(&data)
