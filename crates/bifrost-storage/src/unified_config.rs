@@ -81,11 +81,20 @@ pub struct TlsConfig {
 impl Default for TlsConfig {
     fn default() -> Self {
         Self {
-            enable_interception: true,
+            enable_interception: false,
             intercept_exclude: Vec::new(),
             intercept_include: Vec::new(),
             app_intercept_exclude: Vec::new(),
-            app_intercept_include: Vec::new(),
+            app_intercept_include: vec![
+                "Google Chrome*".to_string(),
+                "Microsoft Edge*".to_string(),
+                "*Safari*".to_string(),
+                "*Firefox*".to_string(),
+                "*Opera*".to_string(),
+                "*Brave*".to_string(),
+                "*Arc*".to_string(),
+                "*Vivaldi*".to_string(),
+            ],
             unsafe_ssl: false,
             disconnect_on_change: true,
         }

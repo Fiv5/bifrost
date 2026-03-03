@@ -6,6 +6,8 @@ use super::types::{
     SearchScope,
 };
 use crate::body_store::{BodyRef, SharedBodyStore};
+use crate::connection_monitor::SharedConnectionMonitor;
+use crate::frame_store::SharedFrameStore;
 use crate::traffic::TrafficRecord;
 use crate::traffic_db::{QueryParams, SharedTrafficDbStore, TrafficSummaryCompact};
 
@@ -16,6 +18,8 @@ const MAX_SEARCH_CANDIDATES: usize = 500;
 pub struct SearchEngine {
     traffic_db: SharedTrafficDbStore,
     body_store: Option<SharedBodyStore>,
+    frame_store: Option<SharedFrameStore>,
+    connection_monitor: Option<SharedConnectionMonitor>,
 }
 
 impl SearchEngine {
@@ -23,6 +27,22 @@ impl SearchEngine {
         Self {
             traffic_db,
             body_store,
+            frame_store: None,
+            connection_monitor: None,
+        }
+    }
+
+    pub fn with_frame_support(
+        traffic_db: SharedTrafficDbStore,
+        body_store: Option<SharedBodyStore>,
+        frame_store: Option<SharedFrameStore>,
+        connection_monitor: Option<SharedConnectionMonitor>,
+    ) -> Self {
+        Self {
+            traffic_db,
+            body_store,
+            frame_store,
+            connection_monitor,
         }
     }
 
@@ -215,6 +235,20 @@ impl SearchEngine {
             }
         }
 
+        if record.is_websocket && scope.should_search_websocket_messages() {
+            if let Some(frame_matches) =
+                self.search_frames(&record.id, keyword, "websocket_message")
+            {
+                matches.extend(frame_matches);
+            }
+        }
+
+        if record.is_sse && scope.should_search_sse_events() {
+            if let Some(frame_matches) = self.search_frames(&record.id, keyword, "sse_event") {
+                matches.extend(frame_matches);
+            }
+        }
+
         if matches.is_empty() {
             None
         } else {
@@ -265,6 +299,76 @@ impl SearchEngine {
                 }
                 None
             }
+        }
+    }
+
+    fn search_frames(
+        &self,
+        connection_id: &str,
+        keyword: &str,
+        field: &str,
+    ) -> Option<Vec<MatchLocation>> {
+        use std::collections::HashSet;
+
+        let mut matches = Vec::new();
+        let mut seen_frame_ids: HashSet<u64> = HashSet::new();
+
+        if let Some(ref monitor) = self.connection_monitor {
+            if let Some((frames, _)) = monitor.get_frames(connection_id, None, usize::MAX) {
+                for frame in frames {
+                    if seen_frame_ids.contains(&frame.frame_id) {
+                        continue;
+                    }
+                    seen_frame_ids.insert(frame.frame_id);
+
+                    if let Some(preview) = &frame.payload_preview {
+                        if let Some(m) = self.search_text(preview, keyword, field) {
+                            matches.push(m);
+                            break;
+                        }
+                    }
+
+                    if let Some(body_ref) = &frame.payload_ref {
+                        if let Some(m) = self.search_body(body_ref, keyword, field) {
+                            matches.push(m);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if matches.is_empty() {
+            if let Some(ref fs) = self.frame_store {
+                if let Ok(frames) = fs.load_all_frames(connection_id) {
+                    for frame in frames {
+                        if seen_frame_ids.contains(&frame.frame_id) {
+                            continue;
+                        }
+                        seen_frame_ids.insert(frame.frame_id);
+
+                        if let Some(preview) = &frame.payload_preview {
+                            if let Some(m) = self.search_text(preview, keyword, field) {
+                                matches.push(m);
+                                break;
+                            }
+                        }
+
+                        if let Some(body_ref) = &frame.payload_ref {
+                            if let Some(m) = self.search_body(body_ref, keyword, field) {
+                                matches.push(m);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
         }
     }
 

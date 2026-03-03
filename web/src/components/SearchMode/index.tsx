@@ -180,6 +180,8 @@ export default function SearchMode({
     { key: "response_headers", label: "Res Headers" },
     { key: "request_body", label: "Req Body" },
     { key: "response_body", label: "Res Body" },
+    { key: "websocket_messages", label: "WS Messages" },
+    { key: "sse_events", label: "SSE Events" },
   ];
 
   return (

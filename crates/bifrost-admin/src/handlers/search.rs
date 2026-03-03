@@ -80,9 +80,16 @@ async fn execute_search(req: Request<Incoming>, state: SharedAdminState) -> Resp
     };
 
     let body_store = state.body_store.clone();
+    let frame_store = state.frame_store.clone();
+    let connection_monitor = Some(state.connection_monitor.clone());
 
     let search_result = tokio::task::spawn_blocking(move || {
-        let engine = SearchEngine::new(traffic_db, body_store);
+        let engine = SearchEngine::with_frame_support(
+            traffic_db,
+            body_store,
+            frame_store,
+            connection_monitor,
+        );
         engine.search(&search_request)
     })
     .await;

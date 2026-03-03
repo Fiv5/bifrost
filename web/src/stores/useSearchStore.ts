@@ -39,6 +39,8 @@ const defaultScope: SearchScope = {
   request_headers: false,
   response_headers: false,
   url: false,
+  websocket_messages: false,
+  sse_events: false,
   all: true,
 };
 
@@ -86,13 +88,16 @@ export const useSearchStore = create<SearchState>((set, get) => ({
           request_headers: false,
           response_headers: false,
           url: false,
+          websocket_messages: false,
+          sse_events: false,
           all: true,
         },
       });
     } else {
       const newScope = { ...scope, ...scopeUpdate, all: false };
       const hasAny = newScope.request_body || newScope.response_body ||
-        newScope.request_headers || newScope.response_headers || newScope.url;
+        newScope.request_headers || newScope.response_headers || newScope.url ||
+        newScope.websocket_messages || newScope.sse_events;
       if (!hasAny) {
         newScope.all = true;
       }

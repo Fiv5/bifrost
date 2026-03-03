@@ -593,6 +593,8 @@ export interface SearchScope {
   request_headers: boolean;
   response_headers: boolean;
   url: boolean;
+  websocket_messages: boolean;
+  sse_events: boolean;
   all: boolean;
 }
 

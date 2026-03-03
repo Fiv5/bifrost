@@ -233,7 +233,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bifrost-admin"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "base64",
  "bifrost-core",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-cli"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bifrost-admin",
  "bifrost-core",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-core"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "chrono",
  "ipnet",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-e2e"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bifrost-admin",
  "bifrost-core",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-proxy"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "async-compression",
  "base64",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-script"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -442,7 +442,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-storage"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-tests"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "async-trait",
  "bifrost-admin",
@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-tls"
-version = "0.0.5-alpha"
+version = "0.0.6-alpha"
 dependencies = [
  "bifrost-core",
  "chrono",

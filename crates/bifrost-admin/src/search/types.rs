@@ -28,6 +28,10 @@ pub struct SearchScope {
     pub response_headers: bool,
     #[serde(default)]
     pub url: bool,
+    #[serde(default)]
+    pub websocket_messages: bool,
+    #[serde(default)]
+    pub sse_events: bool,
     #[serde(default = "default_true")]
     pub all: bool,
 }
@@ -44,6 +48,8 @@ impl Default for SearchScope {
             request_headers: false,
             response_headers: false,
             url: false,
+            websocket_messages: false,
+            sse_events: false,
             all: true,
         }
     }
@@ -68,6 +74,14 @@ impl SearchScope {
 
     pub fn should_search_response_body(&self) -> bool {
         self.all || self.response_body
+    }
+
+    pub fn should_search_websocket_messages(&self) -> bool {
+        self.all || self.websocket_messages
+    }
+
+    pub fn should_search_sse_events(&self) -> bool {
+        self.all || self.sse_events
     }
 }
 
