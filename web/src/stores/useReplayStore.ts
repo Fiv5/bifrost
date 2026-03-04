@@ -49,6 +49,10 @@ interface ReplayUIState {
   selectedRequestId: string | null;
   responsePanelSearch: SessionTargetSearchState;
   responsePanelDisplayFormat: DisplayFormat;
+  messagesPanelSearch: string;
+  messagesPanelSearchMode: 'highlight' | 'filter';
+  messagesPanelFullscreen: boolean;
+  messagesPanelFollowTail: boolean;
 }
 
 interface ReplayState {
@@ -142,6 +146,10 @@ const defaultUIState: ReplayUIState = {
   selectedRequestId: null,
   responsePanelSearch: { value: '', total: 0, show: false },
   responsePanelDisplayFormat: 'HighLight',
+  messagesPanelSearch: '',
+  messagesPanelSearchMode: 'highlight',
+  messagesPanelFullscreen: false,
+  messagesPanelFollowTail: true,
 };
 
 function createEmptyRequest(requestType: RequestType = 'http'): ReplayRequest {

@@ -1,64 +1,31 @@
-import { useCallback, useRef, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { Input, Button, Empty, Tag, Tooltip, theme, Typography, Space } from "antd";
+import { useCallback, useMemo, type CSSProperties } from "react";
+import { Input, Button, Empty, Tag, Tooltip, theme, Typography, Space, Switch } from "antd";
 import {
   SendOutlined,
   DeleteOutlined,
   DisconnectOutlined,
   ClockCircleOutlined,
+  SearchOutlined,
+  FilterOutlined,
+  HighlightOutlined,
+  FullscreenOutlined,
+  VerticalAlignBottomOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
-  CopyOutlined,
-  CheckOutlined,
-  ExpandOutlined,
-  CompressOutlined,
 } from "@ant-design/icons";
-import hljs from "highlight.js/lib/core";
-import json from "highlight.js/lib/languages/json";
-import "highlight.js/styles/github.css";
 import { useReplayStore } from "../../../stores/useReplayStore";
-import type { SSEEvent, WebSocketMessage } from "../../../types";
-
-hljs.registerLanguage("json", json);
+import {
+  VirtualMessageList,
+  MessageItemCard,
+  useMessageSearch,
+  FullscreenMessageViewer,
+  normalizeSSEEvent,
+  normalizeWSMessage,
+  type MessageItem,
+} from "../../../components/VirtualMessageViewer";
 
 const { Text } = Typography;
-
-const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
-  try {
-    const parsed = JSON.parse(text);
-    return { parsed, isJson: true };
-  } catch {
-    return { parsed: null, isJson: false };
-  }
-};
-
-const highlightJson = (text: string): string => {
-  try {
-    const result = hljs.highlight(text, { language: "json" });
-    return result.value;
-  } catch {
-    return text;
-  }
-};
-
-const copyToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-function formatTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    fractionalSecondDigits: 3,
-  } as Intl.DateTimeFormatOptions);
-}
+const { Search } = Input;
 
 function formatDuration(startedAt: number, endedAt?: number): string {
   const duration = (endedAt || Date.now()) - startedAt;
@@ -67,308 +34,8 @@ function formatDuration(startedAt: number, endedAt?: number): string {
   return `${Math.floor(duration / 60000)}m ${Math.floor((duration % 60000) / 1000)}s`;
 }
 
-interface SSEEventItemProps {
-  event: SSEEvent;
-}
-
-function SSEEventItem({ event }: SSEEventItemProps) {
-  const { token } = theme.useToken();
-  const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const { parsed, isJson } = useMemo(() => {
-    return parseJson(event.data);
-  }, [event.data]);
-
-  const formattedContent = useMemo(() => {
-    if (isJson && parsed !== null) {
-      return JSON.stringify(parsed, null, 2);
-    }
-    return event.data;
-  }, [isJson, parsed, event.data]);
-
-  const highlightedContent = useMemo(() => {
-    if (!isJson) return null;
-    return highlightJson(formattedContent);
-  }, [isJson, formattedContent]);
-
-  const handleCopy = async () => {
-    const success = await copyToClipboard(formattedContent);
-    if (success) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
-  };
-
-  const shouldTruncate = !expanded && formattedContent.split("\n").length > 8;
-  const displayContent = shouldTruncate
-    ? formattedContent.split("\n").slice(0, 8).join("\n") + "\n..."
-    : formattedContent;
-
-  return (
-    <div
-      style={{
-        padding: "8px 12px",
-        borderBottom: `1px solid ${token.colorBorderSecondary}`,
-        fontSize: 12,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 4,
-        }}
-      >
-        <Space size={8} align="center">
-          <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
-          <Text type="secondary" style={{ fontSize: 10 }}>
-            {formatTime(event.timestamp)}
-          </Text>
-          {event.id && (
-            <Tag color="blue" style={{ fontSize: 10, margin: 0 }}>
-              id: {event.id}
-            </Tag>
-          )}
-          {event.event && (
-            <Tag color="purple" style={{ fontSize: 10, margin: 0 }}>
-              {event.event}
-            </Tag>
-          )}
-          {isJson && (
-            <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
-              JSON
-            </Tag>
-          )}
-        </Space>
-        <Space size={4}>
-          <Tooltip title={copied ? "Copied!" : "Copy"}>
-            <Button
-              type="text"
-              size="small"
-              icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
-              onClick={handleCopy}
-              disabled={!event.data}
-              style={{ width: 24, height: 24 }}
-            />
-          </Tooltip>
-          {formattedContent.split("\n").length > 8 && (
-            <Tooltip title={expanded ? "Collapse" : "Expand"}>
-              <Button
-                type="text"
-                size="small"
-                icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
-                onClick={() => setExpanded(!expanded)}
-                style={{ width: 24, height: 24 }}
-              />
-            </Tooltip>
-          )}
-        </Space>
-      </div>
-      {event.data ? (
-        isJson && highlightedContent ? (
-          <pre
-            style={{
-              margin: 0,
-              fontFamily: "monospace",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              backgroundColor: token.colorBgLayout,
-              padding: "4px 8px",
-              borderRadius: 4,
-              maxHeight: expanded ? "none" : 200,
-              overflow: "auto",
-              lineHeight: 1.5,
-            }}
-          >
-            <code
-              dangerouslySetInnerHTML={{
-                __html: shouldTruncate
-                  ? highlightJson(displayContent)
-                  : highlightedContent,
-              }}
-            />
-          </pre>
-        ) : (
-          <div
-            style={{
-              fontFamily: "monospace",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              backgroundColor: token.colorBgLayout,
-              padding: "4px 8px",
-              borderRadius: 4,
-              maxHeight: expanded ? "none" : 200,
-              overflow: "auto",
-            }}
-          >
-            {displayContent}
-          </div>
-        )
-      ) : (
-        <Text type="secondary" style={{ fontSize: 12, fontStyle: "italic" }}>
-          (empty data)
-        </Text>
-      )}
-    </div>
-  );
-}
-
-interface WebSocketMessageItemProps {
-  message: WebSocketMessage;
-}
-
-function WebSocketMessageItem({ message }: WebSocketMessageItemProps) {
-  const { token } = theme.useToken();
-  const isSend = message.direction === "send";
-  const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const { parsed, isJson } = useMemo(() => {
-    return parseJson(message.data);
-  }, [message.data]);
-
-  const formattedContent = useMemo(() => {
-    if (isJson && parsed !== null) {
-      return JSON.stringify(parsed, null, 2);
-    }
-    return message.data;
-  }, [isJson, parsed, message.data]);
-
-  const highlightedContent = useMemo(() => {
-    if (!isJson) return null;
-    return highlightJson(formattedContent);
-  }, [isJson, formattedContent]);
-
-  const handleCopy = async () => {
-    const success = await copyToClipboard(formattedContent);
-    if (success) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }
-  };
-
-  const shouldTruncate = !expanded && formattedContent.split("\n").length > 8;
-  const displayContent = shouldTruncate
-    ? formattedContent.split("\n").slice(0, 8).join("\n") + "\n..."
-    : formattedContent;
-
-  return (
-    <div
-      style={{
-        padding: "8px 12px",
-        borderBottom: `1px solid ${token.colorBorderSecondary}`,
-        fontSize: 12,
-        backgroundColor: isSend ? token.colorBgLayout : "transparent",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 4,
-        }}
-      >
-        <Space size={8} align="center">
-          {isSend ? (
-            <ArrowUpOutlined style={{ color: token.colorPrimary, fontSize: 10 }} />
-          ) : (
-            <ArrowDownOutlined style={{ color: token.colorSuccess, fontSize: 10 }} />
-          )}
-          <Tag
-            color={isSend ? "blue" : "green"}
-            style={{ fontSize: 10, margin: 0 }}
-          >
-            {isSend ? "SENT" : "RECEIVED"}
-          </Tag>
-          <Text type="secondary" style={{ fontSize: 10 }}>
-            {formatTime(message.timestamp)}
-          </Text>
-          <Tag style={{ fontSize: 10, margin: 0 }}>{message.type}</Tag>
-          {isJson && (
-            <Tag color="cyan" style={{ fontSize: 10, margin: 0 }}>
-              JSON
-            </Tag>
-          )}
-        </Space>
-        <Space size={4}>
-          <Tooltip title={copied ? "Copied!" : "Copy"}>
-            <Button
-              type="text"
-              size="small"
-              icon={copied ? <CheckOutlined style={{ color: token.colorSuccess }} /> : <CopyOutlined />}
-              onClick={handleCopy}
-              disabled={!message.data}
-              style={{ width: 24, height: 24 }}
-            />
-          </Tooltip>
-          {formattedContent.split("\n").length > 8 && (
-            <Tooltip title={expanded ? "Collapse" : "Expand"}>
-              <Button
-                type="text"
-                size="small"
-                icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
-                onClick={() => setExpanded(!expanded)}
-                style={{ width: 24, height: 24 }}
-              />
-            </Tooltip>
-          )}
-        </Space>
-      </div>
-      {message.data ? (
-        isJson && highlightedContent ? (
-          <pre
-            style={{
-              margin: 0,
-              fontFamily: "monospace",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              padding: "4px 8px",
-              borderRadius: 4,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              maxHeight: expanded ? "none" : 200,
-              overflow: "auto",
-              lineHeight: 1.5,
-            }}
-          >
-            <code
-              dangerouslySetInnerHTML={{
-                __html: shouldTruncate
-                  ? highlightJson(displayContent)
-                  : highlightedContent,
-              }}
-            />
-          </pre>
-        ) : (
-          <div
-            style={{
-              fontFamily: "monospace",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              padding: "4px 8px",
-              borderRadius: 4,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              maxHeight: expanded ? "none" : 200,
-              overflow: "auto",
-            }}
-          >
-            {displayContent}
-          </div>
-        )
-      ) : (
-        <Text type="secondary" style={{ fontSize: 12, fontStyle: "italic" }}>
-          (empty data)
-        </Text>
-      )}
-    </div>
-  );
-}
-
 export default function MessagesPanel() {
   const { token } = theme.useToken();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const {
     streamingConnection,
     sseEvents,
@@ -385,10 +52,59 @@ export default function MessagesPanel() {
   const isWebSocket = streamingConnection?.type === "websocket";
   const isConnected = streamingConnection?.status === "connected";
   const messageInput = uiState.wsMessageInput;
+  const searchQuery = uiState.messagesPanelSearch;
+  const searchMode = uiState.messagesPanelSearchMode;
+  const fullscreenOpen = uiState.messagesPanelFullscreen;
+  const followTail = uiState.messagesPanelFollowTail;
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [sseEvents.length, wsMessages.length]);
+  const normalizedMessages = useMemo<MessageItem[]>(() => {
+    if (isSSE) {
+      return sseEvents.map((event, index) => normalizeSSEEvent(event, index));
+    }
+    if (isWebSocket) {
+      return wsMessages.map(normalizeWSMessage);
+    }
+    return [];
+  }, [isSSE, isWebSocket, sseEvents, wsMessages]);
+
+  const {
+    searchState,
+    setQuery,
+    setMatchMode,
+    filteredItems,
+    highlightedIndices,
+    goToNext,
+    goToPrev,
+    matchTokens,
+  } = useMessageSearch({
+    items: normalizedMessages,
+    initialQuery: searchQuery,
+    initialMatchMode: searchMode,
+  });
+
+  const displayItems = searchMode === 'filter' && searchQuery ? filteredItems : normalizedMessages;
+
+  const handleSearchChange = useCallback((value: string) => {
+    setQuery(value);
+    updateUIState({ messagesPanelSearch: value });
+  }, [setQuery, updateUIState]);
+
+  const handleModeChange = useCallback((mode: 'highlight' | 'filter') => {
+    setMatchMode(mode);
+    updateUIState({ messagesPanelSearchMode: mode });
+  }, [setMatchMode, updateUIState]);
+
+  const handleFullscreenOpen = useCallback(() => {
+    updateUIState({ messagesPanelFullscreen: true });
+  }, [updateUIState]);
+
+  const handleFullscreenClose = useCallback(() => {
+    updateUIState({ messagesPanelFullscreen: false });
+  }, [updateUIState]);
+
+  const handleFollowTailChange = useCallback((following: boolean) => {
+    updateUIState({ messagesPanelFollowTail: following });
+  }, [updateUIState]);
 
   const handleDisconnect = useCallback(() => {
     if (isSSE) {
@@ -438,9 +154,19 @@ export default function MessagesPanel() {
       flex: 1,
       minWidth: 0,
     },
+    toolbar: {
+      padding: "6px 12px",
+      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexShrink: 0,
+      flexWrap: "wrap",
+    },
     messageList: {
       flex: 1,
-      overflow: "auto",
+      overflow: "hidden",
+      minHeight: 0,
     },
     inputArea: {
       padding: "8px 12px",
@@ -450,6 +176,15 @@ export default function MessagesPanel() {
       flexShrink: 0,
     },
   };
+
+  const getItemKey = useCallback((item: MessageItem) => item.id, []);
+
+  const renderItem = useCallback((item: MessageItem) => (
+    <MessageItemCard
+      message={item}
+      searchTokens={searchMode === 'highlight' ? matchTokens : []}
+    />
+  ), [searchMode, matchTokens]);
 
   if (!streamingConnection) {
     return (
@@ -469,6 +204,10 @@ export default function MessagesPanel() {
     disconnected: "default",
     error: "error",
   };
+
+  const matchInfo = searchState.total > 0 
+    ? `${searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0}/${searchState.total}`
+    : null;
 
   return (
     <div style={styles.container}>
@@ -498,6 +237,14 @@ export default function MessagesPanel() {
           </Text>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
+          <Tooltip title="Fullscreen">
+            <Button
+              size="small"
+              icon={<FullscreenOutlined />}
+              onClick={handleFullscreenOpen}
+              disabled={normalizedMessages.length === 0}
+            />
+          </Tooltip>
           <Tooltip title="Clear messages">
             <Button
               size="small"
@@ -518,26 +265,87 @@ export default function MessagesPanel() {
         </div>
       </div>
 
-      <div style={styles.messageList}>
-        {isSSE &&
-          sseEvents.map((event, index) => (
-            <SSEEventItem key={`${event.timestamp}-${index}`} event={event} />
-          ))}
-        {isWebSocket &&
-          wsMessages.map((msg) => (
-            <WebSocketMessageItem key={msg.id} message={msg} />
-          ))}
-        {((isSSE && sseEvents.length === 0) ||
-          (isWebSocket && wsMessages.length === 0)) && (
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              isConnected ? "Waiting for messages..." : "No messages"
-            }
-            style={{ marginTop: 40 }}
-          />
+      <div style={styles.toolbar}>
+        <Search
+          placeholder="Search messages..."
+          allowClear
+          value={searchQuery}
+          onChange={(e) => handleSearchChange(e.target.value)}
+          onSearch={handleSearchChange}
+          style={{ width: 200 }}
+          size="small"
+          prefix={<SearchOutlined />}
+        />
+
+        <Button.Group size="small">
+          <Tooltip title="Highlight matches">
+            <Button
+              type={searchMode === 'highlight' ? 'primary' : 'default'}
+              icon={<HighlightOutlined />}
+              onClick={() => handleModeChange('highlight')}
+            />
+          </Tooltip>
+          <Tooltip title="Filter matches only">
+            <Button
+              type={searchMode === 'filter' ? 'primary' : 'default'}
+              icon={<FilterOutlined />}
+              onClick={() => handleModeChange('filter')}
+            />
+          </Tooltip>
+        </Button.Group>
+
+        {matchInfo && (
+          <>
+            <Tag color="blue" style={{ margin: 0 }}>{matchInfo}</Tag>
+            <Button.Group size="small">
+              <Button icon={<ArrowUpOutlined />} onClick={goToPrev} />
+              <Button icon={<ArrowDownOutlined />} onClick={goToNext} />
+            </Button.Group>
+          </>
         )}
-        <div ref={messagesEndRef} />
+
+        <Tooltip title="Follow latest">
+          <Space size={4}>
+            <VerticalAlignBottomOutlined style={{ fontSize: 12, color: token.colorTextSecondary }} />
+            <Switch
+              size="small"
+              checked={followTail}
+              onChange={handleFollowTailChange}
+            />
+          </Space>
+        </Tooltip>
+
+        <Text type="secondary" style={{ fontSize: 11, marginLeft: 'auto' }}>
+          {displayItems.length} messages
+        </Text>
+      </div>
+
+      <div style={styles.messageList}>
+        <VirtualMessageList
+          items={displayItems}
+          getItemKey={getItemKey}
+          renderItem={renderItem}
+          highlightedIndices={searchMode === 'highlight' ? highlightedIndices : []}
+          currentHighlightIndex={searchState.currentIndex >= 0 ? searchState.matchedIndices[searchState.currentIndex] : -1}
+          estimateSize={120}
+          overscan={3}
+          followTail={followTail}
+          onFollowTailChange={handleFollowTailChange}
+          emptyContent={
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                searchMode === 'filter' && searchQuery
+                  ? "No messages match your search"
+                  : isConnected 
+                    ? "Waiting for messages..." 
+                    : "No messages"
+              }
+              style={{ marginTop: 40 }}
+            />
+          }
+          style={{ padding: "8px 12px" }}
+        />
       </div>
 
       {isWebSocket && isConnected && (
@@ -573,6 +381,24 @@ export default function MessagesPanel() {
           Error: {streamingConnection.error}
         </div>
       )}
+
+      <FullscreenMessageViewer
+        open={fullscreenOpen}
+        onClose={handleFullscreenClose}
+        items={normalizedMessages}
+        title={
+          <Space>
+            <Tag color={isSSE ? "orange" : "purple"}>
+              {isSSE ? "SSE" : "WebSocket"}
+            </Tag>
+            <Text type="secondary">{streamingConnection.url}</Text>
+          </Space>
+        }
+        initialQuery={searchQuery}
+        initialMatchMode={searchMode}
+        followTail={followTail}
+        onFollowTailChange={handleFollowTailChange}
+      />
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
   ReloadOutlined,
   CopyOutlined,
   ExpandOutlined,
+  FullscreenOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import hljs from 'highlight.js/lib/core';
@@ -14,8 +15,12 @@ import json from 'highlight.js/lib/languages/json';
 import plaintext from 'highlight.js/lib/languages/plaintext';
 import 'highlight.js/styles/github.css';
 import type { WebSocketFrame, FrameDirection, FrameType, SessionTargetSearchState } from '../../../../types';
-import { useMarkSearch } from '../../hooks/useMarkSearch';
 import { SseMessageList } from './SseMessageList';
+import {
+  FullscreenMessageViewer,
+  normalizeWSFrame,
+  type MessageItem,
+} from '../../../VirtualMessageViewer';
 
 hljs.registerLanguage('json', json);
 hljs.registerLanguage('plaintext', plaintext);
@@ -99,7 +104,6 @@ export const Messages = ({
   frameCount,
   isConnectionOpen = false,
   searchValue,
-  onSearch,
 }: MessagesProps) => {
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
@@ -183,8 +187,11 @@ export const Messages = ({
     };
   }, [recordId, isConnectionOpen]);
 
-  useMarkSearch(searchValue, () => tableRef.current, onSearch);
-
+  const [sseSearchQuery, setSseSearchQuery] = useState('');
+  const [sseSearchMode, setSseSearchMode] = useState<'highlight' | 'filter'>('highlight');
+  const [wsFullscreenOpen, setWsFullscreenOpen] = useState(false);
+  const [sseFullscreenOpen, setSseFullscreenOpen] = useState(false);
+  
   const filteredFrames = useMemo(() => {
     if (!searchValue.value) return frames;
     const searchLower = searchValue.value.toLowerCase();
@@ -194,6 +201,17 @@ export const Messages = ({
         frame.frame_type.toLowerCase().includes(searchLower)
     );
   }, [frames, searchValue.value]);
+
+  const normalizedWsMessages = useMemo<MessageItem[]>(() => {
+    return frames.map(normalizeWSFrame);
+  }, [frames]);
+
+  const normalizedSseMessages = useMemo<MessageItem[]>(() => {
+    if (!isWebSocket) {
+      return frames.map(normalizeWSFrame);
+    }
+    return [];
+  }, [frames, isWebSocket]);
 
   const columns: TableProps<WebSocketFrame>['columns'] = [
     {
@@ -318,16 +336,33 @@ export const Messages = ({
 
   if (!isWebSocket) {
     return (
-      <SseMessageList
-        frames={frames}
-        filteredFrames={filteredFrames}
-        loading={loading}
-        hasMore={hasMore}
-        searchValue={searchValue}
-        onSearch={onSearch}
-        onLoadMore={handleLoadMore}
-        onRefresh={handleRefresh}
-      />
+      <>
+        <SseMessageList
+          frames={frames}
+          loading={loading}
+          hasMore={hasMore}
+          searchQuery={sseSearchQuery}
+          searchMode={sseSearchMode}
+          onSearchChange={setSseSearchQuery}
+          onSearchModeChange={setSseSearchMode}
+          onLoadMore={handleLoadMore}
+          onRefresh={handleRefresh}
+          onFullscreenOpen={() => setSseFullscreenOpen(true)}
+        />
+        <FullscreenMessageViewer
+          open={sseFullscreenOpen}
+          onClose={() => setSseFullscreenOpen(false)}
+          items={normalizedSseMessages}
+          title={
+            <Space>
+              <Tag color="orange">SSE</Tag>
+              <Text type="secondary">{frames.length} events</Text>
+            </Space>
+          }
+          initialQuery={sseSearchQuery}
+          initialMatchMode={sseSearchMode}
+        />
+      </>
     );
   }
 
@@ -346,6 +381,14 @@ export const Messages = ({
           {hasMore && ' (more available)'}
         </Text>
         <Space>
+          <Tooltip title="Fullscreen">
+            <Button
+              size="small"
+              icon={<FullscreenOutlined />}
+              onClick={() => setWsFullscreenOpen(true)}
+              disabled={frames.length === 0}
+            />
+          </Tooltip>
           {hasMore && (
             <Button
               size="small"
@@ -479,6 +522,20 @@ export const Messages = ({
           </pre>
         )}
       </Modal>
+
+      <FullscreenMessageViewer
+        open={wsFullscreenOpen}
+        onClose={() => setWsFullscreenOpen(false)}
+        items={normalizedWsMessages}
+        title={
+          <Space>
+            <Tag color="purple">WebSocket</Tag>
+            <Text type="secondary">{frames.length} frames</Text>
+          </Space>
+        }
+        initialQuery={searchValue.value}
+        initialMatchMode="highlight"
+      />
     </div>
   );
 };
