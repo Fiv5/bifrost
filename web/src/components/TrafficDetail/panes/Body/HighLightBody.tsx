@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from 'react';
+import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import { theme, Button, Tooltip, message } from 'antd';
 import { CopyOutlined, FormatPainterOutlined } from '@ant-design/icons';
 import hljs from 'highlight.js/lib/core';
@@ -111,11 +111,22 @@ export const HighLightBody = ({
     setIsFormatted((prev) => !prev);
   }, []);
 
-  useMarkSearch(
+  const { startMarkSearch } = useMarkSearch(
     searchValue,
     () => codeRef.current,
     onSearch
   );
+
+  useEffect(() => {
+    const el = codeRef.current;
+    if (!el) return;
+    el.innerHTML = highlighted;
+  }, [highlighted]);
+
+  useEffect(() => {
+    if (!searchValue.value) return;
+    startMarkSearch();
+  }, [highlighted, searchValue.value, startMarkSearch]);
 
   if (!data) {
     return null;
@@ -171,11 +182,7 @@ export const HighLightBody = ({
           lineHeight: 1.4,
         }}
       >
-        <code
-          ref={codeRef}
-          dangerouslySetInnerHTML={{ __html: highlighted }}
-          style={{ fontFamily: 'inherit' }}
-        />
+        <code ref={codeRef} style={{ fontFamily: 'inherit' }} />
       </pre>
       {shouldShowMore && (
         <Button

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import { theme, Button } from 'antd';
 import type { SessionTargetSearchState } from '../../../../types';
 import { useTextSelection } from '../../hooks/useTextSelection';
@@ -53,11 +53,22 @@ export const HexView = ({ data, searchValue, onSearch }: HexViewProps) => {
 
   const shouldShowMore = !showAll && (data?.length ?? 0) > DEFAULT_SHOW_MAX_SIZE;
 
-  useMarkSearch(
+  const { startMarkSearch } = useMarkSearch(
     searchValue,
     () => contentRef.current,
     onSearch
   );
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    el.textContent = hexData;
+  }, [hexData]);
+
+  useEffect(() => {
+    if (!searchValue.value) return;
+    startMarkSearch();
+  }, [hexData, searchValue.value, startMarkSearch]);
 
   if (!data) {
     return null;
@@ -78,9 +89,7 @@ export const HexView = ({ data, searchValue, onSearch }: HexViewProps) => {
           overflowX: 'auto',
           lineHeight: 1.4,
         }}
-      >
-        {hexData}
-      </pre>
+      />
       {shouldShowMore && (
         <Button
           type="link"

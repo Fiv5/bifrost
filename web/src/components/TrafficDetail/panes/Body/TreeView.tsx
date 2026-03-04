@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { Tree, Typography, theme, ConfigProvider } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import type { SessionTargetSearchState } from '../../../../types';
@@ -16,6 +16,7 @@ const isObject = (val: unknown): val is Record<string, unknown> =>
 
 interface TreeNodeData {
   key: string;
+  parentKey?: string;
   label: string;
   value: string;
   isExpandable: boolean;
@@ -32,6 +33,7 @@ const buildTreeNodeData = (
       const isExpandable = typeof item === 'object' && item !== null;
       return {
         key,
+        parentKey: path,
         label: `[${index}]`,
         value: isExpandable
           ? Array.isArray(item)
@@ -50,6 +52,7 @@ const buildTreeNodeData = (
       const isExpandable = typeof v === 'object' && v !== null;
       return {
         key,
+        parentKey: path,
         label: k,
         value: isExpandable
           ? Array.isArray(v)
@@ -65,36 +68,142 @@ const buildTreeNodeData = (
   return [];
 };
 
-const convertToDataNode = (
+interface MatchItem {
+  index: number;
+  nodeKey: string;
+  expandKeys: React.Key[];
+}
+
+const findMatchPositions = (text: string, query: string) => {
+  if (!query) return [];
+  const t = text.toLowerCase();
+  const q = query.toLowerCase();
+  if (!q) return [];
+  const positions: number[] = [];
+  let startIndex = 0;
+  while (startIndex <= t.length - q.length) {
+    const idx = t.indexOf(q, startIndex);
+    if (idx === -1) break;
+    positions.push(idx);
+    startIndex = idx + q.length;
+  }
+  return positions;
+};
+
+const renderHighlightedText = (
+  text: string,
+  query: string | undefined,
+  matchIndices: number[],
+  currentIndex: number
+) => {
+  if (!query || !query.length || matchIndices.length === 0) {
+    return text;
+  }
+
+  const positions = findMatchPositions(text, query);
+  if (positions.length === 0) {
+    return text;
+  }
+
+  const qLen = query.length;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  positions.forEach((pos, i) => {
+    if (pos > last) {
+      parts.push(text.slice(last, pos));
+    }
+    const matchIndex = matchIndices[i];
+    parts.push(
+      <mark
+        key={`${pos}-${matchIndex}`}
+        data-bifrost-match-index={matchIndex}
+        className={matchIndex === currentIndex ? 'mark-current' : undefined}
+      >
+        {text.slice(pos, pos + qLen)}
+      </mark>
+    );
+    last = pos + qLen;
+  });
+  if (last < text.length) {
+    parts.push(text.slice(last));
+  }
+  return parts;
+};
+
+const buildTreeDataAndMatches = (
   nodes: TreeNodeData[],
-  searchValue?: string
-): DataNode[] => {
-  return nodes.map((node) => ({
-    key: node.key,
-    title: (
-      <span>
-        <Text strong>{node.label}: </Text>
-        {node.isExpandable ? (
-          <Text type="secondary">{node.value}</Text>
-        ) : (
-          <Text
-            style={{
-              background:
-                searchValue &&
-                node.value.toLowerCase().includes(searchValue.toLowerCase())
-                  ? '#ffe58f'
-                  : undefined,
-            }}
-          >
-            {node.value}
-          </Text>
-        )}
-      </span>
-    ),
-    children: node.children
-      ? convertToDataNode(node.children, searchValue)
-      : undefined,
-  }));
+  query: string | undefined,
+  currentIndex: number
+): { treeData: DataNode[]; matches: MatchItem[] } => {
+  const matches: MatchItem[] = [];
+  let counter = 0;
+
+  const walk = (ns: TreeNodeData[], path: React.Key[]): DataNode[] => {
+    return ns.map((node) => {
+      const currentPath = [...path, node.key];
+      const labelPositions = query ? findMatchPositions(node.label, query) : [];
+      const valuePositions = query ? findMatchPositions(node.value, query) : [];
+
+      const labelMatchIndices = labelPositions.map(() => {
+        counter += 1;
+        matches.push({
+          index: counter,
+          nodeKey: node.key,
+          expandKeys: currentPath.slice(0, -1),
+        });
+        return counter;
+      });
+
+      const valueMatchIndices = valuePositions.map(() => {
+        counter += 1;
+        matches.push({
+          index: counter,
+          nodeKey: node.key,
+          expandKeys: currentPath.slice(0, -1),
+        });
+        return counter;
+      });
+
+      return {
+        key: node.key,
+        title: (
+          <span data-bifrost-tree-key={node.key}>
+            <Text strong>
+              {renderHighlightedText(
+                node.label,
+                query,
+                labelMatchIndices,
+                currentIndex
+              )}
+              :{' '}
+            </Text>
+            {node.isExpandable ? (
+              <Text type="secondary">
+                {renderHighlightedText(
+                  node.value,
+                  query,
+                  valueMatchIndices,
+                  currentIndex
+                )}
+              </Text>
+            ) : (
+              <Text>
+                {renderHighlightedText(
+                  node.value,
+                  query,
+                  valueMatchIndices,
+                  currentIndex
+                )}
+              </Text>
+            )}
+          </span>
+        ),
+        children: node.children ? walk(node.children, currentPath) : undefined,
+      };
+    });
+  };
+
+  return { treeData: walk(nodes, []), matches };
 };
 
 const parseJsonSafe = (data: string): { parsed: unknown; error: boolean } => {
@@ -105,9 +214,12 @@ const parseJsonSafe = (data: string): { parsed: unknown; error: boolean } => {
   }
 };
 
-export const TreeView = ({ data, searchValue }: TreeViewProps) => {
+export const TreeView = ({ data, searchValue, onSearch }: TreeViewProps) => {
   const { token } = theme.useToken();
-  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(['root']);
+  const [manualExpandedKeys, setManualExpandedKeys] = useState<React.Key[]>([
+    'root',
+  ]);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   const parsedData = useMemo(() => {
     if (!data) return { parsed: null, error: false };
@@ -132,13 +244,84 @@ export const TreeView = ({ data, searchValue }: TreeViewProps) => {
     ];
   }, [parsedData]);
 
-  const treeData = useMemo<DataNode[]>(() => {
-    return convertToDataNode(treeNodeData, searchValue.value);
-  }, [treeNodeData, searchValue.value]);
+  const currentIndex = useMemo(() => {
+    const next = searchValue.next ?? 1;
+    const v = searchValue.value;
+    if (!v) return 0;
+    if (!Number.isFinite(next) || next < 1) return 1;
+    return Math.floor(next);
+  }, [searchValue.next, searchValue.value]);
+
+  const { treeData, matches } = useMemo(() => {
+    return buildTreeDataAndMatches(treeNodeData, searchValue.value, currentIndex);
+  }, [treeNodeData, searchValue.value, currentIndex]);
+
+  const totalMatches = matches.length;
+  const safeCurrentIndex = useMemo(() => {
+    if (!searchValue.value || totalMatches === 0) return 0;
+    const next = searchValue.next ?? 1;
+    const t = Math.min(totalMatches, Math.max(1, Math.floor(next)));
+    return t;
+  }, [searchValue.value, searchValue.next, totalMatches]);
+
+  const searchExpandKeys = useMemo(() => {
+    if (!searchValue.value) return [];
+    if (safeCurrentIndex === 0 || totalMatches === 0) return [];
+    return matches[safeCurrentIndex - 1]?.expandKeys ?? [];
+  }, [matches, safeCurrentIndex, searchValue.value, totalMatches]);
+
+  const expandedKeys = useMemo(() => {
+    const set = new Set<React.Key>();
+    manualExpandedKeys.forEach((k) => set.add(k));
+    searchExpandKeys.forEach((k) => set.add(k));
+    return Array.from(set);
+  }, [manualExpandedKeys, searchExpandKeys]);
 
   const onExpand = useCallback((keys: React.Key[]) => {
-    setExpandedKeys(keys);
+    setManualExpandedKeys(keys);
   }, []);
+
+  useEffect(() => {
+    if (!searchValue.value) {
+      if ((searchValue.total ?? 0) !== 0) {
+        onSearch({ total: 0 });
+      }
+      return;
+    }
+
+    if ((searchValue.total ?? 0) !== totalMatches) {
+      onSearch({ total: totalMatches });
+    }
+
+    if (totalMatches > 0) {
+      const next = searchValue.next ?? 1;
+      const t = Math.min(totalMatches, Math.max(1, Math.floor(next)));
+      if (t !== next) {
+        onSearch({ next: t });
+      }
+    }
+  }, [
+    onSearch,
+    searchValue.next,
+    searchValue.total,
+    searchValue.value,
+    totalMatches,
+  ]);
+
+  useLayoutEffect(() => {
+    if (!searchValue.value) return;
+    if (safeCurrentIndex === 0 || totalMatches === 0) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    const id = safeCurrentIndex;
+    const handle = requestAnimationFrame(() => {
+      const mark = el.querySelector(
+        `mark[data-bifrost-match-index="${id}"]`
+      ) as HTMLElement | null;
+      mark?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(handle);
+  }, [safeCurrentIndex, searchValue.value, totalMatches, expandedKeys, treeData]);
 
   if (!data) {
     return null;
@@ -154,6 +337,7 @@ export const TreeView = ({ data, searchValue }: TreeViewProps) => {
 
   return (
     <div
+      ref={wrapRef}
       style={{
         padding: 4,
         backgroundColor: token.colorBgLayout,
