@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { TrafficSummary, TrafficRecord, ToolbarFilters, FilterCondition, TrafficUpdatesFilter, TrafficSummaryCompact, TrafficDeltaData } from '../types';
 import * as api from '../api';
 import pushService, { type TrafficUpdatesData } from '../services/pushService';
@@ -408,36 +409,38 @@ const compactToSummary = (c: TrafficSummaryCompact): TrafficSummary => {
   };
 };
 
-export const useTrafficStore = create<TrafficState>((set, get) => ({
-  records: [],
-  recordsMap: new Map(),
-  currentRecord: null,
-  requestBody: null,
-  responseBody: null,
-  serverTotal: 0,
-  serverSequence: 0,
-  hasMore: false,
-  lastId: null,
-  lastSequence: null,
-  pendingIds: new Set(),
-  toolbarFilters: { rule: [], protocol: [], type: [], status: [], imported: [] },
-  filterConditions: [],
-  paused: false,
-  loading: false,
-  detailLoading: false,
-  polling: false,
-  error: null,
-  pollTimeoutId: null,
-  autoScroll: true,
-  newRecordsCount: 0,
-  scrollTop: 0,
-  usePush: true,
-  pushUnsubscribe: null,
-  pushDeltaUnsubscribe: null,
-  filterVersion: 0,
-  initialized: false,
-  selectedId: undefined,
-  useDbMode: true,
+export const useTrafficStore = create<TrafficState>()(
+  persist(
+    (set, get) => ({
+      records: [],
+      recordsMap: new Map(),
+      currentRecord: null,
+      requestBody: null,
+      responseBody: null,
+      serverTotal: 0,
+      serverSequence: 0,
+      hasMore: false,
+      lastId: null,
+      lastSequence: null,
+      pendingIds: new Set(),
+      toolbarFilters: { rule: [], protocol: [], type: [], status: [], imported: [] },
+      filterConditions: [],
+      paused: false,
+      loading: false,
+      detailLoading: false,
+      polling: false,
+      error: null,
+      pollTimeoutId: null,
+      autoScroll: true,
+      newRecordsCount: 0,
+      scrollTop: 0,
+      usePush: true,
+      pushUnsubscribe: null,
+      pushDeltaUnsubscribe: null,
+      filterVersion: 0,
+      initialized: false,
+      selectedId: undefined,
+      useDbMode: true,
 
   startPolling: () => {
     const state = get();
@@ -1015,5 +1018,19 @@ export const useTrafficStore = create<TrafficState>((set, get) => ({
 
   setScrollTop: (scrollTop: number) => set({ scrollTop }),
 
-  setSelectedId: (id: string | undefined) => set({ selectedId: id }),
-}));
+      setSelectedId: (id: string | undefined) => set({ selectedId: id }),
+    }),
+    {
+      name: 'bifrost-traffic-ui',
+      partialize: (state) => ({
+        toolbarFilters: state.toolbarFilters,
+        filterConditions: state.filterConditions,
+        autoScroll: state.autoScroll,
+        scrollTop: state.scrollTop,
+        selectedId: state.selectedId,
+        useDbMode: state.useDbMode,
+      }),
+      version: 1,
+    },
+  ),
+);

@@ -209,17 +209,15 @@ impl App {
 
 const HTTP_TIMEOUT: Duration = Duration::from_millis(500);
 
-fn fetch_all_data(
-    port: u16,
-    need_slow_refresh: bool,
-    force_all: bool,
-) -> (
+type FetchAllDataResult = (
     Option<MetricsSnapshot>,
     Option<Vec<RuleGroup>>,
     Option<Vec<Value>>,
     Option<ScriptsResponse>,
     Option<ConfigResponse>,
-) {
+);
+
+fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchAllDataResult {
     let (tx, rx) = mpsc::channel();
 
     let tx_metrics = tx.clone();

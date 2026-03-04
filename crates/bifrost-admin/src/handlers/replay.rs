@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -32,6 +33,74 @@ static REPLAY_SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
     once_cell::sync::Lazy::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_REPLAYS)));
 
 static REPLAY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+
+fn get_header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_str())
+}
+
+fn decode_replay_body(headers: &[(String, String)], body: &[u8]) -> Option<String> {
+    if body.is_empty() {
+        return None;
+    }
+
+    let encoding = get_header_value(headers, "content-encoding")
+        .unwrap_or("")
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+
+    let decoded = match encoding.as_str() {
+        "" => body.to_vec(),
+        "gzip" => {
+            let mut d = flate2::read::GzDecoder::new(std::io::Cursor::new(body));
+            let mut out = Vec::new();
+            d.read_to_end(&mut out).ok()?;
+            out
+        }
+        "deflate" => {
+            let mut d = flate2::read::ZlibDecoder::new(std::io::Cursor::new(body));
+            let mut out = Vec::new();
+            d.read_to_end(&mut out).ok()?;
+            out
+        }
+        "br" => {
+            let mut d = brotli::Decompressor::new(std::io::Cursor::new(body), 4096);
+            let mut out = Vec::new();
+            d.read_to_end(&mut out).ok()?;
+            out
+        }
+        "zstd" => zstd::stream::decode_all(std::io::Cursor::new(body)).ok()?,
+        _ => body.to_vec(),
+    };
+
+    Some(String::from_utf8_lossy(&decoded).to_string())
+}
+
+#[cfg(test)]
+mod replay_body_decode_tests {
+    use super::decode_replay_body;
+
+    #[test]
+    fn decode_gzip_response_body() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let raw = br#"{"ok":true,"msg":"hello"}"#;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(raw).unwrap();
+        let gz = enc.finish().unwrap();
+
+        let headers = vec![("content-encoding".to_string(), "gzip".to_string())];
+        let decoded = decode_replay_body(&headers, &gz).unwrap();
+        assert_eq!(decoded, String::from_utf8_lossy(raw));
+    }
+}
 
 fn default_method() -> String {
     "GET".to_string()
@@ -340,7 +409,10 @@ async fn execute_replay_unified(
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
 
-        let response_body = response.text().await.ok();
+        let response_body = match response.bytes().await {
+            Ok(b) => decode_replay_body(&response_headers, &b),
+            Err(_) => None,
+        };
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         drop(permit);

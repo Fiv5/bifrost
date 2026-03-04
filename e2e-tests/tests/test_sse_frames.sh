@@ -181,7 +181,7 @@ test_sse_frames_capture() {
     fi
 
     local traffic_id
-    traffic_id=$(echo "$traffic_list" | jq -r '.records[] | select(.url | contains("/sse")) | .id' | head -1)
+    traffic_id=$(echo "$traffic_list" | jq -r '.records[] | select((.url // .p // "") | contains("/sse")) | .id' | head -1)
 
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         log_fail "No SSE traffic found in traffic list"
@@ -190,7 +190,11 @@ test_sse_frames_capture() {
     fi
 
     local record
-    record=$(echo "$traffic_list" | jq -r ".records[] | select(.id == \"$traffic_id\")")
+    record=$(get_traffic_detail "$traffic_id")
+    if [[ $? -ne 0 || -z "$record" ]]; then
+        log_fail "Failed to get traffic detail for $traffic_id"
+        return 1
+    fi
 
     local is_sse
     is_sse=$(echo "$record" | jq -r '.is_sse // false')

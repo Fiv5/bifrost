@@ -45,6 +45,7 @@ import CodeEditor from "./CodeEditor";
 import {
   DEFAULT_TIMEOUT_MS,
   type ReplayKeyValueItem,
+  type ReplayRequest,
   type BodyType,
   type RawType,
   type RuleMode,
@@ -86,74 +87,206 @@ interface ParsedCurl {
   };
 }
 
-function parseCurl(curlCommand: string): ParsedCurl | null {
-  const trimmed = curlCommand.trim();
-  if (!trimmed.toLowerCase().startsWith("curl")) {
-    return null;
+function tokenizeCommand(input: string): string[] {
+  const normalized = input.trim().replace(/\\\r?\n/g, " ");
+  const tokens: string[] = [];
+  let i = 0;
+  let current = "";
+  let quote: "'" | '"' | null = null;
+
+  const pushCurrent = () => {
+    if (current !== "") {
+      tokens.push(current);
+      current = "";
+    }
+  };
+
+  while (i < normalized.length) {
+    const ch = normalized[i];
+
+    if (quote === null) {
+      if (/\s/.test(ch)) {
+        pushCurrent();
+        i += 1;
+        continue;
+      }
+
+      if (ch === "'" || ch === '"') {
+        quote = ch;
+        i += 1;
+        continue;
+      }
+
+      if (ch === "\\") {
+        if (i + 1 < normalized.length) {
+          current += normalized[i + 1];
+          i += 2;
+          continue;
+        }
+        i += 1;
+        continue;
+      }
+
+      current += ch;
+      i += 1;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (ch === "'") {
+        quote = null;
+        i += 1;
+        continue;
+      }
+      current += ch;
+      i += 1;
+      continue;
+    }
+
+    if (ch === '"') {
+      quote = null;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "\\") {
+      if (i + 1 < normalized.length) {
+        current += normalized[i + 1];
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+
+    current += ch;
+    i += 1;
   }
 
-  const normalized = trimmed
-    .replace(/\\\n/g, " ")
-    .replace(/\\\r\n/g, " ")
-    .replace(/\s+/g, " ");
+  pushCurrent();
+  return tokens;
+}
+
+function parseCurl(curlCommand: string): ParsedCurl | null {
+  const tokens = tokenizeCommand(curlCommand);
+  if (tokens.length === 0 || tokens[0].toLowerCase() !== "curl") {
+    return null;
+  }
 
   let method = "GET";
   let url = "";
   const headers: ReplayKeyValueItem[] = [];
-  let bodyContent = "";
+  const bodyParts: string[] = [];
   let contentType = "";
 
-  const methodMatch = normalized.match(/-X\s+['"]?(\w+)['"]?/i);
-  if (methodMatch) {
-    method = methodMatch[1].toUpperCase();
-  }
+  const positional: string[] = [];
+  const optionsWithValue = new Set([
+    "-X",
+    "--request",
+    "--url",
+    "-H",
+    "--header",
+    "-d",
+    "--data",
+    "--data-raw",
+    "--data-binary",
+    "--data-urlencode",
+    "--json",
+    "-e",
+    "--referer",
+    "-u",
+    "--user",
+    "-b",
+    "--cookie",
+    "-x",
+    "--proxy",
+  ]);
 
-  const urlMatches = normalized.match(
-    /curl\s+(?:.*?\s+)?['"]?(https?:\/\/[^\s'"]+)['"]?/i,
-  );
-  if (urlMatches) {
-    url = urlMatches[1];
-  } else {
-    const simpleUrlMatch = normalized.match(
-      /curl\s+['"]?(https?:\/\/[^\s'"]+)['"]?/i,
-    );
-    if (simpleUrlMatch) {
-      url = simpleUrlMatch[1];
+  for (let i = 1; i < tokens.length; i += 1) {
+    const token = tokens[i];
+
+    if (token === "--") {
+      positional.push(...tokens.slice(i + 1));
+      break;
     }
-  }
 
-  const headerRegex = /-H\s+['"]([^'"]+)['"]/gi;
-  let headerMatch;
-  while ((headerMatch = headerRegex.exec(normalized)) !== null) {
-    const headerValue = headerMatch[1];
-    const colonIndex = headerValue.indexOf(":");
-    if (colonIndex !== -1) {
-      const key = headerValue.substring(0, colonIndex).trim();
-      const value = headerValue.substring(colonIndex + 1).trim();
-      headers.push({ id: generateId(), key, value, enabled: true });
-      if (key.toLowerCase() === "content-type") {
-        contentType = value.toLowerCase();
+    if (token === "-X" || token === "--request") {
+      const value = tokens[i + 1];
+      if (value) {
+        method = value.toUpperCase();
+        i += 1;
       }
+      continue;
     }
+
+    if (token === "--url") {
+      const value = tokens[i + 1];
+      if (value) {
+        url = value;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (token === "-e" || token === "--referer") {
+      if (tokens[i + 1]) {
+        i += 1;
+      }
+      continue;
+    }
+
+    if (token === "-H" || token === "--header") {
+      const headerValue = tokens[i + 1];
+      if (headerValue) {
+        const colonIndex = headerValue.indexOf(":");
+        if (colonIndex !== -1) {
+          const key = headerValue.substring(0, colonIndex).trim();
+          const value = headerValue.substring(colonIndex + 1).trim();
+          headers.push({ id: generateId(), key, value, enabled: true });
+          if (key.toLowerCase() === "content-type") {
+            contentType = value.toLowerCase();
+          }
+        }
+        i += 1;
+      }
+      continue;
+    }
+
+    if (
+      token === "-d" ||
+      token === "--data" ||
+      token === "--data-raw" ||
+      token === "--data-binary" ||
+      token === "--data-urlencode" ||
+      token === "--json"
+    ) {
+      const value = tokens[i + 1];
+      if (value !== undefined) {
+        bodyParts.push(value);
+        i += 1;
+      }
+      if (method === "GET") {
+        method = "POST";
+      }
+      continue;
+    }
+
+    if (token.startsWith("-")) {
+      if (optionsWithValue.has(token) && tokens[i + 1]) {
+        i += 1;
+      }
+      continue;
+    }
+
+    positional.push(token);
   }
 
-  const dataMatch = normalized.match(
-    /(?:-d|--data|--data-raw|--data-binary)\s+['"]([^'"]*)['"]/i,
-  );
-  if (dataMatch) {
-    bodyContent = dataMatch[1];
-    if (!method || method === "GET") {
-      method = "POST";
-    }
-  }
-
-  const dataAltMatch = normalized.match(
-    /(?:-d|--data|--data-raw|--data-binary)\s+([^\s-][^\s]*)/i,
-  );
-  if (!bodyContent && dataAltMatch) {
-    bodyContent = dataAltMatch[1];
-    if (!method || method === "GET") {
-      method = "POST";
+  if (!url) {
+    const urlCandidates = positional.filter((t) => /^(https?|wss?):\/\//i.test(t));
+    if (urlCandidates.length > 0) {
+      url = urlCandidates[urlCandidates.length - 1];
+    } else if (positional.length > 0) {
+      url = positional[positional.length - 1];
     }
   }
 
@@ -167,7 +300,7 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
     headers,
   };
 
-  if (bodyContent) {
+  if (bodyParts.length > 0) {
     let rawType: RawType = "text";
     if (contentType.includes("json")) {
       rawType = "json";
@@ -178,7 +311,7 @@ function parseCurl(curlCommand: string): ParsedCurl | null {
     result.body = {
       type: "raw",
       raw_type: rawType,
-      content: bodyContent,
+      content: bodyParts.join("&"),
     };
   }
 
@@ -317,12 +450,17 @@ export default function RequestPanel() {
       const parsed = parseCurl(pastedText);
       if (parsed) {
         e.preventDefault();
-        updateCurrentRequest({
+        const updates: Partial<ReplayRequest> = {
           method: parsed.method,
           url: parsed.url,
-          headers: parsed.headers.length > 0 ? parsed.headers : undefined,
-          body: parsed.body,
-        });
+        };
+        if (parsed.headers.length > 0) {
+          updates.headers = parsed.headers;
+        }
+        if (parsed.body) {
+          updates.body = parsed.body;
+        }
+        updateCurrentRequest(updates);
         message.success("cURL command imported successfully");
       }
     },

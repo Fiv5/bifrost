@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   SearchScope,
   SearchFilters,
@@ -44,10 +45,12 @@ const defaultScope: SearchScope = {
   all: true,
 };
 
-export const useSearchStore = create<SearchState>((set, get) => ({
-  mode: 'normal',
-  keyword: '',
-  scope: { ...defaultScope },
+export const useSearchStore = create<SearchState>()(
+  persist(
+    (set, get) => ({
+      mode: 'normal',
+      keyword: '',
+      scope: { ...defaultScope },
 
   results: [],
   totalSearched: 0,
@@ -198,22 +201,33 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
   },
 
-  reset: () => {
-    set({
-      mode: 'normal',
-      keyword: '',
-      scope: { ...defaultScope },
-      results: [],
-      totalSearched: 0,
-      totalMatched: 0,
-      hasMore: false,
-      nextCursor: null,
-      isSearching: false,
-      isLoadingMore: false,
-      searchId: null,
-    });
-  },
-}));
+      reset: () => {
+        set({
+          mode: 'normal',
+          keyword: '',
+          scope: { ...defaultScope },
+          results: [],
+          totalSearched: 0,
+          totalMatched: 0,
+          hasMore: false,
+          nextCursor: null,
+          isSearching: false,
+          isLoadingMore: false,
+          searchId: null,
+        });
+      },
+    }),
+    {
+      name: 'bifrost-search-ui',
+      partialize: (state) => ({
+        mode: state.mode,
+        keyword: state.keyword,
+        scope: state.scope,
+      }),
+      version: 1,
+    },
+  ),
+);
 
 export const compactToSummary = (c: TrafficSummaryCompact): TrafficSummary => {
   return {

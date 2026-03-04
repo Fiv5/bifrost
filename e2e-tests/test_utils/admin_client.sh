@@ -47,7 +47,7 @@ get_traffic_by_url() {
     local url_pattern="$1"
     local limit="${2:-10}"
 
-    get_traffic_list "$limit" | jq -r ".records[] | select(.url | contains(\"$url_pattern\"))"
+    get_traffic_list "$limit" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\"))"
 }
 
 find_traffic_id_by_url() {
@@ -59,9 +59,9 @@ find_traffic_id_by_url() {
     if [[ -z "$url_pattern" ]]; then
         url_pattern="$host"
         limit="${port:-50}"
-        get_traffic_list "$limit" | jq -r ".records[] | select(.url | contains(\"$url_pattern\")) | .id" | head -1
+        get_traffic_list "$limit" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     else
-        curl -s "http://${host}:${port}${ADMIN_PATH_PREFIX}/api/traffic?limit=${limit}" | jq -r ".records[] | select(.url | contains(\"$url_pattern\")) | .id" | head -1
+        curl -s "http://${host}:${port}${ADMIN_PATH_PREFIX}/api/traffic?limit=${limit}" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     fi
 }
 

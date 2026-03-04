@@ -17,7 +17,11 @@ import {
 import { useSearchStore, compactToSummary } from "../../stores/useSearchStore";
 import { useTrafficStore } from "../../stores/useTrafficStore";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
-import type { SearchFilters, SearchResultItem, TrafficSummary } from "../../types";
+import type {
+  SearchFilters,
+  SearchResultItem,
+  TrafficSummary,
+} from "../../types";
 import SearchResultsList from "./SearchResultsList";
 
 const { Text } = Typography;
@@ -53,14 +57,21 @@ export default function SearchMode({
 
   const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
   const filterConditions = useTrafficStore((state) => state.filterConditions);
-  const selectedClientIps = useFilterPanelStore((state) => state.selectedClientIps);
-  const selectedClientApps = useFilterPanelStore((state) => state.selectedClientApps);
+  const selectedClientIps = useFilterPanelStore(
+    (state) => state.selectedClientIps,
+  );
+  const selectedClientApps = useFilterPanelStore(
+    (state) => state.selectedClientApps,
+  );
   const selectedDomains = useFilterPanelStore((state) => state.selectedDomains);
 
   const buildFilters = useCallback((): SearchFilters => {
-    const importedApps = toolbarFilters.imported.length > 0 ? ["Bifrost Import"] : [];
-    const allClientApps = [...new Set([...selectedClientApps, ...importedApps])];
-    
+    const importedApps =
+      toolbarFilters.imported.length > 0 ? ["Bifrost Import"] : [];
+    const allClientApps = [
+      ...new Set([...selectedClientApps, ...importedApps]),
+    ];
+
     return {
       protocols: toolbarFilters.protocol,
       status_ranges: toolbarFilters.status,
@@ -95,7 +106,7 @@ export default function SearchMode({
         handleSearch();
       }
     },
-    [handleSearch]
+    [handleSearch],
   );
 
   const handleLoadMore = useCallback(() => {
@@ -111,7 +122,7 @@ export default function SearchMode({
       const summary = compactToSummary(item.record);
       onSelect(summary);
     },
-    [onSelect]
+    [onSelect],
   );
 
   const handleResultDoubleClick = useCallback(
@@ -119,7 +130,7 @@ export default function SearchMode({
       const summary = compactToSummary(item.record);
       onDoubleClick(summary);
     },
-    [onDoubleClick]
+    [onDoubleClick],
   );
 
   const styles = useMemo<Record<string, CSSProperties>>(
@@ -170,7 +181,7 @@ export default function SearchMode({
         justifyContent: "center",
       },
     }),
-    [token]
+    [token],
   );
 
   const scopeOptions = [
@@ -193,7 +204,9 @@ export default function SearchMode({
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={handleKeyDown}
-            prefix={<SearchOutlined style={{ color: token.colorTextSecondary }} />}
+            prefix={
+              <SearchOutlined style={{ color: token.colorTextSecondary }} />
+            }
             suffix={
               keyword ? (
                 <CloseOutlined
@@ -244,9 +257,7 @@ export default function SearchMode({
             <Text type="secondary">
               Found <Text strong>{totalMatched}</Text> matches
             </Text>
-            <Text type="secondary">
-              (searched {totalSearched} records)
-            </Text>
+            <Text type="secondary">(searched {totalSearched} records)</Text>
           </Space>
           {hasMore && (
             <Button

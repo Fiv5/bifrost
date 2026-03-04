@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import {
   getUiConfig,
   updateUiConfig,
@@ -55,18 +56,20 @@ const defaultCollapsedSections: CollapsedSections = {
   domain: false,
 };
 
-export const useFilterPanelStore = create<FilterPanelState>((set, get) => ({
-  pinnedFilters: [],
-  selectedClientIps: [],
-  selectedClientApps: [],
-  selectedDomains: [],
-  panelCollapsed: false,
-  panelWidth: 220,
-  collapsedSections: defaultCollapsedSections,
-  detailPanelCollapsed: false,
-  loading: false,
-  initialized: false,
-  searchKeyword: "",
+export const useFilterPanelStore = create<FilterPanelState>()(
+  persist(
+    (set, get) => ({
+      pinnedFilters: [],
+      selectedClientIps: [],
+      selectedClientApps: [],
+      selectedDomains: [],
+      panelCollapsed: false,
+      panelWidth: 220,
+      collapsedSections: defaultCollapsedSections,
+      detailPanelCollapsed: false,
+      loading: false,
+      initialized: false,
+      searchKeyword: "",
 
   addPinnedFilter: (filter) => {
     const state = get();
@@ -204,7 +207,7 @@ export const useFilterPanelStore = create<FilterPanelState>((set, get) => ({
     }
   },
 
-  saveToServer: async () => {
+      saveToServer: async () => {
     const state = get();
     const filterPanel: FilterPanelConfig = {
       collapsed: state.panelCollapsed,
@@ -217,8 +220,20 @@ export const useFilterPanelStore = create<FilterPanelState>((set, get) => ({
     } catch (err) {
       console.error("Failed to save UI config:", err);
     }
-  },
-}));
+      },
+    }),
+    {
+      name: "bifrost-filter-panel-ui",
+      partialize: (state) => ({
+        selectedClientIps: state.selectedClientIps,
+        selectedClientApps: state.selectedClientApps,
+        selectedDomains: state.selectedDomains,
+        searchKeyword: state.searchKeyword,
+      }),
+      version: 1,
+    },
+  ),
+);
 
 export const isFilterSelected = (
   state: FilterPanelState,

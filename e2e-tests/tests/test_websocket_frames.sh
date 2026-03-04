@@ -60,20 +60,32 @@ test_ws_text_frame_forwarding() {
     log_test "WebSocket text frame forwarding"
 
     local test_msg='{"test": "hello world"}'
-    local response
+    local conn_id
+    conn_id=$(ws_connect "$WS_SERVER/ws" "" 2>/dev/null) || true
+    if [[ -z "$conn_id" ]]; then
+        fail "Failed to establish WebSocket connection"
+        return 1
+    fi
 
-    response=$(ws_send_recv "$WS_SERVER/ws" "$test_msg" 5 2>/dev/null)
+    ws_send "$conn_id" "$test_msg" 2>/dev/null || true
 
-    if [[ -z "$response" ]]; then
+    local messages
+    messages=$(ws_wait_messages "$conn_id" 2 5 2>/dev/null) || true
+    ws_close "$conn_id" 2>/dev/null || true
+
+    local echo_line
+    echo_line=$(echo "$messages" | tail -n 1 | tr -d '\r')
+
+    if [[ -z "$echo_line" ]]; then
         fail "No response received"
         return 1
     fi
 
-    if echo "$response" | jq -e '.type == "echo"' >/dev/null 2>&1; then
+    if echo "$echo_line" | jq -e '.type == "echo"' >/dev/null 2>&1; then
         pass "Text frame forwarded and echoed correctly"
         return 0
     else
-        fail "Unexpected response: $response"
+        fail "Unexpected response: $echo_line"
         return 1
     fi
 }
@@ -85,7 +97,7 @@ test_ws_broadcast_mode() {
     response=$(ws_connect_recv_all "$WS_SERVER/ws/broadcast" 10 2>/dev/null)
 
     local broadcast_count
-    broadcast_count=$(echo "$response" | grep -c '"type":"broadcast"' || echo "0")
+    broadcast_count=$(echo "$response" | grep -c '"type":"broadcast"' || true)
 
     if [[ "$broadcast_count" -ge 5 ]]; then
         pass "Received $broadcast_count broadcast messages"

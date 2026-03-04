@@ -25,27 +25,40 @@ import FilterBar from "../../components/FilterBar";
 import ThreeSplitPane from "../../components/ThreeSplitPane";
 import FilterPanel from "../../components/FilterPanel";
 import SearchMode from "../../components/SearchMode";
+import {
+  decodeJsonFromQueryParam,
+  encodeJsonForQueryParam,
+} from "../../utils/urlState";
 import type {
   TrafficSummary,
   FilterCondition,
   ToolbarFilters,
+  SearchScope,
 } from "../../types";
 
 const FILTER_PARAM = "filter";
 const TOOLBAR_PARAM = "toolbar";
+const PANEL_PARAM = "panel";
+const SEARCH_PARAM = "search";
 
 const serializeFilters = (filters: FilterCondition[]): string => {
   if (filters.length === 0) return "";
-  return btoa(JSON.stringify(filters));
+  return encodeJsonForQueryParam(filters);
 };
 
 const deserializeFilters = (str: string): FilterCondition[] => {
   if (!str) return [];
-  try {
-    return JSON.parse(atob(str));
-  } catch {
-    return [];
-  }
+  const value = decodeJsonFromQueryParam<unknown>(str);
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((v): v is Record<string, unknown> => !!v && typeof v === "object")
+    .map((v) => ({
+      id: typeof v.id === "string" ? v.id : "",
+      field: typeof v.field === "string" ? v.field : "",
+      operator: typeof v.operator === "string" ? v.operator : "",
+      value: typeof v.value === "string" ? v.value : "",
+    }))
+    .filter((v) => v.id && v.field && v.operator);
 };
 
 const serializeToolbar = (toolbar: ToolbarFilters): string => {
@@ -53,18 +66,28 @@ const serializeToolbar = (toolbar: ToolbarFilters): string => {
     toolbar.rule.length > 0 ||
     toolbar.protocol.length > 0 ||
     toolbar.type.length > 0 ||
-    toolbar.status.length > 0;
+    toolbar.status.length > 0 ||
+    toolbar.imported.length > 0;
   if (!hasFilters) return "";
-  return btoa(JSON.stringify(toolbar));
+  return encodeJsonForQueryParam(toolbar);
 };
 
 const deserializeToolbar = (str: string): ToolbarFilters | null => {
   if (!str) return null;
-  try {
-    return JSON.parse(atob(str));
-  } catch {
-    return null;
-  }
+  const value = decodeJsonFromQueryParam<unknown>(str);
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const toStringArray = (input: unknown): string[] =>
+    Array.isArray(input)
+      ? input.filter((x): x is string => typeof x === "string")
+      : [];
+  return {
+    rule: toStringArray(v.rule),
+    protocol: toStringArray(v.protocol),
+    type: toStringArray(v.type),
+    status: toStringArray(v.status),
+    imported: toStringArray(v.imported),
+  };
 };
 
 export default function Traffic() {
@@ -143,15 +166,109 @@ export default function Traffic() {
     (state) => state.selectedClientApps,
   );
   const selectedDomains = useFilterPanelStore((state) => state.selectedDomains);
+  const setSelectedClientIps = useFilterPanelStore(
+    (state) => state.setSelectedClientIps,
+  );
+  const setSelectedClientApps = useFilterPanelStore(
+    (state) => state.setSelectedClientApps,
+  );
+  const setSelectedDomains = useFilterPanelStore(
+    (state) => state.setSelectedDomains,
+  );
   const filterPanelInitialized = useFilterPanelStore(
     (state) => state.initialized,
   );
 
-  const searchMode = useSearchStore((state) => state.mode) as string;
+  const searchMode = useSearchStore((state) => state.mode);
   const setSearchMode = useSearchStore((state) => state.setMode);
+  const searchKeyword = useSearchStore((state) => state.keyword);
+  const setSearchKeyword = useSearchStore((state) => state.setKeyword);
+  const searchScope = useSearchStore((state) => state.scope);
+  const setSearchScope = useSearchStore((state) => state.setScope);
 
-  const urlInitializedRef = useRef(false);
-  const isUpdatingUrlRef = useRef(false);
+  const pendingUrlUpdateRef = useRef<Record<string, string>>({});
+
+  const isDefaultSearchScope = useCallback((scope: SearchScope) => {
+    return (
+      scope.all === true &&
+      scope.request_body === false &&
+      scope.response_body === false &&
+      scope.request_headers === false &&
+      scope.response_headers === false &&
+      scope.url === false &&
+      scope.websocket_messages === false &&
+      scope.sse_events === false
+    );
+  }, []);
+
+  const serializePanel = useCallback(() => {
+    const hasAny =
+      selectedClientIps.length > 0 ||
+      selectedClientApps.length > 0 ||
+      selectedDomains.length > 0;
+    if (!hasAny) return "";
+    return encodeJsonForQueryParam({
+      clientIps: selectedClientIps,
+      clientApps: selectedClientApps,
+      domains: selectedDomains,
+    });
+  }, [selectedClientApps, selectedClientIps, selectedDomains]);
+
+  const deserializePanel = useCallback((str: string) => {
+    const toStringArray = (input: unknown): string[] =>
+      Array.isArray(input)
+        ? input.filter(
+            (x): x is string => typeof x === "string" && x.length > 0,
+          )
+        : [];
+    const value = decodeJsonFromQueryParam<unknown>(str || "");
+    if (!value || typeof value !== "object") {
+      return { clientIps: [], clientApps: [], domains: [] };
+    }
+    const v = value as Record<string, unknown>;
+    return {
+      clientIps: toStringArray(v.clientIps),
+      clientApps: toStringArray(v.clientApps),
+      domains: toStringArray(v.domains),
+    };
+  }, []);
+
+  const serializeSearch = useCallback(() => {
+    const shouldPersist =
+      searchMode === "search" ||
+      searchKeyword.trim().length > 0 ||
+      !isDefaultSearchScope(searchScope);
+    if (!shouldPersist) return "";
+    return encodeJsonForQueryParam({
+      mode: searchMode,
+      keyword: searchKeyword,
+      scope: searchScope,
+    });
+  }, [isDefaultSearchScope, searchKeyword, searchMode, searchScope]);
+
+  const deserializeSearch = useCallback((str: string) => {
+    const value = decodeJsonFromQueryParam<unknown>(str || "");
+    if (!value || typeof value !== "object") return null;
+    const v = value as Record<string, unknown>;
+    const mode: "normal" | "search" = v.mode === "search" ? "search" : "normal";
+    const keyword = typeof v.keyword === "string" ? v.keyword : "";
+    const scopeValue = v.scope;
+    if (!scopeValue || typeof scopeValue !== "object") {
+      return { mode, keyword, scope: null as SearchScope | null };
+    }
+    const s = scopeValue as Record<string, unknown>;
+    const scope: SearchScope = {
+      request_body: s.request_body === true,
+      response_body: s.response_body === true,
+      request_headers: s.request_headers === true,
+      response_headers: s.response_headers === true,
+      url: s.url === true,
+      websocket_messages: s.websocket_messages === true,
+      sse_events: s.sse_events === true,
+      all: s.all !== false,
+    };
+    return { mode, keyword, scope };
+  }, []);
 
   const handleSystemProxyToggle = useCallback(
     async (enabled: boolean) => {
@@ -168,54 +285,160 @@ export default function Traffic() {
   );
 
   useEffect(() => {
-    if (urlInitializedRef.current) return;
-    urlInitializedRef.current = true;
-
-    const filterParam = searchParams.get(FILTER_PARAM);
-    const toolbarParam = searchParams.get(TOOLBAR_PARAM);
-    const filtersFromUrl = deserializeFilters(filterParam || "");
-    const toolbarFromUrl = deserializeToolbar(toolbarParam || "");
-    if (filtersFromUrl.length > 0 || toolbarFromUrl) {
-      initFromUrl(filtersFromUrl, toolbarFromUrl);
+    const pending = pendingUrlUpdateRef.current;
+    const pendingKeys = Object.keys(pending);
+    if (
+      pendingKeys.length > 0 &&
+      pendingKeys.every((k) => (searchParams.get(k) || "") === pending[k])
+    ) {
+      pendingUrlUpdateRef.current = {};
+      return;
     }
-  }, [searchParams, initFromUrl]);
+
+    const hasAnyStateParam = [
+      FILTER_PARAM,
+      TOOLBAR_PARAM,
+      PANEL_PARAM,
+      SEARCH_PARAM,
+    ].some((k) => searchParams.has(k));
+    if (!hasAnyStateParam) {
+      return;
+    }
+
+    const filterParam = searchParams.get(FILTER_PARAM) || "";
+    const toolbarParam = searchParams.get(TOOLBAR_PARAM) || "";
+    const panelParam = searchParams.get(PANEL_PARAM) || "";
+    const searchParam = searchParams.get(SEARCH_PARAM) || "";
+
+    const filtersFromUrl = deserializeFilters(filterParam);
+    const toolbarFromUrl = deserializeToolbar(toolbarParam);
+    initFromUrl(filtersFromUrl, toolbarFromUrl);
+
+    const panelFromUrl = deserializePanel(panelParam);
+    setSelectedClientIps(panelFromUrl.clientIps);
+    setSelectedClientApps(panelFromUrl.clientApps);
+    setSelectedDomains(panelFromUrl.domains);
+
+    const searchFromUrl = deserializeSearch(searchParam);
+    if (!searchFromUrl) {
+      setSearchMode("normal");
+      setSearchKeyword("");
+      setSearchScope({ all: true });
+      return;
+    }
+
+    setSearchMode(searchFromUrl.mode);
+    setSearchKeyword(searchFromUrl.keyword);
+    if (!searchFromUrl.scope) {
+      setSearchScope({ all: true });
+      return;
+    }
+    if (searchFromUrl.scope.all === true) {
+      setSearchScope({ all: true });
+      return;
+    }
+    setSearchScope(searchFromUrl.scope);
+  }, [
+    deserializePanel,
+    deserializeSearch,
+    initFromUrl,
+    searchParams,
+    setSearchKeyword,
+    setSearchMode,
+    setSearchScope,
+    setSelectedClientApps,
+    setSelectedClientIps,
+    setSelectedDomains,
+  ]);
 
   useEffect(() => {
-    if (!urlInitializedRef.current) return;
-    if (isUpdatingUrlRef.current) {
-      isUpdatingUrlRef.current = false;
-      return;
-    }
-
     const filterStr = serializeFilters(filterConditions);
     const toolbarStr = serializeToolbar(toolbarFilters);
+    const panelStr = serializePanel();
+    const searchStr = serializeSearch();
     const currentFilterStr = searchParams.get(FILTER_PARAM) || "";
     const currentToolbarStr = searchParams.get(TOOLBAR_PARAM) || "";
+    const currentPanelStr = searchParams.get(PANEL_PARAM) || "";
+    const currentSearchStr = searchParams.get(SEARCH_PARAM) || "";
 
-    if (filterStr === currentFilterStr && toolbarStr === currentToolbarStr) {
+    if (
+      filterStr === currentFilterStr &&
+      toolbarStr === currentToolbarStr &&
+      panelStr === currentPanelStr &&
+      searchStr === currentSearchStr
+    ) {
       return;
     }
 
-    isUpdatingUrlRef.current = true;
+    pendingUrlUpdateRef.current = {
+      [FILTER_PARAM]: filterStr,
+      [TOOLBAR_PARAM]: toolbarStr,
+      [PANEL_PARAM]: panelStr,
+      [SEARCH_PARAM]: searchStr,
+    };
     setSearchParams(
       (prev) => {
+        const next = new URLSearchParams(prev);
         if (filterStr) {
-          prev.set(FILTER_PARAM, filterStr);
+          next.set(FILTER_PARAM, filterStr);
         } else {
-          prev.delete(FILTER_PARAM);
+          next.delete(FILTER_PARAM);
         }
 
         if (toolbarStr) {
-          prev.set(TOOLBAR_PARAM, toolbarStr);
+          next.set(TOOLBAR_PARAM, toolbarStr);
         } else {
-          prev.delete(TOOLBAR_PARAM);
+          next.delete(TOOLBAR_PARAM);
         }
 
-        return prev;
+        if (panelStr) {
+          next.set(PANEL_PARAM, panelStr);
+        } else {
+          next.delete(PANEL_PARAM);
+        }
+
+        if (searchStr) {
+          next.set(SEARCH_PARAM, searchStr);
+        } else {
+          next.delete(SEARCH_PARAM);
+        }
+
+        return next;
       },
       { replace: true },
     );
-  }, [filterConditions, toolbarFilters, setSearchParams, searchParams]);
+  }, [
+    filterConditions,
+    searchKeyword,
+    searchMode,
+    searchScope,
+    selectedClientApps,
+    selectedClientIps,
+    selectedDomains,
+    serializePanel,
+    serializeSearch,
+    setSearchParams,
+    searchParams,
+    toolbarFilters,
+  ]);
+
+  const lastAutoFetchSelectedIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedId) {
+      lastAutoFetchSelectedIdRef.current = null;
+      return;
+    }
+    if (lastAutoFetchSelectedIdRef.current === selectedId) {
+      return;
+    }
+    if (currentRecord?.id === selectedId) {
+      lastAutoFetchSelectedIdRef.current = selectedId;
+      return;
+    }
+    lastAutoFetchSelectedIdRef.current = selectedId;
+    fetchTrafficDetail(selectedId);
+  }, [currentRecord?.id, fetchTrafficDetail, selectedId]);
 
   const handleSelect = useCallback(
     async (record: TrafficSummary) => {
@@ -316,7 +539,9 @@ export default function Traffic() {
   const handleClearFiltered = useCallback(async () => {
     const success = await clearTraffic(filteredRecords.map((r) => r.id));
     if (success) {
-      message.success(`${filteredRecords.length} filtered traffic records cleared`);
+      message.success(
+        `${filteredRecords.length} filtered traffic records cleared`,
+      );
       if (selectedId && filteredRecords.some((r) => r.id === selectedId)) {
         setSelectedId(undefined);
       }
@@ -389,7 +614,7 @@ export default function Traffic() {
             availableClientApps={clientInfo.apps}
             availableClientIps={clientInfo.ips}
             onSearchModeToggle={handleSearchModeToggle}
-            isSearchMode={searchMode === "search" as string}
+            isSearchMode={false}
           />
         </div>
       )}

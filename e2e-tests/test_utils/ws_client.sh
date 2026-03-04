@@ -5,6 +5,39 @@
 WS_TEMP_DIR="${WS_TEMP_DIR:-/tmp/bifrost_ws_test}"
 WS_TIMEOUT="${WS_TIMEOUT:-10}"
 
+ws_timeout_cmd() {
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$@"
+    elif command -v timeout >/dev/null 2>&1; then
+        timeout "$@"
+    else
+        local timeout_val="$1"
+        shift
+        perl -e '
+            use POSIX ":sys_wait_h";
+            my $timeout = $ARGV[0];
+            shift @ARGV;
+            my $pid = fork();
+            if ($pid == 0) {
+                exec(@ARGV);
+                exit(1);
+            }
+            eval {
+                local $SIG{ALRM} = sub { die "timeout\n" };
+                alarm($timeout);
+                waitpid($pid, 0);
+                alarm(0);
+            };
+            if ($@ eq "timeout\n") {
+                kill("TERM", $pid);
+                waitpid($pid, 0);
+                exit(124);
+            }
+            exit($? >> 8);
+        ' "$timeout_val" "$@"
+    fi
+}
+
 ws_ensure_deps() {
     if ! command -v websocat &> /dev/null; then
         echo "Error: websocat is required. Install with: brew install websocat" >&2
@@ -137,7 +170,7 @@ ws_send_recv() {
     
     ws_ensure_deps || return 1
     
-    echo "$message" | timeout "$timeout" websocat -t -1 "$url" 2>/dev/null
+    echo "$message" | ws_timeout_cmd "$timeout" websocat -t -1 "$url" 2>/dev/null
 }
 
 ws_connect_recv_all() {
@@ -146,5 +179,5 @@ ws_connect_recv_all() {
     
     ws_ensure_deps || return 1
     
-    timeout "$timeout" websocat -t "$url" 2>/dev/null
+    ws_timeout_cmd "$timeout" websocat -t "$url" 2>/dev/null
 }
