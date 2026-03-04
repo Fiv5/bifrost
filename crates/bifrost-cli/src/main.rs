@@ -10,11 +10,12 @@ mod help;
 mod parsing;
 mod process;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, TrafficCommands};
 use commands::{
     check_and_print_update_notice, handle_ca_command, handle_config_command, handle_rule_command,
     handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
-    run_search, run_start, run_status, run_status_tui, run_stop, OutputFormat, SearchOptions,
+    run_search, run_start, run_status, run_status_tui, run_stop, run_traffic_get, run_traffic_list,
+    OutputFormat, SearchOptions, TrafficGetOptions, TrafficListOptions,
 };
 use process::read_runtime_port;
 
@@ -167,6 +168,105 @@ fn main() {
             let exit_code = run_search(options);
             std::process::exit(exit_code);
         }
+        Some(Commands::Traffic { action }) => match action {
+            TrafficCommands::List {
+                limit,
+                cursor,
+                direction,
+                method,
+                status,
+                status_min,
+                status_max,
+                protocol,
+                host,
+                url,
+                path,
+                content_type,
+                client_ip,
+                client_app,
+                has_rule_hit,
+                is_websocket,
+                is_sse,
+                is_tunnel,
+                format,
+                no_color,
+            } => {
+                let options = TrafficListOptions {
+                    port: get_effective_port(cli.port),
+                    limit,
+                    cursor,
+                    direction,
+                    method,
+                    status,
+                    status_min,
+                    status_max,
+                    protocol,
+                    host,
+                    url,
+                    path,
+                    content_type,
+                    client_ip,
+                    client_app,
+                    has_rule_hit,
+                    is_websocket,
+                    is_sse,
+                    is_tunnel,
+                    format: format.parse().unwrap_or(OutputFormat::Table),
+                    no_color,
+                };
+                run_traffic_list(options)
+            }
+            TrafficCommands::Get {
+                id,
+                request_body,
+                response_body,
+                format,
+            } => {
+                let options = TrafficGetOptions {
+                    port: get_effective_port(cli.port),
+                    id,
+                    request_body,
+                    response_body,
+                    format: format.parse().unwrap_or(OutputFormat::JsonPretty),
+                };
+                run_traffic_get(options)
+            }
+            TrafficCommands::Search {
+                keyword,
+                interactive,
+                limit,
+                format,
+                url,
+                headers,
+                body,
+                status,
+                method,
+                protocol,
+                content_type,
+                domain,
+                no_color,
+            } => {
+                let is_interactive = interactive || keyword.is_none();
+                let options = SearchOptions {
+                    keyword: keyword.unwrap_or_default(),
+                    port: get_effective_port(cli.port),
+                    limit,
+                    format: format.parse().unwrap_or(OutputFormat::Table),
+                    interactive: is_interactive,
+                    scope_url: url,
+                    scope_headers: headers,
+                    scope_body: body,
+                    filter_status: status,
+                    filter_method: method,
+                    filter_protocol: protocol,
+                    filter_content_type: content_type,
+                    filter_domain: domain,
+                    no_color,
+                };
+                let exit_code = run_search(options);
+                std::process::exit(exit_code);
+            }
+        },
         None => run_start(
             cli.port,
             cli.host.clone(),

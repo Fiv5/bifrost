@@ -363,6 +363,7 @@ name = "bifrost-e2e"
 version = "0.0.10-beta"
 dependencies = [
  "bifrost-admin",
+ "bifrost-cli",
  "bifrost-core",
  "bifrost-proxy",
  "bifrost-tls",

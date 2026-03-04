@@ -84,6 +84,7 @@ start [OPTIONS]                   Start the proxy server (default)
 stop                              Stop the running proxy
 
 status                            Show proxy status
+  --tui                              Show interactive TUI dashboard
 
 rule <ACTION>                     Manage rules
   list                              List all rules
@@ -118,6 +119,39 @@ value <ACTION>                    Manage values for variable expansion
   delete <name>                     Delete a value
   import <file>                     Import from file (.txt/.kv/.json)
 
+upgrade [OPTIONS]                 Upgrade bifrost to the latest version
+  -y, --yes                         Skip confirmation prompt
+
+config [ACTION]                   Manage runtime configuration
+  show [--json] [--section <SECTION>]  Show configuration (default)
+  get <key> [--json]                  Get a configuration value (e.g., tls.enabled)
+  set <key> <value>                   Set a configuration value
+  add <key> <value>                   Add item to a list configuration
+  remove <key> <value>                Remove item from a list configuration
+  reset <key|all> [-y|--yes]           Reset a configuration to default value
+  clear-cache [-y|--yes]               Clear all caches (body, traffic, frame)
+  disconnect <domain>                  Disconnect connections by domain pattern
+  export [-o path] [--format json|toml] Export configuration to file
+
+traffic <ACTION>                  Inspect and query traffic records
+  list [OPTIONS]                     List traffic records
+  get [id] [OPTIONS]                 Get traffic record details by id/sequence
+  search [keyword] [OPTIONS]         Search traffic records (same as `bifrost search`)
+
+search [keyword] [OPTIONS]         Search traffic records with advanced filtering
+  -i, --interactive                   Interactive TUI mode (default if no keyword)
+  -l, --limit <N>                     Maximum results to return (default: 50)
+  -f, --format <FMT>                  Output format: table|compact|json|json-pretty
+  --url|--headers|--body              Search only in URL, headers, or body
+  --status <FILTER>                   Status: 2xx|3xx|4xx|5xx|error
+  --method <METHOD>                   HTTP method filter
+  --protocol <PROTO>                 Protocol: HTTP|HTTPS|WS|WSS
+  --domain <PATTERN>                 Domain pattern filter
+  --no-color                          Disable colored output
+
+TIP:
+    Use 'bifrost <command> -h' for the full list of options for any subcommand.
+
 ────────────────────────────────────────────────────────────────────────────
 ENVIRONMENT VARIABLES
 ────────────────────────────────────────────────────────────────────────────
@@ -148,6 +182,51 @@ Example rule with variables:
 Manage values:
   bifrost value set LOCAL_SERVER 127.0.0.1:3000
   bifrost value list
+
+────────────────────────────────────────────────────────────────────────────
+RULES QUICK START
+────────────────────────────────────────────────────────────────────────────
+
+Basic syntax:
+  pattern operation [operations...] [filters...] [lineProps://...]
+
+Pattern types (auto-detected):
+  Domain            example.com  example.com/api
+  IP/CIDR           192.168.1.1  192.168.0.0/16
+  Regex             /pattern/    /pattern/i
+  Wildcard          *.example.com  api?  $host
+  Negation          !*.example.com
+
+Common operations (examples):
+  example.com host://127.0.0.1:3000              Forward to upstream
+  example.com proxy://127.0.0.1:8080             Chain to another proxy
+  example.com reqHeaders://X-Test=1&X-Foo=bar     Inject request headers
+  example.com resHeaders://X-Debug=1              Inject response headers
+  example.com statusCode://404                    Override status code
+  example.com file://({\"ec\":0,\"data\":null})   Mock response body
+
+Filters and rule props:
+  includeFilter://m:GET           Only apply to GET
+  excludeFilter:///admin/         Exclude paths matching /admin/
+  lineProps://important           Higher priority
+  lineProps://disabled            Disable a rule
+
+How to apply rules:
+  bifrost start --rules \"example.com host://127.0.0.1:3000\"
+  bifrost start --rules-file ./rules.txt
+  bifrost rule add demo -c \"example.com reqHeaders://X-Bifrost=1\"
+
+Verify with curl:
+  curl -x http://127.0.0.1:9900 http://httpbin.org/headers
+  curl -x http://127.0.0.1:9900 https://httpbin.org/headers -k
+  # If you installed Bifrost CA, prefer:
+  # curl -x http://127.0.0.1:9900 https://httpbin.org/headers --cacert <path-to-bifrost-ca.pem>
+
+More docs:
+  https://github.com/bifrost-proxy/bifrost/tree/main/docs
+  https://github.com/bifrost-proxy/bifrost/blob/main/docs/rule.md
+  https://github.com/bifrost-proxy/bifrost/blob/main/docs/operation.md
+  https://github.com/bifrost-proxy/bifrost/blob/main/docs/pattern.md
 ")]
 pub struct Cli {
     #[arg(short = 'v', short_alias = 'V', long, action = ArgAction::Version, help = "Print version")]
@@ -308,7 +387,121 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ConfigCommands>,
     },
+    #[command(about = "Inspect and query traffic records")]
+    Traffic {
+        #[command(subcommand)]
+        action: TrafficCommands,
+    },
     #[command(about = "Search traffic records with advanced filtering")]
+    Search {
+        #[arg(help = "Search keyword (searches URL, headers, body)")]
+        keyword: Option<String>,
+        #[arg(short, long, help = "Interactive TUI mode (default if no keyword)")]
+        interactive: bool,
+        #[arg(short, long, default_value = "50", help = "Maximum results to return")]
+        limit: usize,
+        #[arg(
+            short,
+            long,
+            default_value = "table",
+            help = "Output format: table, compact, json, json-pretty"
+        )]
+        format: String,
+        #[arg(long, help = "Search only in URL/path")]
+        url: bool,
+        #[arg(long, help = "Search only in headers")]
+        headers: bool,
+        #[arg(long, help = "Search only in body")]
+        body: bool,
+        #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
+        status: Option<String>,
+        #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
+        method: Option<String>,
+        #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
+        protocol: Option<String>,
+        #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]
+        content_type: Option<String>,
+        #[arg(long, help = "Filter by domain pattern")]
+        domain: Option<String>,
+        #[arg(long, help = "Disable colored output")]
+        no_color: bool,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum TrafficCommands {
+    #[command(about = "List traffic records")]
+    List {
+        #[arg(short, long, default_value = "50", help = "Maximum records to return")]
+        limit: usize,
+        #[arg(
+            long,
+            help = "Cursor sequence for pagination (from next_cursor/prev_cursor)"
+        )]
+        cursor: Option<u64>,
+        #[arg(
+            long,
+            default_value = "backward",
+            help = "Pagination direction: backward or forward"
+        )]
+        direction: String,
+        #[arg(long, help = "Filter by HTTP method")]
+        method: Option<String>,
+        #[arg(long, help = "Filter by status code (exact)")]
+        status: Option<u16>,
+        #[arg(long, help = "Filter by status >= value")]
+        status_min: Option<u16>,
+        #[arg(long, help = "Filter by status <= value")]
+        status_max: Option<u16>,
+        #[arg(long, help = "Filter by protocol (http/https/ws/wss/h3)")]
+        protocol: Option<String>,
+        #[arg(long, help = "Filter host contains")]
+        host: Option<String>,
+        #[arg(long, help = "Filter URL contains")]
+        url: Option<String>,
+        #[arg(long, help = "Filter path contains")]
+        path: Option<String>,
+        #[arg(long, help = "Filter by content type")]
+        content_type: Option<String>,
+        #[arg(long, help = "Filter by client IP")]
+        client_ip: Option<String>,
+        #[arg(long, help = "Filter by client app")]
+        client_app: Option<String>,
+        #[arg(long, help = "Filter by rule hit (true/false)")]
+        has_rule_hit: Option<bool>,
+        #[arg(long, help = "Filter websocket only (true/false)")]
+        is_websocket: Option<bool>,
+        #[arg(long, help = "Filter SSE only (true/false)")]
+        is_sse: Option<bool>,
+        #[arg(long, help = "Filter tunnel only (true/false)")]
+        is_tunnel: Option<bool>,
+        #[arg(
+            short,
+            long,
+            default_value = "table",
+            help = "Output format: table, compact, json, json-pretty"
+        )]
+        format: String,
+        #[arg(long, help = "Disable colored output")]
+        no_color: bool,
+    },
+    #[command(about = "Get traffic record details by id")]
+    Get {
+        #[arg(help = "Traffic record id or sequence (optional; prompts if omitted)")]
+        id: Option<String>,
+        #[arg(long, help = "Include request body (best effort)")]
+        request_body: bool,
+        #[arg(long, help = "Include response body (best effort)")]
+        response_body: bool,
+        #[arg(
+            short,
+            long,
+            default_value = "json-pretty",
+            help = "Output format: table, compact, json, json-pretty"
+        )]
+        format: String,
+    },
+    #[command(about = "Search traffic records (same as `bifrost search`)")]
     Search {
         #[arg(help = "Search keyword (searches URL, headers, body)")]
         keyword: Option<String>,

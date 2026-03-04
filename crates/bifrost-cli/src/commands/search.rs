@@ -11,7 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
     style::{Color as RColor, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{
         Block, BorderType, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation,
         ScrollbarState, Table, Wrap,
@@ -289,17 +289,17 @@ fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
 
     let header = if use_color {
         format!(
-            "\x1b[1;37m{:>6}  {:>6}  {:7}  {:40}  {:50}  {:>10}  {:>8}\x1b[0m",
-            "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
+            "\x1b[1;37m{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}\x1b[0m",
+            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
         )
     } else {
         format!(
-            "{:>6}  {:>6}  {:7}  {:40}  {:50}  {:>10}  {:>8}",
-            "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
+            "{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}",
+            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
         )
     };
     println!("{}", header);
-    println!("{}", "─".repeat(140));
+    println!("{}", "─".repeat(150));
 
     for item in &response.results {
         let r = &item.record;
@@ -338,19 +338,20 @@ fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
 
         let proto = truncate_str(&r.proto, 7);
         let host = highlight_keyword(&truncate_str(&r.h, 40), &options.keyword, use_color);
-        let path = highlight_keyword(&truncate_str(&r.p, 50), &options.keyword, use_color);
+        let path = highlight_keyword(&truncate_str(&r.p, 46), &options.keyword, use_color);
         let size = format_size(r.res_sz);
         let time = format_duration(r.dur);
+        let seq = r.seq.to_string();
 
         if use_color {
             println!(
-                "{}{}  {}  {:7}  {}  {}  {:>10}  {:>8}\x1b[0m",
-                status_color, status_display, method_display, proto, host, path, size, time
+                "\x1b[90m{:>10}\x1b[0m  {}{}  {}  {:7}  {}  {}  {:>10}  {:>8}\x1b[0m",
+                seq, status_color, status_display, method_display, proto, host, path, size, time
             );
         } else {
             println!(
-                "{}  {}  {:7}  {}  {}  {:>10}  {:>8}",
-                status_display, method_display, proto, host, path, size, time
+                "{:>10}  {}  {}  {:7}  {}  {}  {:>10}  {:>8}",
+                seq, status_display, method_display, proto, host, path, size, time
             );
         }
 
@@ -403,11 +404,11 @@ fn print_compact_format(response: &SearchResponse, options: &SearchOptions) {
                 _ => "\x1b[37m",
             };
             println!(
-                "{}{}\x1b[0m {} \x1b[36m{}\x1b[0m{}",
-                status_color, status, r.m, r.h, r.p
+                "\x1b[90m{:>10}\x1b[0m {}{}\x1b[0m {} \x1b[36m{}\x1b[0m{}",
+                r.seq, status_color, status, r.m, r.h, r.p
             );
         } else {
-            println!("{} {} {}{}", status, r.m, r.h, r.p);
+            println!("{:>10} {} {} {}{}", r.seq, status, r.m, r.h, r.p);
         }
     }
 }
@@ -417,6 +418,7 @@ fn print_json_format(response: &SearchResponse, pretty: bool) {
         "results": response.results.iter().map(|item| {
             serde_json::json!({
                 "id": item.record.id,
+                "seq": item.record.seq,
                 "method": item.record.m,
                 "host": item.record.h,
                 "path": item.record.p,
@@ -462,25 +464,48 @@ fn highlight_keyword(text: &str, keyword: &str, use_color: bool) -> String {
     let mut last_end = 0;
 
     for (start, _) in lower_text.match_indices(&lower_keyword) {
-        result.push_str(&text[last_end..start]);
+        let prefix = match text.get(last_end..start) {
+            Some(s) => s,
+            None => return text.to_string(),
+        };
+        result.push_str(prefix);
         result.push_str("\x1b[1;33m");
-        result.push_str(&text[start..start + keyword.len()]);
+        let end = start + lower_keyword.len();
+        let highlighted = match text.get(start..end) {
+            Some(s) => s,
+            None => return text.to_string(),
+        };
+        result.push_str(highlighted);
         result.push_str("\x1b[0m");
-        last_end = start + keyword.len();
+        last_end = end;
     }
-    result.push_str(&text[last_end..]);
+    let rest = match text.get(last_end..) {
+        Some(s) => s,
+        None => return text.to_string(),
+    };
+    result.push_str(rest);
 
     result
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else if max_len > 3 {
-        format!("{}...", &s[..max_len - 3])
-    } else {
-        s[..max_len].to_string()
+    let len = s.chars().count();
+    if len <= max_len {
+        return s.to_string();
     }
+
+    let keep = max_len.saturating_sub(3);
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= keep {
+            break;
+        }
+        out.push(ch);
+    }
+    if keep < max_len {
+        out.push_str("...");
+    }
+    out
 }
 
 fn format_size(bytes: usize) -> String {
@@ -855,7 +880,6 @@ fn run_tui_loop<B: ratatui::backend::Backend>(
 
 fn draw_ui(f: &mut Frame, app: &mut InteractiveApp) {
     let size = f.area();
-    app.visible_height = size.height.saturating_sub(6) as usize;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -865,6 +889,12 @@ fn draw_ui(f: &mut Frame, app: &mut InteractiveApp) {
             Constraint::Length(2),
         ])
         .split(size);
+
+    let list_rows = chunks[1].height.saturating_sub(3) / 2;
+    app.visible_height = match app.mode {
+        AppMode::Detail => size.height.saturating_sub(6) as usize,
+        _ => list_rows.max(1) as usize,
+    };
 
     draw_search_bar(f, app, chunks[0]);
 
@@ -953,7 +983,7 @@ fn draw_results_list(f: &mut Frame, app: &InteractiveApp, area: Rect) {
         return;
     }
 
-    let header_cells = ["", "STATUS", "METHOD", "HOST", "PATH", "SIZE", "TIME"]
+    let header_cells = ["SEQ", "STATUS", "METHOD", "HOST", "PATH", "MATCH"]
         .iter()
         .map(|h| {
             Cell::from(*h).style(
@@ -975,8 +1005,6 @@ fn draw_results_list(f: &mut Frame, app: &InteractiveApp, area: Rect) {
     let rows = visible_results.iter().map(|(idx, item)| {
         let r = &item.record;
         let is_selected = *idx == app.selected_index;
-
-        let indicator = if is_selected { "▶" } else { " " };
 
         let status_str = if r.s == 0 {
             "...".to_string()
@@ -1010,16 +1038,36 @@ fn draw_results_list(f: &mut Frame, app: &InteractiveApp, area: Rect) {
             Style::default()
         };
 
+        let seq_line = if is_selected {
+            Line::from(vec![
+                Span::styled("▶", Style::default().fg(RColor::Yellow)),
+                Span::styled(
+                    format!("{:>9}", r.seq),
+                    Style::default()
+                        .fg(RColor::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+        } else {
+            Line::from(Span::styled(
+                format!("{:>10}", r.seq),
+                Style::default().fg(RColor::DarkGray),
+            ))
+        };
+
+        let (match_header, match_preview) = build_match_summary(item, &app.options.keyword);
+        let match_cell = Cell::from(Text::from(vec![match_header, match_preview]))
+            .style(Style::default().fg(RColor::White));
+
         Row::new(vec![
-            Cell::from(indicator).style(Style::default().fg(RColor::Yellow)),
+            Cell::from(Text::from(vec![seq_line, Line::from("")])),
             Cell::from(status_str).style(status_style),
             Cell::from(r.m.clone()).style(method_style),
-            Cell::from(truncate_str(&r.h, 30)),
+            Cell::from(truncate_str(&r.h, 28)),
             Cell::from(truncate_str(&r.p, 40)),
-            Cell::from(format_size(r.res_sz)),
-            Cell::from(format_duration(r.dur)),
+            match_cell,
         ])
-        .height(1)
+        .height(2)
         .style(row_style)
     });
 
@@ -1028,13 +1076,12 @@ fn draw_results_list(f: &mut Frame, app: &InteractiveApp, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(2),
+            Constraint::Length(12),
             Constraint::Length(7),
             Constraint::Length(8),
-            Constraint::Length(32),
+            Constraint::Length(30),
             Constraint::Min(20),
-            Constraint::Length(10),
-            Constraint::Length(10),
+            Constraint::Min(40),
         ],
     )
     .header(header)
@@ -1069,6 +1116,115 @@ fn draw_results_list(f: &mut Frame, app: &InteractiveApp, area: Rect) {
 
         f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
+}
+
+fn build_match_summary(item: &SearchResultItem, keyword: &str) -> (Line<'static>, Line<'static>) {
+    if item.matches.is_empty() {
+        let header = Line::from(Span::styled(
+            "NO_MATCH",
+            Style::default().fg(RColor::DarkGray),
+        ));
+        return (header, Line::from(""));
+    }
+
+    let mut fields = Vec::<&str>::new();
+    for m in &item.matches {
+        let f = m.field.as_str();
+        if !fields.contains(&f) {
+            fields.push(f);
+        }
+    }
+
+    let primary = item
+        .matches
+        .iter()
+        .find(|m| m.field != "url")
+        .unwrap_or(&item.matches[0]);
+
+    let label = match_field_label(&primary.field);
+    let extra = fields.len().saturating_sub(1);
+    let header_text = if extra > 0 {
+        format!("{}+{} ({})", label, extra, item.matches.len())
+    } else {
+        format!("{} ({})", label, item.matches.len())
+    };
+
+    let header = Line::from(vec![
+        Span::styled(
+            header_text,
+            Style::default()
+                .fg(RColor::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            truncate_str(&primary.preview, 28),
+            Style::default().fg(RColor::DarkGray),
+        ),
+    ]);
+
+    let preview_spans = highlight_spans(&truncate_str(&primary.preview, 80), keyword);
+    let preview = Line::from(preview_spans);
+    (header, preview)
+}
+
+fn match_field_label(field: &str) -> &'static str {
+    match field {
+        "url" => "URL",
+        "request_headers" => "REQ_HDR",
+        "response_headers" => "RES_HDR",
+        "request_body" => "REQ_BODY",
+        "response_body" => "RES_BODY",
+        "frames" => "FRAMES",
+        _ => "MATCH",
+    }
+}
+
+fn highlight_spans(text: &str, keyword: &str) -> Vec<Span<'static>> {
+    if keyword.is_empty() {
+        return vec![Span::raw(text.to_string())];
+    }
+
+    let lower_text = text.to_lowercase();
+    let lower_keyword = keyword.to_lowercase();
+    if !lower_text.contains(&lower_keyword) {
+        return vec![Span::raw(text.to_string())];
+    }
+
+    let mut spans = Vec::new();
+    let mut last_end = 0usize;
+
+    for (start, _) in lower_text.match_indices(&lower_keyword) {
+        if start > last_end {
+            let prefix = match text.get(last_end..start) {
+                Some(s) => s,
+                None => return vec![Span::raw(text.to_string())],
+            };
+            spans.push(Span::raw(prefix.to_string()));
+        }
+        let end = start + lower_keyword.len();
+        let highlighted = match text.get(start..end) {
+            Some(s) => s,
+            None => return vec![Span::raw(text.to_string())],
+        };
+        spans.push(Span::styled(
+            highlighted.to_string(),
+            Style::default()
+                .fg(RColor::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        last_end = end;
+    }
+
+    if last_end < text.len() {
+        let rest = match text.get(last_end..) {
+            Some(s) => s,
+            None => return vec![Span::raw(text.to_string())],
+        };
+        spans.push(Span::raw(rest.to_string()));
+    }
+
+    spans
 }
 
 fn draw_detail_view(f: &mut Frame, app: &InteractiveApp, area: Rect) {

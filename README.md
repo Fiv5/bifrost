@@ -315,6 +315,13 @@ bifrost status
 # 停止服务
 bifrost stop
 
+# 流量查看与搜索
+bifrost traffic list
+bifrost traffic list --method GET --status_min 400 --limit 100
+bifrost traffic get <id> --request-body --response-body
+bifrost traffic search "keyword"
+bifrost search "keyword"
+
 # CA 证书管理
 bifrost ca generate           # 生成 CA 证书
 bifrost ca generate --force   # 强制重新生成 CA 证书

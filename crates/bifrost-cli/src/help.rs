@@ -79,106 +79,35 @@ pub fn print_startup_help(port: u16) {
     print_banner();
     println!(
         r#"╭────────────────────────────────────────────────────────────────────────╮
-│                       BIFROST PROXY COMMANDS                           │
+│                               BIFROST                                   │
+│                        Proxy is up and running                           │
 ╰────────────────────────────────────────────────────────────────────────╯
 
-SUPPORTED PROTOCOLS
-  HTTP/1.1          Full support
-  HTTP/2            Frame-level processing, multiplexing
-  HTTP/3 (QUIC)     Based on Quinn, supports 0-RTT
-  HTTPS             TLS 1.2/1.3, MITM interception
-  SOCKS5 TCP        Username/password authentication
-  SOCKS5 UDP        Full UDP ASSOCIATE support
-  WebSocket         ws:// and wss:// protocols
-  CONNECT-UDP       MASQUE protocol (RFC 9298)
-  gRPC              Based on HTTP/2
-  SSE               Server-Sent Events
-
-PROXY CONTROL
-  bifrost status                    Show proxy status
-  bifrost stop                      Stop the running proxy
-
-RULE MANAGEMENT
-  bifrost rule list                 List all rules
-  bifrost rule add <name>           Add a new rule
-    -c, --content <CONTENT>           Rule content (inline)
-    -f, --file <FILE>                 Rule file path
-  bifrost rule enable <name>        Enable a rule
-  bifrost rule disable <name>       Disable a rule
-  bifrost rule show <name>          Show rule content
-  bifrost rule delete <name>        Delete a rule
-
-CA CERTIFICATE
-  bifrost ca info                   Show CA certificate info
-  bifrost ca export                 Export CA certificate
-    -o, --output <PATH>               Output file path
-  bifrost ca generate               (Re)generate CA certificate
-    -f, --force                       Force regenerate
-
-SYSTEM PROXY
-  bifrost system-proxy status       Show system proxy status
-  bifrost system-proxy enable       Enable system proxy
-    --host <HOST>                     Proxy host (default: 127.0.0.1)
-    --port <PORT>                     Proxy port
-    --bypass <LIST>                   Bypass list (comma-separated)
-  bifrost system-proxy disable      Disable system proxy
-
-VALUES (Variable Expansion)
-  bifrost value list                List all values
-  bifrost value get <name>          Get a value
-  bifrost value set <name> <value>  Set a value
-  bifrost value delete <name>       Delete a value
-  bifrost value import <file>       Import from file (.txt/.kv/.json)
-
-ACCESS CONTROL
-  bifrost whitelist list            List whitelist entries
-  bifrost whitelist add <ip>        Add IP/CIDR to whitelist
-  bifrost whitelist remove <ip>     Remove IP/CIDR from whitelist
-  bifrost whitelist allow-lan <bool> Enable/disable LAN access
-  bifrost whitelist status          Show access control settings
-
-START OPTIONS (bifrost start)
-  -p, --port <PORT>                   Unified proxy port for HTTP/HTTPS/SOCKS5
-  -H, --host <HOST>                   Listen address
-  --socks5-port <PORT>                Separate SOCKS5 port (optional)
-  -d, --daemon                        Run as background daemon
-  --skip-cert-check                   Skip CA certificate check
-  --access-mode <MODE>                Access mode: local_only|whitelist|interactive|allow_all
-  --whitelist <IPS>                   Client IP whitelist (comma-separated, supports CIDR)
-  --allow-lan                         Allow LAN (private network) clients
-  --rules <RULE>                      Proxy rule (can be repeated)
-  --rules-file <PATH>                 Path to rules file
-  --system-proxy                      Enable system proxy
-  --proxy-bypass <LIST>               System proxy bypass list
-
-TLS INTERCEPTION CONTROL
-  Domain-based options:
-    --no-intercept                    Disable TLS/HTTPS interception completely
-    --intercept-exclude <DOMAINS>     Domains to skip interception (comma-separated)
-    --intercept-include <DOMAINS>     Force intercept domains (highest priority)
-  
-  Application-based options:
-    --app-intercept-exclude <APPS>    Exclude apps from TLS interception (supports wildcards)
-    --app-intercept-include <APPS>    Force intercept apps (highest priority)
-  
-  Other options:
-    --unsafe-ssl                      Skip upstream TLS cert verification (dangerous)
-    --no-disconnect-on-config-change  Disable auto-disconnect when TLS config changes
-
-  Rule-based TLS control (highest priority):
-    example.com tlsIntercept://       Force TLS interception for matching domain
-    example.com tlsPassthrough://     Force TLS passthrough for matching domain
-
-  TLS Interception Priority (highest to lowest):
-    1. Rule-based (tlsIntercept://, tlsPassthrough://)
-    2. --intercept-include / --app-intercept-include: Always intercept
-    3. --intercept-exclude / --app-intercept-exclude: Never intercept
-    4. --no-intercept flag: Global switch (default: enabled)
-
 ADMIN UI
-  http://127.0.0.1:{port}/          Web-based admin interface
+  http://127.0.0.1:{port}/
 
-Use 'bifrost <command> --help' for more details."#,
+QUICK START (common workflows)
+  1) Proxy all traffic (local machine)
+     HTTP(S) proxy:  127.0.0.1:{port}
+     SOCKS5 proxy:   127.0.0.1:{port}  (or use --socks5-port)
+
+  2) Enable system proxy (so browsers/apps use it automatically)
+     bifrost system-proxy enable --host 127.0.0.1 --port {port}
+     bifrost system-proxy status
+
+  3) Stop / inspect
+     bifrost status
+     bifrost stop
+
+HELP & DISCOVERY
+  bifrost --help                     Full CLI help (global options + subcommands)
+  bifrost start --help               Start options (proxy behavior, TLS, access)
+  bifrost rule --help                Rule commands
+  bifrost config --help              Config management
+  bifrost traffic --help             Traffic capture & inspection
+  bifrost search --help              Search captured traffic (advanced)
+  bifrost upgrade --help             Self-upgrade
+Tip: Use 'bifrost <command> --help' to see all flags and examples."#,
         port = port
     );
     println!();

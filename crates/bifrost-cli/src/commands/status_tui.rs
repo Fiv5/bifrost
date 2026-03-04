@@ -113,6 +113,8 @@ struct App {
     qps_history: Vec<f64>,
     cpu_history: Vec<f32>,
     max_cpu: f32,
+    memory_used_history: Vec<u64>,
+    max_memory_used: u64,
     rules: Vec<RuleGroup>,
     values: Vec<Value>,
     scripts: ScriptsResponse,
@@ -133,6 +135,8 @@ impl App {
             qps_history: vec![0.0; QPS_HISTORY_SIZE],
             cpu_history: vec![0.0; CPU_HISTORY_SIZE],
             max_cpu: 0.0,
+            memory_used_history: vec![0; CPU_HISTORY_SIZE],
+            max_memory_used: 0,
             rules: Vec::new(),
             values: Vec::new(),
             scripts: ScriptsResponse {
@@ -170,6 +174,10 @@ impl App {
             self.cpu_history.remove(0);
             self.cpu_history.push(m.cpu_usage);
             self.max_cpu = self.max_cpu.max(m.cpu_usage);
+
+            self.memory_used_history.remove(0);
+            self.memory_used_history.push(m.memory_used);
+            self.max_memory_used = self.max_memory_used.max(m.memory_used);
 
             self.metrics = m;
         }
@@ -478,7 +486,7 @@ fn render_overview(frame: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     render_system_metrics(frame, layout[0], app);
-    render_cpu_sparkline(frame, layout[1], app);
+    render_cpu_memory_sparklines(frame, layout[1], app);
     render_qps_sparkline(frame, layout[2], app);
     render_connection_stats(frame, layout[3], app);
 }
@@ -583,6 +591,53 @@ fn render_cpu_sparkline(frame: &mut Frame, area: Rect, app: &App) {
         .max(1000)
         .style(Style::default().fg(Color::Cyan));
     frame.render_widget(sparkline, area);
+}
+
+fn render_memory_sparkline(frame: &mut Frame, area: Rect, app: &App) {
+    let width = area.width.saturating_sub(2) as usize;
+    let data: Vec<u64> = if width > 0 && !app.memory_used_history.is_empty() {
+        let step = app.memory_used_history.len() / width.max(1);
+        let step = step.max(1);
+        app.memory_used_history
+            .iter()
+            .rev()
+            .step_by(step)
+            .take(width)
+            .map(|&v| v / (1024 * 1024))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        vec![0; width]
+    };
+
+    let total_samples = app.memory_used_history.iter().filter(|&&v| v > 0).count();
+    let time_span = format_time_span(total_samples);
+
+    let max_mb = (app.max_memory_used / (1024 * 1024)).max(1);
+    let sparkline = Sparkline::default()
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            " Memory: {} / {} (max: {}) | {} ",
+            format_bytes(app.metrics.memory_used),
+            format_bytes(app.metrics.memory_total),
+            format_bytes(app.max_memory_used),
+            time_span
+        )))
+        .data(&data)
+        .max(max_mb)
+        .style(Style::default().fg(Color::Magenta));
+    frame.render_widget(sparkline, area);
+}
+
+fn render_cpu_memory_sparklines(frame: &mut Frame, area: Rect, app: &App) {
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    render_cpu_sparkline(frame, layout[0], app);
+    render_memory_sparkline(frame, layout[1], app);
 }
 
 fn render_qps_sparkline(frame: &mut Frame, area: Rect, app: &App) {

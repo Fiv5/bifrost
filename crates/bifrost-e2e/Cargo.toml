@@ -13,6 +13,7 @@ path = "src/main.rs"
 bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
 bifrost-admin = { path = "../bifrost-admin" }
+bifrost-cli = { path = "../bifrost-cli" }
 bifrost-tls = { path = "../bifrost-tls" }
 
 tokio = { workspace = true, features = [
