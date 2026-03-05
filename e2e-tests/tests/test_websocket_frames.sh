@@ -177,7 +177,13 @@ test_ws_frames_capture() {
     local frame_count
     frame_count=$(echo "$frames_response" | jq -r '.frames | length')
     if [[ "$frame_count" -ge 1 ]]; then
-        pass "Captured $frame_count frames"
+        local has_preview
+        has_preview=$(echo "$frames_response" | jq -r '[.frames[] | select((.payload_preview // "") | length > 0)] | length')
+        if [[ "${has_preview:-0}" -le 0 ]]; then
+            fail "Captured frames but payload_preview is empty"
+            return 1
+        fi
+        pass "Captured $frame_count frames with payload_preview"
         return 0
     fi
 

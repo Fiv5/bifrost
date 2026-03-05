@@ -349,6 +349,14 @@ test_sse_frame_content() {
         return 1
     fi
 
+    local has_preview
+    has_preview=$(echo "$frames" | jq -r '[.frames[] | select((.payload_preview // "") | length > 0)] | length')
+    if [[ "${has_preview:-0}" -le 0 ]]; then
+        log_debug "Frames response: $frames"
+        log_fail "SSE frames should include payload_preview"
+        return 1
+    fi
+
     return 0
 }
 

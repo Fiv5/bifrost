@@ -160,6 +160,27 @@ impl FrameStore {
         Ok(())
     }
 
+    pub fn load_pending_frames(
+        &self,
+        connection_id: &str,
+        after_frame_id: Option<u64>,
+        limit: usize,
+    ) -> Vec<WebSocketFrameRecord> {
+        let pending = self.pending_frames.lock();
+        let frames = match pending.frames.get(connection_id) {
+            Some(frames) => frames,
+            None => return Vec::new(),
+        };
+
+        let iter = frames.iter().filter(|f| {
+            after_frame_id
+                .map(|after| f.frame_id > after)
+                .unwrap_or(true)
+        });
+
+        iter.take(limit).cloned().collect()
+    }
+
     fn flush_pending_frames(&self) {
         let frames_to_write: HashMap<String, Vec<WebSocketFrameRecord>> = {
             let mut pending = self.pending_frames.lock();

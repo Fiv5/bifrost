@@ -11,8 +11,10 @@ use crate::body_store::{BodyRef, SharedBodyStore};
 use crate::frame_store::SharedFrameStore;
 use crate::traffic::{FrameDirection, FrameType, SocketStatus};
 
-const DEFAULT_PREVIEW_LIMIT: usize = 1024 * 1024; // 1MB for WebSocket
-const DEFAULT_SSE_PREVIEW_LIMIT: usize = 4 * 1024 * 1024; // 4MB for SSE (same as normal request)
+const DEFAULT_PREVIEW_LIMIT: usize = 1024 * 1024;
+const DEFAULT_SSE_PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
+const UNMONITORED_PREVIEW_LIMIT: usize = 1024 * 1024;
+const UNMONITORED_SSE_PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketFrameRecord {
@@ -269,10 +271,26 @@ impl ConnectionMonitor {
             is_fin,
             self.preview_limit,
         );
-
-        if !store.is_monitored {
-            frame.payload_preview = None;
-            frame.payload_ref = None;
+        if frame.payload_preview.is_none() && !payload.is_empty() {
+            let preview_limit = self.preview_limit;
+            let payload_preview = if frame_type == FrameType::Text
+                || frame_type == FrameType::Close
+                || frame_type == FrameType::Sse
+            {
+                let preview_bytes = &payload[..payload.len().min(preview_limit)];
+                String::from_utf8_lossy(preview_bytes).to_string().into()
+            } else if payload.len() <= preview_limit {
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    payload,
+                ))
+            } else {
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &payload[..preview_limit],
+                ))
+            };
+            frame.payload_preview = payload_preview;
         }
 
         if store.is_monitored && payload.len() > self.preview_limit {
@@ -286,11 +304,38 @@ impl ConnectionMonitor {
             }
         }
 
-        let frame_clone = frame.clone();
-        store.add_frame(frame);
+        let frame_for_store = frame.clone();
+        let frame_for_memory = if store.is_monitored {
+            frame
+        } else {
+            let preview_limit = UNMONITORED_PREVIEW_LIMIT;
+            let payload_preview = if frame_type == FrameType::Text
+                || frame_type == FrameType::Close
+                || frame_type == FrameType::Sse
+            {
+                let preview_bytes = &payload[..payload.len().min(preview_limit)];
+                String::from_utf8_lossy(preview_bytes).to_string().into()
+            } else if payload.len() <= preview_limit {
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    payload,
+                ))
+            } else {
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &payload[..preview_limit],
+                ))
+            };
+
+            let mut trimmed = frame;
+            trimmed.payload_preview = payload_preview;
+            trimmed.payload_ref = None;
+            trimmed
+        };
+        store.add_frame(frame_for_memory.clone());
 
         if let Some(fs) = frame_store {
-            if let Err(e) = fs.append_frame(connection_id, &frame_clone) {
+            if let Err(e) = fs.append_frame(connection_id, &frame_for_store) {
                 tracing::warn!(
                     "[WS_MONITOR] Failed to persist frame {} for {}: {}",
                     frame_id,
@@ -302,12 +347,12 @@ impl ConnectionMonitor {
 
         let event = FrameEvent {
             connection_id: connection_id.to_string(),
-            frame: frame_clone.clone(),
+            frame: frame_for_memory.clone(),
         };
         let _ = store.tx.send(event.clone());
         let _ = self.global_tx.send(event);
 
-        Some(frame_clone)
+        Some(frame_for_memory)
     }
 
     pub fn record_sse_event(
@@ -323,10 +368,9 @@ impl ConnectionMonitor {
         let frame_id = store.next_frame_id();
         let mut frame =
             WebSocketFrameRecord::new_sse_event(frame_id, payload, self.sse_preview_limit);
-
-        if !store.is_monitored {
-            frame.payload_preview = None;
-            frame.payload_ref = None;
+        if frame.payload_preview.is_none() && !payload.is_empty() {
+            let preview_bytes = &payload[..payload.len().min(self.sse_preview_limit)];
+            frame.payload_preview = Some(String::from_utf8_lossy(preview_bytes).to_string());
         }
 
         if store.is_monitored && payload.len() > self.sse_preview_limit {
@@ -336,11 +380,21 @@ impl ConnectionMonitor {
             }
         }
 
-        let frame_clone = frame.clone();
-        store.add_frame(frame);
+        let frame_for_store = frame.clone();
+        let frame_for_memory = if store.is_monitored {
+            frame
+        } else {
+            let preview_limit = UNMONITORED_SSE_PREVIEW_LIMIT;
+            let preview_bytes = &payload[..payload.len().min(preview_limit)];
+            let mut trimmed = frame;
+            trimmed.payload_preview = Some(String::from_utf8_lossy(preview_bytes).to_string());
+            trimmed.payload_ref = None;
+            trimmed
+        };
+        store.add_frame(frame_for_memory.clone());
 
         if let Some(fs) = frame_store {
-            if let Err(e) = fs.append_frame(connection_id, &frame_clone) {
+            if let Err(e) = fs.append_frame(connection_id, &frame_for_store) {
                 tracing::warn!(
                     "[WS_MONITOR] Failed to persist SSE event {} for {}: {}",
                     frame_id,
@@ -352,12 +406,12 @@ impl ConnectionMonitor {
 
         let event = FrameEvent {
             connection_id: connection_id.to_string(),
-            frame: frame_clone.clone(),
+            frame: frame_for_memory.clone(),
         };
         let _ = store.tx.send(event.clone());
         let _ = self.global_tx.send(event);
 
-        Some(frame_clone)
+        Some(frame_for_memory)
     }
 
     pub fn set_connection_closed(

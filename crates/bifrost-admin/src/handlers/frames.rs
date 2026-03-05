@@ -64,11 +64,18 @@ pub async fn get_frames(
     let after = query.after;
     let limit = query.limit;
 
-    let file_frames = if let Some(fs) = frame_store.as_ref() {
+    if let Some(fs) = frame_store.as_ref() {
+        fs.flush();
+    }
+
+    let (file_frames, pending_frames) = if let Some(fs) = frame_store.as_ref() {
         let fs = fs.clone();
+        let fs_for_file = fs.clone();
         let conn_id_clone = conn_id.clone();
-        match tokio::task::spawn_blocking(move || fs.load_frames(&conn_id_clone, after, limit))
-            .await
+        let file_frames = match tokio::task::spawn_blocking(move || {
+            fs_for_file.load_frames(&conn_id_clone, after, limit)
+        })
+        .await
         {
             Ok(Ok((frames, _))) => frames,
             Ok(Err(e)) => {
@@ -79,9 +86,11 @@ pub async fn get_frames(
                 tracing::warn!("[FRAMES API] spawn_blocking failed: {}", e);
                 Vec::new()
             }
-        }
+        };
+        let pending_frames = fs.load_pending_frames(&conn_id, after, limit);
+        (file_frames, pending_frames)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let (mem_frames, is_active) = {
@@ -108,6 +117,13 @@ pub async fn get_frames(
     let mut all_frames = Vec::new();
 
     for frame in file_frames {
+        if !seen_ids.contains(&frame.frame_id) {
+            seen_ids.insert(frame.frame_id);
+            all_frames.push(frame);
+        }
+    }
+
+    for frame in pending_frames {
         if !seen_ids.contains(&frame.frame_id) {
             seen_ids.insert(frame.frame_id);
             all_frames.push(frame);
