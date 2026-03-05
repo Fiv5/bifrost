@@ -179,6 +179,9 @@ cargo run --bin bifrost -- start -p 9900 --socks5-port 1080
 # 守护进程模式
 cargo run --bin bifrost -- start --daemon
 
+# 启用 TLS 拦截
+cargo run --bin bifrost -- start --intercept
+
 # 禁用 TLS 拦截
 cargo run --bin bifrost -- start --no-intercept
 
@@ -259,6 +262,9 @@ bifrost start --skip-cert-check
 # 禁用 TLS 拦截（不解密 HTTPS 流量）
 bifrost start --no-intercept
 
+# 启用 TLS 拦截（解密 HTTPS 流量）
+bifrost start --intercept
+
 # 排除特定域名的 TLS 拦截
 bifrost start --intercept-exclude "*.example.com,internal.corp.com"
 
@@ -298,6 +304,7 @@ bifrost start --unsafe-ssl
 | `--access-mode <MODE>`          | 访问控制模式：`local_only`/`whitelist`/`interactive`/`allow_all` |
 | `--whitelist <IPS>`             | 客户端 IP 白名单，逗号分隔，支持 CIDR 表示法                     |
 | `--allow-lan`                   | 允许局域网（私有网络）客户端访问                                 |
+| `--intercept`                   | 启用 TLS/HTTPS 拦截                                              |
 | `--no-intercept`                | 禁用 TLS/HTTPS 拦截                                              |
 | `--intercept-exclude <DOMAINS>` | 排除 TLS 拦截的域名列表，逗号分隔，支持通配符                    |
 | `--unsafe-ssl`                  | 跳过上游服务器 TLS 证书验证（危险，仅用于测试）                  |

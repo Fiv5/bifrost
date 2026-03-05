@@ -30,6 +30,7 @@ pub fn run_start(
     access_mode: Option<String>,
     whitelist: Option<String>,
     allow_lan: bool,
+    intercept: bool,
     no_intercept: bool,
     intercept_exclude: Option<String>,
     intercept_include: Option<String>,
@@ -80,7 +81,9 @@ pub fn run_start(
         stored_config.access.allow_lan
     };
 
-    let enable_tls_interception = if no_intercept {
+    let enable_tls_interception = if intercept {
+        true
+    } else if no_intercept {
         false
     } else {
         stored_config.tls.enable_interception

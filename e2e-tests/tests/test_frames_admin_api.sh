@@ -274,7 +274,7 @@ test_frames_api_structure() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_websocket == true) | .id' | head -1)
+    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -319,7 +319,7 @@ test_frames_api_frame_fields() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_sse == true) | .id' | head -1)
+    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -z "$sse_record" || "$sse_record" == "null" ]]; then
         log_fail "No SSE traffic found"
@@ -370,7 +370,7 @@ test_frames_api_pagination() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_websocket == true) | .id' | head -1)
+    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -445,7 +445,7 @@ test_traffic_record_ws_fields() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq '[.records[] | select(.is_websocket == true)] | first')
+    ws_record=$(echo "$traffic_list" | jq '[.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1))] | first')
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic record found"
@@ -454,7 +454,7 @@ test_traffic_record_ws_fields() {
     fi
 
     local is_ws
-    is_ws=$(echo "$ws_record" | jq -r '.is_websocket')
+    is_ws=$(echo "$ws_record" | jq -r '((.is_websocket // false) == true) or ((((.flags // 0) / 2) | floor) % 2 == 1)')
 
     if ! assert_equals "true" "$is_ws" "Traffic should be marked as WebSocket"; then
         return 1
@@ -468,7 +468,7 @@ test_traffic_record_sse_fields() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq '[.records[] | select(.is_sse == true)] | first')
+    sse_record=$(echo "$traffic_list" | jq '[.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1))] | first')
 
     if [[ -z "$sse_record" || "$sse_record" == "null" ]]; then
         log_fail "No SSE traffic record found"
@@ -477,7 +477,7 @@ test_traffic_record_sse_fields() {
     fi
 
     local is_sse
-    is_sse=$(echo "$sse_record" | jq -r '.is_sse')
+    is_sse=$(echo "$sse_record" | jq -r '((.is_sse // false) == true) or ((((.flags // 0) / 4) | floor) % 2 == 1)')
 
     if ! assert_equals "true" "$is_sse" "Traffic should be marked as SSE"; then
         return 1
@@ -491,7 +491,7 @@ test_frame_direction_values() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_websocket == true) | .id' | head -1)
+    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -524,7 +524,7 @@ test_frame_type_values() {
     traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_websocket == true) | .id' | head -1)
+    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -n "$ws_record" && "$ws_record" != "null" ]]; then
         local ws_frames
@@ -548,7 +548,7 @@ test_frame_type_values() {
     fi
 
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select(.is_sse == true) | .id' | head -1)
+    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1)) | .id' | head -1)
 
     if [[ -n "$sse_record" && "$sse_record" != "null" ]]; then
         local sse_frames
@@ -567,11 +567,15 @@ test_frame_type_values() {
 }
 
 test_concurrent_api_calls() {
+    local pids=()
     for i in $(seq 1 5); do
         curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=10" > /dev/null &
+        pids+=("$!")
     done
 
-    wait
+    for pid in "${pids[@]}"; do
+        wait "$pid"
+    done
 
     local response
     response=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=10")

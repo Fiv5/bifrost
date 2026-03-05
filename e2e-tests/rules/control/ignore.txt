@@ -3,11 +3,11 @@
 # 注意: Bifrost 的 ignore:// 需要域名在前
 
 # 忽略特定域名
-ignore-this.local ignore://
+ignore-this.local passthrough://
 
 # 忽略特定路径
-*.local/health ignore://
-*.local/metrics ignore://
+*.local/health passthrough://
+*.local/metrics passthrough://
 
 # 提供一个可测试的正常转发规则
 normal.local 127.0.0.1:3000

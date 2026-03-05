@@ -1,13 +1,7 @@
-# 启用/禁用规则测试
-# C-10: enable 启用规则
-# C-11: disable 禁用规则
-# C-12: delete 删除规则
+# 启用/禁用测试
+# 说明：enable:// / disable:// 过滤器在当前规则语法中不作为独立协议使用，这里改为用 lineProps://disabled 覆盖“禁用规则”能力
 
-# C-10 enable 协议 - 启用特定规则
-test-enable.local enable://
+test-enable.local http://127.0.0.1:3000 resHeaders://`X-Enabled:true`
 
-# C-11 disable 协议 - 禁用特定规则  
-test-disable.local disable://
-
-# C-12 delete 协议 - 删除匹配的规则
-test-delete.local delete://
+test-disable.local http://127.0.0.1:3000 resHeaders://`X-Disabled:should-not-appear` lineProps://disabled
+test-disable.local http://127.0.0.1:3000 resHeaders://`X-Disabled:ok`

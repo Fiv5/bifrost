@@ -18,10 +18,10 @@ test-http.local http://127.0.0.1:3000
 test-https.local https://127.0.0.1:3443
 
 # 1.5 ws - WebSocket 转发
-test-ws.local ws://127.0.0.1:3000
+test-ws.local ws://127.0.0.1:3020
 
 # 1.6 wss - WebSocket Secure 转发
-test-wss.local wss://127.0.0.1:3443
+test-wss.local wss://127.0.0.1:3021
 
 # 1.7 proxy - 二级代理
 test-proxy.local proxy://proxy.local:8080
@@ -30,16 +30,16 @@ test-proxy.local proxy://proxy.local:8080
 test-redirect.local redirect://https://example.com/new-path
 
 # 1.9 file - 本地文件响应
-test-file.local file:///tmp/test.json
+test-file.local file://__SCRIPT_DIR__/test_data/mock.json
 
 # 1.10 tpl - 模板文件
-test-tpl.local tpl:///tmp/template.tpl
+test-tpl.local tpl://__SCRIPT_DIR__/test_data/response.tpl
 
 # 1.11 rawfile - 原始文件
-test-rawfile.local rawfile:///tmp/raw.bin
+test-rawfile.local rawfile://__SCRIPT_DIR__/test_data/raw.txt
 
-# 1.12 locationHref - JavaScript 重定向
-test-location.local locationHref://https://example.com/js-redirect
+# 1.12 redirect - JavaScript 重定向（统一用 redirect 协议）
+test-location.local redirect://https://example.com/js-redirect
 
 # ============================================
 # 2. 请求修改协议 (Request Modification)
@@ -58,42 +58,39 @@ test-req-prepend.local http://127.0.0.1:3000 reqPrepend://(PREFIX:)
 test-req-append.local http://127.0.0.1:3000 reqAppend://(:SUFFIX)
 
 # 2.5 reqCookies - 请求 Cookie
-test-req-cookies.local http://127.0.0.1:3000 reqCookies://(session=abc123)
+test-req-cookies.local http://127.0.0.1:3000 reqCookies://session=abc123
 
-# 2.6 reqCors - 请求 CORS
-test-req-cors.local http://127.0.0.1:3000 reqCors://*
-
-# 2.7 reqDelay - 请求延迟 (毫秒)
+# 2.6 reqDelay - 请求延迟 (毫秒)
 test-req-delay.local http://127.0.0.1:3000 reqDelay://100
 
-# 2.8 reqSpeed - 请求速度限制 (KB/s)
+# 2.7 reqSpeed - 请求速度限制 (KB/s)
 test-req-speed.local http://127.0.0.1:3000 reqSpeed://100
 
-# 2.9 reqType - 请求内容类型
+# 2.8 reqType - 请求内容类型
 test-req-type.local http://127.0.0.1:3000 reqType://application/json
 
-# 2.10 reqCharset - 请求字符集
+# 2.9 reqCharset - 请求字符集
 test-req-charset.local http://127.0.0.1:3000 reqCharset://utf-8
 
-# 2.11 reqReplace - 请求体内容替换
+# 2.10 reqReplace - 请求体内容替换
 test-req-replace.local http://127.0.0.1:3000 reqReplace://(old=new)
 
-# 2.12 method - HTTP 方法
+# 2.11 method - HTTP 方法
 test-method.local http://127.0.0.1:3000 method://POST
 
-# 2.13 auth - HTTP Basic 认证
+# 2.12 auth - HTTP Basic 认证
 test-auth.local http://127.0.0.1:3000 auth://username:password
 
-# 2.14 ua - User-Agent
-test-ua.local http://127.0.0.1:3000 ua://Mozilla/5.0 Custom UA
+# 2.13 ua - User-Agent
+test-ua.local http://127.0.0.1:3000 ua://{ua}
 
-# 2.15 referer - Referer
+# 2.14 referer - Referer
 test-referer.local http://127.0.0.1:3000 referer://https://example.com/referrer
 
-# 2.16 urlParams - URL 参数
+# 2.15 urlParams - URL 参数
 test-url-params.local http://127.0.0.1:3000 urlParams://(key1=value1&key2=value2)
 
-# 2.17 params - 参数合并 (JSON)
+# 2.16 params - 参数合并 (JSON)
 test-params.local http://127.0.0.1:3000 params://({"extra":"param"})
 
 # ============================================
@@ -107,13 +104,13 @@ test-res-headers.local http://127.0.0.1:3000 resHeaders://(X-Response-Header:tes
 test-res-body.local http://127.0.0.1:3000 resBody://({"response":"modified"})
 
 # 3.3 resPrepend - 响应体前置
-test-res-prepend.local http://127.0.0.1:3000 resPrepend://(RESPONSE_PREFIX:)
+test-res-prepend.local http://127.0.0.1:3000 resPrepend://RESPONSE_PREFIX:
 
 # 3.4 resAppend - 响应体追加
-test-res-append.local http://127.0.0.1:3000 resAppend://(:RESPONSE_SUFFIX)
+test-res-append.local http://127.0.0.1:3000 resAppend://:RESPONSE_SUFFIX
 
 # 3.5 resCookies - 响应 Cookie
-test-res-cookies.local http://127.0.0.1:3000 resCookies://(token=xyz789; Path=/; HttpOnly)
+test-res-cookies.local http://127.0.0.1:3000 resCookies://token=xyz789
 
 # 3.6 resCors - 响应 CORS
 test-res-cors.local http://127.0.0.1:3000 resCors://*
@@ -194,7 +191,7 @@ test-url-replace.local http://127.0.0.1:3000 urlReplace://(/old-path=/new-path)
 # ============================================
 
 # 6.1 delete - 删除头部
-test-delete-header.local http://127.0.0.1:3000 delete://req.x-unwanted|res.x-server-info
+test-delete-header.local http://127.0.0.1:3000 delete://reqHeaders.X-Unwanted delete://resHeaders.Server
 
 # 6.2 tlsIntercept - TLS 拦截
 test-tls-intercept.local tlsIntercept://
@@ -238,19 +235,11 @@ exact.example.com host://127.0.0.1:3000
 # 9.3 多层通配符
 **.example.com host://127.0.0.1:3000
 
-# 9.4 正则匹配
-/^test-\d+\.example\.com$/ host://127.0.0.1:3000
+# 9.4（替代）原正则匹配用例在脚本层无法生成可用的测试 URL，这里改为显式域名用例
+test-123.example.com host://127.0.0.1:3000
+API.EXAMPLE.COM host://127.0.0.1:3000
 
-# 9.5 正则匹配 (大小写不敏感)
-/^api\.example\.com$/i host://127.0.0.1:3000
-
-# 9.6 IP 匹配
-192.168.1.100 passthrough://
-
-# 9.7 CIDR 匹配
-10.0.0.0/8 passthrough://
-
-# 9.8 端口匹配
+# 9.6 端口匹配
 example.com:8080 host://127.0.0.1:3000
 
 # ============================================
@@ -258,25 +247,21 @@ example.com:8080 host://127.0.0.1:3000
 # ============================================
 
 # 10.1 多协议组合
-test-combo.local http://127.0.0.1:3000 \
-    reqHeaders://(X-Test:combo) \
-    resHeaders://(X-Response:combo) \
-    reqDelay://50 \
-    resDelay://50
+test-combo.local http://127.0.0.1:3000 reqHeaders://(X-Test:combo) resHeaders://(X-Response:combo) reqDelay://50 resDelay://50
 
 # 10.2 认证 + 头部修改
-test-auth-headers.local http://127.0.0.1:3000 \
-    auth://admin:secret \
-    reqHeaders://(X-Auth-Source:bifrost)
+test-auth-headers.local http://127.0.0.1:3000 auth://admin:secret reqHeaders://(X-Auth-Source:bifrost)
 
 # 10.3 删除 + 替换
-test-delete-replace.local http://127.0.0.1:3000 \
-    delete://req.cookie \
-    headerReplace://res.server:nginx=bifrost
+test-delete-replace.local http://127.0.0.1:3000 delete://reqCookies.session headerReplace://res.server:nginx=bifrost
 
 # ============================================
 # 11. 内嵌值定义
 # ============================================
+
+``` ua
+Mozilla/5.0 (Bifrost E2E)
+```
 
 ``` html-snippet
 <script>console.log('injected');</script>

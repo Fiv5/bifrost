@@ -74,12 +74,13 @@ max_body_memory_size = 0
 max_body_buffer_size = 10485760
 max_records = 2000
 EOF
-    local rules_file="$E2E_DIR/rules/advanced/memory_pressure.txt"
+    local rules_file="$E2E_DIR/test_data/memory_pressure_load_rules.txt"
     RUST_LOG=info,bifrost_proxy=info \
     BIFROST_DATA_DIR="$TEST_DATA_DIR" \
     cargo run --bin bifrost --manifest-path "$PROJECT_DIR/Cargo.toml" -- \
         -p "$PROXY_PORT" \
         start \
+        --intercept \
         --unsafe-ssl \
         --rules-file "$rules_file" \
         > "$PROXY_LOG_FILE" 2>&1 &

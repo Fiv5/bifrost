@@ -65,6 +65,13 @@ start_proxy() {
     mkdir -p "$DATA_DIR"
     export BIFROST_DATA_DIR="$DATA_DIR"
 
+    log_info "Building bifrost binary (may take a while on first run)..."
+    RUST_LOG=info cargo build --bin bifrost > "$DATA_DIR/build.log" 2>&1 || {
+        log_fail "Failed to build bifrost"
+        cat "$DATA_DIR/build.log"
+        return 1
+    }
+
     RUST_LOG=info cargo run --bin bifrost -- \
         -p "$PROXY_PORT" \
         start --unsafe-ssl \
@@ -81,7 +88,7 @@ start_proxy() {
         return 1
     fi
 
-    local max_wait=30
+    local max_wait=60
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         if curl -s "http://${PROXY_HOST}:${PROXY_PORT}${ADMIN_PATH_PREFIX}/api/system/status" >/dev/null 2>&1; then

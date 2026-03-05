@@ -235,6 +235,9 @@ start_proxy() {
     
     # 组装可选系统代理参数
     local extra_flags=()
+    if [[ "${ENABLE_INTERCEPT:-true}" == "true" ]]; then
+        extra_flags+=(--intercept)
+    fi
     if [[ "${ENABLE_SYSTEM_PROXY:-}" == "true" ]]; then
         extra_flags+=(--system-proxy)
         local bypass_val="${SYSTEM_PROXY_BYPASS:-localhost,127.0.0.1,::1,*.local}"
@@ -1733,7 +1736,8 @@ resolve_code_block_var() {
         if [[ "$line" == '```'* ]] && [[ "$line" != '```' ]]; then
             in_block=true
             block_name="${line#\`\`\`}"
-            block_name="${block_name%% *}"
+            block_name="${block_name#"${block_name%%[![:space:]]*}"}"
+            block_name="${block_name%%[[:space:]]*}"
             content=""
             continue
         fi

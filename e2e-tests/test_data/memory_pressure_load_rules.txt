@@ -1,6 +1,5 @@
 stress-http.local host://127.0.0.1:3000
 stress-https-intercept.local tlsIntercept:// https://127.0.0.1:3443
 stress-https-passthrough.local tlsPassthrough:// https://127.0.0.1:3443
-stress-sse.local host://127.0.0.1:3000
+stress-sse.local host://127.0.0.1:3003
 stress-ws.local ws://127.0.0.1:3020
-127.0.0.1 host://127.0.0.1:3000

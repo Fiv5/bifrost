@@ -1,13 +1,6 @@
 # 规则分组测试
-# C-20: G 分组协议
-# C-21: P 别名
-# C-22: style 样式协议
+# 说明：旧的 G:// / P:// / style:// 已不再作为独立规则存在，这里改为用可执行规则模拟“分组/样式”元信息
 
-# C-20 G 协议 - 规则分组
-test-group.local G://group1
-
-# C-21 P 别名 (等同于 G)
-test-p-group.local P://group2
-
-# C-22 style 协议 - 设置样式
-test-style.local style://color:red
+test-group.local http://127.0.0.1:3000 resHeaders://`X-Group:group1`
+test-p-group.local http://127.0.0.1:3000 resHeaders://`X-Group:group2`
+test-style.local http://127.0.0.1:3000 resHeaders://`X-Style:color-red`

@@ -55,6 +55,9 @@ const STREAMING_CONTENT_TYPES: &[&str] = &[
     "application/octet-stream",
 ];
 
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
+
 fn get_traffic_type_from_url(url: &str) -> TrafficType {
     if url.starts_with("https://") {
         TrafficType::Https
@@ -417,7 +420,7 @@ pub async fn handle_http_request(
     dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
     if is_websocket_upgrade(&req) {
-        return handle_http_websocket(req, rules, ctx, admin_state).await;
+        return handle_http_websocket(req, rules, ctx, admin_state, unsafe_ssl).await;
     }
 
     let uri = req.uri().clone();
@@ -1543,10 +1546,12 @@ async fn handle_http_websocket(
     rules: Arc<dyn RulesResolver>,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
+    unsafe_ssl: bool,
 ) -> Result<Response<BoxBody>> {
     use super::websocket::websocket_bidirectional_generic_with_capture;
     use crate::server::empty_body;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::rustls::pki_types::ServerName;
 
     let start_time = Instant::now();
     let uri = req.uri().clone();
@@ -1600,7 +1605,7 @@ async fn handle_http_websocket(
     );
 
     let connect_start = Instant::now();
-    let mut target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
+    let target_stream = TcpStream::connect(format!("{}:{}", target_host, target_port))
         .await
         .map_err(|e| {
             BifrostError::Network(format!(
@@ -1613,6 +1618,28 @@ async fn handle_http_websocket(
     if let Err(e) = target_stream.set_nodelay(true) {
         debug!("Failed to set TCP_NODELAY on WebSocket connection: {}", e);
     }
+
+    let use_tls = matches!(
+        resolved_rules.host_protocol,
+        Some(bifrost_core::Protocol::Wss) | Some(bifrost_core::Protocol::Https)
+    );
+    let mut target_stream: Box<dyn AsyncReadWrite + Unpin + Send> =
+        if use_tls {
+            let tls_config = super::tunnel::get_tls_client_config(unsafe_ssl);
+            let connector = TlsConnector::from(tls_config);
+
+            let server_name = ServerName::try_from(target_host.clone()).map_err(|_| {
+                BifrostError::Network(format!("Invalid server name for TLS: {}", target_host))
+            })?;
+
+            let tls_stream = connector.connect(server_name, target_stream).await.map_err(|e| {
+                BifrostError::Network(format!("TLS handshake failed: {}", e))
+            })?;
+
+            Box::new(tls_stream)
+        } else {
+            Box::new(target_stream)
+        };
 
     let upgrade_request = build_http_websocket_handshake(&req, &target_host, target_port)?;
     target_stream

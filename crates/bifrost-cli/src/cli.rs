@@ -32,10 +32,11 @@ SUPPORTED PROTOCOLS:
   SSE               Server-Sent Events
 
 EXAMPLES:
-    bifrost                      Start proxy with defaults (port 9900, TLS enabled)
+    bifrost                      Start proxy with defaults (port 9900, TLS disabled)
     bifrost -p 8080              Start proxy on port 8080
     bifrost start --daemon       Start proxy as background daemon
     bifrost start --no-intercept Start proxy without TLS interception
+    bifrost start --intercept    Start proxy with TLS interception enabled
     bifrost start --intercept-exclude '*.apple.com,*.microsoft.com'
                                  Exclude domains from TLS interception
     bifrost start --intercept-include '*.api.local'
@@ -46,7 +47,7 @@ EXAMPLES:
 DEFAULT BEHAVIOR:
     When no subcommand is provided, bifrost starts in foreground mode with:
       • HTTP proxy on 0.0.0.0:9900
-      • TLS/HTTPS interception enabled
+      • TLS/HTTPS interception disabled
       • Access restricted to localhost only
       • CA certificate auto-generated if missing
 
@@ -63,6 +64,7 @@ start [OPTIONS]                   Start the proxy server (default)
   --access-mode <MODE>                Access mode: local_only|whitelist|interactive|allow_all
   --whitelist <IPS>                   Client IP whitelist (comma-separated, supports CIDR)
   --allow-lan                         Allow LAN (private network) clients
+  --intercept                         Enable TLS/HTTPS interception
   --no-intercept                      Disable TLS/HTTPS interception
   --intercept-exclude <DOMAINS>       Exclude domains from interception (supports wildcards)
   --intercept-include <DOMAINS>       Force intercept domains (highest priority)
@@ -79,7 +81,7 @@ start [OPTIONS]                   Start the proxy server (default)
     1. Rule-based (tlsIntercept://, tlsPassthrough://)
     2. --intercept-include / --app-intercept-include: Always intercept
     3. --intercept-exclude / --app-intercept-exclude: Never intercept
-    4. --no-intercept flag: Global switch (default: enabled)
+    4. --intercept / --no-intercept: Global switch (default: disabled)
 
 stop                              Stop the running proxy
 
@@ -298,7 +300,9 @@ pub enum Commands {
         whitelist: Option<String>,
         #[arg(long, help = "Allow LAN (private network) clients")]
         allow_lan: bool,
-        #[arg(long, help = "Disable TLS/HTTPS interception (default: enabled)")]
+        #[arg(long, conflicts_with = "no_intercept", help = "Enable TLS/HTTPS interception")]
+        intercept: bool,
+        #[arg(long, help = "Disable TLS/HTTPS interception (default: disabled)")]
         no_intercept: bool,
         #[arg(
             long,
