@@ -232,17 +232,49 @@ body {{ color: #333; }}
                 return None
         return None
 
+    def _handle_large_response(self):
+        parsed_path = urllib.parse.urlparse(self.path)
+        query_params = urllib.parse.parse_qs(parsed_path.query)
+
+        size = int(query_params.get('size', ['1024'])[0])
+        marker = query_params.get('marker', ['MARKER'])[0]
+
+        marker_len = len(marker)
+        if size < marker_len * 2:
+            size = marker_len * 2
+
+        padding_size = size - marker_len * 2
+        body = marker + ('X' * padding_size) + marker
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Echo-Server', 'bifrost-test-https')
+        self.send_header('X-Response-Size', str(size))
+        self.send_header('X-Response-Marker', marker)
+        self.send_header('Connection', 'keep-alive')
+        self.end_headers()
+        self.wfile.write(body.encode('utf-8'))
+
     def do_GET(self):
         self._log_request_start("GET")
         print(f"Headers:")
         for key, value in self.headers.items():
             print(f"  {key}: {value}")
-        self._send_response()
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/large-response':
+            self._handle_large_response()
+        else:
+            self._send_response()
 
     def do_POST(self):
         self._log_request_start("POST")
         body = self._read_body()
-        self._send_response(body_content=body)
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/large-response':
+            self._handle_large_response()
+        else:
+            self._send_response(body_content=body)
 
     def do_PUT(self):
         self._log_request_start("PUT")

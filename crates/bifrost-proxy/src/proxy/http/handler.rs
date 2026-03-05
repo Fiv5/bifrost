@@ -32,7 +32,8 @@ use crate::utils::http_size::{
 use crate::utils::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::utils::mock::{generate_mock_response, should_intercept_response};
 use crate::utils::tee::{
-    create_sse_tee_body, create_tee_body_with_store, store_request_body, store_response_body,
+    create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
+    store_response_body, BodyCaptureHandle,
 };
 use crate::utils::url::apply_url_rules;
 
@@ -529,31 +530,39 @@ pub async fn handle_http_request(
         .and_then(|s| s.parse::<usize>().ok());
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let has_req_scripts = !resolved_rules.req_scripts.is_empty();
+    let needs_req_body = needs_req_processing || has_req_scripts;
     let req_body_too_large = content_length
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
-    let (body_bytes, final_body, req_body_rules_skipped) =
-        if needs_req_processing && req_body_too_large {
+    let mut skip_req_scripts = false;
+    let mut streaming_body: Option<BoxBody> = None;
+    let mut req_body_capture: Option<BodyCaptureHandle> = None;
+    let (body_bytes, final_body) = if needs_req_body {
+        if req_body_too_large {
             warn!(
-                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules",
+                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
                 ctx.id_str(),
                 content_length.unwrap(),
                 max_body_buffer_size
             );
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
-                .to_bytes();
-            (bytes.clone(), bytes, true)
+            skip_req_scripts = true;
+            if admin_state.is_some() {
+                let (tee_body, capture) =
+                    create_request_tee_body(body, admin_state.clone(), ctx.id_str().to_string());
+                streaming_body = Some(tee_body.boxed());
+                req_body_capture = Some(capture);
+            } else {
+                streaming_body = Some(body.boxed());
+            }
+            (Bytes::new(), Bytes::new())
         } else {
             let bytes = body
                 .collect()
                 .await
                 .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
                 .to_bytes();
-
             let processed = if let Some(ref new_body) = resolved_rules.req_body {
                 if verbose_logging {
                     info!(
@@ -578,10 +587,19 @@ pub async fn handle_http_request(
                     ctx,
                 )
             };
-            (bytes, processed, false)
-        };
-    let _ = req_body_rules_skipped;
-
+            (bytes, processed)
+        }
+    } else {
+        if admin_state.is_some() {
+            let (tee_body, capture) =
+                create_request_tee_body(body, admin_state.clone(), ctx.id_str().to_string());
+            streaming_body = Some(tee_body.boxed());
+            req_body_capture = Some(capture);
+        } else {
+            streaming_body = Some(body.boxed());
+        }
+        (Bytes::new(), Bytes::new())
+    };
     let state_values = get_values_from_state(&admin_state).await;
     let mut values = resolved_rules.values.clone();
     for (k, v) in state_values {
@@ -590,11 +608,19 @@ pub async fn handle_http_request(
 
     let mut script_method = method.clone();
     let mut script_headers = headers_to_hashmap(&req_headers);
-    let mut script_body = String::from_utf8(final_body.to_vec()).ok();
+    let mut script_body = if has_req_scripts && !skip_req_scripts && !final_body.is_empty() {
+        String::from_utf8(final_body.to_vec()).ok()
+    } else {
+        None
+    };
 
     let req_script_results = execute_request_scripts(
         &admin_state,
-        &resolved_rules.req_scripts,
+        if skip_req_scripts {
+            &[]
+        } else {
+            &resolved_rules.req_scripts
+        },
         ctx,
         &resolved_rules,
         &url,
@@ -637,6 +663,15 @@ pub async fn handle_http_request(
         } else {
             final_body
         };
+    let request_body_size = if !final_body.is_empty() {
+        final_body.len()
+    } else {
+        content_length.unwrap_or(0)
+    };
+    let outgoing_body = match streaming_body {
+        Some(body) => body,
+        None => full_body(final_body.clone()),
+    };
 
     let dns_start = Instant::now();
     let (connect_host, dns_ms, dns_error) = if !resolved_rules.dns_servers.is_empty() {
@@ -742,12 +777,16 @@ pub async fn handle_http_request(
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg);
-                record.request_body_ref = store_request_body(
-                    &admin_state,
-                    &ctx.id_str(),
-                    &final_body,
-                    req_content_encoding.as_deref(),
-                );
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        &ctx.id_str(),
+                        &final_body,
+                        req_content_encoding.as_deref(),
+                    )
+                };
 
                 let response_body = if needs_response_override(&resolved_rules) {
                     if let Some(ref res_body) = resolved_rules.res_body {
@@ -849,12 +888,16 @@ pub async fn handle_http_request(
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(final_error_msg);
-                record.request_body_ref = store_request_body(
-                    &admin_state,
-                    &ctx.id_str(),
-                    &final_body,
-                    req_content_encoding.as_deref(),
-                );
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        &ctx.id_str(),
+                        &final_body,
+                        req_content_encoding.as_deref(),
+                    )
+                };
 
                 let response_body = if needs_response_override(&resolved_rules) {
                     if let Some(ref res_body) = resolved_rules.res_body {
@@ -993,7 +1036,7 @@ pub async fn handle_http_request(
             .insert(hyper::header::HOST, host_value.parse().unwrap());
     }
 
-    let outgoing_req = Request::from_parts(parts, full_body(final_body.clone()));
+    let outgoing_req = Request::from_parts(parts, outgoing_body);
 
     let send_start = Instant::now();
     let res = match sender.send_request(outgoing_req).await {
@@ -1088,7 +1131,7 @@ pub async fn handle_http_request(
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
-                .add_bytes_sent_by_type(traffic_type, final_body.len() as u64);
+                .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
             state
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
@@ -1102,7 +1145,7 @@ pub async fn handle_http_request(
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
             record.request_size =
-                calculate_request_size(&method, &record_url, &req_headers, final_body.len());
+                calculate_request_size(&method, &record_url, &req_headers, request_body_size);
             record.response_size = 0;
             record.duration_ms = total_ms;
             record.timing = Some(RequestTiming {
@@ -1142,12 +1185,16 @@ pub async fn handle_http_request(
                 state.connection_monitor.register_connection(&record_id);
             }
 
-            record.request_body_ref = store_request_body(
-                &admin_state,
-                &record_id,
-                &body_bytes,
-                req_content_encoding.as_deref(),
-            );
+            record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                capture.take()
+            } else {
+                store_request_body(
+                    &admin_state,
+                    &record_id,
+                    &body_bytes,
+                    req_content_encoding.as_deref(),
+                )
+            };
 
             if !req_script_results.is_empty() {
                 record.req_script_results = Some(req_script_results.clone());
@@ -1157,8 +1204,13 @@ pub async fn handle_http_request(
         }
 
         if is_sse {
-            let tee_body =
-                create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
+            let tee_body = create_sse_tee_body(
+                res_body,
+                admin_state.clone(),
+                record_id,
+                Some(traffic_type),
+                max_body_buffer_size,
+            );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
         } else {
             let response_headers_size =
@@ -1295,7 +1347,7 @@ pub async fn handle_http_request(
         let traffic_type = get_traffic_type_from_url(&record_url);
         state
             .metrics_collector
-            .add_bytes_sent_by_type(traffic_type, final_body.len() as u64);
+            .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
         state
             .metrics_collector
             .add_bytes_received_by_type(traffic_type, final_res_body.len() as u64);
@@ -1316,7 +1368,7 @@ pub async fn handle_http_request(
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         record.request_size =
-            calculate_request_size(&method, &record_url, &req_headers, final_body.len());
+            calculate_request_size(&method, &record_url, &req_headers, request_body_size);
         record.response_size = calculate_response_size(
             res_parts.status.as_u16(),
             &res_headers,
@@ -1498,9 +1550,28 @@ async fn handle_http_websocket(
 
     let start_time = Instant::now();
     let uri = req.uri().clone();
-    let url = uri.to_string();
     let method = req.method().to_string();
 
+    let host = req
+        .headers()
+        .get("x-forwarded-host")
+        .and_then(|v| v.to_str().ok())
+        .map(|h| h.split(',').next().unwrap_or(h).trim())
+        .or_else(|| {
+            uri.host().or_else(|| {
+                req.headers()
+                    .get(hyper::header::HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|h| h.split(':').next().unwrap_or(h))
+            })
+        })
+        .ok_or_else(|| BifrostError::Network("Missing host in WebSocket request".to_string()))?;
+    let url = if uri.host().is_some() {
+        uri.to_string()
+    } else {
+        let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        format!("http://{}{}", host, path)
+    };
     let resolved_rules = rules.resolve(&url, "GET");
     let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
 
@@ -1509,16 +1580,6 @@ async fn handle_http_websocket(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-
-    let host = uri
-        .host()
-        .or_else(|| {
-            req.headers()
-                .get(hyper::header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .map(|h| h.split(':').next().unwrap_or(h))
-        })
-        .ok_or_else(|| BifrostError::Network("Missing host in WebSocket request".to_string()))?;
 
     let port = uri.port_u16().unwrap_or(80);
 

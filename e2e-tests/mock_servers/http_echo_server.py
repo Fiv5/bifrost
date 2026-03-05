@@ -222,8 +222,11 @@ body {{ color: #333; }}
                 print(f"  {body.decode('utf-8')[:500]}...")
             except UnicodeDecodeError:
                 print(f"  [Binary data: {body.hex()[:100]}...]")
-
-        self._send_response(body_content=body)
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/large-response':
+            self._handle_large_response()
+        else:
+            self._send_response(body_content=body)
 
     def do_PUT(self):
         """处理 PUT 请求"""

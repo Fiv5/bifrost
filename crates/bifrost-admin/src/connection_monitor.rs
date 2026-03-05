@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -232,6 +233,11 @@ impl ConnectionMonitor {
             self.preview_limit,
         );
 
+        if !store.is_monitored {
+            frame.payload_preview = None;
+            frame.payload_ref = None;
+        }
+
         if store.is_monitored && payload.len() > self.preview_limit {
             if let Some(body_store) = body_store {
                 let direction_str = match direction {
@@ -280,6 +286,11 @@ impl ConnectionMonitor {
         let frame_id = store.next_frame_id();
         let mut frame =
             WebSocketFrameRecord::new_sse_event(frame_id, payload, self.sse_preview_limit);
+
+        if !store.is_monitored {
+            frame.payload_preview = None;
+            frame.payload_ref = None;
+        }
 
         if store.is_monitored && payload.len() > self.sse_preview_limit {
             if let Some(body_store) = body_store {
@@ -564,6 +575,17 @@ impl Default for ConnectionMonitor {
 }
 
 pub type SharedConnectionMonitor = Arc<ConnectionMonitor>;
+
+pub fn start_connection_cleanup_task(monitor: SharedConnectionMonitor) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            monitor.cleanup_closed_connections();
+        }
+    });
+}
 
 #[cfg(test)]
 mod tests {

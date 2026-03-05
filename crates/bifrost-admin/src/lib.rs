@@ -28,8 +28,12 @@ pub use app_icon::{create_app_icon_cache, AppIconCache, SharedAppIconCache};
 pub use async_traffic::{
     start_async_traffic_processor, AsyncTrafficWriter, SharedAsyncTrafficWriter, TrafficCommand,
 };
-pub use body_store::{BodyRef, BodyStore, SharedBodyStore};
-pub use connection_monitor::{ConnectionMonitor, SharedConnectionMonitor, WebSocketFrameRecord};
+pub use body_store::{
+    start_body_cleanup_task, BodyRef, BodyStore, BodyStreamWriter, SharedBodyStore,
+};
+pub use connection_monitor::{
+    start_connection_cleanup_task, ConnectionMonitor, SharedConnectionMonitor, WebSocketFrameRecord,
+};
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
 };

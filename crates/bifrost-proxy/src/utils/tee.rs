@@ -1,8 +1,8 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use bifrost_admin::{AdminState, FrameDirection, TrafficType};
+use bifrost_admin::{AdminState, BodyRef, BodyStreamWriter, FrameDirection, TrafficType};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
@@ -20,6 +20,7 @@ struct TeeBodyDropGuard {
     content_encoding: Option<String>,
     traffic_type: Option<TrafficType>,
     response_headers_size: usize,
+    file_writer: Option<BodyStreamWriter>,
 }
 
 impl Drop for TeeBodyDropGuard {
@@ -33,7 +34,9 @@ impl Drop for TeeBodyDropGuard {
 impl TeeBodyDropGuard {
     fn store_body_and_update_record(&mut self) {
         if let Some(ref state) = self.admin_state {
-            let response_body_ref = if !self.buffer.is_empty() {
+            let response_body_ref = if let Some(writer) = self.file_writer.take() {
+                Some(writer.finish())
+            } else if !self.buffer.is_empty() {
                 if let Some(ref body_store) = state.body_store {
                     let store = body_store.read();
                     let decompressed =
@@ -94,6 +97,7 @@ impl TeeBody {
                 content_encoding,
                 traffic_type,
                 response_headers_size,
+                file_writer: None,
             },
         }
     }
@@ -121,8 +125,36 @@ impl Body for TeeBody {
                     let len = data.len();
                     self.guard.total_bytes += len;
 
-                    if self.guard.buffer.len() + len <= self.guard.max_body_size {
+                    let mut new_writer: Option<BodyStreamWriter> = None;
+                    if self.guard.file_writer.is_none()
+                        && self.guard.buffer.len() + len > self.guard.max_body_size
+                    {
+                        if let Some(ref state) = self.guard.admin_state {
+                            if let Some(ref body_store) = state.body_store {
+                                let store = body_store.read();
+                                if let Ok(writer) = store.start_stream(&self.guard.record_id, "res")
+                                {
+                                    new_writer = Some(writer);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(mut writer) = new_writer {
+                        if !self.guard.buffer.is_empty() {
+                            let _ = writer.write_chunk(&self.guard.buffer);
+                            self.guard.buffer.clear();
+                        }
+                        let _ = writer.write_chunk(data);
+                        self.guard.file_writer = Some(writer);
+                    } else if self.guard.file_writer.is_some() {
+                        if let Some(writer) = self.guard.file_writer.as_mut() {
+                            let _ = writer.write_chunk(data);
+                        }
+                    } else if self.guard.buffer.len() + len <= self.guard.max_body_size {
                         self.guard.buffer.extend_from_slice(data);
+                    } else {
+                        self.guard.buffer.clear();
                     }
 
                     if let Some(ref state) = self.guard.admin_state {
@@ -185,6 +217,114 @@ pub fn create_tee_body_with_store(
     )
 }
 
+#[derive(Clone)]
+pub struct BodyCaptureHandle {
+    body_ref: Arc<Mutex<Option<BodyRef>>>,
+}
+
+impl BodyCaptureHandle {
+    pub fn take(&self) -> Option<BodyRef> {
+        self.body_ref.lock().ok()?.take()
+    }
+}
+
+struct RequestTeeBodyDropGuard {
+    admin_state: Option<Arc<AdminState>>,
+    record_id: String,
+    file_writer: Option<BodyStreamWriter>,
+    capture: BodyCaptureHandle,
+}
+
+impl Drop for RequestTeeBodyDropGuard {
+    fn drop(&mut self) {
+        if let Some(writer) = self.file_writer.take() {
+            let body_ref = writer.finish();
+            if let Ok(mut slot) = self.capture.body_ref.lock() {
+                *slot = Some(body_ref);
+            }
+            if let Some(ref state) = self.admin_state {
+                let capture = self.capture.clone();
+                state.update_traffic_by_id(&self.record_id, move |record| {
+                    if let Some(body_ref) = capture.take() {
+                        record.request_body_ref = Some(body_ref);
+                    }
+                });
+            }
+        }
+    }
+}
+
+pub struct RequestTeeBody {
+    inner: Incoming,
+    guard: RequestTeeBodyDropGuard,
+}
+
+impl Body for RequestTeeBody {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match Pin::new(&mut self.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    if self.guard.file_writer.is_none() {
+                        let mut new_writer: Option<BodyStreamWriter> = None;
+                        if let Some(ref state) = self.guard.admin_state {
+                            if let Some(ref body_store) = state.body_store {
+                                let store = body_store.read();
+                                if let Ok(writer) = store.start_stream(&self.guard.record_id, "req")
+                                {
+                                    new_writer = Some(writer);
+                                }
+                            }
+                        }
+                        if let Some(writer) = new_writer {
+                            self.guard.file_writer = Some(writer);
+                        }
+                    }
+                    if let Some(writer) = self.guard.file_writer.as_mut() {
+                        let _ = writer.write_chunk(data);
+                    }
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+pub fn create_request_tee_body(
+    body: Incoming,
+    admin_state: Option<Arc<AdminState>>,
+    record_id: String,
+) -> (RequestTeeBody, BodyCaptureHandle) {
+    let capture = BodyCaptureHandle {
+        body_ref: Arc::new(Mutex::new(None)),
+    };
+    let guard = RequestTeeBodyDropGuard {
+        admin_state,
+        record_id,
+        file_writer: None,
+        capture: BodyCaptureHandle {
+            body_ref: capture.body_ref.clone(),
+        },
+    };
+    (RequestTeeBody { inner: body, guard }, capture)
+}
+
 struct SseTeeBodyDropGuard {
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
@@ -216,6 +356,7 @@ pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
     buffer: BytesMut,
+    max_buffer_size: usize,
 }
 
 impl SseTeeBody {
@@ -224,6 +365,7 @@ impl SseTeeBody {
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         traffic_type: Option<TrafficType>,
+        max_buffer_size: usize,
     ) -> Self {
         if let Some(ref state) = admin_state {
             state.connection_monitor.register_connection(&record_id);
@@ -239,6 +381,7 @@ impl SseTeeBody {
                 traffic_type,
             },
             buffer: BytesMut::with_capacity(4096),
+            max_buffer_size,
         }
     }
 
@@ -305,7 +448,17 @@ impl Body for SseTeeBody {
                         }
                     }
 
-                    self.buffer.extend_from_slice(data);
+                    if self.buffer.len() + len > self.max_buffer_size {
+                        tracing::warn!(
+                            "[SSE] buffer exceeded limit ({} bytes), dropping buffered data for {}",
+                            self.max_buffer_size,
+                            self.guard.record_id
+                        );
+                        self.buffer.clear();
+                    }
+                    if len <= self.max_buffer_size {
+                        self.buffer.extend_from_slice(data);
+                    }
                     self.process_sse_events();
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -361,11 +514,10 @@ pub fn create_sse_tee_body(
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     traffic_type: Option<TrafficType>,
+    max_buffer_size: usize,
 ) -> SseTeeBody {
-    SseTeeBody::new(body, admin_state, record_id, traffic_type)
+    SseTeeBody::new(body, admin_state, record_id, traffic_type, max_buffer_size)
 }
-
-use bifrost_admin::BodyRef;
 
 pub fn store_request_body(
     admin_state: &Option<Arc<AdminState>>,

@@ -474,6 +474,7 @@ pub fn run_foreground(
             stored_config.traffic.max_body_memory_size,
             stored_config.traffic.file_retention_days,
         )));
+        bifrost_admin::start_body_cleanup_task(body_store.clone());
 
         let traffic_dir = bifrost_dir.join("traffic");
         let traffic_db_store = Arc::new(
@@ -547,6 +548,7 @@ pub fn run_foreground(
             .with_replay_db_store_shared_opt(replay_db_store);
 
         bifrost_admin::start_db_cleanup_task(traffic_db_store);
+        bifrost_admin::start_connection_cleanup_task(admin_state.connection_monitor.clone());
 
         let metrics_collector = admin_state.metrics_collector.clone();
         let rules_storage_for_resolver = admin_state.rules_storage.clone();

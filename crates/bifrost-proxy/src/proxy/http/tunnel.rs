@@ -42,7 +42,10 @@ use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
 use crate::utils::logging::{format_rules_summary, RequestContext};
-use crate::utils::tee::{create_sse_tee_body, create_tee_body_with_store, store_request_body};
+use crate::utils::tee::{
+    create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
+    BodyCaptureHandle,
+};
 use crate::utils::throttle::wrap_throttled_body;
 
 use futures_util::StreamExt;
@@ -984,24 +987,42 @@ async fn handle_intercepted_request_with_protocol(
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
-    if needs_req_processing && req_body_too_large {
-        warn!(
-            "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules",
-            req_id,
-            req_content_length.unwrap(),
-            max_body_buffer_size
-        );
-    }
-
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes().to_vec(),
-        Err(e) => {
-            error!("[{}] Failed to read request body: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
+    let mut streaming_body: Option<BoxBody> = None;
+    let mut req_body_capture: Option<BodyCaptureHandle> = None;
+    let body_bytes = if needs_req_processing && !req_body_too_large {
+        match body.collect().await {
+            Ok(collected) => collected.to_bytes().to_vec(),
+            Err(e) => {
+                error!("[{}] Failed to read request body: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
         }
+    } else {
+        if needs_req_processing && req_body_too_large {
+            warn!(
+                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                req_id,
+                req_content_length.unwrap(),
+                max_body_buffer_size
+            );
+        }
+        if admin_state.is_some() {
+            let (tee_body, capture) =
+                create_request_tee_body(body, admin_state.clone(), req_id.to_string());
+            streaming_body = Some(tee_body.boxed());
+            req_body_capture = Some(capture);
+        } else {
+            streaming_body = Some(body.boxed());
+        }
+        Vec::new()
+    };
+    let request_body_size = if !body_bytes.is_empty() {
+        body_bytes.len()
+    } else {
+        req_content_length.unwrap_or(0)
     };
 
     let parsed_uri: hyper::Uri = match target_uri.parse() {
@@ -1105,17 +1126,20 @@ async fn handle_intercepted_request_with_protocol(
         new_req = new_req.header(hyper::header::COOKIE, cookie_str);
     }
 
-    let outgoing_req =
-        match new_req.body(http_body_util::Full::new(Bytes::from(body_bytes.clone()))) {
-            Ok(r) => r,
-            Err(e) => {
-                error!("[{}] Failed to build request: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
-            }
-        };
+    let outgoing_body = match streaming_body {
+        Some(body) => body,
+        None => full_body(Bytes::from(body_bytes.clone())),
+    };
+    let outgoing_req = match new_req.body(outgoing_body) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("[{}] Failed to build request: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+    };
 
     let final_req_headers: Vec<(String, String)> = outgoing_req
         .headers()
@@ -1175,12 +1199,16 @@ async fn handle_intercepted_request_with_protocol(
                     record.has_rule_hit = has_rules;
                     record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                     record.error_message = Some(format!("DNS Lookup Failed: {}", e));
-                    record.request_body_ref = store_request_body(
-                        &admin_state,
-                        req_id,
-                        &body_bytes,
-                        req_content_encoding.as_deref(),
-                    );
+                    record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                        capture.take()
+                    } else {
+                        store_request_body(
+                            &admin_state,
+                            req_id,
+                            &body_bytes,
+                            req_content_encoding.as_deref(),
+                        )
+                    };
                     state.record_traffic(record);
                 }
                 if needs_response_override(&resolved_rules) {
@@ -1242,12 +1270,16 @@ async fn handle_intercepted_request_with_protocol(
                     "DNS resolved but no addresses for {}",
                     actual_target_host
                 ));
-                record.request_body_ref = store_request_body(
-                    &admin_state,
-                    req_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                );
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        req_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
+                    )
+                };
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -1324,12 +1356,16 @@ async fn handle_intercepted_request_with_protocol(
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(format!("Connection Failed: {}", e));
-                record.request_body_ref = store_request_body(
-                    &admin_state,
-                    req_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                );
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        req_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
+                    )
+                };
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -1389,12 +1425,16 @@ async fn handle_intercepted_request_with_protocol(
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg);
-                record.request_body_ref = store_request_body(
-                    &admin_state,
-                    req_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                );
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        req_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
+                    )
+                };
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -1621,7 +1661,7 @@ async fn handle_intercepted_request_with_protocol(
         if let Some(ref state) = admin_state {
             state
                 .metrics_collector
-                .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
+                .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
             state
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
@@ -1640,7 +1680,7 @@ async fn handle_intercepted_request_with_protocol(
                 .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                 .collect();
             record.request_size =
-                calculate_request_size(&method_str, &original_uri, &req_headers, body_bytes.len());
+                calculate_request_size(&method_str, &original_uri, &req_headers, request_body_size);
             record.response_size = 0;
             record.duration_ms = total_ms;
             record.host = original_host.to_string();
@@ -1695,12 +1735,16 @@ async fn handle_intercepted_request_with_protocol(
             record.has_rule_hit = has_rules;
             record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
-            record.request_body_ref = store_request_body(
-                &admin_state,
-                &record_id,
-                &body_bytes,
-                req_content_encoding.as_deref(),
-            );
+            record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                capture.take()
+            } else {
+                store_request_body(
+                    &admin_state,
+                    &record_id,
+                    &body_bytes,
+                    req_content_encoding.as_deref(),
+                )
+            };
 
             state.record_traffic(record);
         }
@@ -1719,8 +1763,13 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         if is_sse {
-            let tee_body =
-                create_sse_tee_body(res_body, admin_state.clone(), record_id, Some(traffic_type));
+            let tee_body = create_sse_tee_body(
+                res_body,
+                admin_state.clone(),
+                record_id,
+                Some(traffic_type),
+                max_body_buffer_size,
+            );
             let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
             return Ok(Response::from_parts(res_parts, final_body));
         } else {
@@ -1763,7 +1812,7 @@ async fn handle_intercepted_request_with_protocol(
         };
         state
             .metrics_collector
-            .add_bytes_sent_by_type(traffic_type, body_bytes.len() as u64);
+            .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
         state
             .metrics_collector
             .add_bytes_received_by_type(traffic_type, res_body_bytes.len() as u64);
@@ -1785,7 +1834,7 @@ async fn handle_intercepted_request_with_protocol(
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         record.request_size =
-            calculate_request_size(&method_str, &original_uri, &req_headers, body_bytes.len());
+            calculate_request_size(&method_str, &original_uri, &req_headers, request_body_size);
         record.response_size = calculate_response_size(
             res_parts.status.as_u16(),
             &res_headers,
@@ -1844,12 +1893,16 @@ async fn handle_intercepted_request_with_protocol(
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
 
-        record.request_body_ref = store_request_body(
-            &admin_state,
-            req_id,
-            &body_bytes,
-            req_content_encoding.as_deref(),
-        );
+        record.request_body_ref = if let Some(ref capture) = req_body_capture {
+            capture.take()
+        } else {
+            store_request_body(
+                &admin_state,
+                req_id,
+                &body_bytes,
+                req_content_encoding.as_deref(),
+            )
+        };
 
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();

@@ -32,6 +32,27 @@ pub struct BodyStore {
     retention_days: u64,
 }
 
+pub struct BodyStreamWriter {
+    path: PathBuf,
+    file: fs::File,
+    size: usize,
+}
+
+impl BodyStreamWriter {
+    pub fn write_chunk(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.file.write_all(data)?;
+        self.size += data.len();
+        Ok(())
+    }
+
+    pub fn finish(self) -> BodyRef {
+        BodyRef::File {
+            path: self.path.to_string_lossy().to_string(),
+            size: self.size,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BodyStoreConfigUpdate {
     pub max_memory_size: Option<usize>,
@@ -100,6 +121,17 @@ impl BodyStore {
                 Some(BodyRef::Inline { data: text })
             }
         }
+    }
+
+    pub fn start_stream(&self, id: &str, kind: &str) -> std::io::Result<BodyStreamWriter> {
+        let filename = format!("{}_{}", id, kind);
+        let path = self.temp_dir.join(&filename);
+        let file = fs::File::create(&path)?;
+        Ok(BodyStreamWriter {
+            path,
+            file,
+            size: 0,
+        })
     }
 
     pub fn load(&self, body_ref: &BodyRef) -> Option<String> {
@@ -222,6 +254,26 @@ impl BodyStore {
     }
 }
 
+pub type SharedBodyStore = Arc<RwLock<BodyStore>>;
+
+pub fn start_body_cleanup_task(store: SharedBodyStore) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Ok(removed) = store.read().cleanup_expired() {
+                if removed > 0 {
+                    tracing::info!(
+                        "[BODY_STORE] Periodic cleanup removed {} expired files",
+                        removed
+                    );
+                }
+            }
+        }
+    });
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BodyStoreStats {
     pub file_count: usize,
@@ -230,8 +282,6 @@ pub struct BodyStoreStats {
     pub max_memory_size: usize,
     pub retention_days: u64,
 }
-
-pub type SharedBodyStore = Arc<RwLock<BodyStore>>;
 
 #[cfg(test)]
 mod tests {
