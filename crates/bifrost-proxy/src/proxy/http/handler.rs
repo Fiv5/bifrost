@@ -1557,27 +1557,68 @@ async fn handle_http_websocket(
     let uri = req.uri().clone();
     let method = req.method().to_string();
 
-    let host = req
+    let forwarded_proto = req
+        .headers()
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|p| p.split(',').next().unwrap_or(p).trim().to_ascii_lowercase());
+
+    let host_header = req
         .headers()
         .get("x-forwarded-host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| h.split(',').next().unwrap_or(h).trim())
+        .map(|h| h.split(',').next().unwrap_or(h).trim().to_string())
+        .or_else(|| uri.host().map(|h| h.to_string()))
         .or_else(|| {
-            uri.host().or_else(|| {
-                req.headers()
-                    .get(hyper::header::HOST)
-                    .and_then(|v| v.to_str().ok())
-                    .map(|h| h.split(':').next().unwrap_or(h))
-            })
+            req.headers()
+                .get(hyper::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .map(|h| h.trim().to_string())
         })
         .ok_or_else(|| BifrostError::Network("Missing host in WebSocket request".to_string()))?;
-    let url = if uri.host().is_some() {
-        uri.to_string()
+
+    let (host, host_port_from_header) = if let Some((h, p)) = host_header.rsplit_once(':') {
+        if let Ok(p) = p.parse::<u16>() {
+            (h.to_string(), Some(p))
+        } else {
+            (host_header.clone(), None)
+        }
+    } else {
+        (host_header.clone(), None)
+    };
+
+    let is_wss = matches!(uri.scheme_str(), Some("wss" | "https"))
+        || matches!(forwarded_proto.as_deref(), Some("wss" | "https"))
+        || matches!(uri.port_u16(), Some(443 | 8443))
+        || matches!(host_port_from_header, Some(443 | 8443));
+
+    let port = uri
+        .port_u16()
+        .or(host_port_from_header)
+        .unwrap_or(if is_wss { 443 } else { 80 });
+
+    let ws_scheme = if is_wss { "wss" } else { "ws" };
+    let ws_url = if let Some(authority) = uri.authority().map(|a| a.as_str()) {
+        let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        format!("{}://{}{}", ws_scheme, authority, path)
     } else {
         let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-        format!("http://{}{}", host, path)
+        format!("{}://{}{}", ws_scheme, host_header, path)
     };
-    let resolved_rules = rules.resolve(&url, "GET");
+
+    let http_scheme = if is_wss { "https" } else { "http" };
+    let http_url = if let Some(authority) = uri.authority().map(|a| a.as_str()) {
+        let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        format!("{}://{}{}", http_scheme, authority, path)
+    } else {
+        let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+        format!("{}://{}{}", http_scheme, host_header, path)
+    };
+
+    let mut resolved_rules = rules.resolve(&ws_url, "GET");
+    if resolved_rules.rules.is_empty() && resolved_rules.host.is_none() {
+        resolved_rules = rules.resolve(&http_url, "GET");
+    }
     let has_rules = !resolved_rules.rules.is_empty() || resolved_rules.host.is_some();
 
     let req_headers: Vec<(String, String)> = req
@@ -1585,8 +1626,6 @@ async fn handle_http_websocket(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
-
-    let port = uri.port_u16().unwrap_or(80);
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
         let parts: Vec<&str> = host_rule.split(':').collect();
@@ -1619,10 +1658,12 @@ async fn handle_http_websocket(
         debug!("Failed to set TCP_NODELAY on WebSocket connection: {}", e);
     }
 
-    let use_tls = matches!(
-        resolved_rules.host_protocol,
-        Some(bifrost_core::Protocol::Wss) | Some(bifrost_core::Protocol::Https)
-    );
+    let use_tls = match resolved_rules.host_protocol {
+        Some(Protocol::Http) | Some(Protocol::Ws) => false,
+        Some(Protocol::Https) | Some(Protocol::Wss) => true,
+        Some(Protocol::Host) | Some(Protocol::XHost) => target_port == 443 || target_port == 8443,
+        _ => is_wss,
+    };
     let mut target_stream: Box<dyn AsyncReadWrite + Unpin + Send> = if use_tls {
         let tls_config = super::tunnel::get_tls_client_config(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
@@ -1674,8 +1715,10 @@ async fn handle_http_websocket(
             .metrics_collector
             .increment_requests_by_type(bifrost_admin::TrafficType::Ws);
 
+        let record_protocol = if use_tls { "wss" } else { "ws" };
         let ws_url = format!(
-            "ws://{}:{}{}",
+            "{}://{}:{}{}",
+            record_protocol,
             host,
             port,
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
@@ -1683,7 +1726,7 @@ async fn handle_http_websocket(
 
         let mut record = bifrost_admin::TrafficRecord::new(record_id.clone(), method, ws_url);
         record.status = 101;
-        record.protocol = "ws".to_string();
+        record.protocol = record_protocol.to_string();
         record.duration_ms = total_ms;
         record.timing = Some(bifrost_admin::RequestTiming {
             dns_ms: None,

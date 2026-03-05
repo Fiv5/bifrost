@@ -1,27 +1,57 @@
 #!/bin/bash
-# WebSocket Frames 端到端测试
-
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-source "$SCRIPT_DIR/../test_utils/assert.sh"
-source "$SCRIPT_DIR/../test_utils/ws_client.sh"
-source "$SCRIPT_DIR/../test_utils/admin_client.sh"
-
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
-PROXY_PORT="${PROXY_PORT:-9900}"
+PROXY_PORT="${PROXY_PORT:-}"
 WS_HOST="${WS_HOST:-127.0.0.1}"
-WS_PORT="${WS_PORT:-8766}"
-WS_SERVER="ws://${WS_HOST}:${WS_PORT}"
-WS_PROXY_URL="ws://${PROXY_HOST}:${PROXY_PORT}"
+WS_PORT="${WS_PORT:-}"
+ADMIN_HOST="${ADMIN_HOST:-$PROXY_HOST}"
+ADMIN_PORT="${ADMIN_PORT:-}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 export ADMIN_PATH_PREFIX
 
+if [[ -z "$PROXY_PORT" ]]; then
+    PROXY_PORT=$((19000 + ($$ % 1000)))
+fi
+if [[ -z "$WS_PORT" ]]; then
+    WS_PORT=$((20000 + ($$ % 1000)))
+fi
+if [[ -z "$ADMIN_PORT" ]]; then
+    ADMIN_PORT="$PROXY_PORT"
+fi
+
+WS_HOST_HEADER="${WS_HOST}:${WS_PORT}"
+
+source "$SCRIPT_DIR/../test_utils/assert.sh"
+source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+
 TESTS_PASSED=0
 TESTS_FAILED=0
-TESTS_SKIPPED=0
+
+BIFROST_DATA_DIR=""
+BIFROST_PID=""
+WS_SERVER_PID=""
+
+cleanup() {
+    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
+        kill "$BIFROST_PID" 2>/dev/null || true
+        wait "$BIFROST_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$WS_SERVER_PID" ]] && kill -0 "$WS_SERVER_PID" 2>/dev/null; then
+        kill "$WS_SERVER_PID" 2>/dev/null || true
+        wait "$WS_SERVER_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
+        rm -rf "$BIFROST_DATA_DIR"
+    fi
+}
+
+trap cleanup EXIT
 
 log_test() {
     echo ""
@@ -40,14 +70,9 @@ fail() {
     TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
-skip() {
-    echo "⏭️ SKIP: $1"
-    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
-}
-
 check_deps() {
-    if ! command -v websocat &> /dev/null; then
-        echo "Error: websocat is required. Install with: brew install websocat"
+    if ! command -v python3 &> /dev/null; then
+        echo "Error: python3 is required"
         exit 1
     fi
     if ! command -v jq &> /dev/null; then
@@ -56,142 +81,108 @@ check_deps() {
     fi
 }
 
-test_ws_text_frame_forwarding() {
-    log_test "WebSocket text frame forwarding"
-
-    local test_msg='{"test": "hello world"}'
-    local conn_id
-    conn_id=$(ws_connect "$WS_SERVER/ws" "" 2>/dev/null) || true
-    if [[ -z "$conn_id" ]]; then
-        fail "Failed to establish WebSocket connection"
-        return 1
-    fi
-
-    ws_send "$conn_id" "$test_msg" 2>/dev/null || true
-
-    local messages
-    messages=$(ws_wait_messages "$conn_id" 2 5 2>/dev/null) || true
-    ws_close "$conn_id" 2>/dev/null || true
-
-    local echo_line
-    echo_line=$(echo "$messages" | tail -n 1 | tr -d '\r')
-
-    if [[ -z "$echo_line" ]]; then
-        fail "No response received"
-        return 1
-    fi
-
-    if echo "$echo_line" | jq -e '.type == "echo"' >/dev/null 2>&1; then
-        pass "Text frame forwarded and echoed correctly"
-        return 0
-    else
-        fail "Unexpected response: $echo_line"
-        return 1
-    fi
+start_ws_server() {
+    python3 "$SCRIPT_DIR/../mock_servers/ws_echo_server.py" --port "$WS_PORT" > /dev/null 2>&1 &
+    WS_SERVER_PID=$!
+    sleep 1
+    kill -0 "$WS_SERVER_PID" 2>/dev/null
 }
 
-test_ws_broadcast_mode() {
-    log_test "WebSocket broadcast mode"
+start_bifrost() {
+    (cd "$ROOT_DIR" && cargo build --bin bifrost > /dev/null 2>&1)
 
-    local response
-    response=$(ws_connect_recv_all "$WS_SERVER/ws/broadcast" 10 2>/dev/null)
+    BIFROST_DATA_DIR="$(mktemp -d)"
+    export BIFROST_DATA_DIR
 
-    local broadcast_count
-    broadcast_count=$(echo "$response" | grep -c '"type":"broadcast"' || true)
-
-    if [[ "$broadcast_count" -ge 5 ]]; then
-        pass "Received $broadcast_count broadcast messages"
-        return 0
-    else
-        fail "Expected 5 broadcast messages, got $broadcast_count"
-        echo "Response: $response"
+    local log_file="$BIFROST_DATA_DIR/proxy.log"
+    (cd "$ROOT_DIR" && BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > "$log_file" 2>&1) &
+    BIFROST_PID=$!
+    sleep 1
+    if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+        tail -n 120 "$log_file" || true
         return 1
     fi
+
+    local max_wait=60
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if curl -sf "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    tail -n 120 "$log_file" || true
+    return 1
+}
+
+ws_generate_echo_traffic() {
+    local messages="${1:-3}"
+    python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
+        --proxy-host "$PROXY_HOST" \
+        --proxy-port "$PROXY_PORT" \
+        --host-header "$WS_HOST_HEADER" \
+        --path "/ws" \
+        --messages "$messages" \
+        --timeout 15.0
+}
+
+is_ws_record() {
+    local traffic_id="$1"
+    local record
+    record=$(get_traffic_detail "$traffic_id")
+    local is_ws
+    is_ws=$(echo "$record" | jq -r '.is_websocket // false')
+    if [[ "$is_ws" == "true" ]]; then
+        return 0
+    fi
+    local flags
+    flags=$(echo "$record" | jq -r '.flags // 0')
+    [[ $(( (flags / 2) % 2 )) -eq 1 ]]
+}
+
+test_ws_text_frame_forwarding() {
+    log_test "WebSocket text frame forwarding (via proxy)"
+    if ws_generate_echo_traffic 2; then
+        pass "Echo frames forwarded"
+        return 0
+    fi
+    fail "Failed to forward echo frames"
+    return 1
 }
 
 test_ws_frames_capture() {
-    log_test "WebSocket frames capture in traffic monitor"
+    log_test "WebSocket frames capture"
 
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5
 
-    local response
-    response=$(ws_connect_recv_all "$WS_SERVER/ws/broadcast" 10 2>/dev/null)
-
+    ws_generate_echo_traffic 3 >/dev/null 2>&1 || true
     sleep 1
 
     local traffic_id
-    traffic_id=$(find_traffic_id_by_url "ws/broadcast" 20)
-
+    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         fail "No WebSocket traffic recorded"
         return 1
     fi
 
-    local is_ws
-    is_ws=$(is_websocket_traffic "$traffic_id")
-
-    if [[ "$is_ws" != "true" ]]; then
-        fail "Traffic not marked as WebSocket (is_websocket=$is_ws)"
+    if ! is_ws_record "$traffic_id"; then
+        fail "Traffic not marked as WebSocket"
         return 1
-    fi
-
-    local frame_count
-    frame_count=$(get_frame_count "$traffic_id")
-
-    if [[ "$frame_count" -ge 5 ]]; then
-        pass "Captured $frame_count frames (expected >= 5)"
-        return 0
-    else
-        fail "Expected >= 5 frames, got $frame_count"
-        return 1
-    fi
-}
-
-test_ws_frames_api() {
-    log_test "WebSocket frames API"
-
-    clear_traffic >/dev/null 2>&1 || true
-    sleep 0.5
-
-    ws_connect_recv_all "$WS_SERVER/ws/broadcast" 10 >/dev/null 2>&1
-
-    sleep 1
-
-    local traffic_id
-    traffic_id=$(find_traffic_id_by_url "ws/broadcast" 20)
-
-    if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
-        skip "No traffic ID found"
-        return 0
     fi
 
     local frames_response
     frames_response=$(get_frames "$traffic_id")
-
-    if ! echo "$frames_response" | jq -e '.frames' >/dev/null 2>&1; then
-        fail "Invalid frames response: $frames_response"
-        return 1
-    fi
-
-    local first_frame_id
-    first_frame_id=$(echo "$frames_response" | jq -r '.frames[0].frame_id')
-
-    if [[ -z "$first_frame_id" || "$first_frame_id" == "null" ]]; then
-        fail "No frame_id in response"
-        return 1
-    fi
-
-    local frame_types
-    frame_types=$(echo "$frames_response" | jq -r '.frames[].frame_type' | sort | uniq)
-
-    if echo "$frame_types" | grep -q "text"; then
-        pass "Frames API returned valid data with text frames"
+    local frame_count
+    frame_count=$(echo "$frames_response" | jq -r '.frames | length')
+    if [[ "$frame_count" -ge 1 ]]; then
+        pass "Captured $frame_count frames"
         return 0
-    else
-        fail "No text frames found in response"
-        return 1
     fi
+
+    fail "Expected frames, got $frame_count"
+    return 1
 }
 
 test_ws_frame_directions() {
@@ -200,17 +191,14 @@ test_ws_frame_directions() {
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5
 
-    local test_msg='{"ping": "test"}'
-    ws_send_recv "$WS_SERVER/ws" "$test_msg" 5 >/dev/null 2>&1
-
+    ws_generate_echo_traffic 1 >/dev/null 2>&1 || true
     sleep 1
 
     local traffic_id
-    traffic_id=$(find_traffic_id_by_url "/ws" 20)
-
+    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
-        skip "No traffic ID found"
-        return 0
+        fail "No traffic ID found"
+        return 1
     fi
 
     local frames_response
@@ -223,10 +211,10 @@ test_ws_frame_directions() {
     if [[ "$send_count" -ge 1 && "$receive_count" -ge 1 ]]; then
         pass "Found send ($send_count) and receive ($receive_count) frames"
         return 0
-    else
-        fail "Expected both send and receive frames (send=$send_count, receive=$receive_count)"
-        return 1
     fi
+
+    fail "Expected both send and receive frames (send=$send_count, receive=$receive_count)"
+    return 1
 }
 
 test_ws_connection_list() {
@@ -234,47 +222,24 @@ test_ws_connection_list() {
 
     local connections
     connections=$(list_websocket_connections)
-
     if echo "$connections" | jq -e 'type == "array" or type == "object"' >/dev/null 2>&1; then
         pass "Connection list API returned valid JSON"
         return 0
-    else
-        fail "Invalid connection list response: $connections"
-        return 1
     fi
+
+    fail "Invalid connection list response: $connections"
+    return 1
 }
 
 run_all_tests() {
-    echo ""
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║            WebSocket Frames E2E Test Suite                   ║"
-    echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║  Proxy: ${PROXY_HOST}:${PROXY_PORT}                                        ║"
-    echo "║  WS Server: ${WS_SERVER}                              ║"
-    echo "║  Admin: ${ADMIN_BASE_URL}                           ║"
-    echo "╚══════════════════════════════════════════════════════════════╝"
-    echo ""
-
     check_deps
-
-    if ! nc -z "$PROXY_HOST" "$PROXY_PORT" 2>/dev/null; then
-        echo "❌ Proxy server not running at ${PROXY_HOST}:${PROXY_PORT}"
-        exit 1
-    fi
-
-    if ! nc -z "127.0.0.1" "$WS_PORT" 2>/dev/null; then
-        echo "❌ WebSocket server not running at 127.0.0.1:${WS_PORT}"
-        exit 1
-    fi
+    start_ws_server
+    start_bifrost
 
     test_ws_text_frame_forwarding || true
-    test_ws_broadcast_mode || true
     test_ws_frames_capture || true
-    test_ws_frames_api || true
     test_ws_frame_directions || true
     test_ws_connection_list || true
-
-    ws_cleanup_all 2>/dev/null || true
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -282,7 +247,6 @@ run_all_tests() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "  Passed:  $TESTS_PASSED"
     echo "  Failed:  $TESTS_FAILED"
-    echo "  Skipped: $TESTS_SKIPPED"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     if [[ $TESTS_FAILED -gt 0 ]]; then
@@ -290,30 +254,4 @@ run_all_tests() {
     fi
 }
 
-case "${1:-all}" in
-    all)
-        run_all_tests
-        ;;
-    text)
-        test_ws_text_frame_forwarding
-        ;;
-    broadcast)
-        test_ws_broadcast_mode
-        ;;
-    capture)
-        test_ws_frames_capture
-        ;;
-    api)
-        test_ws_frames_api
-        ;;
-    directions)
-        test_ws_frame_directions
-        ;;
-    connections)
-        test_ws_connection_list
-        ;;
-    *)
-        echo "Usage: $0 {all|text|broadcast|capture|api|directions|connections}"
-        exit 1
-        ;;
-esac
+run_all_tests

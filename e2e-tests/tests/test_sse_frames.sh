@@ -89,7 +89,7 @@ start_bifrost() {
     local max_wait=60
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
-        if curl -s "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system/status" >/dev/null 2>&1; then
+        if curl -sf "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -320,16 +320,33 @@ test_sse_frames_api() {
 }
 
 test_sse_frame_content() {
-    sse_fetch_all "$SSE_TARGET" "/sse/json" 5 > /dev/null 2>&1
+    local conn_id
+    conn_id=$(sse_connect "${SSE_TARGET}/sse/custom?count=50&interval=0.05" "" "") || {
+        log_fail "Failed to establish SSE connection"
+        return 1
+    }
 
-    sleep 1
+    sleep 0.3
 
     local traffic_id
-    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/sse/json")
-
-    if [[ -z "$traffic_id" ]]; then
+    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/sse/custom")
+    if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
+        sse_disconnect "$conn_id" >/dev/null 2>&1 || true
         log_fail "No SSE traffic found"
         return 1
+    fi
+
+    local stream_out="/tmp/bifrost_sse_frames_stream_${traffic_id}.log"
+    local stream_pid
+    stream_pid=$(subscribe_frames_bg "$traffic_id" "$stream_out")
+    sleep 1
+
+    sse_disconnect "$conn_id" >/dev/null 2>&1 || true
+    sleep 0.5
+
+    if [[ -n "$stream_pid" ]]; then
+        kill "$stream_pid" 2>/dev/null || true
+        admin_delete "/api/traffic/${traffic_id}/frames/unsubscribe" > /dev/null 2>&1 || true
     fi
 
     local frames

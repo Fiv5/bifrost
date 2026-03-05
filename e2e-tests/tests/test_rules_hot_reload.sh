@@ -6,6 +6,8 @@ E2E_DIR="$SCRIPT_DIR/.."
 PROXY_PORT="${PROXY_PORT:-18889}"
 PROXY_HOST="127.0.0.1"
 DATA_DIR="./.bifrost-test-hot-reload-$$"
+ECHO_PORT="${ECHO_PORT:-$((20000 + ($$ % 1000)))}"
+ECHO_PID=""
 
 export ADMIN_HOST="$PROXY_HOST"
 export ADMIN_PORT="$PROXY_PORT"
@@ -30,6 +32,10 @@ cleanup() {
     fi
     if [[ -d "$DATA_DIR" ]]; then
         rm -rf "$DATA_DIR"
+    fi
+    if [[ -n "$ECHO_PID" ]] && kill -0 "$ECHO_PID" 2>/dev/null; then
+        kill "$ECHO_PID" 2>/dev/null
+        wait "$ECHO_PID" 2>/dev/null
     fi
     echo "Cleanup done"
 }
@@ -64,6 +70,16 @@ start_proxy() {
 
     mkdir -p "$DATA_DIR"
     export BIFROST_DATA_DIR="$DATA_DIR"
+
+    log_info "Starting HTTP echo server on port $ECHO_PORT..."
+    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$ECHO_PORT" > "$DATA_DIR/echo.log" 2>&1 &
+    ECHO_PID=$!
+    sleep 1
+    if ! kill -0 "$ECHO_PID" 2>/dev/null; then
+        log_fail "Failed to start HTTP echo server"
+        cat "$DATA_DIR/echo.log"
+        return 1
+    fi
 
     log_info "Building bifrost binary (may take a while on first run)..."
     RUST_LOG=info cargo build --bin bifrost > "$DATA_DIR/build.log" 2>&1 || {
@@ -105,7 +121,7 @@ start_proxy() {
 }
 
 TEST_RULE_NAME="hotreload-test-rule-$$"
-TEST_TARGET_HOST="httpbin.org"
+TEST_TARGET_HOST="127.0.0.1:${ECHO_PORT}"
 TEST_URL="http://${TEST_TARGET_HOST}/status/200"
 
 test_initial_no_rule() {
@@ -121,7 +137,7 @@ test_initial_no_rule() {
 }
 
 test_create_rule_via_api() {
-    local rule_content="$TEST_TARGET_HOST/status/200 statusCode://201"
+    local rule_content="127.0.0.1 statusCode://201"
 
     local response
     response=$(create_rule "$TEST_RULE_NAME" "$rule_content" "true")
@@ -252,7 +268,7 @@ test_enabled_rule_applied_again() {
 }
 
 test_update_rule_content() {
-    local new_content="$TEST_TARGET_HOST/status/200 statusCode://202"
+    local new_content="127.0.0.1 statusCode://202"
 
     local response
     response=$(update_rule "$TEST_RULE_NAME" "$new_content" "true")
