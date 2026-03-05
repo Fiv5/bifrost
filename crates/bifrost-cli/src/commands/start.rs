@@ -19,6 +19,28 @@ use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
 use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
 
+struct SystemProxyRestoreGuard {
+    system_proxy_manager: Arc<tokio::sync::RwLock<bifrost_core::SystemProxyManager>>,
+}
+
+impl SystemProxyRestoreGuard {
+    fn new(
+        system_proxy_manager: Arc<tokio::sync::RwLock<bifrost_core::SystemProxyManager>>,
+    ) -> Self {
+        Self {
+            system_proxy_manager,
+        }
+    }
+}
+
+impl Drop for SystemProxyRestoreGuard {
+    fn drop(&mut self) {
+        if let Err(e) = self.system_proxy_manager.blocking_write().restore() {
+            eprintln!("Failed to restore system proxy: {}", e);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run_start(
     port: u16,
@@ -289,10 +311,16 @@ pub fn run_foreground(
 
     let tls_config = load_tls_config(&config)?;
 
+    let bind_addr = format!("{}:{}", config.host, config.port);
+    std::net::TcpListener::bind(&bind_addr).map_err(|e| {
+        bifrost_core::BifrostError::Network(format!("Failed to bind to {}: {}", bind_addr, e))
+    })?;
+
     let bifrost_dir = config_manager.data_dir().to_path_buf();
     let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
         bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
     ));
+    let _system_proxy_restore_guard = SystemProxyRestoreGuard::new(system_proxy_manager.clone());
 
     if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
         tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
@@ -623,10 +651,6 @@ pub fn run_foreground(
         rules_watcher_task.abort();
     });
 
-    if let Err(e) = system_proxy_manager.blocking_write().restore() {
-        eprintln!("Failed to restore system proxy: {}", e);
-    }
-
     remove_pid()?;
     println!("Bifrost proxy stopped.");
     Ok(())
@@ -718,9 +742,19 @@ pub fn run_daemon(
 
             let tls_config = load_tls_config(&config)?;
 
+            let bind_addr = format!("{}:{}", config.host, config.port);
+            std::net::TcpListener::bind(&bind_addr).map_err(|e| {
+                bifrost_core::BifrostError::Network(format!(
+                    "Failed to bind to {}: {}",
+                    bind_addr, e
+                ))
+            })?;
+
             let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
                 bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
             ));
+            let _system_proxy_restore_guard =
+                SystemProxyRestoreGuard::new(system_proxy_manager.clone());
 
             if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
                 tracing::warn!("Failed to recover system proxy from previous crash: {}", e);

@@ -66,15 +66,24 @@ impl SystemProxyManager {
             return Ok(());
         }
 
-        let current = Sysproxy::get_system_proxy().unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "[SYSTEM_PROXY] Failed to get current proxy for backup");
-            Sysproxy {
-                enable: false,
-                host: String::new(),
-                port: 0,
-                bypass: String::new(),
-            }
-        });
+        #[cfg(target_os = "macos")]
+        let current = match Self::parse_macos_proxy() {
+            Some(proxy) => proxy,
+            None => Sysproxy::get_system_proxy().map_err(|e| {
+                BifrostError::Config(format!(
+                    "Failed to get current system proxy for backup: {}",
+                    e
+                ))
+            })?,
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let current = Sysproxy::get_system_proxy().map_err(|e| {
+            BifrostError::Config(format!(
+                "Failed to get current system proxy for backup: {}",
+                e
+            ))
+        })?;
 
         self.original_proxy = Some(current.clone());
         self.save_backup(&current)?;
@@ -163,16 +172,39 @@ impl SystemProxyManager {
             return Ok(());
         }
 
-        let original = self
+        let original = match self
             .original_proxy
             .take()
             .or_else(|| self.load_backup().ok())
-            .unwrap_or_else(|| Sysproxy {
-                enable: false,
-                host: String::new(),
-                port: 0,
-                bypass: String::new(),
-            });
+        {
+            Some(original) => original,
+            None => {
+                #[cfg(target_os = "macos")]
+                {
+                    disable_macos_all_services_proxy()?;
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let proxy = Sysproxy {
+                        enable: false,
+                        host: String::new(),
+                        port: 0,
+                        bypass: String::new(),
+                    };
+                    proxy.set_system_proxy().map_err(|e| {
+                        BifrostError::Config(format!("Failed to disable system proxy: {}", e))
+                    })?;
+                }
+
+                self.remove_backup();
+                self.is_set = false;
+                return Err(BifrostError::Config(
+                    "Missing original system proxy state; disabled system proxy as failsafe"
+                        .to_string(),
+                ));
+            }
+        };
 
         #[cfg(target_os = "macos")]
         {

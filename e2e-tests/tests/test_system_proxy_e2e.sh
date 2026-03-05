@@ -4,7 +4,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-source "${PROJECT_DIR}/scripts/test_utils/assert.sh"
+source "${SCRIPT_DIR}/../test_utils/assert.sh"
 
 PROXY_PORT="${PROXY_PORT:-18889}"
 ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-19081}"
