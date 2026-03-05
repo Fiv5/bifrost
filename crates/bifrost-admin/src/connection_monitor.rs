@@ -220,10 +220,7 @@ impl ConnectionMonitor {
             store.is_tunnel = true;
             // 隧道连接不需要监控，默认设置为非监控状态
             store.is_monitored = false;
-            connections.insert(
-                connection_id.to_string(),
-                store,
-            );
+            connections.insert(connection_id.to_string(), store);
         }
     }
 
@@ -373,7 +370,7 @@ impl ConnectionMonitor {
         let mut connections = self.connections.write();
         if let Some(store) = connections.get_mut(connection_id) {
             store.set_closed(code, reason);
-            
+
             // 对于隧道连接，关闭后自动清理，释放内存
             if store.is_tunnel {
                 connections.remove(connection_id);

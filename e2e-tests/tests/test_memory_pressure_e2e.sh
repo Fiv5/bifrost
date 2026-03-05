@@ -212,34 +212,15 @@ run_sse_load() {
 }
 
 run_ws_load() {
-    if ! command -v websocat >/dev/null 2>&1; then
-        log "场景: websocket"
-        log "未检测到 websocat，跳过 websocket 压测"
-        return 0
-    fi
     local result_file="$TEST_DATA_DIR/result_ws.txt"
-    local ws_err_file="$TEST_DATA_DIR/result_ws_err.txt"
-    local ws_url="ws://${PROXY_HOST}:${PROXY_PORT}/ws"
-    local ws_payload_file="$TEST_DATA_DIR/ws_payload.txt"
     : > "$result_file"
     local rss_before
     local rss_after
     rss_before=$(get_rss_kb)
     local start_ts
     start_ts=$(date +%s)
-    : > "$ws_err_file"
-    if [[ ! -f "$ws_payload_file" ]] || [[ "$(wc -l < "$ws_payload_file")" -ne "$WS_MESSAGES" ]]; then
-        python3 - "$WS_MESSAGES" "$ws_payload_file" <<'PY'
-import sys
-count = int(sys.argv[1])
-path = sys.argv[2]
-with open(path, "w", encoding="utf-8") as f:
-    for _ in range(count):
-        f.write('{"type":"ping"}\n')
-PY
-    fi
     seq 1 "$WS_CONNECTIONS" | xargs -P "$CONCURRENCY" -I{} bash -c \
-        "cat '$ws_payload_file' | websocat -t '$ws_url' >/dev/null 2>>'$ws_err_file' && echo 200 || echo 500" \
+        "python3 '$E2E_DIR/test_utils/ws_stress_client.py' --proxy-host '${PROXY_HOST}' --proxy-port '${PROXY_PORT}' --host-header 'stress-ws.local' --path '/ws' --messages '${WS_MESSAGES}' --timeout '${TIMEOUT}' >/dev/null 2>&1 && echo 200 || echo 500" \
         >> "$result_file"
     local end_ts
     end_ts=$(date +%s)
@@ -254,10 +235,6 @@ PY
     log "连接数: $WS_CONNECTIONS 消息数/连接: $WS_MESSAGES"
     log "成功: $ok_count 失败: $fail_count 耗时: ${elapsed}s"
     log "RSS: ${rss_before_mb}MB -> ${rss_after_mb}MB (raw=${rss_before}->${rss_after})"
-    if [[ "$fail_count" -gt 0 ]]; then
-        log "WebSocket 错误样例:"
-        head -n 5 "$ws_err_file" || true
-    fi
 }
 
 main() {
