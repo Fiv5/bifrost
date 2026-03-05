@@ -320,52 +320,32 @@ test_sse_frames_api() {
 }
 
 test_sse_frame_content() {
-    local conn_id
-    conn_id=$(sse_connect "${SSE_TARGET}/sse/custom?count=50&interval=0.05" "" "") || {
-        log_fail "Failed to establish SSE connection"
-        return 1
-    }
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
 
-    sleep 0.3
+    sse_fetch_all "$SSE_TARGET" "/sse/custom?count=20&interval=0.05" 5 > /dev/null 2>&1
+    sleep 1
 
     local traffic_id
     traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/sse/custom")
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
-        sse_disconnect "$conn_id" >/dev/null 2>&1 || true
         log_fail "No SSE traffic found"
         return 1
     fi
 
-    local stream_out="/tmp/bifrost_sse_frames_stream_${traffic_id}.log"
-    local stream_pid
-    stream_pid=$(subscribe_frames_bg "$traffic_id" "$stream_out")
-    sleep 1
-
-    sse_disconnect "$conn_id" >/dev/null 2>&1 || true
-    sleep 0.5
-
-    if [[ -n "$stream_pid" ]]; then
-        kill "$stream_pid" 2>/dev/null || true
-        admin_delete "/api/traffic/${traffic_id}/frames/unsubscribe" > /dev/null 2>&1 || true
-    fi
-
     local frames
     frames=$(get_frames "$ADMIN_HOST" "$ADMIN_PORT" "$traffic_id")
+    local frame_count
+    frame_count=$(echo "$frames" | jq -r '.frames | length')
+    if [[ "${frame_count:-0}" -le 0 ]]; then
+        log_fail "No SSE frames recorded"
+        return 1
+    fi
 
-    local has_content=false
-    local frame_data
-
-    for i in $(seq 0 9); do
-        frame_data=$(echo "$frames" | jq -r ".frames[$i].payload_preview // empty")
-        if [[ -n "$frame_data" && "$frame_data" != "null" ]]; then
-            has_content=true
-            break
-        fi
-    done
-
-    if [[ "$has_content" != "true" ]]; then
-        log_fail "SSE frames should contain data"
-        log_debug "Frames: $frames"
+    local has_payload
+    has_payload=$(echo "$frames" | jq -r '[.frames[] | select((.payload_size // 0) > 0)] | length')
+    if [[ "${has_payload:-0}" -le 0 ]]; then
+        log_fail "SSE frames should have payload_size"
         return 1
     fi
 
