@@ -300,7 +300,11 @@ pub enum Commands {
         whitelist: Option<String>,
         #[arg(long, help = "Allow LAN (private network) clients")]
         allow_lan: bool,
-        #[arg(long, conflicts_with = "no_intercept", help = "Enable TLS/HTTPS interception")]
+        #[arg(
+            long,
+            conflicts_with = "no_intercept",
+            help = "Enable TLS/HTTPS interception"
+        )]
         intercept: bool,
         #[arg(long, help = "Disable TLS/HTTPS interception (default: disabled)")]
         no_intercept: bool,

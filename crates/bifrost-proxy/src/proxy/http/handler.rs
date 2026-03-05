@@ -1623,23 +1623,23 @@ async fn handle_http_websocket(
         resolved_rules.host_protocol,
         Some(bifrost_core::Protocol::Wss) | Some(bifrost_core::Protocol::Https)
     );
-    let mut target_stream: Box<dyn AsyncReadWrite + Unpin + Send> =
-        if use_tls {
-            let tls_config = super::tunnel::get_tls_client_config(unsafe_ssl);
-            let connector = TlsConnector::from(tls_config);
+    let mut target_stream: Box<dyn AsyncReadWrite + Unpin + Send> = if use_tls {
+        let tls_config = super::tunnel::get_tls_client_config(unsafe_ssl);
+        let connector = TlsConnector::from(tls_config);
 
-            let server_name = ServerName::try_from(target_host.clone()).map_err(|_| {
-                BifrostError::Network(format!("Invalid server name for TLS: {}", target_host))
-            })?;
+        let server_name = ServerName::try_from(target_host.clone()).map_err(|_| {
+            BifrostError::Network(format!("Invalid server name for TLS: {}", target_host))
+        })?;
 
-            let tls_stream = connector.connect(server_name, target_stream).await.map_err(|e| {
-                BifrostError::Network(format!("TLS handshake failed: {}", e))
-            })?;
+        let tls_stream = connector
+            .connect(server_name, target_stream)
+            .await
+            .map_err(|e| BifrostError::Network(format!("TLS handshake failed: {}", e)))?;
 
-            Box::new(tls_stream)
-        } else {
-            Box::new(target_stream)
-        };
+        Box::new(tls_stream)
+    } else {
+        Box::new(target_stream)
+    };
 
     let upgrade_request = build_http_websocket_handshake(&req, &target_host, target_port)?;
     target_stream

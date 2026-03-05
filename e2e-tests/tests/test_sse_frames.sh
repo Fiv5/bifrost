@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/sse_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
@@ -25,6 +27,78 @@ log_info() { echo "[INFO] $*"; }
 log_pass() { echo "[PASS] $*"; }
 log_fail() { echo "[FAIL] $*"; }
 log_debug() { [[ "${DEBUG:-0}" == "1" ]] && echo "[DEBUG] $*"; }
+
+BIFROST_DATA_DIR=""
+BIFROST_PID=""
+SSE_SERVER_PID=""
+
+cleanup() {
+    log_info "Cleaning up..."
+
+    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
+        kill "$BIFROST_PID" 2>/dev/null || true
+        wait "$BIFROST_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$SSE_SERVER_PID" ]] && kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
+        kill "$SSE_SERVER_PID" 2>/dev/null || true
+        wait "$SSE_SERVER_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
+        rm -rf "$BIFROST_DATA_DIR"
+    fi
+
+    sse_cleanup_all 2>/dev/null || true
+}
+
+trap cleanup EXIT
+
+start_sse_server() {
+    log_info "Starting SSE echo server on port $SSE_PORT..."
+    python3 "$SCRIPT_DIR/../mock_servers/sse_echo_server.py" --port "$SSE_PORT" > /dev/null 2>&1 &
+    SSE_SERVER_PID=$!
+
+    sleep 1
+    if ! kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
+        log_fail "Failed to start SSE server"
+        return 1
+    fi
+
+    if ! curl -s "${SSE_TARGET}/health" >/dev/null 2>&1; then
+        log_fail "SSE server health check failed"
+        return 1
+    fi
+    return 0
+}
+
+start_bifrost() {
+    log_info "Building bifrost binary..."
+    (cd "$SCRIPT_DIR/../.." && cargo build --bin bifrost > /dev/null 2>&1) || {
+        log_fail "Failed to build bifrost"
+        return 1
+    }
+
+    log_info "Starting Bifrost proxy on port $PROXY_PORT..."
+    BIFROST_DATA_DIR="$(mktemp -d)"
+    export BIFROST_DATA_DIR
+
+    (cd "$SCRIPT_DIR/../.." && BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > /dev/null 2>&1) &
+    BIFROST_PID=$!
+
+    local max_wait=60
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if curl -s "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system/status" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log_fail "Failed to start Bifrost proxy"
+    return 1
+}
 
 assert_equals() {
     local expected="$1"
@@ -379,6 +453,12 @@ main() {
     log_info "Admin: $ADMIN_HOST:$ADMIN_PORT"
     log_info "SSE Server: $SSE_HOST:$SSE_PORT"
     echo ""
+
+    start_sse_server
+    start_bifrost
+
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
 
     run_test "SSE Basic Events" test_sse_basic_events
     run_test "SSE Custom Events" test_sse_custom_events
