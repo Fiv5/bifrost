@@ -104,6 +104,7 @@ pub struct ConnectionFrameStore {
     frame_id_counter: AtomicU64,
     status: SocketStatus,
     is_monitored: bool,
+    is_tunnel: bool, // 标记是否为隧道连接
     tx: broadcast::Sender<FrameEvent>,
 }
 
@@ -117,8 +118,15 @@ impl ConnectionFrameStore {
             frame_id_counter: AtomicU64::new(0),
             status: SocketStatus::default(),
             is_monitored: false,
+            is_tunnel: false,
             tx,
         }
+    }
+
+    pub fn new_tunnel(max_frames: usize) -> Self {
+        let mut store = Self::new(max_frames);
+        store.is_tunnel = true;
+        store
     }
 
     pub fn next_frame_id(&self) -> u64 {
@@ -203,6 +211,22 @@ impl ConnectionMonitor {
         }
     }
 
+    pub fn register_tunnel_connection(&self, connection_id: &str) {
+        let mut connections = self.connections.write();
+        if !connections.contains_key(connection_id) {
+            // 为隧道连接设置最小的最大帧数量，进一步减少内存使用
+            let tunnel_max_frames = 5; // 只保留最基本的统计信息
+            let mut store = ConnectionFrameStore::new(tunnel_max_frames);
+            store.is_tunnel = true;
+            // 隧道连接不需要监控，默认设置为非监控状态
+            store.is_monitored = false;
+            connections.insert(
+                connection_id.to_string(),
+                store,
+            );
+        }
+    }
+
     pub fn unregister_connection(&self, connection_id: &str) {
         self.connections.write().remove(connection_id);
     }
@@ -221,6 +245,22 @@ impl ConnectionMonitor {
     ) -> Option<WebSocketFrameRecord> {
         let mut connections = self.connections.write();
         let store = connections.get_mut(connection_id)?;
+
+        // 对于隧道连接，只记录基本统计信息，不记录详细帧数据
+        if store.is_tunnel {
+            // 只更新流量统计
+            match direction {
+                FrameDirection::Send => {
+                    store.status.send_count += 1;
+                    store.status.send_bytes += payload.len() as u64;
+                }
+                FrameDirection::Receive => {
+                    store.status.receive_count += 1;
+                    store.status.receive_bytes += payload.len() as u64;
+                }
+            }
+            return None;
+        }
 
         let frame_id = store.next_frame_id();
         let mut frame = WebSocketFrameRecord::new(
@@ -333,6 +373,12 @@ impl ConnectionMonitor {
         let mut connections = self.connections.write();
         if let Some(store) = connections.get_mut(connection_id) {
             store.set_closed(code, reason);
+            
+            // 对于隧道连接，关闭后自动清理，释放内存
+            if store.is_tunnel {
+                connections.remove(connection_id);
+                return;
+            }
         }
         if let Some(fs) = frame_store {
             fs.mark_connection_closed(connection_id);

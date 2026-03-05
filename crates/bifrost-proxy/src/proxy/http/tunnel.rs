@@ -363,7 +363,7 @@ pub async fn handle_connect(
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         state.record_traffic(record);
 
-        state.connection_monitor.register_connection(&req_id);
+        state.connection_monitor.register_tunnel_connection(&req_id);
     }
 
     let host_for_unregister = host.clone();
@@ -2803,6 +2803,7 @@ pub async fn tunnel_bidirectional_with_cancel(
                 state
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
+                // 对于隧道连接，只更新流量统计，不记录详细帧
                 state.connection_monitor.update_traffic(
                     &req_id_owned,
                     FrameDirection::Send,
@@ -2829,6 +2830,7 @@ pub async fn tunnel_bidirectional_with_cancel(
                 state
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
+                // 对于隧道连接，只更新流量统计，不记录详细帧
                 state.connection_monitor.update_traffic(
                     &req_id_owned2,
                     FrameDirection::Receive,
