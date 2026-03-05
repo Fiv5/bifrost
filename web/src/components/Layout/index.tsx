@@ -79,7 +79,7 @@ export default function AppLayout() {
       overflow: "hidden",
     },
     sidebar: {
-      width: 48,
+      width: 72,
       height: "100%",
       backgroundColor: token.colorBgContainer,
       borderRight: `1px solid ${token.colorBorderSecondary}`,
@@ -90,9 +90,10 @@ export default function AppLayout() {
       flexShrink: 0,
     },
     menuItem: {
-      width: 48,
-      height: 48,
+      width: 72,
+      height: 64,
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
       justifyContent: "center",
       cursor: "pointer",
@@ -100,6 +101,13 @@ export default function AppLayout() {
       color: token.colorTextSecondary,
       position: "relative",
       transition: "all 0.2s",
+    },
+    menuItemLabel: {
+      marginTop: 4,
+      fontSize: 9,
+      lineHeight: "9px",
+      whiteSpace: "nowrap",
+      color: "inherit",
     },
     menuItemActive: {
       color: token.colorPrimary,
@@ -170,6 +178,7 @@ export default function AppLayout() {
                     <div style={styles.activeBorder as CSSProperties} />
                   )}
                   {renderMenuIcon(item)}
+                  <div style={styles.menuItemLabel}>{item.label}</div>
                 </div>
               </Tooltip>
             );
