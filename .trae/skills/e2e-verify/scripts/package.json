@@ -1,0 +1,25 @@
+{
+  "name": "e2e-verify",
+  "version": "2.0.0",
+  "description": "E2E Testing Tool - Browser UI Testing & API Verification",
+  "main": "browser-test.js",
+  "bin": {
+    "browser": "browser-test.js",
+    "api": "api-test.js"
+  },
+  "scripts": {
+    "browser": "node browser-test.js",
+    "browser:launch": "node browser-test.js launch",
+    "browser:interactive": "node browser-test.js launch -i",
+    "browser:scenario": "node browser-test.js scenario",
+    "browser:scenario:list": "node browser-test.js scenario --list",
+    "browser:watch": "node browser-test.js watch",
+    "browser:tools": "node browser-test.js tools",
+    "browser:help": "node browser-test.js help",
+    "api": "node api-test.js",
+    "api:help": "node api-test.js --help"
+  },
+  "dependencies": {
+    "puppeteer": "^24.4.0"
+  }
+}

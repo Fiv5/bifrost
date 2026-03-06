@@ -1214,9 +1214,15 @@ GET /api/config/performance
 {
   "traffic": {
     "max_records": 5000,
+    "max_db_size_bytes": 2147483648,
     "max_body_memory_size": 524288,
     "max_body_buffer_size": 10485760,
-    "file_retention_days": 7
+    "file_retention_days": 7,
+    "sse_stream_flush_bytes": 65536,
+    "sse_stream_flush_interval_ms": 200,
+    "ws_payload_flush_bytes": 262144,
+    "ws_payload_flush_interval_ms": 200,
+    "ws_payload_max_open_files": 128
   },
   "body_store_stats": {
     "memory_used": 1048576,
@@ -1245,18 +1251,30 @@ PUT /api/config/performance
 ```json
 {
   "max_records": 10000,
+  "max_db_size_bytes": 2147483648,
   "max_body_memory_size": 1048576,
   "max_body_buffer_size": 20971520,
-  "file_retention_days": 3
+  "file_retention_days": 3,
+  "sse_stream_flush_bytes": 65536,
+  "sse_stream_flush_interval_ms": 200,
+  "ws_payload_flush_bytes": 262144,
+  "ws_payload_flush_interval_ms": 200,
+  "ws_payload_max_open_files": 128
 }
 ```
 
-| 字段                 | 类型   | 必填 | 说明                            |
-| -------------------- | ------ | ---- | ------------------------------- |
-| max_records          | number | 否   | 最大流量记录数                  |
-| max_body_memory_size | number | 否   | 单个请求体最大内存缓存大小      |
-| max_body_buffer_size | number | 否   | 请求体缓冲区最大大小            |
-| file_retention_days  | number | 否   | 文件保留天数（最大 7 天）       |
+| 字段                         | 类型   | 必填 | 说明                            |
+| ---------------------------- | ------ | ---- | ------------------------------- |
+| max_records                  | number | 否   | 最大流量记录数                  |
+| max_db_size_bytes            | number | 否   | Traffic DB 最大大小（字节）     |
+| max_body_memory_size         | number | 否   | 单个请求体最大内存缓存大小      |
+| max_body_buffer_size         | number | 否   | 请求体缓冲区最大大小            |
+| file_retention_days          | number | 否   | 文件保留天数（最大 7 天）       |
+| sse_stream_flush_bytes       | number | 否   | SSE raw stream flush 字节阈值   |
+| sse_stream_flush_interval_ms | number | 否   | SSE raw stream flush 间隔（ms） |
+| ws_payload_flush_bytes       | number | 否   | WS payload flush 字节阈值       |
+| ws_payload_flush_interval_ms | number | 否   | WS payload flush 间隔（ms）     |
+| ws_payload_max_open_files    | number | 否   | WS payload 最大打开文件数       |
 
 ### 9.6 清除缓存
 
@@ -1271,7 +1289,8 @@ DELETE /api/config/performance/clear-cache
   "body_cache_removed": 100,
   "traffic_cache_removed": 5000,
   "frame_cache_removed": 500,
-  "message": "Successfully cleared 100 body cache files, 5000 traffic records, and 500 frame files"
+  "ws_payload_cache_removed": 50,
+  "message": "Successfully cleared 100 body cache files, 5000 traffic records, 500 frame files, and 50 ws payload files"
 }
 ```
 

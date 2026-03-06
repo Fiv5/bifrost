@@ -11,6 +11,7 @@ use crate::frame_store::FrameStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::traffic_store::TrafficStoreStats;
+use crate::ws_payload_store::WsPayloadStoreConfigUpdate;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -44,9 +45,15 @@ pub struct UpdateTlsConfigRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficConfig {
     pub max_records: usize,
+    pub max_db_size_bytes: u64,
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
     pub file_retention_days: u64,
+    pub sse_stream_flush_bytes: usize,
+    pub sse_stream_flush_interval_ms: u64,
+    pub ws_payload_flush_bytes: usize,
+    pub ws_payload_flush_interval_ms: u64,
+    pub ws_payload_max_open_files: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,9 +67,15 @@ pub struct PerformanceConfigResponse {
 #[derive(Deserialize)]
 pub struct UpdateTrafficConfigRequest {
     pub max_records: Option<usize>,
+    pub max_db_size_bytes: Option<u64>,
     pub max_body_memory_size: Option<usize>,
     pub max_body_buffer_size: Option<usize>,
     pub file_retention_days: Option<u64>,
+    pub sse_stream_flush_bytes: Option<usize>,
+    pub sse_stream_flush_interval_ms: Option<u64>,
+    pub ws_payload_flush_bytes: Option<usize>,
+    pub ws_payload_flush_interval_ms: Option<u64>,
+    pub ws_payload_max_open_files: Option<usize>,
 }
 
 pub async fn handle_config(
@@ -315,16 +328,28 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         let config = config_manager.config().await;
         TrafficConfig {
             max_records: config.traffic.max_records,
+            max_db_size_bytes: config.traffic.max_db_size_bytes,
             max_body_memory_size: config.traffic.max_body_memory_size,
             max_body_buffer_size: config.traffic.max_body_buffer_size,
             file_retention_days: config.traffic.file_retention_days,
+            sse_stream_flush_bytes: config.traffic.sse_stream_flush_bytes,
+            sse_stream_flush_interval_ms: config.traffic.sse_stream_flush_interval_ms,
+            ws_payload_flush_bytes: config.traffic.ws_payload_flush_bytes,
+            ws_payload_flush_interval_ms: config.traffic.ws_payload_flush_interval_ms,
+            ws_payload_max_open_files: config.traffic.ws_payload_max_open_files,
         }
     } else {
         TrafficConfig {
             max_records: 5000,
+            max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
             file_retention_days: 7,
+            sse_stream_flush_bytes: 64 * 1024,
+            sse_stream_flush_interval_ms: 200,
+            ws_payload_flush_bytes: 256 * 1024,
+            ws_payload_flush_interval_ms: 200,
+            ws_payload_max_open_files: 128,
         }
     };
 
@@ -371,9 +396,15 @@ async fn update_performance_config(
     if let Some(ref config_manager) = state.config_manager {
         let update = TrafficConfigUpdate {
             max_records: request.max_records,
+            max_db_size_bytes: request.max_db_size_bytes,
             max_body_memory_size: request.max_body_memory_size,
             max_body_buffer_size: request.max_body_buffer_size,
             file_retention_days: request.file_retention_days,
+            sse_stream_flush_bytes: request.sse_stream_flush_bytes,
+            sse_stream_flush_interval_ms: request.sse_stream_flush_interval_ms,
+            ws_payload_flush_bytes: request.ws_payload_flush_bytes,
+            ws_payload_flush_interval_ms: request.ws_payload_flush_interval_ms,
+            ws_payload_max_open_files: request.ws_payload_max_open_files,
         };
 
         if let Err(e) = config_manager.update_traffic_config(update).await {
@@ -398,12 +429,30 @@ async fn update_performance_config(
         }
     }
 
+    if let Some(max_db_size_bytes) = request.max_db_size_bytes {
+        if let Some(ref traffic_db_store) = state.traffic_db_store {
+            traffic_db_store.set_max_db_size_bytes(max_db_size_bytes);
+        }
+    }
+
     if let Some(ref body_store) = state.body_store {
         let body_store_update = BodyStoreConfigUpdate {
             max_memory_size: request.max_body_memory_size,
             retention_days: request.file_retention_days,
+            stream_flush_bytes: request.sse_stream_flush_bytes,
+            stream_flush_interval_ms: request.sse_stream_flush_interval_ms,
         };
         body_store.write().update_config(body_store_update);
+    }
+
+    if let Some(ref ws_payload_store) = state.ws_payload_store {
+        let ws_payload_update = WsPayloadStoreConfigUpdate {
+            flush_bytes: request.ws_payload_flush_bytes,
+            flush_interval_ms: request.ws_payload_flush_interval_ms,
+            max_open_files: request.ws_payload_max_open_files,
+            retention_days: request.file_retention_days,
+        };
+        ws_payload_store.update_config(ws_payload_update);
     }
 
     if let Some(ref traffic_store) = state.traffic_store {
@@ -428,6 +477,7 @@ struct ClearCacheResponse {
     body_cache_removed: usize,
     traffic_cache_removed: usize,
     frame_cache_removed: usize,
+    ws_payload_cache_removed: usize,
     message: String,
 }
 
@@ -435,6 +485,7 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
     let mut body_removed = 0usize;
     let mut traffic_removed = 0usize;
     let mut frame_removed = 0usize;
+    let mut ws_payload_removed = 0usize;
     let mut errors = Vec::new();
 
     if let Some(ref body_store) = state.body_store {
@@ -473,6 +524,19 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         }
     }
 
+    if let Some(ref ws_payload_store) = state.ws_payload_store {
+        match ws_payload_store.clear() {
+            Ok(count) => {
+                ws_payload_removed = count;
+                tracing::info!("Cleared {} ws payload files", count);
+            }
+            Err(e) => {
+                tracing::error!("Failed to clear ws payload cache: {}", e);
+                errors.push(format!("ws payload cache: {}", e));
+            }
+        }
+    }
+
     if !errors.is_empty() {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -484,9 +548,10 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         body_cache_removed: body_removed,
         traffic_cache_removed: traffic_removed,
         frame_cache_removed: frame_removed,
+        ws_payload_cache_removed: ws_payload_removed,
         message: format!(
-            "Successfully cleared {} body cache files, {} traffic records, and {} frame files",
-            body_removed, traffic_removed, frame_removed
+            "Successfully cleared {} body cache files, {} traffic records, {} frame files, and {} ws payload files",
+            body_removed, traffic_removed, frame_removed, ws_payload_removed
         ),
     };
     json_response(&response)

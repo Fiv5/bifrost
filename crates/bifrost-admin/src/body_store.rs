@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -41,12 +41,18 @@ pub struct BodyStore {
     temp_dir: PathBuf,
     max_memory_size: usize,
     retention_days: u64,
+    stream_flush_bytes: usize,
+    stream_flush_interval: Duration,
 }
 
 pub struct BodyStreamWriter {
     path: PathBuf,
     file: fs::File,
     size: usize,
+    buffer: Vec<u8>,
+    flush_bytes: usize,
+    flush_interval: Duration,
+    last_flush: Instant,
 }
 
 impl BodyStreamWriter {
@@ -62,12 +68,31 @@ impl BodyStreamWriter {
     }
 
     pub fn write_chunk(&mut self, data: &[u8]) -> std::io::Result<()> {
-        self.file.write_all(data)?;
+        if data.is_empty() {
+            return Ok(());
+        }
+        self.buffer.extend_from_slice(data);
         self.size += data.len();
+        if self.buffer.len() >= self.flush_bytes || self.last_flush.elapsed() >= self.flush_interval
+        {
+            self.flush()?;
+        }
         Ok(())
     }
 
-    pub fn finish(self) -> BodyRef {
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        self.file.write_all(&self.buffer)?;
+        self.file.flush()?;
+        self.buffer.clear();
+        self.last_flush = Instant::now();
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> BodyRef {
+        let _ = self.flush();
         BodyRef::File {
             path: self.path.to_string_lossy().to_string(),
             size: self.size,
@@ -79,10 +104,18 @@ impl BodyStreamWriter {
 pub struct BodyStoreConfigUpdate {
     pub max_memory_size: Option<usize>,
     pub retention_days: Option<u64>,
+    pub stream_flush_bytes: Option<usize>,
+    pub stream_flush_interval_ms: Option<u64>,
 }
 
 impl BodyStore {
-    pub fn new(temp_dir: PathBuf, max_memory_size: usize, retention_days: u64) -> Self {
+    pub fn new(
+        temp_dir: PathBuf,
+        max_memory_size: usize,
+        retention_days: u64,
+        stream_flush_bytes: usize,
+        stream_flush_interval: Duration,
+    ) -> Self {
         if !temp_dir.exists() {
             let _ = fs::create_dir_all(&temp_dir);
         }
@@ -90,6 +123,8 @@ impl BodyStore {
             temp_dir,
             max_memory_size,
             retention_days,
+            stream_flush_bytes,
+            stream_flush_interval,
         }
     }
 
@@ -109,6 +144,22 @@ impl BodyStore {
                 retention_days
             );
             self.retention_days = retention_days;
+        }
+        if let Some(stream_flush_bytes) = update.stream_flush_bytes {
+            tracing::info!(
+                "BodyStore config updated: stream_flush_bytes {} -> {}",
+                self.stream_flush_bytes,
+                stream_flush_bytes
+            );
+            self.stream_flush_bytes = stream_flush_bytes;
+        }
+        if let Some(stream_flush_interval_ms) = update.stream_flush_interval_ms {
+            tracing::info!(
+                "BodyStore config updated: stream_flush_interval_ms {:?} -> {}",
+                self.stream_flush_interval.as_millis(),
+                stream_flush_interval_ms
+            );
+            self.stream_flush_interval = Duration::from_millis(stream_flush_interval_ms);
         }
     }
 
@@ -181,6 +232,10 @@ impl BodyStore {
             path,
             file,
             size: 0,
+            buffer: Vec::with_capacity(self.stream_flush_bytes),
+            flush_bytes: self.stream_flush_bytes,
+            flush_interval: self.stream_flush_interval,
+            last_flush: Instant::now(),
         })
     }
 
@@ -277,7 +332,10 @@ impl BodyStore {
             let path = entry.path();
             if path.is_file() {
                 if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
-                    let base_id = file_name.split('-').next().unwrap_or(file_name);
+                    let base_id = file_name
+                        .rsplit_once('_')
+                        .map(|(id, _)| id)
+                        .unwrap_or(file_name);
                     if ids_set.contains(base_id) && fs::remove_file(&path).is_ok() {
                         removed_count += 1;
                     }
@@ -385,7 +443,7 @@ mod tests {
     #[test]
     fn test_store_inline_small_body() {
         let dir = create_test_dir();
-        let store = BodyStore::new(dir.clone(), 1024, 7);
+        let store = BodyStore::new(dir.clone(), 1024, 7, 64 * 1024, Duration::from_millis(200));
 
         let data = b"Hello, World!";
         let body_ref = store.store("test1", "req", data).unwrap();
@@ -399,7 +457,7 @@ mod tests {
     #[test]
     fn test_store_file_large_body() {
         let dir = create_test_dir();
-        let store = BodyStore::new(dir.clone(), 10, 7);
+        let store = BodyStore::new(dir.clone(), 10, 7, 64 * 1024, Duration::from_millis(200));
 
         let data = b"This is a large body that exceeds the memory limit";
         let body_ref = store.store("test2", "res", data).unwrap();
@@ -418,7 +476,7 @@ mod tests {
     #[test]
     fn test_load_file_range() {
         let dir = create_test_dir();
-        let store = BodyStore::new(dir.clone(), 10, 7);
+        let store = BodyStore::new(dir.clone(), 10, 7, 64 * 1024, Duration::from_millis(200));
 
         let data = b"Hello range body";
         let body_ref = store.store("test_range", "res", data).unwrap();
@@ -442,7 +500,7 @@ mod tests {
     #[test]
     fn test_empty_body() {
         let dir = create_test_dir();
-        let store = BodyStore::new(dir.clone(), 1024, 7);
+        let store = BodyStore::new(dir.clone(), 1024, 7, 64 * 1024, Duration::from_millis(200));
 
         let body_ref = store.store("test3", "req", b"");
         assert!(body_ref.is_none());
@@ -451,9 +509,31 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_by_ids_with_hyphenated_id() {
+        let dir = create_test_dir();
+        let store = BodyStore::new(dir.clone(), 1, 7, 64 * 1024, Duration::from_millis(200));
+
+        let id = "req-123-abc";
+        let data = b"large body for file storage";
+        let body_ref = store.store(id, "req", data).unwrap();
+        assert!(body_ref.is_file());
+
+        let before_stats = store.stats();
+        assert_eq!(before_stats.file_count, 1);
+
+        let removed = store.delete_by_ids(&[id.to_string()]).unwrap();
+        assert_eq!(removed, 1);
+
+        let after_stats = store.stats();
+        assert_eq!(after_stats.file_count, 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
     fn test_cleanup() {
         let dir = create_test_dir();
-        let store = BodyStore::new(dir.clone(), 10, 0);
+        let store = BodyStore::new(dir.clone(), 10, 0, 64 * 1024, Duration::from_millis(200));
 
         let data = b"Test data for cleanup";
         store.store("test4", "req", data);

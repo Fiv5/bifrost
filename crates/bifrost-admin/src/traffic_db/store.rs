@@ -24,6 +24,7 @@ pub struct TrafficDbStore {
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
     max_records: AtomicUsize,
+    max_db_size_bytes: AtomicU64,
     retention_hours: AtomicU64,
     tx: broadcast::Sender<TrafficRecord>,
     current_sequence: AtomicU64,
@@ -35,6 +36,7 @@ impl TrafficDbStore {
     pub fn new(
         db_dir: PathBuf,
         max_records: usize,
+        max_db_size_bytes: u64,
         retention_hours: Option<u64>,
     ) -> Result<Self, rusqlite::Error> {
         if !db_dir.exists() {
@@ -46,11 +48,12 @@ impl TrafficDbStore {
         tracing::info!(
             db_path = %db_path.display(),
             max_records = max_records,
+            max_db_size_bytes = max_db_size_bytes,
             retention_hours = retention_hours.unwrap_or(168),
             "[TRAFFIC_DB] Initializing SQLite traffic store"
         );
 
-        let mut write_conn = match Self::open_or_reset_database(&db_path) {
+        let write_conn = match Self::open_or_reset_database(&db_path) {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!(error = %e, "[TRAFFIC_DB] Failed to open database");
@@ -63,13 +66,7 @@ impl TrafficDbStore {
             "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
         )?;
 
-        let current_seq = match Self::resequence_records(&mut write_conn) {
-            Ok(count) => count,
-            Err(e) => {
-                tracing::warn!(error = %e, "[TRAFFIC_DB] Failed to resequence, using max sequence");
-                Self::get_max_sequence(&write_conn).unwrap_or(0)
-            }
-        };
+        let current_seq = Self::get_max_sequence(&write_conn).unwrap_or(0);
 
         let (tx, _) = broadcast::channel(1024);
 
@@ -85,6 +82,7 @@ impl TrafficDbStore {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
             max_records: AtomicUsize::new(max_records),
+            max_db_size_bytes: AtomicU64::new(max_db_size_bytes),
             retention_hours: AtomicU64::new(retention_hours.unwrap_or(168)),
             tx,
             current_sequence: AtomicU64::new(current_seq + 1),
@@ -137,41 +135,6 @@ impl TrafficDbStore {
         .ok()
         .flatten()
         .map(|v| v as u64)
-    }
-
-    fn resequence_records(conn: &mut Connection) -> rusqlite::Result<u64> {
-        let start = std::time::Instant::now();
-
-        let mut stmt = conn.prepare("SELECT id FROM traffic_records ORDER BY sequence ASC")?;
-        let ids: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-
-        if ids.is_empty() {
-            return Ok(0);
-        }
-
-        let tx = conn.transaction()?;
-        let mut update_stmt =
-            tx.prepare("UPDATE traffic_records SET sequence = ?1 WHERE id = ?2")?;
-
-        for (idx, id) in ids.iter().enumerate() {
-            update_stmt.execute(rusqlite::params![(idx + 1) as i64, id])?;
-        }
-
-        drop(update_stmt);
-        tx.commit()?;
-
-        tracing::info!(
-            record_count = ids.len(),
-            duration_ms = start.elapsed().as_millis(),
-            "[TRAFFIC_DB] Resequenced existing records (1 to {})",
-            ids.len()
-        );
-
-        Ok(ids.len() as u64)
     }
 
     pub fn record(&self, mut record: TrafficRecord) {
@@ -705,8 +668,8 @@ impl TrafficDbStore {
         );
 
         if active_connection_ids.is_empty() {
-            if let Err(e) = conn.execute("DELETE FROM traffic_records WHERE status != 0", []) {
-                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear completed records");
+            if let Err(e) = conn.execute("DELETE FROM traffic_records", []) {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear traffic records");
             }
         } else {
             let placeholders: String = active_connection_ids
@@ -716,7 +679,7 @@ impl TrafficDbStore {
                 .join(",");
 
             let sql = format!(
-                "DELETE FROM traffic_records WHERE status != 0 AND id NOT IN ({})",
+                "DELETE FROM traffic_records WHERE id NOT IN ({})",
                 placeholders
             );
 
@@ -724,7 +687,7 @@ impl TrafficDbStore {
                 &sql,
                 rusqlite::params_from_iter(active_connection_ids.iter()),
             ) {
-                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear completed records");
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear traffic records");
             }
         }
 
@@ -732,8 +695,7 @@ impl TrafficDbStore {
         let preserved_ids: Vec<String> = cache
             .iter()
             .filter(|(id, record)| {
-                record.status == 0
-                    || active_ids_set.contains(id.as_str())
+                active_ids_set.contains(id.as_str())
                     || (record.is_websocket
                         && record.socket_status.as_ref().is_some_and(|s| s.is_open))
             })
@@ -751,7 +713,33 @@ impl TrafficDbStore {
         }
         *cache = new_cache;
 
+        if active_connection_ids.is_empty() {
+            drop(conn);
+            self.compact_db(true);
+        } else {
+            drop(conn);
+            self.compact_db(false);
+        }
+
         tracing::info!("[TRAFFIC_DB] Traffic records cleared (active preserved)");
+    }
+
+    fn compact_with_conn(conn: &Connection, full_vacuum: bool) {
+        if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
+            tracing::warn!(error = %e, "[TRAFFIC_DB] WAL checkpoint failed during compact");
+        }
+        if full_vacuum {
+            if let Err(e) = conn.execute_batch("VACUUM") {
+                tracing::warn!(error = %e, "[TRAFFIC_DB] VACUUM failed");
+            } else {
+                tracing::info!("[TRAFFIC_DB] VACUUM completed");
+            }
+        }
+    }
+
+    fn compact_db(&self, full_vacuum: bool) {
+        let conn = self.write_conn.lock();
+        Self::compact_with_conn(&conn, full_vacuum);
     }
 
     pub fn delete_by_ids(&self, ids: &[String]) {
@@ -803,6 +791,44 @@ impl TrafficDbStore {
                         max = max,
                         "[TRAFFIC_DB] Cleaned up old records"
                     );
+                }
+            }
+        }
+
+        let max_db_size_bytes = self.max_db_size_bytes.load(Ordering::Relaxed);
+        if max_db_size_bytes > 0 {
+            let db_size = fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
+            if db_size > max_db_size_bytes {
+                let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
+                let avg_bytes_per_record = if count > 0 {
+                    (db_size / count as u64).max(1)
+                } else {
+                    1
+                };
+                let bytes_to_remove = db_size.saturating_sub(target_size);
+                let mut to_remove = bytes_to_remove.div_ceil(avg_bytes_per_record) as i64;
+                if to_remove < 1 {
+                    to_remove = 1;
+                }
+
+                let result = conn.execute(
+                    "DELETE FROM traffic_records WHERE sequence IN (
+                        SELECT sequence FROM traffic_records ORDER BY sequence ASC LIMIT ?
+                    )",
+                    [to_remove],
+                );
+
+                if let Ok(deleted) = result {
+                    if deleted > 0 {
+                        tracing::info!(
+                            deleted = deleted,
+                            db_size = db_size,
+                            max_db_size_bytes = max_db_size_bytes,
+                            target_size = target_size,
+                            "[TRAFFIC_DB] Cleaned up records due to DB size limit"
+                        );
+                        Self::compact_with_conn(conn, true);
+                    }
                 }
             }
         }
@@ -897,6 +923,19 @@ impl TrafficDbStore {
         }
     }
 
+    pub fn set_max_db_size_bytes(&self, max: u64) {
+        let old = self.max_db_size_bytes.swap(max, Ordering::SeqCst);
+        if old != max {
+            tracing::info!(
+                old = old,
+                new = max,
+                "[TRAFFIC_DB] Max db size bytes updated"
+            );
+            let conn = self.write_conn.lock();
+            self.maybe_cleanup(&conn);
+        }
+    }
+
     pub fn set_retention_hours(&self, hours: u64) {
         let old = self.retention_hours.swap(hours, Ordering::SeqCst);
         if old != hours {
@@ -934,8 +973,82 @@ pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
             interval.tick().await;
             let deleted = store.cleanup_expired_records();
             if deleted > 0 {
-                store.checkpoint();
+                store.compact_db(false);
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn create_test_dir() -> PathBuf {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = env::temp_dir().join(format!(
+            "bifrost_traffic_db_test_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            counter
+        ));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn cleanup_test_dir(dir: &PathBuf) {
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_clear_removes_pending_records_when_no_active_connections() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        let record = TrafficRecord::new(
+            "req-1".to_string(),
+            "GET".to_string(),
+            "https://a.com".to_string(),
+        );
+        store.record(record);
+        assert_eq!(store.count(), 1);
+
+        store.clear_with_active_ids(&[]);
+        assert_eq!(store.count(), 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_clear_preserves_active_connection_records() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        let active = TrafficRecord::new(
+            "active-1".to_string(),
+            "GET".to_string(),
+            "https://a.com".to_string(),
+        );
+        let inactive = TrafficRecord::new(
+            "inactive-1".to_string(),
+            "GET".to_string(),
+            "https://b.com".to_string(),
+        );
+        store.record(active);
+        store.record(inactive);
+        assert_eq!(store.count(), 2);
+
+        let active_ids = vec!["active-1".to_string()];
+        store.clear_with_active_ids(&active_ids);
+        assert_eq!(store.count(), 1);
+        assert!(store.get_by_id("active-1").is_some());
+
+        cleanup_test_dir(&dir);
+    }
 }

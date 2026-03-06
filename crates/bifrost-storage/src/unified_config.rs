@@ -141,18 +141,30 @@ impl Default for SystemProxyConfig {
 #[serde(default)]
 pub struct TrafficConfig {
     pub max_records: usize,
+    pub max_db_size_bytes: u64,
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
     pub file_retention_days: u64,
+    pub sse_stream_flush_bytes: usize,
+    pub sse_stream_flush_interval_ms: u64,
+    pub ws_payload_flush_bytes: usize,
+    pub ws_payload_flush_interval_ms: u64,
+    pub ws_payload_max_open_files: usize,
 }
 
 impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
             max_records: 5000,
+            max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
             file_retention_days: 7,
+            sse_stream_flush_bytes: 64 * 1024,
+            sse_stream_flush_interval_ms: 200,
+            ws_payload_flush_bytes: 256 * 1024,
+            ws_payload_flush_interval_ms: 200,
+            ws_payload_max_open_files: 128,
         }
     }
 }
@@ -210,9 +222,15 @@ pub struct SystemProxyConfigUpdate {
 #[derive(Debug, Clone, Default)]
 pub struct TrafficConfigUpdate {
     pub max_records: Option<usize>,
+    pub max_db_size_bytes: Option<u64>,
     pub max_body_memory_size: Option<usize>,
     pub max_body_buffer_size: Option<usize>,
     pub file_retention_days: Option<u64>,
+    pub sse_stream_flush_bytes: Option<usize>,
+    pub sse_stream_flush_interval_ms: Option<u64>,
+    pub ws_payload_flush_bytes: Option<usize>,
+    pub ws_payload_flush_interval_ms: Option<u64>,
+    pub ws_payload_max_open_files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

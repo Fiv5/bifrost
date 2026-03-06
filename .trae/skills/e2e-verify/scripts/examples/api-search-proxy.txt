@@ -1,0 +1,2 @@
+node api-test.js --api /_bifrost/api/search -m POST -d '{"keyword":"login","scope":{"all":false,"url":true},"limit":10}' --target http://127.0.0.1:9900
+node api-test.js --api /_bifrost/api/proxy/system --target http://127.0.0.1:9900

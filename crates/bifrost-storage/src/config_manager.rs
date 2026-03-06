@@ -162,6 +162,9 @@ impl ConfigManager {
         if let Some(max_records) = update.max_records {
             config.traffic.max_records = max_records;
         }
+        if let Some(max_db_size_bytes) = update.max_db_size_bytes {
+            config.traffic.max_db_size_bytes = max_db_size_bytes;
+        }
         if let Some(max_body_memory_size) = update.max_body_memory_size {
             config.traffic.max_body_memory_size = max_body_memory_size;
         }
@@ -170,6 +173,21 @@ impl ConfigManager {
         }
         if let Some(file_retention_days) = update.file_retention_days {
             config.traffic.file_retention_days = file_retention_days;
+        }
+        if let Some(sse_stream_flush_bytes) = update.sse_stream_flush_bytes {
+            config.traffic.sse_stream_flush_bytes = sse_stream_flush_bytes;
+        }
+        if let Some(sse_stream_flush_interval_ms) = update.sse_stream_flush_interval_ms {
+            config.traffic.sse_stream_flush_interval_ms = sse_stream_flush_interval_ms;
+        }
+        if let Some(ws_payload_flush_bytes) = update.ws_payload_flush_bytes {
+            config.traffic.ws_payload_flush_bytes = ws_payload_flush_bytes;
+        }
+        if let Some(ws_payload_flush_interval_ms) = update.ws_payload_flush_interval_ms {
+            config.traffic.ws_payload_flush_interval_ms = ws_payload_flush_interval_ms;
+        }
+        if let Some(ws_payload_max_open_files) = update.ws_payload_max_open_files {
+            config.traffic.ws_payload_max_open_files = ws_payload_max_open_files;
         }
 
         self.save_config(&config)?;
@@ -406,9 +424,15 @@ impl ConfigManager {
             },
             traffic: TrafficConfig {
                 max_records: legacy.traffic.max_records,
+                max_db_size_bytes: 2 * 1024 * 1024 * 1024,
                 max_body_memory_size: legacy.traffic.max_body_memory_size,
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
                 file_retention_days: legacy.traffic.file_retention_days,
+                sse_stream_flush_bytes: legacy.traffic.sse_stream_flush_bytes,
+                sse_stream_flush_interval_ms: legacy.traffic.sse_stream_flush_interval_ms,
+                ws_payload_flush_bytes: legacy.traffic.ws_payload_flush_bytes,
+                ws_payload_flush_interval_ms: legacy.traffic.ws_payload_flush_interval_ms,
+                ws_payload_max_open_files: legacy.traffic.ws_payload_max_open_files,
             },
             paths: PathsConfig::for_data_dir(data_dir),
             ui: UiConfig::default(),

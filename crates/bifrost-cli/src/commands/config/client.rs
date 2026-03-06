@@ -167,9 +167,15 @@ pub struct PerformanceConfigResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrafficConfig {
     pub max_records: usize,
+    pub max_db_size_bytes: u64,
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
     pub file_retention_days: u64,
+    pub sse_stream_flush_bytes: usize,
+    pub sse_stream_flush_interval_ms: u64,
+    pub ws_payload_flush_bytes: usize,
+    pub ws_payload_flush_interval_ms: u64,
+    pub ws_payload_max_open_files: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,11 +209,23 @@ pub struct UpdatePerformanceConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_records: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_db_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_body_memory_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_body_buffer_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_retention_days: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sse_stream_flush_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sse_stream_flush_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_payload_flush_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_payload_flush_interval_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_payload_max_open_files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +233,7 @@ pub struct ClearCacheResponse {
     pub body_cache_removed: usize,
     pub traffic_cache_removed: usize,
     pub frame_cache_removed: usize,
+    pub ws_payload_cache_removed: usize,
     pub message: String,
 }
 

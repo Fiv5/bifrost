@@ -390,6 +390,7 @@ pub async fn handle_connect(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
 
                     if let Some(socket_status) = state.connection_monitor.get_status(&req_id) {
@@ -2290,6 +2291,7 @@ async fn handle_intercepted_websocket(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -2463,6 +2465,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -2474,6 +2477,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -2520,6 +2524,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -2531,6 +2536,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }

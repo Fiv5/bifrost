@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 use crate::body_store::{BodyRef, SharedBodyStore};
 use crate::frame_store::SharedFrameStore;
 use crate::traffic::{FrameDirection, FrameType, SocketStatus};
+use crate::ws_payload_store::SharedWsPayloadStore;
 
 const DEFAULT_PREVIEW_LIMIT: usize = 256;
 
@@ -256,6 +257,7 @@ impl ConnectionMonitor {
         is_masked: bool,
         is_fin: bool,
         body_store: Option<&SharedBodyStore>,
+        ws_payload_store: Option<&SharedWsPayloadStore>,
         frame_store: Option<&SharedFrameStore>,
     ) -> Option<WebSocketFrameRecord> {
         let mut connections = self.connections.write();
@@ -287,8 +289,15 @@ impl ConnectionMonitor {
             is_fin,
             self.preview_limit,
         );
-        if let Some(body_store) = body_store {
-            if !payload.is_empty() {
+        if !payload.is_empty() {
+            let payload_ref = if let Some(ws_payload_store) = ws_payload_store {
+                ws_payload_store.append_bytes(connection_id, payload)
+            } else {
+                None
+            };
+            if payload_ref.is_some() {
+                frame.payload_ref = payload_ref;
+            } else if let Some(body_store) = body_store {
                 let direction_str = match direction {
                     FrameDirection::Send => "send",
                     FrameDirection::Receive => "recv",
@@ -432,6 +441,7 @@ impl ConnectionMonitor {
         code: Option<u16>,
         reason: Option<String>,
         frame_store: Option<&SharedFrameStore>,
+        ws_payload_store: Option<&SharedWsPayloadStore>,
     ) {
         let mut connections = self.connections.write();
         if let Some(store) = connections.get_mut(connection_id) {
@@ -445,6 +455,9 @@ impl ConnectionMonitor {
         }
         if let Some(fs) = frame_store {
             fs.mark_connection_closed(connection_id);
+        }
+        if let Some(ws_payload_store) = ws_payload_store {
+            ws_payload_store.close(connection_id);
         }
     }
 
@@ -721,6 +734,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
 
         assert!(frame.is_some());
@@ -744,6 +758,7 @@ mod tests {
                 format!("Message {}", i).as_bytes(),
                 true,
                 true,
+                None,
                 None,
                 None,
             );
@@ -784,6 +799,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         );
         monitor.record_frame(
             "conn-1",
@@ -792,6 +808,7 @@ mod tests {
             b"response",
             false,
             true,
+            None,
             None,
             None,
         );
@@ -813,6 +830,7 @@ mod tests {
             "conn-1",
             Some(1000),
             Some("Normal closure".to_string()),
+            None,
             None,
         );
 

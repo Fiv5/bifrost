@@ -158,6 +158,12 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
                 .map_err(BifrostError::Config)?;
             serde_json::Value::Number(perf.traffic.max_records.into())
         }
+        ConfigKey::TrafficMaxDbSize => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.max_db_size_bytes.into())
+        }
         ConfigKey::TrafficMaxBodySize => {
             let perf = client
                 .get_performance_config()
@@ -175,6 +181,36 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
                 .get_performance_config()
                 .map_err(BifrostError::Config)?;
             serde_json::Value::Number(perf.traffic.file_retention_days.into())
+        }
+        ConfigKey::TrafficSseStreamFlushBytes => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.sse_stream_flush_bytes.into())
+        }
+        ConfigKey::TrafficSseStreamFlushIntervalMs => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.sse_stream_flush_interval_ms.into())
+        }
+        ConfigKey::TrafficWsPayloadFlushBytes => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.ws_payload_flush_bytes.into())
+        }
+        ConfigKey::TrafficWsPayloadFlushIntervalMs => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.ws_payload_flush_interval_ms.into())
+        }
+        ConfigKey::TrafficWsPayloadMaxOpenFiles => {
+            let perf = client
+                .get_performance_config()
+                .map_err(BifrostError::Config)?;
+            serde_json::Value::Number(perf.traffic.ws_payload_max_open_files.into())
         }
         ConfigKey::AccessMode => {
             let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
@@ -295,6 +331,17 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
                 .map_err(BifrostError::Config)?;
             println!("✓ max-records set to {}", max);
         }
+        ConfigKey::TrafficMaxDbSize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdatePerformanceConfigRequest {
+                max_db_size_bytes: Some(size as u64),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ max-db-size set to {}", format_size(size));
+        }
         ConfigKey::TrafficMaxBodySize => {
             let size = parse_size(value).map_err(BifrostError::Config)?;
             let req = UpdatePerformanceConfigRequest {
@@ -334,6 +381,67 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
             println!("✓ retention-days set to {} days", days);
+        }
+        ConfigKey::TrafficSseStreamFlushBytes => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdatePerformanceConfigRequest {
+                sse_stream_flush_bytes: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ sse-stream-flush-bytes set to {}", format_size(size));
+        }
+        ConfigKey::TrafficSseStreamFlushIntervalMs => {
+            let ms = value
+                .parse::<u64>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let req = UpdatePerformanceConfigRequest {
+                sse_stream_flush_interval_ms: Some(ms),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ sse-stream-flush-interval-ms set to {} ms", ms);
+        }
+        ConfigKey::TrafficWsPayloadFlushBytes => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_flush_bytes: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ ws-payload-flush-bytes set to {}", format_size(size));
+        }
+        ConfigKey::TrafficWsPayloadFlushIntervalMs => {
+            let ms = value
+                .parse::<u64>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_flush_interval_ms: Some(ms),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ ws-payload-flush-interval-ms set to {} ms", ms);
+        }
+        ConfigKey::TrafficWsPayloadMaxOpenFiles => {
+            let count = value
+                .parse::<usize>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_max_open_files: Some(count),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ ws-payload-max-open-files set to {}", count);
         }
         ConfigKey::AccessMode => {
             let valid_modes = ["allow_all", "local_only", "whitelist", "interactive"];
@@ -497,9 +605,15 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
 
         let perf_req = UpdatePerformanceConfigRequest {
             max_records: Some(5000),
+            max_db_size_bytes: Some(2 * 1024 * 1024 * 1024),
             max_body_memory_size: Some(512 * 1024),
             max_body_buffer_size: Some(10 * 1024 * 1024),
             file_retention_days: Some(7),
+            sse_stream_flush_bytes: Some(64 * 1024),
+            sse_stream_flush_interval_ms: Some(200),
+            ws_payload_flush_bytes: Some(256 * 1024),
+            ws_payload_flush_interval_ms: Some(200),
+            ws_payload_max_open_files: Some(128),
         };
         client
             .update_performance_config(&perf_req)
@@ -612,6 +726,16 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
                 .map_err(BifrostError::Config)?;
             println!("✓ traffic.max-records reset to 5000");
         }
+        ConfigKey::TrafficMaxDbSize => {
+            let req = UpdatePerformanceConfigRequest {
+                max_db_size_bytes: Some(2 * 1024 * 1024 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.max-db-size reset to 2 GB");
+        }
         ConfigKey::TrafficMaxBodySize => {
             let req = UpdatePerformanceConfigRequest {
                 max_body_memory_size: Some(512 * 1024),
@@ -641,6 +765,56 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
             println!("✓ traffic.retention-days reset to 7");
+        }
+        ConfigKey::TrafficSseStreamFlushBytes => {
+            let req = UpdatePerformanceConfigRequest {
+                sse_stream_flush_bytes: Some(64 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.sse-stream-flush-bytes reset to 64 KB");
+        }
+        ConfigKey::TrafficSseStreamFlushIntervalMs => {
+            let req = UpdatePerformanceConfigRequest {
+                sse_stream_flush_interval_ms: Some(200),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.sse-stream-flush-interval-ms reset to 200");
+        }
+        ConfigKey::TrafficWsPayloadFlushBytes => {
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_flush_bytes: Some(256 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.ws-payload-flush-bytes reset to 256 KB");
+        }
+        ConfigKey::TrafficWsPayloadFlushIntervalMs => {
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_flush_interval_ms: Some(200),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.ws-payload-flush-interval-ms reset to 200");
+        }
+        ConfigKey::TrafficWsPayloadMaxOpenFiles => {
+            let req = UpdatePerformanceConfigRequest {
+                ws_payload_max_open_files: Some(128),
+                ..Default::default()
+            };
+            client
+                .update_performance_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ traffic.ws-payload-max-open-files reset to 128");
         }
         ConfigKey::AccessMode => {
             client
@@ -730,6 +904,7 @@ fn export_as_json(
         },
         "traffic": {
             "max_records": perf.traffic.max_records,
+            "max_db_size_bytes": perf.traffic.max_db_size_bytes,
             "max_body_size": perf.traffic.max_body_memory_size,
             "max_buffer_size": perf.traffic.max_body_buffer_size,
             "retention_days": perf.traffic.file_retention_days,
@@ -787,6 +962,10 @@ fn export_as_toml(
 
     output.push_str("[traffic]\n");
     output.push_str(&format!("max_records = {}\n", perf.traffic.max_records));
+    output.push_str(&format!(
+        "max_db_size_bytes = {}\n",
+        perf.traffic.max_db_size_bytes
+    ));
     output.push_str(&format!(
         "max_body_memory_size = {}\n",
         perf.traffic.max_body_memory_size

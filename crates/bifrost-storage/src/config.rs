@@ -34,6 +34,11 @@ pub(crate) struct LegacyTrafficConfig {
     pub max_body_buffer_size: usize,
     pub temp_dir: PathBuf,
     pub file_retention_days: u64,
+    pub sse_stream_flush_bytes: usize,
+    pub sse_stream_flush_interval_ms: u64,
+    pub ws_payload_flush_bytes: usize,
+    pub ws_payload_flush_interval_ms: u64,
+    pub ws_payload_max_open_files: usize,
 }
 
 impl Default for LegacyTrafficConfig {
@@ -44,6 +49,11 @@ impl Default for LegacyTrafficConfig {
             max_body_buffer_size: 10 * 1024 * 1024,
             temp_dir: crate::data_dir().join("traffic"),
             file_retention_days: 7,
+            sse_stream_flush_bytes: 64 * 1024,
+            sse_stream_flush_interval_ms: 200,
+            ws_payload_flush_bytes: 256 * 1024,
+            ws_payload_flush_interval_ms: 200,
+            ws_payload_max_open_files: 128,
         }
     }
 }

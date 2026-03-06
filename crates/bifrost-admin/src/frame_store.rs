@@ -215,8 +215,8 @@ impl FrameStore {
             let frame_count = frames.len() as u64;
 
             for frame in &frames {
-                if let Ok(json) = serde_json::to_string(frame) {
-                    let _ = writeln!(writer, "{}", json);
+                if serde_json::to_writer(&mut writer, frame).is_ok() {
+                    let _ = writer.write_all(b"\n");
                     last_frame_id = frame.frame_id;
                 }
             }
@@ -359,8 +359,8 @@ impl FrameStore {
                     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
                         let mut writer = BufWriter::new(file);
                         for frame in &frames {
-                            if let Ok(json) = serde_json::to_string(frame) {
-                                let _ = writeln!(writer, "{}", json);
+                            if serde_json::to_writer(&mut writer, frame).is_ok() {
+                                let _ = writer.write_all(b"\n");
                             }
                         }
                         let _ = writer.flush();

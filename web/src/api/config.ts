@@ -40,6 +40,7 @@ export async function updateTlsConfig(config: UpdateTlsConfigRequest): Promise<T
 
 export interface TrafficConfig {
   max_records: number;
+  max_db_size_bytes: number;
   max_body_memory_size: number;
   max_body_buffer_size: number;
   file_retention_days: number;
@@ -82,6 +83,7 @@ export interface PerformanceConfig {
 
 export interface UpdateTrafficConfigRequest {
   max_records?: number;
+  max_db_size_bytes?: number;
   max_body_memory_size?: number;
   max_body_buffer_size?: number;
   file_retention_days?: number;

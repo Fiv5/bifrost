@@ -200,6 +200,7 @@ pub async fn handle_websocket_upgrade(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -366,6 +367,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -377,6 +379,7 @@ async fn websocket_bidirectional_with_capture(
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                     persist_socket_summary(state, &record_id_owned);
                 }
@@ -424,6 +427,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -435,6 +439,7 @@ async fn websocket_bidirectional_with_capture(
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                     persist_socket_summary(state, &record_id_owned2);
                 }
@@ -463,6 +468,7 @@ async fn websocket_bidirectional_with_capture(
                 None,
                 None,
                 state.frame_store.as_ref(),
+                state.ws_payload_store.as_ref(),
             );
         }
         persist_socket_summary(state, record_id);
@@ -536,6 +542,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -547,6 +554,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                     persist_socket_summary(state, &record_id_owned);
                 }
@@ -594,6 +602,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -605,6 +614,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                     persist_socket_summary(state, &record_id_owned2);
                 }
@@ -633,6 +643,7 @@ where
                 None,
                 None,
                 state.frame_store.as_ref(),
+                state.ws_payload_store.as_ref(),
             );
         }
         persist_socket_summary(state, record_id);

@@ -348,6 +348,36 @@ pub async fn get_frame_detail(
                 });
                 return json_response(&body);
             }
+            if let Some(ref ws_payload_store) = state.ws_payload_store {
+                if ws_payload_store.is_ws_payload_ref(body_ref) {
+                    let body_ref_clone = body_ref.clone();
+                    let store_clone = ws_payload_store.clone();
+                    let frame_clone = frame.clone();
+                    let data = tokio::task::spawn_blocking(move || {
+                        store_clone.read_range(&body_ref_clone)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+
+                    if let Some(payload_bytes) = data {
+                        let payload = match frame_clone.frame_type {
+                            FrameType::Text | FrameType::Close | FrameType::Sse => {
+                                String::from_utf8_lossy(&payload_bytes).to_string()
+                            }
+                            _ => base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                payload_bytes,
+                            ),
+                        };
+                        let body = serde_json::json!({
+                            "frame": frame_clone,
+                            "full_payload": payload
+                        });
+                        return json_response(&body);
+                    }
+                }
+            }
             if let Some(ref body_store) = state.body_store {
                 let body_ref_clone = body_ref.clone();
                 let body_store_clone = body_store.clone();

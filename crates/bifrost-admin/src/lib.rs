@@ -21,6 +21,7 @@ mod traffic;
 pub mod traffic_db;
 mod traffic_store;
 mod version_check;
+mod ws_payload_store;
 
 #[cfg(test)]
 mod tests;
@@ -62,6 +63,9 @@ pub use traffic_db::{
 };
 pub use traffic_store::{
     start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
+};
+pub use ws_payload_store::{
+    start_ws_payload_cleanup_task, SharedWsPayloadStore, WsPayloadStore, WsPayloadStoreConfigUpdate,
 };
 
 pub use replay_db::{

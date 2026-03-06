@@ -369,6 +369,19 @@ bifrost system-proxy enable                 # 启用系统代理（使用全局�
 bifrost system-proxy enable --host 127.0.0.1 --port 9900  # 指定主机和端口
 bifrost system-proxy enable --bypass "localhost,127.0.0.1,*.local"  # 配置绕过列表
 bifrost system-proxy disable                # 禁用系统代理
+
+# 性能配置
+bifrost config show traffic
+bifrost config set traffic.max-records 10000
+bifrost config set traffic.max-db-size 2GB
+bifrost config set traffic.max-body-size 1MB
+bifrost config set traffic.max-buffer-size 20MB
+bifrost config set traffic.retention-days 3
+bifrost config set traffic.sse-stream-flush-bytes 64KB
+bifrost config set traffic.sse-stream-flush-interval-ms 200
+bifrost config set traffic.ws-payload-flush-bytes 256KB
+bifrost config set traffic.ws-payload-flush-interval-ms 200
+bifrost config set traffic.ws-payload-max-open-files 128
 ```
 
 ### 环境变量

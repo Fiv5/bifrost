@@ -362,6 +362,7 @@ dependencies = [
 name = "bifrost-e2e"
 version = "0.0.12-beta"
 dependencies = [
+ "base64",
  "bifrost-admin",
  "bifrost-cli",
  "bifrost-core",
@@ -370,6 +371,7 @@ dependencies = [
  "bytes",
  "clap",
  "colored",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -380,6 +382,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "url",

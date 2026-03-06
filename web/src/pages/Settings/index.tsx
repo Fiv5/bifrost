@@ -470,6 +470,19 @@ export default function Settings() {
     }
   };
 
+  const handleUpdateMaxDbSize = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ max_db_size_bytes: value });
+      setPerformanceConfig(result);
+      message.success("Max DB size updated");
+    } catch {
+      message.error("Failed to update max DB size");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
   const handleUpdateMaxBodyMemorySize = async (value: number) => {
     setPerfLoading(true);
     try {
@@ -961,6 +974,36 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                         }
                         style={{ width: 120 }}
                       />
+                    </Col>
+                  </Row>
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col flex="1" style={{ marginRight: 16 }}>
+                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                        <Text>Max DB Size</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Maximum size of traffic database on disk
+                        </Text>
+                        <Slider
+                          min={256 * 1024 * 1024}
+                          max={10 * 1024 * 1024 * 1024}
+                          step={256 * 1024 * 1024}
+                          value={performanceConfig?.traffic.max_db_size_bytes}
+                          onChange={(value) => handleUpdateMaxDbSize(value)}
+                          tooltip={{
+                            formatter: (value) => (value ? formatBytes(value) : ""),
+                          }}
+                        />
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Text code>
+                        {formatBytes(
+                          performanceConfig?.traffic.max_db_size_bytes || 0,
+                        )}
+                      </Text>
                     </Col>
                   </Row>
 

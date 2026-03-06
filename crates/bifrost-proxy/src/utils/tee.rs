@@ -83,6 +83,7 @@ impl TeeBodyDropGuard {
                 None,
                 None,
                 state.frame_store.as_ref(),
+                state.ws_payload_store.as_ref(),
             );
         }
     }

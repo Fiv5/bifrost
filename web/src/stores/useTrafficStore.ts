@@ -198,6 +198,12 @@ const preprocessRecords = (records: TrafficSummary[]): TrafficSummary[] => {
   return records;
 };
 
+const applyDisplayIndex = (records: TrafficSummary[]): void => {
+  for (let i = 0; i < records.length; i++) {
+    records[i]._displayIndex = i + 1;
+  }
+};
+
 const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]): boolean => {
   return toolbar.rule.length > 0 ||
     toolbar.protocol.length > 0 ||
@@ -466,121 +472,233 @@ export const useTrafficStore = create<TrafficState>()(
       selectedId: undefined,
       useDbMode: true,
 
-  startPolling: () => {
-    const state = get();
-    if (state.polling) return;
+      startPolling: () => {
+        const state = get();
+        if (state.polling) return;
 
-    set({ polling: true });
+        set({ polling: true });
 
-    if (state.usePush) {
-      get().enablePush();
-    } else {
-      get().fetchUpdates();
-    }
-  },
+        if (state.usePush) {
+          get().enablePush();
+        } else {
+          get().fetchUpdates();
+        }
+      },
 
-  stopPolling: () => {
-    const state = get();
-    if (state.pollTimeoutId) {
-      clearTimeout(state.pollTimeoutId);
-    }
-    hasMoreBurst = 0;
-    if (state.usePush) {
-      get().disablePush();
-    }
-    set({ polling: false, pollTimeoutId: null });
-  },
+      stopPolling: () => {
+        const state = get();
+        if (state.pollTimeoutId) {
+          clearTimeout(state.pollTimeoutId);
+        }
+        hasMoreBurst = 0;
+        if (state.usePush) {
+          get().disablePush();
+        }
+        set({ polling: false, pollTimeoutId: null });
+      },
 
-  enablePush: () => {
-    const state = get();
-    if (state.pushUnsubscribe || state.pushDeltaUnsubscribe) return;
+      enablePush: () => {
+        const state = get();
+        if (state.pushUnsubscribe || state.pushDeltaUnsubscribe) return;
 
-    const subscription = {
-      last_traffic_id: state.lastId || undefined,
-      last_sequence: state.lastSequence || undefined,
-      pending_ids: Array.from(state.pendingIds),
-    };
+        const subscription = {
+          last_traffic_id: state.lastId || undefined,
+          last_sequence: state.lastSequence || undefined,
+          pending_ids: Array.from(state.pendingIds),
+        };
 
-    pushService.connect(subscription);
+        pushService.connect(subscription);
 
-    const unsubscribe = pushService.onTrafficUpdates((data) => {
-      get().handleTrafficPush(data);
-    });
+        const unsubscribe = pushService.onTrafficUpdates((data) => {
+          get().handleTrafficPush(data);
+        });
 
-    const unsubscribeDelta = pushService.onTrafficDelta((data) => {
-      get().handleTrafficDelta(data);
-    });
+        const unsubscribeDelta = pushService.onTrafficDelta((data) => {
+          get().handleTrafficDelta(data);
+        });
 
-    set({ pushUnsubscribe: unsubscribe, pushDeltaUnsubscribe: unsubscribeDelta });
-  },
+        set({ pushUnsubscribe: unsubscribe, pushDeltaUnsubscribe: unsubscribeDelta });
+      },
 
-  disablePush: () => {
-    const state = get();
-    if (state.pushUnsubscribe) {
-      state.pushUnsubscribe();
-    }
-    if (state.pushDeltaUnsubscribe) {
-      state.pushDeltaUnsubscribe();
-    }
-    set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null });
-    pushService.disconnectIfIdle();
-  },
+      disablePush: () => {
+        const state = get();
+        if (state.pushUnsubscribe) {
+          state.pushUnsubscribe();
+        }
+        if (state.pushDeltaUnsubscribe) {
+          state.pushDeltaUnsubscribe();
+        }
+        set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null });
+        pushService.disconnectIfIdle();
+      },
 
-  handleTrafficPush: (data: TrafficUpdatesData) => {
-    const state = get();
-    if (state.paused) return;
-    if (data.new_records.length === 0 && data.updated_records.length === 0) return;
+      handleTrafficPush: (data: TrafficUpdatesData) => {
+        const state = get();
+        if (state.paused) return;
+        if (data.new_records.length === 0 && data.updated_records.length === 0) return;
 
-    const preprocessedNew = preprocessRecords(data.new_records);
-    const preprocessedUpdated = preprocessRecords(data.updated_records);
+        const preprocessedNew = preprocessRecords(data.new_records);
+        const preprocessedUpdated = preprocessRecords(data.updated_records);
 
-    if (pendingBatch) {
-      pendingBatch.newRecords.push(...preprocessedNew);
-      pendingBatch.updatedRecords.push(...preprocessedUpdated);
-      pendingBatch.serverTotal = data.server_total;
-      pendingBatch.hasMore = data.has_more;
-    } else {
-      pendingBatch = {
-        newRecords: [...preprocessedNew],
-        updatedRecords: [...preprocessedUpdated],
-        serverTotal: data.server_total,
-        hasMore: data.has_more,
-      };
-    }
+        if (pendingBatch) {
+          pendingBatch.newRecords.push(...preprocessedNew);
+          pendingBatch.updatedRecords.push(...preprocessedUpdated);
+          pendingBatch.serverTotal = data.server_total;
+          pendingBatch.hasMore = data.has_more;
+        } else {
+          pendingBatch = {
+            newRecords: [...preprocessedNew],
+            updatedRecords: [...preprocessedUpdated],
+            serverTotal: data.server_total,
+            hasMore: data.has_more,
+          };
+        }
 
-    const now = performance.now();
-    const timeSinceLastUpdate = now - lastUpdateTime;
+        const now = performance.now();
+        const timeSinceLastUpdate = now - lastUpdateTime;
 
-    if (rafId !== null) {
-      return;
-    }
+        if (rafId !== null) {
+          return;
+        }
 
-    const scheduleUpdate = () => {
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        const batch = pendingBatch;
-        if (!batch) return;
-        pendingBatch = null;
-        lastUpdateTime = performance.now();
+        const scheduleUpdate = () => {
+          rafId = requestAnimationFrame(() => {
+            rafId = null;
+            const batch = pendingBatch;
+            if (!batch) return;
+            pendingBatch = null;
+            lastUpdateTime = performance.now();
+
+            set((prevState) => {
+              const recordsMap = prevState.recordsMap;
+              let hasChanges = false;
+
+              for (const r of batch.updatedRecords) {
+                const existing = recordsMap.get(r.id);
+                const socketStatusChanged =
+                  existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
+                  existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
+                  existing?.socket_status?.is_open !== r.socket_status?.is_open;
+                if (!existing || existing.status !== r.status || socketStatusChanged) {
+                  recordsMap.set(r.id, r);
+                  hasChanges = true;
+                }
+              }
+
+              let actualNewCount = 0;
+              for (const r of batch.newRecords) {
+                if (!recordsMap.has(r.id)) {
+                  recordsMap.set(r.id, r);
+                  hasChanges = true;
+                  actualNewCount++;
+                }
+              }
+
+              const newPendingIds = prevState.pendingIds;
+
+              for (const r of batch.updatedRecords) {
+                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                if (!isPending) {
+                  newPendingIds.delete(r.id);
+                }
+              }
+
+              for (const r of batch.newRecords) {
+                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                if (isPending) {
+                  newPendingIds.add(r.id);
+                }
+              }
+              capPendingIds(newPendingIds);
+
+              let allRecords: TrafficSummary[];
+              if (hasChanges) {
+                allRecords = Array.from(recordsMap.values());
+                applyDisplayIndex(allRecords);
+
+                if (allRecords.length > MAX_RECORDS) {
+                  const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
+                  for (const r of toRemove) {
+                    recordsMap.delete(r.id);
+                    newPendingIds.delete(r.id);
+                  }
+                  allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
+                }
+              } else {
+                allRecords = prevState.records;
+              }
+
+              const lastRecord = batch.newRecords[batch.newRecords.length - 1];
+              const newLastId = lastRecord?.id || prevState.lastId;
+
+              const updatedNewRecordsCount = prevState.autoScroll
+                ? 0
+                : prevState.newRecordsCount + actualNewCount;
+
+              pushService.updateSubscription({
+                last_traffic_id: newLastId || undefined,
+                pending_ids: Array.from(newPendingIds),
+              });
+
+              let updatedCurrentRecord = prevState.currentRecord;
+              if (updatedCurrentRecord) {
+                const updatedSummary = batch.updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+                if (updatedSummary && updatedSummary.socket_status) {
+                  updatedCurrentRecord = {
+                    ...updatedCurrentRecord,
+                    socket_status: updatedSummary.socket_status,
+                    frame_count: updatedSummary.frame_count,
+                  };
+                }
+              }
+
+              return {
+                records: allRecords,
+                recordsMap,
+                serverTotal: batch.serverTotal,
+                hasMore: batch.hasMore,
+                lastId: newLastId,
+                pendingIds: newPendingIds,
+                newRecordsCount: updatedNewRecordsCount,
+                currentRecord: updatedCurrentRecord,
+              };
+            });
+          });
+        };
+
+        if (timeSinceLastUpdate >= UPDATE_THROTTLE_MS) {
+          scheduleUpdate();
+        } else {
+          setTimeout(scheduleUpdate, UPDATE_THROTTLE_MS - timeSinceLastUpdate);
+        }
+      },
+
+      handleTrafficDelta: (data: TrafficDeltaData) => {
+        const state = get();
+        if (state.paused) return;
+        if (data.inserts.length === 0 && data.updates.length === 0) return;
+
+        const newRecords = data.inserts.map(c => preprocessRecord(compactToSummary(c)));
+        const updatedRecords = data.updates.map(c => preprocessRecord(compactToSummary(c)));
 
         set((prevState) => {
           const recordsMap = prevState.recordsMap;
           let hasChanges = false;
 
-          for (const r of batch.updatedRecords) {
+          for (const r of updatedRecords) {
             const existing = recordsMap.get(r.id);
             const socketStatusChanged =
               existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
               existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
               existing?.socket_status?.is_open !== r.socket_status?.is_open;
-            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status || socketStatusChanged) {
+            if (!existing || existing.status !== r.status || socketStatusChanged) {
               recordsMap.set(r.id, r);
               hasChanges = true;
             }
           }
 
           let actualNewCount = 0;
-          for (const r of batch.newRecords) {
+          for (const r of newRecords) {
             if (!recordsMap.has(r.id)) {
               recordsMap.set(r.id, r);
               hasChanges = true;
@@ -590,14 +708,14 @@ export const useTrafficStore = create<TrafficState>()(
 
           const newPendingIds = prevState.pendingIds;
 
-          for (const r of batch.updatedRecords) {
+          for (const r of updatedRecords) {
             const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
             if (!isPending) {
               newPendingIds.delete(r.id);
             }
           }
 
-          for (const r of batch.newRecords) {
+          for (const r of newRecords) {
             const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
             if (isPending) {
               newPendingIds.add(r.id);
@@ -608,8 +726,7 @@ export const useTrafficStore = create<TrafficState>()(
           let allRecords: TrafficSummary[];
           if (hasChanges) {
             allRecords = Array.from(recordsMap.values());
-            allRecords.sort((a, b) => a.sequence - b.sequence);
-
+            applyDisplayIndex(allRecords);
             if (allRecords.length > MAX_RECORDS) {
               const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
               for (const r of toRemove) {
@@ -622,21 +739,22 @@ export const useTrafficStore = create<TrafficState>()(
             allRecords = prevState.records;
           }
 
-          const lastRecord = batch.newRecords[batch.newRecords.length - 1];
+          const lastRecord = newRecords[newRecords.length - 1];
           const newLastId = lastRecord?.id || prevState.lastId;
+          const newLastSeq = lastRecord?.sequence || prevState.lastSequence;
 
           const updatedNewRecordsCount = prevState.autoScroll
             ? 0
             : prevState.newRecordsCount + actualNewCount;
 
           pushService.updateSubscription({
-            last_traffic_id: newLastId || undefined,
+            last_sequence: newLastSeq || undefined,
             pending_ids: Array.from(newPendingIds),
           });
 
           let updatedCurrentRecord = prevState.currentRecord;
           if (updatedCurrentRecord) {
-            const updatedSummary = batch.updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+            const updatedSummary = updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
             if (updatedSummary && updatedSummary.socket_status) {
               updatedCurrentRecord = {
                 ...updatedCurrentRecord,
@@ -649,429 +767,316 @@ export const useTrafficStore = create<TrafficState>()(
           return {
             records: allRecords,
             recordsMap,
-            serverTotal: batch.serverTotal,
-            hasMore: batch.hasMore,
+            serverTotal: data.server_total,
+            serverSequence: data.server_sequence,
+            hasMore: data.has_more,
             lastId: newLastId,
+            lastSequence: newLastSeq,
             pendingIds: newPendingIds,
             newRecordsCount: updatedNewRecordsCount,
             currentRecord: updatedCurrentRecord,
           };
         });
-      });
-    };
+      },
 
-    if (timeSinceLastUpdate >= UPDATE_THROTTLE_MS) {
-      scheduleUpdate();
-    } else {
-      setTimeout(scheduleUpdate, UPDATE_THROTTLE_MS - timeSinceLastUpdate);
-    }
-  },
-
-  handleTrafficDelta: (data: TrafficDeltaData) => {
-    const state = get();
-    if (state.paused) return;
-    if (data.inserts.length === 0 && data.updates.length === 0) return;
-
-    const newRecords = data.inserts.map(c => preprocessRecord(compactToSummary(c)));
-    const updatedRecords = data.updates.map(c => preprocessRecord(compactToSummary(c)));
-
-    set((prevState) => {
-      const recordsMap = prevState.recordsMap;
-      let hasChanges = false;
-
-      for (const r of updatedRecords) {
-        const existing = recordsMap.get(r.id);
-        const socketStatusChanged =
-          existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
-          existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
-          existing?.socket_status?.is_open !== r.socket_status?.is_open;
-        if (!existing || existing.sequence !== r.sequence || existing.status !== r.status || socketStatusChanged) {
-          recordsMap.set(r.id, r);
-          hasChanges = true;
+      fetchInitialData: async () => {
+        const state = get();
+        if (state.initialized && state.records.length > 0) {
+          return;
         }
-      }
 
-      let actualNewCount = 0;
-      for (const r of newRecords) {
-        if (!recordsMap.has(r.id)) {
-          recordsMap.set(r.id, r);
-          hasChanges = true;
-          actualNewCount++;
-        }
-      }
-
-      const newPendingIds = prevState.pendingIds;
-
-      for (const r of updatedRecords) {
-        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-        if (!isPending) {
-          newPendingIds.delete(r.id);
-        }
-      }
-
-      for (const r of newRecords) {
-        const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-        if (isPending) {
-          newPendingIds.add(r.id);
-        }
-      }
-      capPendingIds(newPendingIds);
-
-      let allRecords: TrafficSummary[];
-      if (hasChanges) {
-        allRecords = Array.from(recordsMap.values());
-        allRecords.sort((a, b) => a.sequence - b.sequence);
-
-        if (allRecords.length > MAX_RECORDS) {
-          const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
-          for (const r of toRemove) {
-            recordsMap.delete(r.id);
-            newPendingIds.delete(r.id);
-          }
-          allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
-        }
-      } else {
-        allRecords = prevState.records;
-      }
-
-      const lastRecord = newRecords[newRecords.length - 1];
-      const newLastId = lastRecord?.id || prevState.lastId;
-      const newLastSeq = lastRecord?.sequence || prevState.lastSequence;
-
-      const updatedNewRecordsCount = prevState.autoScroll
-        ? 0
-        : prevState.newRecordsCount + actualNewCount;
-
-      pushService.updateSubscription({
-        last_sequence: newLastSeq || undefined,
-        pending_ids: Array.from(newPendingIds),
-      });
-
-      let updatedCurrentRecord = prevState.currentRecord;
-      if (updatedCurrentRecord) {
-        const updatedSummary = updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
-        if (updatedSummary && updatedSummary.socket_status) {
-          updatedCurrentRecord = {
-            ...updatedCurrentRecord,
-            socket_status: updatedSummary.socket_status,
-            frame_count: updatedSummary.frame_count,
+        set({ loading: true, error: null });
+        try {
+          const filter: TrafficUpdatesFilter = {
+            limit: BATCH_LIMIT,
           };
-        }
-      }
+          const response = await api.getTrafficUpdates(filter);
 
-      return {
-        records: allRecords,
-        recordsMap,
-        serverTotal: data.server_total,
-        serverSequence: data.server_sequence,
-        hasMore: data.has_more,
-        lastId: newLastId,
-        lastSequence: newLastSeq,
-        pendingIds: newPendingIds,
-        newRecordsCount: updatedNewRecordsCount,
-        currentRecord: updatedCurrentRecord,
-      };
-    });
-  },
+          const convertedRecords = response.new_records.map(compactToSummary);
+          const preprocessedRecords = preprocessRecords(convertedRecords);
+          applyDisplayIndex(preprocessedRecords);
 
-  fetchInitialData: async () => {
-    const state = get();
-    if (state.initialized && state.records.length > 0) {
-      return;
-    }
-
-    set({ loading: true, error: null });
-    try {
-      const filter: TrafficUpdatesFilter = {
-        limit: BATCH_LIMIT,
-      };
-      const response = await api.getTrafficUpdates(filter);
-
-      const convertedRecords = response.new_records.map(compactToSummary);
-      const preprocessedRecords = preprocessRecords(convertedRecords);
-
-      const newPendingIds = new Set<string>();
-      const newRecordsMap = new Map<string, TrafficSummary>();
-      for (const r of preprocessedRecords) {
-        newRecordsMap.set(r.id, r);
-        if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
-          newPendingIds.add(r.id);
-        }
-      }
-      capPendingIds(newPendingIds);
-
-      const lastRecord = preprocessedRecords[preprocessedRecords.length - 1];
-
-      set({
-        records: preprocessedRecords,
-        recordsMap: newRecordsMap,
-        serverTotal: response.server_total,
-        serverSequence: response.server_sequence,
-        hasMore: response.has_more,
-        lastId: lastRecord?.id || null,
-        lastSequence: lastRecord?.sequence || null,
-        pendingIds: newPendingIds,
-        loading: false,
-        filterVersion: 0,
-        initialized: true,
-      });
-    } catch (e) {
-      set({ error: (e as Error).message, loading: false });
-    }
-  },
-
-  fetchUpdates: async () => {
-    const state = get();
-    if (state.paused || !state.polling) return;
-
-    try {
-      const pendingIdsArray = Array.from(state.pendingIds);
-
-      const filter: TrafficUpdatesFilter = {
-        after_id: state.lastId || undefined,
-        pending_ids: pendingIdsArray.length > 0 ? pendingIdsArray.join(',') : undefined,
-        limit: BATCH_LIMIT,
-      };
-
-      const response = await api.getTrafficUpdates(filter);
-
-      if (response.new_records.length > 0 || response.updated_records.length > 0) {
-        const convertedNew = response.new_records.map(compactToSummary);
-        const convertedUpdated = response.updated_records.map(compactToSummary);
-        const preprocessedNew = preprocessRecords(convertedNew);
-        const preprocessedUpdated = preprocessRecords(convertedUpdated);
-
-        set((prevState) => {
-          const recordsMap = prevState.recordsMap;
-          let hasChanges = false;
-
-          for (const r of preprocessedUpdated) {
-            const existing = recordsMap.get(r.id);
-            if (!existing || existing.sequence !== r.sequence || existing.status !== r.status) {
-              recordsMap.set(r.id, r);
-              hasChanges = true;
-            }
-          }
-
-          let actualNewCount = 0;
-          for (const r of preprocessedNew) {
-            if (!recordsMap.has(r.id)) {
-              recordsMap.set(r.id, r);
-              hasChanges = true;
-              actualNewCount++;
-            }
-          }
-
-          const newPendingIds = prevState.pendingIds;
-
-          for (const r of preprocessedUpdated) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-            if (!isPending) {
-              newPendingIds.delete(r.id);
-            }
-          }
-
-          for (const r of preprocessedNew) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
-            if (isPending) {
+          const newPendingIds = new Set<string>();
+          const newRecordsMap = new Map<string, TrafficSummary>();
+          for (const r of preprocessedRecords) {
+            newRecordsMap.set(r.id, r);
+            if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
               newPendingIds.add(r.id);
             }
           }
           capPendingIds(newPendingIds);
 
-          let allRecords: TrafficSummary[];
-          if (hasChanges) {
-            allRecords = Array.from(recordsMap.values());
-            allRecords.sort((a, b) => a.sequence - b.sequence);
+          const lastRecord = preprocessedRecords[preprocessedRecords.length - 1];
 
-            if (allRecords.length > MAX_RECORDS) {
-              const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
-              for (const r of toRemove) {
-                recordsMap.delete(r.id);
-                newPendingIds.delete(r.id);
-              }
-              allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
-            }
-          } else {
-            allRecords = prevState.records;
-          }
-
-          const lastRecord = preprocessedNew[preprocessedNew.length - 1];
-          const newLastId = lastRecord?.id || prevState.lastId;
-
-          const updatedNewRecordsCount = prevState.autoScroll
-            ? 0
-            : prevState.newRecordsCount + actualNewCount;
-
-          return {
-            records: allRecords,
-            recordsMap,
-            serverTotal: response.server_total,
-            hasMore: response.has_more,
-            lastId: newLastId,
-            pendingIds: newPendingIds,
-            newRecordsCount: updatedNewRecordsCount,
-          };
-        });
-      }
-
-      const currentState = get();
-      if (currentState.polling) {
-        if (response.has_more) {
-          hasMoreBurst += 1;
-        } else {
-          hasMoreBurst = 0;
-        }
-        const nextDelay = response.has_more
-          ? (hasMoreBurst > HAS_MORE_BURST_LIMIT ? HAS_MORE_BACKOFF_INTERVAL : POLL_MIN_INTERVAL)
-          : POLL_INTERVAL;
-        const timeoutId = window.setTimeout(() => {
-          get().fetchUpdates();
-        }, nextDelay);
-        set({ pollTimeoutId: timeoutId });
-      }
-    } catch (e) {
-      set({ error: (e as Error).message });
-
-      const currentState = get();
-      if (currentState.polling) {
-        const timeoutId = window.setTimeout(() => {
-          get().fetchUpdates();
-        }, POLL_INTERVAL);
-        set({ pollTimeoutId: timeoutId });
-      }
-    }
-  },
-
-  fetchTrafficDetail: async (id: string) => {
-    set({ detailLoading: true, error: null, requestBody: null, responseBody: null });
-    try {
-      const record = await api.getTrafficDetail(id);
-      set({ currentRecord: record, detailLoading: false });
-
-      api.getRequestBody(id).then(body => {
-        set({ requestBody: body });
-      }).catch(() => { });
-
-      const isOpenSse = !!record.is_sse && !!record.socket_status?.is_open;
-      if (!isOpenSse) {
-        api.getResponseBody(id).then(body => {
-          set({ responseBody: body });
-        }).catch(() => { });
-      }
-    } catch (e) {
-      set({ error: (e as Error).message, detailLoading: false });
-    }
-  },
-
-  appendSseResponseBody: (recordId: string, payload: string) => {
-    set((state) => {
-      if (!payload) return {};
-      if (state.currentRecord?.id !== recordId) return {};
-      return { responseBody: mergeSseBody(state.responseBody, payload) };
-    });
-  },
-
-  setResponseBody: (recordId: string, body: string | null) => {
-    set((state) => {
-      if (state.currentRecord?.id !== recordId) return {};
-      return { responseBody: body };
-    });
-  },
-
-  clearTraffic: async (ids?: string[]) => {
-    set({ loading: true, error: null });
-    try {
-      await api.clearTraffic(ids);
-      
-      if (ids && ids.length > 0) {
-        const idsToRemove = new Set(ids);
-        set((state) => {
-          const newRecordsMap = new Map(state.recordsMap);
-          const newPendingIds = new Set(state.pendingIds);
-          
-          for (const id of idsToRemove) {
-            newRecordsMap.delete(id);
-            newPendingIds.delete(id);
-          }
-          
-          const newRecords = Array.from(newRecordsMap.values());
-          newRecords.sort((a, b) => a.sequence - b.sequence);
-          
-          return {
-            records: newRecords,
+          set({
+            records: preprocessedRecords,
             recordsMap: newRecordsMap,
+            serverTotal: response.server_total,
+            serverSequence: response.server_sequence,
+            hasMore: response.has_more,
+            lastId: lastRecord?.id || null,
+            lastSequence: lastRecord?.sequence || null,
             pendingIds: newPendingIds,
             loading: false,
-            filterVersion: state.filterVersion + 1,
+            filterVersion: 0,
+            initialized: true,
+          });
+        } catch (e) {
+          set({ error: (e as Error).message, loading: false });
+        }
+      },
+
+      fetchUpdates: async () => {
+        const state = get();
+        if (state.paused || !state.polling) return;
+
+        try {
+          const pendingIdsArray = Array.from(state.pendingIds);
+
+          const filter: TrafficUpdatesFilter = {
+            after_id: state.lastId || undefined,
+            pending_ids: pendingIdsArray.length > 0 ? pendingIdsArray.join(',') : undefined,
+            limit: BATCH_LIMIT,
           };
+
+          const response = await api.getTrafficUpdates(filter);
+
+          if (response.new_records.length > 0 || response.updated_records.length > 0) {
+            const convertedNew = response.new_records.map(compactToSummary);
+            const convertedUpdated = response.updated_records.map(compactToSummary);
+            const preprocessedNew = preprocessRecords(convertedNew);
+            const preprocessedUpdated = preprocessRecords(convertedUpdated);
+
+            set((prevState) => {
+              const recordsMap = prevState.recordsMap;
+              let hasChanges = false;
+
+              for (const r of preprocessedUpdated) {
+                const existing = recordsMap.get(r.id);
+                if (!existing || existing.status !== r.status) {
+                  recordsMap.set(r.id, r);
+                  hasChanges = true;
+                }
+              }
+
+              let actualNewCount = 0;
+              for (const r of preprocessedNew) {
+                if (!recordsMap.has(r.id)) {
+                  recordsMap.set(r.id, r);
+                  hasChanges = true;
+                  actualNewCount++;
+                }
+              }
+
+              const newPendingIds = prevState.pendingIds;
+
+              for (const r of preprocessedUpdated) {
+                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                if (!isPending) {
+                  newPendingIds.delete(r.id);
+                }
+              }
+
+              for (const r of preprocessedNew) {
+                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                if (isPending) {
+                  newPendingIds.add(r.id);
+                }
+              }
+              capPendingIds(newPendingIds);
+
+              let allRecords: TrafficSummary[];
+              if (hasChanges) {
+                allRecords = Array.from(recordsMap.values());
+                applyDisplayIndex(allRecords);
+
+                if (allRecords.length > MAX_RECORDS) {
+                  const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
+                  for (const r of toRemove) {
+                    recordsMap.delete(r.id);
+                    newPendingIds.delete(r.id);
+                  }
+                  allRecords = allRecords.slice(allRecords.length - MAX_RECORDS);
+                }
+              } else {
+                allRecords = prevState.records;
+              }
+
+              const lastRecord = preprocessedNew[preprocessedNew.length - 1];
+              const newLastId = lastRecord?.id || prevState.lastId;
+
+              const updatedNewRecordsCount = prevState.autoScroll
+                ? 0
+                : prevState.newRecordsCount + actualNewCount;
+
+              return {
+                records: allRecords,
+                recordsMap,
+                serverTotal: response.server_total,
+                hasMore: response.has_more,
+                lastId: newLastId,
+                pendingIds: newPendingIds,
+                newRecordsCount: updatedNewRecordsCount,
+              };
+            });
+          }
+
+          const currentState = get();
+          if (currentState.polling) {
+            if (response.has_more) {
+              hasMoreBurst += 1;
+            } else {
+              hasMoreBurst = 0;
+            }
+            const nextDelay = response.has_more
+              ? (hasMoreBurst > HAS_MORE_BURST_LIMIT ? HAS_MORE_BACKOFF_INTERVAL : POLL_MIN_INTERVAL)
+              : POLL_INTERVAL;
+            const timeoutId = window.setTimeout(() => {
+              get().fetchUpdates();
+            }, nextDelay);
+            set({ pollTimeoutId: timeoutId });
+          }
+        } catch (e) {
+          set({ error: (e as Error).message });
+
+          const currentState = get();
+          if (currentState.polling) {
+            const timeoutId = window.setTimeout(() => {
+              get().fetchUpdates();
+            }, POLL_INTERVAL);
+            set({ pollTimeoutId: timeoutId });
+          }
+        }
+      },
+
+      fetchTrafficDetail: async (id: string) => {
+        set({ detailLoading: true, error: null, requestBody: null, responseBody: null });
+        try {
+          const record = await api.getTrafficDetail(id);
+          set({ currentRecord: record, detailLoading: false });
+
+          api.getRequestBody(id).then(body => {
+            set({ requestBody: body });
+          }).catch(() => { });
+
+          const isOpenSse = !!record.is_sse && !!record.socket_status?.is_open;
+          if (!isOpenSse) {
+            api.getResponseBody(id).then(body => {
+              set({ responseBody: body });
+            }).catch(() => { });
+          }
+        } catch (e) {
+          set({ error: (e as Error).message, detailLoading: false });
+        }
+      },
+
+      appendSseResponseBody: (recordId: string, payload: string) => {
+        set((state) => {
+          if (!payload) return {};
+          if (state.currentRecord?.id !== recordId) return {};
+          return { responseBody: mergeSseBody(state.responseBody, payload) };
         });
-      } else {
+      },
+
+      setResponseBody: (recordId: string, body: string | null) => {
+        set((state) => {
+          if (state.currentRecord?.id !== recordId) return {};
+          return { responseBody: body };
+        });
+      },
+
+      clearTraffic: async (ids?: string[]) => {
+        set({ loading: true, error: null });
+        try {
+          await api.clearTraffic(ids);
+
+          if (ids && ids.length > 0) {
+            const idsToRemove = new Set(ids);
+            set((state) => {
+              const newRecordsMap = new Map(state.recordsMap);
+              const newPendingIds = new Set(state.pendingIds);
+
+              for (const id of idsToRemove) {
+                newRecordsMap.delete(id);
+                newPendingIds.delete(id);
+              }
+
+              const newRecords = Array.from(newRecordsMap.values());
+              applyDisplayIndex(newRecords);
+              return {
+                records: newRecords,
+                recordsMap: newRecordsMap,
+                pendingIds: newPendingIds,
+                loading: false,
+                filterVersion: state.filterVersion + 1,
+              };
+            });
+          } else {
+            set({
+              records: [],
+              recordsMap: new Map(),
+              serverTotal: 0,
+              hasMore: false,
+              lastId: null,
+              pendingIds: new Set(),
+              currentRecord: null,
+              requestBody: null,
+              responseBody: null,
+              loading: false,
+              filterVersion: 0,
+              initialized: false,
+              selectedId: undefined,
+            });
+          }
+          return true;
+        } catch (e) {
+          set({ error: (e as Error).message, loading: false });
+          return false;
+        }
+      },
+
+      setToolbarFilters: (filters: ToolbarFilters) => {
+        set((state) => ({ toolbarFilters: filters, filterVersion: state.filterVersion + 1 }));
+      },
+
+      setFilterConditions: (conditions: FilterCondition[]) => {
+        set((state) => ({ filterConditions: conditions, filterVersion: state.filterVersion + 1 }));
+      },
+
+      setPaused: (paused: boolean) => {
+        set({ paused });
+        if (paused) {
+          get().stopPolling();
+        } else {
+          get().startPolling();
+        }
+      },
+
+      setAutoScroll: (autoScroll: boolean) => {
+        set({ autoScroll });
+        if (autoScroll) {
+          set({ newRecordsCount: 0 });
+        }
+      },
+
+      clearNewRecordsCount: () => set({ newRecordsCount: 0 }),
+
+      clearError: () => set({ error: null }),
+
+      clearCurrentRecord: () => set({
+        currentRecord: null,
+        requestBody: null,
+        responseBody: null
+      }),
+
+      initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => {
         set({
-          records: [],
-          recordsMap: new Map(),
-          serverTotal: 0,
-          hasMore: false,
-          lastId: null,
-          pendingIds: new Set(),
-          currentRecord: null,
-          requestBody: null,
-          responseBody: null,
-          loading: false,
-          filterVersion: 0,
-          initialized: false,
-          selectedId: undefined,
+          filterConditions: filters,
+          toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [], imported: [] },
         });
-      }
-      return true;
-    } catch (e) {
-      set({ error: (e as Error).message, loading: false });
-      return false;
-    }
-  },
+      },
 
-  setToolbarFilters: (filters: ToolbarFilters) => {
-    set((state) => ({ toolbarFilters: filters, filterVersion: state.filterVersion + 1 }));
-  },
-
-  setFilterConditions: (conditions: FilterCondition[]) => {
-    set((state) => ({ filterConditions: conditions, filterVersion: state.filterVersion + 1 }));
-  },
-
-  setPaused: (paused: boolean) => {
-    set({ paused });
-    if (paused) {
-      get().stopPolling();
-    } else {
-      get().startPolling();
-    }
-  },
-
-  setAutoScroll: (autoScroll: boolean) => {
-    set({ autoScroll });
-    if (autoScroll) {
-      set({ newRecordsCount: 0 });
-    }
-  },
-
-  clearNewRecordsCount: () => set({ newRecordsCount: 0 }),
-
-  clearError: () => set({ error: null }),
-
-  clearCurrentRecord: () => set({
-    currentRecord: null,
-    requestBody: null,
-    responseBody: null
-  }),
-
-  initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => {
-    set({
-      filterConditions: filters,
-      toolbarFilters: toolbar || { rule: [], protocol: [], type: [], status: [], imported: [] },
-    });
-  },
-
-  setScrollTop: (scrollTop: number) => set({ scrollTop }),
+      setScrollTop: (scrollTop: number) => set({ scrollTop }),
 
       setSelectedId: (id: string | undefined) => set({ selectedId: id }),
     }),
