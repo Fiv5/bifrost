@@ -221,12 +221,9 @@ async fn test_routing_xhost_priority() -> Result<(), String> {
 
 async fn test_routing_redirect_302() -> Result<(), String> {
     let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(
-        port,
-        vec!["test.local redirect://http://new.example.com/"],
-    )
-    .await
-    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+    let _proxy = ProxyInstance::start(port, vec!["test.local redirect://http://new.example.com/"])
+        .await
+        .map_err(|e| format!("Failed to start proxy: {}", e))?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 

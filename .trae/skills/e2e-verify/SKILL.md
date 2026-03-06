@@ -37,6 +37,9 @@ description: |
 scripts/
 ├── browser-test.js              # UI 测试主入口（导出所有核心函数）
 ├── api-test.js                  # API 测试模块（独立的 API 验证能力）
+├── scenarios/                   # 场景配置
+│   ├── stream-sse.json           # SSE 流式消息展示
+│   └── stream-ws.json            # WebSocket 流式消息展示
 ├── lib/
 │   ├── config.js                # 配置常量
 │   ├── logger.js                # 日志工具
@@ -58,6 +61,8 @@ scripts/
 │       ├── emulation.js         # 设备仿真（11 个）
 │       └── debugging.js         # 调试操作（13 个）
 ├── examples/                    # 示例脚本
+│   ├── api-search-proxy.txt      # Search/System Proxy API 用例
+│   └── seed-streaming-traffic.sh # SSE/WS 流量模拟
 ├── screenshots/                 # 截图存储目录
 └── logs/                        # 日志存储目录
 ```
@@ -106,6 +111,10 @@ node browser-test.js scenario --list
 
 # 查看支持的 actions
 node browser-test.js scenario --actions
+
+# SSE/WS 流式场景
+node browser-test.js scenario stream-sse --verbose
+node browser-test.js scenario stream-ws --verbose
 ```
 
 #### 场景命令参数
@@ -615,12 +624,12 @@ node browser-test.js scenario bifrost-smoke --verbose
 #    │ GET    ... /_bifrost/api/system/overview
 #    └───────────────────────────────────────────────
 #
-# 📌 ==== 应用创建测试完成 ====
+# 📌 ==== Bifrost 管理端基础验证完成 ====
 #
 # ============================================================
 # 📊 执行报告
 # ============================================================
-#    场景: 应用创建测试
+#    场景: Bifrost 管理端基础验证
 #    耗时: 15.92s
 #    步骤: 33/33 通过
 #    网络: 106 API 请求, 5 失败
@@ -628,6 +637,23 @@ node browser-test.js scenario bifrost-smoke --verbose
 #    结果: ✅ 通过
 # ============================================================
 ```
+
+### SSE/WebSocket 流式推送用例
+
+先模拟代理流量，再跑场景验证 UI 展示：
+
+```bash
+cd .trae/skills/e2e-verify/scripts
+bash examples/seed-streaming-traffic.sh
+node browser-test.js scenario stream-sse --verbose
+node browser-test.js scenario stream-ws --verbose
+```
+
+预期效果：
+
+- SSE 记录选中后，Messages 里出现 SSE 列表与事件计数
+- WebSocket 记录选中后，Messages 里出现 frames 列表与统计
+- WebSocket 用例依赖 websocat，可用 `brew install websocat` 安装
 
 ## API 测试
 
