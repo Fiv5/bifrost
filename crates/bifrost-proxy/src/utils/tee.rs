@@ -381,13 +381,8 @@ impl Drop for SseTeeBodyDropGuard {
 pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
-    preview_limit: usize,
-    stream_writer: Option<BodyStreamWriter>,
-    stream_path: Option<String>,
-    stream_bytes: usize,
-    event_start: usize,
     prev_byte: Option<u8>,
-    preview_buf: Vec<u8>,
+    event_buffer: Vec<u8>,
 }
 
 impl SseTeeBody {
@@ -396,16 +391,11 @@ impl SseTeeBody {
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         traffic_type: Option<TrafficType>,
-        max_buffer_size: usize,
+        _max_buffer_size: usize,
     ) -> Self {
         if let Some(ref state) = admin_state {
             state.connection_monitor.register_connection(&record_id);
         }
-        let preview_limit = admin_state
-            .as_ref()
-            .map(|state| state.connection_monitor.sse_preview_limit())
-            .unwrap_or(0)
-            .min(max_buffer_size);
 
         Self {
             inner,
@@ -416,13 +406,8 @@ impl SseTeeBody {
                 finished: false,
                 traffic_type,
             },
-            preview_limit,
-            stream_writer: None,
-            stream_path: None,
-            stream_bytes: 0,
-            event_start: 0,
             prev_byte: None,
-            preview_buf: Vec::with_capacity(preview_limit.min(4096)),
+            event_buffer: Vec::new(),
         }
     }
 
@@ -430,81 +415,36 @@ impl SseTeeBody {
         BodyExt::boxed(self)
     }
 
-    fn init_stream_writer(&mut self) {
-        if self.stream_writer.is_some() {
+    fn record_event(&mut self) {
+        if self.event_buffer.is_empty() {
             return;
         }
-        let Some(ref state) = self.guard.admin_state else {
-            return;
-        };
-        let Some(ref body_store) = state.body_store else {
-            return;
-        };
-        let store = body_store.read();
-        if let Ok(writer) = store.start_stream(&self.guard.record_id, "sse_stream") {
-            self.stream_path = Some(writer.path().to_string_lossy().to_string());
-            self.stream_writer = Some(writer);
-        }
-    }
-
-    fn write_stream_chunk(&mut self, data: &[u8]) {
-        if let Some(ref mut writer) = self.stream_writer {
-            if writer.write_chunk(data).is_err() {
-                self.stream_writer = None;
-                self.stream_path = None;
-            }
-        }
-    }
-
-    fn record_event(&mut self, event_len: usize) {
-        if event_len == 0 {
-            self.preview_buf.clear();
-            return;
-        }
-        let preview_bytes = self.preview_buf.clone();
         if let Some(ref state) = self.guard.admin_state {
-            let payload_ref = self.stream_path.as_ref().map(|path| BodyRef::FileRange {
-                path: path.clone(),
-                offset: self.event_start as u64,
-                size: event_len,
-            });
-            state.connection_monitor.record_sse_event_streamed(
+            let event_bytes = std::mem::take(&mut self.event_buffer);
+            state.connection_monitor.record_sse_event(
                 &self.guard.record_id,
-                event_len,
-                &preview_bytes,
-                payload_ref,
+                &event_bytes,
+                state.body_store.as_ref(),
                 state.frame_store.as_ref(),
             );
         }
-        self.preview_buf.clear();
     }
 
     fn process_sse_chunk(&mut self, data: &[u8]) {
-        let chunk_start = self.stream_bytes;
-        for (i, &byte) in data.iter().enumerate() {
+        for &byte in data {
             if self.prev_byte == Some(b'\n') && byte == b'\n' {
-                if self.preview_limit > 0 {
-                    if let Some(&last) = self.preview_buf.last() {
-                        if last == b'\n' {
-                            self.preview_buf.pop();
-                        }
+                if let Some(&last) = self.event_buffer.last() {
+                    if last == b'\n' {
+                        self.event_buffer.pop();
                     }
                 }
-                let boundary_offset = chunk_start + i;
-                let event_len = boundary_offset
-                    .saturating_sub(1)
-                    .saturating_sub(self.event_start);
-                self.record_event(event_len);
-                self.event_start = boundary_offset + 1;
+                self.record_event();
                 self.prev_byte = Some(byte);
                 continue;
             }
-            if self.preview_limit > 0 && self.preview_buf.len() < self.preview_limit {
-                self.preview_buf.push(byte);
-            }
+            self.event_buffer.push(byte);
             self.prev_byte = Some(byte);
         }
-        self.stream_bytes += data.len();
     }
 }
 
@@ -536,8 +476,6 @@ impl Body for SseTeeBody {
                         }
                     }
 
-                    self.init_stream_writer();
-                    self.write_stream_chunk(data);
                     self.process_sse_chunk(data);
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -557,10 +495,7 @@ impl Body for SseTeeBody {
             }
             Poll::Ready(None) => {
                 self.guard.finished = true;
-                if self.event_start < self.stream_bytes {
-                    let event_len = self.stream_bytes - self.event_start;
-                    self.record_event(event_len);
-                }
+                self.record_event();
                 if let Some(ref state) = self.guard.admin_state {
                     state.connection_monitor.set_connection_closed(
                         &self.guard.record_id,

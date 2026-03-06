@@ -349,11 +349,19 @@ test_sse_frame_content() {
         return 1
     fi
 
-    local has_preview
-    has_preview=$(echo "$frames" | jq -r '[.frames[] | select((.payload_preview // "") | length > 0)] | length')
-    if [[ "${has_preview:-0}" -le 0 ]]; then
-        log_debug "Frames response: $frames"
-        log_fail "SSE frames should include payload_preview"
+    local first_frame_id
+    first_frame_id=$(echo "$frames" | jq -r '.frames[0].frame_id // 0')
+    if [[ "${first_frame_id:-0}" -le 0 ]]; then
+        log_fail "SSE frame_id should be available"
+        return 1
+    fi
+    local frame_detail
+    frame_detail=$(get_frame_detail "$traffic_id" "$first_frame_id")
+    local full_payload
+    full_payload=$(echo "$frame_detail" | jq -r '.full_payload // ""')
+    if [[ -z "$full_payload" ]]; then
+        log_debug "Frame detail: $frame_detail"
+        log_fail "SSE frame detail should include full_payload"
         return 1
     fi
     local record
@@ -361,6 +369,7 @@ test_sse_frame_content() {
     local response_size
     response_size=$(echo "$record" | jq -r '.response_size // 0')
     if [[ "${response_size:-0}" -le 0 ]]; then
+        log_debug "Record: $record"
         log_fail "SSE response_size should be persisted"
         return 1
     fi

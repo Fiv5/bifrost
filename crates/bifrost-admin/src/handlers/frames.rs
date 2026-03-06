@@ -7,6 +7,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use super::{error_response, full_body, json_response, BoxBody};
+use crate::body_store::BodyRef;
 use crate::connection_monitor::WebSocketFrameRecord;
 use crate::state::AdminState;
 use crate::traffic::SocketStatus;
@@ -286,48 +287,56 @@ pub async fn get_frame_detail(
 ) -> Response<BoxBody> {
     let monitor = &state.connection_monitor;
 
-    let frames_result = monitor.get_frames(connection_id, None, usize::MAX);
+    let (frames, _, _) = monitor.get_frames_with_persistence(
+        connection_id,
+        None,
+        usize::MAX,
+        state.frame_store.as_ref(),
+    );
 
-    match frames_result {
-        Some((frames, _)) => {
-            if let Some(frame) = frames.iter().find(|f| f.frame_id == frame_id) {
-                if let Some(ref body_ref) = frame.payload_ref {
-                    if let Some(ref body_store) = state.body_store {
-                        let body_ref_clone = body_ref.clone();
-                        let body_store_clone = body_store.clone();
-                        let frame_clone = frame.clone();
-
-                        let data = tokio::task::spawn_blocking(move || {
-                            let store = body_store_clone.read();
-                            store.load(&body_ref_clone)
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-
-                        if let Some(payload_data) = data {
-                            let body = serde_json::json!({
-                                "frame": frame_clone,
-                                "full_payload": payload_data
-                            });
-                            return json_response(&body);
-                        }
-                    }
-                }
-                json_response(frame)
-            } else {
-                error_response(
-                    StatusCode::NOT_FOUND,
-                    &format!(
-                        "Frame {} not found in connection {}",
-                        frame_id, connection_id
-                    ),
-                )
-            }
-        }
-        None => error_response(
+    if frames.is_empty() {
+        return error_response(
             StatusCode::NOT_FOUND,
             &format!("Connection {} not found", connection_id),
-        ),
+        );
+    }
+
+    if let Some(frame) = frames.iter().find(|f| f.frame_id == frame_id) {
+        if let Some(ref body_ref) = frame.payload_ref {
+            if let BodyRef::Inline { data } = body_ref {
+                let body = serde_json::json!({
+                    "frame": frame.clone(),
+                    "full_payload": data
+                });
+                return json_response(&body);
+            }
+            if let Some(ref body_store) = state.body_store {
+                let body_ref_clone = body_ref.clone();
+                let body_store_clone = body_store.clone();
+                let frame_clone = frame.clone();
+
+                let data = tokio::task::spawn_blocking(move || {
+                    let store = body_store_clone.read();
+                    store.load(&body_ref_clone)
+                })
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(payload_data) = data {
+                    let body = serde_json::json!({
+                        "frame": frame_clone,
+                        "full_payload": payload_data
+                    });
+                    return json_response(&body);
+                }
+            }
+        }
+        json_response(frame)
+    } else {
+        error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Frame {} not found in connection {}", frame_id, connection_id),
+        )
     }
 }

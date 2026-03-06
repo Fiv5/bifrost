@@ -138,6 +138,34 @@ impl BodyStore {
         }
     }
 
+    pub fn store_force_file(&self, id: &str, kind: &str, data: &[u8]) -> Option<BodyRef> {
+        if data.is_empty() {
+            return None;
+        }
+
+        let filename = format!("{}_{}", id, kind);
+        let path = self.temp_dir.join(&filename);
+
+        match fs::File::create(&path) {
+            Ok(mut file) => {
+                if file.write_all(data).is_ok() {
+                    Some(BodyRef::File {
+                        path: path.to_string_lossy().to_string(),
+                        size: data.len(),
+                    })
+                } else {
+                    let _ = fs::remove_file(&path);
+                    let text = String::from_utf8_lossy(data).to_string();
+                    Some(BodyRef::Inline { data: text })
+                }
+            }
+            Err(_) => {
+                let text = String::from_utf8_lossy(data).to_string();
+                Some(BodyRef::Inline { data: text })
+            }
+        }
+    }
+
     pub fn start_stream(&self, id: &str, kind: &str) -> std::io::Result<BodyStreamWriter> {
         let filename = format!("{}_{}", id, kind);
         let path = self.temp_dir.join(&filename);

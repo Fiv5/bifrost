@@ -16,6 +16,19 @@ fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
     if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
         summary.frame_count = status.frame_count;
         summary.socket_status = Some(status);
+        if let Some(ref socket_status) = summary.socket_status {
+            let total = socket_status.send_bytes + socket_status.receive_bytes;
+            if !socket_status.is_open && summary.response_size == 0 && total > 0 {
+                summary.response_size = total as usize;
+                let status = socket_status.clone();
+                let frame_count = summary.frame_count;
+                state.update_traffic_by_id(&summary.id, move |record| {
+                    record.response_size = total as usize;
+                    record.socket_status = Some(status.clone());
+                    record.frame_count = frame_count;
+                });
+            }
+        }
     } else if let Some(ref fs) = state.frame_store {
         if let Some(metadata) = fs.get_metadata(&summary.id) {
             summary.frame_count = metadata.frame_count as usize;
@@ -36,6 +49,20 @@ fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminS
     if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
         summary.fc = status.frame_count;
         summary.ss = Some(status);
+        if let Some(ref socket_status) = summary.ss {
+            let total = socket_status.send_bytes + socket_status.receive_bytes;
+            if !socket_status.is_open && summary.res_sz == 0 && total > 0 {
+                summary.res_sz = total as usize;
+                let status = socket_status.clone();
+                let frame_count = summary.fc;
+                let record_id = summary.id.clone();
+                state.update_traffic_by_id(&record_id, move |record| {
+                    record.response_size = total as usize;
+                    record.socket_status = Some(status.clone());
+                    record.frame_count = frame_count;
+                });
+            }
+        }
     } else if let Some(ref fs) = state.frame_store {
         if let Some(metadata) = fs.get_metadata(&summary.id) {
             summary.fc = metadata.frame_count as usize;
@@ -454,6 +481,22 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
                             ..Default::default()
                         });
                     }
+                }
+            }
+            if let Some(ref socket_status) = record.socket_status {
+                let total = socket_status.send_bytes + socket_status.receive_bytes;
+                if !socket_status.is_open && record.response_size == 0 && total > 0 {
+                    record.response_size = total as usize;
+                    let status = socket_status.clone();
+                    let frame_count = record.frame_count;
+                    let last_frame_id = record.last_frame_id;
+                    let record_id = record.id.clone();
+                    state.update_traffic_by_id(&record_id, move |record| {
+                        record.response_size = total as usize;
+                        record.socket_status = Some(status.clone());
+                        record.frame_count = frame_count;
+                        record.last_frame_id = last_frame_id;
+                    });
                 }
             }
             json_response(&record)
