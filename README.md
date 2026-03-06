@@ -226,6 +226,8 @@ http://127.0.0.1:9900/_bifrost/
 | `/_bifrost/api/replay/*`  | 请求重放 API    |
 
 > **注意**：出于安全考虑，管理端仅允许通过 `127.0.0.1` 或 `localhost` 访问。
+>
+> **SSE 说明**：SSE 的 Events 渲染以 `response-body` 为权威，详情页可通过 `/_bifrost/api/traffic/{id}/sse/stream?from=begin` 订阅事件增量（仅 open 连接可用，closed 返回 409）。
 
 ### 全局参数
 

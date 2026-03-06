@@ -166,6 +166,7 @@ test_traffic_updates_api() {
     log_info "Initial server sequence: $initial_seq"
     
     generate_traffic 3
+    sleep 1
     
     local new_response
     new_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${initial_seq}&limit=50")

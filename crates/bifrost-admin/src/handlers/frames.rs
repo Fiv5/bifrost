@@ -10,7 +10,7 @@ use super::{error_response, full_body, json_response, BoxBody};
 use crate::body_store::BodyRef;
 use crate::connection_monitor::WebSocketFrameRecord;
 use crate::state::AdminState;
-use crate::traffic::SocketStatus;
+use crate::traffic::{FrameType, SocketStatus, TrafficRecord};
 
 #[derive(Debug, Serialize)]
 struct FramesResponse {
@@ -46,6 +46,20 @@ fn parse_frames_query(query: Option<&str>) -> FramesQuery {
     query
         .and_then(|q| serde_urlencoded::from_str(q).ok())
         .unwrap_or_default()
+}
+
+async fn get_traffic_record(state: Arc<AdminState>, id: &str) -> Option<TrafficRecord> {
+    if let Some(ref db_store) = state.traffic_db_store {
+        let db_clone = db_store.clone();
+        let id_owned = id.to_string();
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
+    } else if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_by_id(id)
+    } else {
+        state.traffic_recorder.get_by_id(id)
+    }
 }
 
 pub async fn get_frames(
@@ -171,6 +185,23 @@ pub async fn get_frames(
 
         json_response(&response)
     } else {
+        if let Some(record) = get_traffic_record(state.clone(), connection_id).await {
+            if record.is_sse {
+                let socket_status = state
+                    .sse_hub
+                    .get_socket_status(&conn_id)
+                    .or(record.socket_status);
+                let response = FramesResponse {
+                    frames: Vec::new(),
+                    socket_status,
+                    last_frame_id: record.last_frame_id,
+                    has_more: false,
+                    is_monitored: false,
+                };
+                return json_response(&response);
+            }
+        }
+
         error_response(
             StatusCode::NOT_FOUND,
             &format!("Connection {} not found", connection_id),
@@ -287,21 +318,28 @@ pub async fn get_frame_detail(
 ) -> Response<BoxBody> {
     let monitor = &state.connection_monitor;
 
-    let (frames, _, _) = monitor.get_frames_with_persistence(
-        connection_id,
-        None,
-        usize::MAX,
-        state.frame_store.as_ref(),
-    );
-
-    if frames.is_empty() {
-        return error_response(
-            StatusCode::NOT_FOUND,
-            &format!("Connection {} not found", connection_id),
-        );
+    let frame = {
+        let connections = monitor.connections.read();
+        connections.get(connection_id).and_then(|store| {
+            store
+                .frames
+                .iter()
+                .find(|f| f.frame_id == frame_id)
+                .cloned()
+        })
     }
+    .or_else(|| {
+        state.frame_store.as_ref().and_then(|fs| {
+            fs.flush();
+            let pending = fs.load_pending_frames(connection_id, None, usize::MAX);
+            pending
+                .into_iter()
+                .find(|f| f.frame_id == frame_id)
+                .or_else(|| fs.load_frame_by_id(connection_id, frame_id).ok().flatten())
+        })
+    });
 
-    if let Some(frame) = frames.iter().find(|f| f.frame_id == frame_id) {
+    if let Some(frame) = frame {
         if let Some(ref body_ref) = frame.payload_ref {
             if let BodyRef::Inline { data } = body_ref {
                 let body = serde_json::json!({
@@ -332,7 +370,61 @@ pub async fn get_frame_detail(
                 }
             }
         }
-        json_response(frame)
+
+        if frame.frame_type == FrameType::Sse {
+            let record = if let Some(ref db_store) = state.traffic_db_store {
+                let db_store = db_store.clone();
+                let id = connection_id.to_string();
+                tokio::task::spawn_blocking(move || db_store.get_by_id(&id))
+                    .await
+                    .ok()
+                    .flatten()
+            } else if let Some(ref traffic_store) = state.traffic_store {
+                traffic_store.get_by_id(connection_id)
+            } else {
+                state.traffic_recorder.get_by_id(connection_id)
+            };
+
+            if let Some(record) = record {
+                if let (Some(body_store), Some(body_ref)) =
+                    (state.body_store.clone(), record.response_body_ref.clone())
+                {
+                    let data =
+                        tokio::task::spawn_blocking(move || body_store.read().load(&body_ref))
+                            .await
+                            .ok()
+                            .flatten();
+
+                    if let Some(raw) = data {
+                        let mut events = Vec::new();
+                        let mut current = String::new();
+                        for line in raw.lines() {
+                            if line.is_empty() {
+                                if !current.is_empty() {
+                                    events.push(std::mem::take(&mut current));
+                                }
+                                continue;
+                            }
+                            current.push_str(line);
+                            current.push('\n');
+                        }
+                        if !current.is_empty() {
+                            events.push(current);
+                        }
+
+                        if let Some(payload) = events.get(frame_id as usize) {
+                            let body = serde_json::json!({
+                                "frame": frame.clone(),
+                                "full_payload": payload
+                            });
+                            return json_response(&body);
+                        }
+                    }
+                }
+            }
+        }
+
+        json_response(&frame)
     } else {
         error_response(
             StatusCode::NOT_FOUND,

@@ -242,7 +242,12 @@ impl PushManager {
 
     fn enrich_summary(&self, mut summary: TrafficSummary) -> TrafficSummary {
         if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-            if let Some(status) = self
+            if summary.is_sse {
+                if let Some(status) = self.state.sse_hub.get_socket_status(&summary.id) {
+                    summary.frame_count = status.frame_count;
+                    summary.socket_status = Some(status);
+                }
+            } else if let Some(status) = self
                 .state
                 .connection_monitor
                 .get_connection_status(&summary.id)
@@ -259,13 +264,25 @@ impl PushManager {
                     });
                 }
             }
+
+            if summary.is_sse {
+                if let Some(ref socket_status) = summary.socket_status {
+                    let total = socket_status.send_bytes + socket_status.receive_bytes;
+                    summary.response_size = summary.response_size.max(total as usize);
+                }
+            }
         }
         summary
     }
 
     fn enrich_compact_summary(&self, mut summary: TrafficSummaryCompact) -> TrafficSummaryCompact {
         if summary.is_sse() || summary.is_websocket() || summary.is_tunnel() {
-            if let Some(status) = self
+            if summary.is_sse() {
+                if let Some(status) = self.state.sse_hub.get_socket_status(&summary.id) {
+                    summary.fc = status.frame_count;
+                    summary.ss = Some(status);
+                }
+            } else if let Some(status) = self
                 .state
                 .connection_monitor
                 .get_connection_status(&summary.id)
@@ -280,6 +297,13 @@ impl PushManager {
                         frame_count: metadata.frame_count as usize,
                         ..Default::default()
                     });
+                }
+            }
+
+            if summary.is_sse() {
+                if let Some(ref socket_status) = summary.ss {
+                    let total = socket_status.send_bytes + socket_status.receive_bytes;
+                    summary.res_sz = summary.res_sz.max(total as usize);
                 }
             }
         }

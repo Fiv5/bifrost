@@ -1130,6 +1130,7 @@ pub async fn handle_http_request(
         let total_ms = start_time.elapsed().as_millis() as u64;
         let record_id = ctx.id_str();
         let traffic_type = get_traffic_type_from_url(&record_url);
+        let mut sse_stream_writer: Option<bifrost_admin::BodyStreamWriter> = None;
 
         if let Some(ref state) = admin_state {
             state
@@ -1182,7 +1183,7 @@ pub async fn handle_http_request(
                 state.connection_monitor.register_connection(&record_id);
             } else if is_sse {
                 record.set_sse();
-                state.connection_monitor.register_connection(&record_id);
+                state.sse_hub.register(&record_id);
             } else if is_streaming {
                 record.set_streaming();
                 state.connection_monitor.register_connection(&record_id);
@@ -1203,6 +1204,20 @@ pub async fn handle_http_request(
                 record.req_script_results = Some(req_script_results.clone());
             }
 
+            if is_sse {
+                if let Some(ref body_store) = state.body_store {
+                    match body_store.read().start_stream(&record_id, "sse_raw") {
+                        Ok(writer) => {
+                            record.response_body_ref = Some(writer.body_ref());
+                            sse_stream_writer = Some(writer);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                        }
+                    }
+                }
+            }
+
             state.record_traffic(record);
         }
 
@@ -1212,6 +1227,7 @@ pub async fn handle_http_request(
                 admin_state.clone(),
                 record_id,
                 Some(traffic_type),
+                sse_stream_writer,
                 max_body_buffer_size,
             );
             return Ok(Response::from_parts(res_parts, tee_body.boxed()));
@@ -1440,7 +1456,6 @@ pub async fn handle_http_request(
         let is_sse = is_sse_response(&res_parts);
         if is_sse {
             record.set_sse();
-            state.connection_monitor.register_connection(&ctx.id_str());
         }
 
         if let Some(ref body_store) = state.body_store {
@@ -1464,17 +1479,25 @@ pub async fn handle_http_request(
             record.res_script_results = Some(res_script_results.clone());
         }
 
-        state.record_traffic(record);
-
         if is_sse {
-            parse_and_record_sse_events(&final_res_body, &ctx.id_str(), state);
-            state.connection_monitor.set_connection_closed(
-                &ctx.id_str(),
-                None,
-                Some("SSE stream completed".to_string()),
-                state.frame_store.as_ref(),
-            );
+            let event_count = parse_and_record_sse_events(&final_res_body);
+            let response_size = final_res_body.len();
+            record.response_size = response_size;
+            record.frame_count = event_count;
+            record.last_frame_id = event_count as u64;
+            record.socket_status = Some(bifrost_admin::SocketStatus {
+                is_open: false,
+                send_count: 0,
+                receive_count: event_count as u64,
+                send_bytes: 0,
+                receive_bytes: response_size as u64,
+                frame_count: event_count,
+                close_code: None,
+                close_reason: Some("SSE stream completed".to_string()),
+            });
         }
+
+        state.record_traffic(record);
     }
 
     Ok(Response::from_parts(res_parts, full_body(final_res_body)))
@@ -1914,23 +1937,19 @@ pub fn get_request_url(req: &Request<Incoming>) -> String {
     }
 }
 
-pub fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &AdminState) {
+pub fn parse_and_record_sse_events(body: &[u8]) -> usize {
     let body_str = match std::str::from_utf8(body) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(_) => return 0,
     };
 
     let mut current_event = String::new();
+    let mut count = 0usize;
     for line in body_str.lines() {
         if line.is_empty() {
             if !current_event.is_empty() {
-                state.connection_monitor.record_sse_event(
-                    connection_id,
-                    current_event.as_bytes(),
-                    state.body_store.as_ref(),
-                    state.frame_store.as_ref(),
-                );
                 current_event.clear();
+                count += 1;
             }
         } else {
             if !current_event.is_empty() {
@@ -1941,13 +1960,10 @@ pub fn parse_and_record_sse_events(body: &[u8], connection_id: &str, state: &Adm
     }
 
     if !current_event.is_empty() {
-        state.connection_monitor.record_sse_event(
-            connection_id,
-            current_event.as_bytes(),
-            state.body_store.as_ref(),
-            state.frame_store.as_ref(),
-        );
+        count += 1;
     }
+
+    count
 }
 
 #[cfg(test)]

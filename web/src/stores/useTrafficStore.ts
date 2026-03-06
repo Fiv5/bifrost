@@ -40,6 +40,8 @@ interface TrafficState {
   fetchUpdates: () => Promise<void>;
   fetchInitialData: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
+  appendSseResponseBody: (recordId: string, payload: string) => void;
+  setResponseBody: (recordId: string, body: string | null) => void;
   clearTraffic: (ids?: string[]) => Promise<boolean>;
   setToolbarFilters: (filters: ToolbarFilters) => void;
   setFilterConditions: (conditions: FilterCondition[]) => void;
@@ -128,6 +130,15 @@ const formatSize = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+};
+
+const mergeSseBody = (prev: string | null, payload: string): string => {
+  const trimmed = payload.replace(/\n+$/, '');
+  if (!trimmed) return prev || '';
+  if (!prev || prev.length === 0) return trimmed;
+  if (prev.endsWith('\n\n')) return `${prev}${trimmed}`;
+  if (prev.endsWith('\n')) return `${prev}\n${trimmed}`;
+  return `${prev}\n\n${trimmed}`;
 };
 
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
@@ -916,12 +927,30 @@ export const useTrafficStore = create<TrafficState>()(
         set({ requestBody: body });
       }).catch(() => { });
 
-      api.getResponseBody(id).then(body => {
-        set({ responseBody: body });
-      }).catch(() => { });
+      const isOpenSse = !!record.is_sse && !!record.socket_status?.is_open;
+      if (!isOpenSse) {
+        api.getResponseBody(id).then(body => {
+          set({ responseBody: body });
+        }).catch(() => { });
+      }
     } catch (e) {
       set({ error: (e as Error).message, detailLoading: false });
     }
+  },
+
+  appendSseResponseBody: (recordId: string, payload: string) => {
+    set((state) => {
+      if (!payload) return {};
+      if (state.currentRecord?.id !== recordId) return {};
+      return { responseBody: mergeSseBody(state.responseBody, payload) };
+    });
+  },
+
+  setResponseBody: (recordId: string, body: string | null) => {
+    set((state) => {
+      if (state.currentRecord?.id !== recordId) return {};
+      return { responseBody: body };
+    });
   },
 
   clearTraffic: async (ids?: string[]) => {

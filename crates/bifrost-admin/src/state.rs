@@ -17,6 +17,7 @@ use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
+use crate::sse::SseHub;
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
@@ -85,6 +86,7 @@ pub struct AdminState {
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub connection_monitor: SharedConnectionMonitor,
+    pub sse_hub: Arc<SseHub>,
     pub runtime_config: SharedRuntimeConfig,
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
@@ -116,6 +118,7 @@ impl AdminState {
             ca_cert_path: None,
             system_proxy_manager: None,
             connection_monitor: Arc::new(ConnectionMonitor::new()),
+            sse_hub: SseHub::new(),
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,

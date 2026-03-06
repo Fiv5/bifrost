@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Tooltip, theme, Badge } from "antd";
+import { theme, Badge } from "antd";
 import {
   GlobalOutlined,
   FileTextOutlined,
@@ -12,10 +12,7 @@ import type { CSSProperties } from "react";
 import { useEffect } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 import StatusBar from "../StatusBar";
-import {
-  setNavigateCallback,
-  type ReferenceLocation,
-} from "../BifrostEditor";
+import { setNavigateCallback, type ReferenceLocation } from "../BifrostEditor";
 
 interface MenuItem {
   key: string;
@@ -79,7 +76,7 @@ export default function AppLayout() {
       overflow: "hidden",
     },
     sidebar: {
-      width: 72,
+      width: 50,
       height: "100%",
       backgroundColor: token.colorBgContainer,
       borderRight: `1px solid ${token.colorBorderSecondary}`,
@@ -90,7 +87,7 @@ export default function AppLayout() {
       flexShrink: 0,
     },
     menuItem: {
-      width: 72,
+      width: 50,
       height: 64,
       display: "flex",
       flexDirection: "column",
@@ -158,29 +155,17 @@ export default function AppLayout() {
           {menuItems.map((item) => {
             const active = isActive(item.key);
             return (
-              <Tooltip
-                key={item.key}
-                title={
-                  item.key === "/settings" && pendingCount > 0
-                    ? `${item.label} (${pendingCount} pending)`
-                    : item.label
-                }
-                placement="right"
+              <div
+                style={{
+                  ...styles.menuItem,
+                  ...(active ? styles.menuItemActive : {}),
+                }}
+                onClick={() => handleClick(item.key)}
               >
-                <div
-                  style={{
-                    ...styles.menuItem,
-                    ...(active ? styles.menuItemActive : {}),
-                  }}
-                  onClick={() => handleClick(item.key)}
-                >
-                  {active && (
-                    <div style={styles.activeBorder as CSSProperties} />
-                  )}
-                  {renderMenuIcon(item)}
-                  <div style={styles.menuItemLabel}>{item.label}</div>
-                </div>
-              </Tooltip>
+                {active && <div style={styles.activeBorder as CSSProperties} />}
+                {renderMenuIcon(item)}
+                <div style={styles.menuItemLabel}>{item.label}</div>
+              </div>
             );
           })}
         </div>

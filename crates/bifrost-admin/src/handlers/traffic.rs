@@ -1,9 +1,12 @@
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
+use crate::sse::{parse_sse_events_from_text, SseEventEnvelope};
 use crate::state::{AdminState, SharedAdminState};
 use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
@@ -13,22 +16,14 @@ fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
         return;
     }
 
-    if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
+    if summary.is_sse {
+        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
+            summary.frame_count = status.frame_count;
+            summary.socket_status = Some(status);
+        }
+    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
         summary.frame_count = status.frame_count;
         summary.socket_status = Some(status);
-        if let Some(ref socket_status) = summary.socket_status {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if !socket_status.is_open && summary.response_size == 0 && total > 0 {
-                summary.response_size = total as usize;
-                let status = socket_status.clone();
-                let frame_count = summary.frame_count;
-                state.update_traffic_by_id(&summary.id, move |record| {
-                    record.response_size = total as usize;
-                    record.socket_status = Some(status.clone());
-                    record.frame_count = frame_count;
-                });
-            }
-        }
     } else if let Some(ref fs) = state.frame_store {
         if let Some(metadata) = fs.get_metadata(&summary.id) {
             summary.frame_count = metadata.frame_count as usize;
@@ -39,6 +34,26 @@ fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
             });
         }
     }
+
+    if summary.is_sse {
+        if let Some(ref socket_status) = summary.socket_status {
+            let total = socket_status.send_bytes + socket_status.receive_bytes;
+            if total > 0 {
+                summary.response_size = summary.response_size.max(total as usize);
+            }
+
+            if !socket_status.is_open && summary.response_size > 0 {
+                let total = summary.response_size;
+                let status = socket_status.clone();
+                let frame_count = summary.frame_count;
+                state.update_traffic_by_id(&summary.id, move |record| {
+                    record.response_size = total;
+                    record.socket_status = Some(status.clone());
+                    record.frame_count = frame_count;
+                });
+            }
+        }
+    }
 }
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminState) {
@@ -46,23 +61,14 @@ fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminS
         return;
     }
 
-    if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
+    if summary.is_sse() {
+        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
+            summary.fc = status.frame_count;
+            summary.ss = Some(status);
+        }
+    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
         summary.fc = status.frame_count;
         summary.ss = Some(status);
-        if let Some(ref socket_status) = summary.ss {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if !socket_status.is_open && summary.res_sz == 0 && total > 0 {
-                summary.res_sz = total as usize;
-                let status = socket_status.clone();
-                let frame_count = summary.fc;
-                let record_id = summary.id.clone();
-                state.update_traffic_by_id(&record_id, move |record| {
-                    record.response_size = total as usize;
-                    record.socket_status = Some(status.clone());
-                    record.frame_count = frame_count;
-                });
-            }
-        }
     } else if let Some(ref fs) = state.frame_store {
         if let Some(metadata) = fs.get_metadata(&summary.id) {
             summary.fc = metadata.frame_count as usize;
@@ -73,6 +79,27 @@ fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminS
             });
         }
     }
+
+    if summary.is_sse() {
+        if let Some(ref socket_status) = summary.ss {
+            let total = socket_status.send_bytes + socket_status.receive_bytes;
+            if total > 0 {
+                summary.res_sz = summary.res_sz.max(total as usize);
+            }
+
+            if !socket_status.is_open && summary.res_sz > 0 {
+                let total = summary.res_sz;
+                let status = socket_status.clone();
+                let frame_count = summary.fc;
+                let record_id = summary.id.clone();
+                state.update_traffic_by_id(&record_id, move |record| {
+                    record.response_size = total;
+                    record.socket_status = Some(status.clone());
+                    record.frame_count = frame_count;
+                });
+            }
+        }
+    }
 }
 
 pub async fn handle_traffic(
@@ -80,9 +107,10 @@ pub async fn handle_traffic(
     state: SharedAdminState,
     path: &str,
 ) -> Response<BoxBody> {
+    let path = path.trim_end_matches('/');
     let method = req.method().clone();
 
-    if path == "/api/traffic" || path == "/api/traffic/" {
+    if path == "/api/traffic" {
         match method {
             Method::GET => list_traffic(req, state).await,
             Method::DELETE => clear_traffic(req, state).await,
@@ -99,6 +127,7 @@ pub async fn handle_traffic(
             _ => method_not_allowed(),
         }
     } else if let Some(rest) = path.strip_prefix("/api/traffic/") {
+        let rest = rest.trim_end_matches('/');
         if let Some(id) = rest.strip_suffix("/request-body") {
             match method {
                 Method::GET => get_request_body(state, id).await,
@@ -107,6 +136,15 @@ pub async fn handle_traffic(
         } else if let Some(id) = rest.strip_suffix("/response-body") {
             match method {
                 Method::GET => get_response_body(state, id).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some((id, after)) = rest.split_once("/sse/stream") {
+            let after = after.trim().trim_matches('/');
+            if !after.is_empty() {
+                return error_response(StatusCode::BAD_REQUEST, "Invalid SSE stream path");
+            }
+            match method {
+                Method::GET => subscribe_sse_stream(state, id).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(id) = rest.strip_suffix("/frames/stream") {
@@ -146,6 +184,144 @@ pub async fn handle_traffic(
     } else {
         error_response(StatusCode::NOT_FOUND, "Not Found")
     }
+}
+
+async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+    let record = if let Some(ref db_store) = state.traffic_db_store {
+        let db_clone = db_store.clone();
+        let id_owned = id.to_string();
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
+    } else if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.get_by_id(id)
+    } else {
+        state.traffic_recorder.get_by_id(id)
+    };
+
+    let Some(record) = record else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Traffic record '{}' not found", id),
+        );
+    };
+
+    if !record.is_sse {
+        return error_response(StatusCode::BAD_REQUEST, "Not a SSE traffic record");
+    }
+
+    let receiver = match state.sse_hub.subscribe(id) {
+        Some(rx) => rx,
+        None => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "SSE connection already closed; use /response-body to load and render events",
+            );
+        }
+    };
+
+    if state.sse_hub.is_open(id) != Some(true) {
+        return error_response(
+            StatusCode::CONFLICT,
+            "SSE connection already closed; use /response-body to load and render events",
+        );
+    }
+
+    let body_ref = match record.response_body_ref {
+        Some(r) => r,
+        None => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                &format!("SSE response body for {} not found", id),
+            );
+        }
+    };
+
+    let snapshot_text = load_body_snapshot_text(state.clone(), &body_ref).await;
+    let (mut events, _) = parse_sse_events_from_text(&snapshot_text);
+    for (idx, e) in events.iter_mut().enumerate() {
+        e.seq = (idx as u64) + 1;
+        e.ts = record.timestamp;
+    }
+    let last_seq = events.len() as u64;
+
+    let mut backlog = state.sse_hub.get_events_since(id, last_seq);
+    backlog.sort_by_key(|e| e.seq);
+    let max_seq_sent = backlog.last().map(|e| e.seq).unwrap_or(last_seq);
+
+    let id_owned = id.to_string();
+    let live = BroadcastStream::new(receiver).filter_map(move |result| match result {
+        Ok(SseEventEnvelope {
+            connection_id,
+            event,
+        }) if connection_id == id_owned && event.seq > max_seq_sent => {
+            let data = serde_json::to_string(&event).ok()?;
+            let sse_data = format!("id: {}\nevent: sse_event\ndata: {}\n\n", event.seq, data);
+            Some(sse_data)
+        }
+        _ => None,
+    });
+
+    let mut out: Vec<String> = Vec::with_capacity(events.len() + backlog.len());
+    for e in events {
+        if let Ok(data) = serde_json::to_string(&e) {
+            out.push(format!(
+                "id: {}\nevent: sse_event\ndata: {}\n\n",
+                e.seq, data
+            ));
+        }
+    }
+    for e in backlog {
+        if let Ok(data) = serde_json::to_string(&e) {
+            out.push(format!(
+                "id: {}\nevent: sse_event\ndata: {}\n\n",
+                e.seq, data
+            ));
+        }
+    }
+
+    let history = futures_util::stream::iter(out);
+    let stream = history
+        .chain(live)
+        .map(|s| Ok::<_, hyper::Error>(hyper::body::Frame::data(bytes::Bytes::from(s))));
+    let body_stream = http_body_util::StreamBody::new(stream);
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .header("Connection", "keep-alive")
+        .header("Access-Control-Allow-Origin", "*")
+        .body(BoxBody::new(body_stream))
+        .unwrap()
+}
+
+async fn load_body_snapshot_text(state: SharedAdminState, body_ref: &BodyRef) -> String {
+    let Some(ref store) = state.body_store else {
+        return String::new();
+    };
+    let store = store.clone();
+    let body_ref = body_ref.clone();
+    tokio::task::spawn_blocking(move || match body_ref {
+        BodyRef::Inline { data } => data,
+        BodyRef::File { path, .. } => {
+            let len = std::fs::metadata(&path)
+                .map(|m| m.len() as usize)
+                .unwrap_or(0);
+            if len == 0 {
+                return String::new();
+            }
+            let range = BodyRef::FileRange {
+                path,
+                offset: 0,
+                size: len,
+            };
+            store.read().load(&range).unwrap_or_default()
+        }
+        BodyRef::FileRange { .. } => store.read().load(&body_ref).unwrap_or_default(),
+    })
+    .await
+    .unwrap_or_default()
 }
 
 async fn query_traffic(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
@@ -467,7 +643,15 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
     match record {
         Some(mut record) => {
             if record.is_websocket || record.is_sse || record.is_tunnel {
-                if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
+                if record.is_sse {
+                    if let Some(status) = state.sse_hub.get_socket_status(&record.id) {
+                        record.frame_count = status.frame_count;
+                        record.last_frame_id = status.frame_count as u64;
+                        record.socket_status = Some(status);
+                    }
+                } else if let Some(status) =
+                    state.connection_monitor.get_connection_status(&record.id)
+                {
                     record.frame_count = status.frame_count;
                     record.last_frame_id = status.frame_count as u64;
                     record.socket_status = Some(status);
@@ -485,6 +669,9 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
             }
             if let Some(ref socket_status) = record.socket_status {
                 let total = socket_status.send_bytes + socket_status.receive_bytes;
+                if record.is_sse && total > 0 {
+                    record.response_size = record.response_size.max(total as usize);
+                }
                 if !socket_status.is_open && record.response_size == 0 && total > 0 {
                     record.response_size = total as usize;
                     let status = socket_status.clone();

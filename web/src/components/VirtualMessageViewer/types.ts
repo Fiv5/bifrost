@@ -90,6 +90,31 @@ function parseSsePayload(payload: string): {
   return { data, eventId, eventType, retry };
 }
 
+export function parseSseTextToEvents(text: string, timestamp?: number): SSEEvent[] {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const events: SSEEvent[] = [];
+  let start = 0;
+
+  for (let i = 0; i + 1 < normalized.length; i++) {
+    if (normalized[i] === '\n' && normalized[i + 1] === '\n') {
+      const chunk = normalized.slice(start, i).replace(/\n+$/, '');
+      if (chunk.trim().length > 0) {
+        const parsed = parseSsePayload(chunk);
+        events.push({
+          id: parsed.eventId ?? String(events.length + 1),
+          event: parsed.eventType ?? 'message',
+          data: parsed.data ?? chunk,
+          timestamp: timestamp ?? Date.now(),
+        });
+      }
+      start = i + 2;
+      i++;
+    }
+  }
+
+  return events;
+}
+
 export function normalizeSSEEvent(event: SSEEvent, index?: number): MessageItem {
   const eventData = event.data || '';
   const isJson = (() => {

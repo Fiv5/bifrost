@@ -43,6 +43,11 @@ get_traffic_detail() {
     admin_get "/api/traffic/${id}"
 }
 
+get_response_body() {
+    local id="$1"
+    admin_get "/api/traffic/${id}/response-body"
+}
+
 get_traffic_by_url() {
     local url_pattern="$1"
     local limit="${2:-10}"

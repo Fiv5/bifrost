@@ -1665,7 +1665,15 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
   ];
 
   return (
-    <div style={{ padding: 16 }}>
+    <div
+      style={{
+        padding: 16,
+        height: "100%",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       {pendingCount > 0 && (
         <Alert
           type="warning"
@@ -1743,7 +1751,13 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         />
       )}
 
-      <Tabs activeKey={activeTab} onChange={handleTabChange} items={tabItems} />
+      <Tabs
+        className="settings-tabs"
+        style={{ flex: 1, minHeight: 0 }}
+        activeKey={activeTab}
+        onChange={handleTabChange}
+        items={tabItems}
+      />
     </div>
   );
 }
@@ -2502,7 +2516,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.intercept_include.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2583,7 +2597,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.intercept_exclude.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2681,7 +2695,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.app_intercept_include.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2774,7 +2788,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.app_intercept_exclude.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (

@@ -260,7 +260,7 @@ impl FrameStore {
         let reader = BufReader::new(file);
 
         let mut frames = Vec::new();
-        let mut total_matching = 0;
+        let mut has_more = false;
 
         for line in reader.lines() {
             let line = line?;
@@ -276,9 +276,11 @@ impl FrameStore {
                     };
 
                     if should_include {
-                        total_matching += 1;
                         if frames.len() < limit {
                             frames.push(frame);
+                        } else {
+                            has_more = true;
+                            break;
                         }
                     }
                 }
@@ -292,8 +294,48 @@ impl FrameStore {
             }
         }
 
-        let has_more = total_matching > limit;
         Ok((frames, has_more))
+    }
+
+    pub fn load_frame_by_id(
+        &self,
+        connection_id: &str,
+        frame_id: u64,
+    ) -> std::io::Result<Option<WebSocketFrameRecord>> {
+        let path = self.connection_file_path(connection_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            match serde_json::from_str::<WebSocketFrameRecord>(&line) {
+                Ok(frame) => {
+                    if frame.frame_id == frame_id {
+                        return Ok(Some(frame));
+                    }
+                    if frame.frame_id > frame_id {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[FRAME_STORE] Failed to parse frame line for {}: {}",
+                        connection_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn load_all_frames(

@@ -54,6 +54,13 @@ impl BodyStreamWriter {
         &self.path
     }
 
+    pub fn body_ref(&self) -> BodyRef {
+        BodyRef::File {
+            path: self.path.to_string_lossy().to_string(),
+            size: self.size,
+        }
+    }
+
     pub fn write_chunk(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.file.write_all(data)?;
         self.size += data.len();

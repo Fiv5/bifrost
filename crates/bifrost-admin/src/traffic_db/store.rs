@@ -50,7 +50,7 @@ impl TrafficDbStore {
             "[TRAFFIC_DB] Initializing SQLite traffic store"
         );
 
-        let write_conn = match Self::open_or_reset_database(&db_path) {
+        let mut write_conn = match Self::open_or_reset_database(&db_path) {
             Ok(conn) => conn,
             Err(e) => {
                 tracing::error!(error = %e, "[TRAFFIC_DB] Failed to open database");
@@ -63,7 +63,7 @@ impl TrafficDbStore {
             "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
         )?;
 
-        let current_seq = match Self::resequence_records(&write_conn) {
+        let current_seq = match Self::resequence_records(&mut write_conn) {
             Ok(count) => count,
             Err(e) => {
                 tracing::warn!(error = %e, "[TRAFFIC_DB] Failed to resequence, using max sequence");
@@ -139,13 +139,8 @@ impl TrafficDbStore {
         .map(|v| v as u64)
     }
 
-    fn resequence_records(conn: &Connection) -> rusqlite::Result<u64> {
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM traffic_records", [], |row| row.get(0))?;
-
-        if count == 0 {
-            return Ok(0);
-        }
+    fn resequence_records(conn: &mut Connection) -> rusqlite::Result<u64> {
+        let start = std::time::Instant::now();
 
         let mut stmt = conn.prepare("SELECT id FROM traffic_records ORDER BY sequence ASC")?;
         let ids: Vec<String> = stmt
@@ -154,15 +149,24 @@ impl TrafficDbStore {
             .collect();
         drop(stmt);
 
-        for (idx, id) in ids.iter().enumerate() {
-            conn.execute(
-                "UPDATE traffic_records SET sequence = ? WHERE id = ?",
-                rusqlite::params![(idx + 1) as i64, id],
-            )?;
+        if ids.is_empty() {
+            return Ok(0);
         }
+
+        let tx = conn.transaction()?;
+        let mut update_stmt =
+            tx.prepare("UPDATE traffic_records SET sequence = ?1 WHERE id = ?2")?;
+
+        for (idx, id) in ids.iter().enumerate() {
+            update_stmt.execute(rusqlite::params![(idx + 1) as i64, id])?;
+        }
+
+        drop(update_stmt);
+        tx.commit()?;
 
         tracing::info!(
             record_count = ids.len(),
+            duration_ms = start.elapsed().as_millis(),
             "[TRAFFIC_DB] Resequenced existing records (1 to {})",
             ids.len()
         );

@@ -13,6 +13,7 @@ pub mod request_rules;
 mod router;
 pub mod search;
 mod security;
+mod sse;
 mod state;
 mod static_files;
 pub mod status_printer;
@@ -46,6 +47,7 @@ pub use metrics::{
 pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
+pub use sse::{parse_sse_event, parse_sse_events_from_text, SseEvent, SseEventEnvelope, SseHub};
 pub use state::{
     AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedScriptManager,
     SharedSystemProxyManager, SharedValuesStorage,

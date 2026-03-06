@@ -11,20 +11,13 @@ use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body;
 
 fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
-    let status = state.connection_monitor.get_connection_status(record_id);
-    let last_frame_id = state
-        .connection_monitor
-        .get_last_frame_id(record_id)
-        .unwrap_or(0);
-    let frame_count = status.as_ref().map(|s| s.frame_count).unwrap_or(0);
-    let status = status.map(|mut s| {
+    let status = state.sse_hub.get_socket_status(record_id).map(|mut s| {
         s.is_open = false;
         s
     });
-    let mut response_size = status
-        .as_ref()
-        .map(|s| s.send_bytes + s.receive_bytes)
-        .unwrap_or(0) as usize;
+    let frame_count = status.as_ref().map(|s| s.frame_count).unwrap_or(0);
+    let last_frame_id = frame_count as u64;
+    let mut response_size = status.as_ref().map(|s| s.receive_bytes).unwrap_or(0) as usize;
     if response_size == 0 {
         response_size = total_bytes;
     }
@@ -359,22 +352,29 @@ struct SseTeeBodyDropGuard {
     total_bytes: usize,
     finished: bool,
     traffic_type: Option<TrafficType>,
+    file_writer: Option<BodyStreamWriter>,
 }
 
 impl Drop for SseTeeBodyDropGuard {
     fn drop(&mut self) {
-        if let Some(ref state) = self.admin_state {
-            if !self.finished {
-                let total_bytes = self.total_bytes;
-                persist_socket_summary(state, &self.record_id, total_bytes);
-            }
-            state.connection_monitor.set_connection_closed(
-                &self.record_id,
-                None,
-                None,
-                state.frame_store.as_ref(),
-            );
+        if !self.finished {
+            self.store_body_and_update_record();
         }
+    }
+}
+
+impl SseTeeBodyDropGuard {
+    fn store_body_and_update_record(&mut self) {
+        if let Some(ref state) = self.admin_state {
+            let response_body_ref = self.file_writer.take().map(|w| w.finish());
+            state.sse_hub.set_closed(&self.record_id);
+            state.update_traffic_by_id(&self.record_id, move |record| {
+                record.response_body_ref = response_body_ref.clone();
+            });
+            persist_socket_summary(state, &self.record_id, self.total_bytes);
+            state.sse_hub.unregister(&self.record_id);
+        }
+        self.finished = true;
     }
 }
 
@@ -391,10 +391,11 @@ impl SseTeeBody {
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         traffic_type: Option<TrafficType>,
+        file_writer: Option<BodyStreamWriter>,
         _max_buffer_size: usize,
     ) -> Self {
         if let Some(ref state) = admin_state {
-            state.connection_monitor.register_connection(&record_id);
+            state.sse_hub.register(&record_id);
         }
 
         Self {
@@ -405,6 +406,7 @@ impl SseTeeBody {
                 total_bytes: 0,
                 finished: false,
                 traffic_type,
+                file_writer,
             },
             prev_byte: None,
             event_buffer: Vec::new(),
@@ -421,12 +423,9 @@ impl SseTeeBody {
         }
         if let Some(ref state) = self.guard.admin_state {
             let event_bytes = std::mem::take(&mut self.event_buffer);
-            state.connection_monitor.record_sse_event(
-                &self.guard.record_id,
-                &event_bytes,
-                state.body_store.as_ref(),
-                state.frame_store.as_ref(),
-            );
+            state
+                .sse_hub
+                .publish_raw_event(&self.guard.record_id, &event_bytes);
         }
     }
 
@@ -467,6 +466,7 @@ impl Body for SseTeeBody {
                     self.guard.total_bytes += len;
 
                     if let Some(ref state) = self.guard.admin_state {
+                        state.sse_hub.add_receive_bytes(&self.guard.record_id, len);
                         if let Some(traffic_type) = self.guard.traffic_type {
                             state
                                 .metrics_collector
@@ -476,35 +476,21 @@ impl Body for SseTeeBody {
                         }
                     }
 
+                    if let Some(ref mut writer) = self.guard.file_writer {
+                        let _ = writer.write_chunk(data);
+                    }
+
                     self.process_sse_chunk(data);
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(Some(Err(e))) => {
-                self.guard.finished = true;
-                if let Some(ref state) = self.guard.admin_state {
-                    state.connection_monitor.set_connection_closed(
-                        &self.guard.record_id,
-                        None,
-                        None,
-                        state.frame_store.as_ref(),
-                    );
-                    persist_socket_summary(state, &self.guard.record_id, self.guard.total_bytes);
-                }
+                self.guard.store_body_and_update_record();
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
-                self.guard.finished = true;
                 self.record_event();
-                if let Some(ref state) = self.guard.admin_state {
-                    state.connection_monitor.set_connection_closed(
-                        &self.guard.record_id,
-                        None,
-                        None,
-                        state.frame_store.as_ref(),
-                    );
-                    persist_socket_summary(state, &self.guard.record_id, self.guard.total_bytes);
-                }
+                self.guard.store_body_and_update_record();
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,
@@ -525,9 +511,17 @@ pub fn create_sse_tee_body(
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     traffic_type: Option<TrafficType>,
+    file_writer: Option<BodyStreamWriter>,
     max_buffer_size: usize,
 ) -> SseTeeBody {
-    SseTeeBody::new(body, admin_state, record_id, traffic_type, max_buffer_size)
+    SseTeeBody::new(
+        body,
+        admin_state,
+        record_id,
+        traffic_type,
+        file_writer,
+        max_buffer_size,
+    )
 }
 
 pub fn store_request_body(

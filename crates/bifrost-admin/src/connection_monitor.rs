@@ -11,7 +11,7 @@ use crate::body_store::{BodyRef, SharedBodyStore};
 use crate::frame_store::SharedFrameStore;
 use crate::traffic::{FrameDirection, FrameType, SocketStatus};
 
-const DEFAULT_PREVIEW_LIMIT: usize = 0;
+const DEFAULT_PREVIEW_LIMIT: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketFrameRecord {
@@ -294,9 +294,17 @@ impl ConnectionMonitor {
                     FrameDirection::Receive => "recv",
                 };
                 let ref_key = format!("{}_frame_{}_{}", connection_id, frame_id, direction_str);
-                frame.payload_ref = body_store
-                    .read()
-                    .store_force_file(&ref_key, "frame", payload);
+                let payload_for_store: Vec<u8> = match frame_type {
+                    FrameType::Text | FrameType::Close | FrameType::Sse => payload.to_vec(),
+                    _ => {
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload)
+                            .into_bytes()
+                    }
+                };
+                frame.payload_ref =
+                    body_store
+                        .read()
+                        .store_force_file(&ref_key, "frame", &payload_for_store);
             }
         }
 
@@ -335,17 +343,21 @@ impl ConnectionMonitor {
         let mut connections = self.connections.write();
         let store = connections.get_mut(connection_id)?;
         let frame_id = store.next_frame_id();
-        let payload_ref = if !payload.is_empty() {
+        let payload_ref = if payload.is_empty() {
+            None
+        } else {
+            let inline = BodyRef::Inline {
+                data: String::from_utf8_lossy(payload).to_string(),
+            };
             if let Some(body_store) = body_store {
                 let ref_key = format!("{}_sse_event_{}", connection_id, frame_id);
-                body_store.read().store_force_file(&ref_key, "sse", payload)
+                body_store
+                    .read()
+                    .store_force_file(&ref_key, "sse", payload)
+                    .or(Some(inline))
             } else {
-                Some(BodyRef::Inline {
-                    data: String::from_utf8_lossy(payload).to_string(),
-                })
+                Some(inline)
             }
-        } else {
-            None
         };
         let input = SseEventInput {
             payload_size: payload.len(),

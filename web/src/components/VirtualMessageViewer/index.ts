@@ -8,6 +8,7 @@ export type {
 } from './types';
 
 export {
+  parseSseTextToEvents,
   normalizeSSEEvent,
   normalizeWSMessage,
   normalizeWSFrame,

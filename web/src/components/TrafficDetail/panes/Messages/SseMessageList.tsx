@@ -9,12 +9,12 @@ import {
   ArrowDownOutlined,
   FullscreenOutlined,
 } from '@ant-design/icons';
-import type { WebSocketFrame } from '../../../../types';
+import type { SSEEvent } from '../../../../types';
 import {
   VirtualMessageList,
   MessageItemCard,
   useMessageSearch,
-  normalizeWSFrame,
+  normalizeSSEEvent,
   type MessageItem,
 } from '../../../VirtualMessageViewer';
 
@@ -22,7 +22,7 @@ const { Text } = Typography;
 const { Search } = Input;
 
 interface SseMessageListProps {
-  frames: WebSocketFrame[];
+  events: SSEEvent[];
   loading: boolean;
   hasMore: boolean;
   searchQuery?: string;
@@ -35,7 +35,7 @@ interface SseMessageListProps {
 }
 
 export const SseMessageList = ({
-  frames,
+  events,
   loading,
   hasMore,
   searchQuery = '',
@@ -49,8 +49,8 @@ export const SseMessageList = ({
   const { token } = theme.useToken();
 
   const normalizedMessages = useMemo<MessageItem[]>(() => {
-    return frames.map(normalizeWSFrame);
-  }, [frames]);
+    return events.map(normalizeSSEEvent);
+  }, [events]);
 
   const {
     searchState,
@@ -88,7 +88,7 @@ export const SseMessageList = ({
     />
   ), [searchMode, matchTokens]);
 
-  if (frames.length === 0) {
+  if (events.length === 0) {
     return (
       <div
         style={{
@@ -168,7 +168,7 @@ export const SseMessageList = ({
           )}
 
           <Text type="secondary" style={{ fontSize: 11 }}>
-            {displayItems.length} of {frames.length} events
+            {displayItems.length} of {events.length} events
             {hasMore && ' (+)'}
           </Text>
         </Space>
