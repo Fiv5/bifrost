@@ -11,3 +11,4 @@ e2e-tests/.test_results/
 .bifrost_test/
 .bifrost-*-test/
 .bifrost-e2e-*/
+debug.md

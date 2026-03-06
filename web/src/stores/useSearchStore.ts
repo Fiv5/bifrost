@@ -10,6 +10,7 @@ import type {
   TrafficSummaryCompact,
 } from '../types';
 import { TrafficFlags } from '../types';
+import { apiFetch } from '../api/apiFetch';
 
 interface SearchState {
   mode: 'normal' | 'search';
@@ -131,7 +132,7 @@ export const useSearchStore = create<SearchState>()(
         limit: 50,
       };
 
-      const response = await fetch('/_bifrost/api/search', {
+      const response = await apiFetch('/_bifrost/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
@@ -175,7 +176,7 @@ export const useSearchStore = create<SearchState>()(
         limit: 50,
       };
 
-      const response = await fetch('/_bifrost/api/search', {
+      const response = await apiFetch('/_bifrost/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),

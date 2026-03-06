@@ -21,6 +21,8 @@ import {
 import * as replayApi from '../api/replay';
 import * as trafficApi from '../api/traffic';
 import { pushService } from '../services/pushService';
+import { apiFetch } from '../api/apiFetch';
+import { getClientId } from '../services/clientId';
 
 import type { RequestType } from '../types';
 
@@ -330,7 +332,7 @@ export const useReplayStore = create<ReplayState>()(
 
           const timeoutId = setTimeout(() => abortController.abort(), timeoutMs + 5000);
 
-          const response = await fetch('/_bifrost/api/replay/execute/unified', {
+          const response = await apiFetch('/_bifrost/api/replay/execute/unified', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -911,6 +913,7 @@ export const useReplayStore = create<ReplayState>()(
 
         const proxyUrl = new URL('/_bifrost/api/replay/execute/ws', window.location.origin);
         proxyUrl.searchParams.set('url', wsUrl);
+        proxyUrl.searchParams.set('x_client_id', getClientId());
         if (currentRequest.is_saved) {
           proxyUrl.searchParams.set('request_id', currentRequest.id);
         }

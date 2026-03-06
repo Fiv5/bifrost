@@ -421,6 +421,14 @@ test_sse_stream_open_full_and_live() {
         return 1
     fi
 
+    local data0
+    data0=$(echo "$stream_output" | head -n 1 | jq -r '.data // ""')
+    if [[ -z "$data0" ]]; then
+        log_fail "SSE stream payload should contain non-empty data"
+        kill "$sse_pid" >/dev/null 2>&1 || true
+        return 1
+    fi
+
     wait "$sse_pid" >/dev/null 2>&1 || true
     return 0
 }

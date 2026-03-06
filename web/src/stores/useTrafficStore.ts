@@ -60,9 +60,13 @@ interface TrafficState {
 }
 
 const POLL_INTERVAL = 1000;
+const POLL_MIN_INTERVAL = 200;
+const HAS_MORE_BURST_LIMIT = 3;
+const HAS_MORE_BACKOFF_INTERVAL = 500;
 const BATCH_LIMIT = 1000;
 const MAX_RECORDS = 10000;
 const UPDATE_THROTTLE_MS = 100;
+const MAX_PENDING_IDS = 500;
 
 interface BatchedUpdate {
   newRecords: TrafficSummary[];
@@ -74,6 +78,15 @@ interface BatchedUpdate {
 let pendingBatch: BatchedUpdate | null = null;
 let rafId: number | null = null;
 let lastUpdateTime = 0;
+let hasMoreBurst = 0;
+
+function capPendingIds(ids: Set<string>) {
+  while (ids.size > MAX_PENDING_IDS) {
+    const first = ids.values().next().value as string | undefined;
+    if (!first) break;
+    ids.delete(first);
+  }
+}
 
 const contentTypeMap: Record<string, string[]> = {
   'JSON': ['json', 'application/json'],
@@ -471,6 +484,7 @@ export const useTrafficStore = create<TrafficState>()(
     if (state.pollTimeoutId) {
       clearTimeout(state.pollTimeoutId);
     }
+    hasMoreBurst = 0;
     if (state.usePush) {
       get().disablePush();
     }
@@ -509,6 +523,7 @@ export const useTrafficStore = create<TrafficState>()(
       state.pushDeltaUnsubscribe();
     }
     set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null });
+    pushService.disconnectIfIdle();
   },
 
   handleTrafficPush: (data: TrafficUpdatesData) => {
@@ -588,6 +603,7 @@ export const useTrafficStore = create<TrafficState>()(
               newPendingIds.add(r.id);
             }
           }
+          capPendingIds(newPendingIds);
 
           let allRecords: TrafficSummary[];
           if (hasChanges) {
@@ -699,6 +715,7 @@ export const useTrafficStore = create<TrafficState>()(
           newPendingIds.add(r.id);
         }
       }
+      capPendingIds(newPendingIds);
 
       let allRecords: TrafficSummary[];
       if (hasChanges) {
@@ -781,6 +798,7 @@ export const useTrafficStore = create<TrafficState>()(
           newPendingIds.add(r.id);
         }
       }
+      capPendingIds(newPendingIds);
 
       const lastRecord = preprocessedRecords[preprocessedRecords.length - 1];
 
@@ -859,6 +877,7 @@ export const useTrafficStore = create<TrafficState>()(
               newPendingIds.add(r.id);
             }
           }
+          capPendingIds(newPendingIds);
 
           let allRecords: TrafficSummary[];
           if (hasChanges) {
@@ -898,7 +917,14 @@ export const useTrafficStore = create<TrafficState>()(
 
       const currentState = get();
       if (currentState.polling) {
-        const nextDelay = response.has_more ? 0 : POLL_INTERVAL;
+        if (response.has_more) {
+          hasMoreBurst += 1;
+        } else {
+          hasMoreBurst = 0;
+        }
+        const nextDelay = response.has_more
+          ? (hasMoreBurst > HAS_MORE_BURST_LIMIT ? HAS_MORE_BACKOFF_INTERVAL : POLL_MIN_INTERVAL)
+          : POLL_INTERVAL;
         const timeoutId = window.setTimeout(() => {
           get().fetchUpdates();
         }, nextDelay);

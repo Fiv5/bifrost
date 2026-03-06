@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getClientId } from '../services/clientId';
 
 const API_BASE = '/_bifrost/api/bifrost-file';
 
@@ -57,14 +58,14 @@ export interface ExportTemplateRequest {
 
 export async function detectType(content: string): Promise<DetectResponse> {
   const response = await axios.post<DetectResponse>(`${API_BASE}/detect`, content, {
-    headers: { 'Content-Type': 'text/plain' },
+    headers: { 'Content-Type': 'text/plain', 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
 
 export async function importFile(content: string): Promise<ImportResponse> {
   const response = await axios.post<ImportResponse>(`${API_BASE}/import`, content, {
-    headers: { 'Content-Type': 'text/plain' },
+    headers: { 'Content-Type': 'text/plain', 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
@@ -72,6 +73,7 @@ export async function importFile(content: string): Promise<ImportResponse> {
 export async function exportRules(request: ExportRulesRequest): Promise<string> {
   const response = await axios.post<string>(`${API_BASE}/export/rules`, request, {
     responseType: 'text',
+    headers: { 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
@@ -79,6 +81,7 @@ export async function exportRules(request: ExportRulesRequest): Promise<string> 
 export async function exportNetwork(request: ExportNetworkRequest): Promise<string> {
   const response = await axios.post<string>(`${API_BASE}/export/network`, request, {
     responseType: 'text',
+    headers: { 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
@@ -86,6 +89,7 @@ export async function exportNetwork(request: ExportNetworkRequest): Promise<stri
 export async function exportScripts(request: ExportScriptRequest): Promise<string> {
   const response = await axios.post<string>(`${API_BASE}/export/scripts`, request, {
     responseType: 'text',
+    headers: { 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
@@ -93,6 +97,7 @@ export async function exportScripts(request: ExportScriptRequest): Promise<strin
 export async function exportValues(request: ExportValuesRequest): Promise<string> {
   const response = await axios.post<string>(`${API_BASE}/export/values`, request, {
     responseType: 'text',
+    headers: { 'X-Client-Id': getClientId() },
   });
   return response.data;
 }
@@ -100,6 +105,7 @@ export async function exportValues(request: ExportValuesRequest): Promise<string
 export async function exportTemplates(request: ExportTemplateRequest): Promise<string> {
   const response = await axios.post<string>(`${API_BASE}/export/templates`, request, {
     responseType: 'text',
+    headers: { 'X-Client-Id': getClientId() },
   });
   return response.data;
 }

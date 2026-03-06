@@ -1,3 +1,5 @@
+import { apiFetch } from '../../../api/apiFetch';
+
 export interface ProtocolInfo {
   name: string;
   category: string;
@@ -66,7 +68,7 @@ export async function fetchSyntaxInfo(): Promise<UnifiedSyntaxInfo> {
     return fetchPromise;
   }
 
-  fetchPromise = fetch('/_bifrost/api/syntax')
+  fetchPromise = apiFetch('/_bifrost/api/syntax')
     .then((response) => {
       if (!response.ok) {
         throw new Error(`Failed to fetch syntax info: ${response.status}`);

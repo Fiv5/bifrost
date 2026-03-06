@@ -9,9 +9,16 @@ use tokio_tungstenite::WebSocketStream;
 use tracing::{debug, error, info, warn};
 
 use super::{error_response, BoxBody};
-use crate::push::{ClientSubscription, ConnectedData, PushMessage, SharedPushManager};
+use crate::push::{
+    ClientSubscription, ConnectedData, PushMessage, SharedPushManager, MAX_ID_LEN,
+    MAX_SUBSCRIBED_IDS, METRICS_INTERVAL_MAX_MS, METRICS_INTERVAL_MIN_MS,
+};
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const WS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const WS_PONG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const WS_TEXT_MAX_BYTES: usize = 64 * 1024;
+const HISTORY_LIMIT_MAX: usize = 500;
 
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
@@ -35,7 +42,7 @@ pub async fn handle_websocket_upgrade(
     };
 
     let query = req.uri().query().unwrap_or("");
-    let subscription = parse_subscription_from_query(query);
+    let (client_key, subscription) = parse_subscription_from_query(query);
 
     let accept_key = generate_accept_key(&ws_key);
 
@@ -55,7 +62,7 @@ pub async fn handle_websocket_upgrade(
         )
         .await;
 
-        handle_websocket_connection(ws_stream, push_manager, subscription).await;
+        handle_websocket_connection(ws_stream, push_manager, client_key, subscription).await;
     });
 
     Response::builder()
@@ -75,13 +82,19 @@ fn generate_accept_key(key: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(hasher.finalize())
 }
 
-fn parse_subscription_from_query(query: &str) -> ClientSubscription {
+fn parse_subscription_from_query(query: &str) -> (String, ClientSubscription) {
     let mut subscription = ClientSubscription::default();
+    let mut client_key: Option<String> = None;
 
     for pair in query.split('&') {
         if let Some((key, value)) = pair.split_once('=') {
             let value = urlencoding::decode(value).unwrap_or_default();
             match key {
+                "x_client_id" => {
+                    if !value.is_empty() {
+                        client_key = Some(value.to_string());
+                    }
+                }
                 "last_traffic_id" => {
                     if !value.is_empty() {
                         subscription.last_traffic_id = Some(value.to_string());
@@ -107,25 +120,37 @@ fn parse_subscription_from_query(query: &str) -> ClientSubscription {
                         subscription.history_limit = limit;
                     }
                 }
+                "metrics_interval_ms" => {
+                    if let Ok(v) = value.parse() {
+                        subscription.metrics_interval_ms = v;
+                    }
+                }
                 _ => {}
             }
         }
     }
 
-    subscription
+    let mut client_key = client_key.unwrap_or_else(|| "unknown".to_string());
+    if client_key.len() > MAX_ID_LEN {
+        client_key.truncate(MAX_ID_LEN);
+    }
+    (client_key, sanitize_subscription(subscription))
 }
 
 async fn handle_websocket_connection<S>(
     ws_stream: WebSocketStream<S>,
     push_manager: SharedPushManager,
+    client_key: String,
     subscription: ClientSubscription,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    let (client, mut msg_receiver) = push_manager.register_client(subscription);
+    let (client, mut msg_receiver) = push_manager.register_client(client_key, subscription);
     let client_id = client.id;
+
+    let last_pong_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms()));
 
     let connected_msg = PushMessage::Connected(ConnectedData {
         client_id,
@@ -147,40 +172,73 @@ async fn handle_websocket_connection<S>(
 
     let push_manager_clone = push_manager.clone();
     let client_clone = client.clone();
+    let last_pong_ms_sender = last_pong_ms.clone();
 
     let sender_task = tokio::spawn(async move {
-        while let Some(msg) = msg_receiver.recv().await {
-            match serde_json::to_string(&msg) {
-                Ok(json) => {
-                    if let Err(e) = ws_sender.send(Message::Text(json.into())).await {
-                        warn!(client_id = client_id, "Failed to send message: {}", e);
+        let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = ping_interval.tick() => {
+                    let now = now_ms();
+                    let last_pong = last_pong_ms_sender.load(std::sync::atomic::Ordering::Relaxed);
+                    if now.saturating_sub(last_pong) > WS_PONG_TIMEOUT.as_millis() as u64 {
+                        let _ = ws_sender.send(Message::Close(None)).await;
+                        break;
+                    }
+                    if let Err(e) = ws_sender.send(Message::Ping(bytes::Bytes::new())).await {
+                        warn!(client_id = client_id, "Failed to send ping: {}", e);
                         break;
                     }
                 }
-                Err(e) => {
-                    error!(client_id = client_id, "Failed to serialize message: {}", e);
+                maybe_msg = msg_receiver.recv() => {
+                    let Some(msg) = maybe_msg else {
+                        break;
+                    };
+                    if let PushMessage::Disconnect(_) = msg {
+                        if let Ok(json) = serde_json::to_string(&msg) {
+                            let _ = ws_sender.send(Message::Text(json.into())).await;
+                        }
+                        let _ = ws_sender.send(Message::Close(None)).await;
+                        break;
+                    }
+                    match serde_json::to_string(&msg) {
+                        Ok(json) => {
+                            if let Err(e) = ws_sender.send(Message::Text(json.into())).await {
+                                warn!(client_id = client_id, "Failed to send message: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!(client_id = client_id, "Failed to serialize message: {}", e);
+                        }
+                    }
                 }
             }
         }
     });
 
+    let last_pong_ms_receiver = last_pong_ms.clone();
     let receiver_task = tokio::spawn(async move {
         while let Some(result) = ws_receiver.next().await {
             match result {
                 Ok(msg) => match msg {
                     Message::Text(text) => {
-                        debug!(client_id = client_id, "Received text message: {}", text);
+                        if text.len() > WS_TEXT_MAX_BYTES {
+                            break;
+                        }
                         if let Ok(subscription) = serde_json::from_str::<ClientSubscription>(&text)
                         {
-                            client_clone.update_subscription(subscription);
-                            debug!(client_id = client_id, "Updated subscription");
+                            client_clone.update_subscription(sanitize_subscription(subscription));
                         }
+                        last_pong_ms_receiver.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Message::Ping(_) => {
                         debug!(client_id = client_id, "Received ping");
+                        last_pong_ms_receiver.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Message::Pong(_) => {
                         debug!(client_id = client_id, "Received pong");
+                        last_pong_ms_receiver.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Message::Close(_) => {
                         info!(client_id = client_id, "Client closed connection");
@@ -196,15 +254,41 @@ async fn handle_websocket_connection<S>(
         }
     });
 
+    let mut sender_task = sender_task;
+    let mut receiver_task = receiver_task;
     tokio::select! {
-        _ = sender_task => {
-            debug!(client_id = client_id, "Sender task completed");
+        _ = &mut sender_task => {
+            receiver_task.abort();
+            let _ = receiver_task.await;
         }
-        _ = receiver_task => {
-            debug!(client_id = client_id, "Receiver task completed");
+        _ = &mut receiver_task => {
+            sender_task.abort();
+            let _ = sender_task.await;
         }
-    }
+    };
 
     push_manager_clone.unregister_client(client_id);
     info!(client_id = client_id, "WebSocket connection closed");
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn sanitize_subscription(mut sub: ClientSubscription) -> ClientSubscription {
+    if sub.history_limit > HISTORY_LIMIT_MAX {
+        sub.history_limit = HISTORY_LIMIT_MAX;
+    }
+    sub.metrics_interval_ms = sub
+        .metrics_interval_ms
+        .clamp(METRICS_INTERVAL_MIN_MS, METRICS_INTERVAL_MAX_MS);
+    if sub.pending_ids.len() > MAX_SUBSCRIBED_IDS {
+        sub.pending_ids.truncate(MAX_SUBSCRIBED_IDS);
+    }
+    sub.pending_ids
+        .retain(|id| !id.is_empty() && id.len() <= MAX_ID_LEN);
+    sub
 }

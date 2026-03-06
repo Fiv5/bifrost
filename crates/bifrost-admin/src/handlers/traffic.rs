@@ -6,6 +6,7 @@ use tokio_stream::StreamExt;
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
+use crate::push::{MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::sse::{parse_sse_events_from_text, SseEventEnvelope};
 use crate::state::{AdminState, SharedAdminState};
 use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
@@ -256,7 +257,7 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
             event,
         }) if connection_id == id_owned && event.seq > max_seq_sent => {
             let data = serde_json::to_string(&event).ok()?;
-            let sse_data = format!("id: {}\nevent: sse_event\ndata: {}\n\n", event.seq, data);
+            let sse_data = format!("id: {}\ndata: {}\n\n", event.seq, data);
             Some(sse_data)
         }
         _ => None,
@@ -265,18 +266,12 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
     let mut out: Vec<String> = Vec::with_capacity(events.len() + backlog.len());
     for e in events {
         if let Ok(data) = serde_json::to_string(&e) {
-            out.push(format!(
-                "id: {}\nevent: sse_event\ndata: {}\n\n",
-                e.seq, data
-            ));
+            out.push(format!("id: {}\ndata: {}\n\n", e.seq, data));
         }
     }
     for e in backlog {
         if let Ok(data) = serde_json::to_string(&e) {
-            out.push(format!(
-                "id: {}\nevent: sse_event\ndata: {}\n\n",
-                e.seq, data
-            ));
+            out.push(format!("id: {}\ndata: {}\n\n", e.seq, data));
         }
     }
 
@@ -571,7 +566,18 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
                 }
                 "pending_ids" => {
                     if !value.is_empty() {
-                        params.pending_ids = value.split(',').map(|s| s.to_string()).collect();
+                        params.pending_ids = value
+                            .split(',')
+                            .take(MAX_SUBSCRIBED_IDS)
+                            .filter_map(|s| {
+                                let id = s.to_string();
+                                if id.is_empty() || id.len() > MAX_ID_LEN {
+                                    None
+                                } else {
+                                    Some(id)
+                                }
+                            })
+                            .collect();
                     }
                 }
                 "limit" => {

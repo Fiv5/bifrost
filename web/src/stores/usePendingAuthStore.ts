@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { PendingAuth } from "../types";
 import * as api from "../api";
+import { getClientId } from "../services/clientId";
 
 interface PendingAuthEvent {
   event_type: "new" | "approved" | "rejected";
@@ -91,7 +92,7 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
     }
 
     const host = window.location.host;
-    const url = `http://${host}/_bifrost/api/whitelist/pending/stream`;
+    const url = `http://${host}/_bifrost/api/whitelist/pending/stream?x_client_id=${encodeURIComponent(getClientId())}`;
 
     const es = new EventSource(url);
 

@@ -32,6 +32,8 @@ import type {
   SSEEvent,
   SessionTargetSearchState,
 } from "../../../../types";
+import { apiFetch } from "../../../../api/apiFetch";
+import { getClientId } from "../../../../services/clientId";
 import { SseMessageList } from "./SseMessageList";
 import {
   FullscreenMessageViewer,
@@ -161,7 +163,7 @@ export const Messages = ({
         }
         params.set("limit", "100");
 
-        const response = await fetch(
+        const response = await apiFetch(
           `/_bifrost/api/traffic/${recordId}/frames?${params.toString()}`,
         );
         if (!response.ok) {
@@ -187,7 +189,7 @@ export const Messages = ({
 
   const fetchFramePayload = useCallback(
     async (frameId: number) => {
-      const response = await fetch(
+      const response = await apiFetch(
         `/_bifrost/api/traffic/${recordId}/frames/${frameId}`,
       );
       if (!response.ok) {
@@ -220,7 +222,7 @@ export const Messages = ({
     }
 
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/frames/stream`,
+      `/_bifrost/api/traffic/${recordId}/frames/stream?x_client_id=${encodeURIComponent(getClientId())}`,
     );
     eventSourceRef.current = eventSource;
 
@@ -247,7 +249,7 @@ export const Messages = ({
     return () => {
       eventSource.close();
       eventSourceRef.current = null;
-      fetch(`/_bifrost/api/traffic/${recordId}/frames/unsubscribe`, {
+      apiFetch(`/_bifrost/api/traffic/${recordId}/frames/unsubscribe`, {
         method: "DELETE",
       }).catch(() => {});
     };
@@ -259,7 +261,7 @@ export const Messages = ({
     }
     if (isConnectionOpen) {
       const eventSource = new EventSource(
-        `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin`,
+        `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
       );
       sseEventSourceRef.current = eventSource;
       setResponseBody(recordId, "");
