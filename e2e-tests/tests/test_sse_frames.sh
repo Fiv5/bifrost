@@ -74,7 +74,7 @@ start_sse_server() {
 
 start_bifrost() {
     log_info "Building bifrost binary..."
-    (cd "$SCRIPT_DIR/../.." && cargo build --bin bifrost > /dev/null 2>&1) || {
+    (cd "$SCRIPT_DIR/../.." && cargo build --bin bifrost) || {
         log_fail "Failed to build bifrost"
         return 1
     }

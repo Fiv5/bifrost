@@ -336,7 +336,10 @@ pub async fn get_frame_detail(
     } else {
         error_response(
             StatusCode::NOT_FOUND,
-            &format!("Frame {} not found in connection {}", frame_id, connection_id),
+            &format!(
+                "Frame {} not found in connection {}",
+                frame_id, connection_id
+            ),
         )
     }
 }

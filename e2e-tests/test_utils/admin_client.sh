@@ -68,11 +68,11 @@ find_traffic_id_by_url() {
 get_frames() {
     local arg1="$1"
     local arg2="$2"
-    local arg3="$3"
+    local arg3="${3:-}"
     local arg4="${4:-0}"
     local arg5="${5:-100}"
 
-    if [[ -n "$arg3" ]]; then
+    if [[ -n "${arg3:-}" ]]; then
         local host="$arg1"
         local port="$arg2"
         local traffic_id="$arg3"

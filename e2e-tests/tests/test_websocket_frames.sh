@@ -89,7 +89,7 @@ start_ws_server() {
 }
 
 start_bifrost() {
-    (cd "$ROOT_DIR" && cargo build --bin bifrost > /dev/null 2>&1)
+    (cd "$ROOT_DIR" && cargo build --bin bifrost)
 
     BIFROST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR
