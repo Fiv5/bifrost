@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -9,8 +9,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BodyRef {
-    Inline { data: String },
-    File { path: String, size: usize },
+    Inline {
+        data: String,
+    },
+    File {
+        path: String,
+        size: usize,
+    },
+    FileRange {
+        path: String,
+        offset: u64,
+        size: usize,
+    },
 }
 
 impl BodyRef {
@@ -18,11 +28,12 @@ impl BodyRef {
         match self {
             BodyRef::Inline { data } => data.len(),
             BodyRef::File { size, .. } => *size,
+            BodyRef::FileRange { size, .. } => *size,
         }
     }
 
     pub fn is_file(&self) -> bool {
-        matches!(self, BodyRef::File { .. })
+        matches!(self, BodyRef::File { .. } | BodyRef::FileRange { .. })
     }
 }
 
@@ -39,6 +50,10 @@ pub struct BodyStreamWriter {
 }
 
 impl BodyStreamWriter {
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
     pub fn write_chunk(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.file.write_all(data)?;
         self.size += data.len();
@@ -147,6 +162,25 @@ impl BodyStore {
                 file.read_to_end(&mut contents).ok()?;
                 Some(String::from_utf8_lossy(&contents).to_string())
             }
+            BodyRef::FileRange { path, offset, size } => {
+                let path = PathBuf::from(path);
+                if !path.exists() {
+                    return None;
+                }
+                let mut file = fs::File::open(&path).ok()?;
+                file.seek(SeekFrom::Start(*offset)).ok()?;
+                let mut contents = vec![0u8; *size];
+                let mut read_size = 0usize;
+                while read_size < *size {
+                    let n = file.read(&mut contents[read_size..]).ok()?;
+                    if n == 0 {
+                        break;
+                    }
+                    read_size += n;
+                }
+                contents.truncate(read_size);
+                Some(String::from_utf8_lossy(&contents).to_string())
+            }
         }
     }
 
@@ -221,8 +255,11 @@ impl BodyStore {
     }
 
     pub fn remove(&self, body_ref: &BodyRef) {
-        if let BodyRef::File { path, .. } = body_ref {
-            let _ = fs::remove_file(path);
+        match body_ref {
+            BodyRef::File { path, .. } | BodyRef::FileRange { path, .. } => {
+                let _ = fs::remove_file(path);
+            }
+            BodyRef::Inline { .. } => {}
         }
     }
 
@@ -339,6 +376,30 @@ mod tests {
             store.load(&body_ref).unwrap(),
             "This is a large body that exceeds the memory limit"
         );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_load_file_range() {
+        let dir = create_test_dir();
+        let store = BodyStore::new(dir.clone(), 10, 7);
+
+        let data = b"Hello range body";
+        let body_ref = store.store("test_range", "res", data).unwrap();
+        let path = match body_ref {
+            BodyRef::File { path, .. } => path,
+            _ => {
+                cleanup_test_dir(&dir);
+                return;
+            }
+        };
+        let range_ref = BodyRef::FileRange {
+            path,
+            offset: 6,
+            size: 5,
+        };
+        assert_eq!(store.load(&range_ref).unwrap(), "range");
 
         cleanup_test_dir(&dir);
     }

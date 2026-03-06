@@ -650,7 +650,7 @@ async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) ->
             "success": true,
             "data": data
         })),
-        BodyRef::File { path, size } => {
+        BodyRef::File { path, size } | BodyRef::FileRange { path, size, .. } => {
             if let Some(ref body_store) = state.body_store {
                 let body_store_clone = body_store.clone();
                 let body_ref_clone = body_ref.clone();

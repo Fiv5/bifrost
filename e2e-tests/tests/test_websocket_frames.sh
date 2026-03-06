@@ -183,6 +183,20 @@ test_ws_frames_capture() {
             fail "Captured frames but payload_preview is empty"
             return 1
         fi
+        local record
+        record=$(get_traffic_detail "$traffic_id")
+        local response_size
+        response_size=$(echo "$record" | jq -r '.response_size // 0')
+        if [[ "${response_size:-0}" -le 0 ]]; then
+            fail "WebSocket response_size should be persisted"
+            return 1
+        fi
+        local socket_bytes
+        socket_bytes=$(echo "$record" | jq -r '(.socket_status.send_bytes // 0) + (.socket_status.receive_bytes // 0)')
+        if [[ "${socket_bytes:-0}" -le 0 ]]; then
+            fail "WebSocket socket_status bytes should be persisted"
+            return 1
+        fi
         pass "Captured $frame_count frames with payload_preview"
         return 0
     fi

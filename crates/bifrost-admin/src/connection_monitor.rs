@@ -12,7 +12,8 @@ use crate::frame_store::SharedFrameStore;
 use crate::traffic::{FrameDirection, FrameType, SocketStatus};
 
 const DEFAULT_PREVIEW_LIMIT: usize = 1024 * 1024;
-const DEFAULT_SSE_PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
+const DEFAULT_SSE_PREVIEW_LIMIT: usize =  1024 * 1024;
+
 const UNMONITORED_PREVIEW_LIMIT: usize = 1024 * 1024;
 const UNMONITORED_SSE_PREVIEW_LIMIT: usize = 4 * 1024 * 1024;
 
@@ -90,6 +91,25 @@ impl WebSocketFrameRecord {
             is_fin: true,
         }
     }
+
+    pub fn new_sse_event_with_preview(
+        frame_id: u64,
+        payload_size: usize,
+        payload_preview: Option<String>,
+        payload_ref: Option<BodyRef>,
+    ) -> Self {
+        Self {
+            frame_id,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            direction: FrameDirection::Receive,
+            frame_type: FrameType::Sse,
+            payload_size,
+            payload_preview,
+            payload_ref,
+            is_masked: false,
+            is_fin: true,
+        }
+    }
 }
 const DEFAULT_MAX_FRAMES_PER_CONNECTION: usize = 1000;
 const BROADCAST_CHANNEL_SIZE: usize = 256;
@@ -98,6 +118,13 @@ const BROADCAST_CHANNEL_SIZE: usize = 256;
 pub struct FrameEvent {
     pub connection_id: String,
     pub frame: WebSocketFrameRecord,
+}
+
+struct SseEventInput<'a> {
+    payload_size: usize,
+    preview_bytes: &'a [u8],
+    payload_preview: Option<String>,
+    payload_ref: Option<BodyRef>,
 }
 
 pub struct ConnectionFrameStore {
@@ -175,6 +202,8 @@ pub struct ConnectionMonitor {
     pub(crate) connections: RwLock<HashMap<String, ConnectionFrameStore>>,
     preview_limit: usize,
     sse_preview_limit: usize,
+    storage_limit: usize,
+    sse_storage_limit: usize,
     max_frames_per_connection: usize,
     global_tx: broadcast::Sender<FrameEvent>,
 }
@@ -198,9 +227,15 @@ impl ConnectionMonitor {
             connections: RwLock::new(HashMap::new()),
             preview_limit,
             sse_preview_limit,
+            storage_limit: preview_limit,
+            sse_storage_limit: sse_preview_limit,
             max_frames_per_connection,
             global_tx,
         }
+    }
+
+    pub fn sse_preview_limit(&self) -> usize {
+        self.sse_preview_limit
     }
 
     pub fn register_connection(&self, connection_id: &str) {
@@ -293,7 +328,7 @@ impl ConnectionMonitor {
             frame.payload_preview = payload_preview;
         }
 
-        if store.is_monitored && payload.len() > self.preview_limit {
+        if payload.len() > self.storage_limit {
             if let Some(body_store) = body_store {
                 let direction_str = match direction {
                     FrameDirection::Send => "send",
@@ -364,30 +399,83 @@ impl ConnectionMonitor {
     ) -> Option<WebSocketFrameRecord> {
         let mut connections = self.connections.write();
         let store = connections.get_mut(connection_id)?;
-
         let frame_id = store.next_frame_id();
-        let mut frame =
-            WebSocketFrameRecord::new_sse_event(frame_id, payload, self.sse_preview_limit);
-        if frame.payload_preview.is_none() && !payload.is_empty() {
-            let preview_bytes = &payload[..payload.len().min(self.sse_preview_limit)];
-            frame.payload_preview = Some(String::from_utf8_lossy(preview_bytes).to_string());
-        }
-
-        if store.is_monitored && payload.len() > self.sse_preview_limit {
+        let preview_bytes = &payload[..payload.len().min(self.sse_preview_limit)];
+        let preview = if preview_bytes.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(preview_bytes).to_string())
+        };
+        let mut payload_ref = None;
+        if payload.len() > self.sse_storage_limit {
             if let Some(body_store) = body_store {
                 let ref_key = format!("{}_sse_event_{}", connection_id, frame_id);
-                frame.payload_ref = body_store.read().store(&ref_key, "sse", payload);
+                payload_ref = body_store.read().store(&ref_key, "sse", payload);
             }
         }
+        let input = SseEventInput {
+            payload_size: payload.len(),
+            preview_bytes,
+            payload_preview: preview,
+            payload_ref,
+        };
+        self.record_sse_event_inner(store, connection_id, frame_id, input, frame_store)
+    }
+
+    pub fn record_sse_event_streamed(
+        &self,
+        connection_id: &str,
+        payload_size: usize,
+        preview_bytes: &[u8],
+        payload_ref: Option<BodyRef>,
+        frame_store: Option<&SharedFrameStore>,
+    ) -> Option<WebSocketFrameRecord> {
+        let mut connections = self.connections.write();
+        let store = connections.get_mut(connection_id)?;
+        let frame_id = store.next_frame_id();
+        let payload_preview = if preview_bytes.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(preview_bytes).to_string())
+        };
+        let input = SseEventInput {
+            payload_size,
+            preview_bytes,
+            payload_preview,
+            payload_ref,
+        };
+
+        self.record_sse_event_inner(store, connection_id, frame_id, input, frame_store)
+    }
+
+    fn record_sse_event_inner(
+        &self,
+        store: &mut ConnectionFrameStore,
+        connection_id: &str,
+        frame_id: u64,
+        input: SseEventInput<'_>,
+        frame_store: Option<&SharedFrameStore>,
+    ) -> Option<WebSocketFrameRecord> {
+        let frame = WebSocketFrameRecord::new_sse_event_with_preview(
+            frame_id,
+            input.payload_size,
+            input.payload_preview,
+            input.payload_ref,
+        );
 
         let frame_for_store = frame.clone();
         let frame_for_memory = if store.is_monitored {
             frame
         } else {
             let preview_limit = UNMONITORED_SSE_PREVIEW_LIMIT;
-            let preview_bytes = &payload[..payload.len().min(preview_limit)];
+            let preview_bytes =
+                &input.preview_bytes[..input.preview_bytes.len().min(preview_limit)];
             let mut trimmed = frame;
-            trimmed.payload_preview = Some(String::from_utf8_lossy(preview_bytes).to_string());
+            trimmed.payload_preview = if preview_bytes.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(preview_bytes).to_string())
+            };
             trimmed.payload_ref = None;
             trimmed
         };

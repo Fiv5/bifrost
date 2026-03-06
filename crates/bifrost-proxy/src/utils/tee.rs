@@ -10,6 +10,34 @@ use hyper::body::{Body, Frame, Incoming};
 use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body;
 
+fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
+    let status = state.connection_monitor.get_connection_status(record_id);
+    let last_frame_id = state
+        .connection_monitor
+        .get_last_frame_id(record_id)
+        .unwrap_or(0);
+    let frame_count = status.as_ref().map(|s| s.frame_count).unwrap_or(0);
+    let status = status.map(|mut s| {
+        s.is_open = false;
+        s
+    });
+    let mut response_size = status
+        .as_ref()
+        .map(|s| s.send_bytes + s.receive_bytes)
+        .unwrap_or(0) as usize;
+    if response_size == 0 {
+        response_size = total_bytes;
+    }
+    state.update_traffic_by_id(record_id, move |record| {
+        record.response_size = response_size;
+        record.frame_count = frame_count;
+        record.last_frame_id = last_frame_id;
+        if let Some(ref s) = status {
+            record.socket_status = Some(s.clone());
+        }
+    });
+}
+
 struct TeeBodyDropGuard {
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
@@ -338,9 +366,7 @@ impl Drop for SseTeeBodyDropGuard {
         if let Some(ref state) = self.admin_state {
             if !self.finished {
                 let total_bytes = self.total_bytes;
-                state.update_traffic_by_id(&self.record_id, move |record| {
-                    record.response_size = total_bytes;
-                });
+                persist_socket_summary(state, &self.record_id, total_bytes);
             }
             state.connection_monitor.set_connection_closed(
                 &self.record_id,
@@ -355,8 +381,13 @@ impl Drop for SseTeeBodyDropGuard {
 pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
-    buffer: BytesMut,
-    max_buffer_size: usize,
+    preview_limit: usize,
+    stream_writer: Option<BodyStreamWriter>,
+    stream_path: Option<String>,
+    stream_bytes: usize,
+    event_start: usize,
+    prev_byte: Option<u8>,
+    preview_buf: Vec<u8>,
 }
 
 impl SseTeeBody {
@@ -370,6 +401,11 @@ impl SseTeeBody {
         if let Some(ref state) = admin_state {
             state.connection_monitor.register_connection(&record_id);
         }
+        let preview_limit = admin_state
+            .as_ref()
+            .map(|state| state.connection_monitor.sse_preview_limit())
+            .unwrap_or(0)
+            .min(max_buffer_size);
 
         Self {
             inner,
@@ -380,8 +416,13 @@ impl SseTeeBody {
                 finished: false,
                 traffic_type,
             },
-            buffer: BytesMut::with_capacity(4096),
-            max_buffer_size,
+            preview_limit,
+            stream_writer: None,
+            stream_path: None,
+            stream_bytes: 0,
+            event_start: 0,
+            prev_byte: None,
+            preview_buf: Vec::with_capacity(preview_limit.min(4096)),
         }
     }
 
@@ -389,34 +430,81 @@ impl SseTeeBody {
         BodyExt::boxed(self)
     }
 
-    fn process_sse_events(&mut self) {
-        while let Some(pos) = self.find_event_boundary() {
-            let event_data = self.buffer.split_to(pos + 2);
-            let event_bytes = &event_data[..event_data.len() - 2];
+    fn init_stream_writer(&mut self) {
+        if self.stream_writer.is_some() {
+            return;
+        }
+        let Some(ref state) = self.guard.admin_state else {
+            return;
+        };
+        let Some(ref body_store) = state.body_store else {
+            return;
+        };
+        let store = body_store.read();
+        if let Ok(writer) = store.start_stream(&self.guard.record_id, "sse_stream") {
+            self.stream_path = Some(writer.path().to_string_lossy().to_string());
+            self.stream_writer = Some(writer);
+        }
+    }
 
-            if !event_bytes.is_empty() {
-                if let Some(ref state) = self.guard.admin_state {
-                    tracing::debug!(
-                        "[SSE] Recording event for {}, bytes: {}",
-                        self.guard.record_id,
-                        event_bytes.len()
-                    );
-                    state.connection_monitor.record_sse_event(
-                        &self.guard.record_id,
-                        event_bytes,
-                        state.body_store.as_ref(),
-                        state.frame_store.as_ref(),
-                    );
-                } else {
-                    tracing::warn!("[SSE] No admin state for recording event");
-                }
+    fn write_stream_chunk(&mut self, data: &[u8]) {
+        if let Some(ref mut writer) = self.stream_writer {
+            if writer.write_chunk(data).is_err() {
+                self.stream_writer = None;
+                self.stream_path = None;
             }
         }
     }
 
-    fn find_event_boundary(&self) -> Option<usize> {
-        let bytes = &self.buffer[..];
-        (0..bytes.len().saturating_sub(1)).find(|&i| bytes[i] == b'\n' && bytes[i + 1] == b'\n')
+    fn record_event(&mut self, event_len: usize) {
+        if event_len == 0 {
+            self.preview_buf.clear();
+            return;
+        }
+        let preview_bytes = self.preview_buf.clone();
+        if let Some(ref state) = self.guard.admin_state {
+            let payload_ref = self.stream_path.as_ref().map(|path| BodyRef::FileRange {
+                path: path.clone(),
+                offset: self.event_start as u64,
+                size: event_len,
+            });
+            state.connection_monitor.record_sse_event_streamed(
+                &self.guard.record_id,
+                event_len,
+                &preview_bytes,
+                payload_ref,
+                state.frame_store.as_ref(),
+            );
+        }
+        self.preview_buf.clear();
+    }
+
+    fn process_sse_chunk(&mut self, data: &[u8]) {
+        let chunk_start = self.stream_bytes;
+        for (i, &byte) in data.iter().enumerate() {
+            if self.prev_byte == Some(b'\n') && byte == b'\n' {
+                if self.preview_limit > 0 {
+                    if let Some(&last) = self.preview_buf.last() {
+                        if last == b'\n' {
+                            self.preview_buf.pop();
+                        }
+                    }
+                }
+                let boundary_offset = chunk_start + i;
+                let event_len = boundary_offset
+                    .saturating_sub(1)
+                    .saturating_sub(self.event_start);
+                self.record_event(event_len);
+                self.event_start = boundary_offset + 1;
+                self.prev_byte = Some(byte);
+                continue;
+            }
+            if self.preview_limit > 0 && self.preview_buf.len() < self.preview_limit {
+                self.preview_buf.push(byte);
+            }
+            self.prev_byte = Some(byte);
+        }
+        self.stream_bytes += data.len();
     }
 }
 
@@ -448,51 +536,39 @@ impl Body for SseTeeBody {
                         }
                     }
 
-                    if self.buffer.len() + len > self.max_buffer_size {
-                        tracing::warn!(
-                            "[SSE] buffer exceeded limit ({} bytes), dropping buffered data for {}",
-                            self.max_buffer_size,
-                            self.guard.record_id
-                        );
-                        self.buffer.clear();
-                    }
-                    if len <= self.max_buffer_size {
-                        self.buffer.extend_from_slice(data);
-                    }
-                    self.process_sse_events();
+                    self.init_stream_writer();
+                    self.write_stream_chunk(data);
+                    self.process_sse_chunk(data);
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
             Poll::Ready(Some(Err(e))) => {
                 self.guard.finished = true;
                 if let Some(ref state) = self.guard.admin_state {
-                    state
-                        .traffic_recorder
-                        .update_by_id(&self.guard.record_id, |record| {
-                            record.response_size = self.guard.total_bytes;
-                        });
+                    state.connection_monitor.set_connection_closed(
+                        &self.guard.record_id,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
+                    persist_socket_summary(state, &self.guard.record_id, self.guard.total_bytes);
                 }
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
                 self.guard.finished = true;
-                if !self.buffer.is_empty() {
-                    if let Some(ref state) = self.guard.admin_state {
-                        state.connection_monitor.record_sse_event(
-                            &self.guard.record_id,
-                            &self.buffer,
-                            state.body_store.as_ref(),
-                            state.frame_store.as_ref(),
-                        );
-                    }
-                    self.buffer.clear();
+                if self.event_start < self.stream_bytes {
+                    let event_len = self.stream_bytes - self.event_start;
+                    self.record_event(event_len);
                 }
                 if let Some(ref state) = self.guard.admin_state {
-                    state
-                        .traffic_recorder
-                        .update_by_id(&self.guard.record_id, |record| {
-                            record.response_size = self.guard.total_bytes;
-                        });
+                    state.connection_monitor.set_connection_closed(
+                        &self.guard.record_id,
+                        None,
+                        None,
+                        state.frame_store.as_ref(),
+                    );
+                    persist_socket_summary(state, &self.guard.record_id, self.guard.total_bytes);
                 }
                 Poll::Ready(None)
             }
