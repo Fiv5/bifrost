@@ -98,6 +98,10 @@ fn main() {
                 effective_socks5_port,
                 &cli.log_level,
                 daemon,
+                cli.log_dir
+                    .clone()
+                    .unwrap_or_else(|| data_dir().join("logs")),
+                cli.log_retention_days,
                 skip_cert_check,
                 access_mode.clone(),
                 whitelist.clone(),
@@ -275,6 +279,10 @@ fn main() {
             cli.socks5_port,
             &cli.log_level,
             false,
+            cli.log_dir
+                .clone()
+                .unwrap_or_else(|| data_dir().join("logs")),
+            cli.log_retention_days,
             false,
             None,
             None,

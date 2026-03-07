@@ -66,10 +66,11 @@ pub async fn generate_mock_response(
 
     if let Some(redirect_target) = &rules.redirect {
         if let Some(location) = build_redirect_uri(request_uri, redirect_target) {
+            let status = rules.redirect_status.unwrap_or(302);
             if verbose_logging {
-                debug!("[{}] [REDIRECT] 302 -> {}", ctx.id_str(), location);
+                debug!("[{}] [REDIRECT] {} -> {}", ctx.id_str(), status, location);
             }
-            return Some(build_redirect_response(302, &location));
+            return Some(build_redirect_response(status, &location));
         }
     }
 
@@ -77,7 +78,8 @@ pub async fn generate_mock_response(
         if verbose_logging {
             debug!("[{}] [LOCATION_HREF] -> {}", ctx.id_str(), location);
         }
-        return Some(build_redirect_response(302, location));
+        let status = rules.redirect_status.unwrap_or(302);
+        return Some(build_redirect_response(status, location));
     }
 
     if let Some(file_path) = &rules.mock_file {

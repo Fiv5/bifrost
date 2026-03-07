@@ -6,7 +6,7 @@ use tokio_stream::StreamExt;
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
-use crate::push::{MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
+use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::sse::{parse_sse_events_from_text, SseEventEnvelope};
 use crate::state::{AdminState, SharedAdminState};
 use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
@@ -106,6 +106,7 @@ fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminS
 pub async fn handle_traffic(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     path: &str,
 ) -> Response<BoxBody> {
     let path = path.trim_end_matches('/');
@@ -114,7 +115,7 @@ pub async fn handle_traffic(
     if path == "/api/traffic" {
         match method {
             Method::GET => list_traffic(req, state).await,
-            Method::DELETE => clear_traffic(req, state).await,
+            Method::DELETE => clear_traffic(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/traffic/query" {
@@ -706,7 +707,11 @@ struct ClearTrafficRequest {
     ids: Option<Vec<String>>,
 }
 
-async fn clear_traffic(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+async fn clear_traffic(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => bytes::Bytes::new(),
@@ -726,14 +731,18 @@ async fn clear_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respo
 
     if let Some(ids) = request.ids {
         if !ids.is_empty() {
-            return clear_traffic_by_ids(state, ids).await;
+            return clear_traffic_by_ids(state, ids, push_manager).await;
         }
     }
 
-    clear_all_traffic(state).await
+    clear_all_traffic(state, push_manager).await
 }
 
-async fn clear_traffic_by_ids(state: SharedAdminState, ids: Vec<String>) -> Response<BoxBody> {
+async fn clear_traffic_by_ids(
+    state: SharedAdminState,
+    ids: Vec<String>,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let active_connection_ids = state.connection_monitor.active_connection_ids();
     let active_set: std::collections::HashSet<&String> = active_connection_ids.iter().collect();
 
@@ -777,11 +786,29 @@ async fn clear_traffic_by_ids(state: SharedAdminState, ids: Vec<String>) -> Resp
         .await;
     }
 
+    if let Some(ref ws_payload_store) = state.ws_payload_store {
+        let ws_payload_store_clone = ws_payload_store.clone();
+        let ids_for_payload = ids_to_delete.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = ws_payload_store_clone.delete_by_ids(&ids_for_payload) {
+                tracing::warn!("Failed to delete ws payloads: {}", e);
+            }
+        })
+        .await;
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_traffic_deleted(ids_to_delete.clone());
+    }
+
     tracing::info!("[CLEAR_TRAFFIC] Deleted {} traffic records", count);
     success_response(&format!("{} traffic records cleared successfully", count))
 }
 
-async fn clear_all_traffic(state: SharedAdminState) -> Response<BoxBody> {
+async fn clear_all_traffic(
+    state: SharedAdminState,
+    _push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let active_connection_ids = state.connection_monitor.active_connection_ids();
 
     if let Some(ref db_store) = state.traffic_db_store {
@@ -808,6 +835,16 @@ async fn clear_all_traffic(state: SharedAdminState) -> Response<BoxBody> {
         let _ = tokio::task::spawn_blocking(move || {
             if let Err(e) = frame_store_clone.clear() {
                 tracing::warn!("Failed to clear frame store: {}", e);
+            }
+        })
+        .await;
+    }
+
+    if let Some(ref ws_payload_store) = state.ws_payload_store {
+        let ws_payload_store_clone = ws_payload_store.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = ws_payload_store_clone.clear() {
+                tracing::warn!("Failed to clear ws payload store: {}", e);
             }
         })
         .await;

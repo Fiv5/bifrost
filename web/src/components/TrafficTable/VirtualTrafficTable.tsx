@@ -441,6 +441,11 @@ const TableRow = memo(function TableRow({
   return (
     <div
       data-index={rowIndex}
+      data-testid="traffic-row"
+      data-record-id={record.id}
+      data-request-size={record.request_size}
+      data-response-size={record.response_size}
+      data-frame-count={record.frame_count}
       style={rowStyle}
       onClick={onRowClick}
       onDoubleClick={onRowDoubleClick}
@@ -921,18 +926,26 @@ export default function VirtualTrafficTable({
   const virtualItems = rowVirtualizer.getVirtualItems();
 
   return (
-    <div ref={containerRef} style={styles.container} tabIndex={0}>
+    <div
+      ref={containerRef}
+      style={styles.container}
+      tabIndex={0}
+      data-testid="traffic-table"
+    >
       <style>{keyframesStyle}</style>
       <div
         ref={parentRef}
         style={styles.scrollContainer}
         onScroll={handleScroll}
+        data-testid="traffic-table-scroll"
       >
         <div style={styles.tableInner}>
           <div style={styles.header}>{headerCells}</div>
 
           {data.length === 0 ? (
-            <div style={styles.emptyState}>No traffic data</div>
+            <div style={styles.emptyState} data-testid="traffic-empty">
+              No traffic data
+            </div>
           ) : (
             <div
               style={{
@@ -977,6 +990,7 @@ export default function VirtualTrafficTable({
             ...styles.scrollToTopButton,
             animation: "fadeSlideDownCenter 0.3s ease-out",
           }}
+          data-testid="traffic-scroll-top"
           onClick={handleScrollToTopClick}
         >
           <ArrowUpOutlined style={{ fontSize: 14 }} />
@@ -989,6 +1003,7 @@ export default function VirtualTrafficTable({
             ...styles.newRecordsIndicator,
             animation: "slideUp 0.3s ease-out, pulse 2s ease-in-out infinite",
           }}
+          data-testid="traffic-new-indicator"
           onClick={handleScrollToBottomClick}
         >
           <Badge
@@ -1007,6 +1022,7 @@ export default function VirtualTrafficTable({
             ...styles.scrollToBottomButton,
             animation: "fadeSlideInCenter 0.3s ease-out",
           }}
+          data-testid="traffic-scroll-bottom"
           onClick={handleScrollToBottomClick}
         >
           <ArrowDownOutlined style={{ fontSize: 14 }} />

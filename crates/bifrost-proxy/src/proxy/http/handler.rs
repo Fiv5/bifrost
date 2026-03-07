@@ -470,10 +470,17 @@ pub async fn handle_http_request(
     }
 
     if let Some(ref redirect_url) = resolved_rules.redirect {
+        let status = resolved_rules.redirect_status.unwrap_or(302);
         if verbose_logging {
-            info!("[{}] [REDIRECT] {} -> {}", ctx.id_str(), url, redirect_url);
+            info!(
+                "[{}] [REDIRECT] {} -> {} ({})",
+                ctx.id_str(),
+                url,
+                redirect_url,
+                status
+            );
         }
-        return Ok(build_redirect_response(302, redirect_url));
+        return Ok(build_redirect_response(status, redirect_url));
     }
 
     if let Some(ref location) = resolved_rules.location_href {

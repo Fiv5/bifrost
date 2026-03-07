@@ -23,6 +23,7 @@ interface TrafficState {
   detailLoading: boolean;
   polling: boolean;
   error: string | null;
+  detailError: string | null;
   pollTimeoutId: number | null;
   autoScroll: boolean;
   newRecordsCount: number;
@@ -30,6 +31,7 @@ interface TrafficState {
   usePush: boolean;
   pushUnsubscribe: (() => void) | null;
   pushDeltaUnsubscribe: (() => void) | null;
+  pushDeletedUnsubscribe: (() => void) | null;
   filterVersion: number;
   initialized: boolean;
   selectedId: string | undefined;
@@ -55,6 +57,7 @@ interface TrafficState {
   setSelectedId: (id: string | undefined) => void;
   handleTrafficPush: (data: TrafficUpdatesData) => void;
   handleTrafficDelta: (data: TrafficDeltaData) => void;
+  handleTrafficDeleted: (ids: string[]) => void;
   enablePush: () => void;
   disablePush: () => void;
 }
@@ -460,6 +463,7 @@ export const useTrafficStore = create<TrafficState>()(
       detailLoading: false,
       polling: false,
       error: null,
+      detailError: null,
       pollTimeoutId: null,
       autoScroll: true,
       newRecordsCount: 0,
@@ -467,6 +471,7 @@ export const useTrafficStore = create<TrafficState>()(
       usePush: true,
       pushUnsubscribe: null,
       pushDeltaUnsubscribe: null,
+      pushDeletedUnsubscribe: null,
       filterVersion: 0,
       initialized: false,
       selectedId: undefined,
@@ -499,7 +504,7 @@ export const useTrafficStore = create<TrafficState>()(
 
       enablePush: () => {
         const state = get();
-        if (state.pushUnsubscribe || state.pushDeltaUnsubscribe) return;
+        if (state.pushUnsubscribe || state.pushDeltaUnsubscribe || state.pushDeletedUnsubscribe) return;
 
         const subscription = {
           last_traffic_id: state.lastId || undefined,
@@ -517,7 +522,15 @@ export const useTrafficStore = create<TrafficState>()(
           get().handleTrafficDelta(data);
         });
 
-        set({ pushUnsubscribe: unsubscribe, pushDeltaUnsubscribe: unsubscribeDelta });
+        const unsubscribeDeleted = pushService.onTrafficDeleted((data) => {
+          get().handleTrafficDeleted(data.ids);
+        });
+
+        set({
+          pushUnsubscribe: unsubscribe,
+          pushDeltaUnsubscribe: unsubscribeDelta,
+          pushDeletedUnsubscribe: unsubscribeDeleted,
+        });
       },
 
       disablePush: () => {
@@ -528,7 +541,10 @@ export const useTrafficStore = create<TrafficState>()(
         if (state.pushDeltaUnsubscribe) {
           state.pushDeltaUnsubscribe();
         }
-        set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null });
+        if (state.pushDeletedUnsubscribe) {
+          state.pushDeletedUnsubscribe();
+        }
+        set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null, pushDeletedUnsubscribe: null });
         pushService.disconnectIfIdle();
       },
 
@@ -779,6 +795,50 @@ export const useTrafficStore = create<TrafficState>()(
         });
       },
 
+      handleTrafficDeleted: (ids: string[]) => {
+        if (ids.length === 0) return;
+        const idsSet = new Set(ids);
+        set((prevState) => {
+          const recordsMap = new Map(prevState.recordsMap);
+          const pendingIds = new Set(prevState.pendingIds);
+          let removedCount = 0;
+
+          for (const id of idsSet) {
+            if (recordsMap.delete(id)) {
+              removedCount += 1;
+            }
+            pendingIds.delete(id);
+          }
+
+          const currentDeleted = prevState.currentRecord && idsSet.has(prevState.currentRecord.id);
+          const selectedDeleted = prevState.selectedId && idsSet.has(prevState.selectedId);
+
+          if (!currentDeleted && !selectedDeleted && removedCount === 0) {
+            return {};
+          }
+
+          const records = removedCount > 0 ? Array.from(recordsMap.values()) : prevState.records;
+          if (removedCount > 0) {
+            applyDisplayIndex(records);
+          }
+
+          const detailRemoved = currentDeleted || !!selectedDeleted;
+          return {
+            records,
+            recordsMap,
+            pendingIds,
+            serverTotal: Math.max(prevState.serverTotal - removedCount, 0),
+            currentRecord: detailRemoved ? null : prevState.currentRecord,
+            requestBody: detailRemoved ? null : prevState.requestBody,
+            responseBody: detailRemoved ? null : prevState.responseBody,
+            detailLoading: detailRemoved ? false : prevState.detailLoading,
+            detailError: detailRemoved ? 'Request was deleted' : prevState.detailError,
+            selectedId: selectedDeleted ? undefined : prevState.selectedId,
+            filterVersion: removedCount > 0 ? prevState.filterVersion + 1 : prevState.filterVersion,
+          };
+        });
+      },
+
       fetchInitialData: async () => {
         const state = get();
         if (state.initialized && state.records.length > 0) {
@@ -950,10 +1010,10 @@ export const useTrafficStore = create<TrafficState>()(
       },
 
       fetchTrafficDetail: async (id: string) => {
-        set({ detailLoading: true, error: null, requestBody: null, responseBody: null });
+        set({ detailLoading: true, detailError: null, requestBody: null, responseBody: null });
         try {
           const record = await api.getTrafficDetail(id);
-          set({ currentRecord: record, detailLoading: false });
+          set({ currentRecord: record, detailLoading: false, detailError: null });
 
           api.getRequestBody(id).then(body => {
             set({ requestBody: body });
@@ -966,7 +1026,15 @@ export const useTrafficStore = create<TrafficState>()(
             }).catch(() => { });
           }
         } catch (e) {
-          set({ error: (e as Error).message, detailLoading: false });
+          const error = e as { response?: { data?: { error?: string } }; message?: string };
+          const message = error.response?.data?.error || error.message || 'Request detail not found';
+          set({
+            currentRecord: null,
+            requestBody: null,
+            responseBody: null,
+            detailError: message,
+            detailLoading: false,
+          });
         }
       },
 
@@ -995,6 +1063,8 @@ export const useTrafficStore = create<TrafficState>()(
             set((state) => {
               const newRecordsMap = new Map(state.recordsMap);
               const newPendingIds = new Set(state.pendingIds);
+              const currentDeleted = state.currentRecord && idsToRemove.has(state.currentRecord.id);
+              const selectedDeleted = state.selectedId && idsToRemove.has(state.selectedId);
 
               for (const id of idsToRemove) {
                 newRecordsMap.delete(id);
@@ -1007,6 +1077,12 @@ export const useTrafficStore = create<TrafficState>()(
                 records: newRecords,
                 recordsMap: newRecordsMap,
                 pendingIds: newPendingIds,
+                currentRecord: currentDeleted ? null : state.currentRecord,
+                requestBody: currentDeleted ? null : state.requestBody,
+                responseBody: currentDeleted ? null : state.responseBody,
+                detailLoading: currentDeleted ? false : state.detailLoading,
+                detailError: currentDeleted ? 'Request was deleted' : state.detailError,
+                selectedId: selectedDeleted ? undefined : state.selectedId,
                 loading: false,
                 filterVersion: state.filterVersion + 1,
               };
@@ -1022,6 +1098,7 @@ export const useTrafficStore = create<TrafficState>()(
               currentRecord: null,
               requestBody: null,
               responseBody: null,
+              detailError: null,
               loading: false,
               filterVersion: 0,
               initialized: false,
@@ -1066,7 +1143,8 @@ export const useTrafficStore = create<TrafficState>()(
       clearCurrentRecord: () => set({
         currentRecord: null,
         requestBody: null,
-        responseBody: null
+        responseBody: null,
+        detailError: null,
       }),
 
       initFromUrl: (filters: FilterCondition[], toolbar: ToolbarFilters | null) => {

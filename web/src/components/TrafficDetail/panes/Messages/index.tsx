@@ -611,7 +611,7 @@ export const Messages = ({
 
   if (!isWebSocket) {
     return (
-      <>
+      <div data-testid="sse-message-list">
         <SseMessageList
           events={sseEvents}
           loading={false}
@@ -637,12 +637,12 @@ export const Messages = ({
           initialQuery={sseSearchQuery}
           initialMatchMode={sseSearchMode}
         />
-      </>
+      </div>
     );
   }
 
   return (
-    <div ref={tableRef}>
+    <div ref={tableRef} data-testid="ws-frames-pane">
       <div
         style={{
           marginBottom: 4,
@@ -651,7 +651,7 @@ export const Messages = ({
           alignItems: "center",
         }}
       >
-        <Text type="secondary">
+        <Text type="secondary" data-testid="ws-frames-summary">
           {filteredWsFrames.length} of {frames.length} frames
           {hasMore && " (more available)"}
         </Text>
@@ -701,6 +701,7 @@ export const Messages = ({
           pagination={false}
           size="small"
           loading={loading}
+          data-testid="ws-frames-table"
           style={{
             backgroundColor: token.colorBgLayout,
             borderRadius: 4,
@@ -713,6 +714,9 @@ export const Messages = ({
               if (record.payload_size === 0) return;
               void openWsFrameDetail(record);
             },
+            "data-testid": "ws-frame-row",
+            "data-frame-id": record.frame_id,
+            "data-payload-size": record.payload_size,
           })}
         />
       </ConfigProvider>

@@ -100,6 +100,8 @@ const HeaderContent = memo(function HeaderContent({
         borderBottom: "1px solid #f0f0f0",
         gap: 8,
       }}
+      data-testid="traffic-detail-header"
+      data-url={url}
     >
       <div
         style={{

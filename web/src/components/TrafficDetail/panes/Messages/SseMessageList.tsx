@@ -116,6 +116,7 @@ export const SseMessageList = ({
         flexDirection: 'column',
         overflow: 'hidden',
       }}
+      data-testid="sse-message-container"
     >
       <div
         style={{
@@ -167,7 +168,11 @@ export const SseMessageList = ({
             </>
           )}
 
-          <Text type="secondary" style={{ fontSize: 11 }}>
+          <Text
+            type="secondary"
+            style={{ fontSize: 11 }}
+            data-testid="sse-message-count"
+          >
             {displayItems.length} of {events.length} events
             {hasMore && ' (+)'}
           </Text>

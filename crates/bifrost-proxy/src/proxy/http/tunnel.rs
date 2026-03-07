@@ -905,13 +905,14 @@ async fn handle_intercepted_request_with_protocol(
     debug!("[{}] Intercepted: {} {}", req_id, method_str, target_uri);
 
     if let Some(ref redirect_url) = resolved_rules.redirect {
+        let status = resolved_rules.redirect_status.unwrap_or(302);
         if verbose_logging {
             info!(
-                "[{}] [REDIRECT] {} -> {}",
-                req_id, original_uri, redirect_url
+                "[{}] [REDIRECT] {} -> {} ({})",
+                req_id, original_uri, redirect_url, status
             );
         }
-        return Ok(build_redirect_response(302, redirect_url));
+        return Ok(build_redirect_response(status, redirect_url));
     }
 
     if let Some(ref mock_file) = resolved_rules.mock_file {

@@ -17,6 +17,7 @@ export default defineConfig({
       '/_bifrost/api': {
         target: 'http://127.0.0.1:9900',
         changeOrigin: true,
+        ws: true,
       },
       '/_bifrost/ws': {
         target: 'ws://127.0.0.1:9900',

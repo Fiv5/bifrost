@@ -560,6 +560,24 @@ pub struct FrameStoreStats {
 
 pub type SharedFrameStore = Arc<FrameStore>;
 
+pub fn start_frame_cleanup_task(store: SharedFrameStore) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            if let Ok(removed) = store.cleanup_expired() {
+                if removed > 0 {
+                    tracing::info!(
+                        "[FRAME_STORE] Periodic cleanup removed {} expired frame files",
+                        removed
+                    );
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

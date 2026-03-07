@@ -32,6 +32,9 @@ pub enum PushMessage {
     #[serde(rename = "traffic_delta")]
     TrafficDelta(TrafficDeltaData),
 
+    #[serde(rename = "traffic_deleted")]
+    TrafficDeleted(TrafficDeletedData),
+
     #[serde(rename = "overview_update")]
     OverviewUpdate(OverviewData),
 
@@ -72,6 +75,11 @@ pub struct TrafficDeltaData {
     pub has_more: bool,
     pub server_total: usize,
     pub server_sequence: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrafficDeletedData {
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -963,6 +971,24 @@ impl PushManager {
             group_id: group_id.map(|s| s.to_string()),
         });
 
+        let mut clients_to_remove = Vec::new();
+        for client_ref in self.clients.iter() {
+            let client = client_ref.value();
+            if !client.send(msg.clone()) {
+                clients_to_remove.push(client.id);
+            }
+        }
+
+        for client_id in clients_to_remove {
+            self.unregister_client(client_id);
+        }
+    }
+
+    pub fn broadcast_traffic_deleted(&self, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        let msg = PushMessage::TrafficDeleted(TrafficDeletedData { ids });
         let mut clients_to_remove = Vec::new();
         for client_ref in self.clients.iter() {
             let client = client_ref.value();

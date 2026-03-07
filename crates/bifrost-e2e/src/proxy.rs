@@ -1,6 +1,7 @@
 use bifrost_admin::{
-    start_async_traffic_processor, AdminState, AsyncTrafficWriter, BodyStore, ConnectionRegistry,
-    RuntimeConfig, WsPayloadStore,
+    start_async_traffic_processor, start_connection_cleanup_task, start_frame_cleanup_task,
+    start_traffic_cleanup_task, start_ws_payload_cleanup_task, AdminState, AsyncTrafficWriter,
+    BodyStore, ConnectionRegistry, RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
@@ -20,6 +21,20 @@ fn extract_inline_content(value: &str) -> &str {
     } else {
         value
     }
+}
+
+fn parse_redirect_target(value: &str) -> (Option<u16>, String) {
+    if let Some((status_part, location)) = value.split_once(':') {
+        if status_part.len() == 3 && status_part.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(status) = status_part.parse::<u16>() {
+                if (300..=399).contains(&status) && !location.is_empty() {
+                    return (Some(status), location.to_string());
+                }
+            }
+        }
+    }
+
+    (None, value.to_string())
 }
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -238,7 +253,9 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     }
                 }
                 Protocol::Redirect => {
-                    result.redirect = Some(value.to_string());
+                    let (status, location) = parse_redirect_target(value);
+                    result.redirect = Some(location);
+                    result.redirect_status = status;
                 }
                 Protocol::File => {
                     result.mock_file = Some(value.to_string());
@@ -851,6 +868,7 @@ impl ProxyInstance {
             128,
             7,
         ));
+        start_ws_payload_cleanup_task(ws_payload_store.clone());
 
         let traffic_dir = temp_dir.join("traffic");
         let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
@@ -858,8 +876,10 @@ impl ProxyInstance {
             1000,
             Some(24),
         ));
+        start_traffic_cleanup_task(traffic_store.clone());
 
-        let frame_store = bifrost_admin::FrameStore::new(temp_dir, Some(24));
+        let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir, Some(24)));
+        start_frame_cleanup_task(frame_store.clone());
 
         let traffic_recorder = std::sync::Arc::new(bifrost_admin::TrafficRecorder::default());
         let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
@@ -877,7 +897,8 @@ impl ProxyInstance {
             .with_traffic_store_shared(traffic_store)
             .with_traffic_recorder_shared(traffic_recorder)
             .with_async_traffic_writer(async_traffic_writer)
-            .with_frame_store(frame_store);
+            .with_frame_store_shared(frame_store);
+        start_connection_cleanup_task(admin_state.connection_monitor.clone());
 
         let server = ProxyServer::new(config)
             .with_rules(resolver)

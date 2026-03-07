@@ -19,6 +19,20 @@ fn extract_inline_content(value: &str) -> &str {
     }
 }
 
+fn parse_redirect_target(value: &str) -> (Option<u16>, String) {
+    if let Some((status_part, location)) = value.split_once(':') {
+        if status_part.len() == 3 && status_part.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(status) = status_part.parse::<u16>() {
+                if (300..=399).contains(&status) && !location.is_empty() {
+                    return (Some(status), location.to_string());
+                }
+            }
+        }
+    }
+
+    (None, value.to_string())
+}
+
 pub fn parse_cli_rules(
     rules: &[String],
     rules_file: &Option<PathBuf>,
@@ -235,7 +249,9 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
                 }
             }
             Protocol::Redirect => {
-                result.redirect = Some(value.to_string());
+                let (status, location) = parse_redirect_target(value);
+                result.redirect = Some(location);
+                result.redirect_status = status;
             }
             Protocol::ReqHeaders => {
                 if let Some(headers) = parse_header_value(value) {

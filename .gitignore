@@ -15,3 +15,9 @@ debug.md
 .trae/skills/e2e-verify/scripts/logs/
 .trae/skills/e2e-verify/logs/
 web/test-results/
+.bifrost-ui-target/
+.bifrost-ui-test/
+.ui-backend.log
+.ui-backend.pid
+.ui-traffic.pid
+.env/

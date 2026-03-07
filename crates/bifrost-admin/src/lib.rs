@@ -39,7 +39,7 @@ pub use connection_monitor::{
 pub use connection_registry::{
     ConfigChangeEvent, ConnectionInfo, ConnectionRegistry, SharedConnectionRegistry,
 };
-pub use frame_store::{FrameStore, FrameStoreStats, SharedFrameStore};
+pub use frame_store::{start_frame_cleanup_task, FrameStore, FrameStoreStats, SharedFrameStore};
 pub use handlers::scripts::ScriptManager;
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
