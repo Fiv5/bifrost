@@ -80,8 +80,8 @@
 | `cache` | 🔄 | advanced/cache.txt | 缓存控制 |
 | `attachment` | 🔄 | advanced/cache.txt | 附件下载 |
 | `trailers` | ❌ | - | HTTP Trailers |
-| `resMerge` | ❌ | - | 响应合并 |
-| `headerReplace` | ❌ | - | 头部替换 |
+| `resMerge` | ✅ | advanced/body_size_strategy.txt | 响应合并 |
+| `headerReplace` | ✅ | advanced/header_replace.txt | 头部替换 |
 
 ## 4. 内容注入协议 (Content Injection)
 
