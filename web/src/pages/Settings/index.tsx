@@ -470,6 +470,19 @@ export default function Settings() {
     }
   };
 
+  const handleUpdateMaxDbSize = async (value: number) => {
+    setPerfLoading(true);
+    try {
+      const result = await updatePerformanceConfig({ max_db_size_bytes: value });
+      setPerformanceConfig(result);
+      message.success("Max DB size updated");
+    } catch {
+      message.error("Failed to update max DB size");
+    } finally {
+      setPerfLoading(false);
+    }
+  };
+
   const handleUpdateMaxBodyMemorySize = async (value: number) => {
     setPerfLoading(true);
     try {
@@ -961,6 +974,36 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                         }
                         style={{ width: 120 }}
                       />
+                    </Col>
+                  </Row>
+
+                  <Divider style={{ margin: "12px 0" }} />
+
+                  <Row justify="space-between" align="middle">
+                    <Col flex="1" style={{ marginRight: 16 }}>
+                      <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                        <Text>Max DB Size</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          Maximum size of traffic database on disk
+                        </Text>
+                        <Slider
+                          min={256 * 1024 * 1024}
+                          max={10 * 1024 * 1024 * 1024}
+                          step={256 * 1024 * 1024}
+                          value={performanceConfig?.traffic.max_db_size_bytes}
+                          onChange={(value) => handleUpdateMaxDbSize(value)}
+                          tooltip={{
+                            formatter: (value) => (value ? formatBytes(value) : ""),
+                          }}
+                        />
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Text code>
+                        {formatBytes(
+                          performanceConfig?.traffic.max_db_size_bytes || 0,
+                        )}
+                      </Text>
                     </Col>
                   </Row>
 
@@ -1665,7 +1708,15 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
   ];
 
   return (
-    <div style={{ padding: 16 }}>
+    <div
+      style={{
+        padding: 16,
+        height: "100%",
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+      }}
+    >
       {pendingCount > 0 && (
         <Alert
           type="warning"
@@ -1743,7 +1794,13 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         />
       )}
 
-      <Tabs activeKey={activeTab} onChange={handleTabChange} items={tabItems} />
+      <Tabs
+        className="settings-tabs"
+        style={{ flex: 1, minHeight: 0 }}
+        activeKey={activeTab}
+        onChange={handleTabChange}
+        items={tabItems}
+      />
     </div>
   );
 }
@@ -2502,7 +2559,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.intercept_include.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2583,7 +2640,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.intercept_exclude.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2681,7 +2738,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.app_intercept_include.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (
@@ -2774,7 +2831,7 @@ function TlsInterceptionPatternsCard({
                 Add
               </Button>
             </Space.Compact>
-            <div style={{ maxHeight: 150, overflowY: "auto" }}>
+            <div>
               {tlsConfig?.app_intercept_exclude.length === 0 ? (
                 <Text type="secondary">No patterns configured</Text>
               ) : (

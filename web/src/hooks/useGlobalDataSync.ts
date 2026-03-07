@@ -7,6 +7,9 @@ import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
 import { useVersionStore } from '../stores/useVersionStore';
 import { syncDynamicData } from './useEditorCompletion';
+import pushService from '../services/pushService';
+import { useForceRefreshStore } from '../stores/useForceRefreshStore';
+import { usePendingAuthStore } from '../stores/usePendingAuthStore';
 
 const PROXY_POLL_INTERVAL = 5000;
 const VALUES_POLL_INTERVAL = 10000;
@@ -19,6 +22,8 @@ interface GlobalDataSyncState {
   valuesIntervalId: number | null;
   rulesIntervalId: number | null;
   versionCheckIntervalId: number | null;
+  visibilityPaused: boolean;
+  forceRefresh: boolean;
 }
 
 const globalState: GlobalDataSyncState = {
@@ -27,6 +32,8 @@ const globalState: GlobalDataSyncState = {
   valuesIntervalId: null,
   rulesIntervalId: null,
   versionCheckIntervalId: null,
+  visibilityPaused: false,
+  forceRefresh: false,
 };
 
 export function useGlobalDataSync() {
@@ -47,6 +54,68 @@ export function useGlobalDataSync() {
     const metricsStore = useMetricsStore.getState();
     const versionStore = useVersionStore.getState();
 
+    const pauseRealtime = () => {
+      if (globalState.visibilityPaused) return;
+      globalState.visibilityPaused = true;
+      useTrafficStore.getState().stopPolling();
+      useMetricsStore.getState().disablePush();
+    };
+
+    const resumeRealtime = () => {
+      if (globalState.forceRefresh) {
+        return;
+      }
+      if (!globalState.visibilityPaused) return;
+      globalState.visibilityPaused = false;
+      useTrafficStore.getState().startPolling();
+      useMetricsStore.getState().enablePush({
+        needOverview: true,
+        needMetrics: true,
+        needHistory: true,
+        historyLimit: 3600,
+      });
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        pauseRealtime();
+      } else {
+        resumeRealtime();
+      }
+    };
+
+    const onPageHide = () => pauseRealtime();
+    const onPageShow = () => resumeRealtime();
+
+    const stopAllPolling = () => {
+      if (globalState.proxyIntervalId) {
+        clearInterval(globalState.proxyIntervalId);
+        globalState.proxyIntervalId = null;
+      }
+      if (globalState.valuesIntervalId) {
+        clearInterval(globalState.valuesIntervalId);
+        globalState.valuesIntervalId = null;
+      }
+      if (globalState.rulesIntervalId) {
+        clearInterval(globalState.rulesIntervalId);
+        globalState.rulesIntervalId = null;
+      }
+      if (globalState.versionCheckIntervalId) {
+        clearInterval(globalState.versionCheckIntervalId);
+        globalState.versionCheckIntervalId = null;
+      }
+    };
+
+    const onForceRefresh = (data: { reason: string }) => {
+      if (globalState.forceRefresh) return;
+      globalState.forceRefresh = true;
+      stopAllPolling();
+      pauseRealtime();
+      usePendingAuthStore.getState().stopSSE();
+      pushService.disableReconnectUntilRefresh();
+      useForceRefreshStore.getState().show(data.reason);
+    };
+
     const initializeGlobalData = async () => {
       await Promise.all([
         trafficStore.fetchInitialData(),
@@ -59,6 +128,10 @@ export function useGlobalDataSync() {
         versionStore.checkVersion({ skipCache: true }),
       ]);
 
+      if (globalState.forceRefresh) {
+        return;
+      }
+
       trafficStore.startPolling();
 
       metricsStore.enablePush({
@@ -67,6 +140,10 @@ export function useGlobalDataSync() {
         needHistory: true,
         historyLimit: 3600,
       });
+
+      if (globalState.forceRefresh) {
+        return;
+      }
 
       globalState.proxyIntervalId = window.setInterval(() => {
         useProxyStore.getState().fetchSystemProxy();
@@ -94,27 +171,24 @@ export function useGlobalDataSync() {
 
     initializeGlobalData();
 
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShow);
+    const unsubscribeForceRefresh = pushService.onForceRefresh(onForceRefresh);
+
     return () => {
-      if (globalState.proxyIntervalId) {
-        clearInterval(globalState.proxyIntervalId);
-        globalState.proxyIntervalId = null;
-      }
-      if (globalState.valuesIntervalId) {
-        clearInterval(globalState.valuesIntervalId);
-        globalState.valuesIntervalId = null;
-      }
-      if (globalState.rulesIntervalId) {
-        clearInterval(globalState.rulesIntervalId);
-        globalState.rulesIntervalId = null;
-      }
-      if (globalState.versionCheckIntervalId) {
-        clearInterval(globalState.versionCheckIntervalId);
-        globalState.versionCheckIntervalId = null;
-      }
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShow);
+      unsubscribeForceRefresh();
+
+      stopAllPolling();
 
       useTrafficStore.getState().stopPolling();
       useMetricsStore.getState().disablePush();
       globalState.initialized = false;
+      globalState.visibilityPaused = false;
+      globalState.forceRefresh = false;
     };
   }, []);
 }

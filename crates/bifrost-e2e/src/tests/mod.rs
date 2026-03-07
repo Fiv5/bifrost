@@ -20,6 +20,7 @@ pub mod tls_intercept_mode;
 pub mod tls_switch_test;
 pub mod traffic_cli;
 pub mod url_manipulation;
+pub mod ws_payload_persistence;
 
 use crate::runner::TestCase;
 
@@ -47,5 +48,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(tls_switch_test::get_all_tests());
     tests.extend(body_cache::get_all_tests());
     tests.extend(traffic_cli::get_all_tests());
+    tests.extend(ws_payload_persistence::get_all_tests());
     tests
 }

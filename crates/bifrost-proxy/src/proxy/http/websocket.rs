@@ -23,6 +23,31 @@ use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
 
+fn persist_socket_summary(state: &AdminState, record_id: &str) {
+    let status = state.connection_monitor.get_connection_status(record_id);
+    let last_frame_id = state
+        .connection_monitor
+        .get_last_frame_id(record_id)
+        .unwrap_or(0);
+    let frame_count = status.as_ref().map(|s| s.frame_count).unwrap_or(0);
+    let status = status.map(|mut s| {
+        s.is_open = false;
+        s
+    });
+    let response_size = status
+        .as_ref()
+        .map(|s| s.send_bytes + s.receive_bytes)
+        .unwrap_or(0) as usize;
+    state.update_traffic_by_id(record_id, move |record| {
+        record.response_size = response_size;
+        record.frame_count = frame_count;
+        record.last_frame_id = last_frame_id;
+        if let Some(ref s) = status {
+            record.socket_status = Some(s.clone());
+        }
+    });
+}
+
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
@@ -175,6 +200,7 @@ pub async fn handle_websocket_upgrade(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -341,6 +367,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -352,7 +379,9 @@ async fn websocket_bidirectional_with_capture(
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
+                    persist_socket_summary(state, &record_id_owned);
                 }
             }
 
@@ -398,6 +427,7 @@ async fn websocket_bidirectional_with_capture(
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -409,7 +439,9 @@ async fn websocket_bidirectional_with_capture(
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
+                    persist_socket_summary(state, &record_id_owned2);
                 }
             }
 
@@ -423,6 +455,24 @@ async fn websocket_bidirectional_with_capture(
     };
 
     let result = tokio::try_join!(client_to_server, server_to_client);
+
+    if let Some(ref state) = admin_state {
+        let should_close = state
+            .connection_monitor
+            .get_connection_status(record_id)
+            .map(|s| s.is_open)
+            .unwrap_or(false);
+        if should_close {
+            state.connection_monitor.set_connection_closed(
+                record_id,
+                None,
+                None,
+                state.frame_store.as_ref(),
+                state.ws_payload_store.as_ref(),
+            );
+        }
+        persist_socket_summary(state, record_id);
+    }
 
     match result {
         Ok(_) => {
@@ -492,6 +542,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -503,7 +554,9 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
+                    persist_socket_summary(state, &record_id_owned);
                 }
             }
 
@@ -549,6 +602,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -560,7 +614,9 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
+                    persist_socket_summary(state, &record_id_owned2);
                 }
             }
 
@@ -574,6 +630,24 @@ where
     };
 
     let result = tokio::try_join!(client_to_server, server_to_client);
+
+    if let Some(ref state) = admin_state {
+        let should_close = state
+            .connection_monitor
+            .get_connection_status(record_id)
+            .map(|s| s.is_open)
+            .unwrap_or(false);
+        if should_close {
+            state.connection_monitor.set_connection_closed(
+                record_id,
+                None,
+                None,
+                state.frame_store.as_ref(),
+                state.ws_payload_store.as_ref(),
+            );
+        }
+        persist_socket_summary(state, record_id);
+    }
 
     match result {
         Ok(_) => {

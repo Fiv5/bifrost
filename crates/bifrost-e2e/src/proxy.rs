@@ -1,6 +1,6 @@
 use bifrost_admin::{
     start_async_traffic_processor, AdminState, AsyncTrafficWriter, BodyStore, ConnectionRegistry,
-    RuntimeConfig,
+    RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
@@ -11,6 +11,7 @@ use bifrost_proxy::{
 };
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::collections::HashMap;
+use std::time::Duration;
 
 fn extract_inline_content(value: &str) -> &str {
     let trimmed = value.trim();
@@ -839,7 +840,17 @@ impl ProxyInstance {
             temp_dir.clone(),
             2 * 1024 * 1024,
             7,
+            64 * 1024,
+            Duration::from_millis(200),
         )));
+
+        let ws_payload_store = Arc::new(WsPayloadStore::new(
+            temp_dir.clone(),
+            256 * 1024,
+            Duration::from_millis(200),
+            128,
+            7,
+        ));
 
         let traffic_dir = temp_dir.join("traffic");
         let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
@@ -862,6 +873,7 @@ impl ProxyInstance {
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_body_store(body_store)
+            .with_ws_payload_store(ws_payload_store)
             .with_traffic_store_shared(traffic_store)
             .with_traffic_recorder_shared(traffic_recorder)
             .with_async_traffic_writer(async_traffic_writer)

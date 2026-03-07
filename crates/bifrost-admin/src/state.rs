@@ -17,10 +17,12 @@ use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
+use crate::sse::SseHub;
 use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
+use crate::ws_payload_store::SharedWsPayloadStore;
 use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
@@ -80,11 +82,13 @@ pub struct AdminState {
     pub access_control: Option<SharedAccessControl>,
     pub body_store: Option<SharedBodyStore>,
     pub frame_store: Option<SharedFrameStore>,
+    pub ws_payload_store: Option<SharedWsPayloadStore>,
     pub start_time: u64,
     pub port: u16,
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub connection_monitor: SharedConnectionMonitor,
+    pub sse_hub: Arc<SseHub>,
     pub runtime_config: SharedRuntimeConfig,
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
@@ -111,11 +115,13 @@ impl AdminState {
             access_control: None,
             body_store: None,
             frame_store: None,
+            ws_payload_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
             port,
             ca_cert_path: None,
             system_proxy_manager: None,
             connection_monitor: Arc::new(ConnectionMonitor::new()),
+            sse_hub: SseHub::new(),
             runtime_config: Arc::new(RwLock::new(RuntimeConfig::default())),
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,
@@ -244,6 +250,11 @@ impl AdminState {
 
     pub fn with_body_store(mut self, body_store: SharedBodyStore) -> Self {
         self.body_store = Some(body_store);
+        self
+    }
+
+    pub fn with_ws_payload_store(mut self, store: SharedWsPayloadStore) -> Self {
+        self.ws_payload_store = Some(store);
         self
     }
 

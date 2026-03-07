@@ -5,6 +5,7 @@ import type {
   SystemOverview,
   MetricsSnapshot,
 } from '../types';
+import { getClientId } from './clientId';
 
 export interface TrafficUpdatesData {
   new_records: TrafficSummary[];
@@ -49,6 +50,10 @@ export interface ErrorData {
   message: string;
 }
 
+export interface DisconnectData {
+  reason: string;
+}
+
 export interface ReplayRequestUpdatedData {
   action: string;
   request_id?: string;
@@ -69,6 +74,7 @@ export type PushMessageType =
   | 'history_update'
   | 'connected'
   | 'error'
+  | 'disconnect'
   | 'replay_request_updated'
   | 'replay_history_updated';
 
@@ -82,6 +88,7 @@ export interface PushMessage {
   | HistoryData
   | ConnectedData
   | ErrorData
+  | DisconnectData
   | ReplayRequestUpdatedData
   | ReplayHistoryUpdatedData;
 }
@@ -116,6 +123,7 @@ class PushService {
   private reconnectAttempts = 0;
   private config: Required<PushServiceConfig>;
   private isManualClose = false;
+  private forceRefresh = false;
 
   private trafficHandlers: Set<MessageHandler<TrafficUpdatesData>> = new Set();
   private trafficDeltaHandlers: Set<MessageHandler<TrafficDeltaData>> = new Set();
@@ -123,6 +131,7 @@ class PushService {
   private metricsHandlers: Set<MessageHandler<MetricsData>> = new Set();
   private historyHandlers: Set<MessageHandler<HistoryData>> = new Set();
   private connectionHandlers: Set<MessageHandler<{ connected: boolean; clientId?: number }>> = new Set();
+  private forceRefreshHandlers: Set<MessageHandler<DisconnectData>> = new Set();
   private replayRequestHandlers: Set<MessageHandler<ReplayRequestUpdatedData>> = new Set();
   private replayHistoryHandlers: Set<MessageHandler<ReplayHistoryUpdatedData>> = new Set();
 
@@ -134,6 +143,9 @@ class PushService {
   }
 
   connect(subscription: ClientSubscription = {}): void {
+    if (this.forceRefresh) {
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
       this.updateSubscription(subscription);
       return;
@@ -161,6 +173,8 @@ class PushService {
 
   private buildQueryParams(): string {
     const params = new URLSearchParams();
+
+    params.append('x_client_id', getClientId());
 
     if (this.subscription.last_traffic_id) {
       params.append('last_traffic_id', this.subscription.last_traffic_id);
@@ -231,6 +245,14 @@ class PushService {
         this.notifyConnectionHandlers(true, data.client_id);
         break;
       }
+      case 'disconnect': {
+        const data = message.data as DisconnectData;
+        this.forceRefresh = true;
+        this.isManualClose = true;
+        this.forceRefreshHandlers.forEach((handler) => handler(data));
+        this.disconnect();
+        break;
+      }
       case 'traffic_updates': {
         const data = message.data as TrafficUpdatesData;
         this.trafficHandlers.forEach((handler) => handler(data));
@@ -283,6 +305,10 @@ class PushService {
       clearTimeout(this.reconnectTimer);
     }
 
+    if (this.forceRefresh) {
+      return;
+    }
+
     if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
       console.error('[PushService] Max reconnect attempts reached');
       return;
@@ -309,7 +335,30 @@ class PushService {
     }
   }
 
+  disableReconnectUntilRefresh(): void {
+    this.forceRefresh = true;
+    this.isManualClose = true;
+    this.disconnect();
+  }
+
+  disconnectIfIdle(): void {
+    const hasHandlers =
+      this.trafficHandlers.size > 0 ||
+      this.trafficDeltaHandlers.size > 0 ||
+      this.overviewHandlers.size > 0 ||
+      this.metricsHandlers.size > 0 ||
+      this.historyHandlers.size > 0 ||
+      this.replayRequestHandlers.size > 0 ||
+      this.replayHistoryHandlers.size > 0;
+    if (!hasHandlers) {
+      this.disconnect();
+    }
+  }
+
   updateSubscription(subscription: Partial<ClientSubscription>): void {
+    if (this.forceRefresh) {
+      return;
+    }
     this.subscription = { ...this.subscription, ...subscription };
 
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -353,6 +402,11 @@ class PushService {
   onConnectionChange(handler: MessageHandler<{ connected: boolean; clientId?: number }>): () => void {
     this.connectionHandlers.add(handler);
     return () => this.connectionHandlers.delete(handler);
+  }
+
+  onForceRefresh(handler: MessageHandler<DisconnectData>): () => void {
+    this.forceRefreshHandlers.add(handler);
+    return () => this.forceRefreshHandlers.delete(handler);
   }
 
   onReplayRequestUpdated(handler: MessageHandler<ReplayRequestUpdatedData>): () => void {

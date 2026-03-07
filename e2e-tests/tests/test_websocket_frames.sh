@@ -89,7 +89,7 @@ start_ws_server() {
 }
 
 start_bifrost() {
-    (cd "$ROOT_DIR" && cargo build --bin bifrost > /dev/null 2>&1)
+    (cd "$ROOT_DIR" && cargo build --bin bifrost)
 
     BIFROST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR
@@ -177,13 +177,35 @@ test_ws_frames_capture() {
     local frame_count
     frame_count=$(echo "$frames_response" | jq -r '.frames | length')
     if [[ "$frame_count" -ge 1 ]]; then
-        local has_preview
-        has_preview=$(echo "$frames_response" | jq -r '[.frames[] | select((.payload_preview // "") | length > 0)] | length')
-        if [[ "${has_preview:-0}" -le 0 ]]; then
-            fail "Captured frames but payload_preview is empty"
+        local first_frame_id
+        first_frame_id=$(echo "$frames_response" | jq -r '.frames[0].frame_id // 0')
+        if [[ "${first_frame_id:-0}" -le 0 ]]; then
+            fail "Frame id should be available"
             return 1
         fi
-        pass "Captured $frame_count frames with payload_preview"
+        local frame_detail
+        frame_detail=$(get_frame_detail "$traffic_id" "$first_frame_id")
+        local full_payload
+        full_payload=$(echo "$frame_detail" | jq -r '.full_payload // ""')
+        if [[ -z "$full_payload" ]]; then
+            fail "Captured frames but full_payload is empty"
+            return 1
+        fi
+        local record
+        record=$(get_traffic_detail "$traffic_id")
+        local response_size
+        response_size=$(echo "$record" | jq -r '.response_size // 0')
+        if [[ "${response_size:-0}" -le 0 ]]; then
+            fail "WebSocket response_size should be persisted"
+            return 1
+        fi
+        local socket_bytes
+        socket_bytes=$(echo "$record" | jq -r '(.socket_status.send_bytes // 0) + (.socket_status.receive_bytes // 0)')
+        if [[ "${socket_bytes:-0}" -le 0 ]]; then
+            fail "WebSocket socket_status bytes should be persisted"
+            return 1
+        fi
+        pass "Captured $frame_count frames with full_payload"
         return 0
     fi
 

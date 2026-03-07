@@ -368,7 +368,7 @@ GET /api/traffic/{id}/response-body
 }
 ```
 
-### 2.7 获取 WebSocket/SSE 帧列表
+### 2.7 获取 WebSocket 帧列表
 
 ```
 GET /api/traffic/{id}/frames
@@ -407,7 +407,8 @@ GET /api/traffic/{id}/frames
 }
 ```
 
-**应用场景**: 查看 WebSocket 或 SSE 连接的消息帧。
+**应用场景**: 查看 WebSocket 连接的消息帧。
+> 兼容行为：对 SSE 记录，该接口会返回空 `frames`，但会尽可能返回 `socket_status/last_frame_id` 等统计信息；SSE 事件内容请使用 `/api/traffic/{id}/response-body` + `/api/traffic/{id}/sse/stream`。
 
 ### 2.8 获取帧详情
 
@@ -447,12 +448,34 @@ data: {"frame_id":1,"direction":"receive","frame_type":"text",...}
 data: {"frame_id":2,"direction":"send","frame_type":"text",...}
 ```
 
-**应用场景**: 实时监控 WebSocket 连接的消息。
+**应用场景**: 实时监控 WebSocket 连接的消息（WebSocket 专用）。
 
 ### 2.10 取消订阅帧流
 
 ```
 DELETE /api/traffic/{id}/frames/unsubscribe
+```
+
+### 2.11 订阅 SSE 事件流 (SSE)
+
+```
+GET /api/traffic/{id}/sse/stream?from=begin
+```
+
+**说明**:
+
+- 仅对 `is_sse=true` 的流量记录生效
+- open 连接会返回 `text/event-stream`，先输出已落库的历史事件（来自 `response-body` 解析），再持续输出实时增量
+- closed 连接返回 `409`，请改用 `GET /api/traffic/{id}/response-body` 拉取完整文本并在前端以 Events 模式解析渲染
+
+**响应**:
+
+```
+Content-Type: text/event-stream
+
+data: {"seq":1,"ts":1700000000000,"id":"1","event":"message","data":"...","raw":"id: 1\\nevent: message\\ndata: ...\\n\\n"}
+
+data: {"seq":2,"ts":1700000000100,"id":"2","event":"message","data":"...","raw":"id: 2\\nevent: message\\ndata: ...\\n\\n"}
 ```
 
 ---
@@ -1191,9 +1214,15 @@ GET /api/config/performance
 {
   "traffic": {
     "max_records": 5000,
+    "max_db_size_bytes": 2147483648,
     "max_body_memory_size": 524288,
     "max_body_buffer_size": 10485760,
-    "file_retention_days": 7
+    "file_retention_days": 7,
+    "sse_stream_flush_bytes": 65536,
+    "sse_stream_flush_interval_ms": 200,
+    "ws_payload_flush_bytes": 262144,
+    "ws_payload_flush_interval_ms": 200,
+    "ws_payload_max_open_files": 128
   },
   "body_store_stats": {
     "memory_used": 1048576,
@@ -1222,18 +1251,30 @@ PUT /api/config/performance
 ```json
 {
   "max_records": 10000,
+  "max_db_size_bytes": 2147483648,
   "max_body_memory_size": 1048576,
   "max_body_buffer_size": 20971520,
-  "file_retention_days": 3
+  "file_retention_days": 3,
+  "sse_stream_flush_bytes": 65536,
+  "sse_stream_flush_interval_ms": 200,
+  "ws_payload_flush_bytes": 262144,
+  "ws_payload_flush_interval_ms": 200,
+  "ws_payload_max_open_files": 128
 }
 ```
 
-| 字段                 | 类型   | 必填 | 说明                            |
-| -------------------- | ------ | ---- | ------------------------------- |
-| max_records          | number | 否   | 最大流量记录数                  |
-| max_body_memory_size | number | 否   | 单个请求体最大内存缓存大小      |
-| max_body_buffer_size | number | 否   | 请求体缓冲区最大大小            |
-| file_retention_days  | number | 否   | 文件保留天数（最大 7 天）       |
+| 字段                         | 类型   | 必填 | 说明                            |
+| ---------------------------- | ------ | ---- | ------------------------------- |
+| max_records                  | number | 否   | 最大流量记录数                  |
+| max_db_size_bytes            | number | 否   | Traffic DB 最大大小（字节）     |
+| max_body_memory_size         | number | 否   | 单个请求体最大内存缓存大小      |
+| max_body_buffer_size         | number | 否   | 请求体缓冲区最大大小            |
+| file_retention_days          | number | 否   | 文件保留天数（最大 7 天）       |
+| sse_stream_flush_bytes       | number | 否   | SSE raw stream flush 字节阈值   |
+| sse_stream_flush_interval_ms | number | 否   | SSE raw stream flush 间隔（ms） |
+| ws_payload_flush_bytes       | number | 否   | WS payload flush 字节阈值       |
+| ws_payload_flush_interval_ms | number | 否   | WS payload flush 间隔（ms）     |
+| ws_payload_max_open_files    | number | 否   | WS payload 最大打开文件数       |
 
 ### 9.6 清除缓存
 
@@ -1248,7 +1289,8 @@ DELETE /api/config/performance/clear-cache
   "body_cache_removed": 100,
   "traffic_cache_removed": 5000,
   "frame_cache_removed": 500,
-  "message": "Successfully cleared 100 body cache files, 5000 traffic records, and 500 frame files"
+  "ws_payload_cache_removed": 50,
+  "message": "Successfully cleared 100 body cache files, 5000 traffic records, 500 frame files, and 50 ws payload files"
 }
 ```
 

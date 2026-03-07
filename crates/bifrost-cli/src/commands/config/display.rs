@@ -66,6 +66,10 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     println!("Traffic Configuration");
     println!("  Max Records:          {}", perf.traffic.max_records);
     println!(
+        "  Max DB Size:          {}",
+        format_size(perf.traffic.max_db_size_bytes as usize)
+    );
+    println!(
         "  Max Body Size:        {}",
         format_size(perf.traffic.max_body_memory_size)
     );
@@ -76,6 +80,26 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     println!(
         "  Retention Days:       {}",
         perf.traffic.file_retention_days
+    );
+    println!(
+        "  SSE Flush Bytes:      {}",
+        format_size(perf.traffic.sse_stream_flush_bytes)
+    );
+    println!(
+        "  SSE Flush Interval:   {} ms",
+        perf.traffic.sse_stream_flush_interval_ms
+    );
+    println!(
+        "  WS Flush Bytes:       {}",
+        format_size(perf.traffic.ws_payload_flush_bytes)
+    );
+    println!(
+        "  WS Flush Interval:    {} ms",
+        perf.traffic.ws_payload_flush_interval_ms
+    );
+    println!(
+        "  WS Max Open Files:    {}",
+        perf.traffic.ws_payload_max_open_files
     );
 
     if perf.body_store_stats.is_some()

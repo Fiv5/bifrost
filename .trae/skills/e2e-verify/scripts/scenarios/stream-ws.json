@@ -1,0 +1,35 @@
+{
+  "name": "WebSocket 流式消息展示",
+  "description": "验证 Traffic 详情的 Messages(WebSocket) 展示",
+  "config": {
+    "baseUrl": "http://localhost:3000/_bifrost",
+    "waitForLogin": true,
+    "loginTimeout": 120000,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 进入首页 ====" },
+    { "action": "goto", "url": "/" },
+    { "action": "waitForLogin" },
+    { "action": "waitForSelector", "selector": "[data-testid='traffic-row']" },
+    { "action": "click", "selector": "[data-testid='traffic-row']" },
+    { "action": "wait", "ms": 600 },
+    { "action": "takeSnapshot", "name": "Traffic 详情" },
+    {
+      "action": "findElement",
+      "role": "tab",
+      "name": "Messages",
+      "variable": "messagesTab"
+    },
+    { "action": "click", "uid": "${messagesTab}" },
+    {
+      "action": "waitForSelector",
+      "selector": "[data-testid='ws-frames-pane']"
+    },
+    {
+      "action": "assert",
+      "condition": "document.querySelector('[data-testid=\"ws-frames-pane\"]') !== null",
+      "message": "WebSocket Frames 面板可见"
+    }
+  ]
+}

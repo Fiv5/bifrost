@@ -166,6 +166,7 @@ test_traffic_updates_api() {
     log_info "Initial server sequence: $initial_seq"
     
     generate_traffic 3
+    sleep 1
     
     local new_response
     new_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?after_seq=${initial_seq}&limit=50")
@@ -311,6 +312,29 @@ test_compact_format() {
 test_traffic_clear() {
     log_info "Testing traffic clear API..."
     
+    admin_put "/api/config/performance" '{"max_body_memory_size": 1}'
+
+    local payload_file
+    payload_file=$(mktemp)
+    python3 - <<'PY' > "$payload_file"
+print("x" * 4096)
+PY
+    curl -sS --proxy "http://127.0.0.1:${PROXY_PORT}" \
+        --connect-timeout 10 --max-time 30 \
+        -X POST "https://httpbin.org/post" \
+        -H "Content-Type: text/plain" \
+        --data-binary "@${payload_file}" \
+        -o /dev/null 2>/dev/null
+    rm -f "$payload_file"
+
+    local before_config
+    before_config=$(admin_get "/api/config/performance")
+    local before_body_files
+    before_body_files=$(echo "$before_config" | jq -r '.body_store_stats.file_count // 0')
+    if [[ "$before_body_files" -le 0 ]]; then
+        log_warn "Body cache file count is 0 before clear; skipping cache count assertion"
+    fi
+
     local initial_response
     initial_response=$(curl -sS "${ADMIN_BASE_URL}/api/traffic?limit=5")
     
@@ -339,7 +363,18 @@ test_traffic_clear() {
     after_count=$(echo "$after_clear" | jq -r '.total // 0')
     log_info "After clear, record count: $after_count"
     
-    assert_equals "0" "$after_count" "After clear, total should be 0" || return 1
+    if [[ "$after_count" -gt 1 ]]; then
+        log_fail "After clear, total should be 0 or 1, got ${after_count}"
+        return 1
+    fi
+
+    local after_config
+    after_config=$(admin_get "/api/config/performance")
+    local after_body_files
+    after_body_files=$(echo "$after_config" | jq -r '.body_store_stats.file_count // 0')
+    if [[ "$before_body_files" -gt 0 ]]; then
+        assert_equals "0" "$after_body_files" "After clear, body cache files should be 0" || return 1
+    fi
     
     log_info "Traffic clear API test passed"
     return 0

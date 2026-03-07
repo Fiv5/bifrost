@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bifrost_admin::{
-    start_metrics_collector_task, start_push_tasks, status_printer::TlsStatusInfo, AdminState,
-    BodyStore, PushManager, ReplayDbStore, RuntimeConfig,
+    start_metrics_collector_task, start_push_tasks, start_ws_payload_cleanup_task,
+    status_printer::TlsStatusInfo, AdminState, BodyStore, PushManager, ReplayDbStore,
+    RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -504,14 +506,26 @@ pub fn run_foreground(
             body_temp_dir,
             stored_config.traffic.max_body_memory_size,
             stored_config.traffic.file_retention_days,
+            stored_config.traffic.sse_stream_flush_bytes,
+            Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
         )));
         bifrost_admin::start_body_cleanup_task(body_store.clone());
+
+        let ws_payload_store = Arc::new(WsPayloadStore::new(
+            bifrost_dir.clone(),
+            stored_config.traffic.ws_payload_flush_bytes,
+            Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
+            stored_config.traffic.ws_payload_max_open_files,
+            stored_config.traffic.file_retention_days,
+        ));
+        start_ws_payload_cleanup_task(ws_payload_store.clone());
 
         let traffic_dir = bifrost_dir.join("traffic");
         let traffic_db_store = Arc::new(
             bifrost_admin::TrafficDbStore::new(
                 traffic_dir,
                 stored_config.traffic.max_records,
+                stored_config.traffic.max_db_size_bytes,
                 Some(stored_config.traffic.file_retention_days * 24),
             )
             .expect("Failed to create traffic database"),
@@ -564,6 +578,7 @@ pub fn run_foreground(
 
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
+            .with_ws_payload_store(ws_payload_store)
             .with_traffic_db_store_shared(traffic_db_store.clone())
             .with_frame_store(frame_store)
             .with_runtime_config(runtime_config)
@@ -816,13 +831,25 @@ pub fn run_daemon(
                     body_temp_dir,
                     stored_config.traffic.max_body_memory_size,
                     stored_config.traffic.file_retention_days,
+                    stored_config.traffic.sse_stream_flush_bytes,
+                    Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
                 )));
+
+                let ws_payload_store = Arc::new(WsPayloadStore::new(
+                    bifrost_dir.clone(),
+                    stored_config.traffic.ws_payload_flush_bytes,
+                    Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
+                    stored_config.traffic.ws_payload_max_open_files,
+                    stored_config.traffic.file_retention_days,
+                ));
+                start_ws_payload_cleanup_task(ws_payload_store.clone());
 
                 let traffic_dir = bifrost_dir.join("traffic");
                 let traffic_db_store = Arc::new(
                     bifrost_admin::TrafficDbStore::new(
                         traffic_dir,
                         stored_config.traffic.max_records,
+                        stored_config.traffic.max_db_size_bytes,
                         Some(stored_config.traffic.file_retention_days * 24),
                     )
                     .expect("Failed to create traffic database"),
@@ -873,6 +900,7 @@ pub fn run_daemon(
 
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
+                    .with_ws_payload_store(ws_payload_store)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
                     .with_frame_store(frame_store)
                     .with_runtime_config(runtime_config)

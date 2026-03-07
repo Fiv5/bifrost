@@ -390,6 +390,7 @@ pub async fn handle_connect(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
 
                     if let Some(socket_status) = state.connection_monitor.get_status(&req_id) {
@@ -1657,6 +1658,7 @@ async fn handle_intercepted_request_with_protocol(
         } else {
             TrafficType::Https
         };
+        let mut sse_stream_writer: Option<bifrost_admin::BodyStreamWriter> = None;
 
         if let Some(ref state) = admin_state {
             state
@@ -1729,7 +1731,7 @@ async fn handle_intercepted_request_with_protocol(
 
             if is_sse {
                 record.set_sse();
-                state.connection_monitor.register_connection(&record_id);
+                state.sse_hub.register(&record_id);
             }
 
             record.has_rule_hit = has_rules;
@@ -1745,6 +1747,20 @@ async fn handle_intercepted_request_with_protocol(
                     req_content_encoding.as_deref(),
                 )
             };
+
+            if is_sse {
+                if let Some(ref body_store) = state.body_store {
+                    match body_store.read().start_stream(&record_id, "sse_raw") {
+                        Ok(writer) => {
+                            record.response_body_ref = Some(writer.body_ref());
+                            sse_stream_writer = Some(writer);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                        }
+                    }
+                }
+            }
 
             state.record_traffic(record);
         }
@@ -1768,6 +1784,7 @@ async fn handle_intercepted_request_with_protocol(
                 admin_state.clone(),
                 record_id,
                 Some(traffic_type),
+                sse_stream_writer,
                 max_body_buffer_size,
             );
             let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
@@ -1887,7 +1904,7 @@ async fn handle_intercepted_request_with_protocol(
 
         if is_sse {
             record.set_sse();
-            state.connection_monitor.register_connection(req_id);
+            state.sse_hub.register(req_id);
         }
 
         record.has_rule_hit = has_rules;
@@ -1915,13 +1932,24 @@ async fn handle_intercepted_request_with_protocol(
         state.record_traffic(record);
 
         if is_sse {
-            parse_and_record_sse_events(&res_body_bytes, req_id, state);
-            state.connection_monitor.set_connection_closed(
-                req_id,
-                None,
-                Some("SSE stream completed".to_string()),
-                state.frame_store.as_ref(),
-            );
+            let event_count = parse_and_record_sse_events(&res_body_bytes);
+            let response_size = res_body_bytes.len();
+            state.update_traffic_by_id(req_id, move |record| {
+                record.response_size = response_size;
+                record.frame_count = event_count;
+                record.last_frame_id = event_count as u64;
+                record.socket_status = Some(bifrost_admin::SocketStatus {
+                    is_open: false,
+                    send_count: 0,
+                    receive_count: event_count as u64,
+                    send_bytes: 0,
+                    receive_bytes: response_size as u64,
+                    frame_count: event_count,
+                    close_code: None,
+                    close_reason: Some("SSE stream completed".to_string()),
+                });
+            });
+            state.sse_hub.unregister(req_id);
         }
     }
 
@@ -2263,6 +2291,7 @@ async fn handle_intercepted_websocket(
                         None,
                         None,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -2436,6 +2465,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -2447,6 +2477,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }
@@ -2493,6 +2524,7 @@ where
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
+                    state.ws_payload_store.as_ref(),
                     state.frame_store.as_ref(),
                 );
 
@@ -2504,6 +2536,7 @@ where
                         close_code,
                         close_reason,
                         state.frame_store.as_ref(),
+                        state.ws_payload_store.as_ref(),
                     );
                 }
             }

@@ -11,9 +11,15 @@ pub enum ConfigKey {
     TlsAppInclude,
 
     TrafficMaxRecords,
+    TrafficMaxDbSize,
     TrafficMaxBodySize,
     TrafficMaxBufferSize,
     TrafficRetentionDays,
+    TrafficSseStreamFlushBytes,
+    TrafficSseStreamFlushIntervalMs,
+    TrafficWsPayloadFlushBytes,
+    TrafficWsPayloadFlushIntervalMs,
+    TrafficWsPayloadMaxOpenFiles,
 
     AccessMode,
     AccessAllowLan,
@@ -28,7 +34,14 @@ impl ConfigKey {
     }
 
     pub fn is_size(&self) -> bool {
-        matches!(self, Self::TrafficMaxBodySize | Self::TrafficMaxBufferSize)
+        matches!(
+            self,
+            Self::TrafficMaxBodySize
+                | Self::TrafficMaxBufferSize
+                | Self::TrafficMaxDbSize
+                | Self::TrafficSseStreamFlushBytes
+                | Self::TrafficWsPayloadFlushBytes
+        )
     }
 
     pub fn all_keys() -> Vec<&'static str> {
@@ -41,9 +54,15 @@ impl ConfigKey {
             "tls.app-exclude",
             "tls.app-include",
             "traffic.max-records",
+            "traffic.max-db-size",
             "traffic.max-body-size",
             "traffic.max-buffer-size",
             "traffic.retention-days",
+            "traffic.sse-stream-flush-bytes",
+            "traffic.sse-stream-flush-interval-ms",
+            "traffic.ws-payload-flush-bytes",
+            "traffic.ws-payload-flush-interval-ms",
+            "traffic.ws-payload-max-open-files",
             "access.mode",
             "access.allow-lan",
         ]
@@ -63,9 +82,15 @@ impl FromStr for ConfigKey {
             "tls.app-exclude" => Ok(Self::TlsAppExclude),
             "tls.app-include" => Ok(Self::TlsAppInclude),
             "traffic.max-records" => Ok(Self::TrafficMaxRecords),
+            "traffic.max-db-size" => Ok(Self::TrafficMaxDbSize),
             "traffic.max-body-size" => Ok(Self::TrafficMaxBodySize),
             "traffic.max-buffer-size" => Ok(Self::TrafficMaxBufferSize),
             "traffic.retention-days" => Ok(Self::TrafficRetentionDays),
+            "traffic.sse-stream-flush-bytes" => Ok(Self::TrafficSseStreamFlushBytes),
+            "traffic.sse-stream-flush-interval-ms" => Ok(Self::TrafficSseStreamFlushIntervalMs),
+            "traffic.ws-payload-flush-bytes" => Ok(Self::TrafficWsPayloadFlushBytes),
+            "traffic.ws-payload-flush-interval-ms" => Ok(Self::TrafficWsPayloadFlushIntervalMs),
+            "traffic.ws-payload-max-open-files" => Ok(Self::TrafficWsPayloadMaxOpenFiles),
             "access.mode" => Ok(Self::AccessMode),
             "access.allow-lan" => Ok(Self::AccessAllowLan),
             _ => Err(format!(
@@ -92,9 +117,15 @@ impl std::fmt::Display for ConfigKey {
             Self::TlsAppExclude => "tls.app-exclude",
             Self::TlsAppInclude => "tls.app-include",
             Self::TrafficMaxRecords => "traffic.max-records",
+            Self::TrafficMaxDbSize => "traffic.max-db-size",
             Self::TrafficMaxBodySize => "traffic.max-body-size",
             Self::TrafficMaxBufferSize => "traffic.max-buffer-size",
             Self::TrafficRetentionDays => "traffic.retention-days",
+            Self::TrafficSseStreamFlushBytes => "traffic.sse-stream-flush-bytes",
+            Self::TrafficSseStreamFlushIntervalMs => "traffic.sse-stream-flush-interval-ms",
+            Self::TrafficWsPayloadFlushBytes => "traffic.ws-payload-flush-bytes",
+            Self::TrafficWsPayloadFlushIntervalMs => "traffic.ws-payload-flush-interval-ms",
+            Self::TrafficWsPayloadMaxOpenFiles => "traffic.ws-payload-max-open-files",
             Self::AccessMode => "access.mode",
             Self::AccessAllowLan => "access.allow-lan",
         };

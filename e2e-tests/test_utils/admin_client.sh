@@ -43,6 +43,11 @@ get_traffic_detail() {
     admin_get "/api/traffic/${id}"
 }
 
+get_response_body() {
+    local id="$1"
+    admin_get "/api/traffic/${id}/response-body"
+}
+
 get_traffic_by_url() {
     local url_pattern="$1"
     local limit="${2:-10}"
@@ -68,11 +73,11 @@ find_traffic_id_by_url() {
 get_frames() {
     local arg1="$1"
     local arg2="$2"
-    local arg3="$3"
+    local arg3="${3:-}"
     local arg4="${4:-0}"
     local arg5="${5:-100}"
 
-    if [[ -n "$arg3" ]]; then
+    if [[ -n "${arg3:-}" ]]; then
         local host="$arg1"
         local port="$arg2"
         local traffic_id="$arg3"

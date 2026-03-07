@@ -11,6 +11,7 @@ PROXY_PORT="${PROXY_PORT:-9900}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 WS_URL="ws://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/ws"
+WS_PUSH_URL="ws://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/push"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -125,7 +126,7 @@ test_ws_connection() {
     local temp_file
     temp_file=$(mktemp)
     
-    (echo '{"need_overview":true}' | websocat -t --one-message "$WS_URL" > "$temp_file" 2>&1) &
+    (echo '{"need_overview":true}' | websocat -t --one-message "${WS_PUSH_URL}?x_client_id=e2e_conn_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     sleep 2
     kill $ws_pid 2>/dev/null || true
@@ -160,7 +161,7 @@ test_ws_traffic_delta() {
     initial_seq=$(curl -sS "${ADMIN_BASE_URL}/api/traffic/updates?limit=1" | jq -r '.server_sequence // 0')
     log_info "Initial sequence: $initial_seq"
     
-    (echo "{\"last_sequence\":$initial_seq}" | websocat -t "$WS_URL" > "$temp_file" 2>&1) &
+    (echo "{\"last_sequence\":$initial_seq}" | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_delta_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
     sleep 1
@@ -206,7 +207,7 @@ test_ws_overview_push() {
     local temp_file
     temp_file=$(mktemp)
     
-    (echo '{"need_overview":true}' | websocat -t "$WS_URL" > "$temp_file" 2>&1) &
+    (echo '{"need_overview":true}' | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_overview_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
     sleep 3
@@ -232,13 +233,54 @@ test_ws_overview_push() {
     fi
 }
 
+test_ws_max_channels() {
+    log_info "Testing WebSocket max client channels (MAX=3)..."
+
+    if ! ensure_websocat; then
+        return 0
+    fi
+
+    local log1
+    log1=$(mktemp)
+
+    local pid1 pid2 pid3
+    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_1_$$_$RANDOM" >"$log1" 2>&1) &
+    pid1=$!
+    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_2_$$_$RANDOM" >/dev/null 2>&1) &
+    pid2=$!
+    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_3_$$_$RANDOM" >/dev/null 2>&1) &
+    pid3=$!
+
+    sleep 2
+
+    echo '{"need_overview":true}' | websocat -t --one-message "${WS_PUSH_URL}?x_client_id=e2e_chan_4_$$_$RANDOM" >/dev/null 2>&1 || true
+
+    sleep 3
+
+    kill "$pid1" "$pid2" "$pid3" 2>/dev/null || true
+    wait "$pid1" 2>/dev/null || true
+    wait "$pid2" 2>/dev/null || true
+    wait "$pid3" 2>/dev/null || true
+
+    local out
+    out=$(cat "$log1")
+    rm -f "$log1"
+
+    if echo "$out" | grep -q '"type":"disconnect"'; then
+        return 0
+    fi
+
+    log_fail "Disconnect message not received on oldest channel"
+    return 1
+}
+
 test_ws_metrics_push() {
     log_info "Testing WebSocket metrics push..."
     
     local temp_file
     temp_file=$(mktemp)
     
-    (echo '{"need_metrics":true,"metrics_interval_ms":500}' | websocat -t "$WS_URL" > "$temp_file" 2>&1) &
+    (echo '{"need_metrics":true,"metrics_interval_ms":500}' | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_metrics_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
     sleep 3
@@ -398,6 +440,7 @@ main() {
         run_test "WebSocket Traffic Delta" test_ws_traffic_delta
         run_test "WebSocket Overview Push" test_ws_overview_push
         run_test "WebSocket Metrics Push" test_ws_metrics_push
+        run_test "WebSocket Max Channels" test_ws_max_channels
     else
         log_warn "Skipping WebSocket tests (websocat not available)"
     fi

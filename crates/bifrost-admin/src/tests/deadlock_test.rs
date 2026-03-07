@@ -130,7 +130,13 @@ mod deadlock_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_body_store_concurrent_access() {
         let dir = create_temp_dir("body_store");
-        let store = Arc::new(RwLock::new(BodyStore::new(dir.clone(), 100, 7)));
+        let store = Arc::new(RwLock::new(BodyStore::new(
+            dir.clone(),
+            100,
+            7,
+            64 * 1024,
+            Duration::from_millis(200),
+        )));
 
         let mut handles = vec![];
 
@@ -189,10 +195,11 @@ mod deadlock_tests {
                         true,
                         None,
                         None,
+                        None,
                     );
                 }
 
-                monitor_clone.set_connection_closed(&conn_id, None, None, None);
+                monitor_clone.set_connection_closed(&conn_id, None, None, None, None);
             });
             handles.push(handle);
         }
@@ -226,7 +233,13 @@ mod deadlock_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_spawn_blocking_with_file_io() {
         let dir = create_temp_dir("spawn_blocking");
-        let store = Arc::new(RwLock::new(BodyStore::new(dir.clone(), 10, 7)));
+        let store = Arc::new(RwLock::new(BodyStore::new(
+            dir.clone(),
+            10,
+            7,
+            64 * 1024,
+            Duration::from_millis(200),
+        )));
 
         let mut handles = vec![];
 
@@ -289,7 +302,13 @@ mod deadlock_tests {
 
         let traffic_store = Arc::new(TrafficStore::new(traffic_dir.clone(), 1000, None));
         let frame_store = Arc::new(FrameStore::new(frame_dir.clone(), None));
-        let body_store = Arc::new(RwLock::new(BodyStore::new(body_dir.clone(), 100, 7)));
+        let body_store = Arc::new(RwLock::new(BodyStore::new(
+            body_dir.clone(),
+            100,
+            7,
+            64 * 1024,
+            Duration::from_millis(200),
+        )));
         let monitor = Arc::new(ConnectionMonitor::new());
 
         let mut handles = vec![];
@@ -322,6 +341,7 @@ mod deadlock_tests {
                         true,
                         None,
                         None,
+                        None,
                     );
 
                     let frame = WebSocketFrameRecord {
@@ -344,7 +364,7 @@ mod deadlock_tests {
                     };
                 }
 
-                mon.set_connection_closed(&conn_id, None, None, None);
+                mon.set_connection_closed(&conn_id, None, None, None, None);
             });
             handles.push(handle);
         }

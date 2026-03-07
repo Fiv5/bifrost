@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::info;
@@ -14,6 +14,10 @@ use crate::traffic::TrafficSummary;
 use crate::traffic_db::{Direction, QueryParams, TrafficSummaryCompact};
 
 static CLIENT_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+const PUSH_CHANNEL_CAPACITY: usize = 64;
+pub const MAX_SUBSCRIBED_IDS: usize = 500;
+pub const MAX_CLIENT_CHANNELS: usize = 3;
+pub const MAX_ID_LEN: usize = 256;
 
 fn generate_client_id() -> u64 {
     CLIENT_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -48,6 +52,9 @@ pub enum PushMessage {
 
     #[serde(rename = "replay_history_updated")]
     ReplayHistoryUpdated(ReplayHistoryUpdatedData),
+
+    #[serde(rename = "disconnect")]
+    Disconnect(DisconnectData),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +136,11 @@ pub struct ErrorData {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisconnectData {
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClientSubscription {
     #[serde(default)]
@@ -177,15 +189,20 @@ impl Default for ClientSubscription {
 
 pub struct PushClient {
     pub id: u64,
-    pub sender: mpsc::UnboundedSender<PushMessage>,
+    pub client_key: String,
+    pub sender: mpsc::Sender<PushMessage>,
     pub subscription: RwLock<ClientSubscription>,
 }
 
 impl PushClient {
-    pub fn new(subscription: ClientSubscription) -> (Self, mpsc::UnboundedReceiver<PushMessage>) {
-        let (sender, receiver) = mpsc::unbounded_channel();
+    pub fn new(
+        client_key: String,
+        subscription: ClientSubscription,
+    ) -> (Self, mpsc::Receiver<PushMessage>) {
+        let (sender, receiver) = mpsc::channel(PUSH_CHANNEL_CAPACITY);
         let client = Self {
             id: generate_client_id(),
+            client_key,
             sender,
             subscription: RwLock::new(subscription),
         };
@@ -193,7 +210,7 @@ impl PushClient {
     }
 
     pub fn send(&self, msg: PushMessage) -> bool {
-        self.sender.send(msg).is_ok()
+        self.sender.try_send(msg).is_ok()
     }
 
     pub fn update_subscription(&self, subscription: ClientSubscription) {
@@ -207,6 +224,8 @@ impl PushClient {
 
 pub struct PushManager {
     clients: DashMap<u64, Arc<PushClient>>,
+    buckets: DashMap<String, Vec<u64>>,
+    bucket_order: Mutex<VecDeque<String>>,
     state: SharedAdminState,
 }
 
@@ -214,24 +233,49 @@ impl PushManager {
     pub fn new(state: SharedAdminState) -> Self {
         Self {
             clients: DashMap::new(),
+            buckets: DashMap::new(),
+            bucket_order: Mutex::new(VecDeque::new()),
             state,
         }
     }
 
     pub fn register_client(
         &self,
+        client_key: String,
         subscription: ClientSubscription,
-    ) -> (Arc<PushClient>, mpsc::UnboundedReceiver<PushMessage>) {
-        let (client, receiver) = PushClient::new(subscription);
+    ) -> (Arc<PushClient>, mpsc::Receiver<PushMessage>) {
+        let evicted = self.ensure_bucket_capacity(&client_key);
+        for client_id in evicted {
+            if let Some((_, client)) = self.clients.remove(&client_id) {
+                let _ = client.send(PushMessage::Disconnect(DisconnectData {
+                    reason: "Too many active client channels".to_string(),
+                }));
+            }
+        }
+
+        let (client, receiver) = PushClient::new(client_key.clone(), subscription);
         let client = Arc::new(client);
         let client_id = client.id;
         self.clients.insert(client_id, client.clone());
+        self.buckets
+            .entry(client_key)
+            .and_modify(|v| v.push(client_id))
+            .or_insert_with(|| vec![client_id]);
         info!(client_id = client_id, "Push client registered");
         (client, receiver)
     }
 
     pub fn unregister_client(&self, client_id: u64) {
-        if self.clients.remove(&client_id).is_some() {
+        if let Some((_, client)) = self.clients.remove(&client_id) {
+            if let Some(mut bucket) = self.buckets.get_mut(&client.client_key) {
+                bucket.retain(|id| *id != client_id);
+                if bucket.is_empty() {
+                    drop(bucket);
+                    self.buckets.remove(&client.client_key);
+                    let mut order = self.bucket_order.lock();
+                    order.retain(|k| k != &client.client_key);
+                }
+            }
             info!(client_id = client_id, "Push client unregistered");
         }
     }
@@ -240,9 +284,37 @@ impl PushManager {
         self.clients.len()
     }
 
+    fn ensure_bucket_capacity(&self, client_key: &str) -> Vec<u64> {
+        let mut evicted_client_ids = Vec::new();
+        let mut order = self.bucket_order.lock();
+
+        if let Some(pos) = order.iter().position(|k| k == client_key) {
+            let k = order.remove(pos).unwrap_or_else(|| client_key.to_string());
+            order.push_back(k);
+        } else {
+            order.push_back(client_key.to_string());
+        }
+
+        while order.len() > MAX_CLIENT_CHANNELS {
+            let Some(evicted_key) = order.pop_front() else {
+                break;
+            };
+            if let Some((_, client_ids)) = self.buckets.remove(&evicted_key) {
+                evicted_client_ids.extend(client_ids);
+            }
+        }
+
+        evicted_client_ids
+    }
+
     fn enrich_summary(&self, mut summary: TrafficSummary) -> TrafficSummary {
         if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-            if let Some(status) = self
+            if summary.is_sse {
+                if let Some(status) = self.state.sse_hub.get_socket_status(&summary.id) {
+                    summary.frame_count = status.frame_count;
+                    summary.socket_status = Some(status);
+                }
+            } else if let Some(status) = self
                 .state
                 .connection_monitor
                 .get_connection_status(&summary.id)
@@ -259,13 +331,25 @@ impl PushManager {
                     });
                 }
             }
+
+            if summary.is_sse {
+                if let Some(ref socket_status) = summary.socket_status {
+                    let total = socket_status.send_bytes + socket_status.receive_bytes;
+                    summary.response_size = summary.response_size.max(total as usize);
+                }
+            }
         }
         summary
     }
 
     fn enrich_compact_summary(&self, mut summary: TrafficSummaryCompact) -> TrafficSummaryCompact {
         if summary.is_sse() || summary.is_websocket() || summary.is_tunnel() {
-            if let Some(status) = self
+            if summary.is_sse() {
+                if let Some(status) = self.state.sse_hub.get_socket_status(&summary.id) {
+                    summary.fc = status.frame_count;
+                    summary.ss = Some(status);
+                }
+            } else if let Some(status) = self
                 .state
                 .connection_monitor
                 .get_connection_status(&summary.id)
@@ -280,6 +364,13 @@ impl PushManager {
                         frame_count: metadata.frame_count as usize,
                         ..Default::default()
                     });
+                }
+            }
+
+            if summary.is_sse() {
+                if let Some(ref socket_status) = summary.ss {
+                    let total = socket_status.send_bytes + socket_status.receive_bytes;
+                    summary.res_sz = summary.res_sz.max(total as usize);
                 }
             }
         }

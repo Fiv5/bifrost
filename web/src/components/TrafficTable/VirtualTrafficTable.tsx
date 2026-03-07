@@ -64,7 +64,11 @@ interface ColumnDef {
   width: number | string;
   minWidth?: number;
   align?: "left" | "center" | "right";
-  render: (record: TrafficSummary, textSecondary: string) => React.ReactNode;
+  render: (
+    record: TrafficSummary,
+    textSecondary: string,
+    rowIndex: number,
+  ) => React.ReactNode;
 }
 
 const getColumnStyle = (col: ColumnDef): CSSProperties => {
@@ -92,11 +96,11 @@ const columns: ColumnDef[] = [
     title: "#",
     width: 50,
     align: "right",
-    render: (record, textSecondary) => (
+    render: (record, textSecondary, rowIndex) => (
       <span
         style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
       >
-        {formatSequence(record.sequence)}
+        {formatSequence(record._displayIndex ?? rowIndex + 1)}
       </span>
     ),
   },
@@ -382,8 +386,8 @@ const areRowPropsEqual = (
   const prevRecord = prev.record;
   const nextRecord = next.record;
   if (prevRecord.id !== nextRecord.id) return false;
+  if (prevRecord._displayIndex !== nextRecord._displayIndex) return false;
   if (prevRecord.status !== nextRecord.status) return false;
-  if (prevRecord.sequence !== nextRecord.sequence) return false;
   if (prevRecord.duration_ms !== nextRecord.duration_ms) return false;
   if (prevRecord.response_size !== nextRecord.response_size) return false;
   if (prevRecord.end_time !== nextRecord.end_time) return false;
@@ -447,7 +451,7 @@ const TableRow = memo(function TableRow({
           key={col.key}
           style={{ ...baseCellStyle, ...columnStyles[colIndex] }}
         >
-          {col.render(record, textSecondary)}
+          {col.render(record, textSecondary, rowIndex)}
         </div>
       ))}
     </div>

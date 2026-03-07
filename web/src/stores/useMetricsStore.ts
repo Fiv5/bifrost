@@ -144,6 +144,7 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       state.historyUnsubscribe();
       set({ historyUnsubscribe: null });
     }
+    pushService.disconnectIfIdle();
   },
 
   handleOverviewPush: (data: OverviewData) => {

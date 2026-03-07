@@ -10,3 +10,8 @@ node_modules
 e2e-tests/.test_results/
 .bifrost_test/
 .bifrost-*-test/
+.bifrost-e2e-*/
+debug.md
+.trae/skills/e2e-verify/scripts/logs/
+.trae/skills/e2e-verify/logs/
+web/test-results/

@@ -101,6 +101,14 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.handle_json_sse()
             return
 
+        if path == "/sse/chunked":
+            count = int(query.get("count", [3])[0])
+            interval = float(query.get("interval", [0.05])[0])
+            crlf = query.get("crlf", ["0"])[0] == "1"
+            chunk = int(query.get("chunk", [3])[0])
+            self.handle_chunked_sse(count=count, interval=interval, crlf=crlf, chunk=chunk)
+            return
+
         self.send_error(404, "Not Found")
 
     def do_POST(self):
@@ -196,6 +204,63 @@ class SSEHandler(BaseHTTPRequestHandler):
             ):
                 return
             time.sleep(0.2)
+
+    def build_sse_event_bytes(self, data, event=None, id=None, retry=None, crlf=False):
+        lines = []
+        if id is not None:
+            lines.append(f"id: {id}")
+        if event is not None:
+            lines.append(f"event: {event}")
+        if retry is not None:
+            lines.append(f"retry: {retry}")
+        for line in str(data).split("\n"):
+            lines.append(f"data: {line}")
+        lines.append("")
+        lines.append("")
+
+        sep = "\r\n" if crlf else "\n"
+        return sep.join(lines).encode("utf-8")
+
+    def send_bytes_chunked(self, data_bytes, chunk=3, interval=0.05):
+        try:
+            i = 0
+            n = len(data_bytes)
+            while i < n:
+                self.wfile.write(data_bytes[i:i + chunk])
+                self.wfile.flush()
+                i += chunk
+                if interval > 0:
+                    time.sleep(interval)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            return False
+
+    def handle_chunked_sse(self, count=3, interval=0.05, crlf=False, chunk=3):
+        self.send_sse_headers()
+
+        for i in range(count):
+            event_id = i + 1
+            data = {
+                "message": f"Chunked Event {event_id}",
+                "index": i,
+                "total": count,
+                "timestamp": time.time()
+            }
+            event_bytes = self.build_sse_event_bytes(
+                data=json.dumps(data),
+                event="message",
+                id=str(event_id),
+                crlf=crlf,
+            )
+            if not self.send_bytes_chunked(event_bytes, chunk=chunk, interval=interval):
+                return
+
+        done_bytes = self.build_sse_event_bytes(
+            data=json.dumps({"done": True, "total_events": count}),
+            event="done",
+            crlf=crlf,
+        )
+        self.send_bytes_chunked(done_bytes, chunk=chunk, interval=interval)
 
 
 def run_server(port=3003, host="0.0.0.0"):

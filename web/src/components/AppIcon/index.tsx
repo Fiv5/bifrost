@@ -1,6 +1,7 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { Avatar } from "antd";
 import { AppstoreOutlined } from "@ant-design/icons";
+import { apiFetch } from "../../api/apiFetch";
 
 interface AppIconProps {
   appName: string;
@@ -14,7 +15,7 @@ const pendingRequests = new Map<string, Promise<string | null>>();
 const fetchAppIcon = async (appName: string): Promise<string | null> => {
   try {
     const encodedName = encodeURIComponent(appName);
-    const response = await fetch(`/_bifrost/api/app-icon/${encodedName}`);
+    const response = await apiFetch(`/_bifrost/api/app-icon/${encodedName}`);
     
     if (response.ok) {
       const blob = await response.blob();

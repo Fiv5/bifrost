@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import type { AxiosRequestConfig } from 'axios';
+import { getClientId } from '../services/clientId';
 
 const API_BASE = '/_bifrost/api';
 
@@ -9,6 +10,12 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+});
+
+client.interceptors.request.use((config) => {
+  config.headers = config.headers ?? {};
+  config.headers['X-Client-Id'] = getClientId();
+  return config;
 });
 
 client.interceptors.response.use(

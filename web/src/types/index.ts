@@ -78,6 +78,7 @@ export interface TrafficSummary {
   _contentTypeShort?: string;
   _clientDisplay?: string;
   _clientTooltip?: string;
+  _displayIndex?: number;
 }
 
 export interface ScriptLogEntry {

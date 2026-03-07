@@ -1,5 +1,6 @@
 import { editor, MarkerSeverity } from 'monaco-editor';
 import { setFixesForMarker, clearFixesCache, type CodeFix } from './codeAction';
+import { apiFetch } from '../../../api/apiFetch';
 
 const MARKER_OWNER = 'bifrost-validation';
 
@@ -55,7 +56,7 @@ export async function validateRules(
   content: string,
   globalValues?: Record<string, string>
 ): Promise<ValidationResult> {
-  const response = await fetch('/_bifrost/api/rules/validate', {
+  const response = await apiFetch('/_bifrost/api/rules/validate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
