@@ -540,8 +540,9 @@ pub async fn handle_http_request(
         .and_then(|s| s.parse::<usize>().ok());
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let has_req_body_override = resolved_rules.req_body.is_some();
     let has_req_scripts = !resolved_rules.req_scripts.is_empty();
-    let needs_req_body = needs_req_processing || has_req_scripts;
+    let needs_req_body_read = !has_req_body_override && (needs_req_processing || has_req_scripts);
     let req_body_too_large = content_length
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
@@ -549,7 +550,7 @@ pub async fn handle_http_request(
     let mut skip_req_scripts = false;
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let (body_bytes, final_body) = if needs_req_body {
+    let (body_bytes, final_body) = if needs_req_body_read {
         if req_body_too_large {
             warn!(
                 "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
@@ -573,32 +574,36 @@ pub async fn handle_http_request(
                 .await
                 .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
                 .to_bytes();
-            let processed = if let Some(ref new_body) = resolved_rules.req_body {
-                if verbose_logging {
-                    info!(
-                        "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
-                        ctx.id_str(),
-                        bytes.len(),
-                        new_body.len()
-                    );
-                }
-                new_body.clone()
-            } else {
-                let req_content_type = parts
-                    .headers
-                    .get(hyper::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok());
-                apply_body_rules(
-                    bytes.clone(),
-                    &resolved_rules,
-                    Phase::Request,
-                    req_content_type,
-                    verbose_logging,
-                    ctx,
-                )
-            };
+            let req_content_type = parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok());
+            let processed = apply_body_rules(
+                bytes.clone(),
+                &resolved_rules,
+                Phase::Request,
+                req_content_type,
+                verbose_logging,
+                ctx,
+            );
             (bytes, processed)
         }
+    } else if let Some(ref new_body) = resolved_rules.req_body {
+        if verbose_logging {
+            info!(
+                "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
+                ctx.id_str(),
+                content_length.unwrap_or(0),
+                new_body.len()
+            );
+        }
+        let mut body = body;
+        while let Some(frame) = body.frame().await {
+            if frame.is_err() {
+                break;
+            }
+        }
+        (Bytes::new(), new_body.clone())
     } else {
         if admin_state.is_some() {
             let (tee_body, capture) =
@@ -673,6 +678,13 @@ pub async fn handle_http_request(
         } else {
             final_body
         };
+    if streaming_body.is_none() {
+        parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        parts.headers.insert(
+            hyper::header::CONTENT_LENGTH,
+            hyper::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
+        );
+    }
     let request_body_size = if !final_body.is_empty() {
         final_body.len()
     } else {
@@ -1124,6 +1136,8 @@ pub async fn handle_http_request(
         .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
+    let has_res_body_override = resolved_rules.res_body.is_some();
+    let needs_res_body_read = needs_processing && !has_res_body_override;
 
     let is_websocket = res_parts.status == StatusCode::SWITCHING_PROTOCOLS
         && res_parts
@@ -1143,9 +1157,9 @@ pub async fn handle_http_request(
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
-    let skip_body_processing = !needs_processing || res_body_too_large;
+    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
 
-    if needs_processing && res_body_too_large {
+    if needs_res_body_read && res_body_too_large {
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             ctx.id_str(),
@@ -1296,13 +1310,18 @@ pub async fn handle_http_request(
         }
     }
 
-    let receive_start = Instant::now();
-    let res_body_bytes = res_body
-        .collect()
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
-        .to_bytes();
-    let receive_ms = receive_start.elapsed().as_millis() as u64;
+    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+        let receive_start = Instant::now();
+        let res_body_bytes = res_body
+            .collect()
+            .await
+            .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
+            .to_bytes();
+        let receive_ms = receive_start.elapsed().as_millis() as u64;
+        (res_body_bytes, receive_ms)
+    } else {
+        (Bytes::new(), 0)
+    };
 
     let content_type = res_parts
         .headers
@@ -1311,12 +1330,13 @@ pub async fn handle_http_request(
         .unwrap_or("")
         .to_string();
 
+    let original_res_body_len = res_content_length.unwrap_or(res_body_bytes.len());
     let final_res_body = if let Some(ref new_body) = resolved_rules.res_body {
         if verbose_logging {
             info!(
                 "[{}] [RES_BODY] replaced: {} bytes -> {} bytes",
                 ctx.id_str(),
-                res_body_bytes.len(),
+                original_res_body_len,
                 new_body.len()
             );
         }
@@ -1393,7 +1413,7 @@ pub async fn handle_http_request(
             final_res_body
         };
 
-    if res_body_bytes.len() != final_res_body.len() {
+    if original_res_body_len != final_res_body.len() {
         res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
         res_parts.headers.insert(
             hyper::header::CONTENT_LENGTH,
@@ -1403,7 +1423,7 @@ pub async fn handle_http_request(
             info!(
                 "[{}] Updated Content-Length: {} -> {}",
                 ctx.id_str(),
-                res_body_bytes.len(),
+                original_res_body_len,
                 final_res_body.len()
             );
         }

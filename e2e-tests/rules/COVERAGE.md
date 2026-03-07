@@ -29,10 +29,6 @@
 | `ws`               | ✅   | forwarding/ws_forward.txt    | WebSocket            |
 | `wss`              | ✅   | forwarding/ws_forward.txt    | WebSocket Secure     |
 | `proxy`            | 🔄   | advanced/proxy.txt           | 二级代理             |
-| `http-proxy`       | 🔄   | advanced/proxy.txt           | proxy 别名           |
-| `https2http-proxy` | 🔄   | advanced/proxy.txt           | HTTPS→HTTP 代理      |
-| `http2https-proxy` | 🔄   | advanced/proxy.txt           | HTTP→HTTPS 代理      |
-| `internal-proxy`   | 🔄   | advanced/proxy.txt           | 内部代理             |
 | `pac`              | ❌   | -                            | PAC 自动配置         |
 | `redirect`         | ✅   | redirect/redirect.txt        | 302 重定向           |
 | `locationHref`     | ✅   | redirect/redirect.txt        | location.href 重定向 |
@@ -45,10 +41,10 @@
 | 协议         | 状态 | 测试文件                   | 说明           |
 | ------------ | ---- | -------------------------- | -------------- |
 | `reqHeaders` | ⚠️   | request_modify/headers.txt | 请求头修改     |
-| `reqBody`    | 🔄   | request_modify/body.txt    | 请求体替换     |
-| `reqPrepend` | 🔄   | request_modify/body.txt    | 请求体前置     |
-| `reqAppend`  | 🔄   | request_modify/body.txt    | 请求体追加     |
-| `reqReplace` | 🔄   | request_modify/body.txt    | 请求体内容替换 |
+| `reqBody`    | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体替换 |
+| `reqPrepend` | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体前置 |
+| `reqAppend`  | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体追加 |
+| `reqReplace` | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体内容替换 |
 | `reqCookies` | ⚠️   | request_modify/cookies.txt | 请求 Cookie    |
 | `reqCors`    | ⚠️   | response_modify/cors.txt   | 请求 CORS      |
 | `reqDelay`   | ✅   | response_modify/delay.txt  | 请求延迟       |
@@ -68,10 +64,10 @@
 | 协议         | 状态 | 测试文件                    | 说明           |
 | ------------ | ---- | --------------------------- | -------------- |
 | `resHeaders` | ⚠️   | response_modify/headers.txt | 响应头修改     |
-| `resBody`    | ⚠️   | response_modify/body.txt    | 响应体替换     |
-| `resPrepend` | 🔄   | response_modify/body.txt    | 响应体前置     |
-| `resAppend`  | 🔄   | response_modify/body.txt    | 响应体追加     |
-| `resReplace` | 🔄   | response_modify/body.txt    | 响应体内容替换 |
+| `resBody`    | ✅   | response_modify/body.txt, response_modify/res_body_large.txt, advanced/body_size_strategy.txt | 响应体替换 |
+| `resPrepend` | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体前置 |
+| `resAppend`  | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体追加 |
+| `resReplace` | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体内容替换 |
 | `resCookies` | ⚠️   | response_modify/cookies.txt | 响应 Cookie    |
 | `resCors`    | ⚠️   | response_modify/cors.txt    | 响应 CORS      |
 | `resDelay`   | ✅   | response_modify/delay.txt   | 响应延迟       |
@@ -91,15 +87,15 @@
 
 | 协议          | 状态 | 测试文件                | 说明            |
 | ------------- | ---- | ----------------------- | --------------- |
-| `htmlAppend`  | 🔄   | content_inject/html.txt | HTML 追加       |
-| `htmlPrepend` | 🔄   | content_inject/html.txt | HTML 前置       |
-| `htmlBody`    | 🔄   | content_inject/html.txt | HTML Body 替换  |
-| `jsAppend`    | 🔄   | content_inject/js.txt   | JS 追加         |
-| `jsPrepend`   | 🔄   | content_inject/js.txt   | JS 前置         |
-| `jsBody`      | 🔄   | content_inject/js.txt   | JS Body 替换    |
-| `cssAppend`   | 🔄   | content_inject/css.txt  | CSS 追加        |
-| `cssPrepend`  | 🔄   | content_inject/css.txt  | CSS 前置        |
-| `cssBody`     | 🔄   | content_inject/css.txt  | CSS Body 替换   |
+| `htmlAppend`  | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML 追加 |
+| `htmlPrepend` | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML 前置 |
+| `htmlBody`    | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML Body 替换 |
+| `jsAppend`    | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS 追加 |
+| `jsPrepend`   | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS 前置 |
+| `jsBody`      | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS Body 替换 |
+| `cssAppend`   | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS 追加 |
+| `cssPrepend`  | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS 前置 |
+| `cssBody`     | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS Body 替换 |
 | `html`        | 🔄   | content_inject/html.txt | htmlAppend 别名 |
 | `js`          | 🔄   | content_inject/js.txt   | jsAppend 别名   |
 | `css`         | 🔄   | content_inject/css.txt  | cssAppend 别名  |
@@ -115,15 +111,9 @@
 
 | 协议            | 状态 | 测试文件                   | 说明        |
 | --------------- | ---- | -------------------------- | ----------- |
-| `filter`        | ⚠️   | control/filter.txt         | 过滤器      |
-| `ignore`        | ⚠️   | control/ignore.txt         | 忽略规则    |
-| `skip`          | ⚠️   | control/ignore.txt         | ignore 别名 |
 | `enable`        | 🔄   | control/enable_disable.txt | 启用规则    |
 | `disable`       | 🔄   | control/enable_disable.txt | 禁用规则    |
 | `delete`        | 🔄   | control/enable_disable.txt | 删除规则    |
-| `G`             | 🔄   | control/group.txt          | 分组协议    |
-| `P`             | 🔄   | control/group.txt          | G 别名      |
-| `style`         | 🔄   | control/group.txt          | 样式协议    |
 | `lineProps`     | ✅   | control/line_props.txt     | 行属性配置  |
 | `includeFilter` | ⚠️   | control/include_filter.txt | 包含过滤器  |
 | `excludeFilter` | 🔄   | control/exclude_filter.txt | 排除过滤器  |

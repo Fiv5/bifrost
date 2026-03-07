@@ -1005,13 +1005,15 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|s| s.parse::<usize>().ok());
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let has_req_body_override = resolved_rules.req_body.is_some();
+    let needs_req_body_read = needs_req_processing && !has_req_body_override;
     let req_body_too_large = req_content_length
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let body_bytes = if needs_req_processing && !req_body_too_large {
+    let body_bytes = if needs_req_body_read && !req_body_too_large {
         match body.collect().await {
             Ok(collected) => collected.to_bytes().to_vec(),
             Err(e) => {
@@ -1022,8 +1024,24 @@ async fn handle_intercepted_request_with_protocol(
                     .unwrap());
             }
         }
+    } else if let Some(ref new_body) = resolved_rules.req_body {
+        if verbose_logging {
+            info!(
+                "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
+                req_id,
+                req_content_length.unwrap_or(0),
+                new_body.len()
+            );
+        }
+        let mut body = body;
+        while let Some(frame) = body.frame().await {
+            if frame.is_err() {
+                break;
+            }
+        }
+        new_body.to_vec()
     } else {
-        if needs_req_processing && req_body_too_large {
+        if needs_req_body_read && req_body_too_large {
             warn!(
                 "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
                 req_id,
@@ -1067,6 +1085,9 @@ async fn handle_intercepted_request_with_protocol(
         if name == hyper::header::HOST {
             continue;
         }
+        if name == hyper::header::CONTENT_LENGTH {
+            continue;
+        }
         if name == hyper::header::REFERER && resolved_rules.referer.is_some() {
             skip_referer = true;
             continue;
@@ -1081,6 +1102,11 @@ async fn handle_intercepted_request_with_protocol(
         new_req = new_req.header(name, value);
     }
     new_req = new_req.header(hyper::header::HOST, &actual_target_host);
+    if streaming_body.is_none() {
+        new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
+    } else if let Some(content_length) = req_content_length {
+        new_req = new_req.header(hyper::header::CONTENT_LENGTH, content_length);
+    }
 
     if let Some(ref referer) = resolved_rules.referer {
         if !referer.is_empty() {
@@ -1712,6 +1738,8 @@ async fn handle_intercepted_request_with_protocol(
         .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
+    let has_res_body_override = resolved_rules.res_body.is_some();
+    let needs_res_body_read = needs_processing && !has_res_body_override;
 
     let is_websocket = res_parts.status == hyper::StatusCode::SWITCHING_PROTOCOLS
         && res_parts
@@ -1731,9 +1759,9 @@ async fn handle_intercepted_request_with_protocol(
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
-    let skip_body_processing = !needs_processing || res_body_too_large;
+    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
 
-    if needs_processing && res_body_too_large {
+    if needs_res_body_read && res_body_too_large {
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             req_id,
@@ -1905,18 +1933,24 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let receive_start = Instant::now();
-    let res_body_bytes = match res_body.collect().await {
-        Ok(collected) => collected.to_bytes().to_vec(),
-        Err(e) => {
-            error!("[{}] Failed to read response body: {}", req_id, e);
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
+    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+        let receive_start = Instant::now();
+        let res_body_bytes = match res_body.collect().await {
+            Ok(collected) => collected.to_bytes().to_vec(),
+            Err(e) => {
+                error!("[{}] Failed to read response body: {}", req_id, e);
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
+        let receive_ms = receive_start.elapsed().as_millis() as u64;
+        (res_body_bytes, receive_ms)
+    } else {
+        (Vec::new(), 0)
     };
-    let receive_ms = receive_start.elapsed().as_millis() as u64;
+    let original_res_body_len = res_content_length.unwrap_or(res_body_bytes.len());
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1931,7 +1965,7 @@ async fn handle_intercepted_request_with_protocol(
             .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
         state
             .metrics_collector
-            .add_bytes_received_by_type(traffic_type, res_body_bytes.len() as u64);
+            .add_bytes_received_by_type(traffic_type, original_res_body_len as u64);
         state
             .metrics_collector
             .increment_requests_by_type(traffic_type);
@@ -1954,7 +1988,7 @@ async fn handle_intercepted_request_with_protocol(
         record.response_size = calculate_response_size(
             res_parts.status.as_u16(),
             &res_headers,
-            res_body_bytes.len(),
+            original_res_body_len,
         );
         record.duration_ms = total_ms;
         record.host = original_host.to_string();
@@ -2078,7 +2112,7 @@ async fn handle_intercepted_request_with_protocol(
         &ctx,
     );
 
-    if res_body_bytes.len() != final_body.len() {
+    if original_res_body_len != final_body.len() {
         res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
         res_parts.headers.insert(
             hyper::header::CONTENT_LENGTH,
@@ -2088,7 +2122,7 @@ async fn handle_intercepted_request_with_protocol(
             info!(
                 "[{}] Updated Content-Length: {} -> {}",
                 req_id,
-                res_body_bytes.len(),
+                original_res_body_len,
                 final_body.len()
             );
         }

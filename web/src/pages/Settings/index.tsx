@@ -524,8 +524,8 @@ export default function Settings() {
     schedulePerformanceUpdate(
       "max_body_memory_size",
       { max_body_memory_size: value },
-      "Max body memory size updated",
-      "Failed to update max body memory size",
+      "Max body inline size updated",
+      "Failed to update max body inline size",
     );
   };
 
@@ -1046,10 +1046,10 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                         size={0}
                         style={{ width: "100%" }}
                       >
-                        <Text>Max Body Memory Size</Text>
+                        <Text>Max Body Inline Size (DB)</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Bodies up to this size are stored in memory; larger
-                          bodies are stored as files on disk.
+                          Bodies up to this size are stored inline in SQLite;
+                          larger bodies are stored as files in body_cache.
                         </Text>
                         <Slider
                           min={64 * 1024}
