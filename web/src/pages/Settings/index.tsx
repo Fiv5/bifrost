@@ -990,7 +990,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       <Space direction="vertical" size={0}>
                         <Text>Max Records</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Maximum number of traffic records to keep in memory
+                          Keep only the newest records in memory; older ones are
+                          evicted and the database prunes the oldest entries.
                         </Text>
                       </Space>
                     </Col>
@@ -1012,7 +1013,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       <Space direction="vertical" size={0} style={{ width: "100%" }}>
                         <Text>Max DB Size</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Maximum size of traffic database on disk
+                          Caps traffic.db on disk; when exceeded, the oldest
+                          records are deleted and the database is vacuumed.
                         </Text>
                         <Slider
                           min={256 * 1024 * 1024}
@@ -1046,7 +1048,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       >
                         <Text>Max Body Memory Size</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Bodies larger than this will be stored to disk
+                          Bodies up to this size are stored in memory; larger
+                          bodies are stored as files on disk.
                         </Text>
                         <Slider
                           min={64 * 1024}
@@ -1083,8 +1086,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       >
                         <Text>Max Body Buffer Size</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Maximum size of body to capture (larger bodies will be
-                          truncated)
+                          Maximum body size to capture; larger bodies are
+                          truncated and forwarded as streams (rules may skip).
                         </Text>
                         <Slider
                           min={1 * 1024 * 1024}
@@ -1121,7 +1124,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       >
                         <Text>File Retention Days</Text>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          Number of days to keep body files on disk
+                          Files older than this are deleted (body and WebSocket
+                          payload cache).
                         </Text>
                         <Slider
                           min={1}
