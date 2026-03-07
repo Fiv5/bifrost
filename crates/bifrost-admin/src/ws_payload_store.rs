@@ -282,6 +282,34 @@ impl WsPayloadStore {
         Ok(removed_count)
     }
 
+    pub fn delete_by_ids(&self, ids: &[String]) -> std::io::Result<usize> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let payload_dir = self.payload_dir();
+        if !payload_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut removed_count = 0;
+        let mut state = self.state.lock();
+        for id in ids {
+            let safe_id = Self::safe_connection_id(id);
+            if let Some(mut writer) = state.writers.pop(&safe_id) {
+                let _ = writer.flush();
+            }
+            let path = self.connection_path(&safe_id);
+            if path.is_file() && fs::remove_file(&path).is_ok() {
+                removed_count += 1;
+            }
+        }
+        tracing::debug!(
+            count = removed_count,
+            "[WS_PAYLOAD_STORE] Deleted payloads by ids"
+        );
+        Ok(removed_count)
+    }
+
     fn get_retention_days(&self) -> u64 {
         self.state.lock().retention_days
     }

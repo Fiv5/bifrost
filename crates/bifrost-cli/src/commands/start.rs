@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bifrost_admin::{
-    start_metrics_collector_task, start_push_tasks, start_ws_payload_cleanup_task,
-    status_printer::TlsStatusInfo, AdminState, BodyStore, PushManager, ReplayDbStore,
-    RuntimeConfig, WsPayloadStore,
+    start_frame_cleanup_task, start_metrics_collector_task, start_push_tasks,
+    start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
+    PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -50,6 +50,8 @@ pub fn run_start(
     socks5_port: Option<u16>,
     log_level: &str,
     daemon: bool,
+    log_dir: PathBuf,
+    log_retention_days: u32,
     skip_cert_check: bool,
     access_mode: Option<String>,
     whitelist: Option<String>,
@@ -263,6 +265,8 @@ pub fn run_start(
                 enable_system_proxy,
                 system_proxy_bypass.clone(),
                 config_manager,
+                log_dir.clone(),
+                log_retention_days,
             )?;
         }
         #[cfg(not(unix))]
@@ -531,10 +535,11 @@ pub fn run_foreground(
             .expect("Failed to create traffic database"),
         );
 
-        let frame_store = bifrost_admin::FrameStore::new(
+        let frame_store = Arc::new(bifrost_admin::FrameStore::new(
             bifrost_dir.clone(),
             Some(stored_config.traffic.file_retention_days * 24),
-        );
+        ));
+        start_frame_cleanup_task(frame_store.clone());
 
         let values_storage = config_manager.values_storage().await;
         let rules_storage = config_manager.rules_storage().await;
@@ -580,7 +585,7 @@ pub fn run_foreground(
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
             .with_traffic_db_store_shared(traffic_db_store.clone())
-            .with_frame_store(frame_store)
+            .with_frame_store_shared(frame_store)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_values_storage(values_storage)
@@ -672,6 +677,7 @@ pub fn run_foreground(
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 pub fn run_daemon(
     config: ProxyConfig,
     cli_rules: Vec<Rule>,
@@ -679,6 +685,8 @@ pub fn run_daemon(
     enable_system_proxy: bool,
     system_proxy_bypass: String,
     config_manager: ConfigManager,
+    log_dir: PathBuf,
+    log_retention_days: u32,
 ) -> bifrost_core::Result<()> {
     use nix::unistd::{chdir, dup2, fork, setsid, ForkResult};
     use std::os::unix::io::AsRawFd;
@@ -721,17 +729,22 @@ pub fn run_daemon(
 
             let _ = chdir(&bifrost_dir);
 
+            let err_retention_days = std::cmp::min(log_retention_days, 7);
+            if let Err(e) = bifrost_core::rotate_daemon_err_log(&log_dir, err_retention_days) {
+                eprintln!("Warning: Failed to rotate daemon err log: {}", e);
+            }
+            let _ = std::fs::create_dir_all(&log_dir);
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(bifrost_dir.join("bifrost.log"))
+                .open(log_dir.join("bifrost.log"))
                 .map_err(|e| {
                     bifrost_core::BifrostError::Config(format!("Failed to open log file: {}", e))
                 })?;
             let err_file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(bifrost_dir.join("bifrost.err"))
+                .open(log_dir.join("bifrost.err"))
                 .map_err(|e| {
                     bifrost_core::BifrostError::Config(format!(
                         "Failed to open error log file: {}",
@@ -742,9 +755,22 @@ pub fn run_daemon(
             let _ = dup2(log_file.as_raw_fd(), 1);
             let _ = dup2(err_file.as_raw_fd(), 2);
 
-            if let Err(e) = bifrost_core::reinit_logging_for_daemon(&bifrost_dir) {
+            if let Err(e) = bifrost_core::reinit_logging_for_daemon(&log_dir, log_retention_days) {
                 eprintln!("Warning: Failed to initialize logging for daemon: {}", e);
             }
+
+            let err_log_dir = log_dir.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+                let _ = bifrost_core::rotate_daemon_err_log(&err_log_dir, err_retention_days);
+                if let Ok(err_file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(err_log_dir.join("bifrost.err"))
+                {
+                    let _ = dup2(err_file.as_raw_fd(), 2);
+                }
+            });
 
             let pid = std::process::id();
             let runtime_info = RuntimeInfo {
@@ -834,6 +860,7 @@ pub fn run_daemon(
                     stored_config.traffic.sse_stream_flush_bytes,
                     Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
                 )));
+                bifrost_admin::start_body_cleanup_task(body_store.clone());
 
                 let ws_payload_store = Arc::new(WsPayloadStore::new(
                     bifrost_dir.clone(),
@@ -855,10 +882,11 @@ pub fn run_daemon(
                     .expect("Failed to create traffic database"),
                 );
 
-                let frame_store = bifrost_admin::FrameStore::new(
+                let frame_store = Arc::new(bifrost_admin::FrameStore::new(
                     bifrost_dir.clone(),
                     Some(stored_config.traffic.file_retention_days * 24),
-                );
+                ));
+                start_frame_cleanup_task(frame_store.clone());
 
                 let values_storage = config_manager.values_storage().await;
                 let rules_storage = config_manager.rules_storage().await;
@@ -902,7 +930,7 @@ pub fn run_daemon(
                     .with_body_store(body_store)
                     .with_ws_payload_store(ws_payload_store)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
-                    .with_frame_store(frame_store)
+                    .with_frame_store_shared(frame_store)
                     .with_runtime_config(runtime_config)
                     .with_connection_registry(connection_registry)
                     .with_values_storage(values_storage)
@@ -916,6 +944,9 @@ pub fn run_daemon(
                     .with_replay_db_store_shared_opt(replay_db_store);
 
                 bifrost_admin::start_db_cleanup_task(traffic_db_store);
+                bifrost_admin::start_connection_cleanup_task(
+                    admin_state.connection_monitor.clone(),
+                );
 
                 let metrics_collector = admin_state.metrics_collector.clone();
                 let rules_storage_for_resolver = admin_state.rules_storage.clone();

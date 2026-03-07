@@ -24,6 +24,10 @@ export interface TrafficUpdatesDataCompact {
 
 export type { TrafficDeltaData };
 
+export interface TrafficDeletedData {
+  ids: string[];
+}
+
 export interface OverviewData {
   system: SystemOverview['system'];
   metrics: MetricsSnapshot;
@@ -69,6 +73,7 @@ export interface ReplayHistoryUpdatedData {
 export type PushMessageType =
   | 'traffic_updates'
   | 'traffic_delta'
+  | 'traffic_deleted'
   | 'overview_update'
   | 'metrics_update'
   | 'history_update'
@@ -83,6 +88,7 @@ export interface PushMessage {
   data:
   | TrafficUpdatesData
   | TrafficDeltaData
+  | TrafficDeletedData
   | OverviewData
   | MetricsData
   | HistoryData
@@ -127,6 +133,7 @@ class PushService {
 
   private trafficHandlers: Set<MessageHandler<TrafficUpdatesData>> = new Set();
   private trafficDeltaHandlers: Set<MessageHandler<TrafficDeltaData>> = new Set();
+  private trafficDeletedHandlers: Set<MessageHandler<TrafficDeletedData>> = new Set();
   private overviewHandlers: Set<MessageHandler<OverviewData>> = new Set();
   private metricsHandlers: Set<MessageHandler<MetricsData>> = new Set();
   private historyHandlers: Set<MessageHandler<HistoryData>> = new Set();
@@ -263,6 +270,11 @@ class PushService {
         this.trafficDeltaHandlers.forEach((handler) => handler(data));
         break;
       }
+      case 'traffic_deleted': {
+        const data = message.data as TrafficDeletedData;
+        this.trafficDeletedHandlers.forEach((handler) => handler(data));
+        break;
+      }
       case 'overview_update': {
         const data = message.data as OverviewData;
         this.overviewHandlers.forEach((handler) => handler(data));
@@ -382,6 +394,11 @@ class PushService {
   onTrafficDelta(handler: MessageHandler<TrafficDeltaData>): () => void {
     this.trafficDeltaHandlers.add(handler);
     return () => this.trafficDeltaHandlers.delete(handler);
+  }
+
+  onTrafficDeleted(handler: MessageHandler<TrafficDeletedData>): () => void {
+    this.trafficDeletedHandlers.add(handler);
+    return () => this.trafficDeletedHandlers.delete(handler);
   }
 
   onOverviewUpdate(handler: MessageHandler<OverviewData>): () => void {

@@ -24,6 +24,7 @@ interface TrafficDetailProps {
   requestBody: string | null;
   responseBody: string | null;
   loading?: boolean;
+  error?: string | null;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -95,6 +96,7 @@ export default function TrafficDetail({
   requestBody,
   responseBody,
   loading,
+  error,
 }: TrafficDetailProps) {
   const {
     requestSearch,
@@ -447,6 +449,13 @@ export default function TrafficDetail({
         </div>
       );
     }
+    if (error) {
+      return (
+        <div style={styles.emptyContainer}>
+          <Empty description={error} />
+        </div>
+      );
+    }
     return (
       <div style={styles.emptyContainer}>
         <Empty description="Select a request to view details" />
@@ -545,7 +554,7 @@ export default function TrafficDetail({
   };
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} data-testid="traffic-detail">
       <Header record={record} />
       {renderPanels()}
     </div>

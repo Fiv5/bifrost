@@ -321,6 +321,7 @@ pub struct ResolvedRules {
     pub mock_template: Option<String>,
 
     pub redirect: Option<String>,
+    pub redirect_status: Option<u16>,
     pub location_href: Option<String>,
 
     pub req_speed: Option<u64>,

@@ -1,0 +1,47 @@
+{
+  "name": "Traffic 删除推送验证",
+  "description": "删除记录后列表移除且详情显示原因",
+  "config": {
+    "baseUrl": "http://localhost:3000/_bifrost",
+    "waitForLogin": true,
+    "loginTimeout": 120000,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 进入首页 ====" },
+    { "action": "goto", "url": "/" },
+    { "action": "waitForLogin" },
+    { "action": "waitForSelector", "selector": "[data-testid='traffic-row']" },
+    {
+      "action": "evaluate",
+      "variable": "recordId",
+      "code": "(async () => { const d = await fetch('http://127.0.0.1:9900/_bifrost/api/traffic/updates?limit=50').then(r => r.json()); const all = [...(d.new_records || []), ...(d.updated_records || [])]; const pick = all.find(r => r.s > 0 && (r.flags & 0b111) === 0); return pick?.id || all[0]?.id || ''; })()"
+    },
+    {
+      "action": "assert",
+      "condition": "window.__lastRecordId = '${recordId}'; window.__lastRecordId.length > 0",
+      "message": "成功读取待删除的记录 ID"
+    },
+    { "action": "waitForSelector", "selector": "[data-record-id='${recordId}']" },
+    {
+      "action": "evaluate",
+      "code": "(() => { const el = document.querySelector(`[data-record-id='${recordId}']`); if (el) { el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); } return true; })()"
+    },
+    { "action": "wait", "ms": 800 },
+    {
+      "action": "evaluate",
+      "code": "(async () => { const d = await fetch('http://127.0.0.1:9900/_bifrost/api/traffic', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [window.__lastRecordId] }) }).then(r => r.json()); window.__deleteResp = d; return d; })()"
+    },
+    { "action": "wait", "ms": 800 },
+    {
+      "action": "assert",
+      "condition": "document.querySelector(`[data-record-id=\"${recordId}\"]`) === null",
+      "message": "删除后列表已移除记录"
+    },
+    {
+      "action": "assert",
+      "condition": "document.body.innerText.includes('Request was deleted') || document.body.innerText.includes('not found')",
+      "message": "详情区域显示删除原因"
+    }
+  ]
+}

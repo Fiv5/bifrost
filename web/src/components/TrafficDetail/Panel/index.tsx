@@ -90,6 +90,7 @@ export const Panel = ({
                 color: activeTab === tab.key ? token.colorPrimary : undefined,
               }}
               onClick={() => onTabChange(tab.key)}
+              data-testid={`${name.toLowerCase()}-tab-${tab.key.toLowerCase()}`}
             >
               {tab.label}
             </Text>

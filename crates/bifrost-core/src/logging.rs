@@ -128,6 +128,22 @@ fn extract_date_from_filename(filename: &str, prefix: &str) -> Option<String> {
     Some(date_part.to_string())
 }
 
+fn extract_date_from_suffix(filename: &str, base_name: &str) -> Option<String> {
+    let prefix = format!("{base_name}.");
+    let without_prefix = filename.strip_prefix(&prefix)?;
+    Some(without_prefix.to_string())
+}
+
+fn start_log_cleanup_thread(log_dir: PathBuf, prefix: String, retention_days: u32) {
+    if retention_days == 0 {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+        let _ = cleanup_old_logs(&log_dir, &prefix, retention_days);
+    });
+}
+
 pub fn init_logging(level: &str) -> Result<()> {
     let filter = build_env_filter(level)?;
 
@@ -137,6 +153,90 @@ pub fn init_logging(level: &str) -> Result<()> {
         .try_init()
         .map_err(|e| BifrostError::Config(format!("Failed to initialize logging: {}", e)))?;
 
+    let default_config = LogConfig::default();
+    if let Err(e) = cleanup_old_logs(
+        &default_config.log_dir,
+        &default_config.file_prefix,
+        default_config.retention_days,
+    ) {
+        tracing::warn!("Failed to cleanup old logs: {}", e);
+    }
+    start_log_cleanup_thread(
+        default_config.log_dir,
+        default_config.file_prefix,
+        default_config.retention_days,
+    );
+
+    Ok(())
+}
+
+fn rotate_file_if_day_changed(
+    log_dir: &std::path::Path,
+    base_name: &str,
+    today: chrono::NaiveDate,
+) {
+    let current = log_dir.join(base_name);
+    if !current.exists() {
+        return;
+    }
+    let modified_date = current
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).date_naive());
+    if let Some(date) = modified_date {
+        if date != today {
+            let rotated = log_dir.join(format!("{base_name}.{}", date.format("%Y-%m-%d")));
+            let _ = std::fs::rename(&current, rotated);
+        }
+    }
+}
+
+fn cleanup_rotated_files(
+    log_dir: &std::path::Path,
+    base_name: &str,
+    retention_days: u32,
+) -> Result<()> {
+    if retention_days == 0 {
+        return Ok(());
+    }
+    let entries = match std::fs::read_dir(log_dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!("Failed to read log directory for cleanup: {}", e);
+            return Ok(());
+        }
+    };
+
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(retention_days as i64);
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(date_str) = extract_date_from_suffix(name, base_name) {
+                if let Ok(file_date) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                    if file_date < cutoff.date_naive() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn rotate_daemon_err_log(log_dir: &std::path::Path, retention_days: u32) -> Result<()> {
+    std::fs::create_dir_all(log_dir).map_err(|e| {
+        BifrostError::Config(format!(
+            "Failed to create log directory '{}': {}",
+            log_dir.display(),
+            e
+        ))
+    })?;
+    let today = chrono::Utc::now().date_naive();
+    rotate_file_if_day_changed(log_dir, "bifrost.err", today);
+    cleanup_rotated_files(log_dir, "bifrost.err", retention_days)?;
     Ok(())
 }
 
@@ -199,6 +299,11 @@ pub fn init_logging_with_config(config: &LogConfig) -> Result<LogGuard> {
             {
                 tracing::warn!("Failed to cleanup old logs: {}", e);
             }
+            start_log_cleanup_thread(
+                config.log_dir.clone(),
+                config.file_prefix.clone(),
+                config.retention_days,
+            );
         }
         (true, false) => {
             let console_layer = fmt::layer()
@@ -248,6 +353,11 @@ pub fn init_logging_with_config(config: &LogConfig) -> Result<LogGuard> {
             {
                 tracing::warn!("Failed to cleanup old logs: {}", e);
             }
+            start_log_cleanup_thread(
+                config.log_dir.clone(),
+                config.file_prefix.clone(),
+                config.retention_days,
+            );
         }
         (false, false) => {
             return Err(BifrostError::Config(
@@ -261,20 +371,26 @@ pub fn init_logging_with_config(config: &LogConfig) -> Result<LogGuard> {
     })
 }
 
-pub fn reinit_logging_for_daemon(log_dir: &std::path::Path) -> Result<()> {
-    use tracing_subscriber::fmt::writer::MakeWriterExt;
-
-    let log_file_path = log_dir.join("bifrost.log");
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file_path)
-        .map_err(|e| BifrostError::Config(format!("Failed to open log file: {}", e)))?;
+pub fn reinit_logging_for_daemon(log_dir: &std::path::Path, retention_days: u32) -> Result<()> {
+    std::fs::create_dir_all(log_dir).map_err(|e| {
+        BifrostError::Config(format!(
+            "Failed to create log directory '{}': {}",
+            log_dir.display(),
+            e
+        ))
+    })?;
 
     let filter = build_env_filter("info")?;
+    let file_appender = RollingFileAppender::builder()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("bifrost")
+        .filename_suffix("log")
+        .max_log_files(retention_days as usize)
+        .build(log_dir)
+        .map_err(|e| BifrostError::Config(format!("Failed to create file appender: {}", e)))?;
 
     let file_layer = fmt::layer()
-        .with_writer(std::sync::Mutex::new(log_file).with_max_level(tracing::Level::TRACE))
+        .with_writer(file_appender)
         .with_ansi(false)
         .with_target(true)
         .with_file(true)
@@ -287,6 +403,12 @@ pub fn reinit_logging_for_daemon(log_dir: &std::path::Path) -> Result<()> {
         .map_err(|e| {
             BifrostError::Config(format!("Failed to reinitialize logging for daemon: {}", e))
         })?;
+
+    let prefix = "bifrost".to_string();
+    if let Err(e) = cleanup_old_logs(log_dir, &prefix, retention_days) {
+        tracing::warn!("Failed to cleanup old logs: {}", e);
+    }
+    start_log_cleanup_thread(log_dir.to_path_buf(), prefix, retention_days);
 
     Ok(())
 }

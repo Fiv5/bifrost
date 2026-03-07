@@ -104,13 +104,14 @@ export default function Traffic() {
   const scrollTop = useTrafficStore((state) => state.scrollTop);
   const selectedId = useTrafficStore((state) => state.selectedId);
 
-  const { currentRecord, requestBody, responseBody, detailLoading } =
+  const { currentRecord, requestBody, responseBody, detailLoading, detailError } =
     useTrafficStore(
       useShallow((state) => ({
         currentRecord: state.currentRecord,
         requestBody: state.requestBody,
         responseBody: state.responseBody,
         detailLoading: state.detailLoading,
+        detailError: state.detailError,
       })),
     );
 
@@ -653,6 +654,7 @@ export default function Traffic() {
         requestBody={requestBody}
         responseBody={responseBody}
         loading={detailLoading}
+        error={detailError}
       />
     </div>
   );

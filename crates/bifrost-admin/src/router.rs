@@ -69,7 +69,7 @@ impl AdminRouter {
         if path.starts_with("/api/rules") {
             handle_rules(req, state, path).await
         } else if path.starts_with("/api/traffic") {
-            handle_traffic(req, state, path).await
+            handle_traffic(req, state, push_manager.clone(), path).await
         } else if path.starts_with("/api/metrics") {
             handle_metrics(req, state, path).await
         } else if path.starts_with("/api/system") {
