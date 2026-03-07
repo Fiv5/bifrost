@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Card,
@@ -83,6 +83,8 @@ import {
   clearBodyCache,
   type TlsConfig,
   type PerformanceConfig,
+  type TrafficConfig,
+  type UpdateTrafficConfigRequest,
 } from "../../api/config";
 import {
   getCertInfo,
@@ -148,6 +150,8 @@ export default function Settings() {
   const [performanceConfig, setPerformanceConfig] =
     useState<PerformanceConfig | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
+  const [perfDraft, setPerfDraft] = useState<TrafficConfig | null>(null);
+  const perfUpdateTimers = useRef<Record<string, number>>({});
   const [appMetrics, setAppMetrics] = useState<AppMetrics[]>([]);
   const [appMetricsLoading, setAppMetricsLoading] = useState(false);
   const [hostMetrics, setHostMetrics] = useState<HostMetrics[]>([]);
@@ -182,6 +186,7 @@ export default function Settings() {
     try {
       const config = await getPerformanceConfig();
       setPerformanceConfig(config);
+      setPerfDraft(config.traffic);
     } catch {
       console.error("Failed to fetch performance config");
     } finally {
@@ -457,75 +462,91 @@ export default function Settings() {
     }
   };
 
-  const handleUpdateMaxRecords = async (value: number) => {
-    setPerfLoading(true);
-    try {
-      const result = await updatePerformanceConfig({ max_records: value });
-      setPerformanceConfig(result);
-      message.success(`Max records updated to ${value}`);
-    } catch {
-      message.error("Failed to update max records");
-    } finally {
-      setPerfLoading(false);
-    }
+  const updatePerfDraft = (update: Partial<TrafficConfig>) => {
+    setPerfDraft((prev) => {
+      const base = prev ?? performanceConfig?.traffic;
+      if (!base) return prev;
+      return { ...base, ...update };
+    });
   };
 
-  const handleUpdateMaxDbSize = async (value: number) => {
-    setPerfLoading(true);
-    try {
-      const result = await updatePerformanceConfig({ max_db_size_bytes: value });
-      setPerformanceConfig(result);
-      message.success("Max DB size updated");
-    } catch {
-      message.error("Failed to update max DB size");
-    } finally {
-      setPerfLoading(false);
+  const schedulePerformanceUpdate = (
+    key: keyof UpdateTrafficConfigRequest,
+    payload: UpdateTrafficConfigRequest,
+    successMessage: string,
+    errorMessage: string,
+  ) => {
+    const existing = perfUpdateTimers.current[key];
+    if (existing) {
+      window.clearTimeout(existing);
     }
+    perfUpdateTimers.current[key] = window.setTimeout(async () => {
+      setPerfLoading(true);
+      try {
+        const result = await updatePerformanceConfig(payload);
+        setPerformanceConfig(result);
+        setPerfDraft(result.traffic);
+        message.success(successMessage);
+      } catch {
+        message.error(errorMessage);
+        if (performanceConfig) {
+          setPerfDraft(performanceConfig.traffic);
+        }
+      } finally {
+        setPerfLoading(false);
+      }
+    }, 600);
   };
 
-  const handleUpdateMaxBodyMemorySize = async (value: number) => {
-    setPerfLoading(true);
-    try {
-      const result = await updatePerformanceConfig({
-        max_body_memory_size: value,
-      });
-      setPerformanceConfig(result);
-      message.success("Max body memory size updated");
-    } catch {
-      message.error("Failed to update max body memory size");
-    } finally {
-      setPerfLoading(false);
-    }
+  const handleMaxRecordsChange = (value: number | null) => {
+    if (value === null) return;
+    updatePerfDraft({ max_records: value });
+    schedulePerformanceUpdate(
+      "max_records",
+      { max_records: value },
+      `Max records updated to ${value}`,
+      "Failed to update max records",
+    );
   };
 
-  const handleUpdateMaxBodyBufferSize = async (value: number) => {
-    setPerfLoading(true);
-    try {
-      const result = await updatePerformanceConfig({
-        max_body_buffer_size: value,
-      });
-      setPerformanceConfig(result);
-      message.success("Max body buffer size updated");
-    } catch {
-      message.error("Failed to update max body buffer size");
-    } finally {
-      setPerfLoading(false);
-    }
+  const handleMaxDbSizeChange = (value: number) => {
+    updatePerfDraft({ max_db_size_bytes: value });
+    schedulePerformanceUpdate(
+      "max_db_size_bytes",
+      { max_db_size_bytes: value },
+      "Max DB size updated",
+      "Failed to update max DB size",
+    );
   };
 
-  const handleUpdateFileRetentionDays = async (value: number) => {
-    setPerfLoading(true);
-    try {
-      const result = await updatePerformanceConfig({
-        file_retention_days: value,
-      });
-      setPerformanceConfig(result);
-      message.success(`File retention updated to ${value} days`);
-    } catch {
-      message.error("Failed to update file retention days");
-    } finally {
-      setPerfLoading(false);
-    }
+  const handleMaxBodyMemorySizeChange = (value: number) => {
+    updatePerfDraft({ max_body_memory_size: value });
+    schedulePerformanceUpdate(
+      "max_body_memory_size",
+      { max_body_memory_size: value },
+      "Max body memory size updated",
+      "Failed to update max body memory size",
+    );
+  };
+
+  const handleMaxBodyBufferSizeChange = (value: number) => {
+    updatePerfDraft({ max_body_buffer_size: value });
+    schedulePerformanceUpdate(
+      "max_body_buffer_size",
+      { max_body_buffer_size: value },
+      "Max body buffer size updated",
+      "Failed to update max body buffer size",
+    );
+  };
+
+  const handleFileRetentionDaysChange = (value: number) => {
+    updatePerfDraft({ file_retention_days: value });
+    schedulePerformanceUpdate(
+      "file_retention_days",
+      { file_retention_days: value },
+      `File retention updated to ${value} days`,
+      "Failed to update file retention days",
+    );
   };
 
   const handleClearBodyCache = async () => {
@@ -584,6 +605,14 @@ export default function Settings() {
     fetchPending();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overview?.pending_authorizations]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(perfUpdateTimers.current).forEach((timer) => {
+        window.clearTimeout(timer);
+      });
+    };
+  }, []);
 
   const { fetchStatus: fetchWhitelistStatus } = useWhitelistStore();
 
@@ -670,6 +699,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     : 0;
 
   const pendingCount = overview?.pending_authorizations || 0;
+  const trafficDraft = perfDraft ?? performanceConfig?.traffic;
 
   const tabItems = [
     {
@@ -968,10 +998,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                       <InputNumber
                         min={100}
                         max={100000}
-                        value={performanceConfig?.traffic.max_records}
-                        onChange={(value) =>
-                          value && handleUpdateMaxRecords(value)
-                        }
+                        value={trafficDraft?.max_records}
+                        onChange={handleMaxRecordsChange}
                         style={{ width: 120 }}
                       />
                     </Col>
@@ -990,8 +1018,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           min={256 * 1024 * 1024}
                           max={10 * 1024 * 1024 * 1024}
                           step={256 * 1024 * 1024}
-                          value={performanceConfig?.traffic.max_db_size_bytes}
-                          onChange={(value) => handleUpdateMaxDbSize(value)}
+                          value={trafficDraft?.max_db_size_bytes}
+                          onChange={handleMaxDbSizeChange}
                           tooltip={{
                             formatter: (value) => (value ? formatBytes(value) : ""),
                           }}
@@ -1001,7 +1029,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     <Col>
                       <Text code>
                         {formatBytes(
-                          performanceConfig?.traffic.max_db_size_bytes || 0,
+                          trafficDraft?.max_db_size_bytes || 0,
                         )}
                       </Text>
                     </Col>
@@ -1025,11 +1053,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           max={10 * 1024 * 1024}
                           step={64 * 1024}
                           value={
-                            performanceConfig?.traffic.max_body_memory_size
+                            trafficDraft?.max_body_memory_size
                           }
-                          onChange={(value) =>
-                            handleUpdateMaxBodyMemorySize(value)
-                          }
+                          onChange={handleMaxBodyMemorySizeChange}
                           tooltip={{
                             formatter: (value) =>
                               value ? formatBytes(value) : "",
@@ -1040,7 +1066,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     <Col>
                       <Text code>
                         {formatBytes(
-                          performanceConfig?.traffic.max_body_memory_size || 0,
+                          trafficDraft?.max_body_memory_size || 0,
                         )}
                       </Text>
                     </Col>
@@ -1065,11 +1091,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           max={64 * 1024 * 1024}
                           step={1 * 1024 * 1024}
                           value={
-                            performanceConfig?.traffic.max_body_buffer_size
+                            trafficDraft?.max_body_buffer_size
                           }
-                          onChange={(value) =>
-                            handleUpdateMaxBodyBufferSize(value)
-                          }
+                          onChange={handleMaxBodyBufferSizeChange}
                           tooltip={{
                             formatter: (value) =>
                               value ? formatBytes(value) : "",
@@ -1080,7 +1104,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                     <Col>
                       <Text code>
                         {formatBytes(
-                          performanceConfig?.traffic.max_body_buffer_size || 0,
+                          trafficDraft?.max_body_buffer_size || 0,
                         )}
                       </Text>
                     </Col>
@@ -1103,18 +1127,15 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                           min={1}
                           max={7}
                           step={1}
-                          value={performanceConfig?.traffic.file_retention_days}
-                          onChange={(value) =>
-                            handleUpdateFileRetentionDays(value)
-                          }
+                          value={trafficDraft?.file_retention_days}
+                          onChange={handleFileRetentionDaysChange}
                           marks={{ 1: "1d", 3: "3d", 5: "5d", 7: "7d" }}
                         />
                       </Space>
                     </Col>
                     <Col>
                       <Text code>
-                        {performanceConfig?.traffic.file_retention_days || 0}{" "}
-                        days
+                        {trafficDraft?.file_retention_days || 0} days
                       </Text>
                     </Col>
                   </Row>
