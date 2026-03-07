@@ -17,11 +17,12 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info, warn};
+use url::Url;
 
 use crate::dns::DnsResolver;
 
 use super::tunnel::get_tls_client_config;
-use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
+use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
@@ -35,6 +36,7 @@ use crate::utils::tee::{
     create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
     store_response_body, BodyCaptureHandle,
 };
+use crate::utils::throttle::wrap_throttled_body;
 use crate::utils::url::apply_url_rules;
 
 const STREAMING_CONTENT_TYPES: &[&str] = &[
@@ -694,6 +696,7 @@ pub async fn handle_http_request(
         Some(body) => body,
         None => full_body(final_body.clone()),
     };
+    let outgoing_body = wrap_throttled_body(outgoing_body, resolved_rules.req_speed);
 
     let dns_start = Instant::now();
     let (connect_host, dns_ms, dns_error) = if !resolved_rules.dns_servers.is_empty() {
@@ -1293,7 +1296,8 @@ pub async fn handle_http_request(
                 sse_stream_writer,
                 max_body_buffer_size,
             );
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
@@ -1306,7 +1310,8 @@ pub async fn handle_http_request(
                 Some(traffic_type),
                 response_headers_size,
             );
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         }
     }
 
@@ -1569,7 +1574,8 @@ pub async fn handle_http_request(
         state.record_traffic(record);
     }
 
-    Ok(Response::from_parts(res_parts, full_body(final_res_body)))
+    let body = with_trailers(full_body(final_res_body), &resolved_rules);
+    Ok(Response::from_parts(res_parts, body))
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
@@ -1606,6 +1612,26 @@ fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result
             };
             return Ok((host, port));
         }
+    }
+
+    if let Some(ref proxy_rule) = rules.proxy {
+        if proxy_rule.starts_with("http://") || proxy_rule.starts_with("https://") {
+            if let Ok(url) = Url::parse(proxy_rule) {
+                if let Some(host) = url.host_str() {
+                    let port = url.port().unwrap_or(default_port);
+                    return Ok((host.to_string(), port));
+                }
+            }
+        }
+        let host_without_path = proxy_rule.split('/').next().unwrap_or(proxy_rule);
+        let parts: Vec<&str> = host_without_path.split(':').collect();
+        let host = parts[0].to_string();
+        let port = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(default_port)
+        } else {
+            default_port
+        };
+        return Ok((host, port));
     }
 
     let host = uri

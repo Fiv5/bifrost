@@ -32,8 +32,8 @@ use super::handler::{
 use crate::dns::DnsResolver;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{
-    empty_body, full_body, BoxBody, ProxyConfig, ResolvedRules, RulesResolver, TlsConfig,
-    TlsInterceptConfig,
+    empty_body, full_body, with_trailers, BoxBody, ProxyConfig, ResolvedRules, RulesResolver,
+    TlsConfig, TlsInterceptConfig,
 };
 use crate::transform::apply_res_rules;
 use crate::transform::decompress::get_content_encoding;
@@ -1178,6 +1178,7 @@ async fn handle_intercepted_request_with_protocol(
         Some(body) => body,
         None => full_body(Bytes::from(body_bytes.clone())),
     };
+    let outgoing_body = wrap_throttled_body(outgoing_body, resolved_rules.req_speed);
     let outgoing_req = match new_req.body(outgoing_body) {
         Ok(r) => r,
         Err(e) => {
@@ -1915,7 +1916,8 @@ async fn handle_intercepted_request_with_protocol(
                 max_body_buffer_size,
             );
             let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
-            return Ok(Response::from_parts(res_parts, final_body));
+            let body = with_trailers(final_body, &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
@@ -1929,7 +1931,8 @@ async fn handle_intercepted_request_with_protocol(
                 response_headers_size,
             );
             let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
-            return Ok(Response::from_parts(res_parts, final_body));
+            let body = with_trailers(final_body, &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         }
     }
 
@@ -2143,7 +2146,8 @@ async fn handle_intercepted_request_with_protocol(
 
     let response_body =
         wrap_throttled_body(full_body(final_body.to_vec()), resolved_rules.res_speed);
-    Ok(Response::from_parts(res_parts, response_body))
+    let body = with_trailers(response_body, &resolved_rules);
+    Ok(Response::from_parts(res_parts, body))
 }
 
 #[allow(clippy::too_many_arguments)]

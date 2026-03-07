@@ -76,6 +76,7 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
         Protocol::Ws => "WebSocket forwarding",
         Protocol::Wss => "Secure WebSocket forwarding",
         Protocol::Proxy => "HTTP proxy forwarding",
+        Protocol::Pac => "PAC script routing",
         Protocol::Redirect => "URL redirect (301/302)",
         Protocol::File => "Return file content as response",
         Protocol::Tpl => "Template response with variable substitution",
@@ -139,6 +140,7 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
 fn get_protocol_value_type(protocol: Protocol) -> &'static str {
     match protocol {
         Protocol::Host | Protocol::XHost | Protocol::Proxy => "host:port",
+        Protocol::Pac => "pac_url_or_script",
         Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss | Protocol::Redirect => {
             "url"
         }
@@ -196,6 +198,7 @@ fn get_protocol_example(protocol: Protocol) -> &'static str {
         Protocol::Ws => "ws://localhost:8080/socket",
         Protocol::Wss => "wss://api.example.com/socket",
         Protocol::Proxy => "proxy://127.0.0.1:8888",
+        Protocol::Pac => "pac://http://127.0.0.1:8000/proxy.pac",
         Protocol::Redirect => "redirect://https://new-site.com/",
         Protocol::File => "file:///path/to/response.json",
         Protocol::Tpl => "tpl:///path/to/template.tpl",

@@ -13,6 +13,8 @@ status-500.local 127.0.0.1:3000 statusCode://500
 # 改为 302 (模拟重定向，但不实际重定向)
 status-302.local 127.0.0.1:3000 statusCode://302
 
+replace-status-404.local 127.0.0.1:3000 replaceStatus://404
+
 # 测试用例:
 # 1. 请求 http://status-201.local/test
 #    客户端应收到 HTTP 201 状态码

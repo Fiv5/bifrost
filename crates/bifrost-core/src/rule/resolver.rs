@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::context::RequestContext;
 use super::template::TemplateEngine;
 use super::types::Rule;
-use super::ValueStore;
+use super::{MemoryValueStore, ValueStore};
 
 const DEFAULT_CACHE_CAPACITY: usize = 1000;
 
@@ -27,8 +27,19 @@ impl ResolvedRule {
         ctx: &RequestContext,
         values: &HashMap<String, String>,
     ) -> Self {
+        let base_value = if matches!(
+            rule.protocol,
+            crate::protocol::Protocol::File
+                | crate::protocol::Protocol::RawFile
+                | crate::protocol::Protocol::Tpl
+        ) {
+            rule.value.clone()
+        } else {
+            let store = MemoryValueStore::from_hashmap(values.clone());
+            rule.value_source.resolve_with_fallback(&store)
+        };
         let resolved_value =
-            TemplateEngine::expand_with_context(&rule.value, ctx, captures.as_deref(), values);
+            TemplateEngine::expand_with_context(&base_value, ctx, captures.as_deref(), values);
 
         Self {
             rule,

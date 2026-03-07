@@ -60,6 +60,7 @@ basic-wss.test wss://127.0.0.1:8005/
 
 # 2.7 proxy - 代理转发
 basic-proxy.test proxy://127.0.0.1:8006
+basic-pac.test pac://http://127.0.0.1:8007/proxy.pac
 
 # 2.8 redirect - 重定向
 basic-redirect.test redirect://https://new-site.com/

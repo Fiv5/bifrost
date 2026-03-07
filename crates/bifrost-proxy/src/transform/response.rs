@@ -477,6 +477,7 @@ fn apply_res_trailers(
     }
 
     if !trailer_names.is_empty() {
+        parts.headers.remove(hyper::header::CONTENT_LENGTH);
         let trailer_header = trailer_names.join(", ");
         if let Ok(value) = trailer_header.parse::<HeaderValue>() {
             parts.headers.insert(hyper::header::TRAILER, value);

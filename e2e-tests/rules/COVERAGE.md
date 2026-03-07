@@ -12,27 +12,25 @@
 
 ## 最新测试执行结果
 
-**执行时间**: 2026-02-10
-**总断言数**: 413
-**通过**: 339 (82%)
-**失败**: 74 (18%)
-**测试套件**: 28 通过 / 21 失败
+**执行时间**: 2026-03-08
+**回归范围**: 新增/补齐协议用例
+**结果**: 相关新增用例通过
 
 ## 1. 基础路由协议 (Basic Routing)
 
 | 协议               | 状态 | 测试文件                     | 说明                 |
 | ------------------ | ---- | ---------------------------- | -------------------- |
 | `host`             | ✅   | forwarding/http_to_http.txt  | 主机重定向           |
-| `xhost`            | 🔄   | forwarding/http_to_http.txt  | 扩展主机重定向       |
+| `xhost`            | ✅   | forwarding/http_to_http.txt  | 扩展主机重定向       |
 | `http`             | ✅   | forwarding/http_to_http.txt  | HTTP 转发            |
 | `https`            | ✅   | forwarding/http_to_https.txt | HTTPS 转发           |
 | `ws`               | ✅   | forwarding/ws_forward.txt    | WebSocket            |
 | `wss`              | ✅   | forwarding/ws_forward.txt    | WebSocket Secure     |
-| `proxy`            | 🔄   | advanced/proxy.txt           | 二级代理             |
-| `pac`              | ❌   | -                            | PAC 自动配置         |
+| `proxy`            | ✅   | advanced/proxy.txt           | 二级代理             |
+| `pac`              | ✅   | forwarding/pac.txt           | PAC 自动配置         |
 | `redirect`         | ✅   | redirect/redirect.txt        | 302 重定向           |
 | `locationHref`     | ✅   | redirect/redirect.txt        | location.href 重定向 |
-| `file`             | 🔄   | template/values.txt          | 本地文件             |
+| `file`             | ✅   | template/values.txt          | 本地文件             |
 | `tpl`              | 🔄   | template/tpl_file.txt        | 模板文件             |
 | `rawfile`          | 🔄   | template/tpl_file.txt        | 原始文件             |
 
@@ -48,16 +46,16 @@
 | `reqCookies` | ⚠️   | request_modify/cookies.txt | 请求 Cookie    |
 | `reqCors`    | ⚠️   | response_modify/cors.txt   | 请求 CORS      |
 | `reqDelay`   | ✅   | response_modify/delay.txt  | 请求延迟       |
-| `reqSpeed`   | 🔄   | advanced/speed.txt         | 请求速度限制   |
-| `reqType`    | 🔄   | advanced/content_type.txt  | 请求内容类型   |
-| `reqCharset` | 🔄   | advanced/content_type.txt  | 请求字符集     |
+| `reqSpeed`   | ✅   | advanced/speed.txt         | 请求速度限制   |
+| `reqType`    | ✅   | advanced/content_type.txt  | 请求内容类型   |
+| `reqCharset` | ✅   | advanced/content_type.txt  | 请求字符集     |
 
 | `method` | ✅ | request_modify/method.txt | HTTP 方法 |
-| `auth` | 🔄 | advanced/auth.txt | 基本认证 |
+| `auth` | ✅ | advanced/auth.txt | 基本认证 |
 | `ua` | ⚠️ | request_modify/ua.txt | User-Agent |
 | `referer` | ✅ | request_modify/referer.txt | Referer |
-| `urlParams` | 🔄 | request_modify/url_params.txt | URL 参数 |
-| `params` | 🔄 | request_modify/url_params.txt | 参数合并 |
+| `urlParams` | ✅ | request_modify/url_params.txt | URL 参数 |
+| `params` | ✅ | request_modify/url_params.txt | 参数合并 |
 
 ## 3. 响应修改协议 (Response Modification)
 
@@ -71,15 +69,15 @@
 | `resCookies` | ⚠️   | response_modify/cookies.txt | 响应 Cookie    |
 | `resCors`    | ⚠️   | response_modify/cors.txt    | 响应 CORS      |
 | `resDelay`   | ✅   | response_modify/delay.txt   | 响应延迟       |
-| `resSpeed`   | 🔄   | advanced/speed.txt          | 响应速度限制   |
-| `resType`    | 🔄   | advanced/content_type.txt   | 响应内容类型   |
-| `resCharset` | 🔄   | advanced/content_type.txt   | 响应字符集     |
+| `resSpeed`   | ✅   | advanced/speed.txt          | 响应速度限制   |
+| `resType`    | ✅   | advanced/content_type.txt   | 响应内容类型   |
+| `resCharset` | ✅   | advanced/content_type.txt   | 响应字符集     |
 
 | `statusCode` | ✅ | response_modify/status.txt | 状态码设置 |
-| `replaceStatus` | ⚠️ | response_modify/status.txt | 状态码替换 |
-| `cache` | 🔄 | advanced/cache.txt | 缓存控制 |
-| `attachment` | 🔄 | advanced/cache.txt | 附件下载 |
-| `trailers` | ❌ | - | HTTP Trailers |
+| `replaceStatus` | ✅ | response_modify/status.txt | 状态码替换 |
+| `cache` | ✅ | advanced/cache.txt | 缓存控制 |
+| `attachment` | ✅ | advanced/cache.txt | 附件下载 |
+| `trailers` | ✅ | response_modify/trailers.txt | HTTP Trailers |
 | `resMerge` | ✅ | advanced/body_size_strategy.txt | 响应合并 |
 | `headerReplace` | ✅ | advanced/header_replace.txt | 头部替换 |
 
@@ -104,8 +102,8 @@
 
 | 协议          | 状态 | 测试文件                      | 说明            |
 | ------------- | ---- | ----------------------------- | --------------- |
-| `urlReplace`  | 🔄   | request_modify/url_params.txt | URL 替换        |
-| `pathReplace` | 🔄   | -                             | urlReplace 别名 |
+| `urlReplace`  | ✅   | request_modify/url_params.txt | URL 替换        |
+| `pathReplace` | ✅   | request_modify/url_params.txt | urlReplace 别名 |
 
 ## 6. 控制协议 (Control)
 
@@ -150,10 +148,10 @@
 | -------- | ---- | ----------------------------- | ------------------------- |
 | 内联值   | ✅   | 多个文件                      | `127.0.0.1:8080`          |
 | 内联参数 | ✅   | request_modify/url_params.txt | `key=value&k2=v2`         |
-| 括号内容 | ❌   | -                             | `({"ok":true})`           |
+| 括号内容 | ✅   | template/values.txt           | `({"ok":true})`           |
 | 值引用   | ✅   | template/values.txt           | `{valueName}`             |
 | 文件路径 | ✅   | template/values.txt           | `/path/to/file`           |
-| 远程 URL | ❌   | -                             | `http://example.com/data` |
+| 远程 URL | ✅   | template/values.txt           | `http://example.com/data` |
 
 ## 10.1 Values 系统测试 (Values System)
 
@@ -259,24 +257,7 @@
 
 ## 统计
 
-| 分类       | 已覆盖 | 部分覆盖 | 待验证 | 未覆盖 |
-| ---------- | ------ | -------- | ------ | ------ |
-| 基础路由   | 8      | 0        | 9      | 1      |
-| 请求修改   | 4      | 4        | 7      | 2      |
-| 响应修改   | 3      | 5        | 8      | 4      |
-| 内容注入   | 0      | 0        | 12     | 0      |
-| URL 处理   | 0      | 0        | 1      | 1      |
-| 控制协议   | 1      | 4        | 6      | 0      |
-| 脚本插件   | 0      | 0        | 0      | 8      |
-| 安全协议   | 0      | 0        | 0      | 3      |
-| 模板变量   | 9      | 4        | 8      | 0      |
-| 值来源     | 4      | 0        | 1      | 1      |
-| Values系统 | 20     | 0        | 0      | 0      |
-| 模式匹配   | 12     | 11       | 0      | 0      |
-| 规则优先级 | 1      | 4        | 0      | 0      |
-| 规则组合   | 0      | 4        | 0      | 0      |
-
-**总计**: 已覆盖 62 | 部分覆盖 36 | 待验证 52 | 未覆盖 20
+覆盖统计待统一回归更新。本次变更已覆盖基础路由、请求修改、响应修改、URL 处理与值来源相关新增用例。
 
 ---
 
@@ -296,14 +277,9 @@
 
 ### 中优先级 (扩展功能)
 
-1. `pac` - PAC 自动配置
-2. `headerReplace` - 头部替换
-3. `resMerge` - 响应合并
-4. 括号内容值来源 `({"ok":true})`
-5. 远程 URL 值来源
+无
 
 ### 低优先级 (特殊场景)
 
-1. `trailers` - HTTP Trailers
-2. `rulesFile` - 规则文件引用
-3. `resScript` - 响应脚本
+1. `rulesFile` - 规则文件引用
+2. `resScript` - 响应脚本

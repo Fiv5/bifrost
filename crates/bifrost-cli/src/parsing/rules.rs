@@ -33,6 +33,38 @@ fn parse_redirect_target(value: &str) -> (Option<u16>, String) {
     (None, value.to_string())
 }
 
+fn parse_pac_proxy_target(value: &str) -> Option<String> {
+    let upper = value.to_ascii_uppercase();
+    if upper.contains("DIRECT") && !upper.contains("PROXY") {
+        return None;
+    }
+
+    if let Some(proxy_pos) = upper.find("PROXY") {
+        let after = &value[proxy_pos + 5..];
+        let trimmed = after
+            .trim_start_matches(|c: char| c.is_whitespace() || c == ':')
+            .trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut end = trimmed.len();
+        for (idx, ch) in trimmed.char_indices() {
+            if ch.is_whitespace() || ch == ';' || ch == '"' || ch == '\'' {
+                end = idx;
+                break;
+            }
+        }
+        let host_port = trimmed[..end].trim();
+        if host_port.is_empty() {
+            None
+        } else {
+            Some(host_port.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 pub fn parse_cli_rules(
     rules: &[String],
     rules_file: &Option<PathBuf>,
@@ -302,6 +334,12 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             Protocol::Proxy => {
                 result.proxy = Some(value.to_string());
             }
+            Protocol::Pac => {
+                if let Some(target) = parse_pac_proxy_target(value) {
+                    result.host = Some(target);
+                    result.host_protocol = Some(Protocol::Host);
+                }
+            }
             Protocol::ReqCors => {
                 let cors = parse_cors_config(value);
                 result.req_cors = cors;
@@ -443,12 +481,19 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             }
             Protocol::ReqSpeed => {
                 if let Ok(speed) = value.parse::<u64>() {
-                    result.req_speed = Some(speed);
+                    result.req_speed = Some(speed.saturating_mul(1024));
                 }
             }
             Protocol::ResSpeed => {
                 if let Ok(speed) = value.parse::<u64>() {
-                    result.res_speed = Some(speed);
+                    result.res_speed = Some(speed.saturating_mul(1024));
+                }
+            }
+            Protocol::Trailers => {
+                if let Some(headers) = parse_header_value(value) {
+                    for (k, v) in headers {
+                        result.trailers.push((k, v));
+                    }
                 }
             }
             Protocol::Dns => {

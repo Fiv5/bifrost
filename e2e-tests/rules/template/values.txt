@@ -59,3 +59,6 @@ test-value-empty.local http://127.0.0.1:3000 resBody://{emptyValue}
 
 # V-16 不存在的值引用 - 测试 fallback 行为（应返回原始 {valueName} 字符串）
 test-value-missing.local http://127.0.0.1:3000 resHeaders://`X-Missing:{nonExistentValue}`
+
+test-value-paren.local http://127.0.0.1:3000 resBody://({"ok":true})
+test-value-remote.local http://127.0.0.1:3000 resBody://http://127.0.0.1:3000/static-value
