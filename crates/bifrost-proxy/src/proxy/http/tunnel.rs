@@ -355,10 +355,10 @@ pub async fn handle_connect(
         record.protocol = "tunnel".to_string();
         record.host = host.clone();
         record.is_tunnel = true;
-        record.client_ip = client_ip;
-        record.client_app = client_app;
+        record.client_ip = client_ip.clone();
+        record.client_app = client_app.clone();
         record.client_pid = client_pid;
-        record.client_path = client_path;
+        record.client_path = client_path.clone();
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         state.record_traffic(record);
@@ -407,7 +407,17 @@ pub async fn handle_connect(
                         );
                     }
                     Err(e) => {
-                        error!("[{}] Tunnel error: {}", req_id, e);
+                        error!(
+                            "[{}] Tunnel error to {}:{} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                            req_id,
+                            host_for_unregister,
+                            port,
+                            client_ip,
+                            client_app,
+                            client_pid,
+                            client_path,
+                            e
+                        );
                     }
                     _ => {}
                 }
@@ -419,7 +429,17 @@ pub async fn handle_connect(
                         .decrement_connections_by_type(TrafficType::Tunnel);
                     state.connection_registry.unregister(&req_id);
                 }
-                error!("[{}] Upgrade error: {}", req_id, e);
+                error!(
+                    "[{}] Upgrade error for {}:{} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                    req_id,
+                    host_for_unregister,
+                    port,
+                    client_ip,
+                    client_app,
+                    client_pid,
+                    client_path,
+                    e
+                );
             }
         }
     });
@@ -1462,7 +1482,19 @@ async fn handle_intercepted_request_with_protocol(
         {
             Ok(r) => r,
             Err(e) => {
-                error!("[{}] HTTP handshake failed: {}", req_id, e);
+                error!(
+                    "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                    req_id,
+                    actual_target_host,
+                    actual_target_port,
+                    method_str,
+                    original_uri,
+                    &client_ip,
+                    &client_app,
+                    client_pid,
+                    &client_path,
+                    e
+                );
                 return Ok(build_conn_error_record_and_response(
                     "HTTP_HANDSHAKE_FAILED",
                     format!("HTTP Handshake Failed: {}", e),
@@ -1471,9 +1503,30 @@ async fn handle_intercepted_request_with_protocol(
             }
         };
 
+        let req_id_for_conn = req_id.to_string();
+        let target_host_for_conn = actual_target_host.clone();
+        let target_port_for_conn = actual_target_port;
+        let method_for_conn = method_str.clone();
+        let uri_for_conn = original_uri.clone();
+        let client_ip_for_conn = client_ip.clone();
+        let client_app_for_conn = client_app.clone();
+        let client_pid_for_conn = client_pid;
+        let client_path_for_conn = client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    target_host_for_conn,
+                    target_port_for_conn,
+                    method_for_conn,
+                    uri_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 
@@ -1516,7 +1569,19 @@ async fn handle_intercepted_request_with_protocol(
         let tls_stream = match connector.connect(server_name, stream).await {
             Ok(s) => s,
             Err(e) => {
-                error!("[{}] TLS handshake failed: {}", req_id, e);
+                error!(
+                    "[{}] TLS handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                    req_id,
+                    actual_target_host,
+                    actual_target_port,
+                    method_str,
+                    original_uri,
+                    &client_ip,
+                    &client_app,
+                    client_pid,
+                    &client_path,
+                    e
+                );
                 let tls_ms = tls_start.elapsed().as_millis() as u64;
                 return Ok(build_conn_error_record_and_response(
                     "TLS_HANDSHAKE_FAILED",
@@ -1536,7 +1601,19 @@ async fn handle_intercepted_request_with_protocol(
         {
             Ok(r) => r,
             Err(e) => {
-                error!("[{}] HTTP handshake failed: {}", req_id, e);
+                error!(
+                    "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                    req_id,
+                    actual_target_host,
+                    actual_target_port,
+                    method_str,
+                    original_uri,
+                    &client_ip,
+                    &client_app,
+                    client_pid,
+                    &client_path,
+                    e
+                );
                 return Ok(build_conn_error_record_and_response(
                     "HTTP_HANDSHAKE_FAILED",
                     format!("HTTP Handshake Failed: {}", e),
@@ -1545,9 +1622,30 @@ async fn handle_intercepted_request_with_protocol(
             }
         };
 
+        let req_id_for_conn = req_id.to_string();
+        let target_host_for_conn = actual_target_host.clone();
+        let target_port_for_conn = actual_target_port;
+        let method_for_conn = method_str.clone();
+        let uri_for_conn = original_uri.clone();
+        let client_ip_for_conn = client_ip.clone();
+        let client_app_for_conn = client_app.clone();
+        let client_pid_for_conn = client_pid;
+        let client_path_for_conn = client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    target_host_for_conn,
+                    target_port_for_conn,
+                    method_for_conn,
+                    uri_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 

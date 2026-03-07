@@ -988,9 +988,30 @@ pub async fn handle_http_request(
             }
         };
 
+        let req_id_for_conn = ctx.id_str();
+        let host_for_conn = host.clone();
+        let port_for_conn = port;
+        let method_for_conn = method.clone();
+        let url_for_conn = url.clone();
+        let client_ip_for_conn = ctx.client_ip.clone();
+        let client_app_for_conn = ctx.client_app.clone();
+        let client_pid_for_conn = ctx.client_pid;
+        let client_path_for_conn = ctx.client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    host_for_conn,
+                    port_for_conn,
+                    method_for_conn,
+                    url_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 
@@ -1015,9 +1036,30 @@ pub async fn handle_http_request(
             }
         };
 
+        let req_id_for_conn = ctx.id_str();
+        let host_for_conn = host.clone();
+        let port_for_conn = port;
+        let method_for_conn = method.clone();
+        let url_for_conn = url.clone();
+        let client_ip_for_conn = ctx.client_ip.clone();
+        let client_app_for_conn = ctx.client_app.clone();
+        let client_pid_for_conn = ctx.client_pid;
+        let client_path_for_conn = ctx.client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    host_for_conn,
+                    port_for_conn,
+                    method_for_conn,
+                    url_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 
