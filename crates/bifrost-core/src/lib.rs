@@ -14,8 +14,8 @@ pub use access_control::{
 };
 pub use error::{BifrostError, Result};
 pub use logging::{
-    init_logging, init_logging_with_config, reinit_logging_for_daemon, LogConfig, LogGuard,
-    LogOutput,
+    init_logging, init_logging_with_config, reinit_logging_for_daemon, rotate_daemon_err_log,
+    LogConfig, LogGuard, LogOutput,
 };
 pub use matcher::{
     factory::parse_pattern, DomainMatcher, IpMatcher, MatchResult, Matcher, RegexMatcher,

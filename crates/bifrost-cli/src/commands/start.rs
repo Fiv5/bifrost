@@ -729,6 +729,10 @@ pub fn run_daemon(
 
             let _ = chdir(&bifrost_dir);
 
+            let err_retention_days = std::cmp::min(log_retention_days, 7);
+            if let Err(e) = bifrost_core::rotate_daemon_err_log(&log_dir, err_retention_days) {
+                eprintln!("Warning: Failed to rotate daemon err log: {}", e);
+            }
             let _ = std::fs::create_dir_all(&log_dir);
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
@@ -754,6 +758,19 @@ pub fn run_daemon(
             if let Err(e) = bifrost_core::reinit_logging_for_daemon(&log_dir, log_retention_days) {
                 eprintln!("Warning: Failed to initialize logging for daemon: {}", e);
             }
+
+            let err_log_dir = log_dir.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+                let _ = bifrost_core::rotate_daemon_err_log(&err_log_dir, err_retention_days);
+                if let Ok(err_file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(err_log_dir.join("bifrost.err"))
+                {
+                    let _ = dup2(err_file.as_raw_fd(), 2);
+                }
+            });
 
             let pid = std::process::id();
             let runtime_info = RuntimeInfo {
