@@ -521,6 +521,7 @@ mod tests {
             "ws",
             "wss",
             "proxy",
+            "pac",
             "redirect",
             "file",
             "tpl",
@@ -578,7 +579,6 @@ mod tests {
             "tlsIntercept",
             "tlsPassthrough",
             "passthrough",
-            "delete",
         ];
 
         for name in &protocol_names {

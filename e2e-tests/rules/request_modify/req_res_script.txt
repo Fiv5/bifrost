@@ -1,0 +1,3 @@
+  script-test.local host://127.0.0.1:3000
+script-test.local reqScript://req_script
+script-test.local resScript://res_script

@@ -123,6 +123,7 @@ pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
         || rules.css_append.is_some()
         || rules.css_prepend.is_some()
         || rules.css_body.is_some()
+        || !rules.res_scripts.is_empty()
 }
 
 pub fn needs_response_override(rules: &ResolvedRules) -> bool {
