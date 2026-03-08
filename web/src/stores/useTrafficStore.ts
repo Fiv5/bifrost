@@ -159,10 +159,14 @@ const mergeSseBody = (prev: string | null, payload: string): string => {
 
 const getDisplaySizeBytes = (record: TrafficSummary | undefined): number => {
   if (!record) return 0;
-  if ((record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status) {
+  if (record.socket_status && (record.response_size === 0 || record.socket_status.is_open)) {
     return record.socket_status.send_bytes + record.socket_status.receive_bytes;
   }
   return record.response_size;
+};
+
+const isPendingRecord = (record: TrafficSummary): boolean => {
+  return record.status === 0 || record.socket_status?.is_open === true;
 };
 
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
@@ -613,14 +617,14 @@ export const useTrafficStore = create<TrafficState>()(
               const newPendingIds = prevState.pendingIds;
 
               for (const r of batch.updatedRecords) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (!isPending) {
                   newPendingIds.delete(r.id);
                 }
               }
 
               for (const r of batch.newRecords) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (isPending) {
                   newPendingIds.add(r.id);
                 }
@@ -722,14 +726,14 @@ export const useTrafficStore = create<TrafficState>()(
           const newPendingIds = prevState.pendingIds;
 
           for (const r of updatedRecords) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            const isPending = isPendingRecord(r);
             if (!isPending) {
               newPendingIds.delete(r.id);
             }
           }
 
           for (const r of newRecords) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            const isPending = isPendingRecord(r);
             if (isPending) {
               newPendingIds.add(r.id);
             }
@@ -855,7 +859,7 @@ export const useTrafficStore = create<TrafficState>()(
           const newRecordsMap = new Map<string, TrafficSummary>();
           for (const r of preprocessedRecords) {
             newRecordsMap.set(r.id, r);
-            if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
+            if (isPendingRecord(r)) {
               newPendingIds.add(r.id);
             }
           }
@@ -926,14 +930,14 @@ export const useTrafficStore = create<TrafficState>()(
               const newPendingIds = prevState.pendingIds;
 
               for (const r of preprocessedUpdated) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (!isPending) {
                   newPendingIds.delete(r.id);
                 }
               }
 
               for (const r of preprocessedNew) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (isPending) {
                   newPendingIds.add(r.id);
                 }

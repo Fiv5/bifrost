@@ -13,7 +13,11 @@ use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
 
 fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
-    if !summary.is_sse && !summary.is_websocket && !summary.is_tunnel {
+    if !summary.is_sse
+        && !summary.is_websocket
+        && !summary.is_tunnel
+        && summary.socket_status.is_none()
+    {
         return;
     }
 
@@ -58,7 +62,8 @@ fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
 }
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminState) {
-    if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() {
+    if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() && summary.ss.is_none()
+    {
         return;
     }
 
