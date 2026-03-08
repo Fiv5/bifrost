@@ -518,6 +518,7 @@ export default function TrafficDetail({
               collapsed={responseCollapsed}
               onCollapsedChange={handleResponseCollapsedChange}
               keepAliveTabs={["Messages"]}
+              contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
             />
           </div>
         </div>
@@ -558,6 +559,7 @@ export default function TrafficDetail({
                 contentType={responseContentType}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
+                contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>
           </Splitter.Panel>

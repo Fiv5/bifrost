@@ -96,13 +96,16 @@ const columns: ColumnDef[] = [
     title: "#",
     width: 50,
     align: "right",
-    render: (record, textSecondary, rowIndex) => (
-      <span
-        style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
-      >
-        {formatSequence(record._displayIndex ?? rowIndex + 1)}
-      </span>
-    ),
+    render: (record, textSecondary, rowIndex) => {
+      const displaySequence = record.sequence ?? record._displayIndex ?? rowIndex + 1;
+      return (
+        <span
+          style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}
+        >
+          {formatSequence(displaySequence)}
+        </span>
+      );
+    },
   },
   {
     key: "status_dot",
@@ -386,7 +389,7 @@ const areRowPropsEqual = (
   const prevRecord = prev.record;
   const nextRecord = next.record;
   if (prevRecord.id !== nextRecord.id) return false;
-  if (prevRecord._displayIndex !== nextRecord._displayIndex) return false;
+  if (prevRecord.sequence !== nextRecord.sequence) return false;
   if (prevRecord.status !== nextRecord.status) return false;
   if (prevRecord.duration_ms !== nextRecord.duration_ms) return false;
   if (prevRecord.response_size !== nextRecord.response_size) return false;

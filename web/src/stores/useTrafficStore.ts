@@ -157,6 +157,14 @@ const mergeSseBody = (prev: string | null, payload: string): string => {
   return `${prev}\n\n${trimmed}`;
 };
 
+const getDisplaySizeBytes = (record: TrafficSummary | undefined): number => {
+  if (!record) return 0;
+  if ((record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status) {
+    return record.socket_status.send_bytes + record.socket_status.receive_bytes;
+  }
+  return record.response_size;
+};
+
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
   const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
   const displayProtocol = isH3
@@ -167,9 +175,7 @@ const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
   const statusColor = getStatusColor(record.status);
   const statusDotColor = getStatusDotColor(record.status);
 
-  const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
-    ? record.socket_status.send_bytes + record.socket_status.receive_bytes
-    : record.response_size;
+  const size = getDisplaySizeBytes(record);
   const displaySize = formatSize(size);
 
   const contentTypeShort = record.content_type?.split(";")[0]?.split("/").pop() || "-";
@@ -591,11 +597,9 @@ export const useTrafficStore = create<TrafficState>()(
 
               for (const r of batch.updatedRecords) {
                 const existing = recordsMap.get(r.id);
-                const socketStatusChanged =
-                  existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
-                  existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
-                  existing?.socket_status?.is_open !== r.socket_status?.is_open;
-                if (!existing || existing.status !== r.status || socketStatusChanged) {
+                const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
+                const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
+                if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
                   recordsMap.set(r.id, r);
                   hasChanges = true;
                 }
@@ -703,11 +707,9 @@ export const useTrafficStore = create<TrafficState>()(
 
           for (const r of updatedRecords) {
             const existing = recordsMap.get(r.id);
-            const socketStatusChanged =
-              existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
-              existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
-              existing?.socket_status?.is_open !== r.socket_status?.is_open;
-            if (!existing || existing.status !== r.status || socketStatusChanged) {
+            const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
+            const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
+            if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
               recordsMap.set(r.id, r);
               hasChanges = true;
             }

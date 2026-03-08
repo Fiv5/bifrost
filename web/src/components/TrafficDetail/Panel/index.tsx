@@ -31,6 +31,7 @@ interface PanelProps {
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
   keepAliveTabs?: string[];
+  contentOverflow?: 'auto' | 'hidden';
 }
 
 export const Panel = ({
@@ -46,6 +47,7 @@ export const Panel = ({
   collapsed = false,
   onCollapsedChange,
   keepAliveTabs,
+  contentOverflow = 'auto',
 }: PanelProps) => {
   const { token } = theme.useToken();
 
@@ -150,7 +152,7 @@ export const Panel = ({
             style={{
               flex: 1,
               minHeight: 0,
-              overflow: 'auto',
+              overflow: contentOverflow,
             }}
           >
             {enabledTabs.map((tab) => {

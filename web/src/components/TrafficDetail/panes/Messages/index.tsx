@@ -1,6 +1,5 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from "react";
 import {
-  Table,
   Typography,
   Tag,
   theme,
@@ -8,10 +7,8 @@ import {
   Space,
   Tooltip,
   Empty,
-  ConfigProvider,
   Modal,
 } from "antd";
-import type { TableProps } from "antd";
 import {
   ArrowUpOutlined,
   ArrowDownOutlined,
@@ -24,6 +21,7 @@ import dayjs from "dayjs";
 import hljs from "highlight.js/lib/core";
 import json from "highlight.js/lib/languages/json";
 import plaintext from "highlight.js/lib/languages/plaintext";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import "../../../../styles/hljs-github-theme.css";
 import type {
   WebSocketFrame,
@@ -88,6 +86,196 @@ const DirectionIcon = ({ direction }: { direction: FrameDirection }) => {
     <ArrowUpOutlined style={{ color: "#52c41a" }} />
   ) : (
     <ArrowDownOutlined style={{ color: "#1890ff" }} />
+  );
+};
+
+interface WsMessageListProps {
+  frames: WebSocketFrame[];
+  loading: boolean;
+  onOpenDetail: (frame: WebSocketFrame) => void;
+  onCopy: (frame: WebSocketFrame) => void;
+}
+
+const WsMessageList = ({
+  frames,
+  loading,
+  onOpenDetail,
+  onCopy,
+}: WsMessageListProps) => {
+  const { token } = theme.useToken();
+  const parentRef = useRef<HTMLDivElement>(null);
+  const followTailRef = useRef(true);
+
+  const rowVirtualizer = useVirtualizer({
+    count: frames.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 36,
+    overscan: 6,
+    getItemKey: (index) => String(frames[index]?.frame_id ?? index),
+  });
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 24;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      followTailRef.current = distance <= threshold;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (frames.length === 0) return;
+    if (!followTailRef.current) return;
+    rowVirtualizer.scrollToIndex(frames.length - 1, { align: "end" });
+  }, [frames.length, rowVirtualizer]);
+
+  const headerStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "60px 40px 80px 80px 110px 1fr 70px",
+    gap: 8,
+    padding: "6px 8px",
+    backgroundColor: token.colorFillQuaternary,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+    color: token.colorTextSecondary,
+    fontSize: 12,
+    fontWeight: 500,
+  };
+
+  const rowBaseStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "60px 40px 80px 80px 110px 1fr 70px",
+    gap: 8,
+    alignItems: "center",
+    padding: "4px 8px",
+    backgroundColor: token.colorBgContainer,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+  };
+
+  if (frames.length === 0) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: token.colorTextSecondary,
+        }}
+      >
+        {loading ? "Loading..." : "No frames"}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={headerStyle}>
+        <span>#</span>
+        <span />
+        <span>Type</span>
+        <span>Size</span>
+        <span>Time</span>
+        <span>Preview</span>
+        <span />
+      </div>
+      <div
+        ref={parentRef}
+        style={{ flex: 1, minHeight: 0, overflow: "auto" }}
+        data-testid="ws-frames-table"
+      >
+        <div
+          style={{
+            height: rowVirtualizer.getTotalSize(),
+            position: "relative",
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const frame = frames[virtualRow.index];
+            if (!frame) return null;
+            const canOpen = frame.payload_size > 0;
+            const rowStyle: CSSProperties = {
+              ...rowBaseStyle,
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+              borderLeft:
+                frame.direction === "send" ? "3px solid #52c41a" : "3px solid #1890ff",
+              cursor: canOpen ? "pointer" : "default",
+            };
+
+            return (
+              <div
+                key={virtualRow.key}
+                style={rowStyle}
+                data-testid="ws-frame-row"
+                data-frame-id={frame.frame_id}
+                data-payload-size={frame.payload_size}
+                onClick={() => {
+                  if (!canOpen) return;
+                  onOpenDetail(frame);
+                }}
+              >
+                <Text type="secondary">{frame.frame_id}</Text>
+                <DirectionIcon direction={frame.direction} />
+                <Tag color={getFrameTypeColor(frame.frame_type)}>
+                  {frame.frame_type.toUpperCase()}
+                </Tag>
+                <Text>{formatSize(frame.payload_size)}</Text>
+                <Text>{dayjs(frame.timestamp).format("HH:mm:ss.SSS")}</Text>
+                <div style={{ overflow: "hidden" }}>
+                  {frame.payload_preview ? (
+                    <Text
+                      style={{ fontFamily: "monospace", fontSize: 12 }}
+                      ellipsis={{ tooltip: frame.payload_preview }}
+                    >
+                      {frame.payload_preview}
+                    </Text>
+                  ) : (
+                    <Text type="secondary">-</Text>
+                  )}
+                </div>
+                <Space size={4}>
+                  <Tooltip title="Copy">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onCopy(frame);
+                      }}
+                      disabled={!canOpen}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Expand">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ExpandOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!canOpen) return;
+                        onOpenDetail(frame);
+                      }}
+                      disabled={!canOpen}
+                    />
+                  </Tooltip>
+                </Space>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -165,6 +353,7 @@ export const Messages = ({
   frameCount,
   isConnectionOpen = false,
   searchValue,
+  onSearch,
   onSseCountChange,
 }: MessagesProps) => {
   const { token } = theme.useToken();
@@ -190,6 +379,7 @@ export const Messages = ({
   const sseParseTokenRef = useRef(0);
   const ssePendingRef = useRef<SSEEvent[]>([]);
   const sseFlushRef = useRef<number | null>(null);
+  const sseClosedByUsRef = useRef(false);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
   );
@@ -327,6 +517,7 @@ export const Messages = ({
       `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
+    sseClosedByUsRef.current = false;
     setSseConnectionState("connecting");
     setSseLoading(true);
     setResponseBody(recordId, "");
@@ -393,11 +584,12 @@ export const Messages = ({
     eventSource.onerror = () => {
       eventSource.close();
       sseEventSourceRef.current = null;
-      setSseConnectionState("error");
+      setSseConnectionState("closed");
       setSseLoading(false);
     };
 
     return () => {
+      sseClosedByUsRef.current = true;
       eventSource.close();
       sseEventSourceRef.current = null;
       setSseConnectionState("closed");
@@ -501,9 +693,37 @@ export const Messages = ({
     );
   }, [framesForWsDisplay, isWebSocket, searchValue.value]);
 
+  const handleCopyWsFrame = useCallback(
+    async (record: WebSocketFrame) => {
+      const payload =
+        wsPayloadById[record.frame_id] || record.payload_preview || "";
+      if (payload) {
+        await copyToClipboard(payload);
+        return;
+      }
+      if (record.payload_size === 0) return;
+      if (inflightWsPayloadIdsRef.current.has(record.frame_id)) return;
+      inflightWsPayloadIdsRef.current.add(record.frame_id);
+      const full = await fetchFramePayload(record.frame_id);
+      inflightWsPayloadIdsRef.current.delete(record.frame_id);
+      if (!full) return;
+      setWsPayloadById((prev) =>
+        prev[record.frame_id] ? prev : { ...prev, [record.frame_id]: full },
+      );
+      await copyToClipboard(full);
+    },
+    [fetchFramePayload, wsPayloadById],
+  );
+
   const normalizedWsMessages = useMemo<MessageItem[]>(() => {
     return framesForWsDisplay.map(normalizeWSFrame);
   }, [framesForWsDisplay]);
+
+  useEffect(() => {
+    if (!isWebSocket) {
+      setSseSearchQuery(searchValue.value ?? "");
+    }
+  }, [isWebSocket, searchValue.value]);
 
   const openWsFrameDetail = useCallback(
     async (frame: WebSocketFrame) => {
@@ -601,117 +821,6 @@ export const Messages = ({
     );
   }, [selectedFrame, wsPayloadById]);
 
-  const columns: TableProps<WebSocketFrame>["columns"] = [
-    {
-      title: "#",
-      dataIndex: "frame_id",
-      key: "frame_id",
-      width: 60,
-      render: (id: number) => <Text type="secondary">{id}</Text>,
-    },
-    {
-      title: "",
-      dataIndex: "direction",
-      key: "direction",
-      width: 40,
-      render: (direction: FrameDirection) => (
-        <DirectionIcon direction={direction} />
-      ),
-    },
-    {
-      title: "Type",
-      dataIndex: "frame_type",
-      key: "frame_type",
-      width: 80,
-      render: (type: FrameType) => (
-        <Tag color={getFrameTypeColor(type)}>{type.toUpperCase()}</Tag>
-      ),
-    },
-    {
-      title: "Size",
-      dataIndex: "payload_size",
-      key: "payload_size",
-      width: 80,
-      render: (size: number) => formatSize(size),
-    },
-    {
-      title: "Time",
-      dataIndex: "timestamp",
-      key: "timestamp",
-      width: 100,
-      render: (ts: number) => dayjs(ts).format("HH:mm:ss.SSS"),
-    },
-    {
-      title: "Preview",
-      dataIndex: "payload_preview",
-      key: "payload_preview",
-      ellipsis: true,
-      render: (preview: string | undefined) =>
-        preview ? (
-          <Text
-            style={{ fontFamily: "monospace", fontSize: 12 }}
-            ellipsis={{ tooltip: preview }}
-          >
-            {preview}
-          </Text>
-        ) : (
-          <Text type="secondary">-</Text>
-        ),
-    },
-    {
-      title: "",
-      key: "actions",
-      width: 70,
-      render: (_: unknown, record: WebSocketFrame) => (
-        <Space size={4}>
-          <Tooltip title="Copy">
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={async (e) => {
-                e.stopPropagation();
-                const payload =
-                  wsPayloadById[record.frame_id] ||
-                  record.payload_preview ||
-                  "";
-                if (payload) {
-                  await copyToClipboard(payload);
-                  return;
-                }
-                if (record.payload_size === 0) return;
-                if (inflightWsPayloadIdsRef.current.has(record.frame_id))
-                  return;
-                inflightWsPayloadIdsRef.current.add(record.frame_id);
-                const full = await fetchFramePayload(record.frame_id);
-                inflightWsPayloadIdsRef.current.delete(record.frame_id);
-                if (!full) return;
-                setWsPayloadById((prev) =>
-                  prev[record.frame_id]
-                    ? prev
-                    : { ...prev, [record.frame_id]: full },
-                );
-                await copyToClipboard(full);
-              }}
-              disabled={record.payload_size === 0}
-            />
-          </Tooltip>
-          <Tooltip title="Expand">
-            <Button
-              type="text"
-              size="small"
-              icon={<ExpandOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                void openWsFrameDetail(record);
-              }}
-              disabled={record.payload_size === 0}
-            />
-          </Tooltip>
-        </Space>
-      ),
-    },
-  ];
 
   if (
     frameCount === 0 &&
@@ -746,14 +855,28 @@ export const Messages = ({
           events={sseEvents}
           loading={sseLoading}
           hasMore={false}
-          searchQuery={sseSearchQuery}
+          searchQuery={searchValue.value ?? sseSearchQuery}
           searchMode={sseSearchMode}
-          onSearchChange={setSseSearchQuery}
+          onSearchChange={(value) => {
+            setSseSearchQuery(value);
+            onSearch({ value, next: 1 });
+          }}
           onSearchModeChange={setSseSearchMode}
           onLoadMore={() => {}}
           onRefresh={() => setSseReloadToken((n) => n + 1)}
           onFullscreenOpen={() => setSseFullscreenOpen(true)}
           connectionState={sseConnectionState}
+          externalNext={searchValue.next}
+          onMatchCountChange={(total) => {
+            if (searchValue.total !== total) {
+              onSearch({ total });
+            }
+          }}
+          onMatchNavigate={(next) => {
+            if (searchValue.next !== next) {
+              onSearch({ next });
+            }
+          }}
         />
         <Modal
           open={sseFullscreenOpen}
@@ -771,13 +894,27 @@ export const Messages = ({
             events={sseEvents}
             loading={sseLoading}
             hasMore={false}
-            searchQuery={sseSearchQuery}
+            searchQuery={searchValue.value ?? sseSearchQuery}
             searchMode={sseSearchMode}
-            onSearchChange={setSseSearchQuery}
+            onSearchChange={(value) => {
+              setSseSearchQuery(value);
+              onSearch({ value, next: 1 });
+            }}
             onSearchModeChange={setSseSearchMode}
             onLoadMore={() => {}}
             onRefresh={() => setSseReloadToken((n) => n + 1)}
             connectionState={sseConnectionState}
+            externalNext={searchValue.next}
+            onMatchCountChange={(total) => {
+              if (searchValue.total !== total) {
+                onSearch({ total });
+              }
+            }}
+            onMatchNavigate={(next) => {
+              if (searchValue.next !== next) {
+                onSearch({ next });
+              }
+            }}
           />
         </Modal>
       </div>
@@ -785,7 +922,16 @@ export const Messages = ({
   }
 
   return (
-    <div ref={tableRef} data-testid="ws-frames-pane">
+    <div
+      ref={tableRef}
+      data-testid="ws-frames-pane"
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+      }}
+    >
       <div
         style={{
           marginBottom: 4,
@@ -827,57 +973,12 @@ export const Messages = ({
         </Space>
       </div>
 
-      <ConfigProvider
-        theme={{
-          components: {
-            Table: {
-              cellPaddingBlockSM: 2,
-              cellPaddingInlineSM: 4,
-            },
-          },
-        }}
-      >
-        <Table<WebSocketFrame>
-          dataSource={filteredWsFrames}
-          columns={columns}
-          rowKey="frame_id"
-          pagination={false}
-          size="small"
-          loading={loading}
-          data-testid="ws-frames-table"
-          style={{
-            backgroundColor: token.colorBgLayout,
-            borderRadius: 4,
-          }}
-          rowClassName={(record) =>
-            `${record.direction === "send" ? "frame-send" : "frame-receive"} message-row`
-          }
-          onRow={(record) => ({
-            onClick: () => {
-              if (record.payload_size === 0) return;
-              void openWsFrameDetail(record);
-            },
-            "data-testid": "ws-frame-row",
-            "data-frame-id": record.frame_id,
-            "data-payload-size": record.payload_size,
-          })}
-        />
-      </ConfigProvider>
-
-      <style>{`
-        .frame-send td:first-child {
-          border-left: 3px solid #52c41a;
-        }
-        .frame-receive td:first-child {
-          border-left: 3px solid #1890ff;
-        }
-        .message-row {
-          cursor: pointer;
-        }
-        .message-row:hover {
-          background-color: ${token.colorBgTextHover};
-        }
-      `}</style>
+      <WsMessageList
+        frames={filteredWsFrames}
+        loading={loading}
+        onOpenDetail={openWsFrameDetail}
+        onCopy={handleCopyWsFrame}
+      />
 
       <Modal
         title={

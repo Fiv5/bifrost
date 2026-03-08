@@ -29,6 +29,9 @@ interface SseMessageListProps {
   onRefresh: () => void;
   onFullscreenOpen?: () => void;
   connectionState?: 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+  externalNext?: number;
+  onMatchCountChange?: (total: number) => void;
+  onMatchNavigate?: (next: number) => void;
 }
 
 export const SseMessageList = ({
@@ -43,12 +46,16 @@ export const SseMessageList = ({
   onRefresh,
   onFullscreenOpen,
   connectionState,
+  externalNext,
+  onMatchCountChange,
+  onMatchNavigate,
 }: SseMessageListProps) => {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
   const [currentMatch, setCurrentMatch] = useState<number>(-1);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const followTailRef = useRef(true);
 
   const displayEvents = useMemo(() => {
     if (searchMode !== 'filter' || !normalizedQuery) return events;
@@ -78,6 +85,27 @@ export const SseMessageList = ({
   });
 
   useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 24;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      followTailRef.current = distance <= threshold;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (displayEvents.length === 0) return;
+    if (!followTailRef.current) return;
+    rowVirtualizer.scrollToIndex(displayEvents.length - 1, { align: 'end' });
+  }, [displayEvents.length, rowVirtualizer]);
+
+  useEffect(() => {
     if (matchedIndices.length === 0) {
       setCurrentMatch(-1);
       return;
@@ -85,6 +113,28 @@ export const SseMessageList = ({
     setCurrentMatch(0);
     rowVirtualizer.scrollToIndex(matchedIndices[0], { align: 'center' });
   }, [matchedIndices, rowVirtualizer]);
+
+  const lastReportedTotalRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!onMatchCountChange) return;
+    const nextTotal = matchedIndices.length;
+    if (lastReportedTotalRef.current === nextTotal) return;
+    lastReportedTotalRef.current = nextTotal;
+    onMatchCountChange(nextTotal);
+  }, [matchedIndices.length, onMatchCountChange]);
+
+  const prevExternalNext = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!externalNext || matchedIndices.length === 0) {
+      prevExternalNext.current = externalNext;
+      return;
+    }
+    if (prevExternalNext.current === externalNext) return;
+    prevExternalNext.current = externalNext;
+    const idx = (externalNext - 1) % matchedIndices.length;
+    setCurrentMatch(idx);
+    rowVirtualizer.scrollToIndex(matchedIndices[idx], { align: 'center' });
+  }, [externalNext, matchedIndices, rowVirtualizer]);
 
   const handleSearchChange = useCallback((value: string) => {
     onSearchChange?.(value);
@@ -100,6 +150,7 @@ export const SseMessageList = ({
       currentMatch <= 0 ? matchedIndices.length - 1 : currentMatch - 1;
     setCurrentMatch(nextIndex);
     rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+    onMatchNavigate?.(nextIndex + 1);
   }, [currentMatch, matchedIndices, rowVirtualizer]);
 
   const goToNext = useCallback(() => {
@@ -108,11 +159,16 @@ export const SseMessageList = ({
       currentMatch >= matchedIndices.length - 1 ? 0 : currentMatch + 1;
     setCurrentMatch(nextIndex);
     rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+    onMatchNavigate?.(nextIndex + 1);
   }, [currentMatch, matchedIndices, rowVirtualizer]);
 
   const matchInfo = matchedIndices.length > 0
     ? `${currentMatch >= 0 ? currentMatch + 1 : 0}/${matchedIndices.length}`
     : null;
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [expandedMap, rowVirtualizer]);
 
   const getEventKey = useCallback((event: SSEEvent, index: number) => {
     if (event.id) return String(event.id);
@@ -298,6 +354,7 @@ export const SseMessageList = ({
                   >
                     <SseEventCard
                       event={event}
+                      index={virtualRow.index}
                       searchValue={searchMode === 'highlight' ? searchQuery : undefined}
                       expanded={!!expandedMap[key]}
                       onToggle={() => toggleExpanded(key)}
