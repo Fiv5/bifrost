@@ -55,7 +55,9 @@ const TABLE_MIN_WIDTH = 1440;
 const DEFAULT_STATUS_DOT_COLOR = "#d9d9d9";
 
 const formatSequence = (seq: number): string => {
-  return seq.toString().padStart(4, "0");
+  const raw = seq.toString();
+  const trimmed = raw.length > 5 ? raw.slice(-5) : raw;
+  return trimmed.padStart(5, "0");
 };
 
 interface ColumnDef {
@@ -97,7 +99,7 @@ const columns: ColumnDef[] = [
     width: 50,
     align: "right",
     render: (record, textSecondary, rowIndex) => {
-      const displaySequence = record.sequence ?? record._displayIndex ?? rowIndex + 1;
+      const displaySequence = record.sequence ?? rowIndex + 1;
       return (
         <span
           style={{ fontSize: 11, fontFamily: "monospace", color: textSecondary }}

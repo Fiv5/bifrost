@@ -207,11 +207,7 @@ const preprocessRecords = (records: TrafficSummary[]): TrafficSummary[] => {
   return records;
 };
 
-const applyDisplayIndex = (records: TrafficSummary[]): void => {
-  for (let i = 0; i < records.length; i++) {
-    records[i]._displayIndex = i + 1;
-  }
-};
+
 
 const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]): boolean => {
   return toolbar.rule.length > 0 ||
@@ -634,7 +630,6 @@ export const useTrafficStore = create<TrafficState>()(
               let allRecords: TrafficSummary[];
               if (hasChanges) {
                 allRecords = Array.from(recordsMap.values());
-                applyDisplayIndex(allRecords);
 
                 if (allRecords.length > MAX_RECORDS) {
                   const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
@@ -744,7 +739,7 @@ export const useTrafficStore = create<TrafficState>()(
           let allRecords: TrafficSummary[];
           if (hasChanges) {
             allRecords = Array.from(recordsMap.values());
-            applyDisplayIndex(allRecords);
+
             if (allRecords.length > MAX_RECORDS) {
               const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
               for (const r of toRemove) {
@@ -820,9 +815,7 @@ export const useTrafficStore = create<TrafficState>()(
           }
 
           const records = removedCount > 0 ? Array.from(recordsMap.values()) : prevState.records;
-          if (removedCount > 0) {
-            applyDisplayIndex(records);
-          }
+
 
           const detailRemoved = currentDeleted || !!selectedDeleted;
           return {
@@ -856,7 +849,7 @@ export const useTrafficStore = create<TrafficState>()(
 
           const convertedRecords = response.new_records.map(compactToSummary);
           const preprocessedRecords = preprocessRecords(convertedRecords);
-          applyDisplayIndex(preprocessedRecords);
+
 
           const newPendingIds = new Set<string>();
           const newRecordsMap = new Map<string, TrafficSummary>();
@@ -950,7 +943,7 @@ export const useTrafficStore = create<TrafficState>()(
               let allRecords: TrafficSummary[];
               if (hasChanges) {
                 allRecords = Array.from(recordsMap.values());
-                applyDisplayIndex(allRecords);
+
 
                 if (allRecords.length > MAX_RECORDS) {
                   const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
@@ -1074,7 +1067,6 @@ export const useTrafficStore = create<TrafficState>()(
               }
 
               const newRecords = Array.from(newRecordsMap.values());
-              applyDisplayIndex(newRecords);
               return {
                 records: newRecords,
                 recordsMap: newRecordsMap,
