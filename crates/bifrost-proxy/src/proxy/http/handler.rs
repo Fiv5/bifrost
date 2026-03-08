@@ -129,6 +129,58 @@ pub fn needs_response_override(rules: &ResolvedRules) -> bool {
     rules.res_body.is_some() || rules.status_code.is_some() || rules.replace_status.is_some()
 }
 
+enum BodyMode {
+    Known(usize),
+    Stream,
+    StreamWithTrailers,
+}
+
+fn is_no_body_response(status: StatusCode, method: &str) -> bool {
+    status.is_informational()
+        || status == StatusCode::NO_CONTENT
+        || status == StatusCode::NOT_MODIFIED
+        || method.eq_ignore_ascii_case("HEAD")
+}
+
+fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
+    match mode {
+        BodyMode::Known(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
+        }
+        BodyMode::Stream | BodyMode::StreamWithTrailers => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
+}
+
+fn normalize_res_headers(parts: &mut ResponseParts, mode: BodyMode, method: &str) {
+    if is_no_body_response(parts.status, method) {
+        parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+        parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        return;
+    }
+    match mode {
+        BodyMode::Known(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
+        }
+        BodyMode::Stream | BodyMode::StreamWithTrailers => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
+}
+
 pub struct ConnectionErrorInfo {
     pub error_type: &'static str,
     pub error_message: String,
@@ -664,10 +716,6 @@ pub async fn handle_http_request(
         }
         parts.headers = new_headers;
 
-        req_headers = script_headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
     }
 
     let final_body =
@@ -680,13 +728,17 @@ pub async fn handle_http_request(
         } else {
             final_body
         };
-    if streaming_body.is_none() {
-        parts.headers.remove(hyper::header::CONTENT_LENGTH);
-        parts.headers.insert(
-            hyper::header::CONTENT_LENGTH,
-            hyper::header::HeaderValue::from_str(&final_body.len().to_string()).unwrap(),
-        );
-    }
+    let req_body_mode = if streaming_body.is_some() {
+        BodyMode::Stream
+    } else {
+        BodyMode::Known(final_body.len())
+    };
+    normalize_req_headers(&mut parts, req_body_mode);
+    req_headers = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
     let request_body_size = if !final_body.is_empty() {
         final_body.len()
     } else {
@@ -1174,6 +1226,17 @@ pub async fn handle_http_request(
     if skip_body_processing {
         let is_streaming = is_streaming_response(&res_parts);
         let is_sse = is_sse_response(&res_parts);
+        let res_body_mode = if resolved_rules.trailers.is_empty() {
+            BodyMode::Stream
+        } else {
+            BodyMode::StreamWithTrailers
+        };
+        normalize_res_headers(&mut res_parts, res_body_mode, &method);
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
         if verbose_logging && !res_body_too_large {
             if is_sse {
                 info!(
@@ -1417,22 +1480,11 @@ pub async fn handle_http_request(
         } else {
             final_res_body
         };
-
-    if original_res_body_len != final_res_body.len() {
-        res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
-        res_parts.headers.insert(
-            hyper::header::CONTENT_LENGTH,
-            HeaderValue::from_str(&final_res_body.len().to_string()).unwrap(),
-        );
-        if verbose_logging {
-            info!(
-                "[{}] Updated Content-Length: {} -> {}",
-                ctx.id_str(),
-                original_res_body_len,
-                final_res_body.len()
-            );
-        }
-    }
+    normalize_res_headers(
+        &mut res_parts,
+        BodyMode::Known(final_res_body.len()),
+        &method,
+    );
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 

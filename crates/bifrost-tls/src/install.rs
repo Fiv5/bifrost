@@ -35,14 +35,14 @@ fn install_cert_with_uac(cert_path: &Path) -> bool {
     let mut exec_info = SHELLEXECUTEINFOW {
         cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS,
-        hwnd: HWND(0),
+        hwnd: HWND(std::ptr::null_mut()),
         lpVerb: PCWSTR(verb.as_ptr()),
         lpFile: PCWSTR(file.as_ptr()),
         lpParameters: PCWSTR(params.as_ptr()),
         nShow: SW_SHOW.0,
         ..Default::default()
     };
-    let launched = unsafe { ShellExecuteExW(&mut exec_info) }.as_bool();
+    let launched = unsafe { ShellExecuteExW(&mut exec_info) }.is_ok();
     if !launched || exec_info.hProcess.is_invalid() {
         return false;
     }
@@ -50,9 +50,9 @@ fn install_cert_with_uac(cert_path: &Path) -> bool {
         WaitForSingleObject(exec_info.hProcess, INFINITE);
     }
     let mut exit_code: u32 = 1;
-    let got_exit = unsafe { GetExitCodeProcess(exec_info.hProcess, &mut exit_code) }.as_bool();
+    let got_exit = unsafe { GetExitCodeProcess(exec_info.hProcess, &mut exit_code) }.is_ok();
     unsafe {
-        CloseHandle(exec_info.hProcess);
+        let _ = CloseHandle(exec_info.hProcess);
     }
     got_exit && exit_code == 0
 }

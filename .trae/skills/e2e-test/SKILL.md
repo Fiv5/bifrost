@@ -23,6 +23,16 @@ description: "创建和执行 Bifrost 代理的端到端测试；在添加新功
 
 ## 执行测试
 
+### 快速构建启动（推荐）
+
+```bash
+# 仅构建后端并快速启动（跳过前端构建）
+SKIP_FRONTEND_BUILD=1 cargo run --bin bifrost -- start -p 8890 --unsafe-ssl
+
+# 或使用 Makefile 快速启动
+make dev
+```
+
 ### 运行全量测试（推荐）
 
 ```bash
