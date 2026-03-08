@@ -470,8 +470,9 @@ impl CertInstaller {
         println!("This requires administrator privileges.");
         println!("A UAC prompt may appear.");
 
+        let cert_path = self.cert_path.to_str().unwrap_or("");
         let output = Command::new("certutil")
-            .args(["-addstore", "Root", self.cert_path.to_str().unwrap_or("")])
+            .args(["-addstore", "Root", cert_path])
             .status();
 
         match output {
@@ -480,13 +481,32 @@ impl CertInstaller {
                     println!("✓ CA certificate installed and trusted successfully.");
                     Ok(())
                 } else {
-                    println!();
-                    println!("Failed to install certificate. Please try running as Administrator:");
-                    println!("  certutil -addstore Root \"{}\"", self.cert_path.display());
-                    Err(BifrostError::Tls(
-                        "Failed to install CA certificate. Administrator privileges required."
-                            .to_string(),
-                    ))
+                    println!("Requesting administrator approval to install the certificate...");
+                    let escaped_path = self.cert_path.to_string_lossy().replace('\'', "''");
+                    let elevate_script = format!(
+                        "$p = Start-Process -FilePath certutil -ArgumentList @('-addstore','Root','{}') -Verb RunAs -Wait -PassThru; if ($p.ExitCode -eq 0) {{ exit 0 }} else {{ exit $p.ExitCode }}",
+                        escaped_path
+                    );
+                    let elevated = Command::new("powershell")
+                        .args(["-NoProfile", "-Command", &elevate_script])
+                        .status();
+                    match elevated {
+                        Ok(elevated_status) if elevated_status.success() => {
+                            println!("✓ CA certificate installed and trusted successfully.");
+                            Ok(())
+                        }
+                        _ => {
+                            println!();
+                            println!(
+                                "Failed to install certificate. Please try running as Administrator:"
+                            );
+                            println!("  certutil -addstore Root \"{}\"", self.cert_path.display());
+                            Err(BifrostError::Tls(
+                                "Failed to install CA certificate. Administrator privileges required."
+                                    .to_string(),
+                            ))
+                        }
+                    }
                 }
             }
             Err(e) => Err(BifrostError::Tls(format!(
