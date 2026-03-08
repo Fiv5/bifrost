@@ -116,6 +116,17 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
         }
     }
 
+    for (_, _, _, _, client_app) in state.connection_registry.list_connections_full() {
+        let app_name = client_app.unwrap_or_else(|| "Unknown".to_string());
+        let entry = app_stats
+            .entry(app_name.clone())
+            .or_insert_with(|| AppMetrics {
+                app_name,
+                ..Default::default()
+            });
+        entry.active_connections += 1;
+    }
+
     let mut result: Vec<AppMetrics> = app_stats.into_values().collect();
     result.sort_by(|a, b| b.requests.cmp(&a.requests));
 
@@ -190,6 +201,21 @@ async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
                 _ => {}
             }
         }
+    }
+
+    for (_, host, _, _, _) in state.connection_registry.list_connections_full() {
+        let host = if host.is_empty() {
+            "Unknown".to_string()
+        } else {
+            host
+        };
+        let entry = host_stats
+            .entry(host.clone())
+            .or_insert_with(|| HostMetrics {
+                host,
+                ..Default::default()
+            });
+        entry.active_connections += 1;
     }
 
     let mut result: Vec<HostMetrics> = host_stats.into_values().collect();

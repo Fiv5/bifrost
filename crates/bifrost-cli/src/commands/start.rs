@@ -541,6 +541,15 @@ pub fn run_foreground(
         ));
         start_frame_cleanup_task(frame_store.clone());
 
+        let cleanup_body_store = body_store.clone();
+        let cleanup_frame_store = frame_store.clone();
+        let cleanup_ws_payload_store = ws_payload_store.clone();
+        traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+            let _ = cleanup_body_store.write().delete_by_ids(ids);
+            let _ = cleanup_frame_store.delete_by_ids(ids);
+            let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+        }));
+
         let values_storage = config_manager.values_storage().await;
         let rules_storage = config_manager.rules_storage().await;
         let mut values = {
@@ -887,6 +896,15 @@ pub fn run_daemon(
                     Some(stored_config.traffic.file_retention_days * 24),
                 ));
                 start_frame_cleanup_task(frame_store.clone());
+
+                let cleanup_body_store = body_store.clone();
+                let cleanup_frame_store = frame_store.clone();
+                let cleanup_ws_payload_store = ws_payload_store.clone();
+                traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+                    let _ = cleanup_body_store.write().delete_by_ids(ids);
+                    let _ = cleanup_frame_store.delete_by_ids(ids);
+                    let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+                }));
 
                 let values_storage = config_manager.values_storage().await;
                 let rules_storage = config_manager.rules_storage().await;

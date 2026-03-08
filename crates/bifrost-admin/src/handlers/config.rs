@@ -430,6 +430,9 @@ async fn update_performance_config(
         if let Some(ref traffic_store) = state.traffic_store {
             traffic_store.set_max_records(max_records);
         }
+        if let Some(ref traffic_db_store) = state.traffic_db_store {
+            traffic_db_store.set_max_records(max_records);
+        }
     }
 
     if let Some(max_db_size_bytes) = request.max_db_size_bytes {

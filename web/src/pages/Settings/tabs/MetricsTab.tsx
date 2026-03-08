@@ -305,6 +305,14 @@ function AppMetricsContent({
       render: (val: number) => val.toLocaleString(),
     },
     {
+      title: "Active",
+      dataIndex: "active_connections",
+      key: "active_connections",
+      width: 100,
+      sorter: (a, b) => a.active_connections - b.active_connections,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
       title: "Upload",
       dataIndex: "bytes_sent",
       key: "bytes_sent",
@@ -360,6 +368,13 @@ function AppMetricsContent({
       dataIndex: "h3_requests",
       key: "h3_requests",
       width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "SOCKS5",
+      dataIndex: "socks5_requests",
+      key: "socks5_requests",
+      width: 90,
       render: (val: number) => val.toLocaleString(),
     },
   ];
@@ -484,6 +499,14 @@ function HostMetricsContent({
       render: (val: number) => val.toLocaleString(),
     },
     {
+      title: "Active",
+      dataIndex: "active_connections",
+      key: "active_connections",
+      width: 100,
+      sorter: (a, b) => a.active_connections - b.active_connections,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
       title: "Upload",
       dataIndex: "bytes_sent",
       key: "bytes_sent",
@@ -539,6 +562,13 @@ function HostMetricsContent({
       dataIndex: "h3_requests",
       key: "h3_requests",
       width: 80,
+      render: (val: number) => val.toLocaleString(),
+    },
+    {
+      title: "SOCKS5",
+      dataIndex: "socks5_requests",
+      key: "socks5_requests",
+      width: 90,
       render: (val: number) => val.toLocaleString(),
     },
   ];

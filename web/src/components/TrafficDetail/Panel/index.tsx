@@ -142,36 +142,41 @@ export const Panel = ({
         </Space>
       </div>
 
-      {!collapsed && (
-        <>
-          <Divider style={{ margin: '0 0 4px 0' }} />
+      <div
+        style={{
+          display: collapsed ? 'none' : 'flex',
+          flex: 1,
+          minHeight: 0,
+          flexDirection: 'column',
+        }}
+      >
+        <Divider style={{ margin: '0 0 4px 0' }} />
 
-          <Search value={searchValue} onSearch={onSearch} />
+        <Search value={searchValue} onSearch={onSearch} />
 
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: contentOverflow,
-            }}
-          >
-            {enabledTabs.map((tab) => {
-              const isActive = tab.key === activeTab;
-              if (!isActive && !keepAliveSet.has(tab.key)) {
-                return null;
-              }
-              return (
-                <div
-                  key={tab.key}
-                  style={{ display: isActive ? 'block' : 'none', height: '100%' }}
-                >
-                  {tab.children}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: contentOverflow,
+          }}
+        >
+          {enabledTabs.map((tab) => {
+            const isActive = tab.key === activeTab;
+            if (!isActive && !keepAliveSet.has(tab.key)) {
+              return null;
+            }
+            return (
+              <div
+                key={tab.key}
+                style={{ display: isActive ? 'block' : 'none', height: '100%' }}
+              >
+                {tab.children}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 };

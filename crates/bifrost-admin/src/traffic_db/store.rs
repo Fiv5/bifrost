@@ -18,6 +18,7 @@ const DEFAULT_CACHE_SIZE: usize = 500;
 const CLEANUP_CHECK_INTERVAL: u64 = 100;
 
 pub type SharedTrafficDbStore = Arc<TrafficDbStore>;
+type CleanupNotifier = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub struct TrafficDbStore {
     db_path: PathBuf,
@@ -30,6 +31,7 @@ pub struct TrafficDbStore {
     current_sequence: AtomicU64,
     recent_cache: RwLock<LruCache<String, TrafficRecord>>,
     write_count: AtomicU64,
+    cleanup_notifier: RwLock<Option<CleanupNotifier>>,
 }
 
 impl TrafficDbStore {
@@ -88,7 +90,12 @@ impl TrafficDbStore {
             current_sequence: AtomicU64::new(current_seq + 1),
             recent_cache: RwLock::new(LruCache::new(cache_size)),
             write_count: AtomicU64::new(0),
+            cleanup_notifier: RwLock::new(None),
         })
+    }
+
+    pub fn set_cleanup_notifier(&self, notifier: CleanupNotifier) {
+        *self.cleanup_notifier.write() = Some(notifier);
     }
 
     fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {
@@ -761,11 +768,7 @@ impl TrafficDbStore {
             }
         }
 
-        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
-        let mut cache = self.recent_cache.write();
-        for id in &ids_set {
-            cache.pop(&id.to_string());
-        }
+        self.remove_from_cache(ids);
     }
 
     fn maybe_cleanup(&self, conn: &Connection) {
@@ -777,21 +780,13 @@ impl TrafficDbStore {
 
         if count as usize > max {
             let excess = count as usize - max;
-            let result = conn.execute(
-                "DELETE FROM traffic_records WHERE sequence IN (
-                    SELECT sequence FROM traffic_records ORDER BY sequence ASC LIMIT ?
-                )",
-                [excess as i64],
-            );
-
-            if let Ok(deleted) = result {
-                if deleted > 0 {
-                    tracing::debug!(
-                        deleted = deleted,
-                        max = max,
-                        "[TRAFFIC_DB] Cleaned up old records"
-                    );
-                }
+            let deleted = self.delete_oldest_by_limit(conn, excess);
+            if deleted > 0 {
+                tracing::debug!(
+                    deleted = deleted,
+                    max = max,
+                    "[TRAFFIC_DB] Cleaned up old records"
+                );
             }
         }
 
@@ -810,25 +805,16 @@ impl TrafficDbStore {
                 if to_remove < 1 {
                     to_remove = 1;
                 }
-
-                let result = conn.execute(
-                    "DELETE FROM traffic_records WHERE sequence IN (
-                        SELECT sequence FROM traffic_records ORDER BY sequence ASC LIMIT ?
-                    )",
-                    [to_remove],
-                );
-
-                if let Ok(deleted) = result {
-                    if deleted > 0 {
-                        tracing::info!(
-                            deleted = deleted,
-                            db_size = db_size,
-                            max_db_size_bytes = max_db_size_bytes,
-                            target_size = target_size,
-                            "[TRAFFIC_DB] Cleaned up records due to DB size limit"
-                        );
-                        Self::compact_with_conn(conn, true);
-                    }
+                let deleted = self.delete_oldest_by_limit(conn, to_remove as usize);
+                if deleted > 0 {
+                    tracing::info!(
+                        deleted = deleted,
+                        db_size = db_size,
+                        max_db_size_bytes = max_db_size_bytes,
+                        target_size = target_size,
+                        "[TRAFFIC_DB] Cleaned up records due to DB size limit"
+                    );
+                    Self::compact_with_conn(conn, true);
                 }
             }
         }
@@ -841,27 +827,15 @@ impl TrafficDbStore {
         let cutoff = now.saturating_sub(retention_ms);
 
         let conn = self.write_conn.lock();
-        let result = conn.execute(
-            "DELETE FROM traffic_records WHERE timestamp < ?",
-            [cutoff as i64],
-        );
-
-        match result {
-            Ok(deleted) => {
-                if deleted > 0 {
-                    tracing::info!(
-                        deleted = deleted,
-                        retention_hours = retention_hours,
-                        "[TRAFFIC_DB] Cleaned up expired records"
-                    );
-                }
-                deleted
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to cleanup expired records");
-                0
-            }
+        let deleted = self.delete_expired_by_cutoff(&conn, cutoff);
+        if deleted > 0 {
+            tracing::info!(
+                deleted = deleted,
+                retention_hours = retention_hours,
+                "[TRAFFIC_DB] Cleaned up expired records"
+            );
         }
+        deleted
     }
 
     pub fn count(&self) -> usize {
@@ -949,6 +923,86 @@ impl TrafficDbStore {
                 "[TRAFFIC_DB] Retention hours updated"
             );
         }
+    }
+
+    fn notify_cleanup(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        if let Some(notifier) = self.cleanup_notifier.read().as_ref() {
+            notifier(ids);
+        }
+    }
+
+    fn remove_from_cache(&self, ids: &[String]) {
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut cache = self.recent_cache.write();
+        for id in &ids_set {
+            cache.pop(&id.to_string());
+        }
+    }
+
+    fn delete_by_ids_with_conn(&self, conn: &Connection, ids: &[String]) -> usize {
+        if ids.is_empty() {
+            return 0;
+        }
+        let mut deleted = 0usize;
+        for chunk in ids.chunks(500) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM traffic_records WHERE id IN ({})", placeholders);
+            if let Ok(count) = conn.execute(&sql, rusqlite::params_from_iter(chunk.iter())) {
+                deleted += count;
+            }
+        }
+        self.remove_from_cache(ids);
+        deleted
+    }
+
+    fn delete_oldest_by_limit(&self, conn: &Connection, limit: usize) -> usize {
+        if limit == 0 {
+            return 0;
+        }
+        let mut ids = Vec::new();
+        let mut stmt =
+            match conn.prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ?") {
+                Ok(s) => s,
+                Err(_) => return 0,
+            };
+        if let Ok(iter) = stmt.query_map([limit as i64], |row| row.get(0)) {
+            for id in iter.flatten() {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return 0;
+        }
+        let deleted = self.delete_by_ids_with_conn(conn, &ids);
+        self.notify_cleanup(&ids);
+        deleted
+    }
+
+    fn delete_expired_by_cutoff(&self, conn: &Connection, cutoff: u64) -> usize {
+        let mut deleted = 0usize;
+        loop {
+            let mut ids = Vec::new();
+            let mut stmt = match conn.prepare(
+                "SELECT id FROM traffic_records WHERE timestamp < ? ORDER BY sequence ASC LIMIT ?",
+            ) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            if let Ok(iter) = stmt.query_map([cutoff as i64, 500i64], |row| row.get(0)) {
+                for id in iter.flatten() {
+                    ids.push(id);
+                }
+            }
+            if ids.is_empty() {
+                break;
+            }
+            deleted += self.delete_by_ids_with_conn(conn, &ids);
+            self.notify_cleanup(&ids);
+        }
+        deleted
     }
 
     pub fn oldest_ids(&self, limit: usize, offset: usize) -> Vec<String> {

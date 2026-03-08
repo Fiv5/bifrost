@@ -53,6 +53,40 @@ struct MetricsSnapshot {
     socks5: TrafficTypeMetrics,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default, Clone)]
+struct AppMetrics {
+    app_name: String,
+    requests: u64,
+    active_connections: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+    http_requests: u64,
+    https_requests: u64,
+    tunnel_requests: u64,
+    ws_requests: u64,
+    wss_requests: u64,
+    h3_requests: u64,
+    socks5_requests: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize, Default, Clone)]
+struct HostMetrics {
+    host: String,
+    requests: u64,
+    active_connections: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+    http_requests: u64,
+    https_requests: u64,
+    tunnel_requests: u64,
+    ws_requests: u64,
+    wss_requests: u64,
+    h3_requests: u64,
+    socks5_requests: u64,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 struct RuleGroup {
     name: String,
@@ -155,6 +189,8 @@ struct App {
     max_cpu: f32,
     memory_used_history: Vec<u64>,
     max_memory_used: u64,
+    app_metrics: Vec<AppMetrics>,
+    host_metrics: Vec<HostMetrics>,
     rules: Vec<RuleGroup>,
     values: Vec<Value>,
     scripts: ScriptsResponse,
@@ -178,6 +214,8 @@ impl App {
             max_cpu: 0.0,
             memory_used_history: vec![0; CPU_HISTORY_SIZE],
             max_memory_used: 0,
+            app_metrics: Vec::new(),
+            host_metrics: Vec::new(),
             rules: Vec::new(),
             values: Vec::new(),
             scripts: ScriptsResponse {
@@ -206,8 +244,16 @@ impl App {
             self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
 
         let port = self.port;
-        let (metrics, rules, values, scripts, config, performance_config) =
-            fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
+        let (
+            metrics,
+            rules,
+            values,
+            scripts,
+            config,
+            performance_config,
+            app_metrics,
+            host_metrics,
+        ) = fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
 
         if let Some(m) = metrics {
             self.qps_history.remove(0);
@@ -239,6 +285,12 @@ impl App {
         if let Some(p) = performance_config {
             self.performance_config = Some(p);
         }
+        if let Some(a) = app_metrics {
+            self.app_metrics = a;
+        }
+        if let Some(h) = host_metrics {
+            self.host_metrics = h;
+        }
 
         if need_slow_refresh {
             self.last_slow_refresh = Instant::now();
@@ -269,6 +321,8 @@ type FetchAllDataResult = (
     Option<ScriptsResponse>,
     Option<ConfigResponse>,
     Option<PerformanceConfigResponse>,
+    Option<Vec<AppMetrics>>,
+    Option<Vec<HostMetrics>>,
 );
 
 fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchAllDataResult {
@@ -304,6 +358,16 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
         thread::spawn(move || {
             let _ = tx_performance.send(("performance", fetch_performance_config(port)));
         });
+
+        let tx_apps = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_apps.send(("apps", fetch_app_metrics(port)));
+        });
+
+        let tx_hosts = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
+        });
     }
 
     drop(tx);
@@ -314,6 +378,8 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
     let mut scripts = None;
     let mut config = None;
     let mut performance = None;
+    let mut app_metrics = None;
+    let mut host_metrics = None;
 
     for (key, data) in rx {
         match key {
@@ -323,11 +389,22 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
             "scripts" => scripts = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "config" => config = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "performance" => performance = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "apps" => app_metrics = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "hosts" => host_metrics = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             _ => {}
         }
     }
 
-    (metrics, rules, values, scripts, config, performance)
+    (
+        metrics,
+        rules,
+        values,
+        scripts,
+        config,
+        performance,
+        app_metrics,
+        host_metrics,
+    )
 }
 
 fn fetch_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
@@ -388,6 +465,28 @@ fn fetch_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
 fn fetch_performance_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/config/performance", port);
     let result: Option<PerformanceConfigResponse> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
+        .call()
+        .ok()?
+        .into_json()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
+}
+
+fn fetch_app_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
+    let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics/apps", port);
+    let result: Option<Vec<AppMetrics>> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
+        .call()
+        .ok()?
+        .into_json()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
+}
+
+fn fetch_host_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
+    let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics/hosts", port);
+    let result: Option<Vec<HostMetrics>> = ureq::get(&url)
         .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
@@ -1001,6 +1100,11 @@ fn render_rules_config(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_traffic_details(frame: &mut Frame, area: Rect, app: &App) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+
     let protocols = [
         ("HTTP", &app.metrics.http, Color::Blue),
         ("HTTPS", &app.metrics.https, Color::Green),
@@ -1045,7 +1149,78 @@ fn render_traffic_details(frame: &mut Frame, area: Rect, app: &App) {
             .title(" Traffic by Protocol "),
     );
 
-    frame.render_widget(table, area);
+    frame.render_widget(table, layout[0]);
+
+    let detail_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(layout[1]);
+
+    let app_rows: Vec<Row> = app
+        .app_metrics
+        .iter()
+        .take(8)
+        .map(|m| {
+            Row::new(vec![
+                m.app_name.clone(),
+                m.requests.to_string(),
+                m.active_connections.to_string(),
+                m.socks5_requests.to_string(),
+            ])
+        })
+        .collect();
+
+    let apps_table = Table::new(
+        app_rows,
+        [
+            Constraint::Min(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .header(
+        Row::new(vec!["Application", "Requests", "Active", "SOCKS5"])
+            .style(Style::default().fg(Color::Yellow).bold())
+            .bottom_margin(1),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Top Applications "),
+    );
+    frame.render_widget(apps_table, detail_layout[0]);
+
+    let host_rows: Vec<Row> = app
+        .host_metrics
+        .iter()
+        .take(8)
+        .map(|m| {
+            Row::new(vec![
+                m.host.clone(),
+                m.requests.to_string(),
+                m.active_connections.to_string(),
+                m.socks5_requests.to_string(),
+            ])
+        })
+        .collect();
+
+    let hosts_table = Table::new(
+        host_rows,
+        [
+            Constraint::Min(12),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ],
+    )
+    .header(
+        Row::new(vec!["Host", "Requests", "Active", "SOCKS5"])
+            .style(Style::default().fg(Color::Yellow).bold())
+            .bottom_margin(1),
+    )
+    .block(Block::default().borders(Borders::ALL).title(" Top Hosts "));
+    frame.render_widget(hosts_table, detail_layout[1]);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect) {
