@@ -24,7 +24,7 @@ import dayjs from "dayjs";
 import hljs from "highlight.js/lib/core";
 import json from "highlight.js/lib/languages/json";
 import plaintext from "highlight.js/lib/languages/plaintext";
-import "highlight.js/styles/github.css";
+import "../../../../styles/hljs-github-theme.css";
 import type {
   WebSocketFrame,
   FrameDirection,
@@ -37,8 +37,6 @@ import { getClientId } from "../../../../services/clientId";
 import { SseMessageList } from "./SseMessageList";
 import {
   FullscreenMessageViewer,
-  parseSseTextToEvents,
-  normalizeSSEEvent,
   normalizeWSFrame,
   type MessageItem,
 } from "../../../VirtualMessageViewer";
@@ -56,6 +54,7 @@ interface MessagesProps {
   isConnectionOpen?: boolean;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
+  onSseCountChange?: (count: number) => void;
 }
 
 const formatSize = (bytes: number) => {
@@ -122,12 +121,51 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
   }
 };
 
+const parseSseChunkToEvent = (
+  chunk: string,
+  index: number,
+  timestamp: number,
+): SSEEvent | null => {
+  const lines = chunk.split("\n");
+  const dataLines: string[] = [];
+  let eventId: string | undefined;
+  let eventType: string | undefined;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).replace(/^ /, ""));
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      const v = line.slice(6).replace(/^ /, "");
+      if (v) eventType = v;
+      continue;
+    }
+    if (line.startsWith("id:")) {
+      const v = line.slice(3).replace(/^ /, "");
+      if (v) eventId = v;
+    }
+  }
+
+  const data = dataLines.length > 0 ? dataLines.join("\n") : chunk;
+  if (!data && !eventId && !eventType) return null;
+  return {
+    id: eventId ?? String(index + 1),
+    event: eventType ?? "message",
+    data,
+    timestamp,
+  };
+};
+
 export const Messages = ({
   recordId,
   isWebSocket,
   frameCount,
   isConnectionOpen = false,
   searchValue,
+  onSseCountChange,
 }: MessagesProps) => {
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
@@ -143,15 +181,24 @@ export const Messages = ({
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseEventSourceRef = useRef<EventSource | null>(null);
   const [sseEvents, setSseEvents] = useState<SSEEvent[]>([]);
-  const sseBodyRef = useRef<string>("");
   const lastSseSeqRef = useRef<number>(0);
   const [sseReloadToken, setSseReloadToken] = useState(0);
+  const [sseConnectionState, setSseConnectionState] = useState<
+    "idle" | "connecting" | "open" | "closed" | "error"
+  >("idle");
+  const [sseLoading, setSseLoading] = useState(false);
+  const sseParseTokenRef = useRef(0);
+  const ssePendingRef = useRef<SSEEvent[]>([]);
+  const sseFlushRef = useRef<number | null>(null);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
   );
   const inflightWsPayloadIdsRef = useRef<Set<number>>(new Set());
   const responseBody = useTrafficStore((state) => state.responseBody);
   const setResponseBody = useTrafficStore((state) => state.setResponseBody);
+  const appendSseResponseBody = useTrafficStore(
+    (state) => state.appendSseResponseBody,
+  );
 
   const fetchFrames = useCallback(
     async (after?: number) => {
@@ -212,9 +259,26 @@ export const Messages = ({
     setWsPayloadById({});
     inflightWsPayloadIdsRef.current.clear();
     setSseEvents([]);
-    sseBodyRef.current = "";
     lastSseSeqRef.current = 0;
+    sseParseTokenRef.current += 1;
+    if (sseFlushRef.current !== null) {
+      cancelAnimationFrame(sseFlushRef.current);
+      sseFlushRef.current = null;
+    }
+    ssePendingRef.current = [];
+    setSseConnectionState("idle");
+    setSseLoading(false);
   }, [recordId]);
+
+  useEffect(() => {
+    return () => {
+      if (sseFlushRef.current !== null) {
+        cancelAnimationFrame(sseFlushRef.current);
+        sseFlushRef.current = null;
+      }
+      sseParseTokenRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isWebSocket || !isConnectionOpen) {
@@ -256,88 +320,156 @@ export const Messages = ({
   }, [isConnectionOpen, isWebSocket, recordId]);
 
   useEffect(() => {
-    if (isWebSocket) {
+    if (isWebSocket || !isConnectionOpen) {
       return;
     }
-    if (isConnectionOpen) {
-      const eventSource = new EventSource(
-        `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
-      );
-      sseEventSourceRef.current = eventSource;
-      setResponseBody(recordId, "");
-      sseBodyRef.current = "";
-      lastSseSeqRef.current = 0;
-      setSseEvents([]);
+    const eventSource = new EventSource(
+      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
+    );
+    sseEventSourceRef.current = eventSource;
+    setSseConnectionState("connecting");
+    setSseLoading(true);
+    setResponseBody(recordId, "");
+    lastSseSeqRef.current = 0;
+    setSseEvents([]);
 
-      eventSource.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as {
-            seq?: number;
-            ts?: number;
-            id?: string;
-            event?: string;
-            data?: string;
-            raw?: string | null;
-          };
-          const seq = payload.seq ?? 0;
-          if (seq > 0 && seq <= lastSseSeqRef.current) {
-            return;
-          }
-          if (seq > 0) {
-            lastSseSeqRef.current = seq;
-          }
-          const ts = payload.ts ?? Date.now();
-          const ev: SSEEvent = {
-            id: payload.id ?? String(seq || ts),
-            event: payload.event ?? "message",
-            data: payload.data ?? "",
-            timestamp: ts,
-          };
-          setSseEvents((prev) => [...prev, ev]);
-          if (payload.raw) {
-            const raw = payload.raw.replace(/\n+$/, "");
-            if (raw.length > 0) {
-              if (sseBodyRef.current.length === 0) {
-                sseBodyRef.current = raw;
-              } else if (sseBodyRef.current.endsWith("\n\n")) {
-                sseBodyRef.current = `${sseBodyRef.current}${raw}`;
-              } else if (sseBodyRef.current.endsWith("\n")) {
-                sseBodyRef.current = `${sseBodyRef.current}\n${raw}`;
-              } else {
-                sseBodyRef.current = `${sseBodyRef.current}\n\n${raw}`;
-              }
-              setResponseBody(recordId, sseBodyRef.current);
-            }
-          }
-        } catch (e) {
-          console.error("Failed to parse SSE event:", e);
+    const flushPending = () => {
+      const batch = ssePendingRef.current;
+      ssePendingRef.current = [];
+      sseFlushRef.current = null;
+      if (batch.length > 0) {
+        setSseEvents((prev) => prev.concat(batch));
+      }
+    };
+
+    const enqueueEvent = (ev: SSEEvent) => {
+      ssePendingRef.current.push(ev);
+      if (sseFlushRef.current === null) {
+        sseFlushRef.current = requestAnimationFrame(flushPending);
+      }
+    };
+
+    eventSource.onopen = () => {
+      setSseConnectionState("open");
+      setSseLoading(false);
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          seq?: number;
+          ts?: number;
+          id?: string;
+          event?: string;
+          data?: string;
+          raw?: string | null;
+        };
+        const seq = payload.seq ?? 0;
+        if (seq > 0 && seq <= lastSseSeqRef.current) {
+          return;
         }
-      };
+        if (seq > 0) {
+          lastSseSeqRef.current = seq;
+        }
+        const ts = payload.ts ?? Date.now();
+        const ev: SSEEvent = {
+          id: payload.id ?? String(seq || ts),
+          event: payload.event ?? "message",
+          data: payload.data ?? "",
+          timestamp: ts,
+        };
+        enqueueEvent(ev);
+        if (payload.raw) {
+          const raw = payload.raw.replace(/\n+$/, "");
+          if (raw.length > 0) {
+            appendSseResponseBody(recordId, raw);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse SSE event:", e);
+      }
+    };
 
-      eventSource.onerror = () => {
-        eventSource.close();
-        sseEventSourceRef.current = null;
-      };
+    eventSource.onerror = () => {
+      eventSource.close();
+      sseEventSourceRef.current = null;
+      setSseConnectionState("error");
+      setSseLoading(false);
+    };
 
-      return () => {
-        eventSource.close();
-        sseEventSourceRef.current = null;
-      };
-    }
-
-    if (responseBody !== null) {
-      const events = parseSseTextToEvents(responseBody);
-      setSseEvents(events);
-    }
+    return () => {
+      eventSource.close();
+      sseEventSourceRef.current = null;
+      setSseConnectionState("closed");
+      setSseLoading(false);
+    };
   }, [
+    appendSseResponseBody,
     isConnectionOpen,
     isWebSocket,
-    parseSseTextToEvents,
     recordId,
-    responseBody,
-    sseReloadToken,
     setResponseBody,
+    sseReloadToken,
   ]);
+
+  useEffect(() => {
+    if (isWebSocket || isConnectionOpen) {
+      return;
+    }
+    if (responseBody === null) {
+      return;
+    }
+    const token = ++sseParseTokenRef.current;
+    setSseConnectionState("closed");
+    setSseLoading(true);
+    setSseEvents([]);
+    const normalized = responseBody.replace(/\r\n/g, "\n");
+    let index = 0;
+    let eventIndex = 0;
+    const batchSize = 200;
+
+    const run = () => {
+      if (sseParseTokenRef.current !== token) return;
+      const batch: SSEEvent[] = [];
+      let processed = 0;
+      while (processed < batchSize && index < normalized.length) {
+        const next = normalized.indexOf("\n\n", index);
+        if (next === -1) {
+          index = normalized.length;
+          break;
+        }
+        const chunk = normalized.slice(index, next).replace(/\n+$/, "");
+        index = next + 2;
+        if (chunk.trim().length > 0) {
+          const ev = parseSseChunkToEvent(chunk, eventIndex, Date.now());
+          if (ev) {
+            batch.push(ev);
+            eventIndex += 1;
+          }
+        }
+        processed += 1;
+      }
+      if (batch.length > 0) {
+        setSseEvents((prev) => prev.concat(batch));
+      }
+      if (index < normalized.length) {
+        setTimeout(run, 0);
+      } else {
+        setSseLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      if (sseParseTokenRef.current === token) {
+        sseParseTokenRef.current += 1;
+      }
+    };
+  }, [isConnectionOpen, isWebSocket, responseBody]);
+
+  useEffect(() => {
+    onSseCountChange?.(sseEvents.length);
+  }, [onSseCountChange, sseEvents.length]);
 
   const [sseSearchQuery, setSseSearchQuery] = useState("");
   const [sseSearchMode, setSseSearchMode] = useState<"highlight" | "filter">(
@@ -372,11 +504,6 @@ export const Messages = ({
   const normalizedWsMessages = useMemo<MessageItem[]>(() => {
     return framesForWsDisplay.map(normalizeWSFrame);
   }, [framesForWsDisplay]);
-
-  const normalizedSseMessages = useMemo<MessageItem[]>(() => {
-    if (isWebSocket) return [];
-    return sseEvents.map(normalizeSSEEvent);
-  }, [isWebSocket, sseEvents]);
 
   const openWsFrameDetail = useCallback(
     async (frame: WebSocketFrame) => {
@@ -611,10 +738,13 @@ export const Messages = ({
 
   if (!isWebSocket) {
     return (
-      <div data-testid="sse-message-list">
+      <div
+        data-testid="sse-message-list"
+        style={{ height: "100%", overflow: "hidden" }}
+      >
         <SseMessageList
           events={sseEvents}
-          loading={false}
+          loading={sseLoading}
           hasMore={false}
           searchQuery={sseSearchQuery}
           searchMode={sseSearchMode}
@@ -623,20 +753,33 @@ export const Messages = ({
           onLoadMore={() => {}}
           onRefresh={() => setSseReloadToken((n) => n + 1)}
           onFullscreenOpen={() => setSseFullscreenOpen(true)}
+          connectionState={sseConnectionState}
         />
-        <FullscreenMessageViewer
+        <Modal
           open={sseFullscreenOpen}
-          onClose={() => setSseFullscreenOpen(false)}
-          items={normalizedSseMessages}
-          title={
-            <Space>
-              <Tag color="orange">SSE</Tag>
-              <Text type="secondary">{sseEvents.length} events</Text>
-            </Space>
-          }
-          initialQuery={sseSearchQuery}
-          initialMatchMode={sseSearchMode}
-        />
+          onCancel={() => setSseFullscreenOpen(false)}
+          footer={null}
+          width="80vw"
+          styles={{
+            body: {
+              height: "70vh",
+              overflow: "hidden",
+            },
+          }}
+        >
+          <SseMessageList
+            events={sseEvents}
+            loading={sseLoading}
+            hasMore={false}
+            searchQuery={sseSearchQuery}
+            searchMode={sseSearchMode}
+            onSearchChange={setSseSearchQuery}
+            onSearchModeChange={setSseSearchMode}
+            onLoadMore={() => {}}
+            onRefresh={() => setSseReloadToken((n) => n + 1)}
+            connectionState={sseConnectionState}
+          />
+        </Modal>
       </div>
     );
   }
@@ -798,6 +941,7 @@ export const Messages = ({
             }}
           >
             <code
+              className="hljs"
               dangerouslySetInnerHTML={{
                 __html: highlightContent(selectedPayload),
               }}

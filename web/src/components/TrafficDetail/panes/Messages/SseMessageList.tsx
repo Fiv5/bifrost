@@ -1,22 +1,18 @@
-import { useMemo, useCallback } from 'react';
-import { Typography, Button, Space, Tooltip, Empty, Input, Tag, theme } from 'antd';
-import { 
-  ReloadOutlined, 
-  SearchOutlined, 
-  FilterOutlined, 
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
+import { Typography, Button, Space, Tooltip, Input, Tag, theme } from 'antd';
+import {
+  ReloadOutlined,
+  SearchOutlined,
+  FilterOutlined,
   HighlightOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
   FullscreenOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { SSEEvent } from '../../../../types';
-import {
-  VirtualMessageList,
-  MessageItemCard,
-  useMessageSearch,
-  normalizeSSEEvent,
-  type MessageItem,
-} from '../../../VirtualMessageViewer';
+import { SseEventCard } from './SseEventCard';
 
 const { Text } = Typography;
 const { Search } = Input;
@@ -32,6 +28,7 @@ interface SseMessageListProps {
   onLoadMore: () => void;
   onRefresh: () => void;
   onFullscreenOpen?: () => void;
+  connectionState?: 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 }
 
 export const SseMessageList = ({
@@ -45,68 +42,105 @@ export const SseMessageList = ({
   onLoadMore,
   onRefresh,
   onFullscreenOpen,
+  connectionState,
 }: SseMessageListProps) => {
   const { token } = theme.useToken();
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [currentMatch, setCurrentMatch] = useState<number>(-1);
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const normalizedQuery = searchQuery.trim().toLowerCase();
 
-  const normalizedMessages = useMemo<MessageItem[]>(() => {
-    return events.map(normalizeSSEEvent);
-  }, [events]);
+  const displayEvents = useMemo(() => {
+    if (searchMode !== 'filter' || !normalizedQuery) return events;
+    return events.filter((event) => {
+      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      return text.includes(normalizedQuery);
+    });
+  }, [events, normalizedQuery, searchMode]);
 
-  const {
-    searchState,
-    setQuery,
-    setMatchMode,
-    filteredItems,
-    highlightedIndices,
-    goToNext,
-    goToPrev,
-    matchTokens,
-  } = useMessageSearch({
-    items: normalizedMessages,
-    initialQuery: searchQuery,
-    initialMatchMode: searchMode,
+  const matchedIndices = useMemo(() => {
+    if (!normalizedQuery) return [];
+    const indices: number[] = [];
+    displayEvents.forEach((event, index) => {
+      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      if (text.includes(normalizedQuery)) {
+        indices.push(index);
+      }
+    });
+    return indices;
+  }, [displayEvents, normalizedQuery]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: displayEvents.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 160,
+    overscan: 6,
   });
 
-  const displayItems = searchMode === 'filter' && searchQuery ? filteredItems : normalizedMessages;
+  useEffect(() => {
+    if (matchedIndices.length === 0) {
+      setCurrentMatch(-1);
+      return;
+    }
+    setCurrentMatch(0);
+    rowVirtualizer.scrollToIndex(matchedIndices[0], { align: 'center' });
+  }, [matchedIndices, rowVirtualizer]);
 
   const handleSearchChange = useCallback((value: string) => {
-    setQuery(value);
     onSearchChange?.(value);
-  }, [setQuery, onSearchChange]);
+  }, [onSearchChange]);
 
   const handleModeChange = useCallback((mode: 'highlight' | 'filter') => {
-    setMatchMode(mode);
     onSearchModeChange?.(mode);
-  }, [setMatchMode, onSearchModeChange]);
+  }, [onSearchModeChange]);
 
-  const getItemKey = useCallback((item: MessageItem) => item.id, []);
+  const goToPrev = useCallback(() => {
+    if (matchedIndices.length === 0) return;
+    const nextIndex =
+      currentMatch <= 0 ? matchedIndices.length - 1 : currentMatch - 1;
+    setCurrentMatch(nextIndex);
+    rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+  }, [currentMatch, matchedIndices, rowVirtualizer]);
 
-  const renderItem = useCallback((item: MessageItem) => (
-    <MessageItemCard
-      message={item}
-      searchTokens={searchMode === 'highlight' ? matchTokens : []}
-    />
-  ), [searchMode, matchTokens]);
+  const goToNext = useCallback(() => {
+    if (matchedIndices.length === 0) return;
+    const nextIndex =
+      currentMatch >= matchedIndices.length - 1 ? 0 : currentMatch + 1;
+    setCurrentMatch(nextIndex);
+    rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+  }, [currentMatch, matchedIndices, rowVirtualizer]);
 
-  if (events.length === 0) {
-    return (
-      <div
-        style={{
-          padding: 24,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 200,
-        }}
-      >
-        <Empty description="No SSE events yet" />
-      </div>
-    );
-  }
-
-  const matchInfo = searchState.total > 0 
-    ? `${searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0}/${searchState.total}`
+  const matchInfo = matchedIndices.length > 0
+    ? `${currentMatch >= 0 ? currentMatch + 1 : 0}/${matchedIndices.length}`
     : null;
+
+  const getEventKey = useCallback((event: SSEEvent, index: number) => {
+    if (event.id) return String(event.id);
+    return `sse-${event.timestamp}-${index}`;
+  }, []);
+
+  const toggleExpanded = useCallback((key: string) => {
+    setExpandedMap((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
+
+  const stateLabel = (() => {
+    if (connectionState === 'open') return 'Live';
+    if (connectionState === 'closed') return 'Closed';
+    if (connectionState === 'error') return 'Error';
+    if (connectionState === 'connecting') return 'Connecting';
+    return 'Idle';
+  })();
+
+  const stateColor = (() => {
+    if (connectionState === 'open') return 'green';
+    if (connectionState === 'closed') return 'default';
+    if (connectionState === 'error') return 'red';
+    if (connectionState === 'connecting') return 'blue';
+    return 'default';
+  })();
 
   return (
     <div
@@ -115,6 +149,7 @@ export const SseMessageList = ({
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        minHeight: 0,
       }}
       data-testid="sse-message-container"
     >
@@ -168,12 +203,23 @@ export const SseMessageList = ({
             </>
           )}
 
+          <Tag color={stateColor} style={{ margin: 0 }}>
+            {connectionState === 'connecting' || loading ? (
+              <Space size={4}>
+                <LoadingOutlined />
+                {stateLabel}
+              </Space>
+            ) : (
+              stateLabel
+            )}
+          </Tag>
+
           <Text
             type="secondary"
             style={{ fontSize: 11 }}
             data-testid="sse-message-count"
           >
-            {displayItems.length} of {events.length} events
+            {displayEvents.length} of {events.length} events
             {hasMore && ' (+)'}
           </Text>
         </Space>
@@ -205,29 +251,63 @@ export const SseMessageList = ({
       </div>
 
       <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
-        <VirtualMessageList
-          items={displayItems}
-          getItemKey={getItemKey}
-          renderItem={renderItem}
-          highlightedIndices={searchMode === 'highlight' ? highlightedIndices : []}
-          currentHighlightIndex={searchState.currentIndex >= 0 ? searchState.matchedIndices[searchState.currentIndex] : -1}
-          estimateSize={140}
-          overscan={3}
-          followTail={false}
-          emptyContent={
+        {displayEvents.length === 0 && !loading ? (
+          <div
+            style={{
+              padding: 24,
+              textAlign: 'center',
+              color: token.colorTextSecondary,
+            }}
+          >
+            {searchMode === 'filter' && searchQuery
+              ? 'No events match your search'
+              : 'No events'}
+          </div>
+        ) : (
+          <div
+            ref={parentRef}
+            style={{
+              height: '100%',
+              overflow: 'auto',
+              paddingRight: 8,
+            }}
+          >
             <div
               style={{
-                padding: 24,
-                textAlign: 'center',
-                color: token.colorTextSecondary,
+                height: rowVirtualizer.getTotalSize(),
+                width: '100%',
+                position: 'relative',
               }}
             >
-              {searchMode === 'filter' && searchQuery
-                ? 'No events match your search'
-                : 'No events'}
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const event = displayEvents[virtualRow.index];
+                if (!event) return null;
+                const key = getEventKey(event, virtualRow.index);
+                return (
+                  <div
+                    key={key}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    <SseEventCard
+                      event={event}
+                      searchValue={searchMode === 'highlight' ? searchQuery : undefined}
+                      expanded={!!expandedMap[key]}
+                      onToggle={() => toggleExpanded(key)}
+                    />
+                  </div>
+                );
+              })}
             </div>
-          }
-        />
+          </div>
+        )}
       </div>
     </div>
   );

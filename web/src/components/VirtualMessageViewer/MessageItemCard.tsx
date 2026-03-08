@@ -11,7 +11,7 @@ import {
 import dayjs from 'dayjs';
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
-import 'highlight.js/styles/github.css';
+import '../../styles/hljs-github-theme.css';
 import type { MessageItem } from './types';
 import { highlightText } from './useMessageSearch';
 
@@ -263,8 +263,6 @@ export function MessageItemCard({
                   backgroundColor: token.colorFillQuaternary,
                   padding: 8,
                   borderRadius: 4,
-                  maxHeight: expanded ? 'none' : 200,
-                  overflow: 'auto',
                 }}
               >
                 {renderHighlightedText(displayContent)}
@@ -281,11 +279,10 @@ export function MessageItemCard({
                   backgroundColor: token.colorFillQuaternary,
                   padding: 8,
                   borderRadius: 4,
-                  maxHeight: expanded ? 'none' : 200,
-                  overflow: 'auto',
                 }}
               >
                 <code
+                  className="hljs"
                   dangerouslySetInnerHTML={{
                     __html: shouldTruncate ? highlightJson(displayContent) : highlightedHtml,
                   }}
@@ -302,8 +299,6 @@ export function MessageItemCard({
                 wordBreak: 'break-all',
                 lineHeight: 1.5,
                 color: token.colorText,
-                maxHeight: expanded ? 'none' : 200,
-                overflow: 'auto',
               }}
             >
               {searchTokens.length > 0 ? renderHighlightedText(displayContent) : displayContent}

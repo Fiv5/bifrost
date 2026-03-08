@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback } from 'react';
+import { type ReactNode, useCallback, useMemo } from 'react';
 import { Typography, Space, Divider, theme } from 'antd';
 import { FilterOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
 import type {
@@ -30,6 +30,7 @@ interface PanelProps {
   contentType?: RecordContentType;
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
+  keepAliveTabs?: string[];
 }
 
 export const Panel = ({
@@ -44,11 +45,15 @@ export const Panel = ({
   contentType,
   collapsed = false,
   onCollapsedChange,
+  keepAliveTabs,
 }: PanelProps) => {
   const { token } = theme.useToken();
 
   const enabledTabs = tabs.filter((tab) => tab.enable !== false);
-  const activeTabConfig = enabledTabs.find((tab) => tab.key === activeTab);
+  const keepAliveSet = useMemo(
+    () => new Set(keepAliveTabs ?? []),
+    [keepAliveTabs],
+  );
 
   const handleToggleSearch = useCallback(() => {
     onSearch({ show: !searchValue.show });
@@ -148,7 +153,20 @@ export const Panel = ({
               overflow: 'auto',
             }}
           >
-            {activeTabConfig?.children}
+            {enabledTabs.map((tab) => {
+              const isActive = tab.key === activeTab;
+              if (!isActive && !keepAliveSet.has(tab.key)) {
+                return null;
+              }
+              return (
+                <div
+                  key={tab.key}
+                  style={{ display: isActive ? 'block' : 'none', height: '100%' }}
+                >
+                  {tab.children}
+                </div>
+              );
+            })}
           </div>
         </>
       )}

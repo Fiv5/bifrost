@@ -9,51 +9,12 @@ import {
 import dayjs from 'dayjs';
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
-import 'highlight.js/styles/github.css';
-import type { WebSocketFrame } from '../../../../types';
+import '../../../../styles/hljs-github-theme.css';
+import type { SSEEvent } from '../../../../types';
 
 hljs.registerLanguage('json', json);
 
 const { Text } = Typography;
-
-interface SseEventData {
-  id?: string;
-  event?: string;
-  data: string;
-  retry?: number;
-}
-
-const parseSseEvent = (raw: string): SseEventData => {
-  const lines = raw.split('\n');
-  let id: string | undefined;
-  let event: string | undefined;
-  let retry: number | undefined;
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('id:')) {
-      id = line.slice(3).trim();
-    } else if (line.startsWith('event:')) {
-      event = line.slice(6).trim();
-    } else if (line.startsWith('retry:')) {
-      const retryVal = parseInt(line.slice(6).trim(), 10);
-      if (!isNaN(retryVal)) {
-        retry = retryVal;
-      }
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
-    } else if (line.startsWith(':')) {
-      continue;
-    }
-  }
-
-  return {
-    id,
-    event,
-    data: dataLines.join('\n'),
-    retry,
-  };
-};
 
 const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
   try {
@@ -83,18 +44,28 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
 };
 
 interface SseEventCardProps {
-  frame: WebSocketFrame;
+  event: SSEEvent;
   searchValue?: string;
+  expanded: boolean;
+  onToggle: () => void;
 }
 
-export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
+export const SseEventCard = ({
+  event,
+  searchValue,
+  expanded,
+  onToggle,
+}: SseEventCardProps) => {
   const { token } = theme.useToken();
-  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const eventData = useMemo(() => {
-    return parseSseEvent(frame.payload_preview ?? '');
-  }, [frame.payload_preview]);
+    return {
+      id: event.id,
+      event: event.event,
+      data: event.data || '',
+    };
+  }, [event]);
 
   const { parsed, isJson } = useMemo(() => {
     return parseJson(eventData.data);
@@ -167,7 +138,7 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
       >
         <Space size={8} align="center">
           <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-            {dayjs(frame.timestamp).format('HH:mm:ss.SSS')}
+            {dayjs(event.timestamp).format('HH:mm:ss.SSS')}
           </Text>
           <Tag
             color="green"
@@ -183,11 +154,6 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
           {eventData.id && (
             <Text type="secondary" style={{ fontSize: 11 }}>
               id: {eventData.id}
-            </Text>
-          )}
-          {eventData.retry !== undefined && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              retry: {eventData.retry}ms
             </Text>
           )}
           {isJson && (
@@ -221,7 +187,7 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
                 type="text"
                 size="small"
                 icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
-                onClick={() => setExpanded(!expanded)}
+                onClick={onToggle}
                 style={{ width: 24, height: 24 }}
               />
             </Tooltip>
@@ -245,6 +211,7 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
               }}
             >
               <code
+                className="hljs"
                 dangerouslySetInnerHTML={{
                   __html: shouldTruncate
                     ? highlightJson(displayContent)

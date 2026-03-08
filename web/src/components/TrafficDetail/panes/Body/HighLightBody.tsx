@@ -7,7 +7,7 @@ import xml from 'highlight.js/lib/languages/xml';
 import javascript from 'highlight.js/lib/languages/javascript';
 import css from 'highlight.js/lib/languages/css';
 import plaintext from 'highlight.js/lib/languages/plaintext';
-import 'highlight.js/styles/github.css';
+import '../../../../styles/hljs-github-theme.css';
 
 import type { RecordContentType, SessionTargetSearchState } from '../../../../types';
 import { useTextSelection } from '../../hooks/useTextSelection';
@@ -182,7 +182,7 @@ export const HighLightBody = ({
           lineHeight: 1.4,
         }}
       >
-        <code ref={codeRef} style={{ fontFamily: 'inherit' }} />
+        <code ref={codeRef} className="hljs" style={{ fontFamily: 'inherit' }} />
       </pre>
       {shouldShowMore && (
         <Button
