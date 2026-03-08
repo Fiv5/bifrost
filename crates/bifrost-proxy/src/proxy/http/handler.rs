@@ -715,7 +715,6 @@ pub async fn handle_http_request(
             }
         }
         parts.headers = new_headers;
-
     }
 
     let final_body =
