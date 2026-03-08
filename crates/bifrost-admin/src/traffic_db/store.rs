@@ -737,7 +737,7 @@ impl TrafficDbStore {
         }
     }
 
-    fn compact_db(&self, full_vacuum: bool) {
+    pub fn compact_db(&self, full_vacuum: bool) {
         let conn = self.write_conn.lock();
         Self::compact_with_conn(&conn, full_vacuum);
     }
@@ -936,6 +936,10 @@ impl TrafficDbStore {
         }
     }
 
+    pub fn max_db_size_bytes(&self) -> u64 {
+        self.max_db_size_bytes.load(Ordering::Relaxed)
+    }
+
     pub fn set_retention_hours(&self, hours: u64) {
         let old = self.retention_hours.swap(hours, Ordering::SeqCst);
         if old != hours {
@@ -945,6 +949,24 @@ impl TrafficDbStore {
                 "[TRAFFIC_DB] Retention hours updated"
             );
         }
+    }
+
+    pub fn oldest_ids(&self, limit: usize, offset: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let conn = self.read_conn.lock();
+        let mut stmt = match conn
+            .prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ? OFFSET ?")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let iter = match stmt.query_map([limit as i64, offset as i64], |row| row.get(0)) {
+            Ok(i) => i,
+            Err(_) => return Vec::new(),
+        };
+        iter.flatten().collect()
     }
 
     pub fn checkpoint(&self) {

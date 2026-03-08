@@ -382,6 +382,28 @@ impl BodyStore {
             retention_days: self.retention_days,
         }
     }
+
+    pub fn sizes_by_id(&self) -> std::io::Result<std::collections::HashMap<String, u64>> {
+        let mut sizes = std::collections::HashMap::new();
+        if !self.temp_dir.exists() {
+            return Ok(sizes);
+        }
+        for entry in fs::read_dir(&self.temp_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
+                    let base_id = file_name
+                        .rsplit_once('_')
+                        .map(|(id, _)| id)
+                        .unwrap_or(file_name);
+                    *sizes.entry(base_id.to_string()).or_insert(0) += size;
+                }
+            }
+        }
+        Ok(sizes)
+    }
 }
 
 pub type SharedBodyStore = Arc<RwLock<BodyStore>>;

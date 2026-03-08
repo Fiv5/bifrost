@@ -1236,6 +1236,10 @@ GET /api/config/performance
   "frame_store_stats": {
     "total_frames": 1000,
     "total_size": 524288
+  },
+  "ws_payload_store_stats": {
+    "file_count": 50,
+    "total_size": 1048576
   }
 }
 ```
@@ -1266,7 +1270,7 @@ PUT /api/config/performance
 | 字段                         | 类型   | 必填 | 说明                            |
 | ---------------------------- | ------ | ---- | ------------------------------- |
 | max_records                  | number | 否   | 最大流量记录数                  |
-| max_db_size_bytes            | number | 否   | Traffic DB 最大大小（字节）     |
+| max_db_size_bytes            | number | 否   | Traffic 数据总大小上限（字节，包含 body_cache/frames/ws_payload） |
 | max_body_memory_size         | number | 否   | 单个请求体最大内存缓存大小      |
 | max_body_buffer_size         | number | 否   | 请求体缓冲区最大大小            |
 | file_retention_days          | number | 否   | 文件保留天数（最大 7 天）       |

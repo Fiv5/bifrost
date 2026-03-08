@@ -107,8 +107,9 @@ export default function PerformanceTab({
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>Max DB Size</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      Caps traffic.db on disk; when exceeded, the oldest records
-                      are deleted and the database is vacuumed.
+                      Caps traffic.db + body_cache + frames + ws_payload on
+                      disk; when exceeded, the oldest data is deleted and the
+                      database is vacuumed.
                     </Text>
                     <Slider
                       min={256 * 1024 * 1024}
@@ -217,7 +218,8 @@ export default function PerformanceTab({
 
               {(performanceConfig?.body_store_stats ||
                 performanceConfig?.traffic_store_stats ||
-                performanceConfig?.frame_store_stats) && (
+                performanceConfig?.frame_store_stats ||
+                performanceConfig?.ws_payload_store_stats) && (
                 <>
                   <Divider style={{ margin: "12px 0" }} />
                   <Card
@@ -235,7 +237,7 @@ export default function PerformanceTab({
                       <Col>
                         <Popconfirm
                           title="Clear all cache files?"
-                          description="This will delete all cached data including body files, traffic records, and WebSocket frames."
+                          description="This will delete all cached data including body files, traffic records, WebSocket frames, and WebSocket payloads."
                           onConfirm={handleClearBodyCache}
                           okText="Clear"
                           cancelText="Cancel"
@@ -253,7 +255,7 @@ export default function PerformanceTab({
                       </Col>
                     </Row>
                     <Row gutter={[16, 8]} style={{ marginTop: 12 }}>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             Body Cache
@@ -274,7 +276,7 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             Traffic Records
@@ -295,7 +297,7 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             WebSocket Frames
@@ -316,6 +318,27 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
+                      <Col xs={6}>
+                        <Space direction="vertical" size={0}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            WebSocket Payloads
+                          </Text>
+                          <Space>
+                            <SwapOutlined />
+                            <Text>
+                              {performanceConfig.ws_payload_store_stats
+                                ?.file_count ?? 0}{" "}
+                              files
+                            </Text>
+                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {formatBytes(
+                              performanceConfig.ws_payload_store_stats
+                                ?.total_size ?? 0,
+                            )}
+                          </Text>
+                        </Space>
+                      </Col>
                     </Row>
                     <Divider style={{ margin: "8px 0" }} />
                     <Row>
@@ -329,6 +352,8 @@ export default function PerformanceTab({
                                 (performanceConfig.traffic_store_stats
                                   ?.file_size ?? 0) +
                                 (performanceConfig.frame_store_stats
+                                  ?.total_size ?? 0) +
+                                (performanceConfig.ws_payload_store_stats
                                   ?.total_size ?? 0),
                             )}
                           </Text>

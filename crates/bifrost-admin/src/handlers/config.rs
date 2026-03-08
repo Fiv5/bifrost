@@ -11,7 +11,7 @@ use crate::frame_store::FrameStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::traffic_store::TrafficStoreStats;
-use crate::ws_payload_store::WsPayloadStoreConfigUpdate;
+use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -62,6 +62,7 @@ pub struct PerformanceConfigResponse {
     pub body_store_stats: Option<BodyStoreStats>,
     pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
+    pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
 
 #[derive(Deserialize)]
@@ -323,6 +324,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
     let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
     let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
+    let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|ws| ws.stats());
 
     let traffic_config = if let Some(ref config_manager) = state.config_manager {
         let config = config_manager.config().await;
@@ -358,6 +360,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         body_store_stats,
         traffic_store_stats,
         frame_store_stats,
+        ws_payload_store_stats,
     };
 
     json_response(&response)

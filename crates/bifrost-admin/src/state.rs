@@ -22,7 +22,7 @@ use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
-use crate::ws_payload_store::SharedWsPayloadStore;
+use crate::ws_payload_store::{SharedWsPayloadStore, WsPayloadStore};
 use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
@@ -98,6 +98,7 @@ pub struct AdminState {
     pub script_manager: Option<SharedScriptManager>,
     pub replay_db_store: Option<SharedReplayDbStore>,
     pub replay_executor: OnceCell<SharedReplayExecutor>,
+    pub total_size_cleanup_counter: AtomicUsize,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -131,6 +132,7 @@ impl AdminState {
             script_manager: None,
             replay_db_store: None,
             replay_executor: OnceCell::new(),
+            total_size_cleanup_counter: AtomicUsize::new(0),
         }
     }
 
@@ -161,6 +163,7 @@ impl AdminState {
             }
             self.traffic_recorder.record(record);
         }
+        self.maybe_cleanup_total_disk_usage();
     }
 
     #[inline]
@@ -178,6 +181,125 @@ impl AdminState {
             }
             self.traffic_recorder.update_by_id(id, updater);
         }
+    }
+
+    fn maybe_cleanup_total_disk_usage(&self) {
+        const CLEANUP_CHECK_INTERVAL: usize = 100;
+        let counter = self
+            .total_size_cleanup_counter
+            .fetch_add(1, Ordering::Relaxed);
+        if !counter.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
+            return;
+        }
+        self.cleanup_total_disk_usage();
+    }
+
+    fn cleanup_total_disk_usage(&self) {
+        let Some(ref traffic_db_store) = self.traffic_db_store else {
+            return;
+        };
+        let max_db_size_bytes = traffic_db_store.max_db_size_bytes();
+        if max_db_size_bytes == 0 {
+            return;
+        }
+
+        let db_stats = traffic_db_store.stats();
+        let mut total_size = db_stats.db_size;
+
+        let body_sizes = self
+            .body_store
+            .as_ref()
+            .and_then(|store| store.read().sizes_by_id().ok())
+            .unwrap_or_default();
+        total_size += body_sizes.values().sum::<u64>();
+
+        let frame_sizes = self
+            .frame_store
+            .as_ref()
+            .and_then(|store| store.sizes_by_id().ok())
+            .unwrap_or_default();
+        total_size += frame_sizes.values().sum::<u64>();
+
+        let ws_payload_sizes = self
+            .ws_payload_store
+            .as_ref()
+            .and_then(|store| store.sizes_by_safe_id().ok())
+            .unwrap_or_default();
+        total_size += ws_payload_sizes.values().sum::<u64>();
+
+        if total_size <= max_db_size_bytes {
+            return;
+        }
+
+        let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
+        let bytes_to_remove = total_size.saturating_sub(target_size);
+        if bytes_to_remove == 0 {
+            return;
+        }
+
+        let record_count = db_stats.record_count;
+        if record_count == 0 {
+            return;
+        }
+        let avg_db_bytes = (db_stats.db_size / record_count as u64).max(1);
+
+        let mut ids_to_delete = Vec::new();
+        let mut removed_estimate = 0u64;
+        let mut offset = 0usize;
+        let batch = 500usize;
+
+        while removed_estimate < bytes_to_remove {
+            let ids = traffic_db_store.oldest_ids(batch, offset);
+            if ids.is_empty() {
+                break;
+            }
+            for id in ids {
+                let mut size = avg_db_bytes;
+                if let Some(extra) = body_sizes.get(&id) {
+                    size += *extra;
+                }
+                if let Some(extra) = frame_sizes.get(&id) {
+                    size += *extra;
+                }
+                let safe_id = WsPayloadStore::safe_connection_id(&id);
+                if let Some(extra) = ws_payload_sizes.get(&safe_id) {
+                    size += *extra;
+                }
+                removed_estimate += size;
+                ids_to_delete.push(id);
+                if removed_estimate >= bytes_to_remove {
+                    break;
+                }
+            }
+            offset += batch;
+            if offset >= record_count {
+                break;
+            }
+        }
+
+        if ids_to_delete.is_empty() {
+            return;
+        }
+
+        traffic_db_store.delete_by_ids(&ids_to_delete);
+        if let Some(ref body_store) = self.body_store {
+            let _ = body_store.write().delete_by_ids(&ids_to_delete);
+        }
+        if let Some(ref frame_store) = self.frame_store {
+            let _ = frame_store.delete_by_ids(&ids_to_delete);
+        }
+        if let Some(ref ws_payload_store) = self.ws_payload_store {
+            let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
+        }
+        traffic_db_store.compact_db(true);
+
+        tracing::info!(
+            deleted = ids_to_delete.len(),
+            total_size = total_size,
+            max_db_size_bytes = max_db_size_bytes,
+            target_size = target_size,
+            "[TRAFFIC] Cleaned up data due to total size limit"
+        );
     }
 
     pub fn update_client_process(

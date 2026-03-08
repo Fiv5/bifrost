@@ -542,6 +542,30 @@ impl FrameStore {
             retention_hours: self.retention_hours,
         }
     }
+
+    pub fn sizes_by_id(&self) -> std::io::Result<std::collections::HashMap<String, u64>> {
+        let mut sizes = std::collections::HashMap::new();
+        let frames_dir = self.frames_dir();
+        if !frames_dir.exists() {
+            return Ok(sizes);
+        }
+        for entry in fs::read_dir(&frames_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    let id = file_name
+                        .strip_suffix(".jsonl")
+                        .or_else(|| file_name.strip_suffix(".meta.json"));
+                    if let Some(base_id) = id {
+                        *sizes.entry(base_id.to_string()).or_insert(0) += size;
+                    }
+                }
+            }
+        }
+        Ok(sizes)
+    }
 }
 
 impl Drop for FrameStore {

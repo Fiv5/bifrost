@@ -162,6 +162,7 @@ pub struct PerformanceConfigResponse {
     pub body_store_stats: Option<BodyStoreStats>,
     pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
+    pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +203,14 @@ pub struct FrameStoreStats {
     pub total_size: u64,
     pub frames_dir: String,
     pub retention_hours: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsPayloadStoreStats {
+    pub file_count: usize,
+    pub total_size: u64,
+    pub payload_dir: String,
+    pub retention_days: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
