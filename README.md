@@ -162,6 +162,8 @@ cargo build --release
 | Windows | x64           | `bifrost-vX.X.X-x86_64-pc-windows-msvc.zip`           |
 | Windows | ARM64         | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip`          |
 
+Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.ms/vc14/vc_redist.arm64.exe
+
 ## 快速开始
 
 ### 运行

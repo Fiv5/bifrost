@@ -1,0 +1,2 @@
+test-req-header-replace.local http://127.0.0.1:3000/echo headerReplace://req.x-trace:abc=xyz
+test-res-header-replace.local http://127.0.0.1:3000/echo headerReplace://res.x-echo-server:bifrost-test=bifrost-custom

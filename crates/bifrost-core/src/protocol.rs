@@ -11,6 +11,7 @@ pub enum Protocol {
     Ws,
     Wss,
     Proxy,
+    Pac,
     Redirect,
     File,
     Tpl,
@@ -193,6 +194,7 @@ impl Protocol {
             "ws" => Some(Protocol::Ws),
             "wss" => Some(Protocol::Wss),
             "proxy" => Some(Protocol::Proxy),
+            "pac" => Some(Protocol::Pac),
             "redirect" => Some(Protocol::Redirect),
             "file" => Some(Protocol::File),
             "tpl" => Some(Protocol::Tpl),
@@ -263,6 +265,7 @@ impl Protocol {
             Protocol::Ws => "ws",
             Protocol::Wss => "wss",
             Protocol::Proxy => "proxy",
+            Protocol::Pac => "pac",
             Protocol::Redirect => "redirect",
             Protocol::File => "file",
             Protocol::Tpl => "tpl",
@@ -385,6 +388,7 @@ impl Protocol {
             | Protocol::Ws
             | Protocol::Wss
             | Protocol::Proxy
+            | Protocol::Pac
             | Protocol::Redirect
             | Protocol::File
             | Protocol::Tpl
@@ -430,7 +434,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 64] = [
+pub const ALL_PROTOCOLS: [Protocol; 65] = [
     Protocol::Host,
     Protocol::XHost,
     Protocol::Http,
@@ -438,6 +442,7 @@ pub const ALL_PROTOCOLS: [Protocol; 64] = [
     Protocol::Ws,
     Protocol::Wss,
     Protocol::Proxy,
+    Protocol::Pac,
     Protocol::Redirect,
     Protocol::File,
     Protocol::Tpl,
@@ -503,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 64);
+        assert_eq!(ALL_PROTOCOLS.len(), 65);
     }
 
     #[test]
@@ -516,6 +521,7 @@ mod tests {
             "ws",
             "wss",
             "proxy",
+            "pac",
             "redirect",
             "file",
             "tpl",
@@ -573,7 +579,6 @@ mod tests {
             "tlsIntercept",
             "tlsPassthrough",
             "passthrough",
-            "delete",
         ];
 
         for name in &protocol_names {
@@ -793,13 +798,14 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 64);
+        assert_eq!(all.len(), 65);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
         assert!(all.contains(&Protocol::Ws));
         assert!(all.contains(&Protocol::Wss));
         assert!(all.contains(&Protocol::Proxy));
+        assert!(all.contains(&Protocol::Pac));
         assert!(all.contains(&Protocol::Passthrough));
         assert!(all.contains(&Protocol::ReqScript));
     }

@@ -1,0 +1,8 @@
+# 大响应体 resBody 替换测试
+# S-14: 响应体过大时 resBody 仍应生效
+
+test-res-body-large.local http://127.0.0.1:3000/large-response?size=2048&marker=ORIGIN resBody://{large_override_body}
+
+```large_override_body
+REPLACED_BODY
+```

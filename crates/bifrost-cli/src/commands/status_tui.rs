@@ -101,6 +101,46 @@ struct TlsConfig {
     unsafe_ssl: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+struct TrafficConfig {
+    max_records: usize,
+    max_db_size_bytes: u64,
+    max_body_memory_size: usize,
+    max_body_buffer_size: usize,
+    file_retention_days: u64,
+    sse_stream_flush_bytes: usize,
+    sse_stream_flush_interval_ms: u64,
+    ws_payload_flush_bytes: usize,
+    ws_payload_flush_interval_ms: u64,
+    ws_payload_max_open_files: usize,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct BodyStoreStats {
+    file_count: usize,
+    total_size: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct TrafficStoreStats {
+    record_count: usize,
+    file_size: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct FrameStoreStats {
+    connection_count: usize,
+    total_size: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct PerformanceConfigResponse {
+    traffic: TrafficConfig,
+    body_store_stats: Option<BodyStoreStats>,
+    traffic_store_stats: Option<TrafficStoreStats>,
+    frame_store_stats: Option<FrameStoreStats>,
+}
+
 const SLOW_REFRESH_INTERVAL: u64 = 5;
 const CPU_HISTORY_SIZE: usize = 3600;
 const QPS_HISTORY_SIZE: usize = 60;
@@ -119,6 +159,7 @@ struct App {
     values: Vec<Value>,
     scripts: ScriptsResponse,
     config: Option<ConfigResponse>,
+    performance_config: Option<PerformanceConfigResponse>,
     selected_tab: usize,
     last_update: Instant,
     last_slow_refresh: Instant,
@@ -144,6 +185,7 @@ impl App {
                 response: Vec::new(),
             },
             config: None,
+            performance_config: None,
             selected_tab: 0,
             last_update: Instant::now(),
             last_slow_refresh: Instant::now() - Duration::from_secs(SLOW_REFRESH_INTERVAL),
@@ -164,7 +206,7 @@ impl App {
             self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
 
         let port = self.port;
-        let (metrics, rules, values, scripts, config) =
+        let (metrics, rules, values, scripts, config, performance_config) =
             fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
 
         if let Some(m) = metrics {
@@ -193,6 +235,9 @@ impl App {
         }
         if let Some(c) = config {
             self.config = Some(c);
+        }
+        if let Some(p) = performance_config {
+            self.performance_config = Some(p);
         }
 
         if need_slow_refresh {
@@ -223,6 +268,7 @@ type FetchAllDataResult = (
     Option<Vec<Value>>,
     Option<ScriptsResponse>,
     Option<ConfigResponse>,
+    Option<PerformanceConfigResponse>,
 );
 
 fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchAllDataResult {
@@ -253,6 +299,11 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
         thread::spawn(move || {
             let _ = tx_config.send(("config", fetch_config(port)));
         });
+
+        let tx_performance = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_performance.send(("performance", fetch_performance_config(port)));
+        });
     }
 
     drop(tx);
@@ -262,6 +313,7 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
     let mut values = None;
     let mut scripts = None;
     let mut config = None;
+    let mut performance = None;
 
     for (key, data) in rx {
         match key {
@@ -270,11 +322,12 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
             "values" => values = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "scripts" => scripts = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "config" => config = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "performance" => performance = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             _ => {}
         }
     }
 
-    (metrics, rules, values, scripts, config)
+    (metrics, rules, values, scripts, config, performance)
 }
 
 fn fetch_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
@@ -324,6 +377,17 @@ fn fetch_scripts(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
 fn fetch_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/config", port);
     let result: Option<ConfigResponse> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
+        .call()
+        .ok()?
+        .into_json()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
+}
+
+fn fetch_performance_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
+    let url = format!("http://127.0.0.1:{}/_bifrost/api/config/performance", port);
+    let result: Option<PerformanceConfigResponse> = ureq::get(&url)
         .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
@@ -655,10 +719,121 @@ fn render_qps_sparkline(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(sparkline, area);
 }
 
+fn config_lines(app: &App) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    lines.push(Line::from("Proxy:"));
+    if let Some(config) = &app.config {
+        lines.push(Line::from(format!(
+            "  Listen: {}:{}",
+            config.host, config.port
+        )));
+        lines.push(Line::from(format!(
+            "  TLS Interception: {}",
+            if config.tls.enable_tls_interception {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        )));
+        lines.push(Line::from(format!(
+            "  Unsafe SSL: {}",
+            config.tls.unsafe_ssl
+        )));
+        lines.push(Line::from("  Intercept Domains:"));
+        lines.push(Line::from(format!(
+            "    {}",
+            if config.tls.intercept_include.is_empty() {
+                "(none)".to_string()
+            } else {
+                config.tls.intercept_include.join(", ")
+            }
+        )));
+        lines.push(Line::from("  Intercept Apps:"));
+        lines.push(Line::from(format!(
+            "    {}",
+            if config.tls.app_intercept_include.is_empty() {
+                "(none)".to_string()
+            } else {
+                config.tls.app_intercept_include.join(", ")
+            }
+        )));
+    } else {
+        lines.push(Line::from("  Loading..."));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Performance:"));
+    if let Some(perf) = &app.performance_config {
+        lines.push(Line::from(format!(
+            "  Max Records: {}",
+            perf.traffic.max_records
+        )));
+        lines.push(Line::from(format!(
+            "  Max DB Size: {}",
+            format_bytes(perf.traffic.max_db_size_bytes)
+        )));
+        lines.push(Line::from(format!(
+            "  Max Body Inline (DB): {}",
+            format_bytes(perf.traffic.max_body_memory_size as u64)
+        )));
+        lines.push(Line::from(format!(
+            "  Max Body Buffer: {}",
+            format_bytes(perf.traffic.max_body_buffer_size as u64)
+        )));
+        lines.push(Line::from(format!(
+            "  Retention Days: {}",
+            perf.traffic.file_retention_days
+        )));
+        lines.push(Line::from(format!(
+            "  SSE Flush: {} / {}ms",
+            format_bytes(perf.traffic.sse_stream_flush_bytes as u64),
+            perf.traffic.sse_stream_flush_interval_ms
+        )));
+        lines.push(Line::from(format!(
+            "  WS Flush: {} / {}ms",
+            format_bytes(perf.traffic.ws_payload_flush_bytes as u64),
+            perf.traffic.ws_payload_flush_interval_ms
+        )));
+        lines.push(Line::from(format!(
+            "  WS Max Files: {}",
+            perf.traffic.ws_payload_max_open_files
+        )));
+        if let Some(stats) = &perf.body_store_stats {
+            lines.push(Line::from(format!(
+                "  Body Store: {} files, {}",
+                stats.file_count,
+                format_bytes(stats.total_size)
+            )));
+        }
+        if let Some(stats) = &perf.traffic_store_stats {
+            lines.push(Line::from(format!(
+                "  Traffic Store: {} records, {}",
+                stats.record_count,
+                format_bytes(stats.file_size)
+            )));
+        }
+        if let Some(stats) = &perf.frame_store_stats {
+            lines.push(Line::from(format!(
+                "  Frame Store: {} conns, {}",
+                stats.connection_count,
+                format_bytes(stats.total_size)
+            )));
+        }
+    } else {
+        lines.push(Line::from("  Loading..."));
+    }
+
+    lines
+}
+
 fn render_connection_stats(frame: &mut Frame, area: Rect, app: &App) {
     let layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
         .split(area);
 
     let stats_items = vec![
@@ -718,6 +893,13 @@ fn render_connection_stats(frame: &mut Frame, area: Rect, app: &App) {
     let summary_list =
         List::new(summary_items).block(Block::default().borders(Borders::ALL).title(" Summary "));
     frame.render_widget(summary_list, layout[1]);
+
+    let config_para = Paragraph::new(config_lines(app)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Configuration "),
+    );
+    frame.render_widget(config_para, layout[2]);
 }
 
 fn render_rules_config(frame: &mut Frame, area: Rect, app: &App) {
@@ -810,45 +992,7 @@ fn render_rules_config(frame: &mut Frame, area: Rect, app: &App) {
         List::new(script_items).block(Block::default().borders(Borders::ALL).title(" Scripts "));
     frame.render_widget(scripts_list, right_layout[0]);
 
-    let config_text = if let Some(config) = &app.config {
-        vec![
-            Line::from(format!("Listen: {}:{}", config.host, config.port)),
-            Line::from(""),
-            Line::from(format!(
-                "TLS Interception: {}",
-                if config.tls.enable_tls_interception {
-                    "Enabled"
-                } else {
-                    "Disabled"
-                }
-            )),
-            Line::from(format!("Unsafe SSL: {}", config.tls.unsafe_ssl)),
-            Line::from(""),
-            Line::from("Intercept Domains:"),
-            Line::from(format!(
-                "  {}",
-                if config.tls.intercept_include.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    config.tls.intercept_include.join(", ")
-                }
-            )),
-            Line::from(""),
-            Line::from("Intercept Apps:"),
-            Line::from(format!(
-                "  {}",
-                if config.tls.app_intercept_include.is_empty() {
-                    "(none)".to_string()
-                } else {
-                    config.tls.app_intercept_include.join(", ")
-                }
-            )),
-        ]
-    } else {
-        vec![Line::from("Loading...")]
-    };
-
-    let config_para = Paragraph::new(config_text).block(
+    let config_para = Paragraph::new(config_lines(app)).block(
         Block::default()
             .borders(Borders::ALL)
             .title(" Configuration "),

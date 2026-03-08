@@ -8,6 +8,7 @@ HTTPS_PORT=${HTTPS_PORT:-3443}
 WS_PORT=${WS_PORT:-3020}
 WSS_PORT=${WSS_PORT:-3021}
 SSE_PORT=${SSE_PORT:-3003}
+PROXY_PORT=${PROXY_PORT:-9999}
 
 declare -a PIDS=()
 
@@ -58,6 +59,12 @@ start_sse() {
     PIDS+=($!)
 }
 
+start_proxy() {
+    log "Starting HTTP Proxy Echo Server on port $PROXY_PORT..."
+    python3 "$SCRIPT_DIR/http_echo_server.py" "$PROXY_PORT" &
+    PIDS+=($!)
+}
+
 start_all() {
     start_http
     sleep 0.5
@@ -68,6 +75,8 @@ start_all() {
     start_wss
     sleep 0.5
     start_sse
+    sleep 0.5
+    start_proxy
 }
 
 wait_for_server() {
@@ -119,6 +128,12 @@ status() {
     else
         echo "SSE    (port $SSE_PORT): ❌ Not running"
     fi
+
+    if nc -z 127.0.0.1 "$PROXY_PORT" 2>/dev/null; then
+        echo "PROXY  (port $PROXY_PORT): ✅ Running"
+    else
+        echo "PROXY  (port $PROXY_PORT): ❌ Not running"
+    fi
 }
 
 stop_all() {
@@ -150,6 +165,7 @@ usage() {
     echo "  WS_PORT     WebSocket server port (default: 3020)"
     echo "  WSS_PORT    WebSocket Secure server port (default: 3021)"
     echo "  SSE_PORT    SSE server port (default: 3003)"
+    echo "  PROXY_PORT  Proxy echo server port (default: 9999)"
 }
 
 case "$1" in

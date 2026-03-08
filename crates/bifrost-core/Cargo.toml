@@ -27,3 +27,4 @@ toml.workspace = true
 lru.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+ureq = "2"

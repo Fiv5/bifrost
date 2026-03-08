@@ -370,22 +370,50 @@ main() {
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         print_warning "$INSTALL_DIR is not in your PATH"
         echo ""
-        echo "Add it to your shell configuration:"
-        echo ""
-        case "$SHELL" in
-            */fish)
-                echo "  echo 'set -gx PATH \"$INSTALL_DIR\" \$PATH' >> ~/.config/fish/config.fish"
-                ;;
-            */zsh)
-                echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
-                ;;
-            *)
-                echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
-                ;;
-        esac
-        echo ""
-        echo "Then restart your terminal or run:"
-        echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        if [[ "$os" == "windows" ]]; then
+            local win_install_dir="$INSTALL_DIR"
+            if command -v cygpath >/dev/null 2>&1; then
+                win_install_dir=$(cygpath -w "$INSTALL_DIR")
+            fi
+            echo "Add it to your Git Bash shell configuration:"
+            echo ""
+            case "$SHELL" in
+                */fish)
+                    echo "  echo 'set -gx PATH \"$INSTALL_DIR\" \$PATH' >> ~/.config/fish/config.fish"
+                    ;;
+                */zsh)
+                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
+                    ;;
+                *)
+                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
+                    ;;
+            esac
+            echo ""
+            echo "Or add it to Windows PATH (PowerShell):"
+            echo ""
+            echo "  \$currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')"
+            echo "  [Environment]::SetEnvironmentVariable('Path', \"\$currentPath;$win_install_dir\", 'User')"
+            echo ""
+            echo "Then restart your terminal or run:"
+            echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        else
+            echo "Add it to your shell configuration:"
+            echo ""
+            case "$SHELL" in
+                */fish)
+                    echo "  echo 'set -gx PATH \"$INSTALL_DIR\" \$PATH' >> ~/.config/fish/config.fish"
+                    ;;
+                */zsh)
+                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
+                    ;;
+                *)
+                    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
+                    ;;
+            esac
+            echo ""
+            echo "Then restart your terminal or run:"
+            echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+        fi
     fi
 
     echo ""

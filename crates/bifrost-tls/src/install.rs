@@ -2,6 +2,61 @@ use bifrost_core::error::{BifrostError, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::ffi::OsStr;
+#[cfg(target_os = "windows")]
+use std::mem::size_of;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, HWND};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+
+#[cfg(target_os = "windows")]
+fn to_wide(value: &str) -> Vec<u16> {
+    OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn install_cert_with_uac(cert_path: &Path) -> bool {
+    let verb = to_wide("runas");
+    let file = to_wide("certutil");
+    let params = to_wide(format!("-addstore Root \"{}\"", cert_path.display()).as_str());
+    let mut exec_info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        hwnd: HWND(std::ptr::null_mut()),
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_SHOW.0,
+        ..Default::default()
+    };
+    let launched = unsafe { ShellExecuteExW(&mut exec_info) }.is_ok();
+    if !launched || exec_info.hProcess.is_invalid() {
+        return false;
+    }
+    unsafe {
+        WaitForSingleObject(exec_info.hProcess, INFINITE);
+    }
+    let mut exit_code: u32 = 1;
+    let got_exit = unsafe { GetExitCodeProcess(exec_info.hProcess, &mut exit_code) }.is_ok();
+    unsafe {
+        let _ = CloseHandle(exec_info.hProcess);
+    }
+    got_exit && exit_code == 0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertStatus {
     NotInstalled,
@@ -470,8 +525,9 @@ impl CertInstaller {
         println!("This requires administrator privileges.");
         println!("A UAC prompt may appear.");
 
+        let cert_path = self.cert_path.to_str().unwrap_or("");
         let output = Command::new("certutil")
-            .args(["-addstore", "Root", self.cert_path.to_str().unwrap_or("")])
+            .args(["-addstore", "Root", cert_path])
             .status();
 
         match output {
@@ -480,13 +536,21 @@ impl CertInstaller {
                     println!("✓ CA certificate installed and trusted successfully.");
                     Ok(())
                 } else {
-                    println!();
-                    println!("Failed to install certificate. Please try running as Administrator:");
-                    println!("  certutil -addstore Root \"{}\"", self.cert_path.display());
-                    Err(BifrostError::Tls(
-                        "Failed to install CA certificate. Administrator privileges required."
-                            .to_string(),
-                    ))
+                    println!("Requesting administrator approval to install the certificate...");
+                    if install_cert_with_uac(&self.cert_path) {
+                        println!("✓ CA certificate installed and trusted successfully.");
+                        Ok(())
+                    } else {
+                        println!();
+                        println!(
+                            "Failed to install certificate. Please try running as Administrator:"
+                        );
+                        println!("  certutil -addstore Root \"{}\"", self.cert_path.display());
+                        Err(BifrostError::Tls(
+                            "Failed to install CA certificate. Administrator privileges required."
+                                .to_string(),
+                        ))
+                    }
                 }
             }
             Err(e) => Err(BifrostError::Tls(format!(

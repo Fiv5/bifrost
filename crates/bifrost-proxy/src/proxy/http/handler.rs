@@ -17,11 +17,12 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info, warn};
+use url::Url;
 
 use crate::dns::DnsResolver;
 
 use super::tunnel::get_tls_client_config;
-use crate::server::{full_body, BoxBody, ResolvedRules, RulesResolver};
+use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
@@ -35,6 +36,7 @@ use crate::utils::tee::{
     create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
     store_response_body, BodyCaptureHandle,
 };
+use crate::utils::throttle::wrap_throttled_body;
 use crate::utils::url::apply_url_rules;
 
 const STREAMING_CONTENT_TYPES: &[&str] = &[
@@ -121,10 +123,63 @@ pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
         || rules.css_append.is_some()
         || rules.css_prepend.is_some()
         || rules.css_body.is_some()
+        || !rules.res_scripts.is_empty()
 }
 
 pub fn needs_response_override(rules: &ResolvedRules) -> bool {
     rules.res_body.is_some() || rules.status_code.is_some() || rules.replace_status.is_some()
+}
+
+enum BodyMode {
+    Known(usize),
+    Stream,
+    StreamWithTrailers,
+}
+
+fn is_no_body_response(status: StatusCode, method: &str) -> bool {
+    status.is_informational()
+        || status == StatusCode::NO_CONTENT
+        || status == StatusCode::NOT_MODIFIED
+        || method.eq_ignore_ascii_case("HEAD")
+}
+
+fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
+    match mode {
+        BodyMode::Known(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
+        }
+        BodyMode::Stream | BodyMode::StreamWithTrailers => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
+}
+
+fn normalize_res_headers(parts: &mut ResponseParts, mode: BodyMode, method: &str) {
+    if is_no_body_response(parts.status, method) {
+        parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+        parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        return;
+    }
+    match mode {
+        BodyMode::Known(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
+        }
+        BodyMode::Stream | BodyMode::StreamWithTrailers => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        }
+    }
 }
 
 pub struct ConnectionErrorInfo {
@@ -540,8 +595,9 @@ pub async fn handle_http_request(
         .and_then(|s| s.parse::<usize>().ok());
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
+    let has_req_body_override = resolved_rules.req_body.is_some();
     let has_req_scripts = !resolved_rules.req_scripts.is_empty();
-    let needs_req_body = needs_req_processing || has_req_scripts;
+    let needs_req_body_read = !has_req_body_override && (needs_req_processing || has_req_scripts);
     let req_body_too_large = content_length
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
@@ -549,7 +605,7 @@ pub async fn handle_http_request(
     let mut skip_req_scripts = false;
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let (body_bytes, final_body) = if needs_req_body {
+    let (body_bytes, final_body) = if needs_req_body_read {
         if req_body_too_large {
             warn!(
                 "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
@@ -573,32 +629,36 @@ pub async fn handle_http_request(
                 .await
                 .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
                 .to_bytes();
-            let processed = if let Some(ref new_body) = resolved_rules.req_body {
-                if verbose_logging {
-                    info!(
-                        "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
-                        ctx.id_str(),
-                        bytes.len(),
-                        new_body.len()
-                    );
-                }
-                new_body.clone()
-            } else {
-                let req_content_type = parts
-                    .headers
-                    .get(hyper::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok());
-                apply_body_rules(
-                    bytes.clone(),
-                    &resolved_rules,
-                    Phase::Request,
-                    req_content_type,
-                    verbose_logging,
-                    ctx,
-                )
-            };
+            let req_content_type = parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok());
+            let processed = apply_body_rules(
+                bytes.clone(),
+                &resolved_rules,
+                Phase::Request,
+                req_content_type,
+                verbose_logging,
+                ctx,
+            );
             (bytes, processed)
         }
+    } else if let Some(ref new_body) = resolved_rules.req_body {
+        if verbose_logging {
+            info!(
+                "[{}] [REQ_BODY] replaced: {} bytes -> {} bytes",
+                ctx.id_str(),
+                content_length.unwrap_or(0),
+                new_body.len()
+            );
+        }
+        let mut body = body;
+        while let Some(frame) = body.frame().await {
+            if frame.is_err() {
+                break;
+            }
+        }
+        (Bytes::new(), new_body.clone())
     } else {
         if admin_state.is_some() {
             let (tee_body, capture) =
@@ -656,11 +716,6 @@ pub async fn handle_http_request(
             }
         }
         parts.headers = new_headers;
-
-        req_headers = script_headers
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
     }
 
     let final_body =
@@ -673,6 +728,17 @@ pub async fn handle_http_request(
         } else {
             final_body
         };
+    let req_body_mode = if streaming_body.is_some() {
+        BodyMode::Stream
+    } else {
+        BodyMode::Known(final_body.len())
+    };
+    normalize_req_headers(&mut parts, req_body_mode);
+    req_headers = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
     let request_body_size = if !final_body.is_empty() {
         final_body.len()
     } else {
@@ -682,6 +748,7 @@ pub async fn handle_http_request(
         Some(body) => body,
         None => full_body(final_body.clone()),
     };
+    let outgoing_body = wrap_throttled_body(outgoing_body, resolved_rules.req_speed);
 
     let dns_start = Instant::now();
     let (connect_host, dns_ms, dns_error) = if !resolved_rules.dns_servers.is_empty() {
@@ -988,9 +1055,30 @@ pub async fn handle_http_request(
             }
         };
 
+        let req_id_for_conn = ctx.id_str();
+        let host_for_conn = host.clone();
+        let port_for_conn = port;
+        let method_for_conn = method.clone();
+        let url_for_conn = url.clone();
+        let client_ip_for_conn = ctx.client_ip.clone();
+        let client_app_for_conn = ctx.client_app.clone();
+        let client_pid_for_conn = ctx.client_pid;
+        let client_path_for_conn = ctx.client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    host_for_conn,
+                    port_for_conn,
+                    method_for_conn,
+                    url_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 
@@ -1015,9 +1103,30 @@ pub async fn handle_http_request(
             }
         };
 
+        let req_id_for_conn = ctx.id_str();
+        let host_for_conn = host.clone();
+        let port_for_conn = port;
+        let method_for_conn = method.clone();
+        let url_for_conn = url.clone();
+        let client_ip_for_conn = ctx.client_ip.clone();
+        let client_app_for_conn = ctx.client_app.clone();
+        let client_pid_for_conn = ctx.client_pid;
+        let client_path_for_conn = ctx.client_path.clone();
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                error!("Connection failed: {:?}", err);
+                error!(
+                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                    req_id_for_conn,
+                    host_for_conn,
+                    port_for_conn,
+                    method_for_conn,
+                    url_for_conn,
+                    client_ip_for_conn,
+                    client_app_for_conn,
+                    client_pid_for_conn,
+                    client_path_for_conn,
+                    err
+                );
             }
         });
 
@@ -1082,6 +1191,8 @@ pub async fn handle_http_request(
         .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
+    let has_res_body_override = resolved_rules.res_body.is_some();
+    let needs_res_body_read = needs_processing && !has_res_body_override;
 
     let is_websocket = res_parts.status == StatusCode::SWITCHING_PROTOCOLS
         && res_parts
@@ -1101,9 +1212,9 @@ pub async fn handle_http_request(
         .map(|len| len > max_body_buffer_size)
         .unwrap_or(false);
 
-    let skip_body_processing = !needs_processing || res_body_too_large;
+    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
 
-    if needs_processing && res_body_too_large {
+    if needs_res_body_read && res_body_too_large {
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             ctx.id_str(),
@@ -1115,6 +1226,17 @@ pub async fn handle_http_request(
     if skip_body_processing {
         let is_streaming = is_streaming_response(&res_parts);
         let is_sse = is_sse_response(&res_parts);
+        let res_body_mode = if resolved_rules.trailers.is_empty() {
+            BodyMode::Stream
+        } else {
+            BodyMode::StreamWithTrailers
+        };
+        normalize_res_headers(&mut res_parts, res_body_mode, &method);
+        let res_headers: Vec<(String, String)> = res_parts
+            .headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
         if verbose_logging && !res_body_too_large {
             if is_sse {
                 info!(
@@ -1237,7 +1359,8 @@ pub async fn handle_http_request(
                 sse_stream_writer,
                 max_body_buffer_size,
             );
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
@@ -1250,17 +1373,23 @@ pub async fn handle_http_request(
                 Some(traffic_type),
                 response_headers_size,
             );
-            return Ok(Response::from_parts(res_parts, tee_body.boxed()));
+            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            return Ok(Response::from_parts(res_parts, body));
         }
     }
 
-    let receive_start = Instant::now();
-    let res_body_bytes = res_body
-        .collect()
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
-        .to_bytes();
-    let receive_ms = receive_start.elapsed().as_millis() as u64;
+    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+        let receive_start = Instant::now();
+        let res_body_bytes = res_body
+            .collect()
+            .await
+            .map_err(|e| BifrostError::Network(format!("Failed to read response body: {}", e)))?
+            .to_bytes();
+        let receive_ms = receive_start.elapsed().as_millis() as u64;
+        (res_body_bytes, receive_ms)
+    } else {
+        (Bytes::new(), 0)
+    };
 
     let content_type = res_parts
         .headers
@@ -1269,12 +1398,13 @@ pub async fn handle_http_request(
         .unwrap_or("")
         .to_string();
 
+    let original_res_body_len = res_content_length.unwrap_or(res_body_bytes.len());
     let final_res_body = if let Some(ref new_body) = resolved_rules.res_body {
         if verbose_logging {
             info!(
                 "[{}] [RES_BODY] replaced: {} bytes -> {} bytes",
                 ctx.id_str(),
-                res_body_bytes.len(),
+                original_res_body_len,
                 new_body.len()
             );
         }
@@ -1350,22 +1480,11 @@ pub async fn handle_http_request(
         } else {
             final_res_body
         };
-
-    if res_body_bytes.len() != final_res_body.len() {
-        res_parts.headers.remove(hyper::header::CONTENT_LENGTH);
-        res_parts.headers.insert(
-            hyper::header::CONTENT_LENGTH,
-            HeaderValue::from_str(&final_res_body.len().to_string()).unwrap(),
-        );
-        if verbose_logging {
-            info!(
-                "[{}] Updated Content-Length: {} -> {}",
-                ctx.id_str(),
-                res_body_bytes.len(),
-                final_res_body.len()
-            );
-        }
-    }
+    normalize_res_headers(
+        &mut res_parts,
+        BodyMode::Known(final_res_body.len()),
+        &method,
+    );
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
@@ -1507,7 +1626,8 @@ pub async fn handle_http_request(
         state.record_traffic(record);
     }
 
-    Ok(Response::from_parts(res_parts, full_body(final_res_body)))
+    let body = with_trailers(full_body(final_res_body), &resolved_rules);
+    Ok(Response::from_parts(res_parts, body))
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
@@ -1544,6 +1664,26 @@ fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result
             };
             return Ok((host, port));
         }
+    }
+
+    if let Some(ref proxy_rule) = rules.proxy {
+        if proxy_rule.starts_with("http://") || proxy_rule.starts_with("https://") {
+            if let Ok(url) = Url::parse(proxy_rule) {
+                if let Some(host) = url.host_str() {
+                    let port = url.port().unwrap_or(default_port);
+                    return Ok((host.to_string(), port));
+                }
+            }
+        }
+        let host_without_path = proxy_rule.split('/').next().unwrap_or(proxy_rule);
+        let parts: Vec<&str> = host_without_path.split(':').collect();
+        let host = parts[0].to_string();
+        let port = if parts.len() > 1 {
+            parts[1].parse().unwrap_or(default_port)
+        } else {
+            default_port
+        };
+        return Ok((host, port));
     }
 
     let host = uri

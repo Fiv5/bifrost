@@ -13,9 +13,12 @@ use bifrost_admin::{
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
+use hyper::header::{HeaderName, HeaderValue};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use hyper::HeaderMap;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
@@ -1033,6 +1036,26 @@ pub fn full_body(data: impl Into<Bytes>) -> BoxBody {
     use http_body_util::{BodyExt, Full};
     Full::new(data.into())
         .map_err(|never| match never {})
+        .boxed()
+}
+
+pub fn with_trailers(body: BoxBody, rules: &ResolvedRules) -> BoxBody {
+    if rules.trailers.is_empty() {
+        return body;
+    }
+    let mut trailers = HeaderMap::new();
+    for (name, value) in &rules.trailers {
+        if let (Ok(header_name), Ok(header_value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            trailers.insert(header_name, header_value);
+        }
+    }
+    if trailers.is_empty() {
+        return body;
+    }
+    body.with_trailers(std::future::ready(Some(Ok(trailers))))
         .boxed()
 }
 

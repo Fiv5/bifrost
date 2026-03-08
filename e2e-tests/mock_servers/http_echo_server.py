@@ -203,6 +203,16 @@ body {{ color: #333; }}
             print(f"  {key}: {value}")
         
         parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == '/static-value':
+            body = "REMOTE_VALUE"
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('X-Echo-Server', 'bifrost-test')
+            self.send_header('Connection', 'keep-alive')
+            self.end_headers()
+            self.wfile.write(body.encode('utf-8'))
+            return
         if parsed_path.path == '/large-response':
             self._handle_large_response()
         else:

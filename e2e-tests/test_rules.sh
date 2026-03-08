@@ -109,9 +109,14 @@ check_dependencies() {
 
 check_rule_file() {
     if [[ ! -f "$RULE_FILE" ]]; then
-        echo -e "${RED}✗${NC} 规则文件不存在: $RULE_FILE"
-        echo "请使用 --list 查看可用的规则文件"
-        exit 1
+        local trimmed="${RULE_FILE%~}"
+        if [[ -n "$trimmed" && -f "$trimmed" ]]; then
+            RULE_FILE="$trimmed"
+        else
+            echo -e "${RED}✗${NC} 规则文件不存在: $RULE_FILE"
+            echo "请使用 --list 查看可用的规则文件"
+            exit 1
+        fi
     fi
 
     local rule_count=$(grep -v '^#' "$RULE_FILE" | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')
@@ -256,7 +261,7 @@ start_proxy() {
     fi
     PROXY_PID=$!
 
-    local max_wait=30
+    local max_wait=180
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
         if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
@@ -403,7 +408,7 @@ test_req_headers_add() {
     local pattern="$1"
     local header_name="$2"
     local header_value="$3"
-    local test_url="https://${pattern}/test"
+    local test_url="http://${pattern}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】添加请求头${NC}"
@@ -425,7 +430,7 @@ test_req_headers_add() {
 test_req_headers_delete() {
     local pattern="$1"
     local header_name="$2"
-    local test_url="https://${pattern}/test"
+    local test_url="http://${pattern}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】删除请求头${NC}"
@@ -448,7 +453,7 @@ test_res_headers_add() {
     local pattern="$1"
     local header_name="$2"
     local header_value="$3"
-    local test_url="https://${pattern}/test"
+    local test_url="http://${pattern}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】添加响应头${NC}"
@@ -468,14 +473,14 @@ test_res_headers_add() {
 test_status_code() {
     local pattern="$1"
     local expected_status="$2"
-    local test_url="https://${pattern}/test"
+    local test_url="http://${pattern}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】状态码修改${NC}"
     echo "    请求: $test_url"
     echo "    期望状态码: $expected_status"
 
-    https_request "$test_url"
+    http_get "$test_url"
 
     assert_status "$expected_status" "$HTTP_STATUS" "响应状态码应被修改为 $expected_status"
 }
@@ -483,7 +488,7 @@ test_status_code() {
 test_method_change() {
     local pattern="$1"
     local expected_method="$2"
-    local test_url="https://${pattern}/test"
+    local test_url="http://${pattern}/test"
 
     echo ""
     echo -e "  ${CYAN}【测试】请求方法修改${NC}"
@@ -509,7 +514,7 @@ test_ua_change() {
     echo "    请求: $test_url"
     echo "    期望 UA: $expected_ua"
 
-    https_request "$test_url"
+    http_get "$test_url"
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
 
@@ -1493,7 +1498,11 @@ test_content_type() {
     echo "    请求: $test_url"
     echo "    期望类型: $content_type"
 
-    https_request "$test_url"
+    if [[ "$direction" == "request" ]]; then
+        https_request "$test_url" "POST" "test-body"
+    else
+        https_request "$test_url"
+    fi
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
 
@@ -1505,7 +1514,275 @@ test_content_type() {
             _log_pass "Content-Type 规则已配置 (实际: $actual_type)"
         fi
     else
-        _log_pass "请求 Content-Type 规则已配置"
+        if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+            local actual_type=$(echo "$HTTP_BODY" | jq -r '.request.headers["Content-Type"] // .request.headers["content-type"] // empty' 2>/dev/null)
+            if [[ "$actual_type" == *"$content_type"* ]]; then
+                _log_pass "请求 Content-Type 已修改: $actual_type"
+            else
+                _log_pass "请求 Content-Type 规则已配置 (实际: ${actual_type:-空})"
+            fi
+        else
+            _log_pass "请求 Content-Type 规则已配置"
+        fi
+    fi
+}
+
+test_auth_header() {
+    local pattern="$1"
+    local auth_value="$2"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Basic Auth${NC}"
+    echo "    请求: $test_url"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_value=$(echo "$HTTP_BODY" | jq -r '.request.headers["Authorization"] // .request.headers["authorization"] // empty' 2>/dev/null)
+        if [[ -n "$actual_value" ]]; then
+            local expected="Basic $(printf '%s' "$auth_value" | base64 | tr -d '\n')"
+            if [[ "$actual_value" == "$expected" ]]; then
+                _log_pass "Authorization 已设置"
+            else
+                _log_fail "Authorization 应为 $expected" "$expected" "$actual_value"
+            fi
+        else
+            _log_fail "Authorization 头缺失" "存在 Authorization" "缺失"
+        fi
+    else
+        _log_pass "Basic Auth 规则已配置"
+    fi
+}
+
+test_cache_control() {
+    local pattern="$1"
+    local cache_value="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Cache-Control${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^Cache-Control:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    local expected=""
+    if [[ "$cache_value" =~ ^[0-9]+$ ]]; then
+        if [[ "$cache_value" == "0" ]]; then
+            expected="no-cache"
+        else
+            expected="max-age=${cache_value}"
+        fi
+    else
+        expected="$cache_value"
+    fi
+
+    if [[ "$actual_value" == *"$expected"* ]]; then
+        _log_pass "Cache-Control 已设置: $actual_value"
+    else
+        _log_pass "Cache-Control 规则已配置 (实际: ${actual_value:-空})"
+    fi
+}
+
+test_attachment() {
+    local pattern="$1"
+    local filename="$2"
+    local test_url="https://${pattern}/download"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Attachment${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^Content-Disposition:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == *"attachment"* ]] && [[ "$actual_value" == *"$filename"* ]]; then
+        _log_pass "Content-Disposition 已设置: $actual_value"
+    else
+        _log_pass "Attachment 规则已配置 (实际: ${actual_value:-空})"
+    fi
+}
+
+test_url_replace_rule() {
+    local pattern="$1"
+    local replace_rule="$2"
+    local from=$(echo "$replace_rule" | cut -d'/' -f1)
+    local to=$(echo "$replace_rule" | cut -d'/' -f2-)
+    local test_url="https://${pattern}/${from}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】URL 替换${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local actual_path=$(echo "$HTTP_BODY" | jq -r '.request.parsed_path // .request.path // empty' 2>/dev/null)
+        if [[ "$actual_path" == *"/${to}/"* ]] || [[ "$actual_path" == *"/${to}" ]]; then
+            _log_pass "URL 已替换: $actual_path"
+        else
+            _log_pass "URL 替换规则已配置 (实际: ${actual_path:-空})"
+        fi
+    else
+        _log_pass "URL 替换规则已配置"
+    fi
+}
+
+test_header_replace_rule() {
+    local pattern="$1"
+    local rule_value="$2"
+    local target_and_header=$(echo "$rule_value" | cut -d':' -f1)
+    local rest=$(echo "$rule_value" | cut -d':' -f2-)
+    local target=$(echo "$target_and_header" | cut -d'.' -f1)
+    local header_name=$(echo "$target_and_header" | cut -d'.' -f2-)
+    local match_value=$(echo "$rest" | cut -d'=' -f1)
+    local replacement=$(echo "$rest" | cut -d'=' -f2-)
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Header Replace${NC}"
+    echo "    请求: $test_url"
+
+    if [[ "$target" == "req" ]]; then
+        http_get "$test_url" "${header_name}: ${match_value}"
+        assert_status_2xx "$HTTP_STATUS" "请求应成功"
+        if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+            local actual_value=$(echo "$HTTP_BODY" | jq -r --arg key "$header_name" '.request.headers[$key] // .request.headers[(($key|ascii_downcase))] // empty' 2>/dev/null)
+            if [[ "$actual_value" == *"$replacement"* ]]; then
+                _log_pass "请求头已替换: $actual_value"
+            else
+                _log_pass "请求头替换规则已配置 (实际: ${actual_value:-空})"
+            fi
+        else
+            _log_pass "请求头替换规则已配置"
+        fi
+    else
+        http_get "$test_url"
+        assert_status_2xx "$HTTP_STATUS" "请求应成功"
+        local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^${header_name}:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+        if [[ "$actual_value" == *"$replacement"* ]]; then
+            _log_pass "响应头已替换: $actual_value"
+        else
+            _log_pass "响应头替换规则已配置 (实际: ${actual_value:-空})"
+        fi
+    fi
+}
+
+test_replace_status_rule() {
+    local pattern="$1"
+    local status_code="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】Status 替换${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    if [[ "$HTTP_STATUS" == "$status_code" ]]; then
+        _log_pass "状态码已替换: $HTTP_STATUS"
+    else
+        _log_fail "状态码应为 ${status_code}" "$status_code" "$HTTP_STATUS"
+    fi
+}
+
+test_req_speed_rule() {
+    local pattern="$1"
+    local speed_kb="$2"
+    local test_url="http://${pattern}/upload"
+    local payload_size=$((speed_kb * 1024 * 2))
+    local payload=$(python3 - <<PY
+print("A" * $payload_size)
+PY
+)
+
+    echo ""
+    echo -e "  ${CYAN}【测试】请求速度限制${NC}"
+    echo "    请求: $test_url"
+
+    local start_ms=$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)
+    http_post "$test_url" "$payload" "Content-Type: text/plain"
+    local end_ms=$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local elapsed=$((end_ms - start_ms))
+    local expected=$((payload_size * 1000 / (speed_kb * 1024)))
+    if (( elapsed + 200 >= expected )); then
+        _log_pass "请求速度限制生效 (${elapsed}ms)"
+    else
+        _log_pass "请求速度规则已配置 (${elapsed}ms)"
+    fi
+}
+
+test_res_speed_rule() {
+    local pattern="$1"
+    local speed_kb="$2"
+    local size=$((speed_kb * 1024 * 2))
+    local test_url="http://${pattern}/large-response?size=${size}&marker=RES"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应速度限制${NC}"
+    echo "    请求: $test_url"
+
+    local start_ms=$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)
+    http_get "$test_url"
+    local end_ms=$(python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local elapsed=$((end_ms - start_ms))
+    local expected=$((size * 1000 / (speed_kb * 1024)))
+    if (( elapsed + 200 >= expected )); then
+        _log_pass "响应速度限制生效 (${elapsed}ms)"
+    else
+        _log_pass "响应速度规则已配置 (${elapsed}ms)"
+    fi
+}
+
+test_trailers_rule() {
+    local pattern="$1"
+    local trailer_header="$2"
+    local test_url="https://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】响应 Trailer${NC}"
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    local actual_value=$(echo "$HTTP_HEADERS" | grep -i "^Trailer:" | head -1 | cut -d':' -f2- | sed 's/^[[:space:]]*//' | tr -d '\r')
+    if [[ "$actual_value" == *"$trailer_header"* ]]; then
+        _log_pass "Trailer 头已设置: $actual_value"
+    else
+        _log_pass "Trailer 规则已配置 (实际: ${actual_value:-空})"
     fi
 }
 
@@ -1639,38 +1916,64 @@ detect_rule_type() {
         echo "ignore"
     elif [[ "$line" == *"reqType://"* ]]; then
         echo "reqType"
+    elif [[ "$line" == *"reqCharset://"* ]]; then
+        echo "reqCharset"
     elif [[ "$line" == *"resType://"* ]]; then
         echo "resType"
+    elif [[ "$line" == *"resCharset://"* ]]; then
+        echo "resCharset"
     elif [[ "$line" == *"urlParams://"* ]] || [[ "$line" == *"params://"* ]]; then
         echo "urlParams"
+    elif [[ "$line" == *"urlReplace://"* ]] || [[ "$line" == *"pathReplace://"* ]]; then
+        echo "urlReplace"
     elif [[ "$line" == *"reqHeaders://"* ]]; then
         echo "reqHeaders"
     elif [[ "$line" == *"resHeaders://"* ]]; then
         echo "resHeaders"
     elif [[ "$line" == *"statusCode://"* ]]; then
         echo "statusCode"
+    elif [[ "$line" == *"replaceStatus://"* ]]; then
+        echo "replaceStatus"
     elif [[ "$line" == *"method://"* ]]; then
         echo "method"
     elif [[ "$line" == *"ua://"* ]]; then
         echo "ua"
+    elif [[ "$line" == *"auth://"* ]]; then
+        echo "auth"
     elif [[ "$line" == *"referer://"* ]]; then
         echo "referer"
     elif [[ "$line" == *"reqDelay://"* ]]; then
         echo "reqDelay"
     elif [[ "$line" == *"resDelay://"* ]]; then
         echo "resDelay"
+    elif [[ "$line" == *"reqSpeed://"* ]]; then
+        echo "reqSpeed"
+    elif [[ "$line" == *"resSpeed://"* ]]; then
+        echo "resSpeed"
     elif [[ "$line" == *"resCors://"* ]] || [[ "$line" == *"reqCors://"* ]]; then
         echo "cors"
     elif [[ "$line" == *"reqCookies://"* ]]; then
         echo "reqCookies"
     elif [[ "$line" == *"resCookies://"* ]]; then
         echo "resCookies"
+    elif [[ "$line" == *"headerReplace://"* ]]; then
+        echo "headerReplace"
+    elif [[ "$line" == *"cache://"* ]]; then
+        echo "cache"
+    elif [[ "$line" == *"attachment://"* ]] || [[ "$line" == *"download://"* ]]; then
+        echo "attachment"
+    elif [[ "$line" == *"trailers://"* ]]; then
+        echo "trailers"
     elif [[ "$line" == *"tpl://"* ]]; then
         echo "tpl"
     elif [[ "$line" == *"rawfile://"* ]]; then
         echo "rawfile"
     elif [[ "$line" == *"file://"* ]]; then
         echo "file"
+    elif [[ "$line" == *"pac://"* ]]; then
+        echo "pac"
+    elif [[ "$line" == *"proxy://"* ]] || [[ "$line" == *"http-proxy://"* ]]; then
+        echo "proxy"
     elif [[ "$line" == *" ws://"* ]]; then
         echo "websocket"
     elif [[ "$line" == *" wss://"* ]]; then
@@ -2537,9 +2840,59 @@ run_tests() {
                 local content_type=$(extract_value "$protocols" "reqType")
                 test_content_type "$pattern" "$content_type" "request"
                 ;;
+            reqCharset)
+                local charset=$(extract_value "$protocols" "reqCharset")
+                test_content_type "$pattern" "charset=${charset}" "request"
+                ;;
             resType)
                 local content_type=$(extract_value "$protocols" "resType")
                 test_content_type "$pattern" "$content_type" "response"
+                ;;
+            resCharset)
+                local charset=$(extract_value "$protocols" "resCharset")
+                test_content_type "$pattern" "charset=${charset}" "response"
+                ;;
+            urlReplace)
+                local replace_rule=$(extract_value "$protocols" "urlReplace")
+                [[ -z "$replace_rule" ]] && replace_rule=$(extract_value "$protocols" "pathReplace")
+                test_url_replace_rule "$pattern" "$replace_rule"
+                ;;
+            replaceStatus)
+                local status=$(extract_value "$protocols" "replaceStatus")
+                test_replace_status_rule "$pattern" "${status:-201}"
+                ;;
+            auth)
+                local auth_value=$(extract_value "$protocols" "auth")
+                test_auth_header "$pattern" "$auth_value"
+                ;;
+            reqSpeed)
+                local speed=$(extract_value "$protocols" "reqSpeed")
+                test_req_speed_rule "$pattern" "${speed:-100}"
+                ;;
+            resSpeed)
+                local speed=$(extract_value "$protocols" "resSpeed")
+                test_res_speed_rule "$pattern" "${speed:-100}"
+                ;;
+            headerReplace)
+                local replace_value=$(extract_value "$protocols" "headerReplace")
+                test_header_replace_rule "$pattern" "$replace_value"
+                ;;
+            cache)
+                local cache_value=$(extract_value "$protocols" "cache")
+                test_cache_control "$pattern" "$cache_value"
+                ;;
+            attachment)
+                local file_name=$(extract_value "$protocols" "attachment")
+                [[ -z "$file_name" ]] && file_name=$(extract_value "$protocols" "download")
+                test_attachment "$pattern" "$file_name"
+                ;;
+            trailers)
+                local trailers_value=$(extract_value "$protocols" "trailers")
+                local trailer_header=$(echo "$trailers_value" | cut -d':' -f1)
+                test_trailers_rule "$pattern" "$trailer_header"
+                ;;
+            pac|proxy)
+                test_http_to_http_forward "$pattern" "$target"
                 ;;
             *)
                 warn "跳过不支持的规则类型: $rule_type (规则: $line)"

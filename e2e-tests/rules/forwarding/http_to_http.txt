@@ -12,6 +12,7 @@ http-forward.local host://127.0.0.1:3000
 
 # 带路径的转发
 http-forward-path.local/api host://127.0.0.1:3000/backend
+http-forward-xhost.local xhost://127.0.0.1:3000
 
 # 测试:
 # 请求 http://http-forward-path.local/api/users 应转发到 127.0.0.1:3000/backend/users
