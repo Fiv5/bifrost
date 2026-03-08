@@ -344,7 +344,6 @@ dependencies = [
  "parking_lot",
  "rand 0.8.5",
  "regex 1.12.3",
- "reqwest",
  "serde",
  "serde_json",
  "sysproxy",
@@ -354,6 +353,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "ureq",
  "url",
  "urlencoding",
  "uuid",
@@ -508,6 +508,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "webpki-roots 1.0.6",
+ "windows 0.58.0",
  "x509-parser",
 ]
 
@@ -3434,7 +3435,6 @@ dependencies = [
  "cookie",
  "cookie_store",
  "encoding_rs",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

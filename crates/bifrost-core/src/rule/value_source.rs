@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use reqwest::blocking::Client;
+use ureq::AgentBuilder;
 
 use super::ValueStore;
 
@@ -139,15 +139,9 @@ impl ValueSource {
             ValueSource::ValueRef(var_name) => store.get(var_name),
             ValueSource::FilePath(path) => std::fs::read_to_string(path).ok(),
             ValueSource::RemoteUrl(url) => {
-                let client = Client::builder()
-                    .timeout(Duration::from_secs(5))
-                    .build()
-                    .ok()?;
-                let response = client.get(url).send().ok()?;
-                if !response.status().is_success() {
-                    return None;
-                }
-                response.text().ok()
+                let agent = AgentBuilder::new().timeout(Duration::from_secs(5)).build();
+                let response = agent.get(url).call().ok()?;
+                response.into_string().ok()
             }
         }
     }
