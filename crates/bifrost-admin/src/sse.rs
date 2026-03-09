@@ -28,6 +28,9 @@ struct SseConnectionState {
     is_open: bool,
     receive_bytes: u64,
     receive_count: u64,
+    // 当用户在管理端主动查看 SSE messages 时，proxy 侧需要更激进地把 sse_raw 写盘，
+    // 否则可能出现：count 在涨（基于解析/计数），但文件未 flush 导致详情流读不到数据。
+    force_flush_until_ms: u64,
 }
 
 impl SseConnectionState {
@@ -36,6 +39,7 @@ impl SseConnectionState {
             is_open: true,
             receive_bytes: 0,
             receive_count: 0,
+            force_flush_until_ms: 0,
         }
     }
 }
@@ -80,6 +84,25 @@ impl SseHub {
         if let Some(state) = connections.get_mut(connection_id) {
             state.receive_count = state.receive_count.saturating_add(1);
         }
+    }
+
+    pub fn request_force_flush(&self, connection_id: &str, duration_ms: u64) {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let until = now.saturating_add(duration_ms);
+        let mut connections = self.connections.write();
+        let state = connections
+            .entry(connection_id.to_string())
+            .or_insert_with(SseConnectionState::new);
+        state.force_flush_until_ms = state.force_flush_until_ms.max(until);
+    }
+
+    pub fn should_force_flush(&self, connection_id: &str) -> bool {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        self.connections
+            .read()
+            .get(connection_id)
+            .map(|s| s.force_flush_until_ms > now)
+            .unwrap_or(false)
     }
 
     pub fn is_open(&self, connection_id: &str) -> Option<bool> {

@@ -226,6 +226,11 @@ async fn subscribe_sse_stream(
         );
     }
 
+    // 管理端主动拉取 SSE messages：
+    // - 触发 proxy 侧对该连接的 sse_raw 写盘进行更激进的 flush（短时间内每个 chunk 都 flush）
+    // - 避免出现 count 增长但详情页 messages 长时间空的情况
+    state.sse_hub.request_force_flush(id, 30_000);
+
     let body_ref = match record.response_body_ref {
         Some(r) => r,
         None => {
@@ -236,7 +241,10 @@ async fn subscribe_sse_stream(
         }
     };
 
-    let opts = parse_sse_stream_options(query);
+    let mut opts = parse_sse_stream_options(query);
+    // 前端详情页对 SSE messages 更关心“实时可见性”，而不是减少消息条数。
+    // 这里强制每个事件都单独推送（batch_size=1），避免等待凑满 batch 才看到第一屏。
+    opts.batch_size = 1;
     let max_body_size = state.get_max_body_buffer_size();
     let stream = build_sse_disk_stream(
         state.clone(),

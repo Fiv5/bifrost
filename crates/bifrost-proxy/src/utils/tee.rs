@@ -543,8 +543,18 @@ impl Body for SseTeeBody {
                         }
                     }
 
+                    let should_force_flush = self
+                        .guard
+                        .admin_state
+                        .as_ref()
+                        .map(|state| state.sse_hub.should_force_flush(&self.guard.record_id))
+                        .unwrap_or(false);
+
                     if let Some(ref mut writer) = self.guard.file_writer {
                         let _ = writer.write_chunk(data);
+                        if should_force_flush {
+                            let _ = writer.flush_buffered();
+                        }
                     }
 
                     self.process_sse_chunk(data);
