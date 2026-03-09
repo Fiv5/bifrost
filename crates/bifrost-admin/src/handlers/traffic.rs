@@ -1,13 +1,11 @@
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::body_store::BodyRef;
 use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
-use crate::sse::{parse_sse_events_from_text, SseEventEnvelope};
 use crate::state::{AdminState, SharedAdminState};
 use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
@@ -151,7 +149,7 @@ pub async fn handle_traffic(
                 return error_response(StatusCode::BAD_REQUEST, "Invalid SSE stream path");
             }
             match method {
-                Method::GET => subscribe_sse_stream(state, id).await,
+                Method::GET => subscribe_sse_stream(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(id) = rest.strip_suffix("/frames/stream") {
@@ -193,7 +191,11 @@ pub async fn handle_traffic(
     }
 }
 
-async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn subscribe_sse_stream(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
@@ -217,16 +219,6 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         return error_response(StatusCode::BAD_REQUEST, "Not a SSE traffic record");
     }
 
-    let receiver = match state.sse_hub.subscribe(id) {
-        Some(rx) => rx,
-        None => {
-            return error_response(
-                StatusCode::CONFLICT,
-                "SSE connection already closed; use /response-body to load and render events",
-            );
-        }
-    };
-
     if state.sse_hub.is_open(id) != Some(true) {
         return error_response(
             StatusCode::CONFLICT,
@@ -244,40 +236,16 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         }
     };
 
+    let opts = parse_sse_stream_options(query);
     let max_body_size = state.get_max_body_buffer_size();
-    let snapshot_text = load_body_snapshot_text(state.clone(), &body_ref, max_body_size).await;
-    let (mut events, _) = parse_sse_events_from_text(&snapshot_text);
-    for (idx, e) in events.iter_mut().enumerate() {
-        e.seq = (idx as u64) + 1;
-        e.ts = record.timestamp;
-    }
-    let last_seq = events.len() as u64;
-
-    let mut backlog = state.sse_hub.get_events_since(id, last_seq);
-    backlog.sort_by_key(|e| e.seq);
-    let max_seq_sent = backlog.last().map(|e| e.seq).unwrap_or(last_seq);
-
-    let id_owned = id.to_string();
-    let live = BroadcastStream::new(receiver).filter_map(move |result| match result {
-        Ok(SseEventEnvelope {
-            connection_id,
-            event,
-        }) if connection_id == id_owned && event.seq > max_seq_sent => {
-            let data = serde_json::to_string(&event).ok()?;
-            let sse_data = format!("id: {}\ndata: {}\n\n", event.seq, data);
-            Some(sse_data)
-        }
-        _ => None,
-    });
-
-    let history = futures_util::stream::iter(events.into_iter().chain(backlog.into_iter()))
-        .filter_map(|e| {
-            let data = serde_json::to_string(&e).ok()?;
-            Some(format!("id: {}\ndata: {}\n\n", e.seq, data))
-        });
-    let stream = history
-        .chain(live)
-        .map(|s| Ok::<_, hyper::Error>(hyper::body::Frame::data(bytes::Bytes::from(s))));
+    let stream = build_sse_disk_stream(
+        state.clone(),
+        id.to_string(),
+        body_ref,
+        opts.from,
+        opts.batch_size,
+        max_body_size,
+    );
     let body_stream = http_body_util::StreamBody::new(stream);
 
     Response::builder()
@@ -290,56 +258,477 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         .unwrap()
 }
 
-async fn load_body_snapshot_text(
-    state: SharedAdminState,
-    body_ref: &BodyRef,
-    max_size: usize,
-) -> String {
-    let Some(ref store) = state.body_store else {
-        return String::new();
-    };
-    let store = store.clone();
-    let body_ref = body_ref.clone();
-    tokio::task::spawn_blocking(move || match body_ref {
-        BodyRef::Inline { data } => truncate_utf8(&data, max_size),
-        BodyRef::File { path, .. } => {
-            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            let size = (len as usize).min(max_size);
-            if size == 0 {
-                return String::new();
-            }
-            let offset = len.saturating_sub(size as u64);
-            let range = BodyRef::FileRange { path, offset, size };
-            store.read().load(&range).unwrap_or_default()
-        }
-        BodyRef::FileRange { path, offset, size } => {
-            let tail_size = size.min(max_size);
-            if tail_size == 0 {
-                return String::new();
-            }
-            let end = offset.saturating_add(size as u64);
-            let start = end.saturating_sub(tail_size as u64).max(offset);
-            let range = BodyRef::FileRange {
-                path,
-                offset: start,
-                size: tail_size,
-            };
-            store.read().load(&range).unwrap_or_default()
-        }
-    })
-    .await
-    .unwrap_or_default()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SseStreamFrom {
+    Begin,
+    Tail,
 }
 
-fn truncate_utf8(value: &str, max_size: usize) -> String {
-    if value.len() <= max_size {
-        return value.to_string();
+fn parse_sse_stream_from(query: Option<&str>) -> SseStreamFrom {
+    let Some(q) = query else {
+        return SseStreamFrom::Begin;
+    };
+    for part in q.split('&') {
+        if let Some(v) = part.strip_prefix("from=") {
+            if v.eq_ignore_ascii_case("tail") {
+                return SseStreamFrom::Tail;
+            }
+            return SseStreamFrom::Begin;
+        }
     }
-    let mut end = max_size;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
+    SseStreamFrom::Begin
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SseStreamOptions {
+    from: SseStreamFrom,
+    batch_size: usize,
+}
+
+fn parse_sse_stream_options(query: Option<&str>) -> SseStreamOptions {
+    let from = parse_sse_stream_from(query);
+    let mut batch_enabled = false;
+    let mut batch_size_override: Option<usize> = None;
+
+    let Some(q) = query else {
+        return SseStreamOptions {
+            from,
+            batch_size: 1,
+        };
+    };
+
+    for part in q.split('&') {
+        if let Some(v) = part.strip_prefix("batch=") {
+            if v == "0" || v.eq_ignore_ascii_case("false") {
+                batch_enabled = false;
+            } else if v == "1" || v.eq_ignore_ascii_case("true") {
+                batch_enabled = true;
+            }
+            continue;
+        }
+        if let Some(v) = part.strip_prefix("batch_size=") {
+            if let Ok(n) = v.parse::<usize>() {
+                batch_size_override = Some(n.clamp(1, 1000));
+            }
+            continue;
+        }
     }
-    value[..end].to_string()
+
+    let batch_size = if let Some(n) = batch_size_override {
+        n
+    } else if batch_enabled && from == SseStreamFrom::Begin {
+        200
+    } else {
+        1
+    };
+
+    SseStreamOptions { from, batch_size }
+}
+
+fn build_sse_disk_stream(
+    state: SharedAdminState,
+    connection_id: String,
+    body_ref: BodyRef,
+    from: SseStreamFrom,
+    batch_size: usize,
+    tail_bytes: usize,
+) -> impl futures_util::Stream<Item = Result<hyper::body::Frame<bytes::Bytes>, hyper::Error>> {
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(64);
+
+    tokio::spawn(async move {
+        let _ = stream_sse_events_from_body_ref(
+            state,
+            &connection_id,
+            body_ref,
+            from,
+            batch_size,
+            tail_bytes,
+            tx,
+        )
+        .await;
+    });
+
+    ReceiverStream::new(rx).map(|b| Ok::<_, hyper::Error>(hyper::body::Frame::data(b)))
+}
+
+async fn stream_sse_events_from_body_ref(
+    state: SharedAdminState,
+    connection_id: &str,
+    body_ref: BodyRef,
+    from: SseStreamFrom,
+    batch_size: usize,
+    tail_bytes: usize,
+    tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
+) -> Result<(), ()> {
+    let mut seq: u64 = 0;
+    let mut parser = SseIncrementalParser::new();
+
+    match body_ref {
+        BodyRef::Inline { data } => {
+            let mut batch = Vec::new();
+            let batch_size = batch_size.max(1);
+            for raw in split_sse_events_text(&data) {
+                seq = seq.saturating_add(1);
+                let event = sse_event_from_raw(seq, now_ms(), raw);
+                if batch_size <= 1 {
+                    let s = sse_json_line(&event);
+                    if tx.send(bytes::Bytes::from(s)).await.is_err() {
+                        return Ok(());
+                    }
+                    continue;
+                }
+
+                batch.push(event);
+                if batch.len() >= batch_size {
+                    let s = sse_json_batch_line(&batch);
+                    batch.clear();
+                    if tx.send(bytes::Bytes::from(s)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            }
+
+            if !batch.is_empty() {
+                let s = sse_json_batch_line(&batch);
+                let _ = tx.send(bytes::Bytes::from(s)).await;
+            }
+            Ok(())
+        }
+        BodyRef::File { path, .. } => {
+            let cfg = SseFileStreamConfig {
+                state,
+                connection_id: connection_id.to_string(),
+                path,
+                start_offset: 0,
+                fixed_end: None,
+                from,
+                batch_size,
+                tail_bytes,
+            };
+            stream_sse_events_from_file(cfg, &mut seq, &mut parser, tx).await
+        }
+        BodyRef::FileRange { path, offset, size } => {
+            let end = offset.saturating_add(size as u64);
+            let cfg = SseFileStreamConfig {
+                state,
+                connection_id: connection_id.to_string(),
+                path,
+                start_offset: offset,
+                fixed_end: Some(end),
+                from,
+                batch_size,
+                tail_bytes,
+            };
+            stream_sse_events_from_file(cfg, &mut seq, &mut parser, tx).await
+        }
+    }
+}
+
+struct SseFileStreamConfig {
+    state: SharedAdminState,
+    connection_id: String,
+    path: String,
+    start_offset: u64,
+    fixed_end: Option<u64>,
+    from: SseStreamFrom,
+    batch_size: usize,
+    tail_bytes: usize,
+}
+
+async fn stream_sse_events_from_file(
+    cfg: SseFileStreamConfig,
+    seq: &mut u64,
+    parser: &mut SseIncrementalParser,
+    tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
+) -> Result<(), ()> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    use tokio::time::{sleep, Duration};
+
+    let mut file = match tokio::fs::File::open(&cfg.path).await {
+        Ok(f) => f,
+        Err(_) => return Ok(()),
+    };
+
+    let mut offset = cfg.start_offset;
+    if cfg.from == SseStreamFrom::Tail && cfg.fixed_end.is_none() && cfg.tail_bytes > 0 {
+        if let Ok(meta) = file.metadata().await {
+            let len = meta.len();
+            offset = len.saturating_sub(cfg.tail_bytes as u64);
+        }
+    }
+
+    if file.seek(std::io::SeekFrom::Start(offset)).await.is_err() {
+        return Ok(());
+    }
+
+    let mut buf = vec![0u8; 8192];
+
+    let mut batch = Vec::new();
+    let batch_size = cfg.batch_size.max(1);
+
+    loop {
+        let is_open = cfg
+            .state
+            .sse_hub
+            .is_open(&cfg.connection_id)
+            .unwrap_or(false);
+        let end = cfg.fixed_end;
+
+        if let Some(end_pos) = end {
+            if offset >= end_pos {
+                break;
+            }
+        }
+
+        let mut to_read = buf.len();
+        if let Some(end_pos) = end {
+            let remain = (end_pos - offset) as usize;
+            to_read = to_read.min(remain);
+            if to_read == 0 {
+                break;
+            }
+        }
+
+        let n = match file.read(&mut buf[..to_read]).await {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+
+        if n == 0 {
+            if !is_open {
+                break;
+            }
+            sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+
+        offset = offset.saturating_add(n as u64);
+
+        let mut produced = Vec::new();
+        parser.push_bytes(&buf[..n], &mut produced);
+        for raw in produced {
+            *seq = seq.saturating_add(1);
+            let event = sse_event_from_raw(*seq, now_ms(), raw);
+            if batch_size <= 1 {
+                let s = sse_json_line(&event);
+                if tx.send(bytes::Bytes::from(s)).await.is_err() {
+                    return Ok(());
+                }
+                continue;
+            }
+
+            batch.push(event);
+            if batch.len() >= batch_size {
+                let s = sse_json_batch_line(&batch);
+                batch.clear();
+                if tx.send(bytes::Bytes::from(s)).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    if let Some(raw) = parser.finish() {
+        *seq = seq.saturating_add(1);
+        let event = sse_event_from_raw(*seq, now_ms(), raw);
+        if batch_size <= 1 {
+            let s = sse_json_line(&event);
+            let _ = tx.send(bytes::Bytes::from(s)).await;
+        } else {
+            batch.push(event);
+        }
+    }
+
+    if batch_size > 1 && !batch.is_empty() {
+        let s = sse_json_batch_line(&batch);
+        let _ = tx.send(bytes::Bytes::from(s)).await;
+    }
+
+    Ok(())
+}
+
+fn split_sse_events_text(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for line in input.lines() {
+        if line.is_empty() {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push_str(line);
+        current.push('\n');
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+struct SseIncrementalParser {
+    prev_nl: bool,
+    buf: Vec<u8>,
+}
+
+impl SseIncrementalParser {
+    fn new() -> Self {
+        Self {
+            prev_nl: false,
+            buf: Vec::new(),
+        }
+    }
+
+    fn push_bytes(&mut self, data: &[u8], out: &mut Vec<String>) {
+        for &b in data {
+            if b == b'\r' {
+                continue;
+            }
+            if b == b'\n' {
+                if self.prev_nl {
+                    let mut chunk = std::mem::take(&mut self.buf);
+                    while matches!(chunk.last(), Some(b'\n')) {
+                        chunk.pop();
+                    }
+                    if !chunk.is_empty() {
+                        out.push(String::from_utf8_lossy(&chunk).to_string());
+                    }
+                    self.prev_nl = false;
+                    continue;
+                }
+                self.buf.push(b'\n');
+                self.prev_nl = true;
+                continue;
+            }
+            self.prev_nl = false;
+            self.buf.push(b);
+        }
+    }
+
+    fn finish(&mut self) -> Option<String> {
+        let mut chunk = std::mem::take(&mut self.buf);
+        while matches!(chunk.last(), Some(b'\n')) {
+            chunk.pop();
+        }
+        if chunk.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(&chunk).to_string())
+        }
+    }
+}
+
+fn sse_event_from_raw(seq: u64, ts: u64, raw: String) -> crate::sse::SseEvent {
+    let mut event = crate::sse::parse_sse_event(&raw);
+    event.seq = seq;
+    event.ts = ts;
+    event.raw = Some(raw);
+    event
+}
+
+fn sse_json_line(event: &crate::sse::SseEvent) -> String {
+    let data = serde_json::to_string(event)
+        .unwrap_or_else(|_| format!(r#"{{"seq":{},"ts":{},"data":""}}"#, event.seq, event.ts));
+    format!("id: {}\ndata: {}\n\n", event.seq, data)
+}
+
+fn sse_json_batch_line(events: &[crate::sse::SseEvent]) -> String {
+    #[derive(serde::Serialize)]
+    struct Payload<'a> {
+        batch: bool,
+        seq: u64,
+        ts: u64,
+        events: &'a [crate::sse::SseEvent],
+    }
+    let last_seq = events.last().map(|e| e.seq).unwrap_or(0);
+    let data = serde_json::to_string(&Payload {
+        batch: true,
+        seq: last_seq,
+        ts: now_ms(),
+        events,
+    })
+    .unwrap_or_else(|_| "{\"batch\":true,\"seq\":0,\"ts\":0,\"events\":[]}".to_string());
+    format!("id: {}\ndata: {}\n\n", last_seq, data)
+}
+
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+#[cfg(test)]
+mod sse_stream_tests {
+    use super::{
+        parse_sse_stream_from, parse_sse_stream_options, split_sse_events_text,
+        SseIncrementalParser, SseStreamFrom,
+    };
+
+    #[test]
+    fn test_parse_sse_stream_from_default_begin() {
+        assert_eq!(parse_sse_stream_from(None), SseStreamFrom::Begin);
+        assert_eq!(parse_sse_stream_from(Some("x=1")), SseStreamFrom::Begin);
+        assert_eq!(
+            parse_sse_stream_from(Some("from=begin")),
+            SseStreamFrom::Begin
+        );
+        assert_eq!(
+            parse_sse_stream_from(Some("from=tail")),
+            SseStreamFrom::Tail
+        );
+        assert_eq!(
+            parse_sse_stream_from(Some("a=b&from=tail&c=d")),
+            SseStreamFrom::Tail
+        );
+    }
+
+    #[test]
+    fn test_parse_sse_stream_options_batch_size() {
+        let o = parse_sse_stream_options(None);
+        assert_eq!(o.from, SseStreamFrom::Begin);
+        assert_eq!(o.batch_size, 1);
+
+        let o = parse_sse_stream_options(Some("from=tail"));
+        assert_eq!(o.from, SseStreamFrom::Tail);
+        assert_eq!(o.batch_size, 1);
+
+        let o = parse_sse_stream_options(Some("from=begin&batch=1"));
+        assert_eq!(o.from, SseStreamFrom::Begin);
+        assert_eq!(o.batch_size, 200);
+
+        let o = parse_sse_stream_options(Some("from=begin&batch=0"));
+        assert_eq!(o.from, SseStreamFrom::Begin);
+        assert_eq!(o.batch_size, 1);
+
+        let o = parse_sse_stream_options(Some("from=begin&batch_size=10"));
+        assert_eq!(o.batch_size, 10);
+
+        let o = parse_sse_stream_options(Some("from=begin&batch_size=99999"));
+        assert_eq!(o.batch_size, 1000);
+    }
+
+    #[test]
+    fn test_split_sse_events_text() {
+        let input = "data: a\n\ndata: b\n\n";
+        let out = split_sse_events_text(input);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].contains("data: a"));
+        assert!(out[1].contains("data: b"));
+    }
+
+    #[test]
+    fn test_incremental_parser_boundary_and_finish() {
+        let mut p = SseIncrementalParser::new();
+        let mut out = Vec::new();
+        p.push_bytes(b"data: a\n\n", &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].contains("data: a"));
+        let mut out2 = Vec::new();
+        p.push_bytes(b"data: b\n", &mut out2);
+        assert!(out2.is_empty());
+        let tail = p.finish().unwrap();
+        assert!(tail.contains("data: b"));
+    }
 }
 
 async fn query_traffic(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

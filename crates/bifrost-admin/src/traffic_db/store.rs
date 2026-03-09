@@ -180,11 +180,6 @@ impl TrafficDbStore {
 
         let _ = self.tx.send(record.clone());
 
-        {
-            let mut cache = self.recent_cache.write();
-            cache.put(record.id.clone(), record.clone());
-        }
-
         let conn = self.write_conn.lock();
         let flags = encode_flags(&record);
 
@@ -276,6 +271,9 @@ impl TrafficDbStore {
 
         if let Err(e) = result {
             tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
+        } else if Self::should_keep_in_cache(&record) {
+            let mut cache = self.recent_cache.write();
+            cache.put(record.id.clone(), record.clone());
         }
 
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
@@ -288,11 +286,21 @@ impl TrafficDbStore {
     where
         F: FnOnce(&mut TrafficRecord),
     {
+        let mut updater = Some(updater);
         {
             let mut cache = self.recent_cache.write();
-            if let Some(record) = cache.get_mut(id) {
-                updater(record);
-                let updated = record.clone();
+            let updated = if let Some(record) = cache.get_mut(id) {
+                if let Some(updater) = updater.take() {
+                    updater(record);
+                }
+                Some(record.clone())
+            } else {
+                None
+            };
+            if let Some(updated) = updated {
+                if !Self::should_keep_in_cache(&updated) {
+                    cache.pop(id);
+                }
                 drop(cache);
                 self.persist_update(&updated);
                 let _ = self.tx.send(updated);
@@ -301,17 +309,33 @@ impl TrafficDbStore {
         }
 
         if let Some(mut record) = self.get_by_id_from_db(id) {
-            updater(&mut record);
+            if let Some(updater) = updater.take() {
+                updater(&mut record);
+            }
             self.persist_update(&record);
             {
                 let mut cache = self.recent_cache.write();
-                cache.put(record.id.clone(), record.clone());
+                if Self::should_keep_in_cache(&record) {
+                    cache.put(record.id.clone(), record.clone());
+                } else {
+                    cache.pop(&record.id);
+                }
             }
             let _ = self.tx.send(record);
             return true;
         }
 
         false
+    }
+
+    fn should_keep_in_cache(record: &TrafficRecord) -> bool {
+        if record.status == 0 {
+            return true;
+        }
+        if record.is_websocket || record.is_sse || record.is_tunnel {
+            return true;
+        }
+        record.socket_status.as_ref().is_some_and(|s| s.is_open)
     }
 
     fn persist_update(&self, record: &TrafficRecord) {
@@ -521,8 +545,8 @@ impl TrafficDbStore {
 
     pub fn get_by_id(&self, id: &str) -> Option<TrafficRecord> {
         {
-            let cache = self.recent_cache.read();
-            if let Some(record) = cache.peek(id) {
+            let mut cache = self.recent_cache.write();
+            if let Some(record) = cache.get(id) {
                 return Some(record.clone());
             }
         }

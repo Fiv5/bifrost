@@ -31,6 +31,7 @@ import type {
   SessionTargetSearchState,
 } from "../../../../types";
 import { apiFetch } from "../../../../api/apiFetch";
+import { getResponseBody } from "../../../../api/traffic";
 import { getClientId } from "../../../../services/clientId";
 import { SseMessageList } from "./SseMessageList";
 import {
@@ -44,6 +45,8 @@ hljs.registerLanguage("json", json);
 hljs.registerLanguage("plaintext", plaintext);
 
 const { Text } = Typography;
+
+const MAX_SSE_EVENTS = 20_000;
 
 interface MessagesProps {
   recordId: string;
@@ -104,6 +107,8 @@ const WsMessageList = ({
 }: WsMessageListProps) => {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const scrollButtonStyles = useMemo(
     () => ({
       scrollButton: {
@@ -175,6 +180,20 @@ const WsMessageList = ({
     if (frames.length === 0) return;
     rowVirtualizer.scrollToIndex(frames.length - 1, { align: "end" });
   }, [frames.length, rowVirtualizer]);
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 8;
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setIsAtTop(el.scrollTop <= threshold);
+      setIsAtBottom(distanceToBottom <= threshold);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [frames.length]);
 
   if (frames.length === 0) {
     return (
@@ -295,26 +314,30 @@ const WsMessageList = ({
           })}
         </div>
       </div>
-        <div
-          style={{
-            ...scrollButtonStyles.scrollButton,
-            ...scrollButtonStyles.scrollToTopButton,
-          }}
-          onClick={handleScrollToTop}
-          data-testid="ws-scroll-top"
-        >
-          <ArrowUpOutlined style={{ fontSize: 14 }} />
-        </div>
-        <div
-          style={{
-            ...scrollButtonStyles.scrollButton,
-            ...scrollButtonStyles.scrollToBottomButton,
-          }}
-          onClick={handleScrollToBottom}
-          data-testid="ws-scroll-bottom"
-        >
-          <ArrowDownOutlined style={{ fontSize: 14 }} />
-        </div>
+        {!isAtTop && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToTopButton,
+            }}
+            onClick={handleScrollToTop}
+            data-testid="ws-scroll-top"
+          >
+            <ArrowUpOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
+        {!isAtBottom && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToBottomButton,
+            }}
+            onClick={handleScrollToBottom}
+            data-testid="ws-scroll-bottom"
+          >
+            <ArrowDownOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -422,6 +445,7 @@ export const Messages = ({
   const ssePendingRef = useRef<SSEEvent[]>([]);
   const sseFlushRef = useRef<number | null>(null);
   const sseClosedByUsRef = useRef(false);
+  const [sseForceClosed, setSseForceClosed] = useState(false);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
   );
@@ -528,6 +552,7 @@ export const Messages = ({
     ssePendingRef.current = [];
     setSseConnectionState("idle");
     setSseLoading(false);
+    setSseForceClosed(false);
   }, [recordId]);
 
   useEffect(() => {
@@ -575,11 +600,11 @@ export const Messages = ({
   }, [isConnectionOpen, isWebSocket, recordId]);
 
   useEffect(() => {
-    if (isWebSocket || !isConnectionOpen) {
+    if (isWebSocket || !isConnectionOpen || sseForceClosed) {
       return;
     }
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
+      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
     sseClosedByUsRef.current = false;
@@ -590,16 +615,31 @@ export const Messages = ({
     setSseEvents([]);
 
     const flushPending = () => {
-      const batch = ssePendingRef.current;
+      const pending = ssePendingRef.current;
       ssePendingRef.current = [];
       sseFlushRef.current = null;
-      if (batch.length > 0) {
-        setSseEvents((prev) => prev.concat(batch));
+      if (pending.length > 0) {
+        setSseEvents((prev) => {
+          const next = prev.concat(pending);
+          if (next.length <= MAX_SSE_EVENTS) return next;
+          return next.slice(next.length - MAX_SSE_EVENTS);
+        });
       }
     };
 
     const enqueueEvent = (ev: SSEEvent) => {
       ssePendingRef.current.push(ev);
+      if (sseFlushRef.current === null) {
+        sseFlushRef.current = requestAnimationFrame(flushPending);
+      }
+    };
+
+    const enqueueEvents = (events: SSEEvent[]) => {
+      if (events.length === 0) return;
+      const pending = ssePendingRef.current;
+      for (let i = 0; i < events.length; i++) {
+        pending.push(events[i]);
+      }
       if (sseFlushRef.current === null) {
         sseFlushRef.current = requestAnimationFrame(flushPending);
       }
@@ -612,31 +652,62 @@ export const Messages = ({
 
     eventSource.onmessage = (event) => {
       try {
-        const payload = JSON.parse(event.data) as {
-          seq?: number;
-          ts?: number;
-          id?: string;
-          event?: string;
-          data?: string;
-          raw?: string | null;
-        };
-        const seq = payload.seq ?? 0;
+        const payload = JSON.parse(event.data) as unknown;
+        if (!payload || typeof payload !== "object") return;
+        const payloadObj = payload as Record<string, unknown>;
+
+        if (payloadObj.batch && Array.isArray(payloadObj.events)) {
+          const batch = payloadObj.events as Array<Record<string, unknown>>;
+          const parsed: SSEEvent[] = [];
+          const raws: string[] = [];
+          let maxSeq = lastSseSeqRef.current;
+          for (let i = 0; i < batch.length; i++) {
+            const e = batch[i];
+            const seq = typeof e.seq === "number" ? e.seq : 0;
+            if (seq > 0 && seq <= lastSseSeqRef.current) {
+              continue;
+            }
+            if (seq > 0) {
+              maxSeq = Math.max(maxSeq, seq);
+            }
+            const ts = typeof e.ts === "number" ? e.ts : Date.now();
+            parsed.push({
+              id: typeof e.id === "string" ? e.id : String(seq || ts),
+              event: typeof e.event === "string" ? e.event : "message",
+              data: typeof e.data === "string" ? e.data : "",
+              timestamp: ts,
+            });
+            if (typeof e.raw === "string") {
+              const raw = e.raw.replace(/\n+$/, "");
+              if (raw.length > 0) raws.push(raw);
+            }
+          }
+          if (maxSeq > lastSseSeqRef.current) {
+            lastSseSeqRef.current = maxSeq;
+          }
+          enqueueEvents(parsed);
+          if (raws.length > 0) {
+            appendSseResponseBody(recordId, raws.join("\n\n"));
+          }
+          return;
+        }
+
+        const seq = typeof payloadObj.seq === "number" ? payloadObj.seq : 0;
         if (seq > 0 && seq <= lastSseSeqRef.current) {
           return;
         }
         if (seq > 0) {
           lastSseSeqRef.current = seq;
         }
-        const ts = payload.ts ?? Date.now();
-        const ev: SSEEvent = {
-          id: payload.id ?? String(seq || ts),
-          event: payload.event ?? "message",
-          data: payload.data ?? "",
+        const ts = typeof payloadObj.ts === "number" ? payloadObj.ts : Date.now();
+        enqueueEvent({
+          id: typeof payloadObj.id === "string" ? payloadObj.id : String(seq || ts),
+          event: typeof payloadObj.event === "string" ? payloadObj.event : "message",
+          data: typeof payloadObj.data === "string" ? payloadObj.data : "",
           timestamp: ts,
-        };
-        enqueueEvent(ev);
-        if (payload.raw) {
-          const raw = payload.raw.replace(/\n+$/, "");
+        });
+        if (typeof payloadObj.raw === "string") {
+          const raw = payloadObj.raw.replace(/\n+$/, "");
           if (raw.length > 0) {
             appendSseResponseBody(recordId, raw);
           }
@@ -647,10 +718,15 @@ export const Messages = ({
     };
 
     eventSource.onerror = () => {
+      if (sseClosedByUsRef.current) return;
       eventSource.close();
       sseEventSourceRef.current = null;
       setSseConnectionState("closed");
       setSseLoading(false);
+      setSseForceClosed(true);
+      getResponseBody(recordId)
+        .then((body) => setResponseBody(recordId, body))
+        .catch(() => {});
     };
 
     return () => {
@@ -667,10 +743,11 @@ export const Messages = ({
     recordId,
     setResponseBody,
     sseReloadToken,
+    sseForceClosed,
   ]);
 
   useEffect(() => {
-    if (isWebSocket || isConnectionOpen) {
+    if (isWebSocket || (isConnectionOpen && !sseForceClosed)) {
       return;
     }
     if (responseBody === null) {
@@ -707,7 +784,11 @@ export const Messages = ({
         processed += 1;
       }
       if (batch.length > 0) {
-        setSseEvents((prev) => prev.concat(batch));
+        setSseEvents((prev) => {
+          const next = prev.concat(batch);
+          if (next.length <= MAX_SSE_EVENTS) return next;
+          return next.slice(next.length - MAX_SSE_EVENTS);
+        });
       }
       if (index < normalized.length) {
         setTimeout(run, 0);
@@ -722,7 +803,7 @@ export const Messages = ({
         sseParseTokenRef.current += 1;
       }
     };
-  }, [isConnectionOpen, isWebSocket, responseBody]);
+  }, [isConnectionOpen, isWebSocket, responseBody, sseForceClosed]);
 
   useEffect(() => {
     onSseCountChange?.(sseEvents.length);
@@ -928,7 +1009,10 @@ export const Messages = ({
           }}
           onSearchModeChange={setSseSearchMode}
           onLoadMore={() => {}}
-          onRefresh={() => setSseReloadToken((n) => n + 1)}
+          onRefresh={() => {
+            setSseForceClosed(false);
+            setSseReloadToken((n) => n + 1);
+          }}
           onFullscreenOpen={() => setSseFullscreenOpen(true)}
           connectionState={sseConnectionState}
           externalNext={searchValue.next}
@@ -967,7 +1051,10 @@ export const Messages = ({
             }}
             onSearchModeChange={setSseSearchMode}
             onLoadMore={() => {}}
-            onRefresh={() => setSseReloadToken((n) => n + 1)}
+          onRefresh={() => {
+            setSseForceClosed(false);
+            setSseReloadToken((n) => n + 1);
+          }}
             connectionState={sseConnectionState}
             externalNext={searchValue.next}
             onMatchCountChange={(total) => {

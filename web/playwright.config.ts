@@ -11,14 +11,14 @@ export default defineConfig({
     timeout: 15000,
   },
   use: {
-    baseURL: `http://127.0.0.1:${webPort}`,
+    baseURL: `http://localhost:${webPort}`,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
   },
   webServer: {
     command: `pnpm dev -- --host 127.0.0.1 --port ${webPort}`,
-    url: `http://127.0.0.1:${webPort}/_bifrost/`,
+    url: `http://localhost:${webPort}/_bifrost/`,
     reuseExistingServer: true,
     cwd: webRoot,
     timeout: 120000,

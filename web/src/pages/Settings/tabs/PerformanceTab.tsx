@@ -202,9 +202,12 @@ export default function PerformanceTab({
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>Max Body Probe Size</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      For non-text or suspected large bodies, only pre-read up to
-                      this size; if exceeded, body processing is skipped and the
-                      body is forwarded as a stream.
+                      Default 64 KB. For non-text or suspected large bodies,
+                      only pre-read up to this size; if exceeded, body
+                      processing (rules/scripts) is skipped and the body is
+                      forwarded as a stream. Lower values reduce memory/CPU but
+                      may skip more body-based processing; higher values improve
+                      processing coverage at higher cost.
                     </Text>
                     <Slider
                       min={0}

@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect } from 'react';
+import { useRef, useCallback } from 'react';
 import { useVirtualizer, type Virtualizer, type VirtualItem } from '@tanstack/react-virtual';
 import type { MessageItem } from './types';
 

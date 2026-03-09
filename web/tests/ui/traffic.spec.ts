@@ -35,7 +35,7 @@ const startMockServer = async () => {
 const startSseServer = async () => {
   const server = createServer((req, res) => {
     const url = req.url || "";
-    if (!url.startsWith("/sse")) {
+    if (!url.startsWith("/sse-test")) {
       res.statusCode = 404;
       res.end();
       return;
@@ -45,8 +45,23 @@ const startSseServer = async () => {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    res.write(`id: 1\ndata: alpha\n\n`);
-    res.write(`id: 2\ndata: beta\n\n`);
+    for (let i = 1; i <= 40; i += 1) {
+      if (i === 20) {
+        res.write(
+          `id: ${i}\ndata: {"type":"target-long","a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11}\n\n`,
+        );
+        continue;
+      }
+      if (i === 1) {
+        res.write(`id: ${i}\ndata: alpha\n\n`);
+        continue;
+      }
+      if (i === 2) {
+        res.write(`id: ${i}\ndata: beta\n\n`);
+        continue;
+      }
+      res.write(`id: ${i}\ndata: event-${i}\n\n`);
+    }
     res.end();
   });
 
@@ -358,17 +373,28 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startSseServer();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const ssePath = `/sse?token=${token}`;
+  const ssePath = `/sse-test?token=${token}`;
 
   await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
 
   await page.goto("/_bifrost/traffic");
   await expect(page.getByTestId("traffic-table")).toBeVisible();
 
-  const sseRow = page
-    .getByTestId("traffic-row")
-    .filter({ hasText: "/sse" })
-    .last();
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
   await expect(sseRow).toHaveAttribute(
     "data-response-size",
     expect.stringMatching(/^[1-9]\d*$/),
@@ -380,6 +406,103 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await expect(page.getByTestId("sse-message-count")).toContainText("events");
   await expect(page.getByTestId("sse-message-list")).toContainText("alpha");
   await expect(page.getByTestId("sse-message-list")).toContainText("beta");
+
+  await server.close();
+});
+
+test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startSseServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-test?token=${token}`;
+
+  await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
+  await sseRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  const container = page.getByTestId("sse-message-container");
+  await expect(container).toBeVisible();
+
+  const search = container.getByPlaceholder("Search events...");
+  await search.fill("target-long");
+
+  const expandedCard = container
+    .getByTestId("sse-event-card")
+    .filter({ hasText: "target-long" })
+    .first();
+
+  await expect(expandedCard).toBeVisible();
+  const beforeBox = await expandedCard.boundingBox();
+  expect(beforeBox).not.toBeNull();
+
+  await expandedCard.getByTestId("sse-event-toggle").click();
+
+  await expect
+    .poll(async () => (await expandedCard.boundingBox())?.height || 0)
+    .toBeGreaterThan((beforeBox?.height || 0) + 10);
+
+  const cards = container.getByTestId("sse-event-card");
+  const cardCount = await cards.count();
+  const boxes: Array<{ index: number; y: number; bottom: number }> = [];
+  for (let i = 0; i < cardCount; i += 1) {
+    const box = await cards.nth(i).boundingBox();
+    if (!box) continue;
+    boxes.push({ index: i, y: box.y, bottom: box.y + box.height });
+  }
+  boxes.sort((a, b) => a.y - b.y);
+
+  const expandedBox = await expandedCard.boundingBox();
+  expect(expandedBox).not.toBeNull();
+  const expandedBottom = (expandedBox?.y || 0) + (expandedBox?.height || 0);
+
+  const scroll = container.getByTestId("sse-message-scroll");
+  let next: { index: number; y: number; bottom: number } | undefined;
+  let currentExpandedBottom = expandedBottom;
+  for (let i = 0; i < 4; i += 1) {
+    const currentExpandedBox = await expandedCard.boundingBox();
+    expect(currentExpandedBox).not.toBeNull();
+    currentExpandedBottom =
+      (currentExpandedBox?.y || 0) + (currentExpandedBox?.height || 0);
+
+    boxes.length = 0;
+    const count = await cards.count();
+    for (let j = 0; j < count; j += 1) {
+      const box = await cards.nth(j).boundingBox();
+      if (!box) continue;
+      boxes.push({ index: j, y: box.y, bottom: box.y + box.height });
+    }
+    boxes.sort((a, b) => a.y - b.y);
+
+    next = boxes.find((b) => b.y > currentExpandedBottom);
+    if (next) break;
+
+    await scroll.evaluate((el) => {
+      el.scrollTop += 320;
+    });
+    await page.waitForTimeout(60);
+  }
+
+  expect(next).toBeTruthy();
+  expect((next?.y || 0) - currentExpandedBottom).toBeGreaterThanOrEqual(6);
 
   await server.close();
 });

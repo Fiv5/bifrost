@@ -442,11 +442,10 @@ export default function Traffic() {
   }, [currentRecord?.id, fetchTrafficDetail, selectedId]);
 
   const handleSelect = useCallback(
-    async (record: TrafficSummary) => {
+    (record: TrafficSummary) => {
       setSelectedId(record.id);
-      await fetchTrafficDetail(record.id);
     },
-    [fetchTrafficDetail, setSelectedId],
+    [setSelectedId],
   );
 
   const handleClearAll = useCallback(async () => {
@@ -473,19 +472,13 @@ export default function Traffic() {
   }, [filterPanelCollapsed, setFilterPanelCollapsed]);
 
   const handleDoubleClick = useCallback(
-    async (record: TrafficSummary) => {
+    (record: TrafficSummary) => {
       setSelectedId(record.id);
-      await fetchTrafficDetail(record.id);
       if (detailPanelCollapsed) {
         setDetailPanelCollapsed(false);
       }
     },
-    [
-      fetchTrafficDetail,
-      detailPanelCollapsed,
-      setDetailPanelCollapsed,
-      setSelectedId,
-    ],
+    [detailPanelCollapsed, setDetailPanelCollapsed, setSelectedId],
   );
 
   const handleScrollPositionChange = useCallback(

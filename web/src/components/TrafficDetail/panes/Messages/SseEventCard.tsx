@@ -134,12 +134,13 @@ export const SseEventCard = ({
 
   return (
     <div
+      data-testid="sse-event-card"
+      data-event-id={eventData.id ? String(eventData.id) : undefined}
       style={{
         borderRadius: 6,
         border: `1px solid ${token.colorBorderSecondary}`,
         backgroundColor: token.colorBgContainer,
         overflow: 'hidden',
-        marginBottom: 8,
       }}
     >
       <div
@@ -207,6 +208,7 @@ export const SseEventCard = ({
                 size="small"
                 icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
                 onClick={onToggle}
+                data-testid="sse-event-toggle"
                 style={{ width: 24, height: 24 }}
               />
             </Tooltip>

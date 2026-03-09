@@ -406,6 +406,9 @@ impl TrafficRecorder {
         let _ = self.tx.send(record.clone());
 
         let max = self.max_records.load(Ordering::Relaxed);
+        if max == 0 {
+            return;
+        }
         let mut records = self.records.write();
         if records.len() >= max {
             records.pop_front();
@@ -770,6 +773,19 @@ mod tests {
         assert!(recorder.get_by_id("0").is_none());
         assert!(recorder.get_by_id("1").is_none());
         assert!(recorder.get_by_id("2").is_some());
+    }
+
+    #[test]
+    fn test_traffic_recorder_zero_max_records() {
+        let recorder = TrafficRecorder::new(0);
+        let record = TrafficRecord::new(
+            "1".to_string(),
+            "GET".to_string(),
+            "https://example.com".to_string(),
+        );
+        recorder.record(record);
+        assert_eq!(recorder.count(), 0);
+        assert!(recorder.get_by_id("1").is_none());
     }
 
     #[test]

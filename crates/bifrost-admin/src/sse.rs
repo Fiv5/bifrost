@@ -1,17 +1,10 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 use crate::traffic::SocketStatus;
-
-const BROADCAST_CHANNEL_SIZE: usize = 1024;
-const DEFAULT_RING_CAPACITY: usize = 2048;
-const DEFAULT_MAX_EVENT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseEvent {
@@ -31,53 +24,25 @@ pub struct SseEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct SseEventEnvelope {
-    pub connection_id: String,
-    pub event: SseEvent,
-}
-
-#[derive(Debug)]
 struct SseConnectionState {
     is_open: bool,
     receive_bytes: u64,
     receive_count: u64,
-    seq: u64,
-    tx: broadcast::Sender<SseEventEnvelope>,
-    recent: VecDeque<SseEvent>,
-    recent_capacity: usize,
 }
 
 impl SseConnectionState {
-    fn new(recent_capacity: usize) -> Self {
-        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+    fn new() -> Self {
         Self {
             is_open: true,
             receive_bytes: 0,
             receive_count: 0,
-            seq: 0,
-            tx,
-            recent: VecDeque::with_capacity(recent_capacity.min(32)),
-            recent_capacity,
         }
-    }
-
-    fn next_seq(&mut self) -> u64 {
-        self.seq += 1;
-        self.seq
-    }
-
-    fn push_recent(&mut self, event: SseEvent) {
-        if self.recent.len() >= self.recent_capacity {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(event);
     }
 }
 
 #[derive(Debug)]
 pub struct SseHub {
     connections: RwLock<HashMap<String, SseConnectionState>>,
-    max_event_bytes: AtomicUsize,
 }
 
 impl SseHub {
@@ -85,16 +50,11 @@ impl SseHub {
         Arc::new(Self::default())
     }
 
-    pub fn set_max_event_bytes(&self, max_event_bytes: usize) {
-        self.max_event_bytes
-            .store(max_event_bytes, Ordering::SeqCst);
-    }
-
     pub fn register(&self, connection_id: &str) {
         let mut connections = self.connections.write();
         connections
             .entry(connection_id.to_string())
-            .or_insert_with(|| SseConnectionState::new(DEFAULT_RING_CAPACITY));
+            .or_insert_with(SseConnectionState::new);
     }
 
     pub fn set_closed(&self, connection_id: &str) {
@@ -112,6 +72,13 @@ impl SseHub {
         let mut connections = self.connections.write();
         if let Some(state) = connections.get_mut(connection_id) {
             state.receive_bytes = state.receive_bytes.saturating_add(bytes as u64);
+        }
+    }
+
+    pub fn add_receive_event(&self, connection_id: &str) {
+        let mut connections = self.connections.write();
+        if let Some(state) = connections.get_mut(connection_id) {
+            state.receive_count = state.receive_count.saturating_add(1);
         }
     }
 
@@ -136,72 +103,14 @@ impl SseHub {
             close_reason: None,
         })
     }
-
-    pub fn subscribe(&self, connection_id: &str) -> Option<broadcast::Receiver<SseEventEnvelope>> {
-        let connections = self.connections.read();
-        connections.get(connection_id).map(|s| s.tx.subscribe())
-    }
-
-    pub fn get_events_since(&self, connection_id: &str, last_seq: u64) -> Vec<SseEvent> {
-        let connections = self.connections.read();
-        let Some(state) = connections.get(connection_id) else {
-            return Vec::new();
-        };
-        state
-            .recent
-            .iter()
-            .filter(|e| e.seq > last_seq)
-            .cloned()
-            .collect()
-    }
-
-    pub fn publish_raw_event(&self, connection_id: &str, raw_event: &[u8]) -> Option<SseEvent> {
-        let max_event_bytes = self.max_event_bytes.load(Ordering::Relaxed);
-        let truncated = max_event_bytes > 0 && raw_event.len() > max_event_bytes;
-        let raw_slice = if max_event_bytes == 0 {
-            raw_event
-        } else if truncated {
-            &raw_event[..max_event_bytes]
-        } else {
-            raw_event
-        };
-        let raw = String::from_utf8_lossy(raw_slice).to_string();
-        let mut connections = self.connections.write();
-        let state = connections.get_mut(connection_id)?;
-        if !state.is_open {
-            return None;
-        }
-
-        let seq = state.next_seq();
-        state.receive_count = state.receive_count.saturating_add(1);
-        let ts = now_ms();
-        let mut event = parse_sse_event_with_error(&raw, truncated);
-        event.seq = seq;
-        event.ts = ts;
-        let envelope = SseEventEnvelope {
-            connection_id: connection_id.to_string(),
-            event: event.clone(),
-        };
-        let _ = state.tx.send(envelope);
-        state.push_recent(event.clone());
-        Some(event)
-    }
 }
 
 impl Default for SseHub {
     fn default() -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
-            max_event_bytes: AtomicUsize::new(DEFAULT_MAX_EVENT_BYTES),
         }
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 pub fn parse_sse_event(raw: &str) -> SseEvent {
@@ -262,7 +171,11 @@ fn parse_sse_event_with_error(raw: &str, parse_error: bool) -> SseEvent {
         event,
         retry,
         data,
-        raw: Some(raw.to_string()),
+        raw: if parse_error {
+            Some(raw.to_string())
+        } else {
+            None
+        },
         parse_error,
     }
 }

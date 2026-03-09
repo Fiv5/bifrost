@@ -616,6 +616,7 @@ pub fn run_foreground(
         };
 
         let admin_state = AdminState::new(config.port)
+            .with_traffic_recorder(bifrost_admin::TrafficRecorder::new(0))
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
             .with_traffic_db_store_shared(traffic_db_store.clone())
@@ -807,15 +808,6 @@ pub fn run_daemon(
                 }
             });
 
-            let pid = std::process::id();
-            let runtime_info = RuntimeInfo {
-                pid,
-                port: config.port,
-                socks5_port: config.socks5_port,
-                host: Some(config.host.clone()),
-            };
-            write_runtime_info(&runtime_info)?;
-
             let tls_config = load_tls_config(&config)?;
 
             let bind_addr = format!("{}:{}", config.host, config.port);
@@ -886,6 +878,17 @@ pub fn run_daemon(
             })?;
 
             rt.block_on(async {
+                let pid = std::process::id();
+                let runtime_info = RuntimeInfo {
+                    pid,
+                    port: config.port,
+                    socks5_port: config.socks5_port,
+                    host: Some(config.host.clone()),
+                };
+                write_runtime_info(&runtime_info).expect("Failed to write runtime info");
+                let shutdown = tokio::spawn(wait_for_shutdown_signal());
+                tokio::task::yield_now().await;
+
                 let stored_config = config_manager.config().await;
                 let body_temp_dir = bifrost_dir.join("body_cache");
                 let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
@@ -971,6 +974,7 @@ pub fn run_daemon(
                 };
 
                 let admin_state = AdminState::new(config.port)
+                    .with_traffic_recorder(bifrost_admin::TrafficRecorder::new(0))
                     .with_body_store(body_store)
                     .with_ws_payload_store(ws_payload_store)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
@@ -1053,7 +1057,7 @@ pub fn run_daemon(
                             eprintln!("Server error: {}", e);
                         }
                     }
-                    _ = wait_for_shutdown_signal() => {
+                    _ = shutdown => {
                         tracing::info!("Received shutdown signal");
                         eprintln!("Received shutdown signal");
                     }

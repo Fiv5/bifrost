@@ -157,6 +157,8 @@ const mergeSseBody = (prev: string | null, payload: string): string => {
   return `${prev}\n\n${trimmed}`;
 };
 
+const SSE_RESPONSE_BODY_CHAR_LIMIT = 2_000_000;
+
 const getDisplaySizeBytes = (record: TrafficSummary | undefined): number => {
   if (!record) return 0;
   if (record.socket_status && (record.response_size === 0 || record.socket_status.is_open)) {
@@ -1041,7 +1043,13 @@ export const useTrafficStore = create<TrafficState>()(
         set((state) => {
           if (!payload) return {};
           if (state.currentRecord?.id !== recordId) return {};
-          return { responseBody: mergeSseBody(state.responseBody, payload) };
+          const prev = state.responseBody || '';
+          if (prev.length >= SSE_RESPONSE_BODY_CHAR_LIMIT) return {};
+          let next = mergeSseBody(prev, payload);
+          if (next.length > SSE_RESPONSE_BODY_CHAR_LIMIT) {
+            next = `${next.slice(0, SSE_RESPONSE_BODY_CHAR_LIMIT)}\n\n... (truncated)`;
+          }
+          return { responseBody: next };
         });
       },
 

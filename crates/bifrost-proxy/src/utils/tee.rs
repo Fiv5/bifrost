@@ -396,7 +396,7 @@ pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
     prev_byte: Option<u8>,
-    event_buffer: Vec<u8>,
+    event_size: usize,
     max_buffer_size: usize,
     overflowed: bool,
 }
@@ -425,7 +425,7 @@ impl SseTeeBody {
                 file_writer,
             },
             prev_byte: None,
-            event_buffer: Vec::new(),
+            event_size: 0,
             max_buffer_size,
             overflowed: false,
         }
@@ -435,33 +435,16 @@ impl SseTeeBody {
         BodyExt::boxed(self)
     }
 
-    fn record_event(&mut self) {
-        if self.event_buffer.is_empty() {
-            return;
-        }
-        if let Some(ref state) = self.guard.admin_state {
-            let event_bytes = std::mem::take(&mut self.event_buffer);
-            state
-                .sse_hub
-                .publish_raw_event(&self.guard.record_id, &event_bytes);
-        }
-    }
-
     fn process_sse_chunk(&mut self, data: &[u8]) {
         for &byte in data {
             if self.prev_byte == Some(b'\n') && byte == b'\n' {
-                if self.overflowed {
-                    self.event_buffer.clear();
-                    self.overflowed = false;
-                    self.prev_byte = Some(byte);
-                    continue;
-                }
-                if let Some(&last) = self.event_buffer.last() {
-                    if last == b'\n' {
-                        self.event_buffer.pop();
+                if self.event_size > 0 {
+                    if let Some(ref state) = self.guard.admin_state {
+                        state.sse_hub.add_receive_event(&self.guard.record_id);
                     }
                 }
-                self.record_event();
+                self.event_size = 0;
+                self.overflowed = false;
                 self.prev_byte = Some(byte);
                 continue;
             }
@@ -469,19 +452,10 @@ impl SseTeeBody {
                 self.prev_byte = Some(byte);
                 continue;
             }
-            if self.max_buffer_size > 0 && self.event_buffer.len() + 1 > self.max_buffer_size {
-                let mut event_bytes = std::mem::take(&mut self.event_buffer);
-                event_bytes.push(byte);
-                if let Some(ref state) = self.guard.admin_state {
-                    state
-                        .sse_hub
-                        .publish_raw_event(&self.guard.record_id, &event_bytes);
-                }
+            self.event_size = self.event_size.saturating_add(1);
+            if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
                 self.overflowed = true;
-                self.prev_byte = Some(byte);
-                continue;
             }
-            self.event_buffer.push(byte);
             self.prev_byte = Some(byte);
         }
     }
@@ -529,7 +503,6 @@ impl Body for SseTeeBody {
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
-                self.record_event();
                 self.guard.store_body_and_update_record();
                 Poll::Ready(None)
             }

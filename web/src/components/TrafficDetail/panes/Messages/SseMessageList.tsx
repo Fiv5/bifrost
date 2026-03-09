@@ -55,6 +55,8 @@ export const SseMessageList = ({
   const [currentMatch, setCurrentMatch] = useState<number>(-1);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
   const scrollButtonStyles = useMemo(
     () => ({
       scrollButton: {
@@ -107,9 +109,21 @@ export const SseMessageList = ({
     return indices;
   }, [displayEvents, normalizedQuery]);
 
+  const getEventKey = useCallback((event: SSEEvent, index: number) => {
+    if (event.id) return String(event.id);
+    return `sse-${event.timestamp}-${index}`;
+  }, []);
+
+  const getItemKey = useCallback((index: number) => {
+    const event = displayEvents[index];
+    if (!event) return String(index);
+    return getEventKey(event, index);
+  }, [displayEvents, getEventKey]);
+
   const rowVirtualizer = useVirtualizer({
     count: displayEvents.length,
     getScrollElement: () => parentRef.current,
+    getItemKey,
     estimateSize: () => 160,
     overscan: 6,
   });
@@ -123,6 +137,20 @@ export const SseMessageList = ({
     if (displayEvents.length === 0) return;
     rowVirtualizer.scrollToIndex(displayEvents.length - 1, { align: "end" });
   }, [displayEvents.length, rowVirtualizer]);
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 8;
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setIsAtTop(el.scrollTop <= threshold);
+      setIsAtBottom(distanceToBottom <= threshold);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [displayEvents.length]);
 
 
   useEffect(() => {
@@ -189,11 +217,6 @@ export const SseMessageList = ({
   useEffect(() => {
     rowVirtualizer.measure();
   }, [expandedMap, rowVirtualizer]);
-
-  const getEventKey = useCallback((event: SSEEvent, index: number) => {
-    if (event.id) return String(event.id);
-    return `sse-${event.timestamp}-${index}`;
-  }, []);
 
   const toggleExpanded = useCallback((key: string) => {
     setExpandedMap((prev) => ({
@@ -342,6 +365,7 @@ export const SseMessageList = ({
         ) : (
           <div
             ref={parentRef}
+            data-testid="sse-message-scroll"
             style={{
               height: '100%',
               overflow: 'auto',
@@ -370,6 +394,7 @@ export const SseMessageList = ({
                       left: 0,
                       width: '100%',
                       transform: `translateY(${virtualRow.start}px)`,
+                      paddingBottom: 8,
                     }}
                   >
                     <SseEventCard
@@ -385,26 +410,30 @@ export const SseMessageList = ({
             </div>
           </div>
         )}
-        <div
-          style={{
-            ...scrollButtonStyles.scrollButton,
-            ...scrollButtonStyles.scrollToTopButton,
-          }}
-          onClick={handleScrollToTop}
-          data-testid="sse-scroll-top"
-        >
-          <ArrowUpOutlined style={{ fontSize: 14 }} />
-        </div>
-        <div
-          style={{
-            ...scrollButtonStyles.scrollButton,
-            ...scrollButtonStyles.scrollToBottomButton,
-          }}
-          onClick={handleScrollToBottom}
-          data-testid="sse-scroll-bottom"
-        >
-          <ArrowDownOutlined style={{ fontSize: 14 }} />
-        </div>
+        {!isAtTop && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToTopButton,
+            }}
+            onClick={handleScrollToTop}
+            data-testid="sse-scroll-top"
+          >
+            <ArrowUpOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
+        {!isAtBottom && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToBottomButton,
+            }}
+            onClick={handleScrollToBottom}
+            data-testid="sse-scroll-bottom"
+          >
+            <ArrowDownOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
       </div>
     </div>
   );
