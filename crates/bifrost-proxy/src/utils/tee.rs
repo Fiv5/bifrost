@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -6,6 +7,7 @@ use bifrost_admin::{AdminState, BodyRef, BodyStreamWriter, FrameDirection, Traff
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
+use tokio::time::Sleep;
 
 use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body;
@@ -399,6 +401,8 @@ pub struct SseTeeBody {
     event_size: usize,
     max_buffer_size: usize,
     overflowed: bool,
+    flush_interval: Option<std::time::Duration>,
+    flush_sleep: Option<Pin<Box<Sleep>>>,
 }
 
 impl SseTeeBody {
@@ -410,6 +414,12 @@ impl SseTeeBody {
         file_writer: Option<BodyStreamWriter>,
         max_buffer_size: usize,
     ) -> Self {
+        let flush_interval = file_writer
+            .as_ref()
+            .map(|w| w.flush_interval())
+            .filter(|d| !d.is_zero());
+        let flush_sleep = flush_interval.map(|d| Box::pin(tokio::time::sleep(d)));
+
         if let Some(ref state) = admin_state {
             state.sse_hub.register(&record_id);
         }
@@ -428,6 +438,8 @@ impl SseTeeBody {
             event_size: 0,
             max_buffer_size,
             overflowed: false,
+            flush_interval,
+            flush_sleep,
         }
     }
 
@@ -471,6 +483,19 @@ impl Body for SseTeeBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         if self.guard.finished {
             return Poll::Ready(None);
+        }
+
+        if let (Some(interval), Some(mut sleep_fut)) =
+            (self.flush_interval, self.flush_sleep.take())
+        {
+            if sleep_fut.as_mut().poll(cx).is_ready() {
+                if let Some(ref mut writer) = self.guard.file_writer {
+                    let _ = writer.flush_buffered();
+                }
+                self.flush_sleep = Some(Box::pin(tokio::time::sleep(interval)));
+            } else {
+                self.flush_sleep = Some(sleep_fut);
+            }
         }
 
         match Pin::new(&mut self.inner).poll_frame(cx) {

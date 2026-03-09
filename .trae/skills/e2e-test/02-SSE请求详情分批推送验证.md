@@ -6,7 +6,7 @@
 
 ```bash
 # 在项目根目录执行
-export BIFROST_DATA_DIR=./.bifrost-e2e-tmp
+export BIFROST_DATA_DIR=./.bifrost-e2e-test
 rm -rf "$BIFROST_DATA_DIR"
 
 # 快速启动：跳过前端构建；端口可自行调整

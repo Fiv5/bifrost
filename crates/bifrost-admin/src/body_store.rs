@@ -80,6 +80,14 @@ impl BodyStreamWriter {
         Ok(())
     }
 
+    pub fn flush_interval(&self) -> Duration {
+        self.flush_interval
+    }
+
+    pub fn flush_buffered(&mut self) -> std::io::Result<()> {
+        self.flush()
+    }
+
     fn flush(&mut self) -> std::io::Result<()> {
         if self.buffer.is_empty() {
             return Ok(());
