@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,6 +11,7 @@ use crate::traffic::SocketStatus;
 
 const BROADCAST_CHANNEL_SIZE: usize = 1024;
 const DEFAULT_RING_CAPACITY: usize = 2048;
+const DEFAULT_MAX_EVENT_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseEvent {
@@ -72,14 +74,20 @@ impl SseConnectionState {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SseHub {
     connections: RwLock<HashMap<String, SseConnectionState>>,
+    max_event_bytes: AtomicUsize,
 }
 
 impl SseHub {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    pub fn set_max_event_bytes(&self, max_event_bytes: usize) {
+        self.max_event_bytes
+            .store(max_event_bytes, Ordering::SeqCst);
     }
 
     pub fn register(&self, connection_id: &str) {
@@ -148,7 +156,16 @@ impl SseHub {
     }
 
     pub fn publish_raw_event(&self, connection_id: &str, raw_event: &[u8]) -> Option<SseEvent> {
-        let raw = String::from_utf8_lossy(raw_event).to_string();
+        let max_event_bytes = self.max_event_bytes.load(Ordering::Relaxed);
+        let truncated = max_event_bytes > 0 && raw_event.len() > max_event_bytes;
+        let raw_slice = if max_event_bytes == 0 {
+            &[]
+        } else if truncated {
+            &raw_event[..max_event_bytes]
+        } else {
+            raw_event
+        };
+        let raw = String::from_utf8_lossy(raw_slice).to_string();
         let mut connections = self.connections.write();
         let state = connections.get_mut(connection_id)?;
         if !state.is_open {
@@ -158,7 +175,7 @@ impl SseHub {
         let seq = state.next_seq();
         state.receive_count = state.receive_count.saturating_add(1);
         let ts = now_ms();
-        let mut event = parse_sse_event(&raw);
+        let mut event = parse_sse_event_with_error(&raw, truncated);
         event.seq = seq;
         event.ts = ts;
         let envelope = SseEventEnvelope {
@@ -171,6 +188,15 @@ impl SseHub {
     }
 }
 
+impl Default for SseHub {
+    fn default() -> Self {
+        Self {
+            connections: RwLock::new(HashMap::new()),
+            max_event_bytes: AtomicUsize::new(DEFAULT_MAX_EVENT_BYTES),
+        }
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -179,6 +205,10 @@ fn now_ms() -> u64 {
 }
 
 pub fn parse_sse_event(raw: &str) -> SseEvent {
+    parse_sse_event_with_error(raw, false)
+}
+
+fn parse_sse_event_with_error(raw: &str, parse_error: bool) -> SseEvent {
     let mut id: Option<String> = None;
     let mut event: Option<String> = None;
     let mut retry: Option<u64> = None;
@@ -233,33 +263,35 @@ pub fn parse_sse_event(raw: &str) -> SseEvent {
         retry,
         data,
         raw: Some(raw.to_string()),
-        parse_error: false,
+        parse_error,
     }
 }
 
 pub fn parse_sse_events_from_text(input: &str) -> (Vec<SseEvent>, String) {
-    let normalized = input.replace("\r\n", "\n");
     let mut events: Vec<SseEvent> = Vec::new();
-    let mut start = 0usize;
-    let bytes = normalized.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-            let chunk = &normalized[start..i];
-            let chunk = chunk.trim_end_matches('\n');
-            if !chunk.is_empty() {
-                events.push(parse_sse_event(chunk));
-            }
-            i += 2;
-            start = i;
+    let mut buffer = String::new();
+    let mut prev_nl = false;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' && matches!(chars.peek(), Some('\n')) {
             continue;
         }
-        i += 1;
+        if ch == '\n' {
+            if prev_nl {
+                let chunk = buffer.trim_end_matches('\n').to_string();
+                if !chunk.is_empty() {
+                    events.push(parse_sse_event(&chunk));
+                }
+                buffer.clear();
+                prev_nl = false;
+                continue;
+            }
+            buffer.push('\n');
+            prev_nl = true;
+            continue;
+        }
+        prev_nl = false;
+        buffer.push(ch);
     }
-    let remainder = if start < normalized.len() {
-        normalized[start..].to_string()
-    } else {
-        String::new()
-    };
-    (events, remainder)
+    (events, buffer)
 }

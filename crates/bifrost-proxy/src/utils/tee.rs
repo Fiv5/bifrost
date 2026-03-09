@@ -379,11 +379,15 @@ impl SseTeeBodyDropGuard {
     }
 }
 
+const DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES: usize = 256 * 1024;
+
 pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
     prev_byte: Option<u8>,
     event_buffer: Vec<u8>,
+    max_buffer_size: usize,
+    overflowed: bool,
 }
 
 impl SseTeeBody {
@@ -393,7 +397,7 @@ impl SseTeeBody {
         record_id: String,
         traffic_type: Option<TrafficType>,
         file_writer: Option<BodyStreamWriter>,
-        _max_buffer_size: usize,
+        max_buffer_size: usize,
     ) -> Self {
         if let Some(ref state) = admin_state {
             state.sse_hub.register(&record_id);
@@ -411,6 +415,8 @@ impl SseTeeBody {
             },
             prev_byte: None,
             event_buffer: Vec::new(),
+            max_buffer_size,
+            overflowed: false,
         }
     }
 
@@ -433,12 +439,34 @@ impl SseTeeBody {
     fn process_sse_chunk(&mut self, data: &[u8]) {
         for &byte in data {
             if self.prev_byte == Some(b'\n') && byte == b'\n' {
+                if self.overflowed {
+                    self.event_buffer.clear();
+                    self.overflowed = false;
+                    self.prev_byte = Some(byte);
+                    continue;
+                }
                 if let Some(&last) = self.event_buffer.last() {
                     if last == b'\n' {
                         self.event_buffer.pop();
                     }
                 }
                 self.record_event();
+                self.prev_byte = Some(byte);
+                continue;
+            }
+            if self.overflowed {
+                self.prev_byte = Some(byte);
+                continue;
+            }
+            if self.max_buffer_size > 0 && self.event_buffer.len() + 1 > self.max_buffer_size {
+                let mut event_bytes = std::mem::take(&mut self.event_buffer);
+                event_bytes.push(byte);
+                if let Some(ref state) = self.guard.admin_state {
+                    state
+                        .sse_hub
+                        .publish_raw_event(&self.guard.record_id, &event_bytes);
+                }
+                self.overflowed = true;
                 self.prev_byte = Some(byte);
                 continue;
             }
@@ -515,6 +543,7 @@ pub fn create_sse_tee_body(
     file_writer: Option<BodyStreamWriter>,
     max_buffer_size: usize,
 ) -> SseTeeBody {
+    let max_buffer_size = max_buffer_size.min(DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES);
     SseTeeBody::new(
         body,
         admin_state,

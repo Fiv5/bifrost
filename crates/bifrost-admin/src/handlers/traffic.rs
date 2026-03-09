@@ -244,7 +244,8 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         }
     };
 
-    let snapshot_text = load_body_snapshot_text(state.clone(), &body_ref).await;
+    let max_body_size = state.get_max_body_buffer_size();
+    let snapshot_text = load_body_snapshot_text(state.clone(), &body_ref, max_body_size).await;
     let (mut events, _) = parse_sse_events_from_text(&snapshot_text);
     for (idx, e) in events.iter_mut().enumerate() {
         e.seq = (idx as u64) + 1;
@@ -269,19 +270,11 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         _ => None,
     });
 
-    let mut out: Vec<String> = Vec::with_capacity(events.len() + backlog.len());
-    for e in events {
-        if let Ok(data) = serde_json::to_string(&e) {
-            out.push(format!("id: {}\ndata: {}\n\n", e.seq, data));
-        }
-    }
-    for e in backlog {
-        if let Ok(data) = serde_json::to_string(&e) {
-            out.push(format!("id: {}\ndata: {}\n\n", e.seq, data));
-        }
-    }
-
-    let history = futures_util::stream::iter(out);
+    let history = futures_util::stream::iter(events.into_iter().chain(backlog.into_iter()))
+        .filter_map(|e| {
+            let data = serde_json::to_string(&e).ok()?;
+            Some(format!("id: {}\ndata: {}\n\n", e.seq, data))
+        });
     let stream = history
         .chain(live)
         .map(|s| Ok::<_, hyper::Error>(hyper::body::Frame::data(bytes::Bytes::from(s))));
@@ -297,32 +290,55 @@ async fn subscribe_sse_stream(state: SharedAdminState, id: &str) -> Response<Box
         .unwrap()
 }
 
-async fn load_body_snapshot_text(state: SharedAdminState, body_ref: &BodyRef) -> String {
+async fn load_body_snapshot_text(
+    state: SharedAdminState,
+    body_ref: &BodyRef,
+    max_size: usize,
+) -> String {
     let Some(ref store) = state.body_store else {
         return String::new();
     };
     let store = store.clone();
     let body_ref = body_ref.clone();
     tokio::task::spawn_blocking(move || match body_ref {
-        BodyRef::Inline { data } => data,
+        BodyRef::Inline { data } => truncate_utf8(&data, max_size),
         BodyRef::File { path, .. } => {
             let len = std::fs::metadata(&path)
                 .map(|m| m.len() as usize)
                 .unwrap_or(0);
-            if len == 0 {
+            let size = len.min(max_size);
+            if size == 0 {
                 return String::new();
             }
             let range = BodyRef::FileRange {
                 path,
                 offset: 0,
-                size: len,
+                size,
             };
             store.read().load(&range).unwrap_or_default()
         }
-        BodyRef::FileRange { .. } => store.read().load(&body_ref).unwrap_or_default(),
+        BodyRef::FileRange { path, offset, size } => {
+            let size = size.min(max_size);
+            if size == 0 {
+                return String::new();
+            }
+            let range = BodyRef::FileRange { path, offset, size };
+            store.read().load(&range).unwrap_or_default()
+        }
     })
     .await
     .unwrap_or_default()
+}
+
+fn truncate_utf8(value: &str, max_size: usize) -> String {
+    if value.len() <= max_size {
+        return value.to_string();
+    }
+    let mut end = max_size;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 async fn query_traffic(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

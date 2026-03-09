@@ -7,7 +7,7 @@ use bifrost_core::{protocol::Protocol, BifrostError, Result};
 use bifrost_script::{MatchedRuleInfo, RequestData, ResponseData, ScriptContext, ScriptType};
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper::client::conn::http1::Builder as ClientBuilder;
 use hyper::header::HeaderValue;
 use hyper::http::response::Parts as ResponseParts;
@@ -39,24 +39,6 @@ use crate::utils::tee::{
 use crate::utils::throttle::wrap_throttled_body;
 use crate::utils::url::apply_url_rules;
 
-const STREAMING_CONTENT_TYPES: &[&str] = &[
-    "video/x-flv",
-    "video/mp4",
-    "video/webm",
-    "video/ogg",
-    "video/mpeg",
-    "video/mp2t",
-    "application/x-mpegurl",
-    "application/vnd.apple.mpegurl",
-    "application/dash+xml",
-    "audio/mpeg",
-    "audio/ogg",
-    "audio/wav",
-    "audio/aac",
-    "text/event-stream",
-    "application/octet-stream",
-];
-
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 
@@ -81,30 +63,29 @@ fn is_sse_response(res_parts: &ResponseParts) -> bool {
     get_content_type(res_parts).starts_with("text/event-stream")
 }
 
-fn is_streaming_response(res_parts: &ResponseParts) -> bool {
-    let content_type_lower = get_content_type(res_parts);
-
-    for streaming_type in STREAMING_CONTENT_TYPES {
-        if content_type_lower.starts_with(streaming_type) {
-            return true;
-        }
+fn is_streaming_response(
+    res_parts: &ResponseParts,
+    res_content_length: Option<usize>,
+    max_body_buffer_size: usize,
+) -> bool {
+    if is_sse_response(res_parts) {
+        return true;
     }
 
-    let has_content_length = res_parts
-        .headers
-        .contains_key(hyper::header::CONTENT_LENGTH);
     let is_chunked = res_parts
         .headers
         .get(hyper::header::TRANSFER_ENCODING)
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().contains("chunked"))
         .unwrap_or(false);
-
-    if !has_content_length && is_chunked && content_type_lower.contains("video") {
+    if is_chunked {
         return true;
     }
 
-    false
+    match res_content_length {
+        Some(len) => len > max_body_buffer_size,
+        None => true,
+    }
 }
 
 pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
@@ -598,19 +579,27 @@ pub async fn handle_http_request(
     let has_req_body_override = resolved_rules.req_body.is_some();
     let has_req_scripts = !resolved_rules.req_scripts.is_empty();
     let needs_req_body_read = !has_req_body_override && (needs_req_processing || has_req_scripts);
-    let req_body_too_large = content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
+    let req_body_size_hint = body.size_hint().upper();
+    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
+    let req_body_too_large = match content_length {
+        Some(len) => (len as u64) > max_body_buffer_size_u64,
+        None => req_body_size_hint
+            .map(|len| len > max_body_buffer_size_u64)
+            .unwrap_or(true),
+    };
 
     let mut skip_req_scripts = false;
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
     let (body_bytes, final_body) = if needs_req_body_read {
         if req_body_too_large {
+            let size_display = content_length
+                .map(|len| len.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             warn!(
                 "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
                 ctx.id_str(),
-                content_length.unwrap(),
+                size_display,
                 max_body_buffer_size
             );
             skip_req_scripts = true;
@@ -1208,23 +1197,32 @@ pub async fn handle_http_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_body_too_large = res_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
+    let res_body_size_hint = res_body.size_hint().upper();
+    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
+    let res_body_too_large = match res_content_length {
+        Some(len) => (len as u64) > max_body_buffer_size_u64,
+        None => res_body_size_hint
+            .map(|len| len > max_body_buffer_size_u64)
+            .unwrap_or(true),
+    };
 
     let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
+        let size_display = res_content_length
+            .map(|len| len.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             ctx.id_str(),
-            res_content_length.unwrap(),
+            size_display,
             max_body_buffer_size
         );
     }
 
     if skip_body_processing {
-        let is_streaming = is_streaming_response(&res_parts);
+        let is_streaming =
+            is_streaming_response(&res_parts, res_content_length, max_body_buffer_size);
         let is_sse = is_sse_response(&res_parts);
         let res_body_mode = if resolved_rules.trailers.is_empty() {
             BodyMode::Stream

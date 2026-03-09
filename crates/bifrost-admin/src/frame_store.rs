@@ -101,6 +101,13 @@ impl FrameStore {
             return;
         }
 
+        let retention_duration = Duration::from_secs(self.retention_hours * 60 * 60);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let cutoff_timestamp = now.saturating_sub(retention_duration.as_millis() as u64);
+
         let mut cache = self.metadata_cache.write();
         if let Ok(entries) = fs::read_dir(&frames_dir) {
             for entry in entries.flatten() {
@@ -112,7 +119,9 @@ impl FrameStore {
                 {
                     if let Ok(content) = fs::read_to_string(&path) {
                         if let Ok(metadata) = serde_json::from_str::<FrameStoreMetadata>(&content) {
-                            cache.insert(metadata.connection_id.clone(), metadata);
+                            if metadata.updated_at >= cutoff_timestamp {
+                                cache.insert(metadata.connection_id.clone(), metadata);
+                            }
                         }
                     }
                 }

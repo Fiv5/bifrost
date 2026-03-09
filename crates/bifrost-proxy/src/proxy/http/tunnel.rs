@@ -8,7 +8,7 @@ use bifrost_admin::{
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
+use hyper::body::{Body, Incoming};
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
@@ -1007,9 +1007,14 @@ async fn handle_intercepted_request_with_protocol(
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
     let has_req_body_override = resolved_rules.req_body.is_some();
     let needs_req_body_read = needs_req_processing && !has_req_body_override;
-    let req_body_too_large = req_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
+    let req_body_size_hint = body.size_hint().upper();
+    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
+    let req_body_too_large = match req_content_length {
+        Some(len) => (len as u64) > max_body_buffer_size_u64,
+        None => req_body_size_hint
+            .map(|len| len > max_body_buffer_size_u64)
+            .unwrap_or(true),
+    };
 
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
@@ -1042,10 +1047,13 @@ async fn handle_intercepted_request_with_protocol(
         new_body.to_vec()
     } else {
         if needs_req_body_read && req_body_too_large {
+            let size_display = req_content_length
+                .map(|len| len.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
             warn!(
                 "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
                 req_id,
-                req_content_length.unwrap(),
+                size_display,
                 max_body_buffer_size
             );
         }
@@ -1756,17 +1764,25 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_body_too_large = res_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
+    let res_body_size_hint = res_body.size_hint().upper();
+    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
+    let res_body_too_large = match res_content_length {
+        Some(len) => (len as u64) > max_body_buffer_size_u64,
+        None => res_body_size_hint
+            .map(|len| len > max_body_buffer_size_u64)
+            .unwrap_or(true),
+    };
 
     let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
+        let size_display = res_content_length
+            .map(|len| len.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             req_id,
-            res_content_length.unwrap(),
+            size_display,
             max_body_buffer_size
         );
     }

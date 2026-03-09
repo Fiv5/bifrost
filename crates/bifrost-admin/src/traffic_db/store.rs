@@ -962,22 +962,32 @@ impl TrafficDbStore {
         if limit == 0 {
             return 0;
         }
-        let mut ids = Vec::new();
-        let mut stmt =
-            match conn.prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ?") {
+        let mut remaining = limit;
+        let mut deleted = 0usize;
+        while remaining > 0 {
+            let batch = remaining.min(500);
+            let mut ids = Vec::new();
+            let mut stmt = match conn
+                .prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ?")
+            {
                 Ok(s) => s,
-                Err(_) => return 0,
+                Err(_) => break,
             };
-        if let Ok(iter) = stmt.query_map([limit as i64], |row| row.get(0)) {
-            for id in iter.flatten() {
-                ids.push(id);
+            if let Ok(iter) = stmt.query_map([batch as i64], |row| row.get(0)) {
+                for id in iter.flatten() {
+                    ids.push(id);
+                }
             }
+            if ids.is_empty() {
+                break;
+            }
+            deleted += self.delete_by_ids_with_conn(conn, &ids);
+            self.notify_cleanup(&ids);
+            if ids.len() >= remaining {
+                break;
+            }
+            remaining = remaining.saturating_sub(ids.len());
         }
-        if ids.is_empty() {
-            return 0;
-        }
-        let deleted = self.delete_by_ids_with_conn(conn, &ids);
-        self.notify_cleanup(&ids);
         deleted
     }
 
