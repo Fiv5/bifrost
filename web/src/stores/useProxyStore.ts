@@ -1,18 +1,21 @@
 import { create } from "zustand";
-import type { SystemProxyStatus } from "../api/proxy";
-import { getSystemProxyStatus, setSystemProxy } from "../api/proxy";
+import type { CliProxyStatus, SystemProxyStatus } from "../api/proxy";
+import { getCliProxyStatus, getSystemProxyStatus, setSystemProxy } from "../api/proxy";
 
 interface ProxyState {
   systemProxy: SystemProxyStatus | null;
+  cliProxy: CliProxyStatus | null;
   loading: boolean;
   error: string | null;
   fetchSystemProxy: () => Promise<void>;
+  fetchCliProxy: () => Promise<void>;
   toggleSystemProxy: (enabled: boolean) => Promise<boolean>;
   clearError: () => void;
 }
 
 export const useProxyStore = create<ProxyState>((set, get) => ({
   systemProxy: null,
+  cliProxy: null,
   loading: false,
   error: null,
 
@@ -20,6 +23,15 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     try {
       const status = await getSystemProxyStatus();
       set({ systemProxy: status, error: null });
+    } catch (e) {
+      set({ error: (e as Error).message });
+    }
+  },
+
+  fetchCliProxy: async () => {
+    try {
+      const status = await getCliProxyStatus();
+      set({ cliProxy: status, error: null });
     } catch (e) {
       set({ error: (e as Error).message });
     }

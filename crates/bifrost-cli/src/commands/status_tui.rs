@@ -128,6 +128,14 @@ struct ConfigResponse {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+struct CliProxyStatus {
+    enabled: bool,
+    shell: String,
+    config_files: Vec<String>,
+    proxy_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 struct TlsConfig {
     enable_tls_interception: bool,
     intercept_include: Vec<String>,
@@ -196,6 +204,7 @@ struct App {
     scripts: ScriptsResponse,
     config: Option<ConfigResponse>,
     performance_config: Option<PerformanceConfigResponse>,
+    cli_proxy: Option<CliProxyStatus>,
     selected_tab: usize,
     last_update: Instant,
     last_slow_refresh: Instant,
@@ -224,6 +233,7 @@ impl App {
             },
             config: None,
             performance_config: None,
+            cli_proxy: None,
             selected_tab: 0,
             last_update: Instant::now(),
             last_slow_refresh: Instant::now() - Duration::from_secs(SLOW_REFRESH_INTERVAL),
@@ -253,6 +263,7 @@ impl App {
             performance_config,
             app_metrics,
             host_metrics,
+            cli_proxy,
         ) = fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
 
         if let Some(m) = metrics {
@@ -291,6 +302,9 @@ impl App {
         if let Some(h) = host_metrics {
             self.host_metrics = h;
         }
+        if let Some(s) = cli_proxy {
+            self.cli_proxy = Some(s);
+        }
 
         if need_slow_refresh {
             self.last_slow_refresh = Instant::now();
@@ -323,6 +337,7 @@ type FetchAllDataResult = (
     Option<PerformanceConfigResponse>,
     Option<Vec<AppMetrics>>,
     Option<Vec<HostMetrics>>,
+    Option<CliProxyStatus>,
 );
 
 fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchAllDataResult {
@@ -368,6 +383,11 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
         thread::spawn(move || {
             let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
         });
+
+        let tx_cli_proxy = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_cli_proxy.send(("cli_proxy", fetch_cli_proxy(port)));
+        });
     }
 
     drop(tx);
@@ -380,6 +400,7 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
     let mut performance = None;
     let mut app_metrics = None;
     let mut host_metrics = None;
+    let mut cli_proxy = None;
 
     for (key, data) in rx {
         match key {
@@ -391,6 +412,7 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
             "performance" => performance = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "apps" => app_metrics = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             "hosts" => host_metrics = data.and_then(|d| d.downcast().ok()).map(|b| *b),
+            "cli_proxy" => cli_proxy = data.and_then(|d| d.downcast().ok()).map(|b| *b),
             _ => {}
         }
     }
@@ -404,6 +426,7 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
         performance,
         app_metrics,
         host_metrics,
+        cli_proxy,
     )
 }
 
@@ -487,6 +510,17 @@ fn fetch_app_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
 fn fetch_host_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics/hosts", port);
     let result: Option<Vec<HostMetrics>> = ureq::get(&url)
+        .timeout(HTTP_TIMEOUT)
+        .call()
+        .ok()?
+        .into_json()
+        .ok();
+    result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
+}
+
+fn fetch_cli_proxy(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
+    let url = format!("http://127.0.0.1:{}/_bifrost/api/proxy/cli", port);
+    let result: Option<CliProxyStatus> = ureq::get(&url)
         .timeout(HTTP_TIMEOUT)
         .call()
         .ok()?
@@ -861,6 +895,23 @@ fn config_lines(app: &App) -> Vec<Line<'_>> {
     }
 
     lines.push(Line::from(""));
+    lines.push(Line::from("CLI Proxy (ENV):"));
+    if let Some(cli) = &app.cli_proxy {
+        lines.push(Line::from(format!(
+            "  Status: {}",
+            if cli.enabled { "Enabled" } else { "Disabled" }
+        )));
+        lines.push(Line::from(format!("  Proxy URL: {}", cli.proxy_url)));
+        lines.push(Line::from(format!("  Shell: {}", cli.shell)));
+        lines.push(Line::from(format!(
+            "  Config Files: {}",
+            cli.config_files.len()
+        )));
+    } else {
+        lines.push(Line::from("  Loading..."));
+    }
+
+    lines.push(Line::from(""));
     lines.push(Line::from("Performance:"));
     if let Some(perf) = &app.performance_config {
         lines.push(Line::from(format!(
@@ -985,6 +1036,13 @@ fn render_connection_stats(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     "Disabled"
                 })
+                .unwrap_or("N/A")
+        )),
+        ListItem::new(format!(
+            "CLI Proxy: {}",
+            app.cli_proxy
+                .as_ref()
+                .map(|s| if s.enabled { "Enabled" } else { "Disabled" })
                 .unwrap_or("N/A")
         )),
     ];

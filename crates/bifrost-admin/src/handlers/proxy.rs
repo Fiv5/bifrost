@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
+use bifrost_core::ShellProxyManager;
 use bifrost_core::SystemProxyManager;
 use bifrost_storage::SystemProxyConfigUpdate;
 
@@ -21,6 +22,14 @@ struct SystemProxyStatus {
 struct SystemProxySupportStatus {
     supported: bool,
     platform: String,
+}
+
+#[derive(Serialize)]
+struct CliProxyStatus {
+    enabled: bool,
+    shell: String,
+    config_files: Vec<String>,
+    proxy_url: String,
 }
 
 #[derive(Deserialize)]
@@ -56,6 +65,10 @@ pub async fn handle_proxy(
             Method::PUT => set_system_proxy(req, state).await,
             _ => method_not_allowed(),
         },
+        "/api/proxy/cli" | "/api/proxy/cli/" => match method {
+            Method::GET => get_cli_proxy_status(state).await,
+            _ => method_not_allowed(),
+        },
         "/api/proxy/system/support" => match method {
             Method::GET => get_system_proxy_support().await,
             _ => method_not_allowed(),
@@ -66,6 +79,31 @@ pub async fn handle_proxy(
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
     }
+}
+
+async fn get_cli_proxy_status(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let data_dir = config_manager.data_dir().to_path_buf();
+    let manager = ShellProxyManager::new(data_dir);
+    let status = manager.status();
+
+    let resp = CliProxyStatus {
+        enabled: status.has_persistent_config,
+        shell: status.shell_type.as_str().to_string(),
+        config_files: status
+            .config_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        proxy_url: format!("http://127.0.0.1:{}", state.port),
+    };
+    json_response(&resp)
 }
 
 async fn get_system_proxy_status(_state: SharedAdminState) -> Response<BoxBody> {

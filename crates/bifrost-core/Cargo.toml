@@ -24,6 +24,7 @@ serde.workspace = true
 sysproxy.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+dirs.workspace = true
 lru.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, features = ["sync"] }

@@ -122,6 +122,7 @@ export function useGlobalDataSync() {
         rulesStore.fetchRules(),
         valuesStore.fetchValues(),
         proxyStore.fetchSystemProxy(),
+        proxyStore.fetchCliProxy(),
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
         metricsStore.fetchHistory(3600),
@@ -147,6 +148,7 @@ export function useGlobalDataSync() {
 
       globalState.proxyIntervalId = window.setInterval(() => {
         useProxyStore.getState().fetchSystemProxy();
+        useProxyStore.getState().fetchCliProxy();
       }, PROXY_POLL_INTERVAL);
 
       globalState.valuesIntervalId = window.setInterval(() => {

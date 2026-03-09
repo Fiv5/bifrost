@@ -1031,10 +1031,10 @@ export const Messages = ({
           open={sseFullscreenOpen}
           onCancel={() => setSseFullscreenOpen(false)}
           footer={null}
-          width="80vw"
+          width="90vw"
           styles={{
             body: {
-              height: "70vh",
+              height: "80vh",
               overflow: "hidden",
             },
           }}

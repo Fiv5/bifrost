@@ -316,6 +316,8 @@ bifrost start --unsafe-ssl
 | `--rules-file <PATH>`           | 规则文件路径，每行一条规则                                       |
 | `--system-proxy`                | 启用系统代理配置                                                 |
 | `--proxy-bypass <LIST>`         | 系统代理绕过列表，逗号分隔                                       |
+| `--cli-proxy`                   | 启用命令行代理环境变量（仅代理运行期间生效）                     |
+| `--cli-proxy-no-proxy <LIST>`   | 命令行代理 no-proxy 列表，逗号分隔                               |
 
 ### 基本命令
 
@@ -384,6 +386,10 @@ bifrost config set traffic.sse-stream-flush-interval-ms 200
 bifrost config set traffic.ws-payload-flush-bytes 256KB
 bifrost config set traffic.ws-payload-flush-interval-ms 200
 bifrost config set traffic.ws-payload-max-open-files 128
+
+# 命令行代理（环境变量）管理：仅在代理运行期间写入 http_proxy 等变量（对新开终端生效）
+bifrost -p 9900 start --cli-proxy
+bifrost -p 9900 start --cli-proxy --cli-proxy-no-proxy "localhost,127.0.0.1,::1,*.local"
 ```
 
 ### 环境变量

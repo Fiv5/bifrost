@@ -13,6 +13,13 @@ export interface SystemProxySupportStatus {
   platform: string;
 }
 
+export interface CliProxyStatus {
+  enabled: boolean;
+  shell: string;
+  config_files: string[];
+  proxy_url: string;
+}
+
 export interface SetSystemProxyRequest {
   enabled: boolean;
   bypass?: string;
@@ -30,6 +37,10 @@ export async function setSystemProxy(
 
 export async function getSystemProxySupport(): Promise<SystemProxySupportStatus> {
   return get<SystemProxySupportStatus>("/proxy/system/support");
+}
+
+export async function getCliProxyStatus(): Promise<CliProxyStatus> {
+  return get<CliProxyStatus>("/proxy/cli");
 }
 
 export interface ProxyAddress {

@@ -46,4 +46,10 @@ impl From<std::io::Error> for BifrostError {
     }
 }
 
+impl From<serde_json::Error> for BifrostError {
+    fn from(err: serde_json::Error) -> Self {
+        BifrostError::Parse(err.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, BifrostError>;
