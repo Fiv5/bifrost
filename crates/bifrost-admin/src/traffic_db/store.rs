@@ -12,12 +12,14 @@ use tokio::sync::broadcast;
 use super::query::{Direction, QueryParams, QueryResult};
 use super::schema::{get_insert_sql, get_update_sql, init_database, InitError};
 use super::types::{encode_flags, TrafficDbStats, TrafficSummaryCompact};
+use crate::body_store::BodyRef;
 use crate::traffic::{SocketStatus, TrafficRecord};
 
 const DEFAULT_CACHE_SIZE: usize = 500;
 const CLEANUP_CHECK_INTERVAL: u64 = 100;
 
 pub type SharedTrafficDbStore = Arc<TrafficDbStore>;
+type CleanupNotifier = Arc<dyn Fn(&[String]) + Send + Sync>;
 
 pub struct TrafficDbStore {
     db_path: PathBuf,
@@ -30,6 +32,47 @@ pub struct TrafficDbStore {
     current_sequence: AtomicU64,
     recent_cache: RwLock<LruCache<String, TrafficRecord>>,
     write_count: AtomicU64,
+    cleanup_notifier: RwLock<Option<CleanupNotifier>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrafficSearchFields {
+    pub id: String,
+    pub url: Option<String>,
+    pub request_headers: Option<Vec<(String, String)>>,
+    pub response_headers: Option<Vec<(String, String)>>,
+    pub request_body_ref: Option<BodyRef>,
+    pub response_body_ref: Option<BodyRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostMetricsAggregate {
+    pub host: String,
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub http_requests: u64,
+    pub https_requests: u64,
+    pub tunnel_requests: u64,
+    pub ws_requests: u64,
+    pub wss_requests: u64,
+    pub h3_requests: u64,
+    pub socks5_requests: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppMetricsAggregate {
+    pub app_name: String,
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub http_requests: u64,
+    pub https_requests: u64,
+    pub tunnel_requests: u64,
+    pub ws_requests: u64,
+    pub wss_requests: u64,
+    pub h3_requests: u64,
+    pub socks5_requests: u64,
 }
 
 impl TrafficDbStore {
@@ -88,7 +131,12 @@ impl TrafficDbStore {
             current_sequence: AtomicU64::new(current_seq + 1),
             recent_cache: RwLock::new(LruCache::new(cache_size)),
             write_count: AtomicU64::new(0),
+            cleanup_notifier: RwLock::new(None),
         })
+    }
+
+    pub fn set_cleanup_notifier(&self, notifier: CleanupNotifier) {
+        *self.cleanup_notifier.write() = Some(notifier);
     }
 
     fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {
@@ -142,11 +190,6 @@ impl TrafficDbStore {
         record.sequence = seq;
 
         let _ = self.tx.send(record.clone());
-
-        {
-            let mut cache = self.recent_cache.write();
-            cache.put(record.id.clone(), record.clone());
-        }
 
         let conn = self.write_conn.lock();
         let flags = encode_flags(&record);
@@ -239,6 +282,9 @@ impl TrafficDbStore {
 
         if let Err(e) = result {
             tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
+        } else if Self::should_keep_in_cache(&record) {
+            let mut cache = self.recent_cache.write();
+            cache.put(record.id.clone(), record.clone());
         }
 
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
@@ -251,11 +297,21 @@ impl TrafficDbStore {
     where
         F: FnOnce(&mut TrafficRecord),
     {
+        let mut updater = Some(updater);
         {
             let mut cache = self.recent_cache.write();
-            if let Some(record) = cache.get_mut(id) {
-                updater(record);
-                let updated = record.clone();
+            let updated = if let Some(record) = cache.get_mut(id) {
+                if let Some(updater) = updater.take() {
+                    updater(record);
+                }
+                Some(record.clone())
+            } else {
+                None
+            };
+            if let Some(updated) = updated {
+                if !Self::should_keep_in_cache(&updated) {
+                    cache.pop(id);
+                }
                 drop(cache);
                 self.persist_update(&updated);
                 let _ = self.tx.send(updated);
@@ -264,17 +320,33 @@ impl TrafficDbStore {
         }
 
         if let Some(mut record) = self.get_by_id_from_db(id) {
-            updater(&mut record);
+            if let Some(updater) = updater.take() {
+                updater(&mut record);
+            }
             self.persist_update(&record);
             {
                 let mut cache = self.recent_cache.write();
-                cache.put(record.id.clone(), record.clone());
+                if Self::should_keep_in_cache(&record) {
+                    cache.put(record.id.clone(), record.clone());
+                } else {
+                    cache.pop(&record.id);
+                }
             }
             let _ = self.tx.send(record);
             return true;
         }
 
         false
+    }
+
+    fn should_keep_in_cache(record: &TrafficRecord) -> bool {
+        if record.status == 0 {
+            return true;
+        }
+        if record.is_websocket || record.is_sse || record.is_tunnel {
+            return true;
+        }
+        record.socket_status.as_ref().is_some_and(|s| s.is_open)
     }
 
     fn persist_update(&self, record: &TrafficRecord) {
@@ -364,6 +436,15 @@ impl TrafficDbStore {
     }
 
     pub fn query(&self, params: &QueryParams) -> QueryResult {
+        self.query_internal(params, true)
+    }
+
+    /// 用于搜索等高频迭代场景的查询：不会计算 total（COUNT(*)），避免重复全表扫描。
+    pub fn query_for_search(&self, params: &QueryParams) -> QueryResult {
+        self.query_internal(params, false)
+    }
+
+    fn query_internal(&self, params: &QueryParams, include_total: bool) -> QueryResult {
         let conn = self.read_conn.lock();
         let (sql, values) = params.build_select_sql();
         let param_refs: Vec<&dyn rusqlite::ToSql> =
@@ -456,7 +537,11 @@ impl TrafficDbStore {
             }
         };
 
-        let total = self.count_with_conn(&conn, params);
+        let total = if include_total {
+            self.count_with_conn(&conn, params)
+        } else {
+            0
+        };
 
         QueryResult {
             records,
@@ -466,6 +551,148 @@ impl TrafficDbStore {
             total,
             server_sequence: self.current_sequence.load(Ordering::Relaxed),
         }
+    }
+
+    /// 批量拉取搜索所需的轻量字段，避免 search 中的 N+1 `get_by_id`。
+    pub fn get_search_fields_by_ids(
+        &self,
+        ids: &[&str],
+        need_url: bool,
+        need_request_headers: bool,
+        need_response_headers: bool,
+        need_request_body_ref: bool,
+        need_response_body_ref: bool,
+    ) -> std::collections::HashMap<String, TrafficSearchFields> {
+        use std::collections::HashMap;
+
+        if ids.is_empty() {
+            return HashMap::new();
+        }
+
+        // 至少要取 id。
+        let mut columns: Vec<&str> = vec!["id"];
+        if need_url {
+            columns.push("url");
+        }
+        if need_request_headers {
+            columns.push("request_headers_blob");
+        }
+        if need_response_headers {
+            columns.push("response_headers_blob");
+        }
+        if need_request_body_ref {
+            columns.push("request_body_ref_blob");
+        }
+        if need_response_body_ref {
+            columns.push("response_body_ref_blob");
+        }
+
+        // 全部不需要也就不查。
+        if columns.len() == 1 {
+            return ids
+                .iter()
+                .map(|id| {
+                    (
+                        (*id).to_string(),
+                        TrafficSearchFields {
+                            id: (*id).to_string(),
+                            url: None,
+                            request_headers: None,
+                            response_headers: None,
+                            request_body_ref: None,
+                            response_body_ref: None,
+                        },
+                    )
+                })
+                .collect();
+        }
+
+        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+        let sql = format!(
+            "SELECT {} FROM traffic_records WHERE id IN ({})",
+            columns.join(","),
+            placeholders.join(",")
+        );
+
+        let conn = self.read_conn.lock();
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "[TRAFFIC_DB] Failed to prepare get_search_fields_by_ids");
+                return HashMap::new();
+            }
+        };
+
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+
+        let mut out: HashMap<String, TrafficSearchFields> = HashMap::new();
+        let iter = match stmt.query_map(params.as_slice(), |row| {
+            let mut idx = 0usize;
+            let id: String = row.get(idx)?;
+            idx += 1;
+
+            let url: Option<String> = if need_url {
+                let v: String = row.get(idx)?;
+                idx += 1;
+                Some(v)
+            } else {
+                None
+            };
+
+            let request_headers: Option<Vec<(String, String)>> = if need_request_headers {
+                let blob: Option<Vec<u8>> = row.get(idx)?;
+                idx += 1;
+                blob.and_then(|b| bincode::deserialize(&b).ok())
+            } else {
+                None
+            };
+
+            let response_headers: Option<Vec<(String, String)>> = if need_response_headers {
+                let blob: Option<Vec<u8>> = row.get(idx)?;
+                idx += 1;
+                blob.and_then(|b| bincode::deserialize(&b).ok())
+            } else {
+                None
+            };
+
+            let request_body_ref: Option<BodyRef> = if need_request_body_ref {
+                let blob: Option<Vec<u8>> = row.get(idx)?;
+                idx += 1;
+                blob.and_then(|b| bincode::deserialize(&b).ok())
+            } else {
+                None
+            };
+
+            let response_body_ref: Option<BodyRef> = if need_response_body_ref {
+                let blob: Option<Vec<u8>> = row.get(idx)?;
+                // idx += 1;
+                blob.and_then(|b| bincode::deserialize(&b).ok())
+            } else {
+                None
+            };
+
+            Ok(TrafficSearchFields {
+                id: id.clone(),
+                url,
+                request_headers,
+                response_headers,
+                request_body_ref,
+                response_body_ref,
+            })
+        }) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::warn!(error = %e, "[TRAFFIC_DB] get_search_fields_by_ids query failed");
+                return HashMap::new();
+            }
+        };
+
+        for row in iter.flatten() {
+            out.insert(row.id.clone(), row);
+        }
+
+        out
     }
 
     fn count_with_conn(
@@ -484,8 +711,8 @@ impl TrafficDbStore {
 
     pub fn get_by_id(&self, id: &str) -> Option<TrafficRecord> {
         {
-            let cache = self.recent_cache.read();
-            if let Some(record) = cache.peek(id) {
+            let mut cache = self.recent_cache.write();
+            if let Some(record) = cache.get(id) {
                 return Some(record.clone());
             }
         }
@@ -737,7 +964,7 @@ impl TrafficDbStore {
         }
     }
 
-    fn compact_db(&self, full_vacuum: bool) {
+    pub fn compact_db(&self, full_vacuum: bool) {
         let conn = self.write_conn.lock();
         Self::compact_with_conn(&conn, full_vacuum);
     }
@@ -761,11 +988,7 @@ impl TrafficDbStore {
             }
         }
 
-        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
-        let mut cache = self.recent_cache.write();
-        for id in &ids_set {
-            cache.pop(&id.to_string());
-        }
+        self.remove_from_cache(ids);
     }
 
     fn maybe_cleanup(&self, conn: &Connection) {
@@ -777,21 +1000,13 @@ impl TrafficDbStore {
 
         if count as usize > max {
             let excess = count as usize - max;
-            let result = conn.execute(
-                "DELETE FROM traffic_records WHERE sequence IN (
-                    SELECT sequence FROM traffic_records ORDER BY sequence ASC LIMIT ?
-                )",
-                [excess as i64],
-            );
-
-            if let Ok(deleted) = result {
-                if deleted > 0 {
-                    tracing::debug!(
-                        deleted = deleted,
-                        max = max,
-                        "[TRAFFIC_DB] Cleaned up old records"
-                    );
-                }
+            let deleted = self.delete_oldest_by_limit(conn, excess);
+            if deleted > 0 {
+                tracing::debug!(
+                    deleted = deleted,
+                    max = max,
+                    "[TRAFFIC_DB] Cleaned up old records"
+                );
             }
         }
 
@@ -810,25 +1025,16 @@ impl TrafficDbStore {
                 if to_remove < 1 {
                     to_remove = 1;
                 }
-
-                let result = conn.execute(
-                    "DELETE FROM traffic_records WHERE sequence IN (
-                        SELECT sequence FROM traffic_records ORDER BY sequence ASC LIMIT ?
-                    )",
-                    [to_remove],
-                );
-
-                if let Ok(deleted) = result {
-                    if deleted > 0 {
-                        tracing::info!(
-                            deleted = deleted,
-                            db_size = db_size,
-                            max_db_size_bytes = max_db_size_bytes,
-                            target_size = target_size,
-                            "[TRAFFIC_DB] Cleaned up records due to DB size limit"
-                        );
-                        Self::compact_with_conn(conn, true);
-                    }
+                let deleted = self.delete_oldest_by_limit(conn, to_remove as usize);
+                if deleted > 0 {
+                    tracing::info!(
+                        deleted = deleted,
+                        db_size = db_size,
+                        max_db_size_bytes = max_db_size_bytes,
+                        target_size = target_size,
+                        "[TRAFFIC_DB] Cleaned up records due to DB size limit"
+                    );
+                    Self::compact_with_conn(conn, true);
                 }
             }
         }
@@ -841,27 +1047,15 @@ impl TrafficDbStore {
         let cutoff = now.saturating_sub(retention_ms);
 
         let conn = self.write_conn.lock();
-        let result = conn.execute(
-            "DELETE FROM traffic_records WHERE timestamp < ?",
-            [cutoff as i64],
-        );
-
-        match result {
-            Ok(deleted) => {
-                if deleted > 0 {
-                    tracing::info!(
-                        deleted = deleted,
-                        retention_hours = retention_hours,
-                        "[TRAFFIC_DB] Cleaned up expired records"
-                    );
-                }
-                deleted
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to cleanup expired records");
-                0
-            }
+        let deleted = self.delete_expired_by_cutoff(&conn, cutoff);
+        if deleted > 0 {
+            tracing::info!(
+                deleted = deleted,
+                retention_hours = retention_hours,
+                "[TRAFFIC_DB] Cleaned up expired records"
+            );
         }
+        deleted
     }
 
     pub fn count(&self) -> usize {
@@ -906,6 +1100,94 @@ impl TrafficDbStore {
         }
     }
 
+    pub fn aggregate_host_metrics(&self) -> Vec<HostMetricsAggregate> {
+        let conn = self.read_conn.lock();
+        let sql = "SELECT COALESCE(NULLIF(host, ''), 'Unknown') AS host, \
+                   COUNT(*) AS requests, \
+                   COALESCE(SUM(request_size), 0) AS bytes_sent, \
+                   COALESCE(SUM(response_size), 0) AS bytes_received, \
+                   SUM(CASE WHEN protocol = 'http' THEN 1 ELSE 0 END) AS http_requests, \
+                   SUM(CASE WHEN protocol = 'https' THEN 1 ELSE 0 END) AS https_requests, \
+                   SUM(CASE WHEN protocol = 'tunnel' THEN 1 ELSE 0 END) AS tunnel_requests, \
+                   SUM(CASE WHEN protocol = 'ws' THEN 1 ELSE 0 END) AS ws_requests, \
+                   SUM(CASE WHEN protocol = 'wss' THEN 1 ELSE 0 END) AS wss_requests, \
+                   SUM(CASE WHEN protocol = 'h3' THEN 1 ELSE 0 END) AS h3_requests, \
+                   SUM(CASE WHEN protocol = 'socks5' THEN 1 ELSE 0 END) AS socks5_requests \
+                   FROM traffic_records \
+                   GROUP BY host \
+                   ORDER BY requests DESC";
+
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to prepare host metrics aggregate query");
+                return vec![];
+            }
+        };
+
+        stmt.query_map([], |row| {
+            Ok(HostMetricsAggregate {
+                host: row.get(0)?,
+                requests: row.get::<_, i64>(1)? as u64,
+                bytes_sent: row.get::<_, i64>(2)? as u64,
+                bytes_received: row.get::<_, i64>(3)? as u64,
+                http_requests: row.get::<_, i64>(4)? as u64,
+                https_requests: row.get::<_, i64>(5)? as u64,
+                tunnel_requests: row.get::<_, i64>(6)? as u64,
+                ws_requests: row.get::<_, i64>(7)? as u64,
+                wss_requests: row.get::<_, i64>(8)? as u64,
+                h3_requests: row.get::<_, i64>(9)? as u64,
+                socks5_requests: row.get::<_, i64>(10)? as u64,
+            })
+        })
+        .map(|r| r.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    pub fn aggregate_app_metrics(&self) -> Vec<AppMetricsAggregate> {
+        let conn = self.read_conn.lock();
+        let sql = "SELECT COALESCE(NULLIF(client_app, ''), 'Unknown') AS app_name, \
+                   COUNT(*) AS requests, \
+                   COALESCE(SUM(request_size), 0) AS bytes_sent, \
+                   COALESCE(SUM(response_size), 0) AS bytes_received, \
+                   SUM(CASE WHEN protocol = 'http' THEN 1 ELSE 0 END) AS http_requests, \
+                   SUM(CASE WHEN protocol = 'https' THEN 1 ELSE 0 END) AS https_requests, \
+                   SUM(CASE WHEN protocol = 'tunnel' THEN 1 ELSE 0 END) AS tunnel_requests, \
+                   SUM(CASE WHEN protocol = 'ws' THEN 1 ELSE 0 END) AS ws_requests, \
+                   SUM(CASE WHEN protocol = 'wss' THEN 1 ELSE 0 END) AS wss_requests, \
+                   SUM(CASE WHEN protocol = 'h3' THEN 1 ELSE 0 END) AS h3_requests, \
+                   SUM(CASE WHEN protocol = 'socks5' THEN 1 ELSE 0 END) AS socks5_requests \
+                   FROM traffic_records \
+                   GROUP BY app_name \
+                   ORDER BY requests DESC";
+
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to prepare app metrics aggregate query");
+                return vec![];
+            }
+        };
+
+        stmt.query_map([], |row| {
+            Ok(AppMetricsAggregate {
+                app_name: row.get(0)?,
+                requests: row.get::<_, i64>(1)? as u64,
+                bytes_sent: row.get::<_, i64>(2)? as u64,
+                bytes_received: row.get::<_, i64>(3)? as u64,
+                http_requests: row.get::<_, i64>(4)? as u64,
+                https_requests: row.get::<_, i64>(5)? as u64,
+                tunnel_requests: row.get::<_, i64>(6)? as u64,
+                ws_requests: row.get::<_, i64>(7)? as u64,
+                wss_requests: row.get::<_, i64>(8)? as u64,
+                h3_requests: row.get::<_, i64>(9)? as u64,
+                socks5_requests: row.get::<_, i64>(10)? as u64,
+            })
+        })
+        .map(|r| r.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     pub fn current_sequence(&self) -> u64 {
         self.current_sequence.load(Ordering::Relaxed)
     }
@@ -936,6 +1218,10 @@ impl TrafficDbStore {
         }
     }
 
+    pub fn max_db_size_bytes(&self) -> u64 {
+        self.max_db_size_bytes.load(Ordering::Relaxed)
+    }
+
     pub fn set_retention_hours(&self, hours: u64) {
         let old = self.retention_hours.swap(hours, Ordering::SeqCst);
         if old != hours {
@@ -945,6 +1231,114 @@ impl TrafficDbStore {
                 "[TRAFFIC_DB] Retention hours updated"
             );
         }
+    }
+
+    fn notify_cleanup(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        if let Some(notifier) = self.cleanup_notifier.read().as_ref() {
+            notifier(ids);
+        }
+    }
+
+    fn remove_from_cache(&self, ids: &[String]) {
+        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+        let mut cache = self.recent_cache.write();
+        for id in &ids_set {
+            cache.pop(&id.to_string());
+        }
+    }
+
+    fn delete_by_ids_with_conn(&self, conn: &Connection, ids: &[String]) -> usize {
+        if ids.is_empty() {
+            return 0;
+        }
+        let mut deleted = 0usize;
+        for chunk in ids.chunks(500) {
+            let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM traffic_records WHERE id IN ({})", placeholders);
+            if let Ok(count) = conn.execute(&sql, rusqlite::params_from_iter(chunk.iter())) {
+                deleted += count;
+            }
+        }
+        self.remove_from_cache(ids);
+        deleted
+    }
+
+    fn delete_oldest_by_limit(&self, conn: &Connection, limit: usize) -> usize {
+        if limit == 0 {
+            return 0;
+        }
+        let mut remaining = limit;
+        let mut deleted = 0usize;
+        while remaining > 0 {
+            let batch = remaining.min(500);
+            let mut ids = Vec::new();
+            let mut stmt = match conn
+                .prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ?")
+            {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            if let Ok(iter) = stmt.query_map([batch as i64], |row| row.get(0)) {
+                for id in iter.flatten() {
+                    ids.push(id);
+                }
+            }
+            if ids.is_empty() {
+                break;
+            }
+            deleted += self.delete_by_ids_with_conn(conn, &ids);
+            self.notify_cleanup(&ids);
+            if ids.len() >= remaining {
+                break;
+            }
+            remaining = remaining.saturating_sub(ids.len());
+        }
+        deleted
+    }
+
+    fn delete_expired_by_cutoff(&self, conn: &Connection, cutoff: u64) -> usize {
+        let mut deleted = 0usize;
+        loop {
+            let mut ids = Vec::new();
+            let mut stmt = match conn.prepare(
+                "SELECT id FROM traffic_records WHERE timestamp < ? ORDER BY sequence ASC LIMIT ?",
+            ) {
+                Ok(s) => s,
+                Err(_) => break,
+            };
+            if let Ok(iter) = stmt.query_map([cutoff as i64, 500i64], |row| row.get(0)) {
+                for id in iter.flatten() {
+                    ids.push(id);
+                }
+            }
+            if ids.is_empty() {
+                break;
+            }
+            deleted += self.delete_by_ids_with_conn(conn, &ids);
+            self.notify_cleanup(&ids);
+        }
+        deleted
+    }
+
+    pub fn oldest_ids(&self, limit: usize, offset: usize) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let conn = self.read_conn.lock();
+        let mut stmt = match conn
+            .prepare("SELECT id FROM traffic_records ORDER BY sequence ASC LIMIT ? OFFSET ?")
+        {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let iter = match stmt.query_map([limit as i64, offset as i64], |row| row.get(0)) {
+            Ok(i) => i,
+            Err(_) => return Vec::new(),
+        };
+        iter.flatten().collect()
     }
 
     pub fn checkpoint(&self) {
@@ -982,6 +1376,7 @@ pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::body_store::BodyRef;
     use std::env;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1004,6 +1399,91 @@ mod tests {
 
     fn cleanup_test_dir(dir: &PathBuf) {
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn test_query_for_search_skips_total_count() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        store.record(TrafficRecord::new(
+            "req-1".to_string(),
+            "GET".to_string(),
+            "https://a.com/p1".to_string(),
+        ));
+        store.record(TrafficRecord::new(
+            "req-2".to_string(),
+            "GET".to_string(),
+            "https://a.com/p2".to_string(),
+        ));
+        store.record(TrafficRecord::new(
+            "req-3".to_string(),
+            "GET".to_string(),
+            "https://a.com/p3".to_string(),
+        ));
+
+        let params = QueryParams {
+            limit: Some(2),
+            direction: Direction::Backward,
+            ..Default::default()
+        };
+
+        let normal = store.query(&params);
+        let fast = store.query_for_search(&params);
+
+        assert_eq!(normal.records.len(), fast.records.len());
+        assert_eq!(normal.has_more, fast.has_more);
+        assert!(normal.total >= 3);
+        assert_eq!(fast.total, 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_get_search_fields_by_ids_respects_field_flags() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        let mut record = TrafficRecord::new(
+            "req-1".to_string(),
+            "POST".to_string(),
+            "https://a.com/p1".to_string(),
+        );
+        record.request_headers = Some(vec![("X-Test".to_string(), "1".to_string())]);
+        record.response_headers = Some(vec![("Y-Test".to_string(), "2".to_string())]);
+        record.request_body_ref = Some(BodyRef::Inline {
+            data: "hello".to_string(),
+        });
+        record.response_body_ref = Some(BodyRef::Inline {
+            data: "world".to_string(),
+        });
+        store.record(record);
+
+        let ids = ["req-1" as &str];
+
+        let m = store.get_search_fields_by_ids(&ids, true, true, true, true, true);
+        let f = m.get("req-1").expect("missing fields");
+        assert!(f.url.as_deref().unwrap_or("").contains("https://a.com/p1"));
+        assert!(f
+            .request_headers
+            .as_ref()
+            .is_some_and(|h| h.iter().any(|(k, v)| k == "X-Test" && v == "1")));
+        assert!(f
+            .response_headers
+            .as_ref()
+            .is_some_and(|h| h.iter().any(|(k, v)| k == "Y-Test" && v == "2")));
+        assert!(matches!(f.request_body_ref, Some(BodyRef::Inline { .. })));
+        assert!(matches!(f.response_body_ref, Some(BodyRef::Inline { .. })));
+
+        let m2 = store.get_search_fields_by_ids(&ids, false, false, false, false, false);
+        let f2 = m2.get("req-1").expect("missing fields");
+        assert!(f2.url.is_none());
+        assert!(f2.request_headers.is_none());
+        assert!(f2.response_headers.is_none());
+        assert!(f2.request_body_ref.is_none());
+        assert!(f2.response_body_ref.is_none());
+
+        cleanup_test_dir(&dir);
     }
 
     #[test]

@@ -28,7 +28,9 @@ export default async () => {
       }
     }
     await fs.unlink(trafficPidFile);
-  } catch {}
+  } catch {
+    void 0;
+  }
   const pidFile = path.join(repoRoot, PID_PATH);
   try {
     const pidText = await fs.readFile(pidFile, "utf-8");

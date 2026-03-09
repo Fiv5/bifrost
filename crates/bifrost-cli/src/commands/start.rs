@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bifrost_admin::{
-    start_frame_cleanup_task, start_metrics_collector_task, start_push_tasks,
-    start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
-    PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
+    start_async_traffic_processor, start_frame_cleanup_task, start_metrics_collector_task,
+    start_push_tasks, start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState,
+    AsyncTrafficWriter, BodyStore, PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -20,6 +20,32 @@ use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
 use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
+
+const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        let mut sighup = signal(SignalKind::hangup()).expect("failed to install SIGHUP handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+            _ = sighup.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
 
 struct SystemProxyRestoreGuard {
     system_proxy_manager: Arc<tokio::sync::RwLock<bifrost_core::SystemProxyManager>>,
@@ -173,6 +199,7 @@ pub fn run_start(
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
+        max_body_probe_size: stored_config.traffic.max_body_probe_size,
         enable_socks: true,
         ..Default::default()
     };
@@ -535,11 +562,26 @@ pub fn run_foreground(
             .expect("Failed to create traffic database"),
         );
 
+        let (async_traffic_writer, async_traffic_rx) =
+            AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+        let async_traffic_writer = Arc::new(async_traffic_writer);
+        let _async_traffic_task =
+            start_async_traffic_processor(async_traffic_rx, Some(traffic_db_store.clone()), None);
+
         let frame_store = Arc::new(bifrost_admin::FrameStore::new(
             bifrost_dir.clone(),
             Some(stored_config.traffic.file_retention_days * 24),
         ));
         start_frame_cleanup_task(frame_store.clone());
+
+        let cleanup_body_store = body_store.clone();
+        let cleanup_frame_store = frame_store.clone();
+        let cleanup_ws_payload_store = ws_payload_store.clone();
+        traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+            let _ = cleanup_body_store.write().delete_by_ids(ids);
+            let _ = cleanup_frame_store.delete_by_ids(ids);
+            let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+        }));
 
         let values_storage = config_manager.values_storage().await;
         let rules_storage = config_manager.rules_storage().await;
@@ -584,6 +626,7 @@ pub fn run_foreground(
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
+            .with_async_traffic_writer_shared(async_traffic_writer)
             .with_traffic_db_store_shared(traffic_db_store.clone())
             .with_frame_store_shared(frame_store)
             .with_runtime_config(runtime_config)
@@ -594,6 +637,7 @@ pub fn run_foreground(
             .with_system_proxy_manager_shared(system_proxy_manager.clone())
             .with_config_manager(config_manager)
             .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+            .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
             .with_app_icon_cache(app_icon_cache)
             .with_script_manager(script_manager)
             .with_replay_db_store_shared_opt(replay_db_store);
@@ -662,7 +706,7 @@ pub fn run_foreground(
                     eprintln!("Server error: {}", e);
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = wait_for_shutdown_signal() => {
                 info!("Received shutdown signal");
                 println!("\nShutting down...");
             }
@@ -772,15 +816,6 @@ pub fn run_daemon(
                 }
             });
 
-            let pid = std::process::id();
-            let runtime_info = RuntimeInfo {
-                pid,
-                port: config.port,
-                socks5_port: config.socks5_port,
-                host: Some(config.host.clone()),
-            };
-            write_runtime_info(&runtime_info)?;
-
             let tls_config = load_tls_config(&config)?;
 
             let bind_addr = format!("{}:{}", config.host, config.port);
@@ -851,6 +886,17 @@ pub fn run_daemon(
             })?;
 
             rt.block_on(async {
+                let pid = std::process::id();
+                let runtime_info = RuntimeInfo {
+                    pid,
+                    port: config.port,
+                    socks5_port: config.socks5_port,
+                    host: Some(config.host.clone()),
+                };
+                write_runtime_info(&runtime_info).expect("Failed to write runtime info");
+                let shutdown = tokio::spawn(wait_for_shutdown_signal());
+                tokio::task::yield_now().await;
+
                 let stored_config = config_manager.config().await;
                 let body_temp_dir = bifrost_dir.join("body_cache");
                 let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
@@ -882,11 +928,29 @@ pub fn run_daemon(
                     .expect("Failed to create traffic database"),
                 );
 
+                let (async_traffic_writer, async_traffic_rx) =
+                    AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+                let async_traffic_writer = Arc::new(async_traffic_writer);
+                let _async_traffic_task = start_async_traffic_processor(
+                    async_traffic_rx,
+                    Some(traffic_db_store.clone()),
+                    None,
+                );
+
                 let frame_store = Arc::new(bifrost_admin::FrameStore::new(
                     bifrost_dir.clone(),
                     Some(stored_config.traffic.file_retention_days * 24),
                 ));
                 start_frame_cleanup_task(frame_store.clone());
+
+                let cleanup_body_store = body_store.clone();
+                let cleanup_frame_store = frame_store.clone();
+                let cleanup_ws_payload_store = ws_payload_store.clone();
+                traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+                    let _ = cleanup_body_store.write().delete_by_ids(ids);
+                    let _ = cleanup_frame_store.delete_by_ids(ids);
+                    let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+                }));
 
                 let values_storage = config_manager.values_storage().await;
                 let rules_storage = config_manager.rules_storage().await;
@@ -929,6 +993,7 @@ pub fn run_daemon(
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
                     .with_ws_payload_store(ws_payload_store)
+                    .with_async_traffic_writer_shared(async_traffic_writer)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
                     .with_frame_store_shared(frame_store)
                     .with_runtime_config(runtime_config)
@@ -1003,8 +1068,16 @@ pub fn run_daemon(
                     runtime_config_for_resolver,
                 );
 
-                if let Err(e) = server.run().await {
-                    eprintln!("Server error: {}", e);
+                tokio::select! {
+                    result = server.run() => {
+                        if let Err(e) = result {
+                            eprintln!("Server error: {}", e);
+                        }
+                    }
+                    _ = shutdown => {
+                        tracing::info!("Received shutdown signal");
+                        eprintln!("Received shutdown signal");
+                    }
                 }
 
                 rules_watcher_task.abort();

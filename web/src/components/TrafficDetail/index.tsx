@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useCallback } from "react";
+import { useEffect, useMemo, useCallback, useState } from "react";
 import { Empty, Splitter, Spin } from "antd";
 import type { CSSProperties } from "react";
 import type {
@@ -70,25 +70,6 @@ const styles: Record<string, CSSProperties> = {
     padding: "0 8px",
     overflow: "hidden",
   },
-  flexPanelsWrapper: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    minHeight: 0,
-  },
-  collapsedPanel: {
-    height: COLLAPSED_HEIGHT,
-    flexShrink: 0,
-    padding: "0 8px",
-    overflow: "hidden",
-  },
-  expandedPanel: {
-    flex: 1,
-    minHeight: 0,
-    padding: "0 8px",
-    overflow: "hidden",
-  },
 };
 
 export default function TrafficDetail({
@@ -121,10 +102,15 @@ export default function TrafficDetail({
     setResponseCollapsed,
     reset,
   } = useTrafficDetailStore();
+  const [liveSseCount, setLiveSseCount] = useState<number | null>(null);
 
   useEffect(() => {
     reset();
   }, [record?.id, reset]);
+
+  useEffect(() => {
+    setLiveSseCount(null);
+  }, [record?.id]);
 
   const handleRequestTabChange = useCallback(
     (tab: string) => {
@@ -292,6 +278,11 @@ export default function TrafficDetail({
     if (!record) return [];
 
     const hasMessages = record.is_websocket || record.is_sse;
+    const socketCount = record.socket_status?.frame_count ?? record.frame_count ?? 0;
+    const messageCount = record.is_sse ? liveSseCount ?? socketCount : socketCount;
+    const isSseOpen = record.is_sse
+      ? record.socket_status?.is_open ?? !record.end_time
+      : false;
 
     return [
       {
@@ -324,16 +315,17 @@ export default function TrafficDetail({
       },
       {
         key: "Messages",
-        label: `Messages${(record.frame_count ?? 0) > 0 ? ` (${record.frame_count})` : ""}`,
+        label: `Messages${messageCount > 0 ? ` (${messageCount})` : ""}`,
         enable: hasMessages,
         children: (
           <Messages
             recordId={record.id}
             isWebSocket={record.is_websocket || false}
             frameCount={record.frame_count ?? 0}
-            isConnectionOpen={record.socket_status?.is_open ?? false}
+            isConnectionOpen={record.is_websocket ? record.socket_status?.is_open ?? false : isSseOpen}
             searchValue={responseSearch}
             onSearch={setResponseSearch}
+            onSseCountChange={record.is_sse ? setLiveSseCount : undefined}
           />
         ),
       },
@@ -380,6 +372,7 @@ export default function TrafficDetail({
     ];
   }, [
     record,
+    liveSseCount,
     responseBody,
     responseSearch,
     setResponseSearch,
@@ -464,57 +457,21 @@ export default function TrafficDetail({
   }
 
   const hasCollapsed = requestCollapsed || responseCollapsed;
+  const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const requestPanelProps = hasCollapsed
+    ? { size: requestPanelSize, resizable: false }
+    : { min: "20%", max: "80%", defaultSize: "50%" };
+  const responsePanelProps = hasCollapsed
+    ? { size: responsePanelSize, resizable: false }
+    : {};
 
-  const renderPanels = () => {
-    if (hasCollapsed) {
-      return (
-        <div style={styles.flexPanelsWrapper}>
-          <div
-            style={
-              requestCollapsed ? styles.collapsedPanel : styles.expandedPanel
-            }
-          >
-            <Panel
-              name="Request"
-              tabs={requestTabs}
-              activeTab={requestTab}
-              onTabChange={handleRequestTabChange}
-              searchValue={requestSearch}
-              onSearch={setRequestSearch}
-              displayFormat={requestDisplayFormat}
-              onDisplayFormatChange={handleRequestDisplayFormatChange}
-              contentType={requestContentType}
-              collapsed={requestCollapsed}
-              onCollapsedChange={handleRequestCollapsedChange}
-            />
-          </div>
-          <div
-            style={
-              responseCollapsed ? styles.collapsedPanel : styles.expandedPanel
-            }
-          >
-            <Panel
-              name="Response"
-              tabs={responseTabs}
-              activeTab={responseTab}
-              onTabChange={handleResponseTabChange}
-              searchValue={responseSearch}
-              onSearch={setResponseSearch}
-              displayFormat={responseDisplayFormat}
-              onDisplayFormatChange={handleResponseDisplayFormatChange}
-              contentType={responseContentType}
-              collapsed={responseCollapsed}
-              onCollapsedChange={handleResponseCollapsedChange}
-            />
-          </div>
-        </div>
-      );
-    }
-
-    return (
+  return (
+    <div style={styles.container} data-testid="traffic-detail">
+      <Header record={record} />
       <div style={styles.splitterWrapper}>
         <Splitter layout="vertical">
-          <Splitter.Panel min="20%" max="80%" defaultSize="50%">
+          <Splitter.Panel {...requestPanelProps}>
             <div style={styles.panelWrapper}>
               <Panel
                 name="Request"
@@ -531,7 +488,7 @@ export default function TrafficDetail({
               />
             </div>
           </Splitter.Panel>
-          <Splitter.Panel>
+          <Splitter.Panel {...responsePanelProps}>
             <div style={styles.panelWrapper}>
               <Panel
                 name="Response"
@@ -545,18 +502,13 @@ export default function TrafficDetail({
                 contentType={responseContentType}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
+                keepAliveTabs={["Messages"]}
+                contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>
           </Splitter.Panel>
         </Splitter>
       </div>
-    );
-  };
-
-  return (
-    <div style={styles.container} data-testid="traffic-detail">
-      <Header record={record} />
-      {renderPanels()}
     </div>
   );
 }

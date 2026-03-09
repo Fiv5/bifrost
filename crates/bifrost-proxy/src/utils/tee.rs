@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -6,6 +7,8 @@ use bifrost_admin::{AdminState, BodyRef, BodyStreamWriter, FrameDirection, Traff
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
+use memchr::memchr;
+use tokio::time::Sleep;
 
 use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body;
@@ -89,16 +92,16 @@ impl TeeBodyDropGuard {
     }
 }
 
-pub struct TeeBody {
-    inner: Incoming,
+struct TeeBody<B> {
+    inner: Pin<Box<B>>,
     guard: TeeBodyDropGuard,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
 
-impl TeeBody {
+impl<B> TeeBody<B> {
     pub fn new(
-        inner: Incoming,
+        inner: B,
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         max_body_size: Option<usize>,
@@ -108,7 +111,7 @@ impl TeeBody {
     ) -> Self {
         let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
-            inner,
+            inner: Box::pin(inner),
             guard: TeeBodyDropGuard {
                 admin_state,
                 record_id,
@@ -124,12 +127,18 @@ impl TeeBody {
         }
     }
 
-    pub fn boxed(self) -> BoxBody {
+    pub fn boxed(self) -> BoxBody
+    where
+        B: Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
+    {
         BodyExt::boxed(self)
     }
 }
 
-impl Body for TeeBody {
+impl<B> Body for TeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error>,
+{
     type Data = Bytes;
     type Error = hyper::Error;
 
@@ -141,7 +150,7 @@ impl Body for TeeBody {
             return Poll::Ready(None);
         }
 
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        match self.inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     let len = data.len();
@@ -220,14 +229,14 @@ impl Body for TeeBody {
 }
 
 pub fn create_tee_body_with_store(
-    body: Incoming,
+    body: impl Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     max_body_size: Option<usize>,
     content_encoding: Option<String>,
     traffic_type: Option<TrafficType>,
     response_headers_size: usize,
-) -> TeeBody {
+) -> BoxBody {
     TeeBody::new(
         body,
         admin_state,
@@ -237,6 +246,7 @@ pub fn create_tee_body_with_store(
         traffic_type,
         response_headers_size,
     )
+    .boxed()
 }
 
 #[derive(Clone)]
@@ -277,7 +287,7 @@ impl Drop for RequestTeeBodyDropGuard {
 }
 
 pub struct RequestTeeBody {
-    inner: Incoming,
+    inner: Pin<Box<dyn Body<Data = Bytes, Error = hyper::Error> + Send + Sync>>,
     guard: RequestTeeBodyDropGuard,
 }
 
@@ -289,7 +299,7 @@ impl Body for RequestTeeBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        match self.inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     if self.guard.file_writer.is_none() {
@@ -329,10 +339,10 @@ impl Body for RequestTeeBody {
 }
 
 pub fn create_request_tee_body(
-    body: Incoming,
+    body: impl Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
-) -> (RequestTeeBody, BodyCaptureHandle) {
+) -> (BoxBody, BodyCaptureHandle) {
     let capture = BodyCaptureHandle {
         body_ref: Arc::new(Mutex::new(None)),
     };
@@ -344,7 +354,11 @@ pub fn create_request_tee_body(
             body_ref: capture.body_ref.clone(),
         },
     };
-    (RequestTeeBody { inner: body, guard }, capture)
+    let body = RequestTeeBody {
+        inner: Box::pin(body),
+        guard,
+    };
+    (BodyExt::boxed(body), capture)
 }
 
 struct SseTeeBodyDropGuard {
@@ -379,11 +393,17 @@ impl SseTeeBodyDropGuard {
     }
 }
 
+const DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES: usize = 256 * 1024;
+
 pub struct SseTeeBody {
     inner: Incoming,
     guard: SseTeeBodyDropGuard,
     prev_byte: Option<u8>,
-    event_buffer: Vec<u8>,
+    event_size: usize,
+    max_buffer_size: usize,
+    overflowed: bool,
+    flush_interval: Option<std::time::Duration>,
+    flush_sleep: Option<Pin<Box<Sleep>>>,
 }
 
 impl SseTeeBody {
@@ -393,8 +413,14 @@ impl SseTeeBody {
         record_id: String,
         traffic_type: Option<TrafficType>,
         file_writer: Option<BodyStreamWriter>,
-        _max_buffer_size: usize,
+        max_buffer_size: usize,
     ) -> Self {
+        let flush_interval = file_writer
+            .as_ref()
+            .map(|w| w.flush_interval())
+            .filter(|d| !d.is_zero());
+        let flush_sleep = flush_interval.map(|d| Box::pin(tokio::time::sleep(d)));
+
         if let Some(ref state) = admin_state {
             state.sse_hub.register(&record_id);
         }
@@ -410,7 +436,11 @@ impl SseTeeBody {
                 file_writer,
             },
             prev_byte: None,
-            event_buffer: Vec::new(),
+            event_size: 0,
+            max_buffer_size,
+            overflowed: false,
+            flush_interval,
+            flush_sleep,
         }
     }
 
@@ -418,32 +448,55 @@ impl SseTeeBody {
         BodyExt::boxed(self)
     }
 
-    fn record_event(&mut self) {
-        if self.event_buffer.is_empty() {
+    fn process_sse_chunk(&mut self, data: &[u8]) {
+        if data.is_empty() {
             return;
         }
-        if let Some(ref state) = self.guard.admin_state {
-            let event_bytes = std::mem::take(&mut self.event_buffer);
-            state
-                .sse_hub
-                .publish_raw_event(&self.guard.record_id, &event_bytes);
-        }
-    }
 
-    fn process_sse_chunk(&mut self, data: &[u8]) {
-        for &byte in data {
-            if self.prev_byte == Some(b'\n') && byte == b'\n' {
-                if let Some(&last) = self.event_buffer.last() {
-                    if last == b'\n' {
-                        self.event_buffer.pop();
+        let mut i = 0;
+        while i < data.len() {
+            let Some(rel) = memchr(b'\n', &data[i..]) else {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(data.len() - i);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
                     }
                 }
-                self.record_event();
-                self.prev_byte = Some(byte);
-                continue;
+                self.prev_byte = Some(*data.last().unwrap());
+                return;
+            };
+
+            let pos = i + rel;
+            if pos > i {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(pos - i);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
+                    }
+                }
+                self.prev_byte = Some(data[pos - 1]);
             }
-            self.event_buffer.push(byte);
-            self.prev_byte = Some(byte);
+
+            if self.prev_byte == Some(b'\n') {
+                if self.event_size > 0 {
+                    if let Some(ref state) = self.guard.admin_state {
+                        state.sse_hub.add_receive_event(&self.guard.record_id);
+                    }
+                }
+                self.event_size = 0;
+                self.overflowed = false;
+                self.prev_byte = Some(b'\n');
+            } else {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(1);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
+                    }
+                }
+                self.prev_byte = Some(b'\n');
+            }
+
+            i = pos + 1;
         }
     }
 }
@@ -458,6 +511,19 @@ impl Body for SseTeeBody {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         if self.guard.finished {
             return Poll::Ready(None);
+        }
+
+        if let (Some(interval), Some(mut sleep_fut)) =
+            (self.flush_interval, self.flush_sleep.take())
+        {
+            if sleep_fut.as_mut().poll(cx).is_ready() {
+                if let Some(ref mut writer) = self.guard.file_writer {
+                    let _ = writer.flush_buffered();
+                }
+                self.flush_sleep = Some(Box::pin(tokio::time::sleep(interval)));
+            } else {
+                self.flush_sleep = Some(sleep_fut);
+            }
         }
 
         match Pin::new(&mut self.inner).poll_frame(cx) {
@@ -477,8 +543,18 @@ impl Body for SseTeeBody {
                         }
                     }
 
+                    let should_force_flush = self
+                        .guard
+                        .admin_state
+                        .as_ref()
+                        .map(|state| state.sse_hub.should_force_flush(&self.guard.record_id))
+                        .unwrap_or(false);
+
                     if let Some(ref mut writer) = self.guard.file_writer {
                         let _ = writer.write_chunk(data);
+                        if should_force_flush {
+                            let _ = writer.flush_buffered();
+                        }
                     }
 
                     self.process_sse_chunk(data);
@@ -490,7 +566,6 @@ impl Body for SseTeeBody {
                 Poll::Ready(Some(Err(e)))
             }
             Poll::Ready(None) => {
-                self.record_event();
                 self.guard.store_body_and_update_record();
                 Poll::Ready(None)
             }
@@ -515,6 +590,7 @@ pub fn create_sse_tee_body(
     file_writer: Option<BodyStreamWriter>,
     max_buffer_size: usize,
 ) -> SseTeeBody {
+    let max_buffer_size = max_buffer_size.min(DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES);
     SseTeeBody::new(
         body,
         admin_state,

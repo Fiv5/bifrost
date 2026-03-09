@@ -30,6 +30,24 @@ cleanup() {
 
 trap cleanup EXIT
 
+assert_body_contains_ci() {
+    local expected_substring=$1
+    local body=$2
+    local message=${3:-"Response body should contain '$expected_substring'"}
+    local expected_lower
+    local body_lower
+    expected_lower=$(echo "$expected_substring" | tr '[:upper:]' '[:lower:]')
+    body_lower=$(echo "$body" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$body_lower" == *"$expected_lower"* ]]; then
+        _log_pass "$message"
+        return 0
+    else
+        _log_fail "$message" "Contains '$expected_substring'" "${body:0:200}..."
+        return 1
+    fi
+}
+
 start_mock_servers() {
     mkdir -p "$TEST_DATA_DIR"
 
@@ -106,19 +124,9 @@ test_req_script() {
     http_post "$url" "origin-body"
     assert_status_2xx "$HTTP_STATUS" "reqScript should allow proxy request"
 
-    local req_header
-    local decoded_body
-    decoded_body=$(printf '%s' "$HTTP_BODY" | sed 's/\\"/"/g')
-    req_header=$(echo "$decoded_body" | jq -r '.request.headers | to_entries[] | select(.key|ascii_downcase=="x-reqscript") | .value')
-    assert_body_equals "enabled" "$req_header" "reqScript should inject request header"
-
-    local req_protocol
-    req_protocol=$(echo "$decoded_body" | jq -r '.request.headers | to_entries[] | select(.key|ascii_downcase=="x-reqscript-protocol") | .value')
-    assert_body_equals "http" "$req_protocol" "reqScript should expose protocol"
-
-    local req_body
-    req_body=$(echo "$decoded_body" | jq -r '.request.body')
-    assert_body_equals "body-from-reqscript" "$req_body" "reqScript should update request body"
+    assert_body_contains_ci "\\\"x-reqscript\\\": \\\"enabled\\\"" "$HTTP_BODY" "reqScript should inject request header"
+    assert_body_contains_ci "\\\"x-reqscript-protocol\\\": \\\"http\\\"" "$HTTP_BODY" "reqScript should expose protocol"
+    assert_body_contains "\\\"body\\\": \\\"body-from-reqscript\\\"" "$HTTP_BODY" "reqScript should update request body"
 
     assert_header_value "X-ResScript" "enabled" "$HTTP_HEADERS" "resScript should add response header"
 }

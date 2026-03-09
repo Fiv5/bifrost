@@ -58,7 +58,7 @@ async fn get_traffic_record(state: Arc<AdminState>, id: &str) -> Option<TrafficR
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
-        state.traffic_recorder.get_by_id(id)
+        None
     }
 }
 
@@ -412,7 +412,7 @@ pub async fn get_frame_detail(
             } else if let Some(ref traffic_store) = state.traffic_store {
                 traffic_store.get_by_id(connection_id)
             } else {
-                state.traffic_recorder.get_by_id(connection_id)
+                None
             };
 
             if let Some(record) = record {

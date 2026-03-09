@@ -1308,6 +1308,10 @@ impl SocksHandler {
             .as_ref()
             .map(|s| s.get_max_body_buffer_size())
             .unwrap_or(10 * 1024 * 1024);
+        let max_body_probe_size = admin_state
+            .as_ref()
+            .map(|s| s.get_max_body_probe_size())
+            .unwrap_or(64 * 1024);
 
         let service = service_fn(move |req: Request<Incoming>| {
             let target_host = target_host.clone();
@@ -1325,6 +1329,7 @@ impl SocksHandler {
                     admin_state,
                     dns_resolver,
                     max_body_buffer_size,
+                    max_body_probe_size,
                     verbose_logging,
                     unsafe_ssl,
                     peer_addr,
@@ -1649,6 +1654,7 @@ async fn handle_socks5_intercepted_request(
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     verbose_logging: bool,
     unsafe_ssl: bool,
     peer_addr: SocketAddr,
@@ -1750,6 +1756,7 @@ async fn handle_socks5_intercepted_request(
         verbose_logging,
         unsafe_ssl,
         max_body_buffer_size,
+        max_body_probe_size,
         &ctx,
         admin_state,
         dns_resolver,

@@ -76,6 +76,7 @@ pub struct ProxyConfig {
     pub allow_lan: bool,
     pub unsafe_ssl: bool,
     pub max_body_buffer_size: usize,
+    pub max_body_probe_size: usize,
     pub enable_socks: bool,
 }
 
@@ -109,6 +110,7 @@ impl Default for ProxyConfig {
             allow_lan: false,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
+            max_body_probe_size: 64 * 1024,
             enable_socks: true,
         }
     }
@@ -991,6 +993,11 @@ async fn handle_request(
         } else {
             (proxy_config.unsafe_ssl, proxy_config.max_body_buffer_size)
         };
+        let max_body_probe_size = if let Some(ref state) = admin_state {
+            state.get_max_body_probe_size()
+        } else {
+            proxy_config.max_body_probe_size
+        };
 
         match handle_http_request(
             req,
@@ -998,6 +1005,7 @@ async fn handle_request(
             verbose_logging,
             unsafe_ssl,
             max_body_buffer_size,
+            max_body_probe_size,
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),
@@ -1196,6 +1204,7 @@ mod tests {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
             enable_socks: true,
         };
         let server = ProxyServer::new(config);

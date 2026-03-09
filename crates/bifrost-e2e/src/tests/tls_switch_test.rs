@@ -21,7 +21,11 @@ pub fn get_all_tests() -> Vec<TestCase> {
 }
 
 fn get_traffic_as_json(admin_state: &bifrost_admin::AdminState) -> Value {
-    let records = admin_state.traffic_recorder.get_all();
+    let records = admin_state
+        .traffic_store
+        .as_ref()
+        .map(|s| s.get_all())
+        .unwrap_or_default();
     let records_json: Vec<Value> = records
         .into_iter()
         .map(|r| {

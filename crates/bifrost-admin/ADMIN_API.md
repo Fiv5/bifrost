@@ -1217,11 +1217,12 @@ GET /api/config/performance
     "max_db_size_bytes": 2147483648,
     "max_body_memory_size": 524288,
     "max_body_buffer_size": 10485760,
+    "max_body_probe_size": 65536,
     "file_retention_days": 7,
-    "sse_stream_flush_bytes": 65536,
-    "sse_stream_flush_interval_ms": 200,
-    "ws_payload_flush_bytes": 262144,
-    "ws_payload_flush_interval_ms": 200,
+    "sse_stream_flush_bytes": 262144,
+    "sse_stream_flush_interval_ms": 1000,
+    "ws_payload_flush_bytes": 524288,
+    "ws_payload_flush_interval_ms": 1000,
     "ws_payload_max_open_files": 128
   },
   "body_store_stats": {
@@ -1236,6 +1237,10 @@ GET /api/config/performance
   "frame_store_stats": {
     "total_frames": 1000,
     "total_size": 524288
+  },
+  "ws_payload_store_stats": {
+    "file_count": 50,
+    "total_size": 1048576
   }
 }
 ```
@@ -1254,11 +1259,12 @@ PUT /api/config/performance
   "max_db_size_bytes": 2147483648,
   "max_body_memory_size": 1048576,
   "max_body_buffer_size": 20971520,
+  "max_body_probe_size": 65536,
   "file_retention_days": 3,
-  "sse_stream_flush_bytes": 65536,
-  "sse_stream_flush_interval_ms": 200,
-  "ws_payload_flush_bytes": 262144,
-  "ws_payload_flush_interval_ms": 200,
+  "sse_stream_flush_bytes": 262144,
+  "sse_stream_flush_interval_ms": 1000,
+  "ws_payload_flush_bytes": 524288,
+  "ws_payload_flush_interval_ms": 1000,
   "ws_payload_max_open_files": 128
 }
 ```
@@ -1266,9 +1272,10 @@ PUT /api/config/performance
 | 字段                         | 类型   | 必填 | 说明                            |
 | ---------------------------- | ------ | ---- | ------------------------------- |
 | max_records                  | number | 否   | 最大流量记录数                  |
-| max_db_size_bytes            | number | 否   | Traffic DB 最大大小（字节）     |
+| max_db_size_bytes            | number | 否   | Traffic 数据总大小上限（字节，包含 body_cache/frames/ws_payload） |
 | max_body_memory_size         | number | 否   | 单个请求体最大内存缓存大小      |
 | max_body_buffer_size         | number | 否   | 请求体缓冲区最大大小            |
+| max_body_probe_size          | number | 否   | 非文本/疑似大流量 body 预读探测上限（超过则跳过 body 处理并直接流式转发） |
 | file_retention_days          | number | 否   | 文件保留天数（最大 7 天）       |
 | sse_stream_flush_bytes       | number | 否   | SSE raw stream flush 字节阈值   |
 | sse_stream_flush_interval_ms | number | 否   | SSE raw stream flush 间隔（ms） |

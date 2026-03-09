@@ -22,11 +22,13 @@ export interface PerformanceTabProps {
   maxDbSizeMarks: Record<number, string>;
   maxBodyInlineMarks: Record<number, string>;
   maxBodyBufferMarks: Record<number, string>;
+  maxBodyProbeMarks: Record<number, string>;
   fileRetentionMarks: Record<number, string>;
   handleMaxRecordsChange: (value: number | null) => void;
   handleMaxDbSizeChange: (value: number) => void;
   handleMaxBodyMemorySizeChange: (value: number) => void;
   handleMaxBodyBufferSizeChange: (value: number) => void;
+  handleMaxBodyProbeSizeChange: (value: number) => void;
   handleFileRetentionDaysChange: (value: number) => void;
   handleClearBodyCache: () => void;
   formatBytes: (bytes: number) => string;
@@ -43,11 +45,13 @@ export default function PerformanceTab({
   maxDbSizeMarks,
   maxBodyInlineMarks,
   maxBodyBufferMarks,
+  maxBodyProbeMarks,
   fileRetentionMarks,
   handleMaxRecordsChange,
   handleMaxDbSizeChange,
   handleMaxBodyMemorySizeChange,
   handleMaxBodyBufferSizeChange,
+  handleMaxBodyProbeSizeChange,
   handleFileRetentionDaysChange,
   handleClearBodyCache,
   formatBytes,
@@ -107,8 +111,9 @@ export default function PerformanceTab({
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>Max DB Size</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      Caps traffic.db on disk; when exceeded, the oldest records
-                      are deleted and the database is vacuumed.
+                      Caps traffic.db + body_cache + frames + ws_payload on
+                      disk; when exceeded, the oldest data is deleted and the
+                      database is vacuumed.
                     </Text>
                     <Slider
                       min={256 * 1024 * 1024}
@@ -195,6 +200,47 @@ export default function PerformanceTab({
               <Row justify="space-between" align="middle">
                 <Col flex="1" style={{ marginRight: 16 }}>
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                    <Text>Max Body Probe Size</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Default 64 KB. For non-text or suspected large bodies,
+                      only pre-read up to this size; if exceeded, body
+                      processing (rules/scripts) is skipped and the body is
+                      forwarded as a stream. Lower values reduce memory/CPU but
+                      may skip more body-based processing; higher values improve
+                      processing coverage at higher cost.
+                    </Text>
+                    <Slider
+                      min={0}
+                      max={1 * 1024 * 1024}
+                      step={16 * 1024}
+                      value={trafficDraft?.max_body_probe_size}
+                      onChange={handleMaxBodyProbeSizeChange}
+                      marks={maxBodyProbeMarks}
+                      tooltip={{
+                        formatter: (value) =>
+                          value !== null && value !== undefined
+                            ? value === 0
+                              ? "Off"
+                              : formatBytes(value)
+                            : "",
+                      }}
+                    />
+                  </Space>
+                </Col>
+                <Col>
+                  <Text code>
+                    {trafficDraft?.max_body_probe_size === 0
+                      ? "Off"
+                      : formatBytes(trafficDraft?.max_body_probe_size || 0)}
+                  </Text>
+                </Col>
+              </Row>
+
+              <Divider style={{ margin: "12px 0" }} />
+
+              <Row justify="space-between" align="middle">
+                <Col flex="1" style={{ marginRight: 16 }}>
+                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>File Retention Days</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       Files older than this are deleted (body and WebSocket
@@ -217,7 +263,8 @@ export default function PerformanceTab({
 
               {(performanceConfig?.body_store_stats ||
                 performanceConfig?.traffic_store_stats ||
-                performanceConfig?.frame_store_stats) && (
+                performanceConfig?.frame_store_stats ||
+                performanceConfig?.ws_payload_store_stats) && (
                 <>
                   <Divider style={{ margin: "12px 0" }} />
                   <Card
@@ -235,7 +282,7 @@ export default function PerformanceTab({
                       <Col>
                         <Popconfirm
                           title="Clear all cache files?"
-                          description="This will delete all cached data including body files, traffic records, and WebSocket frames."
+                          description="This will delete all cached data including body files, traffic records, WebSocket frames, and WebSocket payloads."
                           onConfirm={handleClearBodyCache}
                           okText="Clear"
                           cancelText="Cancel"
@@ -253,7 +300,7 @@ export default function PerformanceTab({
                       </Col>
                     </Row>
                     <Row gutter={[16, 8]} style={{ marginTop: 12 }}>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             Body Cache
@@ -274,7 +321,7 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             Traffic Records
@@ -295,7 +342,7 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
-                      <Col xs={8}>
+                      <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             WebSocket Frames
@@ -316,6 +363,27 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
+                      <Col xs={6}>
+                        <Space direction="vertical" size={0}>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            WebSocket Payloads
+                          </Text>
+                          <Space>
+                            <SwapOutlined />
+                            <Text>
+                              {performanceConfig.ws_payload_store_stats
+                                ?.file_count ?? 0}{" "}
+                              files
+                            </Text>
+                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {formatBytes(
+                              performanceConfig.ws_payload_store_stats
+                                ?.total_size ?? 0,
+                            )}
+                          </Text>
+                        </Space>
+                      </Col>
                     </Row>
                     <Divider style={{ margin: "8px 0" }} />
                     <Row>
@@ -329,6 +397,8 @@ export default function PerformanceTab({
                                 (performanceConfig.traffic_store_stats
                                   ?.file_size ?? 0) +
                                 (performanceConfig.frame_store_stats
+                                  ?.total_size ?? 0) +
+                                (performanceConfig.ws_payload_store_stats
                                   ?.total_size ?? 0),
                             )}
                           </Text>

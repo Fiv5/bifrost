@@ -38,6 +38,7 @@ use crate::server::{
 use crate::transform::apply_res_rules;
 use crate::transform::decompress::get_content_encoding;
 use crate::transform::{apply_body_rules, Phase};
+use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
@@ -106,19 +107,55 @@ pub fn get_https_client(unsafe_ssl: bool) -> &'static HttpsPooledClient {
 }
 
 pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
-    if unsafe_ssl {
-        Arc::new(
-            ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerifier))
-                .with_no_client_auth(),
-        )
+    // 允许 TLS 上游通过 ALPN 协商到 HTTP/2，从而避免被强制降级到 HTTP/1.1 造成大文件下载吞吐下降。
+    // 这里显式打开 h2 + http/1.1，后续会根据协商结果选择对应的 Hyper handshake。
+    let mut config = if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
     } else {
-        Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(build_root_cert_store())
-                .with_no_client_auth(),
-        )
+        ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth()
+    };
+
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Arc::new(config)
+}
+
+fn sanitize_headers_for_http2(headers: &mut hyper::HeaderMap) {
+    use hyper::header;
+
+    // RFC7540: HTTP/2 禁止 hop-by-hop headers。
+    // 同时移除 Connection 指定的额外 header。
+    let extra_to_remove: Vec<header::HeaderName> = headers
+        .get(header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|conn| {
+            conn.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    headers.remove(header::CONNECTION);
+    for name in extra_to_remove {
+        headers.remove(name);
+    }
+    headers.remove("proxy-connection");
+    headers.remove("keep-alive");
+    headers.remove("transfer-encoding");
+    headers.remove("upgrade");
+    headers.remove("trailer");
+
+    // TE 在 HTTP/2 仅允许 "trailers"。
+    if let Some(te) = headers.get(header::TE).and_then(|v| v.to_str().ok()) {
+        if !te.trim().eq_ignore_ascii_case("trailers") {
+            headers.remove(header::TE);
+        }
     }
 }
 
@@ -189,6 +226,10 @@ pub async fn handle_connect(
             .as_ref()
             .map(|s| s.get_max_body_buffer_size())
             .unwrap_or(proxy_config.max_body_buffer_size);
+        let max_body_probe_size = admin_state
+            .as_ref()
+            .map(|s| s.get_max_body_probe_size())
+            .unwrap_or(proxy_config.max_body_probe_size);
         return handle_tls_interception(
             req,
             &host,
@@ -197,6 +238,7 @@ pub async fn handle_connect(
             tls_config,
             verbose_logging,
             max_body_buffer_size,
+            max_body_probe_size,
             tls_intercept_config.unsafe_ssl,
             ctx,
             admin_state,
@@ -456,6 +498,7 @@ async fn handle_tls_interception(
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
@@ -524,6 +567,7 @@ async fn handle_tls_interception(
             rules,
             verbose,
             max_body_buffer_size,
+            max_body_probe_size,
             unsafe_ssl,
             &req_id,
             admin_state.clone(),
@@ -573,6 +617,7 @@ async fn tls_intercept_tunnel(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
@@ -620,6 +665,7 @@ async fn tls_intercept_tunnel(
                 rules,
                 verbose,
                 max_body_buffer_size,
+                max_body_probe_size,
                 unsafe_ssl,
                 client_ip,
                 client_app,
@@ -657,6 +703,7 @@ async fn tls_intercept_tunnel_with_cancel(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
@@ -705,6 +752,7 @@ async fn tls_intercept_tunnel_with_cancel(
                 rules,
                 verbose,
                 max_body_buffer_size,
+                max_body_probe_size,
                 unsafe_ssl,
                 client_ip,
                 client_app,
@@ -762,6 +810,35 @@ fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
     connection.to_lowercase().contains("upgrade") && upgrade.to_lowercase() == "websocket"
 }
 
+fn is_likely_text_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() {
+        return false;
+    }
+    if ct.starts_with("text/") {
+        return true;
+    }
+    if ct.starts_with("application/json") {
+        return true;
+    }
+    if ct.contains("+json") {
+        return true;
+    }
+    if ct.starts_with("application/xml") || ct.contains("+xml") {
+        return true;
+    }
+    if ct.starts_with("application/javascript")
+        || ct.starts_with("application/x-javascript")
+        || ct.starts_with("application/ecmascript")
+    {
+        return true;
+    }
+    if ct.starts_with("application/x-www-form-urlencoded") {
+        return true;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_intercepted_request_with_protocol(
     req: Request<Incoming>,
@@ -772,6 +849,7 @@ async fn handle_intercepted_request_with_protocol(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     client_ip: String,
     client_app: Option<String>,
@@ -1007,21 +1085,127 @@ async fn handle_intercepted_request_with_protocol(
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
     let has_req_body_override = resolved_rules.req_body.is_some();
     let needs_req_body_read = needs_req_processing && !has_req_body_override;
-    let req_body_too_large = req_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
 
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let body_bytes = if needs_req_body_read && !req_body_too_large {
-        match body.collect().await {
-            Ok(collected) => collected.to_bytes().to_vec(),
-            Err(e) => {
-                error!("[{}] Failed to read request body: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+    let body_bytes = if needs_req_body_read {
+        if let Some(len) = req_content_length {
+            if len > max_body_buffer_size {
+                warn!(
+                    "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                    req_id,
+                    len,
+                    max_body_buffer_size
+                );
+                if admin_state.is_some() {
+                    let (tee_body, capture) =
+                        create_request_tee_body(body, admin_state.clone(), req_id.to_string());
+                    streaming_body = Some(tee_body);
+                    req_body_capture = Some(capture);
+                } else {
+                    streaming_body = Some(body.boxed());
+                }
+                Vec::new()
+            } else {
+                let req_content_type = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let limit = if !is_likely_text_content_type(&req_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => bytes.to_vec(),
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        let size_display = req_content_length
+                            .map(|len| len.to_string())
+                            .unwrap_or_else(|| format!(">{}", limit));
+                        warn!(
+                            "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                            req_id,
+                            size_display,
+                            limit
+                        );
+                        if admin_state.is_some() {
+                            let (tee_body, capture) = create_request_tee_body(
+                                replay_body,
+                                admin_state.clone(),
+                                req_id.to_string(),
+                            );
+                            streaming_body = Some(tee_body);
+                            req_body_capture = Some(capture);
+                        } else {
+                            streaming_body = Some(replay_body.boxed());
+                        }
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        error!("[{}] Failed to read request body: {}", req_id, e);
+                        return Ok(Response::builder()
+                            .status(502)
+                            .body(full_body(b"Bad Gateway".to_vec()))
+                            .unwrap());
+                    }
+                }
+            }
+        } else {
+            let req_content_type = parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_lowercase();
+            let limit = if !is_likely_text_content_type(&req_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => bytes.to_vec(),
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    let size_display = req_content_length
+                        .map(|len| len.to_string())
+                        .unwrap_or_else(|| format!(">{}", limit));
+                    warn!(
+                        "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                        req_id,
+                        size_display,
+                        limit
+                    );
+                    if admin_state.is_some() {
+                        let (tee_body, capture) = create_request_tee_body(
+                            replay_body,
+                            admin_state.clone(),
+                            req_id.to_string(),
+                        );
+                        streaming_body = Some(tee_body);
+                        req_body_capture = Some(capture);
+                    } else {
+                        streaming_body = Some(replay_body.boxed());
+                    }
+                    Vec::new()
+                }
+                Err(e) => {
+                    error!("[{}] Failed to read request body: {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
             }
         }
     } else if let Some(ref new_body) = resolved_rules.req_body {
@@ -1041,18 +1225,10 @@ async fn handle_intercepted_request_with_protocol(
         }
         new_body.to_vec()
     } else {
-        if needs_req_body_read && req_body_too_large {
-            warn!(
-                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-                req_id,
-                req_content_length.unwrap(),
-                max_body_buffer_size
-            );
-        }
         if admin_state.is_some() {
             let (tee_body, capture) =
                 create_request_tee_body(body, admin_state.clone(), req_id.to_string());
-            streaming_body = Some(tee_body.boxed());
+            streaming_body = Some(tee_body);
             req_body_capture = Some(capture);
         } else {
             streaming_body = Some(body.boxed());
@@ -1065,10 +1241,12 @@ async fn handle_intercepted_request_with_protocol(
         req_content_length.unwrap_or(0)
     };
 
-    let parsed_uri: hyper::Uri = match target_uri.parse() {
+    // 直连上游时，请求行必须使用 origin-form（`/path?query`），
+    // 避免把 absolute-form（`https://host/path`）发给 CDN/源站导致 400。
+    let upstream_uri: hyper::Uri = match path.parse() {
         Ok(u) => u,
         Err(e) => {
-            error!("[{}] Failed to parse URI: {}", req_id, e);
+            error!("[{}] Failed to parse upstream path as URI: {}", req_id, e);
             return Ok(Response::builder()
                 .status(502)
                 .body(full_body(b"Bad Gateway".to_vec()))
@@ -1076,7 +1254,7 @@ async fn handle_intercepted_request_with_protocol(
         }
     };
 
-    let mut new_req = Request::builder().method(actual_method).uri(&parsed_uri);
+    let mut new_req = Request::builder().method(actual_method).uri(&upstream_uri);
 
     let mut skip_referer = false;
     let mut skip_ua = false;
@@ -1101,7 +1279,18 @@ async fn handle_intercepted_request_with_protocol(
         }
         new_req = new_req.header(name, value);
     }
-    new_req = new_req.header(hyper::header::HOST, &actual_target_host);
+    let host_header_value = if actual_use_http {
+        if actual_target_port == 80 {
+            actual_target_host.clone()
+        } else {
+            format!("{}:{}", actual_target_host, actual_target_port)
+        }
+    } else if actual_target_port == 443 {
+        actual_target_host.clone()
+    } else {
+        format!("{}:{}", actual_target_host, actual_target_port)
+    };
+    new_req = new_req.header(hyper::header::HOST, host_header_value);
     if streaming_body.is_none() {
         new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
     } else if let Some(content_length) = req_content_length {
@@ -1619,77 +1808,169 @@ async fn handle_intercepted_request_with_protocol(
         };
         let tls_ms = tls_start.elapsed().as_millis() as u64;
 
-        let io = TokioIo::new(tls_stream);
-        let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
+        let negotiated_alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        let use_h2 = matches!(negotiated_alpn.as_deref(), Some(b"h2"));
+        if verbose_logging {
+            debug!(
+                "[{}] [UPSTREAM] negotiated ALPN={:?}, use_h2={}",
+                req_id, negotiated_alpn, use_h2
+            );
+        }
+
+        let mut outgoing_req = outgoing_req;
+        if use_h2 {
+            let (mut parts, body) = outgoing_req.into_parts();
+            sanitize_headers_for_http2(&mut parts.headers);
+            outgoing_req = Request::from_parts(parts, body);
+        }
+
+        // HTTP/2 与 HTTP/1.1 需要不同的 handshake。这里根据 ALPN 选择，并在分支内 spawn 对应 conn，
+        // 避免把不同类型的 conn 暴露到同一个 if 表达式外。
+        if use_h2 {
+            let io = TokioIo::new(tls_stream);
+            let (mut sender, conn) = match hyper::client::conn::http2::Builder::new(
+                TokioExecutor::new(),
+            )
             .handshake(io)
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                    req_id,
-                    actual_target_host,
-                    actual_target_port,
-                    method_str,
-                    original_uri,
-                    &client_ip,
-                    &client_app,
-                    client_pid,
-                    &client_path,
-                    e
-                );
-                return Ok(build_conn_error_record_and_response(
-                    "HTTP_HANDSHAKE_FAILED",
-                    format!("HTTP Handshake Failed: {}", e),
-                    Some(tls_ms),
-                ));
-            }
-        };
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(
+                        "[{}] HTTP/2 handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                        req_id,
+                        actual_target_host,
+                        actual_target_port,
+                        method_str,
+                        original_uri,
+                        &client_ip,
+                        &client_app,
+                        client_pid,
+                        &client_path,
+                        e
+                    );
+                    return Ok(build_conn_error_record_and_response(
+                        "HTTP2_HANDSHAKE_FAILED",
+                        format!("HTTP/2 Handshake Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
 
-        let req_id_for_conn = req_id.to_string();
-        let target_host_for_conn = actual_target_host.clone();
-        let target_port_for_conn = actual_target_port;
-        let method_for_conn = method_str.clone();
-        let uri_for_conn = original_uri.clone();
-        let client_ip_for_conn = client_ip.clone();
-        let client_app_for_conn = client_app.clone();
-        let client_pid_for_conn = client_pid;
-        let client_path_for_conn = client_path.clone();
-        tokio::spawn(async move {
-            if let Err(err) = conn.await {
-                error!(
-                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                    req_id_for_conn,
-                    target_host_for_conn,
-                    target_port_for_conn,
-                    method_for_conn,
-                    uri_for_conn,
-                    client_ip_for_conn,
-                    client_app_for_conn,
-                    client_pid_for_conn,
-                    client_path_for_conn,
-                    err
-                );
-            }
-        });
+            let req_id_for_conn = req_id.to_string();
+            let target_host_for_conn = actual_target_host.clone();
+            let target_port_for_conn = actual_target_port;
+            let method_for_conn = method_str.clone();
+            let uri_for_conn = original_uri.clone();
+            let client_ip_for_conn = client_ip.clone();
+            let client_app_for_conn = client_app.clone();
+            let client_pid_for_conn = client_pid;
+            let client_path_for_conn = client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        target_host_for_conn,
+                        target_port_for_conn,
+                        method_for_conn,
+                        uri_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
 
-        let send_start = Instant::now();
-        let response = match sender.send_request(outgoing_req).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!("[{}] Failed to send request: {}", req_id, e);
-                return Ok(build_conn_error_record_and_response(
-                    "REQUEST_FAILED",
-                    format!("Request Failed: {}", e),
-                    Some(tls_ms),
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        (response, Some(tls_ms), wait_ms)
+            let send_start = Instant::now();
+            let response = match sender.send_request(outgoing_req).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[{}] Failed to send request: {}", req_id, e);
+                    return Ok(build_conn_error_record_and_response(
+                        "REQUEST_FAILED",
+                        format!("Request Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            (response, Some(tls_ms), wait_ms)
+        } else {
+            let io = TokioIo::new(tls_stream);
+            let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(io)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(
+                        "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                        req_id,
+                        actual_target_host,
+                        actual_target_port,
+                        method_str,
+                        original_uri,
+                        &client_ip,
+                        &client_app,
+                        client_pid,
+                        &client_path,
+                        e
+                    );
+                    return Ok(build_conn_error_record_and_response(
+                        "HTTP_HANDSHAKE_FAILED",
+                        format!("HTTP Handshake Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+
+            let req_id_for_conn = req_id.to_string();
+            let target_host_for_conn = actual_target_host.clone();
+            let target_port_for_conn = actual_target_port;
+            let method_for_conn = method_str.clone();
+            let uri_for_conn = original_uri.clone();
+            let client_ip_for_conn = client_ip.clone();
+            let client_app_for_conn = client_app.clone();
+            let client_pid_for_conn = client_pid;
+            let client_path_for_conn = client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        target_host_for_conn,
+                        target_port_for_conn,
+                        method_for_conn,
+                        uri_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
+
+            let send_start = Instant::now();
+            let response = match sender.send_request(outgoing_req).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[{}] Failed to send request: {}", req_id, e);
+                    return Ok(build_conn_error_record_and_response(
+                        "REQUEST_FAILED",
+                        format!("Request Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            (response, Some(tls_ms), wait_ms)
+        }
     };
 
     let (mut res_parts, res_body) = response.into_parts();
@@ -1756,27 +2037,113 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_body_too_large = res_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
-
-    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
-
-    if needs_res_body_read && res_body_too_large {
-        warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-            req_id,
-            res_content_length.unwrap(),
-            max_body_buffer_size
-        );
-    }
-
+    let res_content_type = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
     let is_sse = res_parts
         .headers
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().starts_with("text/event-stream"))
         .unwrap_or(false);
+
+    let mut res_body_too_large = false;
+    let mut res_body_limit = max_body_buffer_size;
+    let mut res_body_incoming = Some(res_body);
+    let mut res_body_stream: Option<BoxBody> = None;
+    if !is_sse {
+        res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
+    }
+
+    let mut pre_read_res: Option<(Vec<u8>, u64)> = None;
+    if needs_res_body_read && needs_processing && !is_sse {
+        if let Some(len) = res_content_length {
+            if len > max_body_buffer_size {
+                res_body_too_large = true;
+                res_body_limit = max_body_buffer_size;
+            } else {
+                let receive_start = Instant::now();
+                let body = res_body_stream.take().unwrap();
+                let limit = if !is_likely_text_content_type(&res_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                res_body_limit = limit;
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => {
+                        let receive_ms = receive_start.elapsed().as_millis() as u64;
+                        pre_read_res = Some((bytes.to_vec(), receive_ms));
+                    }
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        res_body_too_large = true;
+                        res_body_stream = Some(replay_body.boxed());
+                    }
+                    Err(e) => {
+                        error!("[{}] Failed to read response body: {}", req_id, e);
+                        return Ok(Response::builder()
+                            .status(502)
+                            .body(full_body(b"Bad Gateway".to_vec()))
+                            .unwrap());
+                    }
+                }
+            }
+        } else {
+            let receive_start = Instant::now();
+            let body = res_body_stream.take().unwrap();
+            let limit = if !is_likely_text_content_type(&res_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            res_body_limit = limit;
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => {
+                    let receive_ms = receive_start.elapsed().as_millis() as u64;
+                    pre_read_res = Some((bytes.to_vec(), receive_ms));
+                }
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    res_body_too_large = true;
+                    res_body_stream = Some(replay_body.boxed());
+                }
+                Err(e) => {
+                    error!("[{}] Failed to read response body: {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
+            }
+        }
+    }
+
+    let skip_body_processing =
+        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
+
+    if needs_res_body_read && res_body_too_large {
+        let size_display = res_content_length
+            .map(|len| len.to_string())
+            .unwrap_or_else(|| format!(">{}", res_body_limit));
+        warn!(
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            req_id,
+            size_display,
+            res_body_limit
+        );
+    }
 
     if skip_body_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
@@ -1907,6 +2274,7 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         if is_sse {
+            let res_body = res_body_incoming.take().unwrap();
             let tee_body = create_sse_tee_body(
                 res_body,
                 admin_state.clone(),
@@ -1921,6 +2289,7 @@ async fn handle_intercepted_request_with_protocol(
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+            let res_body = res_body_stream.take().unwrap();
             let tee_body = create_tee_body_with_store(
                 res_body,
                 admin_state.clone(),
@@ -1930,14 +2299,17 @@ async fn handle_intercepted_request_with_protocol(
                 Some(traffic_type),
                 response_headers_size,
             );
-            let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
+            let final_body = wrap_throttled_body(tee_body, resolved_rules.res_speed);
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         }
     }
 
-    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+    let (res_body_bytes, receive_ms) = if let Some(v) = pre_read_res.take() {
+        v
+    } else if needs_res_body_read {
         let receive_start = Instant::now();
+        let res_body = res_body_stream.take().unwrap();
         let res_body_bytes = match res_body.collect().await {
             Ok(collected) => collected.to_bytes().to_vec(),
             Err(e) => {

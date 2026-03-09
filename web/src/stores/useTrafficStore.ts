@@ -157,6 +157,20 @@ const mergeSseBody = (prev: string | null, payload: string): string => {
   return `${prev}\n\n${trimmed}`;
 };
 
+const SSE_RESPONSE_BODY_CHAR_LIMIT = 2_000_000;
+
+const getDisplaySizeBytes = (record: TrafficSummary | undefined): number => {
+  if (!record) return 0;
+  if (record.socket_status && (record.response_size === 0 || record.socket_status.is_open)) {
+    return record.socket_status.send_bytes + record.socket_status.receive_bytes;
+  }
+  return record.response_size;
+};
+
+const isPendingRecord = (record: TrafficSummary): boolean => {
+  return record.status === 0 || record.socket_status?.is_open === true;
+};
+
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
   const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
   const displayProtocol = isH3
@@ -167,9 +181,7 @@ const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
   const statusColor = getStatusColor(record.status);
   const statusDotColor = getStatusDotColor(record.status);
 
-  const size = (record.is_websocket || record.is_sse || record.is_tunnel) && record.socket_status
-    ? record.socket_status.send_bytes + record.socket_status.receive_bytes
-    : record.response_size;
+  const size = getDisplaySizeBytes(record);
   const displaySize = formatSize(size);
 
   const contentTypeShort = record.content_type?.split(";")[0]?.split("/").pop() || "-";
@@ -201,11 +213,7 @@ const preprocessRecords = (records: TrafficSummary[]): TrafficSummary[] => {
   return records;
 };
 
-const applyDisplayIndex = (records: TrafficSummary[]): void => {
-  for (let i = 0; i < records.length; i++) {
-    records[i]._displayIndex = i + 1;
-  }
-};
+
 
 const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]): boolean => {
   return toolbar.rule.length > 0 ||
@@ -591,11 +599,9 @@ export const useTrafficStore = create<TrafficState>()(
 
               for (const r of batch.updatedRecords) {
                 const existing = recordsMap.get(r.id);
-                const socketStatusChanged =
-                  existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
-                  existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
-                  existing?.socket_status?.is_open !== r.socket_status?.is_open;
-                if (!existing || existing.status !== r.status || socketStatusChanged) {
+                const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
+                const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
+                if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
                   recordsMap.set(r.id, r);
                   hasChanges = true;
                 }
@@ -613,14 +619,14 @@ export const useTrafficStore = create<TrafficState>()(
               const newPendingIds = prevState.pendingIds;
 
               for (const r of batch.updatedRecords) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (!isPending) {
                   newPendingIds.delete(r.id);
                 }
               }
 
               for (const r of batch.newRecords) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (isPending) {
                   newPendingIds.add(r.id);
                 }
@@ -630,7 +636,6 @@ export const useTrafficStore = create<TrafficState>()(
               let allRecords: TrafficSummary[];
               if (hasChanges) {
                 allRecords = Array.from(recordsMap.values());
-                applyDisplayIndex(allRecords);
 
                 if (allRecords.length > MAX_RECORDS) {
                   const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
@@ -703,11 +708,9 @@ export const useTrafficStore = create<TrafficState>()(
 
           for (const r of updatedRecords) {
             const existing = recordsMap.get(r.id);
-            const socketStatusChanged =
-              existing?.socket_status?.send_bytes !== r.socket_status?.send_bytes ||
-              existing?.socket_status?.receive_bytes !== r.socket_status?.receive_bytes ||
-              existing?.socket_status?.is_open !== r.socket_status?.is_open;
-            if (!existing || existing.status !== r.status || socketStatusChanged) {
+            const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
+            const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
+            if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
               recordsMap.set(r.id, r);
               hasChanges = true;
             }
@@ -725,14 +728,14 @@ export const useTrafficStore = create<TrafficState>()(
           const newPendingIds = prevState.pendingIds;
 
           for (const r of updatedRecords) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            const isPending = isPendingRecord(r);
             if (!isPending) {
               newPendingIds.delete(r.id);
             }
           }
 
           for (const r of newRecords) {
-            const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+            const isPending = isPendingRecord(r);
             if (isPending) {
               newPendingIds.add(r.id);
             }
@@ -742,7 +745,7 @@ export const useTrafficStore = create<TrafficState>()(
           let allRecords: TrafficSummary[];
           if (hasChanges) {
             allRecords = Array.from(recordsMap.values());
-            applyDisplayIndex(allRecords);
+
             if (allRecords.length > MAX_RECORDS) {
               const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
               for (const r of toRemove) {
@@ -818,9 +821,7 @@ export const useTrafficStore = create<TrafficState>()(
           }
 
           const records = removedCount > 0 ? Array.from(recordsMap.values()) : prevState.records;
-          if (removedCount > 0) {
-            applyDisplayIndex(records);
-          }
+
 
           const detailRemoved = currentDeleted || !!selectedDeleted;
           return {
@@ -854,13 +855,13 @@ export const useTrafficStore = create<TrafficState>()(
 
           const convertedRecords = response.new_records.map(compactToSummary);
           const preprocessedRecords = preprocessRecords(convertedRecords);
-          applyDisplayIndex(preprocessedRecords);
+
 
           const newPendingIds = new Set<string>();
           const newRecordsMap = new Map<string, TrafficSummary>();
           for (const r of preprocessedRecords) {
             newRecordsMap.set(r.id, r);
-            if (r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open)) {
+            if (isPendingRecord(r)) {
               newPendingIds.add(r.id);
             }
           }
@@ -931,14 +932,14 @@ export const useTrafficStore = create<TrafficState>()(
               const newPendingIds = prevState.pendingIds;
 
               for (const r of preprocessedUpdated) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (!isPending) {
                   newPendingIds.delete(r.id);
                 }
               }
 
               for (const r of preprocessedNew) {
-                const isPending = r.status === 0 || ((r.is_websocket || r.is_sse || r.is_tunnel) && r.socket_status?.is_open);
+                const isPending = isPendingRecord(r);
                 if (isPending) {
                   newPendingIds.add(r.id);
                 }
@@ -948,7 +949,7 @@ export const useTrafficStore = create<TrafficState>()(
               let allRecords: TrafficSummary[];
               if (hasChanges) {
                 allRecords = Array.from(recordsMap.values());
-                applyDisplayIndex(allRecords);
+
 
                 if (allRecords.length > MAX_RECORDS) {
                   const toRemove = allRecords.slice(0, allRecords.length - MAX_RECORDS);
@@ -1042,7 +1043,13 @@ export const useTrafficStore = create<TrafficState>()(
         set((state) => {
           if (!payload) return {};
           if (state.currentRecord?.id !== recordId) return {};
-          return { responseBody: mergeSseBody(state.responseBody, payload) };
+          const prev = state.responseBody || '';
+          if (prev.length >= SSE_RESPONSE_BODY_CHAR_LIMIT) return {};
+          let next = mergeSseBody(prev, payload);
+          if (next.length > SSE_RESPONSE_BODY_CHAR_LIMIT) {
+            next = `${next.slice(0, SSE_RESPONSE_BODY_CHAR_LIMIT)}\n\n... (truncated)`;
+          }
+          return { responseBody: next };
         });
       },
 
@@ -1072,7 +1079,6 @@ export const useTrafficStore = create<TrafficState>()(
               }
 
               const newRecords = Array.from(newRecordsMap.values());
-              applyDisplayIndex(newRecords);
               return {
                 records: newRecords,
                 recordsMap: newRecordsMap,

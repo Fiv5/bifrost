@@ -10,7 +10,7 @@ import xml from "highlight.js/lib/languages/xml";
 import javascript from "highlight.js/lib/languages/javascript";
 import css from "highlight.js/lib/languages/css";
 import plaintext from "highlight.js/lib/languages/plaintext";
-import "highlight.js/styles/github.css";
+import "../../../styles/hljs-github-theme.css";
 import { useReplayStore, type ResponseViewMode, type ResponseContentType } from "../../../stores/useReplayStore";
 
 hljs.registerLanguage("json", json);
@@ -312,7 +312,7 @@ export default function CodeViewer({
               </div>
             )}
             <pre style={styles.code}>
-              <code>
+              <code className="hljs">
                 {lines.map((line, index) => (
                   <div
                     key={index}

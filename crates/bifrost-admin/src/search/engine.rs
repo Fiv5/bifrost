@@ -8,8 +8,9 @@ use super::types::{
 use crate::body_store::{BodyRef, SharedBodyStore};
 use crate::connection_monitor::SharedConnectionMonitor;
 use crate::frame_store::SharedFrameStore;
-use crate::traffic::TrafficRecord;
-use crate::traffic_db::{QueryParams, SharedTrafficDbStore, TrafficSummaryCompact};
+use crate::traffic_db::{
+    QueryParams, SharedTrafficDbStore, TrafficSearchFields, TrafficSummaryCompact,
+};
 
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
@@ -22,6 +23,15 @@ pub struct SearchEngine {
     body_store: Option<SharedBodyStore>,
     frame_store: Option<SharedFrameStore>,
     connection_monitor: Option<SharedConnectionMonitor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchProgress {
+    pub iterations: usize,
+    pub total_searched: usize,
+    pub total_matched: usize,
+    pub cursor: Option<u64>,
+    pub has_more_hint: bool,
 }
 
 impl SearchEngine {
@@ -49,9 +59,35 @@ impl SearchEngine {
     }
 
     pub fn search(&self, request: &SearchRequest) -> SearchResponse {
+        self.search_stream(request, |_| {}, |_| {})
+    }
+
+    pub fn search_stream<F, P>(
+        &self,
+        request: &SearchRequest,
+        mut on_result: F,
+        mut on_progress: P,
+    ) -> SearchResponse
+    where
+        F: FnMut(&SearchResultItem),
+        P: FnMut(&SearchProgress),
+    {
         let search_id = generate_search_id();
         let batch_size = request.limit.unwrap_or(DEFAULT_BATCH_SIZE);
         let keyword_lower = request.keyword.to_lowercase();
+
+        // search scope / filters 计算一次，避免循环里反复判断
+        let scope = &request.scope;
+        let need_url = scope.should_search_url()
+            || request
+                .filters
+                .conditions
+                .iter()
+                .any(|c| c.field.as_str() == "url");
+        let need_request_headers = scope.should_search_request_headers();
+        let need_response_headers = scope.should_search_response_headers();
+        let need_request_body_ref = scope.should_search_request_body();
+        let need_response_body_ref = scope.should_search_response_body();
 
         debug!(
             keyword = %request.keyword,
@@ -75,7 +111,8 @@ impl SearchEngine {
             iterations += 1;
 
             let query_params = self.build_query_params_with_cursor(request, current_cursor);
-            let query_result = self.traffic_db.query(&query_params);
+            // 搜索会迭代多次，避免每次 query 都做 COUNT(*)
+            let query_result = self.traffic_db.query_for_search(&query_params);
 
             if query_result.records.is_empty() {
                 db_has_more = false;
@@ -90,28 +127,60 @@ impl SearchEngine {
                 "[SEARCH] Processing batch"
             );
 
+            // 先收集候选 id，批量拉取搜索字段，避免 N+1。
+            let candidate_ids: Vec<&str> = query_result
+                .records
+                .iter()
+                .filter(|c| self.matches_filter_compact(c, &request.filters))
+                .map(|c| c.id.as_str())
+                .collect();
+
+            let fields_map = if candidate_ids.is_empty() {
+                std::collections::HashMap::new()
+            } else {
+                self.traffic_db.get_search_fields_by_ids(
+                    &candidate_ids,
+                    need_url,
+                    need_request_headers,
+                    need_response_headers,
+                    need_request_body_ref,
+                    need_response_body_ref,
+                )
+            };
+
             for compact in &query_result.records {
                 total_searched += 1;
                 current_cursor = Some(compact.seq);
 
                 if !self.matches_filter_compact(compact, &request.filters) {
+                    if total_searched >= MAX_TOTAL_SEARCHED {
+                        break;
+                    }
                     continue;
                 }
 
-                if let Some(record) = self.traffic_db.get_by_id(&compact.id) {
-                    if !request.filters.conditions.is_empty()
-                        && !self.matches_conditions(&record, &request.filters.conditions)
-                    {
-                        continue;
-                    }
+                let fields = fields_map.get(&compact.id);
 
-                    if let Some(result) =
-                        self.search_record(&request.scope, &keyword_lower, &record, compact)
-                    {
-                        results.push(result);
-                        if results.len() >= batch_size {
-                            break;
-                        }
+                if !request.filters.conditions.is_empty()
+                    && !self.matches_conditions_compact(
+                        compact,
+                        fields,
+                        &request.filters.conditions,
+                    )
+                {
+                    if total_searched >= MAX_TOTAL_SEARCHED {
+                        break;
+                    }
+                    continue;
+                }
+
+                if let Some(result) = self.search_compact(scope, &keyword_lower, compact, fields) {
+                    results.push(result);
+                    if let Some(last) = results.last() {
+                        on_result(last);
+                    }
+                    if results.len() >= batch_size {
+                        break;
                     }
                 }
 
@@ -121,6 +190,13 @@ impl SearchEngine {
             }
 
             db_has_more = query_result.has_more;
+            on_progress(&SearchProgress {
+                iterations,
+                total_searched,
+                total_matched: results.len(),
+                cursor: current_cursor,
+                has_more_hint: db_has_more && total_searched < MAX_TOTAL_SEARCHED,
+            });
         }
 
         let has_more = db_has_more && total_searched < MAX_TOTAL_SEARCHED;
@@ -142,6 +218,110 @@ impl SearchEngine {
             has_more,
             search_id,
         }
+    }
+
+    fn search_compact(
+        &self,
+        scope: &SearchScope,
+        keyword: &str,
+        compact: &TrafficSummaryCompact,
+        fields: Option<&TrafficSearchFields>,
+    ) -> Option<SearchResultItem> {
+        // 搜索目标是尽快返回结果：一条 record 只要命中一次就足够展示。
+        // 因此这里按“便宜 -> 昂贵”的顺序，并在首次命中后立即返回。
+
+        if scope.should_search_url() {
+            let url_text = fields
+                .and_then(|f| f.url.as_deref())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| build_compact_url(compact));
+            if let Some(m) = self.search_text(&url_text, keyword, "url") {
+                return Some(SearchResultItem {
+                    record: compact.clone(),
+                    matches: vec![m],
+                });
+            }
+        }
+
+        if scope.should_search_request_headers() {
+            if let Some(headers) = fields.and_then(|f| f.request_headers.as_ref()) {
+                for (k, v) in headers {
+                    let header_text = format!("{}: {}", k, v);
+                    if let Some(m) = self.search_text(&header_text, keyword, "request_header") {
+                        return Some(SearchResultItem {
+                            record: compact.clone(),
+                            matches: vec![m],
+                        });
+                    }
+                }
+            }
+        }
+
+        if scope.should_search_response_headers() {
+            if let Some(headers) = fields.and_then(|f| f.response_headers.as_ref()) {
+                for (k, v) in headers {
+                    let header_text = format!("{}: {}", k, v);
+                    if let Some(m) = self.search_text(&header_text, keyword, "response_header") {
+                        return Some(SearchResultItem {
+                            record: compact.clone(),
+                            matches: vec![m],
+                        });
+                    }
+                }
+            }
+        }
+
+        if scope.should_search_request_body() {
+            if let Some(body_ref) = fields.and_then(|f| f.request_body_ref.as_ref()) {
+                if let Some(m) = self.search_body(body_ref, keyword, "request_body") {
+                    return Some(SearchResultItem {
+                        record: compact.clone(),
+                        matches: vec![m],
+                    });
+                }
+            }
+        }
+
+        if scope.should_search_response_body() {
+            if let Some(body_ref) = fields.and_then(|f| f.response_body_ref.as_ref()) {
+                if let Some(m) = self.search_body(body_ref, keyword, "response_body") {
+                    return Some(SearchResultItem {
+                        record: compact.clone(),
+                        matches: vec![m],
+                    });
+                }
+            }
+        }
+
+        // WS/SSE frame 搜索最贵，且只在对应记录上启用。
+        let is_websocket = (compact.flags & crate::traffic_db::TrafficFlags::IS_WEBSOCKET) != 0;
+        let is_sse = (compact.flags & crate::traffic_db::TrafficFlags::IS_SSE) != 0;
+
+        if is_websocket && scope.should_search_websocket_messages() {
+            if let Some(frame_matches) =
+                self.search_frames(&compact.id, keyword, "websocket_message")
+            {
+                if let Some(first) = frame_matches.into_iter().next() {
+                    return Some(SearchResultItem {
+                        record: compact.clone(),
+                        matches: vec![first],
+                    });
+                }
+            }
+        }
+
+        if is_sse && scope.should_search_sse_events() {
+            if let Some(frame_matches) = self.search_frames(&compact.id, keyword, "sse_event") {
+                if let Some(first) = frame_matches.into_iter().next() {
+                    return Some(SearchResultItem {
+                        record: compact.clone(),
+                        matches: vec![first],
+                    });
+                }
+            }
+        }
+
+        None
     }
 
     fn build_query_params_with_cursor(
@@ -208,82 +388,56 @@ impl SearchEngine {
         params
     }
 
-    fn search_record(
+    fn matches_conditions_compact(
         &self,
-        scope: &SearchScope,
-        keyword: &str,
-        record: &TrafficRecord,
         compact: &TrafficSummaryCompact,
-    ) -> Option<SearchResultItem> {
-        let mut matches = Vec::new();
-
-        if scope.should_search_url() {
-            if let Some(m) = self.search_text(&record.url, keyword, "url") {
-                matches.push(m);
+        fields: Option<&TrafficSearchFields>,
+        conditions: &[FilterCondition],
+    ) -> bool {
+        for condition in conditions {
+            if !self.matches_condition_compact(compact, fields, condition) {
+                return false;
             }
         }
+        true
+    }
 
-        if scope.should_search_request_headers() {
-            if let Some(headers) = &record.request_headers {
-                for (k, v) in headers {
-                    let header_text = format!("{}: {}", k, v);
-                    if let Some(m) = self.search_text(&header_text, keyword, "request_header") {
-                        matches.push(m);
-                        break;
-                    }
+    fn matches_condition_compact(
+        &self,
+        compact: &TrafficSummaryCompact,
+        fields: Option<&TrafficSearchFields>,
+        condition: &FilterCondition,
+    ) -> bool {
+        let url_fallback;
+        let field_value: &str = match condition.field.as_str() {
+            "url" => {
+                if let Some(u) = fields.and_then(|f| f.url.as_deref()) {
+                    u
+                } else {
+                    url_fallback = build_compact_url(compact);
+                    &url_fallback
                 }
             }
-        }
+            "host" => compact.h.as_str(),
+            "path" => compact.p.as_str(),
+            "method" => compact.m.as_str(),
+            "content_type" => compact.ct.as_deref().unwrap_or(""),
+            "client_app" => compact.capp.as_deref().unwrap_or(""),
+            "client_ip" => compact.cip.as_str(),
+            _ => return true,
+        };
 
-        if scope.should_search_response_headers() {
-            if let Some(headers) = &record.response_headers {
-                for (k, v) in headers {
-                    let header_text = format!("{}: {}", k, v);
-                    if let Some(m) = self.search_text(&header_text, keyword, "response_header") {
-                        matches.push(m);
-                        break;
-                    }
-                }
-            }
-        }
+        let field_lower = field_value.to_lowercase();
+        let value_lower = condition.value.to_lowercase();
 
-        if scope.should_search_request_body() {
-            if let Some(body_ref) = &record.request_body_ref {
-                if let Some(m) = self.search_body(body_ref, keyword, "request_body") {
-                    matches.push(m);
-                }
-            }
-        }
-
-        if scope.should_search_response_body() {
-            if let Some(body_ref) = &record.response_body_ref {
-                if let Some(m) = self.search_body(body_ref, keyword, "response_body") {
-                    matches.push(m);
-                }
-            }
-        }
-
-        if record.is_websocket && scope.should_search_websocket_messages() {
-            if let Some(frame_matches) =
-                self.search_frames(&record.id, keyword, "websocket_message")
-            {
-                matches.extend(frame_matches);
-            }
-        }
-
-        if record.is_sse && scope.should_search_sse_events() {
-            if let Some(frame_matches) = self.search_frames(&record.id, keyword, "sse_event") {
-                matches.extend(frame_matches);
-            }
-        }
-
-        if matches.is_empty() {
-            None
-        } else {
-            Some(SearchResultItem {
-                record: compact.clone(),
-                matches,
-            })
+        match condition.operator.as_str() {
+            "contains" => field_lower.contains(&value_lower),
+            "equals" => field_lower == value_lower,
+            "not_contains" => !field_lower.contains(&value_lower),
+            "regex" => Regex::new(&condition.value)
+                .map(|re| re.is_match(field_value))
+                .unwrap_or(false),
+            _ => field_lower.contains(&value_lower),
         }
     }
 
@@ -602,44 +756,16 @@ impl SearchEngine {
 
         true
     }
+}
 
-    fn matches_conditions(&self, record: &TrafficRecord, conditions: &[FilterCondition]) -> bool {
-        for condition in conditions {
-            if !self.matches_condition(record, condition) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn matches_condition(&self, record: &TrafficRecord, condition: &FilterCondition) -> bool {
-        let field_value = match condition.field.as_str() {
-            "url" => &record.url,
-            "host" => &record.host,
-            "path" => &record.path,
-            "method" => &record.method,
-            "content_type" => record.content_type.as_deref().unwrap_or(""),
-            "client_app" => record.client_app.as_deref().unwrap_or(""),
-            "client_ip" => &record.client_ip,
-            _ => return true,
-        };
-
-        let field_lower = field_value.to_lowercase();
-        let value_lower = condition.value.to_lowercase();
-
-        match condition.operator.as_str() {
-            "contains" => field_lower.contains(&value_lower),
-            "equals" => field_lower == value_lower,
-            "not_contains" => !field_lower.contains(&value_lower),
-            "regex" => {
-                if let Ok(re) = Regex::new(&condition.value) {
-                    re.is_match(field_value)
-                } else {
-                    false
-                }
-            }
-            _ => field_lower.contains(&value_lower),
-        }
+fn build_compact_url(compact: &TrafficSummaryCompact) -> String {
+    // compact 中 proto/h/p 是 UI 展示和过滤的核心字段。
+    // 这里仅用于搜索预览/匹配，避免为了 URL 再回表查整条 record。
+    let scheme = compact.proto.trim();
+    if scheme.is_empty() {
+        format!("http://{}{}", compact.h, compact.p)
+    } else {
+        format!("{}://{}{}", scheme, compact.h, compact.p)
     }
 }
 

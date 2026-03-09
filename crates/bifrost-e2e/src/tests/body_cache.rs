@@ -58,15 +58,20 @@ async fn test_request_body_small() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state.traffic_recorder.get_all();
+    let records = admin_state
+        .traffic_store
+        .as_ref()
+        .map(|s| s.get_all())
+        .unwrap_or_default();
     if records.is_empty() {
         return Err("No traffic records found".to_string());
     }
 
     let record_id = &records[0].id;
     let record = admin_state
-        .traffic_recorder
-        .get_by_id(record_id)
+        .traffic_store
+        .as_ref()
+        .and_then(|s| s.get_by_id(record_id))
         .ok_or("Failed to get traffic record detail")?;
 
     let body_ref = record
@@ -129,15 +134,20 @@ async fn test_request_body_with_rule() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state.traffic_recorder.get_all();
+    let records = admin_state
+        .traffic_store
+        .as_ref()
+        .map(|s| s.get_all())
+        .unwrap_or_default();
     if records.is_empty() {
         return Err("No traffic records found".to_string());
     }
 
     let record_id = &records[0].id;
     let record = admin_state
-        .traffic_recorder
-        .get_by_id(record_id)
+        .traffic_store
+        .as_ref()
+        .and_then(|s| s.get_by_id(record_id))
         .ok_or("Failed to get traffic record detail")?;
 
     let body_ref = record
@@ -196,15 +206,20 @@ async fn test_request_body_post() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state.traffic_recorder.get_all();
+    let records = admin_state
+        .traffic_store
+        .as_ref()
+        .map(|s| s.get_all())
+        .unwrap_or_default();
     if records.is_empty() {
         return Err("No traffic records found".to_string());
     }
 
     let record_id = &records[0].id;
     let record = admin_state
-        .traffic_recorder
-        .get_by_id(record_id)
+        .traffic_store
+        .as_ref()
+        .and_then(|s| s.get_by_id(record_id))
         .ok_or("Failed to get traffic record detail")?;
 
     let body_ref = record

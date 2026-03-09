@@ -13,6 +13,7 @@ import {
   SearchOutlined,
   CloseOutlined,
   LoadingOutlined,
+  StopOutlined,
 } from "@ant-design/icons";
 import { useSearchStore, compactToSummary } from "../../stores/useSearchStore";
 import { useTrafficStore } from "../../stores/useTrafficStore";
@@ -52,6 +53,7 @@ export default function SearchMode({
     setScope,
     search,
     loadMore,
+    cancelSearch,
     setMode,
   } = useSearchStore();
 
@@ -116,6 +118,10 @@ export default function SearchMode({
   const handleExitSearch = useCallback(() => {
     setMode("normal");
   }, [setMode]);
+
+  const handleCancelSearch = useCallback(() => {
+    cancelSearch();
+  }, [cancelSearch]);
 
   const handleResultSelect = useCallback(
     (item: SearchResultItem) => {
@@ -220,11 +226,20 @@ export default function SearchMode({
           <Button
             type="primary"
             onClick={handleSearch}
-            loading={isSearching}
             icon={<SearchOutlined />}
+            disabled={!keyword.trim()}
           >
             Search
           </Button>
+          {(isSearching || isLoadingMore) && (
+            <Button
+              onClick={handleCancelSearch}
+              icon={<StopOutlined />}
+              danger
+            >
+              Stop
+            </Button>
+          )}
           <Button onClick={handleExitSearch}>Exit</Button>
         </div>
         <div style={styles.scopeRow}>
@@ -258,6 +273,12 @@ export default function SearchMode({
               Found <Text strong>{totalMatched}</Text> matches
             </Text>
             <Text type="secondary">(searched {totalSearched} records)</Text>
+            {isSearching && (
+              <Space size={6}>
+                <LoadingOutlined style={{ color: token.colorTextSecondary }} />
+                <Text type="secondary">Searching...</Text>
+              </Space>
+            )}
           </Space>
           {hasMore && (
             <Button
@@ -274,7 +295,13 @@ export default function SearchMode({
       <div style={styles.results}>
         {isSearching && results.length === 0 ? (
           <div style={styles.emptyWrapper}>
-            <Spin indicator={<LoadingOutlined spin />} tip="Searching..." />
+            <Space direction="vertical" align="center" size={8}>
+              <Spin indicator={<LoadingOutlined spin />} tip="Searching..." />
+              <Text type="secondary">searched {totalSearched} records</Text>
+              <Button onClick={handleCancelSearch} icon={<StopOutlined />} danger>
+                Stop
+              </Button>
+            </Space>
           </div>
         ) : results.length === 0 ? (
           <div style={styles.emptyWrapper}>

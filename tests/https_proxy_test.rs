@@ -6,15 +6,25 @@ use bifrost_tls::{generate_root_ca, init_crypto_provider, CertCache, DynamicCert
 use common::{add_test_rule, start_test_proxy, start_test_proxy_with_config};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::test]
 async fn test_https_tunnel() {
     let proxy = start_test_proxy().await;
 
+    let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target_addr = target.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = target.accept().await;
+    });
+
     let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
 
-    let connect_request = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
+    let connect_request = format!(
+        "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+        target_addr.port(),
+        target_addr.port()
+    );
     stream.write_all(connect_request.as_bytes()).await.unwrap();
 
     let mut response = vec![0u8; 1024];

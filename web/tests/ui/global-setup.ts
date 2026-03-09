@@ -50,7 +50,9 @@ const startTrafficGenerator = async (repoRoot: string) => {
     if (!Number.isNaN(pid) && isProcessAlive(pid)) {
       return;
     }
-  } catch {}
+  } catch {
+    void 0;
+  }
 
   const generatorPath = path.join(repoRoot, "web", "tests", "ui", "traffic-generator.cjs");
   const child = spawn("node", [generatorPath], {

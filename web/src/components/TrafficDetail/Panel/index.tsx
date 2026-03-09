@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback } from 'react';
+import { type ReactNode, useCallback, useMemo } from 'react';
 import { Typography, Space, Divider, theme } from 'antd';
 import { FilterOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
 import type {
@@ -30,6 +30,8 @@ interface PanelProps {
   contentType?: RecordContentType;
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
+  keepAliveTabs?: string[];
+  contentOverflow?: 'auto' | 'hidden';
 }
 
 export const Panel = ({
@@ -44,11 +46,16 @@ export const Panel = ({
   contentType,
   collapsed = false,
   onCollapsedChange,
+  keepAliveTabs,
+  contentOverflow = 'auto',
 }: PanelProps) => {
   const { token } = theme.useToken();
 
   const enabledTabs = tabs.filter((tab) => tab.enable !== false);
-  const activeTabConfig = enabledTabs.find((tab) => tab.key === activeTab);
+  const keepAliveSet = useMemo(
+    () => new Set(keepAliveTabs ?? []),
+    [keepAliveTabs],
+  );
 
   const handleToggleSearch = useCallback(() => {
     onSearch({ show: !searchValue.show });
@@ -135,23 +142,41 @@ export const Panel = ({
         </Space>
       </div>
 
-      {!collapsed && (
-        <>
-          <Divider style={{ margin: '0 0 4px 0' }} />
+      <div
+        style={{
+          display: collapsed ? 'none' : 'flex',
+          flex: 1,
+          minHeight: 0,
+          flexDirection: 'column',
+        }}
+      >
+        <Divider style={{ margin: '0 0 4px 0' }} />
 
-          <Search value={searchValue} onSearch={onSearch} />
+        <Search value={searchValue} onSearch={onSearch} />
 
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              overflow: 'auto',
-            }}
-          >
-            {activeTabConfig?.children}
-          </div>
-        </>
-      )}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: contentOverflow,
+          }}
+        >
+          {enabledTabs.map((tab) => {
+            const isActive = tab.key === activeTab;
+            if (!isActive && !keepAliveSet.has(tab.key)) {
+              return null;
+            }
+            return (
+              <div
+                key={tab.key}
+                style={{ display: isActive ? 'block' : 'none', height: '100%' }}
+              >
+                {tab.children}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 };

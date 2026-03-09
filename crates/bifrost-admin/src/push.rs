@@ -561,19 +561,15 @@ impl PushManager {
         client: &Arc<PushClient>,
         subscription: &ClientSubscription,
     ) {
-        let (new_records, has_more) = if let Some(ref traffic_store) = self.state.traffic_store {
-            traffic_store.get_after(
-                subscription.last_traffic_id.as_deref(),
-                &Default::default(),
-                500,
-            )
-        } else {
-            self.state.traffic_recorder.get_after(
-                subscription.last_traffic_id.as_deref(),
-                &Default::default(),
-                500,
-            )
+        let Some(ref traffic_store) = self.state.traffic_store else {
+            return;
         };
+
+        let (new_records, has_more) = traffic_store.get_after(
+            subscription.last_traffic_id.as_deref(),
+            &Default::default(),
+            500,
+        );
 
         let new_records: Vec<_> = new_records
             .into_iter()
@@ -586,11 +582,7 @@ impl PushManager {
                 .iter()
                 .map(|s| s.as_str())
                 .collect();
-            let summaries = if let Some(ref traffic_store) = self.state.traffic_store {
-                traffic_store.get_by_ids(&ids)
-            } else {
-                self.state.traffic_recorder.get_by_ids(&ids)
-            };
+            let summaries = traffic_store.get_by_ids(&ids);
             summaries
                 .into_iter()
                 .map(|s| self.enrich_summary(s))
@@ -599,11 +591,7 @@ impl PushManager {
             Vec::new()
         };
 
-        let server_total = if let Some(ref traffic_store) = self.state.traffic_store {
-            traffic_store.total()
-        } else {
-            self.state.traffic_recorder.total()
-        };
+        let server_total = traffic_store.total();
 
         if !new_records.is_empty() || !updated_records.is_empty() {
             let last_id = new_records.last().map(|r| r.id.clone());
@@ -661,20 +649,15 @@ impl PushManager {
             let client = client_ref.value();
             let subscription = client.get_subscription();
 
-            let (new_records, has_more) = if let Some(ref traffic_store) = self.state.traffic_store
-            {
-                traffic_store.get_after(
-                    subscription.last_traffic_id.as_deref(),
-                    &Default::default(),
-                    500,
-                )
-            } else {
-                self.state.traffic_recorder.get_after(
-                    subscription.last_traffic_id.as_deref(),
-                    &Default::default(),
-                    500,
-                )
+            let Some(ref traffic_store) = self.state.traffic_store else {
+                continue;
             };
+
+            let (new_records, has_more) = traffic_store.get_after(
+                subscription.last_traffic_id.as_deref(),
+                &Default::default(),
+                500,
+            );
 
             let new_records: Vec<_> = new_records
                 .into_iter()
@@ -687,11 +670,7 @@ impl PushManager {
                     .iter()
                     .map(|s| s.as_str())
                     .collect();
-                let summaries = if let Some(ref traffic_store) = self.state.traffic_store {
-                    traffic_store.get_by_ids(&ids)
-                } else {
-                    self.state.traffic_recorder.get_by_ids(&ids)
-                };
+                let summaries = traffic_store.get_by_ids(&ids);
                 summaries
                     .into_iter()
                     .map(|s| self.enrich_summary(s))
@@ -700,11 +679,7 @@ impl PushManager {
                 Vec::new()
             };
 
-            let server_total = if let Some(ref traffic_store) = self.state.traffic_store {
-                traffic_store.total()
-            } else {
-                self.state.traffic_recorder.total()
-            };
+            let server_total = traffic_store.total();
 
             if !new_records.is_empty() || !updated_records.is_empty() {
                 let last_id = new_records.last().map(|r| r.id.clone());
@@ -767,7 +742,13 @@ impl PushManager {
 
         let system_info = crate::metrics::SystemInfo::new(self.state.start_time);
         let metrics = self.state.metrics_collector.get_current();
-        let traffic_count = self.state.traffic_recorder.count();
+        let traffic_count = if let Some(ref db_store) = self.state.traffic_db_store {
+            db_store.stats().record_count
+        } else if let Some(ref traffic_store) = self.state.traffic_store {
+            traffic_store.total()
+        } else {
+            0
+        };
 
         let (rules_total, rules_enabled) = match self.state.rules_storage.load_all() {
             Ok(rules) => {
@@ -899,7 +880,13 @@ impl PushManager {
         if subscription.need_overview {
             let system_info = crate::metrics::SystemInfo::new(self.state.start_time);
             let metrics = self.state.metrics_collector.get_current();
-            let traffic_count = self.state.traffic_recorder.count();
+            let traffic_count = if let Some(ref db_store) = self.state.traffic_db_store {
+                db_store.stats().record_count
+            } else if let Some(ref traffic_store) = self.state.traffic_store {
+                traffic_store.total()
+            } else {
+                0
+            };
 
             let (rules_total, rules_enabled) = match self.state.rules_storage.load_all() {
                 Ok(rules) => {

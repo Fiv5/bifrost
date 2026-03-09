@@ -10,6 +10,7 @@ export function getClientId(): string {
       return stored;
     }
   } catch {
+    void 0;
   }
   const cryptoObj = globalThis.crypto as Crypto | undefined;
   const uuid = cryptoObj?.randomUUID?.();
@@ -17,6 +18,7 @@ export function getClientId(): string {
   try {
     sessionStorage.setItem(SESSION_KEY, clientId);
   } catch {
+    void 0;
   }
   return clientId;
 }

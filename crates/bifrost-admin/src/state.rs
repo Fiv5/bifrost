@@ -18,11 +18,10 @@ use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
 use crate::sse::SseHub;
-use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
-use crate::ws_payload_store::SharedWsPayloadStore;
+use crate::ws_payload_store::{SharedWsPayloadStore, WsPayloadStore};
 use once_cell::sync::OnceCell;
 
 pub type SharedScriptManager = Arc<RwLock<ScriptManager>>;
@@ -72,7 +71,6 @@ impl RuntimeConfig {
 }
 
 pub struct AdminState {
-    pub traffic_recorder: SharedTrafficRecorder,
     pub traffic_store: Option<SharedTrafficStore>,
     pub traffic_db_store: Option<SharedTrafficDbStore>,
     pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
@@ -93,19 +91,21 @@ pub struct AdminState {
     pub connection_registry: SharedConnectionRegistry,
     pub config_manager: Option<SharedConfigManager>,
     pub max_body_buffer_size: AtomicUsize,
+    pub max_body_probe_size: AtomicUsize,
     pub app_icon_cache: Option<SharedAppIconCache>,
     pub version_checker: SharedVersionChecker,
     pub script_manager: Option<SharedScriptManager>,
     pub replay_db_store: Option<SharedReplayDbStore>,
     pub replay_executor: OnceCell<SharedReplayExecutor>,
+    pub total_size_cleanup_counter: AtomicUsize,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
+const DEFAULT_MAX_BODY_PROBE_SIZE: usize = 64 * 1024;
 
 impl AdminState {
     pub fn new(port: u16) -> Self {
         Self {
-            traffic_recorder: Arc::new(TrafficRecorder::default()),
             traffic_store: None,
             traffic_db_store: None,
             async_traffic_writer: None,
@@ -126,11 +126,13 @@ impl AdminState {
             connection_registry: Arc::new(ConnectionRegistry::default()),
             config_manager: None,
             max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
+            max_body_probe_size: AtomicUsize::new(DEFAULT_MAX_BODY_PROBE_SIZE),
             app_icon_cache: None,
             version_checker: Arc::new(VersionChecker::new()),
             script_manager: None,
             replay_db_store: None,
             replay_executor: OnceCell::new(),
+            total_size_cleanup_counter: AtomicUsize::new(0),
         }
     }
 
@@ -138,11 +140,26 @@ impl AdminState {
         self.max_body_buffer_size.load(Ordering::Relaxed)
     }
 
+    pub fn get_max_body_probe_size(&self) -> usize {
+        self.max_body_probe_size.load(Ordering::Relaxed)
+    }
+
     pub fn set_max_body_buffer_size(&self, size: usize) {
         let old = self.max_body_buffer_size.swap(size, Ordering::SeqCst);
         if old != size {
             tracing::info!(
                 "AdminState config updated: max_body_buffer_size {} -> {}",
+                old,
+                size
+            );
+        }
+    }
+
+    pub fn set_max_body_probe_size(&self, size: usize) {
+        let old = self.max_body_probe_size.swap(size, Ordering::SeqCst);
+        if old != size {
+            tracing::info!(
+                "AdminState config updated: max_body_probe_size {} -> {}",
                 old,
                 size
             );
@@ -158,9 +175,12 @@ impl AdminState {
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.record(record.clone());
+                self.maybe_cleanup_total_disk_usage();
+                return;
             }
-            self.traffic_recorder.record(record);
+            tracing::error!("[ADMIN_STATE] No traffic store configured; drop record");
         }
+        self.maybe_cleanup_total_disk_usage();
     }
 
     #[inline]
@@ -175,9 +195,129 @@ impl AdminState {
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.update_by_id(id, updater.clone());
+                return;
             }
-            self.traffic_recorder.update_by_id(id, updater);
+            tracing::error!("[ADMIN_STATE] No traffic store configured; drop update");
         }
+    }
+
+    fn maybe_cleanup_total_disk_usage(&self) {
+        const CLEANUP_CHECK_INTERVAL: usize = 100;
+        let counter = self
+            .total_size_cleanup_counter
+            .fetch_add(1, Ordering::Relaxed);
+        if !counter.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
+            return;
+        }
+        self.cleanup_total_disk_usage();
+    }
+
+    fn cleanup_total_disk_usage(&self) {
+        let Some(ref traffic_db_store) = self.traffic_db_store else {
+            return;
+        };
+        let max_db_size_bytes = traffic_db_store.max_db_size_bytes();
+        if max_db_size_bytes == 0 {
+            return;
+        }
+
+        let db_stats = traffic_db_store.stats();
+        let mut total_size = db_stats.db_size;
+
+        let body_sizes = self
+            .body_store
+            .as_ref()
+            .and_then(|store| store.read().sizes_by_id().ok())
+            .unwrap_or_default();
+        total_size += body_sizes.values().sum::<u64>();
+
+        let frame_sizes = self
+            .frame_store
+            .as_ref()
+            .and_then(|store| store.sizes_by_id().ok())
+            .unwrap_or_default();
+        total_size += frame_sizes.values().sum::<u64>();
+
+        let ws_payload_sizes = self
+            .ws_payload_store
+            .as_ref()
+            .and_then(|store| store.sizes_by_safe_id().ok())
+            .unwrap_or_default();
+        total_size += ws_payload_sizes.values().sum::<u64>();
+
+        if total_size <= max_db_size_bytes {
+            return;
+        }
+
+        let target_size = max_db_size_bytes.saturating_sub(max_db_size_bytes / 4);
+        let bytes_to_remove = total_size.saturating_sub(target_size);
+        if bytes_to_remove == 0 {
+            return;
+        }
+
+        let record_count = db_stats.record_count;
+        if record_count == 0 {
+            return;
+        }
+        let avg_db_bytes = (db_stats.db_size / record_count as u64).max(1);
+
+        let mut ids_to_delete = Vec::new();
+        let mut removed_estimate = 0u64;
+        let mut offset = 0usize;
+        let batch = 500usize;
+
+        while removed_estimate < bytes_to_remove {
+            let ids = traffic_db_store.oldest_ids(batch, offset);
+            if ids.is_empty() {
+                break;
+            }
+            for id in ids {
+                let mut size = avg_db_bytes;
+                if let Some(extra) = body_sizes.get(&id) {
+                    size += *extra;
+                }
+                if let Some(extra) = frame_sizes.get(&id) {
+                    size += *extra;
+                }
+                let safe_id = WsPayloadStore::safe_connection_id(&id);
+                if let Some(extra) = ws_payload_sizes.get(&safe_id) {
+                    size += *extra;
+                }
+                removed_estimate += size;
+                ids_to_delete.push(id);
+                if removed_estimate >= bytes_to_remove {
+                    break;
+                }
+            }
+            offset += batch;
+            if offset >= record_count {
+                break;
+            }
+        }
+
+        if ids_to_delete.is_empty() {
+            return;
+        }
+
+        traffic_db_store.delete_by_ids(&ids_to_delete);
+        if let Some(ref body_store) = self.body_store {
+            let _ = body_store.write().delete_by_ids(&ids_to_delete);
+        }
+        if let Some(ref frame_store) = self.frame_store {
+            let _ = frame_store.delete_by_ids(&ids_to_delete);
+        }
+        if let Some(ref ws_payload_store) = self.ws_payload_store {
+            let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
+        }
+        traffic_db_store.compact_db(true);
+
+        tracing::info!(
+            deleted = ids_to_delete.len(),
+            total_size = total_size,
+            max_db_size_bytes = max_db_size_bytes,
+            target_size = target_size,
+            "[TRAFFIC] Cleaned up data due to total size limit"
+        );
     }
 
     pub fn update_client_process(
@@ -204,26 +344,12 @@ impl AdminState {
         self
     }
 
-    pub fn with_traffic_recorder(mut self, recorder: TrafficRecorder) -> Self {
-        self.traffic_recorder = Arc::new(recorder);
-        self
-    }
-
-    pub fn with_traffic_recorder_shared(mut self, recorder: SharedTrafficRecorder) -> Self {
-        self.traffic_recorder = recorder;
-        self
-    }
-
     pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
-        let sequence = store.current_sequence();
-        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(Arc::new(store));
         self
     }
 
     pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
-        let sequence = store.current_sequence();
-        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(store);
         self
     }
@@ -315,6 +441,11 @@ impl AdminState {
 
     pub fn with_max_body_buffer_size(self, size: usize) -> Self {
         self.max_body_buffer_size.store(size, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_max_body_probe_size(self, size: usize) -> Self {
+        self.max_body_probe_size.store(size, Ordering::SeqCst);
         self
     }
 

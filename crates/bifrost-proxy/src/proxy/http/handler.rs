@@ -8,11 +8,11 @@ use bifrost_script::{MatchedRuleInfo, RequestData, ResponseData, ScriptContext, 
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper::client::conn::http1::Builder as ClientBuilder;
+use hyper::client::conn::http1::Builder as Http1ClientBuilder;
 use hyper::header::HeaderValue;
 use hyper::http::response::Parts as ResponseParts;
 use hyper::{Request, Response, StatusCode, Uri};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
@@ -27,6 +27,7 @@ use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
 use crate::transform::{decompress_body, get_content_encoding};
+use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
@@ -38,6 +39,62 @@ use crate::utils::tee::{
 };
 use crate::utils::throttle::wrap_throttled_body;
 use crate::utils::url::apply_url_rules;
+
+enum UpstreamSender {
+    Http1(hyper::client::conn::http1::SendRequest<BoxBody>),
+    Http2(hyper::client::conn::http2::SendRequest<BoxBody>),
+}
+
+impl UpstreamSender {
+    fn sanitize_headers_for_http2(headers: &mut hyper::HeaderMap) {
+        use hyper::header;
+
+        let extra_to_remove: Vec<header::HeaderName> = headers
+            .get(header::CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .map(|conn| {
+                conn.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        headers.remove(header::CONNECTION);
+        for name in extra_to_remove {
+            headers.remove(name);
+        }
+        headers.remove("proxy-connection");
+        headers.remove("keep-alive");
+        headers.remove("transfer-encoding");
+        headers.remove("upgrade");
+        headers.remove("trailer");
+
+        if let Some(te) = headers.get(header::TE).and_then(|v| v.to_str().ok()) {
+            if !te.trim().eq_ignore_ascii_case("trailers") {
+                headers.remove(header::TE);
+            }
+        }
+    }
+
+    async fn send_request(
+        &mut self,
+        req: Request<BoxBody>,
+    ) -> std::result::Result<Response<Incoming>, hyper::Error> {
+        match self {
+            UpstreamSender::Http1(sender) => sender.send_request(req).await,
+            UpstreamSender::Http2(sender) => {
+                let (mut parts, body) = req.into_parts();
+                Self::sanitize_headers_for_http2(&mut parts.headers);
+                sender.send_request(Request::from_parts(parts, body)).await
+            }
+        }
+    }
+}
+
+trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 
 const STREAMING_CONTENT_TYPES: &[&str] = &[
     "video/x-flv",
@@ -57,8 +114,34 @@ const STREAMING_CONTENT_TYPES: &[&str] = &[
     "application/octet-stream",
 ];
 
-trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
-impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
+fn is_likely_text_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() {
+        return false;
+    }
+    if ct.starts_with("text/") {
+        return true;
+    }
+    if ct.starts_with("application/json") {
+        return true;
+    }
+    if ct.contains("+json") {
+        return true;
+    }
+    if ct.starts_with("application/xml") || ct.contains("+xml") {
+        return true;
+    }
+    if ct.starts_with("application/javascript")
+        || ct.starts_with("application/x-javascript")
+        || ct.starts_with("application/ecmascript")
+    {
+        return true;
+    }
+    if ct.starts_with("application/x-www-form-urlencoded") {
+        return true;
+    }
+    false
+}
 
 fn get_traffic_type_from_url(url: &str) -> TrafficType {
     if url.starts_with("https://") {
@@ -81,30 +164,37 @@ fn is_sse_response(res_parts: &ResponseParts) -> bool {
     get_content_type(res_parts).starts_with("text/event-stream")
 }
 
-fn is_streaming_response(res_parts: &ResponseParts) -> bool {
-    let content_type_lower = get_content_type(res_parts);
-
-    for streaming_type in STREAMING_CONTENT_TYPES {
-        if content_type_lower.starts_with(streaming_type) {
-            return true;
-        }
+fn is_streaming_response(
+    res_parts: &ResponseParts,
+    res_content_length: Option<usize>,
+    max_body_buffer_size: usize,
+) -> bool {
+    if is_sse_response(res_parts) {
+        return true;
     }
 
-    let has_content_length = res_parts
-        .headers
-        .contains_key(hyper::header::CONTENT_LENGTH);
+    let content_type_lower = get_content_type(res_parts);
+    if STREAMING_CONTENT_TYPES
+        .iter()
+        .any(|streaming_type| content_type_lower.starts_with(streaming_type))
+    {
+        return true;
+    }
+
     let is_chunked = res_parts
         .headers
         .get(hyper::header::TRANSFER_ENCODING)
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().contains("chunked"))
         .unwrap_or(false);
-
-    if !has_content_length && is_chunked && content_type_lower.contains("video") {
+    if is_chunked {
         return true;
     }
 
-    false
+    match res_content_length {
+        Some(len) => len > max_body_buffer_size,
+        None => false,
+    }
 }
 
 pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
@@ -470,6 +560,7 @@ pub async fn handle_http_request(
     verbose_logging: bool,
     unsafe_ssl: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -598,50 +689,161 @@ pub async fn handle_http_request(
     let has_req_body_override = resolved_rules.req_body.is_some();
     let has_req_scripts = !resolved_rules.req_scripts.is_empty();
     let needs_req_body_read = !has_req_body_override && (needs_req_processing || has_req_scripts);
-    let req_body_too_large = content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
 
     let mut skip_req_scripts = false;
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
     let (body_bytes, final_body) = if needs_req_body_read {
-        if req_body_too_large {
-            warn!(
-                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
-                ctx.id_str(),
-                content_length.unwrap(),
-                max_body_buffer_size
-            );
-            skip_req_scripts = true;
-            if admin_state.is_some() {
-                let (tee_body, capture) =
-                    create_request_tee_body(body, admin_state.clone(), ctx.id_str().to_string());
-                streaming_body = Some(tee_body.boxed());
-                req_body_capture = Some(capture);
+        if let Some(len) = content_length {
+            if len > max_body_buffer_size {
+                warn!(
+                    "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
+                    ctx.id_str(),
+                    len,
+                    max_body_buffer_size
+                );
+                skip_req_scripts = true;
+                if admin_state.is_some() {
+                    let (tee_body, capture) = create_request_tee_body(
+                        body,
+                        admin_state.clone(),
+                        ctx.id_str().to_string(),
+                    );
+                    streaming_body = Some(tee_body);
+                    req_body_capture = Some(capture);
+                } else {
+                    streaming_body = Some(body.boxed());
+                }
+                (Bytes::new(), Bytes::new())
             } else {
-                streaming_body = Some(body.boxed());
+                let req_content_type = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let limit = if !is_likely_text_content_type(&req_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => {
+                        let req_content_type = parts
+                            .headers
+                            .get(hyper::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok());
+                        let processed = apply_body_rules(
+                            bytes.clone(),
+                            &resolved_rules,
+                            Phase::Request,
+                            req_content_type,
+                            verbose_logging,
+                            ctx,
+                        );
+                        (bytes, processed)
+                    }
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        let size_display = content_length
+                            .map(|len| len.to_string())
+                            .unwrap_or_else(|| format!(">{}", limit));
+                        warn!(
+                            "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
+                            ctx.id_str(),
+                            size_display,
+                            limit
+                        );
+                        skip_req_scripts = true;
+                        if admin_state.is_some() {
+                            let (tee_body, capture) = create_request_tee_body(
+                                replay_body,
+                                admin_state.clone(),
+                                ctx.id_str().to_string(),
+                            );
+                            streaming_body = Some(tee_body);
+                            req_body_capture = Some(capture);
+                        } else {
+                            streaming_body = Some(replay_body.boxed());
+                        }
+                        (Bytes::new(), Bytes::new())
+                    }
+                    Err(e) => {
+                        return Err(BifrostError::Network(format!(
+                            "Failed to read request body: {}",
+                            e
+                        )))
+                    }
+                }
             }
-            (Bytes::new(), Bytes::new())
         } else {
-            let bytes = body
-                .collect()
-                .await
-                .map_err(|e| BifrostError::Network(format!("Failed to read request body: {}", e)))?
-                .to_bytes();
             let req_content_type = parts
                 .headers
                 .get(hyper::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok());
-            let processed = apply_body_rules(
-                bytes.clone(),
-                &resolved_rules,
-                Phase::Request,
-                req_content_type,
-                verbose_logging,
-                ctx,
-            );
-            (bytes, processed)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_lowercase();
+            let limit = if !is_likely_text_content_type(&req_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => {
+                    let req_content_type = parts
+                        .headers
+                        .get(hyper::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok());
+                    let processed = apply_body_rules(
+                        bytes.clone(),
+                        &resolved_rules,
+                        Phase::Request,
+                        req_content_type,
+                        verbose_logging,
+                        ctx,
+                    );
+                    (bytes, processed)
+                }
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    let size_display = content_length
+                        .map(|len| len.to_string())
+                        .unwrap_or_else(|| format!(">{}", limit));
+                    warn!(
+                    "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and scripts",
+                    ctx.id_str(),
+                    size_display,
+                    limit
+                );
+                    skip_req_scripts = true;
+                    if admin_state.is_some() {
+                        let (tee_body, capture) = create_request_tee_body(
+                            replay_body,
+                            admin_state.clone(),
+                            ctx.id_str().to_string(),
+                        );
+                        streaming_body = Some(tee_body);
+                        req_body_capture = Some(capture);
+                    } else {
+                        streaming_body = Some(replay_body.boxed());
+                    }
+                    (Bytes::new(), Bytes::new())
+                }
+                Err(e) => {
+                    return Err(BifrostError::Network(format!(
+                        "Failed to read request body: {}",
+                        e
+                    )))
+                }
+            }
         }
     } else if let Some(ref new_body) = resolved_rules.req_body {
         if verbose_logging {
@@ -663,7 +865,7 @@ pub async fn handle_http_request(
         if admin_state.is_some() {
             let (tee_body, capture) =
                 create_request_tee_body(body, admin_state.clone(), ctx.id_str().to_string());
-            streaming_body = Some(tee_body.boxed());
+            streaming_body = Some(tee_body);
             req_body_capture = Some(capture);
         } else {
             streaming_body = Some(body.boxed());
@@ -1036,62 +1238,124 @@ pub async fn handle_http_request(
         };
         let tls_elapsed = tls_start.elapsed().as_millis() as u64;
 
-        let io = TokioIo::new(tls_stream);
-        let (sender, conn) = match ClientBuilder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
-            .handshake(io)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let error_msg = format!("HTTP handshake failed: {}", e);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                return Ok(build_conn_error_and_record(
-                    "HTTP_HANDSHAKE_FAILED",
-                    error_msg,
-                    Some(tls_elapsed),
-                ));
-            }
-        };
+        let negotiated_alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        let use_h2 = matches!(negotiated_alpn.as_deref(), Some(b"h2"));
+        if verbose_logging {
+            debug!(
+                "[{}] [UPSTREAM] negotiated ALPN={:?}, use_h2={}",
+                ctx.id_str(),
+                negotiated_alpn,
+                use_h2
+            );
+        }
 
-        let req_id_for_conn = ctx.id_str();
-        let host_for_conn = host.clone();
-        let port_for_conn = port;
-        let method_for_conn = method.clone();
-        let url_for_conn = url.clone();
-        let client_ip_for_conn = ctx.client_ip.clone();
-        let client_app_for_conn = ctx.client_app.clone();
-        let client_pid_for_conn = ctx.client_pid;
-        let client_path_for_conn = ctx.client_path.clone();
-        tokio::spawn(async move {
-            if let Err(err) = conn.await {
-                error!(
-                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                    req_id_for_conn,
-                    host_for_conn,
-                    port_for_conn,
-                    method_for_conn,
-                    url_for_conn,
-                    client_ip_for_conn,
-                    client_app_for_conn,
-                    client_pid_for_conn,
-                    client_path_for_conn,
-                    err
-                );
-            }
-        });
+        let sender = if use_h2 {
+            let io = TokioIo::new(tls_stream);
+            let (sender, conn) =
+                match hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                    .handshake(io)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let error_msg = format!("HTTP/2 handshake failed: {}", e);
+                        error!("[{}] {}", ctx.id_str(), error_msg);
+                        return Ok(build_conn_error_and_record(
+                            "HTTP2_HANDSHAKE_FAILED",
+                            error_msg,
+                            Some(tls_elapsed),
+                        ));
+                    }
+                };
+
+            let req_id_for_conn = ctx.id_str();
+            let host_for_conn = host.clone();
+            let port_for_conn = port;
+            let method_for_conn = method.clone();
+            let url_for_conn = url.clone();
+            let client_ip_for_conn = ctx.client_ip.clone();
+            let client_app_for_conn = ctx.client_app.clone();
+            let client_pid_for_conn = ctx.client_pid;
+            let client_path_for_conn = ctx.client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        host_for_conn,
+                        port_for_conn,
+                        method_for_conn,
+                        url_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
+
+            UpstreamSender::Http2(sender)
+        } else {
+            let io = TokioIo::new(tls_stream);
+            let (sender, conn) = match Http1ClientBuilder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(io)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let error_msg = format!("HTTP handshake failed: {}", e);
+                    error!("[{}] {}", ctx.id_str(), error_msg);
+                    return Ok(build_conn_error_and_record(
+                        "HTTP_HANDSHAKE_FAILED",
+                        error_msg,
+                        Some(tls_elapsed),
+                    ));
+                }
+            };
+
+            let req_id_for_conn = ctx.id_str();
+            let host_for_conn = host.clone();
+            let port_for_conn = port;
+            let method_for_conn = method.clone();
+            let url_for_conn = url.clone();
+            let client_ip_for_conn = ctx.client_ip.clone();
+            let client_app_for_conn = ctx.client_app.clone();
+            let client_pid_for_conn = ctx.client_pid;
+            let client_path_for_conn = ctx.client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        host_for_conn,
+                        port_for_conn,
+                        method_for_conn,
+                        url_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
+
+            UpstreamSender::Http1(sender)
+        };
 
         (sender, Some(tls_elapsed))
     } else {
         let io = TokioIo::new(stream);
-        let (sender, conn) = match ClientBuilder::new()
+        let (sender, conn) = match Http1ClientBuilder::new()
             .preserve_header_case(true)
             .title_case_headers(true)
             .handshake(io)
             .await
         {
-            Ok(r) => r,
+            Ok((s, c)) => (UpstreamSender::Http1(s), c),
             Err(e) => {
                 let error_msg = format!("HTTP handshake failed: {}", e);
                 error!("[{}] {}", ctx.id_str(), error_msg);
@@ -1208,24 +1472,104 @@ pub async fn handle_http_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_body_too_large = res_content_length
-        .map(|len| len > max_body_buffer_size)
-        .unwrap_or(false);
+    let res_content_type = get_content_type(&res_parts);
+    let is_sse = is_sse_response(&res_parts);
+    let mut res_body_too_large = false;
+    let mut res_body_limit = max_body_buffer_size;
+    let mut res_body_incoming = Some(res_body);
+    let mut res_body_stream: Option<BoxBody> = None;
+    if !is_sse {
+        res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
+    }
 
-    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
+    let mut pre_read_res: Option<(Bytes, u64)> = None;
+    if needs_res_body_read && needs_processing && !is_sse {
+        if let Some(len) = res_content_length {
+            if len > max_body_buffer_size {
+                res_body_too_large = true;
+                res_body_limit = max_body_buffer_size;
+            } else {
+                let receive_start = Instant::now();
+                let body = res_body_stream.take().unwrap();
+                let limit = if !is_likely_text_content_type(&res_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                res_body_limit = limit;
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => {
+                        let receive_ms = receive_start.elapsed().as_millis() as u64;
+                        pre_read_res = Some((bytes, receive_ms));
+                    }
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        res_body_too_large = true;
+                        res_body_stream = Some(replay_body.boxed());
+                    }
+                    Err(e) => {
+                        return Err(BifrostError::Network(format!(
+                            "Failed to read response body: {}",
+                            e
+                        )))
+                    }
+                }
+            }
+        } else {
+            let receive_start = Instant::now();
+            let body = res_body_stream.take().unwrap();
+            let limit = if !is_likely_text_content_type(&res_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            res_body_limit = limit;
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => {
+                    let receive_ms = receive_start.elapsed().as_millis() as u64;
+                    pre_read_res = Some((bytes, receive_ms));
+                }
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    res_body_too_large = true;
+                    res_body_stream = Some(replay_body.boxed());
+                }
+                Err(e) => {
+                    return Err(BifrostError::Network(format!(
+                        "Failed to read response body: {}",
+                        e
+                    )))
+                }
+            }
+        }
+    }
+
+    let skip_body_processing =
+        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
+        let size_display = res_content_length
+            .map(|len| len.to_string())
+            .unwrap_or_else(|| format!(">{}", res_body_limit));
         warn!(
             "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
             ctx.id_str(),
-            res_content_length.unwrap(),
-            max_body_buffer_size
+            size_display,
+            res_body_limit
         );
     }
 
     if skip_body_processing {
-        let is_streaming = is_streaming_response(&res_parts);
-        let is_sse = is_sse_response(&res_parts);
+        let is_streaming =
+            is_streaming_response(&res_parts, res_content_length, max_body_buffer_size);
         let res_body_mode = if resolved_rules.trailers.is_empty() {
             BodyMode::Stream
         } else {
@@ -1351,6 +1695,7 @@ pub async fn handle_http_request(
         }
 
         if is_sse {
+            let res_body = res_body_incoming.take().unwrap();
             let tee_body = create_sse_tee_body(
                 res_body,
                 admin_state.clone(),
@@ -1364,6 +1709,7 @@ pub async fn handle_http_request(
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+            let res_body = res_body_stream.take().unwrap();
             let tee_body = create_tee_body_with_store(
                 res_body,
                 admin_state.clone(),
@@ -1373,13 +1719,16 @@ pub async fn handle_http_request(
                 Some(traffic_type),
                 response_headers_size,
             );
-            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            let body = with_trailers(tee_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         }
     }
 
-    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+    let (res_body_bytes, receive_ms) = if let Some(v) = pre_read_res.take() {
+        v
+    } else if needs_res_body_read {
         let receive_start = Instant::now();
+        let res_body = res_body_stream.take().unwrap();
         let res_body_bytes = res_body
             .collect()
             .await

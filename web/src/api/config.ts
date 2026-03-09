@@ -43,6 +43,7 @@ export interface TrafficConfig {
   max_db_size_bytes: number;
   max_body_memory_size: number;
   max_body_buffer_size: number;
+  max_body_probe_size: number;
   file_retention_days: number;
 }
 
@@ -74,11 +75,19 @@ export interface FrameStoreStats {
   retention_hours: number;
 }
 
+export interface WsPayloadStoreStats {
+  file_count: number;
+  total_size: number;
+  payload_dir: string;
+  retention_days: number;
+}
+
 export interface PerformanceConfig {
   traffic: TrafficConfig;
   body_store_stats: BodyStoreStats | null;
   traffic_store_stats: TrafficStoreStats | null;
   frame_store_stats: FrameStoreStats | null;
+  ws_payload_store_stats: WsPayloadStoreStats | null;
 }
 
 export interface UpdateTrafficConfigRequest {
@@ -86,6 +95,7 @@ export interface UpdateTrafficConfigRequest {
   max_db_size_bytes?: number;
   max_body_memory_size?: number;
   max_body_buffer_size?: number;
+  max_body_probe_size?: number;
   file_retention_days?: number;
 }
 

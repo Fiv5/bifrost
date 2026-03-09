@@ -503,6 +503,16 @@ export default function Settings() {
     );
   };
 
+  const handleMaxBodyProbeSizeChange = (value: number) => {
+    updatePerfDraft({ max_body_probe_size: value });
+    schedulePerformanceUpdate(
+      "max_body_probe_size",
+      { max_body_probe_size: value },
+      "Max body probe size updated",
+      "Failed to update max body probe size",
+    );
+  };
+
   const handleFileRetentionDaysChange = (value: number) => {
     updatePerfDraft({ file_retention_days: value });
     schedulePerformanceUpdate(
@@ -722,6 +732,13 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     1 * 1024 * 1024,
     formatBytes,
   );
+  const maxBodyProbeMarks: Record<number, string> = {
+    0: "Off",
+    [16 * 1024]: "16KB",
+    [64 * 1024]: "64KB",
+    [256 * 1024]: "256KB",
+    [1 * 1024 * 1024]: "1MB",
+  };
   const fileRetentionMarks = buildSliderMarks(
     1,
     7,
@@ -850,11 +867,13 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
           maxDbSizeMarks={maxDbSizeMarks}
           maxBodyInlineMarks={maxBodyInlineMarks}
           maxBodyBufferMarks={maxBodyBufferMarks}
+          maxBodyProbeMarks={maxBodyProbeMarks}
           fileRetentionMarks={fileRetentionMarks}
           handleMaxRecordsChange={handleMaxRecordsChange}
           handleMaxDbSizeChange={handleMaxDbSizeChange}
           handleMaxBodyMemorySizeChange={handleMaxBodyMemorySizeChange}
           handleMaxBodyBufferSizeChange={handleMaxBodyBufferSizeChange}
+          handleMaxBodyProbeSizeChange={handleMaxBodyProbeSizeChange}
           handleFileRetentionDaysChange={handleFileRetentionDaysChange}
           handleClearBodyCache={handleClearBodyCache}
           formatBytes={formatBytes}

@@ -9,51 +9,12 @@ import {
 import dayjs from 'dayjs';
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
-import 'highlight.js/styles/github.css';
-import type { WebSocketFrame } from '../../../../types';
+import '../../../../styles/hljs-github-theme.css';
+import type { SSEEvent } from '../../../../types';
 
 hljs.registerLanguage('json', json);
 
 const { Text } = Typography;
-
-interface SseEventData {
-  id?: string;
-  event?: string;
-  data: string;
-  retry?: number;
-}
-
-const parseSseEvent = (raw: string): SseEventData => {
-  const lines = raw.split('\n');
-  let id: string | undefined;
-  let event: string | undefined;
-  let retry: number | undefined;
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('id:')) {
-      id = line.slice(3).trim();
-    } else if (line.startsWith('event:')) {
-      event = line.slice(6).trim();
-    } else if (line.startsWith('retry:')) {
-      const retryVal = parseInt(line.slice(6).trim(), 10);
-      if (!isNaN(retryVal)) {
-        retry = retryVal;
-      }
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart());
-    } else if (line.startsWith(':')) {
-      continue;
-    }
-  }
-
-  return {
-    id,
-    event,
-    data: dataLines.join('\n'),
-    retry,
-  };
-};
 
 const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
   try {
@@ -73,6 +34,38 @@ const highlightJson = (text: string): string => {
   }
 };
 
+const escapeHtml = (text: string): string => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+};
+
+const highlightText = (text: string, search?: string): string => {
+  if (!search) return escapeHtml(text);
+  const escaped = escapeHtml(text);
+  const lower = text.toLowerCase();
+  const lowerSearch = search.toLowerCase();
+  if (!lowerSearch) return escaped;
+  let result = '';
+  let idx = 0;
+  while (idx < lower.length) {
+    const hit = lower.indexOf(lowerSearch, idx);
+    if (hit === -1) {
+      result += escapeHtml(text.slice(idx));
+      break;
+    }
+    result += escapeHtml(text.slice(idx, hit));
+    result += `<mark style="background-color:#ffe58f;padding:0;">${escapeHtml(
+      text.slice(hit, hit + lowerSearch.length),
+    )}</mark>`;
+    idx = hit + lowerSearch.length;
+  }
+  return result;
+};
+
 const copyToClipboard = async (text: string): Promise<boolean> => {
   try {
     await navigator.clipboard.writeText(text);
@@ -83,18 +76,30 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
 };
 
 interface SseEventCardProps {
-  frame: WebSocketFrame;
+  event: SSEEvent;
+  index: number;
   searchValue?: string;
+  expanded: boolean;
+  onToggle: () => void;
 }
 
-export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
+export const SseEventCard = ({
+  event,
+  index,
+  searchValue,
+  expanded,
+  onToggle,
+}: SseEventCardProps) => {
   const { token } = theme.useToken();
-  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const eventData = useMemo(() => {
-    return parseSseEvent(frame.payload_preview ?? '');
-  }, [frame.payload_preview]);
+    return {
+      id: event.id,
+      event: event.event,
+      data: event.data || '',
+    };
+  }, [event]);
 
   const { parsed, isJson } = useMemo(() => {
     return parseJson(eventData.data);
@@ -125,34 +130,17 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
     ? formattedContent.split('\n').slice(0, 8).join('\n') + '\n...'
     : formattedContent;
 
-  const highlightSearch = (text: string, search?: string): React.ReactNode => {
-    if (!search) return text;
-    const lowerText = text.toLowerCase();
-    const lowerSearch = search.toLowerCase();
-    const index = lowerText.indexOf(lowerSearch);
-    if (index === -1) return text;
-
-    return (
-      <>
-        {text.slice(0, index)}
-        <mark style={{ backgroundColor: '#ffe58f', padding: 0 }}>
-          {text.slice(index, index + search.length)}
-        </mark>
-        {text.slice(index + search.length)}
-      </>
-    );
-  };
-
   const eventName = eventData.event || 'message';
 
   return (
     <div
+      data-testid="sse-event-card"
+      data-event-id={eventData.id ? String(eventData.id) : undefined}
       style={{
         borderRadius: 6,
         border: `1px solid ${token.colorBorderSecondary}`,
         backgroundColor: token.colorBgContainer,
         overflow: 'hidden',
-        marginBottom: 8,
       }}
     >
       <div
@@ -160,34 +148,32 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '6px 10px',
+        padding: '4px 8px',
           backgroundColor: token.colorFillQuaternary,
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
         }}
       >
-        <Space size={8} align="center">
-          <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-            {dayjs(frame.timestamp).format('HH:mm:ss.SSS')}
+        <Space size={6} align="center">
+          <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>
+            #{index + 1}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 10, fontFamily: 'monospace' }}>
+            {dayjs(event.timestamp).format('HH:mm:ss.SSS')}
           </Text>
           <Tag
             color="green"
             style={{
               margin: 0,
-              fontSize: 11,
-              lineHeight: '18px',
-              padding: '0 6px',
+              fontSize: 10,
+              lineHeight: '16px',
+              padding: '0 4px',
             }}
           >
             {eventName}
           </Tag>
           {eventData.id && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
+            <Text type="secondary" style={{ fontSize: 10 }}>
               id: {eventData.id}
-            </Text>
-          )}
-          {eventData.retry !== undefined && (
-            <Text type="secondary" style={{ fontSize: 11 }}>
-              retry: {eventData.retry}ms
             </Text>
           )}
           {isJson && (
@@ -195,9 +181,9 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
               color="blue"
               style={{
                 margin: 0,
-                fontSize: 10,
-                lineHeight: '16px',
-                padding: '0 4px',
+                fontSize: 9,
+                lineHeight: '14px',
+                padding: '0 3px',
               }}
             >
               JSON
@@ -221,14 +207,15 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
                 type="text"
                 size="small"
                 icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
-                onClick={() => setExpanded(!expanded)}
+                onClick={onToggle}
+                data-testid="sse-event-toggle"
                 style={{ width: 24, height: 24 }}
               />
             </Tooltip>
           )}
         </Space>
       </div>
-      <div style={{ padding: '8px 10px' }}>
+      <div style={{ padding: 0 }}>
         {eventData.data ? (
           isJson && highlightedContent ? (
             <pre
@@ -245,10 +232,15 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
               }}
             >
               <code
+                className="hljs"
                 dangerouslySetInnerHTML={{
-                  __html: shouldTruncate
-                    ? highlightJson(displayContent)
-                    : highlightedContent,
+                  __html: searchValue
+                    ? shouldTruncate
+                      ? highlightText(displayContent, searchValue)
+                      : highlightText(formattedContent, searchValue)
+                    : shouldTruncate
+                      ? highlightJson(displayContent)
+                      : highlightedContent,
                 }}
               />
             </pre>
@@ -264,7 +256,11 @@ export const SseEventCard = ({ frame, searchValue }: SseEventCardProps) => {
                 color: token.colorText,
               }}
             >
-              {searchValue ? highlightSearch(displayContent, searchValue) : displayContent}
+              <code
+                dangerouslySetInnerHTML={{
+                  __html: highlightText(displayContent, searchValue),
+                }}
+              />
             </pre>
           )
         ) : (

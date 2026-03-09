@@ -1,6 +1,5 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, type CSSProperties } from "react";
 import {
-  Table,
   Typography,
   Tag,
   theme,
@@ -8,10 +7,8 @@ import {
   Space,
   Tooltip,
   Empty,
-  ConfigProvider,
   Modal,
 } from "antd";
-import type { TableProps } from "antd";
 import {
   ArrowUpOutlined,
   ArrowDownOutlined,
@@ -24,7 +21,8 @@ import dayjs from "dayjs";
 import hljs from "highlight.js/lib/core";
 import json from "highlight.js/lib/languages/json";
 import plaintext from "highlight.js/lib/languages/plaintext";
-import "highlight.js/styles/github.css";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import "../../../../styles/hljs-github-theme.css";
 import type {
   WebSocketFrame,
   FrameDirection,
@@ -33,12 +31,11 @@ import type {
   SessionTargetSearchState,
 } from "../../../../types";
 import { apiFetch } from "../../../../api/apiFetch";
+import { getResponseBody } from "../../../../api/traffic";
 import { getClientId } from "../../../../services/clientId";
 import { SseMessageList } from "./SseMessageList";
 import {
   FullscreenMessageViewer,
-  parseSseTextToEvents,
-  normalizeSSEEvent,
   normalizeWSFrame,
   type MessageItem,
 } from "../../../VirtualMessageViewer";
@@ -49,6 +46,8 @@ hljs.registerLanguage("plaintext", plaintext);
 
 const { Text } = Typography;
 
+const MAX_SSE_EVENTS = 20_000;
+
 interface MessagesProps {
   recordId: string;
   isWebSocket: boolean;
@@ -56,6 +55,7 @@ interface MessagesProps {
   isConnectionOpen?: boolean;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
+  onSseCountChange?: (count: number) => void;
 }
 
 const formatSize = (bytes: number) => {
@@ -92,6 +92,257 @@ const DirectionIcon = ({ direction }: { direction: FrameDirection }) => {
   );
 };
 
+interface WsMessageListProps {
+  frames: WebSocketFrame[];
+  loading: boolean;
+  onOpenDetail: (frame: WebSocketFrame) => void;
+  onCopy: (frame: WebSocketFrame) => void;
+}
+
+const WsMessageList = ({
+  frames,
+  loading,
+  onOpenDetail,
+  onCopy,
+}: WsMessageListProps) => {
+  const { token } = theme.useToken();
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const scrollButtonStyles = useMemo(
+    () => ({
+      scrollButton: {
+        position: "absolute" as const,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        backgroundColor: token.colorBgElevated,
+        color: token.colorTextSecondary,
+        borderRadius: "50%",
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
+        zIndex: 10,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        transition:
+          "opacity 0.3s ease, transform 0.3s ease, background-color 0.2s",
+      },
+      scrollToTopButton: {
+        top: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+      scrollToBottomButton: {
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+    }),
+    [token],
+  );
+  const rowVirtualizer = useVirtualizer({
+    count: frames.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 36,
+    overscan: 6,
+    getItemKey: (index) => String(frames[index]?.frame_id ?? index),
+  });
+
+  const headerStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "60px 40px 80px 80px 110px 1fr 70px",
+    gap: 8,
+    padding: "6px 8px",
+    backgroundColor: token.colorFillQuaternary,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+    color: token.colorTextSecondary,
+    fontSize: 12,
+    fontWeight: 500,
+  };
+
+  const rowBaseStyle: CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: "60px 40px 80px 80px 110px 1fr 70px",
+    gap: 8,
+    alignItems: "center",
+    padding: "4px 8px",
+    backgroundColor: token.colorBgContainer,
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+  };
+
+  const handleScrollToTop = useCallback(() => {
+    if (frames.length === 0) return;
+    rowVirtualizer.scrollToIndex(0, { align: "start" });
+  }, [frames.length, rowVirtualizer]);
+
+  const handleScrollToBottom = useCallback(() => {
+    if (frames.length === 0) return;
+    rowVirtualizer.scrollToIndex(frames.length - 1, { align: "end" });
+  }, [frames.length, rowVirtualizer]);
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 8;
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setIsAtTop(el.scrollTop <= threshold);
+      setIsAtBottom(distanceToBottom <= threshold);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [frames.length]);
+
+  if (frames.length === 0) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: token.colorTextSecondary,
+        }}
+      >
+        {loading ? "Loading..." : "No frames"}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <div style={headerStyle}>
+        <span>#</span>
+        <span />
+        <span>Type</span>
+        <span>Size</span>
+        <span>Time</span>
+        <span>Preview</span>
+        <span />
+      </div>
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <div
+          ref={parentRef}
+          style={{ height: "100%", overflow: "auto" }}
+          data-testid="ws-frames-table"
+        >
+        <div
+          style={{
+            height: rowVirtualizer.getTotalSize(),
+            position: "relative",
+          }}
+        >
+          {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+            const frame = frames[virtualRow.index];
+            if (!frame) return null;
+            const canOpen = frame.payload_size > 0;
+            const rowStyle: CSSProperties = {
+              ...rowBaseStyle,
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start}px)`,
+              borderLeft:
+                frame.direction === "send" ? "3px solid #52c41a" : "3px solid #1890ff",
+              cursor: canOpen ? "pointer" : "default",
+            };
+
+            return (
+              <div
+                key={virtualRow.key}
+                style={rowStyle}
+                data-testid="ws-frame-row"
+                data-frame-id={frame.frame_id}
+                data-payload-size={frame.payload_size}
+                onClick={() => {
+                  if (!canOpen) return;
+                  onOpenDetail(frame);
+                }}
+              >
+                <Text type="secondary">{frame.frame_id}</Text>
+                <DirectionIcon direction={frame.direction} />
+                <Tag color={getFrameTypeColor(frame.frame_type)}>
+                  {frame.frame_type.toUpperCase()}
+                </Tag>
+                <Text>{formatSize(frame.payload_size)}</Text>
+                <Text>{dayjs(frame.timestamp).format("HH:mm:ss.SSS")}</Text>
+                <div style={{ overflow: "hidden" }}>
+                  {frame.payload_preview ? (
+                    <Text
+                      style={{ fontFamily: "monospace", fontSize: 12 }}
+                      ellipsis={{ tooltip: frame.payload_preview }}
+                    >
+                      {frame.payload_preview}
+                    </Text>
+                  ) : (
+                    <Text type="secondary">-</Text>
+                  )}
+                </div>
+                <Space size={4}>
+                  <Tooltip title="Copy">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void onCopy(frame);
+                      }}
+                      disabled={!canOpen}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Expand">
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<ExpandOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!canOpen) return;
+                        onOpenDetail(frame);
+                      }}
+                      disabled={!canOpen}
+                    />
+                  </Tooltip>
+                </Space>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+        {!isAtTop && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToTopButton,
+            }}
+            onClick={handleScrollToTop}
+            data-testid="ws-scroll-top"
+          >
+            <ArrowUpOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
+        {!isAtBottom && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToBottomButton,
+            }}
+            onClick={handleScrollToBottom}
+            data-testid="ws-scroll-bottom"
+          >
+            <ArrowDownOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const formatJson = (text: string): { formatted: string; isJson: boolean } => {
   try {
     const parsed = JSON.parse(text);
@@ -122,17 +373,58 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
   }
 };
 
+const parseSseChunkToEvent = (
+  chunk: string,
+  index: number,
+  timestamp: number,
+): SSEEvent | null => {
+  const lines = chunk.split("\n");
+  const dataLines: string[] = [];
+  let eventId: string | undefined;
+  let eventType: string | undefined;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line) continue;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).replace(/^ /, ""));
+      continue;
+    }
+    if (line.startsWith("event:")) {
+      const v = line.slice(6).replace(/^ /, "");
+      if (v) eventType = v;
+      continue;
+    }
+    if (line.startsWith("id:")) {
+      const v = line.slice(3).replace(/^ /, "");
+      if (v) eventId = v;
+    }
+  }
+
+  const data = dataLines.length > 0 ? dataLines.join("\n") : chunk;
+  if (!data && !eventId && !eventType) return null;
+  return {
+    id: eventId ?? String(index + 1),
+    event: eventType ?? "message",
+    data,
+    timestamp,
+  };
+};
+
 export const Messages = ({
   recordId,
   isWebSocket,
   frameCount,
   isConnectionOpen = false,
   searchValue,
+  onSearch,
+  onSseCountChange,
 }: MessagesProps) => {
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
   const [loading, setLoading] = useState(false);
-  const [lastFrameId, setLastFrameId] = useState(0);
+  const [lastFetchedFrameId, setLastFetchedFrameId] = useState(0);
+  const [lastSeenFrameId, setLastSeenFrameId] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
   const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(
@@ -143,15 +435,46 @@ export const Messages = ({
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseEventSourceRef = useRef<EventSource | null>(null);
   const [sseEvents, setSseEvents] = useState<SSEEvent[]>([]);
-  const sseBodyRef = useRef<string>("");
   const lastSseSeqRef = useRef<number>(0);
   const [sseReloadToken, setSseReloadToken] = useState(0);
+  const [sseConnectionState, setSseConnectionState] = useState<
+    "idle" | "connecting" | "open" | "closed" | "error"
+  >("idle");
+  const [sseLoading, setSseLoading] = useState(false);
+  const sseParseTokenRef = useRef(0);
+  const ssePendingRef = useRef<SSEEvent[]>([]);
+  const sseFlushRef = useRef<number | null>(null);
+  const sseClosedByUsRef = useRef(false);
+  const [sseForceClosed, setSseForceClosed] = useState(false);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
   );
   const inflightWsPayloadIdsRef = useRef<Set<number>>(new Set());
   const responseBody = useTrafficStore((state) => state.responseBody);
   const setResponseBody = useTrafficStore((state) => state.setResponseBody);
+  const appendSseResponseBody = useTrafficStore(
+    (state) => state.appendSseResponseBody,
+  );
+
+  const mergeWsFrames = useCallback((base: WebSocketFrame[], incoming: WebSocketFrame[]) => {
+    if (incoming.length === 0) return base;
+    const byId = new Map<number, WebSocketFrame>();
+    for (const f of base) {
+      byId.set(f.frame_id, f);
+    }
+    for (const f of incoming) {
+      const existing = byId.get(f.frame_id);
+      if (!existing) {
+        byId.set(f.frame_id, f);
+        continue;
+      }
+      const shouldReplace = !existing.payload_preview && !!f.payload_preview;
+      if (shouldReplace) {
+        byId.set(f.frame_id, { ...existing, ...f });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.frame_id - b.frame_id);
+  }, []);
 
   const fetchFrames = useCallback(
     async (after?: number) => {
@@ -170,13 +493,18 @@ export const Messages = ({
           throw new Error("Failed to fetch frames");
         }
         const data = await response.json();
+        const nextFrames = (data.frames || []) as WebSocketFrame[];
 
         if (after !== undefined) {
-          setFrames((prev) => [...prev, ...data.frames]);
+          setFrames((prev) => mergeWsFrames(prev, nextFrames));
         } else {
-          setFrames(data.frames);
+          setFrames(mergeWsFrames([], nextFrames));
         }
-        setLastFrameId(data.last_frame_id);
+        if (nextFrames.length > 0) {
+          const lastId = nextFrames[nextFrames.length - 1].frame_id;
+          setLastFetchedFrameId(lastId);
+          setLastSeenFrameId((prev) => Math.max(prev, lastId));
+        }
         setHasMore(data.has_more);
       } catch (error) {
         console.error("Failed to fetch frames:", error);
@@ -209,12 +537,33 @@ export const Messages = ({
 
   useEffect(() => {
     setFrames([]);
+    setLastFetchedFrameId(0);
+    setLastSeenFrameId(0);
+    setHasMore(false);
     setWsPayloadById({});
     inflightWsPayloadIdsRef.current.clear();
     setSseEvents([]);
-    sseBodyRef.current = "";
     lastSseSeqRef.current = 0;
+    sseParseTokenRef.current += 1;
+    if (sseFlushRef.current !== null) {
+      cancelAnimationFrame(sseFlushRef.current);
+      sseFlushRef.current = null;
+    }
+    ssePendingRef.current = [];
+    setSseConnectionState("idle");
+    setSseLoading(false);
+    setSseForceClosed(false);
   }, [recordId]);
+
+  useEffect(() => {
+    return () => {
+      if (sseFlushRef.current !== null) {
+        cancelAnimationFrame(sseFlushRef.current);
+        sseFlushRef.current = null;
+      }
+      sseParseTokenRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     if (!isWebSocket || !isConnectionOpen) {
@@ -229,13 +578,8 @@ export const Messages = ({
     eventSource.onmessage = (event) => {
       try {
         const frame = JSON.parse(event.data) as WebSocketFrame;
-        setFrames((prev) => {
-          if (prev.some((f) => f.frame_id === frame.frame_id)) {
-            return prev;
-          }
-          return [...prev, frame];
-        });
-        setLastFrameId(frame.frame_id);
+        setFrames((prev) => mergeWsFrames(prev, [frame]));
+        setLastSeenFrameId((prev) => Math.max(prev, frame.frame_id));
       } catch (error) {
         console.error("Failed to parse frame event:", error);
       }
@@ -256,88 +600,214 @@ export const Messages = ({
   }, [isConnectionOpen, isWebSocket, recordId]);
 
   useEffect(() => {
-    if (isWebSocket) {
+    if (isWebSocket || !isConnectionOpen || sseForceClosed) {
       return;
     }
-    if (isConnectionOpen) {
-      const eventSource = new EventSource(
-        `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&x_client_id=${encodeURIComponent(getClientId())}`,
-      );
-      sseEventSourceRef.current = eventSource;
-      setResponseBody(recordId, "");
-      sseBodyRef.current = "";
-      lastSseSeqRef.current = 0;
-      setSseEvents([]);
+    const eventSource = new EventSource(
+      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
+    );
+    sseEventSourceRef.current = eventSource;
+    sseClosedByUsRef.current = false;
+    setSseConnectionState("connecting");
+    setSseLoading(true);
+    setResponseBody(recordId, "");
+    lastSseSeqRef.current = 0;
+    setSseEvents([]);
 
-      eventSource.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as {
-            seq?: number;
-            ts?: number;
-            id?: string;
-            event?: string;
-            data?: string;
-            raw?: string | null;
-          };
-          const seq = payload.seq ?? 0;
-          if (seq > 0 && seq <= lastSseSeqRef.current) {
-            return;
-          }
-          if (seq > 0) {
-            lastSseSeqRef.current = seq;
-          }
-          const ts = payload.ts ?? Date.now();
-          const ev: SSEEvent = {
-            id: payload.id ?? String(seq || ts),
-            event: payload.event ?? "message",
-            data: payload.data ?? "",
-            timestamp: ts,
-          };
-          setSseEvents((prev) => [...prev, ev]);
-          if (payload.raw) {
-            const raw = payload.raw.replace(/\n+$/, "");
-            if (raw.length > 0) {
-              if (sseBodyRef.current.length === 0) {
-                sseBodyRef.current = raw;
-              } else if (sseBodyRef.current.endsWith("\n\n")) {
-                sseBodyRef.current = `${sseBodyRef.current}${raw}`;
-              } else if (sseBodyRef.current.endsWith("\n")) {
-                sseBodyRef.current = `${sseBodyRef.current}\n${raw}`;
-              } else {
-                sseBodyRef.current = `${sseBodyRef.current}\n\n${raw}`;
-              }
-              setResponseBody(recordId, sseBodyRef.current);
+    const flushPending = () => {
+      const pending = ssePendingRef.current;
+      ssePendingRef.current = [];
+      sseFlushRef.current = null;
+      if (pending.length > 0) {
+        setSseEvents((prev) => {
+          const next = prev.concat(pending);
+          if (next.length <= MAX_SSE_EVENTS) return next;
+          return next.slice(next.length - MAX_SSE_EVENTS);
+        });
+      }
+    };
+
+    const enqueueEvent = (ev: SSEEvent) => {
+      ssePendingRef.current.push(ev);
+      if (sseFlushRef.current === null) {
+        sseFlushRef.current = requestAnimationFrame(flushPending);
+      }
+    };
+
+    const enqueueEvents = (events: SSEEvent[]) => {
+      if (events.length === 0) return;
+      const pending = ssePendingRef.current;
+      for (let i = 0; i < events.length; i++) {
+        pending.push(events[i]);
+      }
+      if (sseFlushRef.current === null) {
+        sseFlushRef.current = requestAnimationFrame(flushPending);
+      }
+    };
+
+    eventSource.onopen = () => {
+      setSseConnectionState("open");
+      setSseLoading(false);
+    };
+
+    eventSource.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as unknown;
+        if (!payload || typeof payload !== "object") return;
+        const payloadObj = payload as Record<string, unknown>;
+
+        if (payloadObj.batch && Array.isArray(payloadObj.events)) {
+          const batch = payloadObj.events as Array<Record<string, unknown>>;
+          const parsed: SSEEvent[] = [];
+          const raws: string[] = [];
+          let maxSeq = lastSseSeqRef.current;
+          for (let i = 0; i < batch.length; i++) {
+            const e = batch[i];
+            const seq = typeof e.seq === "number" ? e.seq : 0;
+            if (seq > 0 && seq <= lastSseSeqRef.current) {
+              continue;
+            }
+            if (seq > 0) {
+              maxSeq = Math.max(maxSeq, seq);
+            }
+            const ts = typeof e.ts === "number" ? e.ts : Date.now();
+            parsed.push({
+              id: typeof e.id === "string" ? e.id : String(seq || ts),
+              event: typeof e.event === "string" ? e.event : "message",
+              data: typeof e.data === "string" ? e.data : "",
+              timestamp: ts,
+            });
+            if (typeof e.raw === "string") {
+              const raw = e.raw.replace(/\n+$/, "");
+              if (raw.length > 0) raws.push(raw);
             }
           }
-        } catch (e) {
-          console.error("Failed to parse SSE event:", e);
+          if (maxSeq > lastSseSeqRef.current) {
+            lastSseSeqRef.current = maxSeq;
+          }
+          enqueueEvents(parsed);
+          if (raws.length > 0) {
+            appendSseResponseBody(recordId, raws.join("\n\n"));
+          }
+          return;
         }
-      };
 
-      eventSource.onerror = () => {
-        eventSource.close();
-        sseEventSourceRef.current = null;
-      };
+        const seq = typeof payloadObj.seq === "number" ? payloadObj.seq : 0;
+        if (seq > 0 && seq <= lastSseSeqRef.current) {
+          return;
+        }
+        if (seq > 0) {
+          lastSseSeqRef.current = seq;
+        }
+        const ts = typeof payloadObj.ts === "number" ? payloadObj.ts : Date.now();
+        enqueueEvent({
+          id: typeof payloadObj.id === "string" ? payloadObj.id : String(seq || ts),
+          event: typeof payloadObj.event === "string" ? payloadObj.event : "message",
+          data: typeof payloadObj.data === "string" ? payloadObj.data : "",
+          timestamp: ts,
+        });
+        if (typeof payloadObj.raw === "string") {
+          const raw = payloadObj.raw.replace(/\n+$/, "");
+          if (raw.length > 0) {
+            appendSseResponseBody(recordId, raw);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to parse SSE event:", e);
+      }
+    };
 
-      return () => {
-        eventSource.close();
-        sseEventSourceRef.current = null;
-      };
-    }
+    eventSource.onerror = () => {
+      if (sseClosedByUsRef.current) return;
+      eventSource.close();
+      sseEventSourceRef.current = null;
+      setSseConnectionState("closed");
+      setSseLoading(false);
+      setSseForceClosed(true);
+      getResponseBody(recordId)
+        .then((body) => setResponseBody(recordId, body))
+        .catch(() => {});
+    };
 
-    if (responseBody !== null) {
-      const events = parseSseTextToEvents(responseBody);
-      setSseEvents(events);
-    }
+    return () => {
+      sseClosedByUsRef.current = true;
+      eventSource.close();
+      sseEventSourceRef.current = null;
+      setSseConnectionState("closed");
+      setSseLoading(false);
+    };
   }, [
+    appendSseResponseBody,
     isConnectionOpen,
     isWebSocket,
-    parseSseTextToEvents,
     recordId,
-    responseBody,
-    sseReloadToken,
     setResponseBody,
+    sseReloadToken,
+    sseForceClosed,
   ]);
+
+  useEffect(() => {
+    if (isWebSocket || (isConnectionOpen && !sseForceClosed)) {
+      return;
+    }
+    if (responseBody === null) {
+      return;
+    }
+    const token = ++sseParseTokenRef.current;
+    setSseConnectionState("closed");
+    setSseLoading(true);
+    setSseEvents([]);
+    const normalized = responseBody.replace(/\r\n/g, "\n");
+    let index = 0;
+    let eventIndex = 0;
+    const batchSize = 200;
+
+    const run = () => {
+      if (sseParseTokenRef.current !== token) return;
+      const batch: SSEEvent[] = [];
+      let processed = 0;
+      while (processed < batchSize && index < normalized.length) {
+        const next = normalized.indexOf("\n\n", index);
+        if (next === -1) {
+          index = normalized.length;
+          break;
+        }
+        const chunk = normalized.slice(index, next).replace(/\n+$/, "");
+        index = next + 2;
+        if (chunk.trim().length > 0) {
+          const ev = parseSseChunkToEvent(chunk, eventIndex, Date.now());
+          if (ev) {
+            batch.push(ev);
+            eventIndex += 1;
+          }
+        }
+        processed += 1;
+      }
+      if (batch.length > 0) {
+        setSseEvents((prev) => {
+          const next = prev.concat(batch);
+          if (next.length <= MAX_SSE_EVENTS) return next;
+          return next.slice(next.length - MAX_SSE_EVENTS);
+        });
+      }
+      if (index < normalized.length) {
+        setTimeout(run, 0);
+      } else {
+        setSseLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      if (sseParseTokenRef.current === token) {
+        sseParseTokenRef.current += 1;
+      }
+    };
+  }, [isConnectionOpen, isWebSocket, responseBody, sseForceClosed]);
+
+  useEffect(() => {
+    onSseCountChange?.(sseEvents.length);
+  }, [onSseCountChange, sseEvents.length]);
 
   const [sseSearchQuery, setSseSearchQuery] = useState("");
   const [sseSearchMode, setSseSearchMode] = useState<"highlight" | "filter">(
@@ -369,14 +839,37 @@ export const Messages = ({
     );
   }, [framesForWsDisplay, isWebSocket, searchValue.value]);
 
+  const handleCopyWsFrame = useCallback(
+    async (record: WebSocketFrame) => {
+      const payload =
+        wsPayloadById[record.frame_id] || record.payload_preview || "";
+      if (payload) {
+        await copyToClipboard(payload);
+        return;
+      }
+      if (record.payload_size === 0) return;
+      if (inflightWsPayloadIdsRef.current.has(record.frame_id)) return;
+      inflightWsPayloadIdsRef.current.add(record.frame_id);
+      const full = await fetchFramePayload(record.frame_id);
+      inflightWsPayloadIdsRef.current.delete(record.frame_id);
+      if (!full) return;
+      setWsPayloadById((prev) =>
+        prev[record.frame_id] ? prev : { ...prev, [record.frame_id]: full },
+      );
+      await copyToClipboard(full);
+    },
+    [fetchFramePayload, wsPayloadById],
+  );
+
   const normalizedWsMessages = useMemo<MessageItem[]>(() => {
     return framesForWsDisplay.map(normalizeWSFrame);
   }, [framesForWsDisplay]);
 
-  const normalizedSseMessages = useMemo<MessageItem[]>(() => {
-    if (isWebSocket) return [];
-    return sseEvents.map(normalizeSSEEvent);
-  }, [isWebSocket, sseEvents]);
+  useEffect(() => {
+    if (!isWebSocket) {
+      setSseSearchQuery(searchValue.value ?? "");
+    }
+  }, [isWebSocket, searchValue.value]);
 
   const openWsFrameDetail = useCallback(
     async (frame: WebSocketFrame) => {
@@ -474,117 +967,6 @@ export const Messages = ({
     );
   }, [selectedFrame, wsPayloadById]);
 
-  const columns: TableProps<WebSocketFrame>["columns"] = [
-    {
-      title: "#",
-      dataIndex: "frame_id",
-      key: "frame_id",
-      width: 60,
-      render: (id: number) => <Text type="secondary">{id}</Text>,
-    },
-    {
-      title: "",
-      dataIndex: "direction",
-      key: "direction",
-      width: 40,
-      render: (direction: FrameDirection) => (
-        <DirectionIcon direction={direction} />
-      ),
-    },
-    {
-      title: "Type",
-      dataIndex: "frame_type",
-      key: "frame_type",
-      width: 80,
-      render: (type: FrameType) => (
-        <Tag color={getFrameTypeColor(type)}>{type.toUpperCase()}</Tag>
-      ),
-    },
-    {
-      title: "Size",
-      dataIndex: "payload_size",
-      key: "payload_size",
-      width: 80,
-      render: (size: number) => formatSize(size),
-    },
-    {
-      title: "Time",
-      dataIndex: "timestamp",
-      key: "timestamp",
-      width: 100,
-      render: (ts: number) => dayjs(ts).format("HH:mm:ss.SSS"),
-    },
-    {
-      title: "Preview",
-      dataIndex: "payload_preview",
-      key: "payload_preview",
-      ellipsis: true,
-      render: (preview: string | undefined) =>
-        preview ? (
-          <Text
-            style={{ fontFamily: "monospace", fontSize: 12 }}
-            ellipsis={{ tooltip: preview }}
-          >
-            {preview}
-          </Text>
-        ) : (
-          <Text type="secondary">-</Text>
-        ),
-    },
-    {
-      title: "",
-      key: "actions",
-      width: 70,
-      render: (_: unknown, record: WebSocketFrame) => (
-        <Space size={4}>
-          <Tooltip title="Copy">
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={async (e) => {
-                e.stopPropagation();
-                const payload =
-                  wsPayloadById[record.frame_id] ||
-                  record.payload_preview ||
-                  "";
-                if (payload) {
-                  await copyToClipboard(payload);
-                  return;
-                }
-                if (record.payload_size === 0) return;
-                if (inflightWsPayloadIdsRef.current.has(record.frame_id))
-                  return;
-                inflightWsPayloadIdsRef.current.add(record.frame_id);
-                const full = await fetchFramePayload(record.frame_id);
-                inflightWsPayloadIdsRef.current.delete(record.frame_id);
-                if (!full) return;
-                setWsPayloadById((prev) =>
-                  prev[record.frame_id]
-                    ? prev
-                    : { ...prev, [record.frame_id]: full },
-                );
-                await copyToClipboard(full);
-              }}
-              disabled={record.payload_size === 0}
-            />
-          </Tooltip>
-          <Tooltip title="Expand">
-            <Button
-              type="text"
-              size="small"
-              icon={<ExpandOutlined />}
-              onClick={(e) => {
-                e.stopPropagation();
-                void openWsFrameDetail(record);
-              }}
-              disabled={record.payload_size === 0}
-            />
-          </Tooltip>
-        </Space>
-      ),
-    },
-  ];
 
   if (
     frameCount === 0 &&
@@ -611,38 +993,97 @@ export const Messages = ({
 
   if (!isWebSocket) {
     return (
-      <div data-testid="sse-message-list">
+      <div
+        data-testid="sse-message-list"
+        style={{ height: "100%", overflow: "hidden" }}
+      >
         <SseMessageList
           events={sseEvents}
-          loading={false}
+          loading={sseLoading}
           hasMore={false}
-          searchQuery={sseSearchQuery}
+          searchQuery={searchValue.value ?? sseSearchQuery}
           searchMode={sseSearchMode}
-          onSearchChange={setSseSearchQuery}
+          onSearchChange={(value) => {
+            setSseSearchQuery(value);
+            onSearch({ value, next: 1 });
+          }}
           onSearchModeChange={setSseSearchMode}
           onLoadMore={() => {}}
-          onRefresh={() => setSseReloadToken((n) => n + 1)}
+          onRefresh={() => {
+            setSseForceClosed(false);
+            setSseReloadToken((n) => n + 1);
+          }}
           onFullscreenOpen={() => setSseFullscreenOpen(true)}
+          connectionState={sseConnectionState}
+          externalNext={searchValue.next}
+          onMatchCountChange={(total) => {
+            if (searchValue.total !== total) {
+              onSearch({ total });
+            }
+          }}
+          onMatchNavigate={(next) => {
+            if (searchValue.next !== next) {
+              onSearch({ next });
+            }
+          }}
         />
-        <FullscreenMessageViewer
+        <Modal
           open={sseFullscreenOpen}
-          onClose={() => setSseFullscreenOpen(false)}
-          items={normalizedSseMessages}
-          title={
-            <Space>
-              <Tag color="orange">SSE</Tag>
-              <Text type="secondary">{sseEvents.length} events</Text>
-            </Space>
-          }
-          initialQuery={sseSearchQuery}
-          initialMatchMode={sseSearchMode}
-        />
+          onCancel={() => setSseFullscreenOpen(false)}
+          footer={null}
+          width="80vw"
+          styles={{
+            body: {
+              height: "70vh",
+              overflow: "hidden",
+            },
+          }}
+        >
+          <SseMessageList
+            events={sseEvents}
+            loading={sseLoading}
+            hasMore={false}
+            searchQuery={searchValue.value ?? sseSearchQuery}
+            searchMode={sseSearchMode}
+            onSearchChange={(value) => {
+              setSseSearchQuery(value);
+              onSearch({ value, next: 1 });
+            }}
+            onSearchModeChange={setSseSearchMode}
+            onLoadMore={() => {}}
+          onRefresh={() => {
+            setSseForceClosed(false);
+            setSseReloadToken((n) => n + 1);
+          }}
+            connectionState={sseConnectionState}
+            externalNext={searchValue.next}
+            onMatchCountChange={(total) => {
+              if (searchValue.total !== total) {
+                onSearch({ total });
+              }
+            }}
+            onMatchNavigate={(next) => {
+              if (searchValue.next !== next) {
+                onSearch({ next });
+              }
+            }}
+          />
+        </Modal>
       </div>
     );
   }
 
   return (
-    <div ref={tableRef} data-testid="ws-frames-pane">
+    <div
+      ref={tableRef}
+      data-testid="ws-frames-pane"
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+      }}
+    >
       <div
         style={{
           marginBottom: 4,
@@ -664,10 +1105,10 @@ export const Messages = ({
               disabled={frames.length === 0}
             />
           </Tooltip>
-          {hasMore && (
+          {(hasMore || lastSeenFrameId > lastFetchedFrameId) && (
             <Button
               size="small"
-              onClick={() => fetchFrames(lastFrameId)}
+              onClick={() => fetchFrames(lastFetchedFrameId)}
               loading={loading}
             >
               Load More
@@ -684,57 +1125,12 @@ export const Messages = ({
         </Space>
       </div>
 
-      <ConfigProvider
-        theme={{
-          components: {
-            Table: {
-              cellPaddingBlockSM: 2,
-              cellPaddingInlineSM: 4,
-            },
-          },
-        }}
-      >
-        <Table<WebSocketFrame>
-          dataSource={filteredWsFrames}
-          columns={columns}
-          rowKey="frame_id"
-          pagination={false}
-          size="small"
-          loading={loading}
-          data-testid="ws-frames-table"
-          style={{
-            backgroundColor: token.colorBgLayout,
-            borderRadius: 4,
-          }}
-          rowClassName={(record) =>
-            `${record.direction === "send" ? "frame-send" : "frame-receive"} message-row`
-          }
-          onRow={(record) => ({
-            onClick: () => {
-              if (record.payload_size === 0) return;
-              void openWsFrameDetail(record);
-            },
-            "data-testid": "ws-frame-row",
-            "data-frame-id": record.frame_id,
-            "data-payload-size": record.payload_size,
-          })}
-        />
-      </ConfigProvider>
-
-      <style>{`
-        .frame-send td:first-child {
-          border-left: 3px solid #52c41a;
-        }
-        .frame-receive td:first-child {
-          border-left: 3px solid #1890ff;
-        }
-        .message-row {
-          cursor: pointer;
-        }
-        .message-row:hover {
-          background-color: ${token.colorBgTextHover};
-        }
-      `}</style>
+      <WsMessageList
+        frames={filteredWsFrames}
+        loading={loading}
+        onOpenDetail={openWsFrameDetail}
+        onCopy={handleCopyWsFrame}
+      />
 
       <Modal
         title={
@@ -798,6 +1194,7 @@ export const Messages = ({
             }}
           >
             <code
+              className="hljs"
               dangerouslySetInnerHTML={{
                 __html: highlightContent(selectedPayload),
               }}

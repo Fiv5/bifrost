@@ -5,6 +5,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use lru::LruCache;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 
 use crate::body_store::BodyRef;
 
@@ -124,7 +125,7 @@ impl WsPayloadStore {
         self.base_dir.join(WS_PAYLOAD_SUBDIR)
     }
 
-    fn safe_connection_id(connection_id: &str) -> String {
+    pub fn safe_connection_id(connection_id: &str) -> String {
         connection_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
     }
 
@@ -310,6 +311,50 @@ impl WsPayloadStore {
         Ok(removed_count)
     }
 
+    pub fn stats(&self) -> WsPayloadStoreStats {
+        let payload_dir = self.payload_dir();
+        let mut file_count = 0;
+        let mut total_size = 0u64;
+        if payload_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&payload_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().is_some_and(|e| e == "bin") {
+                        file_count += 1;
+                        if let Ok(metadata) = entry.metadata() {
+                            total_size += metadata.len();
+                        }
+                    }
+                }
+            }
+        }
+        WsPayloadStoreStats {
+            file_count,
+            total_size,
+            payload_dir: payload_dir.to_string_lossy().to_string(),
+            retention_days: self.get_retention_days(),
+        }
+    }
+
+    pub fn sizes_by_safe_id(&self) -> std::io::Result<std::collections::HashMap<String, u64>> {
+        let mut sizes = std::collections::HashMap::new();
+        let payload_dir = self.payload_dir();
+        if !payload_dir.exists() {
+            return Ok(sizes);
+        }
+        for entry in fs::read_dir(&payload_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    *sizes.entry(file_stem.to_string()).or_insert(0) += size;
+                }
+            }
+        }
+        Ok(sizes)
+    }
+
     fn get_retention_days(&self) -> u64 {
         self.state.lock().retention_days
     }
@@ -333,4 +378,12 @@ pub fn start_ws_payload_cleanup_task(store: SharedWsPayloadStore) {
             }
         }
     });
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsPayloadStoreStats {
+    pub file_count: usize,
+    pub total_size: u64,
+    pub payload_dir: String,
+    pub retention_days: u64,
 }

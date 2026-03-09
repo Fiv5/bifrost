@@ -48,14 +48,13 @@ pub use metrics::{
 pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
-pub use sse::{parse_sse_event, parse_sse_events_from_text, SseEvent, SseEventEnvelope, SseHub};
+pub use sse::{parse_sse_event, parse_sse_events_from_text, SseEvent, SseHub};
 pub use state::{
     AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedScriptManager,
     SharedSystemProxyManager, SharedValuesStorage,
 };
 pub use traffic::{
-    FrameDirection, FrameType, MatchedRule, RequestTiming, SharedTrafficRecorder, SocketStatus,
-    TrafficRecord, TrafficRecorder,
+    FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,
 };
 pub use traffic_db::{
     start_db_cleanup_task, Direction, QueryParams, QueryResult, SharedTrafficDbStore,

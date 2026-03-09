@@ -302,6 +302,7 @@ fn test_proxy_config_custom() {
         allow_lan: true,
         unsafe_ssl: false,
         max_body_buffer_size: 10 * 1024 * 1024,
+        max_body_probe_size: 64 * 1024,
         enable_socks: true,
     };
     assert_eq!(config.port, 9000);

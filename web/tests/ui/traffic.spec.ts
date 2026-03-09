@@ -3,7 +3,7 @@ import type { APIRequestContext } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import WebSocket, { WebSocketServer } from "ws";
 import { HttpProxyAgent } from "http-proxy-agent";
 
@@ -35,7 +35,7 @@ const startMockServer = async () => {
 const startSseServer = async () => {
   const server = createServer((req, res) => {
     const url = req.url || "";
-    if (!url.startsWith("/sse")) {
+    if (!url.startsWith("/sse-test")) {
       res.statusCode = 404;
       res.end();
       return;
@@ -45,8 +45,23 @@ const startSseServer = async () => {
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
     });
-    res.write(`id: 1\ndata: alpha\n\n`);
-    res.write(`id: 2\ndata: beta\n\n`);
+    for (let i = 1; i <= 40; i += 1) {
+      if (i === 20) {
+        res.write(
+          `id: ${i}\ndata: {"type":"target-long","a":1,"b":2,"c":3,"d":4,"e":5,"f":6,"g":7,"h":8,"i":9,"j":10,"k":11}\n\n`,
+        );
+        continue;
+      }
+      if (i === 1) {
+        res.write(`id: ${i}\ndata: alpha\n\n`);
+        continue;
+      }
+      if (i === 2) {
+        res.write(`id: ${i}\ndata: beta\n\n`);
+        continue;
+      }
+      res.write(`id: ${i}\ndata: event-${i}\n\n`);
+    }
     res.end();
   });
 
@@ -247,21 +262,139 @@ test("WebSocket 帧与 size 更新展示正确", async ({ page, request }) => {
   await server.close();
 });
 
+test("WebSocket 外部站点回显与 size 增长", async ({ page, request }) => {
+  await clearTraffic(request);
+  await sendWsViaProxy("wss://echo.websocket.org/");
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  const wsRow = page
+    .getByTestId("traffic-row")
+    .filter({ hasText: "echo.websocket.org" })
+    .first();
+  await expect(wsRow).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const frameCountAttr = await wsRow.getAttribute("data-frame-count");
+      return Number(frameCountAttr ?? "0");
+    })
+    .toBeGreaterThanOrEqual(2);
+
+  await wsRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
+  await expect(page.getByTestId("ws-frames-table")).toContainText("hello");
+  await expect(page.getByTestId("ws-frames-table")).toContainText("6 B");
+});
+
+test("WebSocket 列表未到底部时不应强制滚动到底部", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startWsServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const wsPath = `/ws-scroll-${token}`;
+  const wsUrl = `ws://127.0.0.1:${server.port}${wsPath}`;
+
+  const agent = new HttpProxyAgent(proxyUrl);
+  const ws = new WebSocket(wsUrl, { agent });
+
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+
+  for (let i = 0; i < 120; i += 1) {
+    ws.send(`seed-${token}-${i}`);
+  }
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  const wsRow = page
+    .getByTestId("traffic-row")
+    .filter({ hasText: wsPath })
+    .last();
+  await expect(wsRow).toBeVisible();
+  await wsRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
+
+  const summary = page.getByTestId("ws-frames-summary");
+  const summaryHandle = await summary.elementHandle();
+  if (summaryHandle) {
+    await page.waitForFunction(
+      (el: SVGElement | HTMLElement) => {
+        const text = el.textContent || "";
+        const match = text.match(/(\d+)\s+of\s+(\d+)\s+frames/);
+        if (!match) return false;
+        return Number(match[1]) >= 50;
+      },
+      summaryHandle,
+    );
+  }
+
+  const scrollContainer = page.getByTestId("ws-frames-table");
+  await scrollContainer.evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  const scrollTopBefore = await scrollContainer.evaluate((el) => el.scrollTop);
+
+  for (let i = 120; i < 140; i += 1) {
+    ws.send(`append-${token}-${i}`);
+  }
+
+  if (summaryHandle) {
+    await page.waitForFunction(
+      (el: SVGElement | HTMLElement) => {
+        const text = el.textContent || "";
+        const match = text.match(/(\d+)\s+of\s+(\d+)\s+frames/);
+        if (!match) return false;
+        return Number(match[1]) >= 70;
+      },
+      summaryHandle,
+    );
+  }
+
+  const scrollTopAfter = await scrollContainer.evaluate((el) => el.scrollTop);
+  expect(scrollTopAfter).toBe(scrollTopBefore);
+
+  await new Promise<void>((resolve) => {
+    ws.once("close", resolve);
+    ws.close();
+  });
+  await server.close();
+});
+
 test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startSseServer();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const ssePath = `/sse?token=${token}`;
+  const ssePath = `/sse-test?token=${token}`;
 
   await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
 
   await page.goto("/_bifrost/traffic");
   await expect(page.getByTestId("traffic-table")).toBeVisible();
 
-  const sseRow = page
-    .getByTestId("traffic-row")
-    .filter({ hasText: "/sse" })
-    .last();
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
   await expect(sseRow).toHaveAttribute(
     "data-response-size",
     expect.stringMatching(/^[1-9]\d*$/),
@@ -275,4 +408,160 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await expect(page.getByTestId("sse-message-list")).toContainText("beta");
 
   await server.close();
+});
+
+test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startSseServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-test?token=${token}`;
+
+  await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
+  await sseRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  const container = page.getByTestId("sse-message-container");
+  await expect(container).toBeVisible();
+
+  const search = container.getByPlaceholder("Search events...");
+  await search.fill("target-long");
+
+  const expandedCard = container
+    .getByTestId("sse-event-card")
+    .filter({ hasText: "target-long" })
+    .first();
+
+  await expect(expandedCard).toBeVisible();
+  const beforeBox = await expandedCard.boundingBox();
+  expect(beforeBox).not.toBeNull();
+
+  await expandedCard.getByTestId("sse-event-toggle").click();
+
+  await expect
+    .poll(async () => (await expandedCard.boundingBox())?.height || 0)
+    .toBeGreaterThan((beforeBox?.height || 0) + 10);
+
+  const cards = container.getByTestId("sse-event-card");
+  const cardCount = await cards.count();
+  const boxes: Array<{ index: number; y: number; bottom: number }> = [];
+  for (let i = 0; i < cardCount; i += 1) {
+    const box = await cards.nth(i).boundingBox();
+    if (!box) continue;
+    boxes.push({ index: i, y: box.y, bottom: box.y + box.height });
+  }
+  boxes.sort((a, b) => a.y - b.y);
+
+  const expandedBox = await expandedCard.boundingBox();
+  expect(expandedBox).not.toBeNull();
+  const expandedBottom = (expandedBox?.y || 0) + (expandedBox?.height || 0);
+
+  const scroll = container.getByTestId("sse-message-scroll");
+  let next: { index: number; y: number; bottom: number } | undefined;
+  let currentExpandedBottom = expandedBottom;
+  for (let i = 0; i < 4; i += 1) {
+    const currentExpandedBox = await expandedCard.boundingBox();
+    expect(currentExpandedBox).not.toBeNull();
+    currentExpandedBottom =
+      (currentExpandedBox?.y || 0) + (currentExpandedBox?.height || 0);
+
+    boxes.length = 0;
+    const count = await cards.count();
+    for (let j = 0; j < count; j += 1) {
+      const box = await cards.nth(j).boundingBox();
+      if (!box) continue;
+      boxes.push({ index: j, y: box.y, bottom: box.y + box.height });
+    }
+    boxes.sort((a, b) => a.y - b.y);
+
+    next = boxes.find((b) => b.y > currentExpandedBottom);
+    if (next) break;
+
+    await scroll.evaluate((el) => {
+      el.scrollTop += 320;
+    });
+    await page.waitForTimeout(60);
+  }
+
+  expect(next).toBeTruthy();
+  expect((next?.y || 0) - currentExpandedBottom).toBeGreaterThanOrEqual(6);
+
+  await server.close();
+});
+
+test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) => {
+  await clearTraffic(request);
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "6",
+      "-x",
+      proxyUrl,
+      "https://echo.websocket.org/.sse",
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const row = page
+      .getByTestId("traffic-row")
+      .filter({ hasText: "echo.websocket.org" })
+      .first();
+    await expect(row).toBeVisible();
+
+    const sizeBefore = Number((await row.getAttribute("data-response-size")) || "0");
+    await expect
+      .poll(async () => {
+        const size = await row.getAttribute("data-response-size");
+        return Number(size || "0");
+      })
+      .toBeGreaterThan(sizeBefore);
+
+    await row.click();
+    await page.getByTestId("response-tab-messages").click();
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect
+      .poll(async () => {
+        const text = await page.getByTestId("sse-message-count").textContent();
+        const match = text?.match(/(\d+)\s+events/);
+        return match ? Number(match[1]) : 0;
+      })
+      .toBeGreaterThan(0);
+  } finally {
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
 });

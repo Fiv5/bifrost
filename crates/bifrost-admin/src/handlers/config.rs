@@ -11,7 +11,7 @@ use crate::frame_store::FrameStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::traffic_store::TrafficStoreStats;
-use crate::ws_payload_store::WsPayloadStoreConfigUpdate;
+use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
@@ -48,6 +48,7 @@ pub struct TrafficConfig {
     pub max_db_size_bytes: u64,
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
+    pub max_body_probe_size: usize,
     pub file_retention_days: u64,
     pub sse_stream_flush_bytes: usize,
     pub sse_stream_flush_interval_ms: u64,
@@ -62,6 +63,7 @@ pub struct PerformanceConfigResponse {
     pub body_store_stats: Option<BodyStoreStats>,
     pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
+    pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
 
 #[derive(Deserialize)]
@@ -70,6 +72,7 @@ pub struct UpdateTrafficConfigRequest {
     pub max_db_size_bytes: Option<u64>,
     pub max_body_memory_size: Option<usize>,
     pub max_body_buffer_size: Option<usize>,
+    pub max_body_probe_size: Option<usize>,
     pub file_retention_days: Option<u64>,
     pub sse_stream_flush_bytes: Option<usize>,
     pub sse_stream_flush_interval_ms: Option<u64>,
@@ -323,6 +326,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
     let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
     let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
+    let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|ws| ws.stats());
 
     let traffic_config = if let Some(ref config_manager) = state.config_manager {
         let config = config_manager.config().await;
@@ -331,6 +335,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_db_size_bytes: config.traffic.max_db_size_bytes,
             max_body_memory_size: config.traffic.max_body_memory_size,
             max_body_buffer_size: config.traffic.max_body_buffer_size,
+            max_body_probe_size: config.traffic.max_body_probe_size,
             file_retention_days: config.traffic.file_retention_days,
             sse_stream_flush_bytes: config.traffic.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: config.traffic.sse_stream_flush_interval_ms,
@@ -344,11 +349,12 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
             file_retention_days: 7,
-            sse_stream_flush_bytes: 64 * 1024,
-            sse_stream_flush_interval_ms: 200,
-            ws_payload_flush_bytes: 256 * 1024,
-            ws_payload_flush_interval_ms: 200,
+            sse_stream_flush_bytes: 256 * 1024,
+            sse_stream_flush_interval_ms: 1000,
+            ws_payload_flush_bytes: 512 * 1024,
+            ws_payload_flush_interval_ms: 1000,
             ws_payload_max_open_files: 128,
         }
     };
@@ -358,6 +364,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         body_store_stats,
         traffic_store_stats,
         frame_store_stats,
+        ws_payload_store_stats,
     };
 
     json_response(&response)
@@ -399,6 +406,7 @@ async fn update_performance_config(
             max_db_size_bytes: request.max_db_size_bytes,
             max_body_memory_size: request.max_body_memory_size,
             max_body_buffer_size: request.max_body_buffer_size,
+            max_body_probe_size: request.max_body_probe_size,
             file_retention_days: request.file_retention_days,
             sse_stream_flush_bytes: request.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: request.sse_stream_flush_interval_ms,
@@ -423,9 +431,11 @@ async fn update_performance_config(
     }
 
     if let Some(max_records) = request.max_records {
-        state.traffic_recorder.set_max_records(max_records);
         if let Some(ref traffic_store) = state.traffic_store {
             traffic_store.set_max_records(max_records);
+        }
+        if let Some(ref traffic_db_store) = state.traffic_db_store {
+            traffic_db_store.set_max_records(max_records);
         }
     }
 
@@ -469,6 +479,10 @@ async fn update_performance_config(
         state.set_max_body_buffer_size(max_body_buffer_size);
     }
 
+    if let Some(max_body_probe_size) = request.max_body_probe_size {
+        state.set_max_body_probe_size(max_body_probe_size);
+    }
+
     get_performance_config(state).await
 }
 
@@ -506,10 +520,7 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         let stats = traffic_store.stats();
         traffic_removed = stats.total_records_processed as usize;
         tracing::info!("Cleared traffic store records");
-        let new_sequence = traffic_store.current_sequence();
-        state.traffic_recorder.set_initial_sequence(new_sequence);
     }
-    state.traffic_recorder.clear();
 
     if let Some(ref frame_store) = state.frame_store {
         match frame_store.clear() {

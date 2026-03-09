@@ -37,7 +37,13 @@ async fn get_system_info(state: SharedAdminState) -> Response<BoxBody> {
 async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
     let system_info = SystemInfo::new(state.start_time);
     let metrics = state.metrics_collector.get_current();
-    let traffic_count = state.traffic_recorder.count();
+    let traffic_count = if let Some(ref db_store) = state.traffic_db_store {
+        db_store.stats().record_count
+    } else if let Some(ref traffic_store) = state.traffic_store {
+        traffic_store.total()
+    } else {
+        0
+    };
 
     let (rules_total, rules_enabled) = match state.rules_storage.load_all() {
         Ok(rules) => {

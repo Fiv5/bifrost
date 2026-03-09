@@ -105,6 +105,7 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     if perf.body_store_stats.is_some()
         || perf.traffic_store_stats.is_some()
         || perf.frame_store_stats.is_some()
+        || perf.ws_payload_store_stats.is_some()
     {
         println!();
         println!("  Storage Stats:");
@@ -126,6 +127,13 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
                 "    Frame Store:        {} ({} connections)",
                 format_size(stats.total_size as usize),
                 stats.connection_count
+            );
+        }
+        if let Some(ref stats) = perf.ws_payload_store_stats {
+            println!(
+                "    WS Payload Store:   {} ({} files)",
+                format_size(stats.total_size as usize),
+                stats.file_count
             );
         }
     }

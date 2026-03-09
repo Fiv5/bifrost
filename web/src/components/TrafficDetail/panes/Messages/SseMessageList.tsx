@@ -1,22 +1,18 @@
-import { useMemo, useCallback } from 'react';
-import { Typography, Button, Space, Tooltip, Empty, Input, Tag, theme } from 'antd';
-import { 
-  ReloadOutlined, 
-  SearchOutlined, 
-  FilterOutlined, 
+import { useMemo, useCallback, useEffect, useRef, useState } from 'react';
+import { Typography, Button, Space, Tooltip, Input, Tag, theme } from 'antd';
+import {
+  ReloadOutlined,
+  SearchOutlined,
+  FilterOutlined,
   HighlightOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
   FullscreenOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { SSEEvent } from '../../../../types';
-import {
-  VirtualMessageList,
-  MessageItemCard,
-  useMessageSearch,
-  normalizeSSEEvent,
-  type MessageItem,
-} from '../../../VirtualMessageViewer';
+import { SseEventCard } from './SseEventCard';
 
 const { Text } = Typography;
 const { Search } = Input;
@@ -32,6 +28,10 @@ interface SseMessageListProps {
   onLoadMore: () => void;
   onRefresh: () => void;
   onFullscreenOpen?: () => void;
+  connectionState?: 'idle' | 'connecting' | 'open' | 'closed' | 'error';
+  externalNext?: number;
+  onMatchCountChange?: (total: number) => void;
+  onMatchNavigate?: (next: number) => void;
 }
 
 export const SseMessageList = ({
@@ -45,68 +45,201 @@ export const SseMessageList = ({
   onLoadMore,
   onRefresh,
   onFullscreenOpen,
+  connectionState,
+  externalNext,
+  onMatchCountChange,
+  onMatchNavigate,
 }: SseMessageListProps) => {
   const { token } = theme.useToken();
+  const parentRef = useRef<HTMLDivElement>(null);
+  const [currentMatch, setCurrentMatch] = useState<number>(-1);
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const [isAtTop, setIsAtTop] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const scrollButtonStyles = useMemo(
+    () => ({
+      scrollButton: {
+        position: "absolute" as const,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        backgroundColor: token.colorBgElevated,
+        color: token.colorTextSecondary,
+        borderRadius: "50%",
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
+        zIndex: 10,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        transition:
+          "opacity 0.3s ease, transform 0.3s ease, background-color 0.2s",
+      },
+      scrollToTopButton: {
+        top: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+      scrollToBottomButton: {
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+    }),
+    [token],
+  );
+  const displayEvents = useMemo(() => {
+    if (searchMode !== 'filter' || !normalizedQuery) return events;
+    return events.filter((event) => {
+      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      return text.includes(normalizedQuery);
+    });
+  }, [events, normalizedQuery, searchMode]);
 
-  const normalizedMessages = useMemo<MessageItem[]>(() => {
-    return events.map(normalizeSSEEvent);
-  }, [events]);
+  const matchedIndices = useMemo(() => {
+    if (!normalizedQuery) return [];
+    const indices: number[] = [];
+    displayEvents.forEach((event, index) => {
+      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      if (text.includes(normalizedQuery)) {
+        indices.push(index);
+      }
+    });
+    return indices;
+  }, [displayEvents, normalizedQuery]);
 
-  const {
-    searchState,
-    setQuery,
-    setMatchMode,
-    filteredItems,
-    highlightedIndices,
-    goToNext,
-    goToPrev,
-    matchTokens,
-  } = useMessageSearch({
-    items: normalizedMessages,
-    initialQuery: searchQuery,
-    initialMatchMode: searchMode,
+  const getEventKey = useCallback((event: SSEEvent, index: number) => {
+    if (event.id) return String(event.id);
+    return `sse-${event.timestamp}-${index}`;
+  }, []);
+
+  const getItemKey = useCallback((index: number) => {
+    const event = displayEvents[index];
+    if (!event) return String(index);
+    return getEventKey(event, index);
+  }, [displayEvents, getEventKey]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: displayEvents.length,
+    getScrollElement: () => parentRef.current,
+    getItemKey,
+    estimateSize: () => 160,
+    overscan: 6,
   });
 
-  const displayItems = searchMode === 'filter' && searchQuery ? filteredItems : normalizedMessages;
+  const handleScrollToTop = useCallback(() => {
+    if (displayEvents.length === 0) return;
+    rowVirtualizer.scrollToIndex(0, { align: "start" });
+  }, [displayEvents.length, rowVirtualizer]);
+
+  const handleScrollToBottom = useCallback(() => {
+    if (displayEvents.length === 0) return;
+    rowVirtualizer.scrollToIndex(displayEvents.length - 1, { align: "end" });
+  }, [displayEvents.length, rowVirtualizer]);
+
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const threshold = 8;
+      const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setIsAtTop(el.scrollTop <= threshold);
+      setIsAtBottom(distanceToBottom <= threshold);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [displayEvents.length]);
+
+
+  useEffect(() => {
+    if (matchedIndices.length === 0) {
+      setCurrentMatch(-1);
+      return;
+    }
+    setCurrentMatch(0);
+    rowVirtualizer.scrollToIndex(matchedIndices[0], { align: 'center' });
+  }, [matchedIndices, rowVirtualizer]);
+
+  const lastReportedTotalRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!onMatchCountChange) return;
+    const nextTotal = matchedIndices.length;
+    if (lastReportedTotalRef.current === nextTotal) return;
+    lastReportedTotalRef.current = nextTotal;
+    onMatchCountChange(nextTotal);
+  }, [matchedIndices.length, onMatchCountChange]);
+
+  const prevExternalNext = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!externalNext || matchedIndices.length === 0) {
+      prevExternalNext.current = externalNext;
+      return;
+    }
+    if (prevExternalNext.current === externalNext) return;
+    prevExternalNext.current = externalNext;
+    const idx = (externalNext - 1) % matchedIndices.length;
+    setCurrentMatch(idx);
+    rowVirtualizer.scrollToIndex(matchedIndices[idx], { align: 'center' });
+  }, [externalNext, matchedIndices, rowVirtualizer]);
 
   const handleSearchChange = useCallback((value: string) => {
-    setQuery(value);
     onSearchChange?.(value);
-  }, [setQuery, onSearchChange]);
+  }, [onSearchChange]);
 
   const handleModeChange = useCallback((mode: 'highlight' | 'filter') => {
-    setMatchMode(mode);
     onSearchModeChange?.(mode);
-  }, [setMatchMode, onSearchModeChange]);
+  }, [onSearchModeChange]);
 
-  const getItemKey = useCallback((item: MessageItem) => item.id, []);
+  const goToPrev = useCallback(() => {
+    if (matchedIndices.length === 0) return;
+    const nextIndex =
+      currentMatch <= 0 ? matchedIndices.length - 1 : currentMatch - 1;
+    setCurrentMatch(nextIndex);
+    rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+    onMatchNavigate?.(nextIndex + 1);
+  }, [currentMatch, matchedIndices, rowVirtualizer]);
 
-  const renderItem = useCallback((item: MessageItem) => (
-    <MessageItemCard
-      message={item}
-      searchTokens={searchMode === 'highlight' ? matchTokens : []}
-    />
-  ), [searchMode, matchTokens]);
+  const goToNext = useCallback(() => {
+    if (matchedIndices.length === 0) return;
+    const nextIndex =
+      currentMatch >= matchedIndices.length - 1 ? 0 : currentMatch + 1;
+    setCurrentMatch(nextIndex);
+    rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
+    onMatchNavigate?.(nextIndex + 1);
+  }, [currentMatch, matchedIndices, rowVirtualizer]);
 
-  if (events.length === 0) {
-    return (
-      <div
-        style={{
-          padding: 24,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          height: 200,
-        }}
-      >
-        <Empty description="No SSE events yet" />
-      </div>
-    );
-  }
-
-  const matchInfo = searchState.total > 0 
-    ? `${searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0}/${searchState.total}`
+  const matchInfo = matchedIndices.length > 0
+    ? `${currentMatch >= 0 ? currentMatch + 1 : 0}/${matchedIndices.length}`
     : null;
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [expandedMap, rowVirtualizer]);
+
+  const toggleExpanded = useCallback((key: string) => {
+    setExpandedMap((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }, []);
+
+  const stateLabel = (() => {
+    if (connectionState === 'open') return 'Live';
+    if (connectionState === 'closed') return 'Closed';
+    if (connectionState === 'error') return 'Error';
+    if (connectionState === 'connecting') return 'Connecting';
+    return 'Idle';
+  })();
+
+  const stateColor = (() => {
+    if (connectionState === 'open') return 'green';
+    if (connectionState === 'closed') return 'default';
+    if (connectionState === 'error') return 'red';
+    if (connectionState === 'connecting') return 'blue';
+    return 'default';
+  })();
 
   return (
     <div
@@ -115,6 +248,7 @@ export const SseMessageList = ({
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        minHeight: 0,
       }}
       data-testid="sse-message-container"
     >
@@ -168,12 +302,23 @@ export const SseMessageList = ({
             </>
           )}
 
+          <Tag color={stateColor} style={{ margin: 0 }}>
+            {connectionState === 'connecting' || loading ? (
+              <Space size={4}>
+                <LoadingOutlined />
+                {stateLabel}
+              </Space>
+            ) : (
+              stateLabel
+            )}
+          </Tag>
+
           <Text
             type="secondary"
             style={{ fontSize: 11 }}
             data-testid="sse-message-count"
           >
-            {displayItems.length} of {events.length} events
+            {displayEvents.length} of {events.length} events
             {hasMore && ' (+)'}
           </Text>
         </Space>
@@ -204,30 +349,91 @@ export const SseMessageList = ({
         </Space>
       </div>
 
-      <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
-        <VirtualMessageList
-          items={displayItems}
-          getItemKey={getItemKey}
-          renderItem={renderItem}
-          highlightedIndices={searchMode === 'highlight' ? highlightedIndices : []}
-          currentHighlightIndex={searchState.currentIndex >= 0 ? searchState.matchedIndices[searchState.currentIndex] : -1}
-          estimateSize={140}
-          overscan={3}
-          followTail={false}
-          emptyContent={
+      <div style={{ flex: 1, overflow: "hidden", minHeight: 0, position: "relative" }}>
+        {displayEvents.length === 0 && !loading ? (
+          <div
+            style={{
+              padding: 24,
+              textAlign: 'center',
+              color: token.colorTextSecondary,
+            }}
+          >
+            {searchMode === 'filter' && searchQuery
+              ? 'No events match your search'
+              : 'No events'}
+          </div>
+        ) : (
+          <div
+            ref={parentRef}
+            data-testid="sse-message-scroll"
+            style={{
+              height: '100%',
+              overflow: 'auto',
+              paddingRight: 8,
+            }}
+          >
             <div
               style={{
-                padding: 24,
-                textAlign: 'center',
-                color: token.colorTextSecondary,
+                height: rowVirtualizer.getTotalSize(),
+                width: '100%',
+                position: 'relative',
               }}
             >
-              {searchMode === 'filter' && searchQuery
-                ? 'No events match your search'
-                : 'No events'}
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const event = displayEvents[virtualRow.index];
+                if (!event) return null;
+                const key = getEventKey(event, virtualRow.index);
+                return (
+                  <div
+                    key={key}
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start}px)`,
+                      paddingBottom: 8,
+                    }}
+                  >
+                    <SseEventCard
+                      event={event}
+                      index={virtualRow.index}
+                      searchValue={searchMode === 'highlight' ? searchQuery : undefined}
+                      expanded={!!expandedMap[key]}
+                      onToggle={() => toggleExpanded(key)}
+                    />
+                  </div>
+                );
+              })}
             </div>
-          }
-        />
+          </div>
+        )}
+        {!isAtTop && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToTopButton,
+            }}
+            onClick={handleScrollToTop}
+            data-testid="sse-scroll-top"
+          >
+            <ArrowUpOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
+        {!isAtBottom && (
+          <div
+            style={{
+              ...scrollButtonStyles.scrollButton,
+              ...scrollButtonStyles.scrollToBottomButton,
+            }}
+            onClick={handleScrollToBottom}
+            data-testid="sse-scroll-bottom"
+          >
+            <ArrowDownOutlined style={{ fontSize: 14 }} />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,15 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 use crate::traffic::SocketStatus;
-
-const BROADCAST_CHANNEL_SIZE: usize = 1024;
-const DEFAULT_RING_CAPACITY: usize = 2048;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseEvent {
@@ -29,50 +24,27 @@ pub struct SseEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct SseEventEnvelope {
-    pub connection_id: String,
-    pub event: SseEvent,
-}
-
-#[derive(Debug)]
 struct SseConnectionState {
     is_open: bool,
     receive_bytes: u64,
     receive_count: u64,
-    seq: u64,
-    tx: broadcast::Sender<SseEventEnvelope>,
-    recent: VecDeque<SseEvent>,
-    recent_capacity: usize,
+    // 当用户在管理端主动查看 SSE messages 时，proxy 侧需要更激进地把 sse_raw 写盘，
+    // 否则可能出现：count 在涨（基于解析/计数），但文件未 flush 导致详情流读不到数据。
+    force_flush_until_ms: u64,
 }
 
 impl SseConnectionState {
-    fn new(recent_capacity: usize) -> Self {
-        let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_SIZE);
+    fn new() -> Self {
         Self {
             is_open: true,
             receive_bytes: 0,
             receive_count: 0,
-            seq: 0,
-            tx,
-            recent: VecDeque::with_capacity(recent_capacity.min(32)),
-            recent_capacity,
+            force_flush_until_ms: 0,
         }
-    }
-
-    fn next_seq(&mut self) -> u64 {
-        self.seq += 1;
-        self.seq
-    }
-
-    fn push_recent(&mut self, event: SseEvent) {
-        if self.recent.len() >= self.recent_capacity {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(event);
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SseHub {
     connections: RwLock<HashMap<String, SseConnectionState>>,
 }
@@ -86,7 +58,7 @@ impl SseHub {
         let mut connections = self.connections.write();
         connections
             .entry(connection_id.to_string())
-            .or_insert_with(|| SseConnectionState::new(DEFAULT_RING_CAPACITY));
+            .or_insert_with(SseConnectionState::new);
     }
 
     pub fn set_closed(&self, connection_id: &str) {
@@ -105,6 +77,32 @@ impl SseHub {
         if let Some(state) = connections.get_mut(connection_id) {
             state.receive_bytes = state.receive_bytes.saturating_add(bytes as u64);
         }
+    }
+
+    pub fn add_receive_event(&self, connection_id: &str) {
+        let mut connections = self.connections.write();
+        if let Some(state) = connections.get_mut(connection_id) {
+            state.receive_count = state.receive_count.saturating_add(1);
+        }
+    }
+
+    pub fn request_force_flush(&self, connection_id: &str, duration_ms: u64) {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let until = now.saturating_add(duration_ms);
+        let mut connections = self.connections.write();
+        let state = connections
+            .entry(connection_id.to_string())
+            .or_insert_with(SseConnectionState::new);
+        state.force_flush_until_ms = state.force_flush_until_ms.max(until);
+    }
+
+    pub fn should_force_flush(&self, connection_id: &str) -> bool {
+        let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        self.connections
+            .read()
+            .get(connection_id)
+            .map(|s| s.force_flush_until_ms > now)
+            .unwrap_or(false)
     }
 
     pub fn is_open(&self, connection_id: &str) -> Option<bool> {
@@ -128,57 +126,21 @@ impl SseHub {
             close_reason: None,
         })
     }
-
-    pub fn subscribe(&self, connection_id: &str) -> Option<broadcast::Receiver<SseEventEnvelope>> {
-        let connections = self.connections.read();
-        connections.get(connection_id).map(|s| s.tx.subscribe())
-    }
-
-    pub fn get_events_since(&self, connection_id: &str, last_seq: u64) -> Vec<SseEvent> {
-        let connections = self.connections.read();
-        let Some(state) = connections.get(connection_id) else {
-            return Vec::new();
-        };
-        state
-            .recent
-            .iter()
-            .filter(|e| e.seq > last_seq)
-            .cloned()
-            .collect()
-    }
-
-    pub fn publish_raw_event(&self, connection_id: &str, raw_event: &[u8]) -> Option<SseEvent> {
-        let raw = String::from_utf8_lossy(raw_event).to_string();
-        let mut connections = self.connections.write();
-        let state = connections.get_mut(connection_id)?;
-        if !state.is_open {
-            return None;
-        }
-
-        let seq = state.next_seq();
-        state.receive_count = state.receive_count.saturating_add(1);
-        let ts = now_ms();
-        let mut event = parse_sse_event(&raw);
-        event.seq = seq;
-        event.ts = ts;
-        let envelope = SseEventEnvelope {
-            connection_id: connection_id.to_string(),
-            event: event.clone(),
-        };
-        let _ = state.tx.send(envelope);
-        state.push_recent(event.clone());
-        Some(event)
-    }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+impl Default for SseHub {
+    fn default() -> Self {
+        Self {
+            connections: RwLock::new(HashMap::new()),
+        }
+    }
 }
 
 pub fn parse_sse_event(raw: &str) -> SseEvent {
+    parse_sse_event_with_error(raw, false)
+}
+
+fn parse_sse_event_with_error(raw: &str, parse_error: bool) -> SseEvent {
     let mut id: Option<String> = None;
     let mut event: Option<String> = None;
     let mut retry: Option<u64> = None;
@@ -232,34 +194,40 @@ pub fn parse_sse_event(raw: &str) -> SseEvent {
         event,
         retry,
         data,
-        raw: Some(raw.to_string()),
-        parse_error: false,
+        raw: if parse_error {
+            Some(raw.to_string())
+        } else {
+            None
+        },
+        parse_error,
     }
 }
 
 pub fn parse_sse_events_from_text(input: &str) -> (Vec<SseEvent>, String) {
-    let normalized = input.replace("\r\n", "\n");
     let mut events: Vec<SseEvent> = Vec::new();
-    let mut start = 0usize;
-    let bytes = normalized.as_bytes();
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-            let chunk = &normalized[start..i];
-            let chunk = chunk.trim_end_matches('\n');
-            if !chunk.is_empty() {
-                events.push(parse_sse_event(chunk));
-            }
-            i += 2;
-            start = i;
+    let mut buffer = String::new();
+    let mut prev_nl = false;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\r' && matches!(chars.peek(), Some('\n')) {
             continue;
         }
-        i += 1;
+        if ch == '\n' {
+            if prev_nl {
+                let chunk = buffer.trim_end_matches('\n').to_string();
+                if !chunk.is_empty() {
+                    events.push(parse_sse_event(&chunk));
+                }
+                buffer.clear();
+                prev_nl = false;
+                continue;
+            }
+            buffer.push('\n');
+            prev_nl = true;
+            continue;
+        }
+        prev_nl = false;
+        buffer.push(ch);
     }
-    let remainder = if start < normalized.len() {
-        normalized[start..].to_string()
-    } else {
-        String::new()
-    };
-    (events, remainder)
+    (events, buffer)
 }
