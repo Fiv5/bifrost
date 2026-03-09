@@ -1,10 +1,4 @@
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 use crate::body_store::BodyRef;
 
@@ -360,186 +354,6 @@ impl From<&TrafficRecord> for TrafficSummary {
     }
 }
 
-pub struct TrafficRecorder {
-    records: RwLock<VecDeque<TrafficRecord>>,
-    max_records: AtomicUsize,
-    tx: broadcast::Sender<TrafficRecord>,
-    sequence: AtomicU64,
-}
-
-impl TrafficRecorder {
-    pub fn new(max_records: usize) -> Self {
-        let (tx, _) = broadcast::channel(1000);
-        let initial_capacity = max_records.min(1000);
-        Self {
-            records: RwLock::new(VecDeque::with_capacity(initial_capacity)),
-            max_records: AtomicUsize::new(max_records),
-            tx,
-            sequence: AtomicU64::new(1),
-        }
-    }
-
-    pub fn set_max_records(&self, max_records: usize) {
-        let old = self.max_records.swap(max_records, Ordering::SeqCst);
-        if old != max_records {
-            tracing::info!(
-                "TrafficRecorder config updated: max_records {} -> {}",
-                old,
-                max_records
-            );
-        }
-    }
-
-    pub fn set_initial_sequence(&self, sequence: u64) {
-        let old = self.sequence.swap(sequence, Ordering::SeqCst);
-        tracing::info!(
-            "TrafficRecorder sequence initialized: {} -> {}",
-            old,
-            sequence
-        );
-    }
-
-    pub fn record(&self, mut record: TrafficRecord) {
-        let seq = self.sequence.fetch_add(1, Ordering::SeqCst);
-        record.sequence = seq;
-
-        let _ = self.tx.send(record.clone());
-
-        let max = self.max_records.load(Ordering::Relaxed);
-        if max == 0 {
-            return;
-        }
-        let mut records = self.records.write();
-        if records.len() >= max {
-            records.pop_front();
-        }
-        records.push_back(record);
-    }
-
-    pub fn get_all(&self) -> Vec<TrafficSummary> {
-        self.records
-            .read()
-            .iter()
-            .map(TrafficSummary::from)
-            .collect()
-    }
-
-    pub fn get_recent(&self, limit: usize) -> Vec<TrafficSummary> {
-        self.records
-            .read()
-            .iter()
-            .rev()
-            .take(limit)
-            .map(TrafficSummary::from)
-            .collect()
-    }
-
-    pub fn get_by_id(&self, id: &str) -> Option<TrafficRecord> {
-        self.records.read().iter().find(|r| r.id == id).cloned()
-    }
-
-    pub fn update_by_id<F>(&self, id: &str, updater: F) -> bool
-    where
-        F: FnOnce(&mut TrafficRecord),
-    {
-        let mut records = self.records.write();
-        if let Some(record) = records.iter_mut().find(|r| r.id == id) {
-            updater(record);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn clear(&self) {
-        self.records.write().clear();
-        self.sequence.store(1, Ordering::SeqCst);
-    }
-
-    pub fn delete_by_ids(&self, ids: &[String]) {
-        if ids.is_empty() {
-            return;
-        }
-
-        let ids_set: std::collections::HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
-
-        let mut records = self.records.write();
-        records.retain(|r| !ids_set.contains(r.id.as_str()));
-
-        tracing::debug!(
-            count = ids.len(),
-            "[TRAFFIC_RECORDER] Deleted records by ids"
-        );
-    }
-
-    pub fn count(&self) -> usize {
-        self.records.read().len()
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<TrafficRecord> {
-        self.tx.subscribe()
-    }
-
-    pub fn filter(&self, filter: &TrafficFilter) -> Vec<TrafficSummary> {
-        self.records
-            .read()
-            .iter()
-            .filter(|r| filter.matches(r))
-            .map(TrafficSummary::from)
-            .collect()
-    }
-
-    pub fn get_after(
-        &self,
-        after_id: Option<&str>,
-        filter: &TrafficFilter,
-        limit: usize,
-    ) -> (Vec<TrafficSummary>, bool) {
-        let records = self.records.read();
-
-        let start_idx = if let Some(after_id) = after_id {
-            records
-                .iter()
-                .position(|r| r.id == after_id)
-                .map(|idx| idx + 1)
-                .unwrap_or(0)
-        } else {
-            0
-        };
-
-        let filtered: Vec<TrafficSummary> = records
-            .iter()
-            .skip(start_idx)
-            .filter(|r| filter.matches(r))
-            .map(TrafficSummary::from)
-            .collect();
-
-        let total = filtered.len();
-        let has_more = total > limit;
-        let result = filtered.into_iter().take(limit).collect();
-
-        (result, has_more)
-    }
-
-    pub fn get_by_ids(&self, ids: &[&str]) -> Vec<TrafficSummary> {
-        let records = self.records.read();
-        ids.iter()
-            .filter_map(|id| records.iter().find(|r| r.id == *id))
-            .map(TrafficSummary::from)
-            .collect()
-    }
-
-    pub fn total(&self) -> usize {
-        self.records.read().len()
-    }
-}
-
-impl Default for TrafficRecorder {
-    fn default() -> Self {
-        Self::new(10000)
-    }
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TrafficFilter {
     pub method: Option<String>,
@@ -719,8 +533,6 @@ impl TrafficFilter {
     }
 }
 
-pub type SharedTrafficRecorder = Arc<TrafficRecorder>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -738,54 +550,6 @@ mod tests {
         assert_eq!(record.host, "example.com");
         assert_eq!(record.path, "/api/test");
         assert_eq!(record.protocol, "https");
-    }
-
-    #[test]
-    fn test_traffic_recorder() {
-        let recorder = TrafficRecorder::new(100);
-
-        let record = TrafficRecord::new(
-            "1".to_string(),
-            "GET".to_string(),
-            "https://example.com".to_string(),
-        );
-        recorder.record(record);
-
-        assert_eq!(recorder.count(), 1);
-        assert!(recorder.get_by_id("1").is_some());
-        assert!(recorder.get_by_id("2").is_none());
-    }
-
-    #[test]
-    fn test_traffic_recorder_max_records() {
-        let recorder = TrafficRecorder::new(3);
-
-        for i in 0..5 {
-            let record = TrafficRecord::new(
-                i.to_string(),
-                "GET".to_string(),
-                "https://example.com".to_string(),
-            );
-            recorder.record(record);
-        }
-
-        assert_eq!(recorder.count(), 3);
-        assert!(recorder.get_by_id("0").is_none());
-        assert!(recorder.get_by_id("1").is_none());
-        assert!(recorder.get_by_id("2").is_some());
-    }
-
-    #[test]
-    fn test_traffic_recorder_zero_max_records() {
-        let recorder = TrafficRecorder::new(0);
-        let record = TrafficRecord::new(
-            "1".to_string(),
-            "GET".to_string(),
-            "https://example.com".to_string(),
-        );
-        recorder.record(record);
-        assert_eq!(recorder.count(), 0);
-        assert!(recorder.get_by_id("1").is_none());
     }
 
     #[test]
@@ -824,67 +588,14 @@ mod tests {
     }
 
     #[test]
-    fn test_traffic_recorder_sequence() {
-        let recorder = TrafficRecorder::new(100);
-
-        for i in 0..3 {
-            let record = TrafficRecord::new(
-                format!("id-{}", i),
-                "GET".to_string(),
-                "https://example.com".to_string(),
-            );
-            recorder.record(record);
-        }
-
-        let record1 = recorder.get_by_id("id-0").unwrap();
-        let record2 = recorder.get_by_id("id-1").unwrap();
-        let record3 = recorder.get_by_id("id-2").unwrap();
-
-        assert_eq!(record1.sequence, 1);
-        assert_eq!(record2.sequence, 2);
-        assert_eq!(record3.sequence, 3);
-    }
-
-    #[test]
-    fn test_traffic_recorder_sequence_reset_on_clear() {
-        let recorder = TrafficRecorder::new(100);
-
-        for i in 0..3 {
-            let record = TrafficRecord::new(
-                format!("id-{}", i),
-                "GET".to_string(),
-                "https://example.com".to_string(),
-            );
-            recorder.record(record);
-        }
-
-        assert_eq!(recorder.get_by_id("id-2").unwrap().sequence, 3);
-
-        recorder.clear();
-
-        let record = TrafficRecord::new(
-            "new-id".to_string(),
-            "GET".to_string(),
-            "https://example.com".to_string(),
-        );
-        recorder.record(record);
-
-        assert_eq!(recorder.get_by_id("new-id").unwrap().sequence, 1);
-    }
-
-    #[test]
     fn test_traffic_summary_includes_sequence() {
-        let recorder = TrafficRecorder::new(100);
-
-        let record = TrafficRecord::new(
+        let mut record = TrafficRecord::new(
             "test-id".to_string(),
             "GET".to_string(),
             "https://example.com".to_string(),
         );
-        recorder.record(record);
-
-        let summaries = recorder.get_all();
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].sequence, 1);
+        record.sequence = 42;
+        let summary = TrafficSummary::from(&record);
+        assert_eq!(summary.sequence, 42);
     }
 }

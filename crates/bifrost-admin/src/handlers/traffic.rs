@@ -205,7 +205,7 @@ async fn subscribe_sse_stream(
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
-        state.traffic_recorder.get_by_id(id)
+        None
     };
 
     let Some(record) = record else {
@@ -804,11 +804,11 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
     } else {
         let filter = parse_traffic_filter(query);
 
-        let records = if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.filter(&filter)
-        } else {
-            state.traffic_recorder.filter(&filter)
-        };
+        let records = state
+            .traffic_store
+            .as_ref()
+            .map(|s| s.filter(&filter))
+            .unwrap_or_default();
 
         let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
 
@@ -902,13 +902,18 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
         let filter = parse_traffic_filter(query);
         let limit = params.limit.unwrap_or(100);
 
-        let (new_records, has_more) = if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.get_after(params.after_id.as_deref(), &filter, limit)
-        } else {
-            state
-                .traffic_recorder
-                .get_after(params.after_id.as_deref(), &filter, limit)
+        let Some(ref traffic_store) = state.traffic_store else {
+            let response = serde_json::json!({
+                "new_records": [],
+                "updated_records": [],
+                "has_more": false,
+                "server_total": 0
+            });
+            return json_response(&response);
         };
+
+        let (new_records, has_more) =
+            traffic_store.get_after(params.after_id.as_deref(), &filter, limit);
 
         let new_records: Vec<_> = new_records
             .into_iter()
@@ -920,11 +925,7 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
 
         let updated_records = if !params.pending_ids.is_empty() {
             let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
-            let summaries = if let Some(ref traffic_store) = state.traffic_store {
-                traffic_store.get_by_ids(&ids)
-            } else {
-                state.traffic_recorder.get_by_ids(&ids)
-            };
+            let summaries = traffic_store.get_by_ids(&ids);
             summaries
                 .into_iter()
                 .map(|mut summary| {
@@ -936,11 +937,7 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
             Vec::new()
         };
 
-        let server_total = if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.total()
-        } else {
-            state.traffic_recorder.total()
-        };
+        let server_total = traffic_store.total();
 
         let response = serde_json::json!({
             "new_records": new_records,
@@ -1055,7 +1052,7 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
-        state.traffic_recorder.get_by_id(id)
+        None
     };
 
     match record {
@@ -1173,7 +1170,6 @@ async fn clear_traffic_by_ids(
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.delete_by_ids(&ids_to_delete);
     }
-    state.traffic_recorder.delete_by_ids(&ids_to_delete);
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
@@ -1226,10 +1222,7 @@ async fn clear_all_traffic(
         db_store.clear_with_active_ids(&active_connection_ids);
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.clear();
-        let new_sequence = traffic_store.current_sequence();
-        state.traffic_recorder.set_initial_sequence(new_sequence);
     }
-    state.traffic_recorder.clear();
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
@@ -1276,7 +1269,7 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
-        state.traffic_recorder.get_by_id(id)
+        None
     };
 
     match record {
@@ -1307,7 +1300,7 @@ async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBod
     } else if let Some(ref traffic_store) = state.traffic_store {
         traffic_store.get_by_id(id)
     } else {
-        state.traffic_recorder.get_by_id(id)
+        None
     };
 
     match record {

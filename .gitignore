@@ -21,3 +21,6 @@ web/test-results/
 .ui-backend.pid
 .ui-traffic.pid
 .env/
+log/
+.cargo-target-e2e-*/
+.cargo-target-e2e/

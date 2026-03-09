@@ -616,7 +616,6 @@ pub fn run_foreground(
         };
 
         let admin_state = AdminState::new(config.port)
-            .with_traffic_recorder(bifrost_admin::TrafficRecorder::new(0))
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
             .with_traffic_db_store_shared(traffic_db_store.clone())
@@ -974,7 +973,6 @@ pub fn run_daemon(
                 };
 
                 let admin_state = AdminState::new(config.port)
-                    .with_traffic_recorder(bifrost_admin::TrafficRecorder::new(0))
                     .with_body_store(body_store)
                     .with_ws_payload_store(ws_payload_store)
                     .with_traffic_db_store_shared(traffic_db_store.clone())

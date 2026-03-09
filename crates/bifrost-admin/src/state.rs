@@ -18,7 +18,6 @@ use crate::metrics::{MetricsCollector, SharedMetricsCollector};
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
 use crate::sse::SseHub;
-use crate::traffic::{SharedTrafficRecorder, TrafficRecorder};
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
 use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
@@ -72,7 +71,6 @@ impl RuntimeConfig {
 }
 
 pub struct AdminState {
-    pub traffic_recorder: SharedTrafficRecorder,
     pub traffic_store: Option<SharedTrafficStore>,
     pub traffic_db_store: Option<SharedTrafficDbStore>,
     pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
@@ -108,7 +106,6 @@ const DEFAULT_MAX_BODY_PROBE_SIZE: usize = 64 * 1024;
 impl AdminState {
     pub fn new(port: u16) -> Self {
         Self {
-            traffic_recorder: Arc::new(TrafficRecorder::default()),
             traffic_store: None,
             traffic_db_store: None,
             async_traffic_writer: None,
@@ -178,8 +175,10 @@ impl AdminState {
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.record(record.clone());
+                self.maybe_cleanup_total_disk_usage();
+                return;
             }
-            self.traffic_recorder.record(record);
+            tracing::error!("[ADMIN_STATE] No traffic store configured; drop record");
         }
         self.maybe_cleanup_total_disk_usage();
     }
@@ -196,8 +195,9 @@ impl AdminState {
         } else {
             if let Some(ref traffic_store) = self.traffic_store {
                 traffic_store.update_by_id(id, updater.clone());
+                return;
             }
-            self.traffic_recorder.update_by_id(id, updater);
+            tracing::error!("[ADMIN_STATE] No traffic store configured; drop update");
         }
     }
 
@@ -344,26 +344,12 @@ impl AdminState {
         self
     }
 
-    pub fn with_traffic_recorder(mut self, recorder: TrafficRecorder) -> Self {
-        self.traffic_recorder = Arc::new(recorder);
-        self
-    }
-
-    pub fn with_traffic_recorder_shared(mut self, recorder: SharedTrafficRecorder) -> Self {
-        self.traffic_recorder = recorder;
-        self
-    }
-
     pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
-        let sequence = store.current_sequence();
-        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(Arc::new(store));
         self
     }
 
     pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
-        let sequence = store.current_sequence();
-        self.traffic_recorder.set_initial_sequence(sequence);
         self.traffic_store = Some(store);
         self
     }

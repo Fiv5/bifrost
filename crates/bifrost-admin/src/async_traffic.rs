@@ -3,7 +3,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::traffic::{SharedTrafficRecorder, TrafficRecord};
+use crate::traffic::TrafficRecord;
+use crate::traffic_db::SharedTrafficDbStore;
 use crate::traffic_store::SharedTrafficStore;
 
 pub type TrafficUpdater = Arc<dyn Fn(&mut TrafficRecord) + Send + Sync>;
@@ -85,7 +86,7 @@ pub type SharedAsyncTrafficWriter = Arc<AsyncTrafficWriter>;
 
 pub fn start_async_traffic_processor(
     mut rx: mpsc::Receiver<TrafficCommand>,
-    traffic_recorder: SharedTrafficRecorder,
+    traffic_db_store: Option<SharedTrafficDbStore>,
     traffic_store: Option<SharedTrafficStore>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -125,7 +126,9 @@ pub fn start_async_traffic_processor(
                             if let Some(ref store) = traffic_store {
                                 store.record(*record.clone());
                             }
-                            traffic_recorder.record(*record);
+                            if let Some(ref db_store) = traffic_db_store {
+                                db_store.record(*record);
+                            }
                         }
                         debug!("Processed {} traffic records", batch_size);
                     }
@@ -136,7 +139,9 @@ pub fn start_async_traffic_processor(
                             if let Some(ref store) = traffic_store {
                                 store.update_by_id(&id, |r| updater(r));
                             }
-                            traffic_recorder.update_by_id(&id, |r| updater(r));
+                            if let Some(ref db_store) = traffic_db_store {
+                                db_store.update_by_id(&id, |r| updater(r));
+                            }
                         }
                         debug!("Processed {} traffic updates", update_count);
                     }
@@ -153,16 +158,30 @@ pub fn start_async_traffic_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traffic::TrafficRecorder;
+    use crate::traffic_db::TrafficDbStore;
+    use std::sync::Arc;
     use std::time::Duration;
+
+    fn make_temp_dir(name: &str) -> std::path::PathBuf {
+        let pid = std::process::id();
+        let ts = chrono::Utc::now().timestamp_millis();
+        let dir = std::env::temp_dir().join(format!("bifrost-{}-{}-{}", name, pid, ts));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
 
     #[tokio::test]
     async fn test_async_traffic_writer() {
         let (writer, rx) = AsyncTrafficWriter::new(100);
-        let recorder = Arc::new(TrafficRecorder::new(100));
-        let recorder_clone = recorder.clone();
+        let dir = make_temp_dir("async-traffic-writer");
+        let traffic_dir = dir.join("traffic");
+        let _ = std::fs::create_dir_all(&traffic_dir);
+        let db_store = Arc::new(
+            TrafficDbStore::new(traffic_dir, 1000, 0, None)
+                .expect("failed to create traffic db store"),
+        );
 
-        let handle = start_async_traffic_processor(rx, recorder_clone, None);
+        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
 
         let record = TrafficRecord::new(
             "test-1".to_string(),
@@ -173,8 +192,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert_eq!(recorder.count(), 1);
-        assert!(recorder.get_by_id("test-1").is_some());
+        assert!(db_store.get_by_id("test-1").is_some());
 
         drop(writer);
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
@@ -183,10 +201,15 @@ mod tests {
     #[tokio::test]
     async fn test_async_traffic_update() {
         let (writer, rx) = AsyncTrafficWriter::new(100);
-        let recorder = Arc::new(TrafficRecorder::new(100));
-        let recorder_clone = recorder.clone();
+        let dir = make_temp_dir("async-traffic-update");
+        let traffic_dir = dir.join("traffic");
+        let _ = std::fs::create_dir_all(&traffic_dir);
+        let db_store = Arc::new(
+            TrafficDbStore::new(traffic_dir, 1000, 0, None)
+                .expect("failed to create traffic db store"),
+        );
 
-        let handle = start_async_traffic_processor(rx, recorder_clone, None);
+        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
 
         let record = TrafficRecord::new(
             "test-update".to_string(),
@@ -204,7 +227,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let updated = recorder.get_by_id("test-update").unwrap();
+        let updated = db_store.get_by_id("test-update").unwrap();
         assert_eq!(updated.status, 200);
         assert_eq!(updated.duration_ms, 100);
 
@@ -215,10 +238,15 @@ mod tests {
     #[tokio::test]
     async fn test_batch_processing() {
         let (writer, rx) = AsyncTrafficWriter::new(1000);
-        let recorder = Arc::new(TrafficRecorder::new(1000));
-        let recorder_clone = recorder.clone();
+        let dir = make_temp_dir("async-traffic-batch");
+        let traffic_dir = dir.join("traffic");
+        let _ = std::fs::create_dir_all(&traffic_dir);
+        let db_store = Arc::new(
+            TrafficDbStore::new(traffic_dir, 10000, 0, None)
+                .expect("failed to create traffic db store"),
+        );
 
-        let handle = start_async_traffic_processor(rx, recorder_clone, None);
+        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
 
         for i in 0..100 {
             let record = TrafficRecord::new(
@@ -231,7 +259,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        assert_eq!(recorder.count(), 100);
+        assert_eq!(db_store.count(), 100);
 
         drop(writer);
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;

@@ -47,13 +47,7 @@ async fn load_metric_traffic(state: SharedAdminState) -> Vec<MetricTraffic> {
             .map(MetricTraffic::from)
             .collect();
     }
-
-    state
-        .traffic_recorder
-        .get_all()
-        .into_iter()
-        .map(MetricTraffic::from)
-        .collect()
+    Vec::new()
 }
 
 pub async fn handle_metrics(
@@ -373,6 +367,7 @@ mod tests {
     use crate::state::AdminState;
     use crate::traffic::TrafficRecord;
     use crate::traffic_db::TrafficDbStore;
+    use crate::traffic_store::TrafficStore;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("bifrost-{}-{}", name, uuid::Uuid::new_v4()));
@@ -442,8 +437,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_metrics_include_in_memory_records() {
-        let state = Arc::new(AdminState::new(0));
+    async fn host_metrics_include_traffic_store_records() {
+        let dir = temp_dir("metrics-traffic-store-hosts");
+        let traffic_dir = dir.join("traffic");
+        std::fs::create_dir_all(&traffic_dir).unwrap();
+        let store = TrafficStore::new(traffic_dir, 5000, Some(24));
+        let state = Arc::new(AdminState::new(0).with_traffic_store(store));
 
         let mut record = TrafficRecord::new(
             "req-3".to_string(),
@@ -464,5 +463,6 @@ mod tests {
         assert_eq!(m.bytes_sent, 3);
         assert_eq!(m.bytes_received, 5);
         assert_eq!(m.http_requests, 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

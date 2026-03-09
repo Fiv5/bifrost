@@ -54,8 +54,7 @@ pub use state::{
     SharedSystemProxyManager, SharedValuesStorage,
 };
 pub use traffic::{
-    FrameDirection, FrameType, MatchedRule, RequestTiming, SharedTrafficRecorder, SocketStatus,
-    TrafficRecord, TrafficRecorder,
+    FrameDirection, FrameType, MatchedRule, RequestTiming, SocketStatus, TrafficRecord,
 };
 pub use traffic_db::{
     start_db_cleanup_task, Direction, QueryParams, QueryResult, SharedTrafficDbStore,

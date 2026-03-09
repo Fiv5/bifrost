@@ -1,8 +1,19 @@
 mod common;
 
-use bifrost_admin::{AdminState, BodyRef, TrafficRecord, TrafficRecorder};
+use bifrost_admin::{AdminState, BodyRef, TrafficRecord, TrafficStore};
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::sync::Arc;
+
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let pid = std::process::id();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("bifrost-tests-{}-{}-{}", name, pid, ts));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 #[tokio::test]
 async fn test_dynamic_cert_chain_validity() {
@@ -43,8 +54,6 @@ async fn test_dynamic_cert_chain_validity() {
 
 #[tokio::test]
 async fn test_traffic_record_fields_complete() {
-    let recorder = TrafficRecorder::new(100);
-
     let mut record = TrafficRecord::new(
         "test-id-001".to_string(),
         "POST".to_string(),
@@ -72,22 +81,15 @@ async fn test_traffic_record_fields_complete() {
     record.response_body_ref = Some(BodyRef::Inline {
         data: r#"{"id":1,"name":"test","created":true}"#.to_string(),
     });
+    assert_eq!(record.id, "test-id-001");
+    assert_eq!(record.method, "POST");
+    assert_eq!(record.status, 201);
+    assert_eq!(record.host, "api.example.com");
+    assert_eq!(record.path, "/v1/users");
+    assert_eq!(record.protocol, "https");
 
-    recorder.record(record);
-
-    let retrieved = recorder.get_by_id("test-id-001");
-    assert!(retrieved.is_some(), "Record should be retrievable");
-
-    let r = retrieved.unwrap();
-    assert_eq!(r.id, "test-id-001");
-    assert_eq!(r.method, "POST");
-    assert_eq!(r.status, 201);
-    assert_eq!(r.host, "api.example.com");
-    assert_eq!(r.path, "/v1/users");
-    assert_eq!(r.protocol, "https");
-
-    assert!(r.request_headers.is_some());
-    let req_headers = r.request_headers.unwrap();
+    assert!(record.request_headers.is_some());
+    let req_headers = record.request_headers.take().unwrap();
     assert_eq!(req_headers.len(), 2);
     assert!(req_headers
         .iter()
@@ -96,52 +98,42 @@ async fn test_traffic_record_fields_complete() {
         .iter()
         .any(|(k, v)| k == "authorization" && v == "Bearer token123"));
 
-    assert!(r.response_headers.is_some());
-    let res_headers = r.response_headers.unwrap();
+    assert!(record.response_headers.is_some());
+    let res_headers = record.response_headers.take().unwrap();
     assert_eq!(res_headers.len(), 2);
 
-    assert!(r.request_body_ref.is_some());
-    if let Some(BodyRef::Inline { data }) = &r.request_body_ref {
+    assert!(record.request_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &record.request_body_ref {
         assert!(data.contains("test@example.com"));
     }
 
-    assert!(r.response_body_ref.is_some());
-    if let Some(BodyRef::Inline { data }) = &r.response_body_ref {
+    assert!(record.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &record.response_body_ref {
         assert!(data.contains("created"));
     }
 }
 
 #[tokio::test]
 async fn test_https_traffic_protocol_detection() {
-    let recorder = TrafficRecorder::new(100);
-
     let https_record = TrafficRecord::new(
         "https-001".to_string(),
         "GET".to_string(),
         "https://secure.example.com/api".to_string(),
     );
-    recorder.record(https_record);
+    assert_eq!(https_record.protocol, "https");
+    assert_eq!(https_record.host, "secure.example.com");
 
     let http_record = TrafficRecord::new(
         "http-001".to_string(),
         "GET".to_string(),
         "http://example.com/api".to_string(),
     );
-    recorder.record(http_record);
-
-    let https_retrieved = recorder.get_by_id("https-001").unwrap();
-    assert_eq!(https_retrieved.protocol, "https");
-    assert_eq!(https_retrieved.host, "secure.example.com");
-
-    let http_retrieved = recorder.get_by_id("http-001").unwrap();
-    assert_eq!(http_retrieved.protocol, "http");
-    assert_eq!(http_retrieved.host, "example.com");
+    assert_eq!(http_record.protocol, "http");
+    assert_eq!(http_record.host, "example.com");
 }
 
 #[tokio::test]
 async fn test_traffic_record_request_response_body() {
-    let recorder = TrafficRecorder::new(100);
-
     let request_body = r#"{"username":"admin","password":"secret123"}"#;
     let response_body = r#"{"token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9","expires_in":3600}"#;
 
@@ -160,19 +152,14 @@ async fn test_traffic_record_request_response_body() {
     });
     record.request_size = request_body.len();
     record.response_size = response_body.len();
-
-    recorder.record(record);
-
-    let retrieved = recorder.get_by_id("body-test-001").unwrap();
-
-    assert!(retrieved.request_body_ref.is_some());
-    if let Some(BodyRef::Inline { data }) = &retrieved.request_body_ref {
+    assert!(record.request_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &record.request_body_ref {
         assert!(data.contains("username"));
         assert!(data.contains("admin"));
     }
 
-    assert!(retrieved.response_body_ref.is_some());
-    if let Some(BodyRef::Inline { data }) = &retrieved.response_body_ref {
+    assert!(record.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &record.response_body_ref {
         assert!(data.contains("token"));
         assert!(data.contains("expires_in"));
     }
@@ -180,8 +167,6 @@ async fn test_traffic_record_request_response_body() {
 
 #[tokio::test]
 async fn test_traffic_record_headers_complete() {
-    let recorder = TrafficRecorder::new(100);
-
     let mut record = TrafficRecord::new(
         "headers-test-001".to_string(),
         "GET".to_string(),
@@ -211,12 +196,7 @@ async fn test_traffic_record_headers_complete() {
         ("x-request-id".to_string(), "req-12345".to_string()),
         ("x-ratelimit-remaining".to_string(), "99".to_string()),
     ]);
-
-    recorder.record(record);
-
-    let retrieved = recorder.get_by_id("headers-test-001").unwrap();
-
-    let req_headers = retrieved.request_headers.unwrap();
+    let req_headers = record.request_headers.take().unwrap();
     assert_eq!(req_headers.len(), 6);
     assert!(req_headers
         .iter()
@@ -225,7 +205,7 @@ async fn test_traffic_record_headers_complete() {
         .iter()
         .any(|(k, v)| k == "user-agent" && v.contains("Mozilla")));
 
-    let res_headers = retrieved.response_headers.unwrap();
+    let res_headers = record.response_headers.take().unwrap();
     assert_eq!(res_headers.len(), 6);
     assert!(res_headers
         .iter()
@@ -237,8 +217,6 @@ async fn test_traffic_record_headers_complete() {
 
 #[tokio::test]
 async fn test_traffic_record_large_body() {
-    let recorder = TrafficRecorder::new(100);
-
     let large_request = "x".repeat(10000);
     let large_response = "y".repeat(50000);
 
@@ -257,27 +235,20 @@ async fn test_traffic_record_large_body() {
     });
     record.request_size = large_request.len();
     record.response_size = large_response.len();
-
-    recorder.record(record);
-
-    let retrieved = recorder.get_by_id("large-body-001").unwrap();
-
-    assert_eq!(retrieved.request_size, 10000);
-    assert_eq!(retrieved.response_size, 50000);
-    assert!(retrieved.request_body_ref.is_some());
-    assert!(retrieved.response_body_ref.is_some());
-    if let Some(BodyRef::Inline { data }) = &retrieved.request_body_ref {
+    assert_eq!(record.request_size, 10000);
+    assert_eq!(record.response_size, 50000);
+    assert!(record.request_body_ref.is_some());
+    assert!(record.response_body_ref.is_some());
+    if let Some(BodyRef::Inline { data }) = &record.request_body_ref {
         assert_eq!(data.len(), 10000);
     }
-    if let Some(BodyRef::Inline { data }) = &retrieved.response_body_ref {
+    if let Some(BodyRef::Inline { data }) = &record.response_body_ref {
         assert_eq!(data.len(), 50000);
     }
 }
 
 #[tokio::test]
 async fn test_traffic_record_binary_body_as_none() {
-    let recorder = TrafficRecorder::new(100);
-
     let mut record = TrafficRecord::new(
         "binary-body-001".to_string(),
         "GET".to_string(),
@@ -290,19 +261,18 @@ async fn test_traffic_record_binary_body_as_none() {
     record.response_body_ref = None;
     record.request_size = 0;
     record.response_size = 1024000;
-
-    recorder.record(record);
-
-    let retrieved = recorder.get_by_id("binary-body-001").unwrap();
-
-    assert!(retrieved.request_body_ref.is_none());
-    assert!(retrieved.response_body_ref.is_none());
-    assert_eq!(retrieved.response_size, 1024000);
+    assert!(record.request_body_ref.is_none());
+    assert!(record.response_body_ref.is_none());
+    assert_eq!(record.response_size, 1024000);
 }
 
 #[tokio::test]
-async fn test_admin_state_traffic_recorder_integration() {
-    let admin_state = AdminState::new(8080);
+async fn test_admin_state_traffic_store_integration() {
+    let dir = temp_dir("admin-state-traffic-store");
+    let traffic_dir = dir.join("traffic");
+    std::fs::create_dir_all(&traffic_dir).unwrap();
+    let store = TrafficStore::new(traffic_dir, 1000, Some(24));
+    let admin_state = AdminState::new(8080).with_traffic_store(store);
 
     let mut record1 = TrafficRecord::new(
         "admin-test-001".to_string(),
@@ -318,7 +288,7 @@ async fn test_admin_state_traffic_recorder_integration() {
     record1.response_body_ref = Some(BodyRef::Inline {
         data: r#"[{"id":1,"name":"user1"},{"id":2,"name":"user2"}]"#.to_string(),
     });
-    admin_state.traffic_recorder.record(record1);
+    admin_state.record_traffic(record1);
 
     let mut record2 = TrafficRecord::new(
         "admin-test-002".to_string(),
@@ -336,27 +306,23 @@ async fn test_admin_state_traffic_recorder_integration() {
     record2.response_body_ref = Some(BodyRef::Inline {
         data: r#"{"id":3,"name":"newuser"}"#.to_string(),
     });
-    admin_state.traffic_recorder.record(record2);
+    admin_state.record_traffic(record2);
 
-    assert_eq!(admin_state.traffic_recorder.count(), 2);
+    let traffic_store = admin_state.traffic_store.as_ref().unwrap();
+    assert_eq!(traffic_store.total(), 2);
 
-    let record1_retrieved = admin_state
-        .traffic_recorder
-        .get_by_id("admin-test-001")
-        .unwrap();
+    let record1_retrieved = traffic_store.get_by_id("admin-test-001").unwrap();
     assert_eq!(record1_retrieved.method, "GET");
     if let Some(BodyRef::Inline { data }) = &record1_retrieved.response_body_ref {
         assert!(data.contains("user1"));
     }
 
-    let record2_retrieved = admin_state
-        .traffic_recorder
-        .get_by_id("admin-test-002")
-        .unwrap();
+    let record2_retrieved = traffic_store.get_by_id("admin-test-002").unwrap();
     assert_eq!(record2_retrieved.method, "POST");
     if let Some(BodyRef::Inline { data }) = &record2_retrieved.request_body_ref {
         assert!(data.contains("newuser"));
     }
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
@@ -380,8 +346,6 @@ async fn test_cert_generator_caching() {
 
 #[tokio::test]
 async fn test_traffic_record_all_url_components() {
-    let recorder = TrafficRecorder::new(100);
-
     let test_cases = [
         ("https://example.com/path", "https", "example.com", "/path"),
         (
@@ -406,15 +370,12 @@ async fn test_traffic_record_all_url_components() {
             "GET".to_string(),
             url.to_string(),
         );
-        recorder.record(record);
-
-        let retrieved = recorder.get_by_id(&format!("url-test-{}", i)).unwrap();
         assert_eq!(
-            retrieved.protocol, *expected_protocol,
+            record.protocol, *expected_protocol,
             "Protocol mismatch for {}",
             url
         );
-        assert_eq!(retrieved.host, *expected_host, "Host mismatch for {}", url);
-        assert_eq!(retrieved.path, *expected_path, "Path mismatch for {}", url);
+        assert_eq!(record.host, *expected_host, "Host mismatch for {}", url);
+        assert_eq!(record.path, *expected_path, "Path mismatch for {}", url);
     }
 }
