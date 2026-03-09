@@ -21,6 +21,30 @@ use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
 use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
 
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
+        let mut sighup = signal(SignalKind::hangup()).expect("failed to install SIGHUP handler");
+
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+            _ = sighup.recv() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 struct SystemProxyRestoreGuard {
     system_proxy_manager: Arc<tokio::sync::RwLock<bifrost_core::SystemProxyManager>>,
 }
@@ -671,7 +695,7 @@ pub fn run_foreground(
                     eprintln!("Server error: {}", e);
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = wait_for_shutdown_signal() => {
                 info!("Received shutdown signal");
                 println!("\nShutting down...");
             }
@@ -1021,8 +1045,16 @@ pub fn run_daemon(
                     runtime_config_for_resolver,
                 );
 
-                if let Err(e) = server.run().await {
-                    eprintln!("Server error: {}", e);
+                tokio::select! {
+                    result = server.run() => {
+                        if let Err(e) = result {
+                            eprintln!("Server error: {}", e);
+                        }
+                    }
+                    _ = wait_for_shutdown_signal() => {
+                        tracing::info!("Received shutdown signal");
+                        eprintln!("Received shutdown signal");
+                    }
                 }
 
                 rules_watcher_task.abort();

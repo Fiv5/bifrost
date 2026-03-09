@@ -181,7 +181,14 @@ impl SystemProxyManager {
             None => {
                 #[cfg(target_os = "macos")]
                 {
-                    disable_macos_all_services_proxy()?;
+                    if let Err(e) = disable_macos_all_services_proxy() {
+                        let msg = e.to_string();
+                        if msg.contains("RequiresAdmin") {
+                            disable_macos_all_services_proxy_with_gui_auth()?;
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
 
                 #[cfg(not(target_os = "macos"))]
@@ -208,10 +215,26 @@ impl SystemProxyManager {
 
         #[cfg(target_os = "macos")]
         {
-            if original.enable {
-                set_macos_all_services_proxy(&original.host, original.port, &original.bypass)?;
+            let result = if original.enable {
+                set_macos_all_services_proxy(&original.host, original.port, &original.bypass)
             } else {
-                disable_macos_all_services_proxy()?;
+                disable_macos_all_services_proxy()
+            };
+            if let Err(e) = result {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    if original.enable {
+                        set_macos_all_services_proxy_with_gui_auth(
+                            &original.host,
+                            original.port,
+                            &original.bypass,
+                        )?;
+                    } else {
+                        disable_macos_all_services_proxy_with_gui_auth()?;
+                    }
+                } else {
+                    return Err(e);
+                }
             }
         }
 

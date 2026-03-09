@@ -21,14 +21,14 @@ pub fn run_stop() -> bifrost_core::Result<()> {
             bifrost_core::BifrostError::Config(format!("Failed to send SIGTERM: {}", e))
         })?;
 
-        for i in 0..50 {
+        for i in 0..300 {
             std::thread::sleep(std::time::Duration::from_millis(100));
             if !is_process_running(pid) {
                 remove_pid()?;
                 println!("Bifrost proxy stopped.");
                 return Ok(());
             }
-            if i == 30 {
+            if i == 250 {
                 println!("Sending SIGKILL...");
                 let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
             }
