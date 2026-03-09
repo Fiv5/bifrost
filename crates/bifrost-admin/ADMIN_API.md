@@ -1219,10 +1219,10 @@ GET /api/config/performance
     "max_body_buffer_size": 10485760,
     "max_body_probe_size": 65536,
     "file_retention_days": 7,
-    "sse_stream_flush_bytes": 65536,
-    "sse_stream_flush_interval_ms": 200,
-    "ws_payload_flush_bytes": 262144,
-    "ws_payload_flush_interval_ms": 200,
+    "sse_stream_flush_bytes": 262144,
+    "sse_stream_flush_interval_ms": 1000,
+    "ws_payload_flush_bytes": 524288,
+    "ws_payload_flush_interval_ms": 1000,
     "ws_payload_max_open_files": 128
   },
   "body_store_stats": {
@@ -1261,10 +1261,10 @@ PUT /api/config/performance
   "max_body_buffer_size": 20971520,
   "max_body_probe_size": 65536,
   "file_retention_days": 3,
-  "sse_stream_flush_bytes": 65536,
-  "sse_stream_flush_interval_ms": 200,
-  "ws_payload_flush_bytes": 262144,
-  "ws_payload_flush_interval_ms": 200,
+  "sse_stream_flush_bytes": 262144,
+  "sse_stream_flush_interval_ms": 1000,
+  "ws_payload_flush_bytes": 524288,
+  "ws_payload_flush_interval_ms": 1000,
   "ws_payload_max_open_files": 128
 }
 ```

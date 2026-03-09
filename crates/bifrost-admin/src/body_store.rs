@@ -93,7 +93,6 @@ impl BodyStreamWriter {
             return Ok(());
         }
         self.file.write_all(&self.buffer)?;
-        self.file.flush()?;
         self.buffer.clear();
         self.last_flush = Instant::now();
         Ok(())

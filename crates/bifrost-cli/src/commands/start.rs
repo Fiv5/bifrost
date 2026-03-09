@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bifrost_admin::{
-    start_frame_cleanup_task, start_metrics_collector_task, start_push_tasks,
-    start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState, BodyStore,
-    PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
+    start_async_traffic_processor, start_frame_cleanup_task, start_metrics_collector_task,
+    start_push_tasks, start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState,
+    AsyncTrafficWriter, BodyStore, PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -20,6 +20,8 @@ use crate::config::get_bifrost_dir;
 use crate::help::print_startup_help;
 use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesResolver};
 use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
+
+const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
 
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
@@ -560,6 +562,12 @@ pub fn run_foreground(
             .expect("Failed to create traffic database"),
         );
 
+        let (async_traffic_writer, async_traffic_rx) =
+            AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+        let async_traffic_writer = Arc::new(async_traffic_writer);
+        let _async_traffic_task =
+            start_async_traffic_processor(async_traffic_rx, Some(traffic_db_store.clone()), None);
+
         let frame_store = Arc::new(bifrost_admin::FrameStore::new(
             bifrost_dir.clone(),
             Some(stored_config.traffic.file_retention_days * 24),
@@ -618,6 +626,7 @@ pub fn run_foreground(
         let admin_state = AdminState::new(config.port)
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
+            .with_async_traffic_writer_shared(async_traffic_writer)
             .with_traffic_db_store_shared(traffic_db_store.clone())
             .with_frame_store_shared(frame_store)
             .with_runtime_config(runtime_config)
@@ -919,6 +928,15 @@ pub fn run_daemon(
                     .expect("Failed to create traffic database"),
                 );
 
+                let (async_traffic_writer, async_traffic_rx) =
+                    AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+                let async_traffic_writer = Arc::new(async_traffic_writer);
+                let _async_traffic_task = start_async_traffic_processor(
+                    async_traffic_rx,
+                    Some(traffic_db_store.clone()),
+                    None,
+                );
+
                 let frame_store = Arc::new(bifrost_admin::FrameStore::new(
                     bifrost_dir.clone(),
                     Some(stored_config.traffic.file_retention_days * 24),
@@ -975,6 +993,7 @@ pub fn run_daemon(
                 let admin_state = AdminState::new(config.port)
                     .with_body_store(body_store)
                     .with_ws_payload_store(ws_payload_store)
+                    .with_async_traffic_writer_shared(async_traffic_writer)
                     .with_traffic_db_store_shared(traffic_db_store.clone())
                     .with_frame_store_shared(frame_store)
                     .with_runtime_config(runtime_config)

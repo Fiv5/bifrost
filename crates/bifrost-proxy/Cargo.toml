@@ -56,6 +56,7 @@ urlencoding = "2"
 hickory-resolver = "0.24"
 netstat2 = "0.11"
 lazy_static = "1"
+memchr = "2"
 
 quinn = { version = "0.11", optional = true }
 h3 = { version = "0.0.8", optional = true }

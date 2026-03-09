@@ -12,6 +12,104 @@ import type {
 import { TrafficFlags } from '../types';
 import { apiFetch } from '../api/apiFetch';
 
+type SearchStreamEvent =
+  | { event: 'result'; data: SearchResultItem }
+  | {
+      event: 'progress';
+      data: {
+        total_searched: number;
+        total_matched: number;
+        next_cursor: number | null;
+        has_more_hint: boolean;
+        iterations: number;
+      };
+    }
+  | {
+      event: 'done';
+      data: {
+        total_searched: number;
+        total_matched: number;
+        next_cursor: number | null;
+        has_more: boolean;
+        search_id: string;
+      };
+    };
+
+let currentSearchAbort: AbortController | null = null;
+let currentLoadMoreAbort: AbortController | null = null;
+
+async function* parseSseStream(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<SearchStreamEvent> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    // Normalize CRLF to LF to simplify parsing.
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+    // SSE event delimiter is a blank line
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+
+      const lines = raw.split('\n');
+      let eventName = '';
+      const dataLines: string[] = [];
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          eventName = line.slice('event:'.length).trim();
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice('data:'.length).trim());
+        }
+      }
+
+      if (!eventName || dataLines.length === 0) continue;
+      const dataText = dataLines.join('\n');
+
+      try {
+        const data = JSON.parse(dataText);
+        if (eventName === 'result') {
+          yield { event: 'result', data } as SearchStreamEvent;
+        } else if (eventName === 'progress') {
+          yield { event: 'progress', data } as SearchStreamEvent;
+        } else if (eventName === 'done') {
+          yield { event: 'done', data } as SearchStreamEvent;
+        }
+      } catch {
+        // ignore malformed chunk
+      }
+    }
+  }
+}
+
+function abortSearch() {
+  try {
+    currentSearchAbort?.abort();
+  } finally {
+    currentSearchAbort = null;
+  }
+}
+
+function abortLoadMore() {
+  try {
+    currentLoadMoreAbort?.abort();
+  } finally {
+    currentLoadMoreAbort = null;
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof DOMException && err.name === 'AbortError'
+  ) || ((err as any)?.name === 'AbortError');
+}
+
 interface SearchState {
   mode: 'normal' | 'search';
   keyword: string;
@@ -32,6 +130,7 @@ interface SearchState {
   setScope: (scope: Partial<SearchScope>) => void;
   search: (filters: SearchFilters) => Promise<void>;
   loadMore: (filters: SearchFilters) => Promise<void>;
+  cancelSearch: () => void;
   reset: () => void;
 }
 
@@ -65,6 +164,8 @@ export const useSearchStore = create<SearchState>()(
 
   setMode: (mode) => {
     if (mode === 'normal') {
+      abortSearch();
+      abortLoadMore();
       set({
         mode,
         results: [],
@@ -73,6 +174,8 @@ export const useSearchStore = create<SearchState>()(
         hasMore: false,
         nextCursor: null,
         searchId: null,
+        isSearching: false,
+        isLoadingMore: false,
       });
     } else {
       set({ mode });
@@ -115,8 +218,15 @@ export const useSearchStore = create<SearchState>()(
       return;
     }
 
+    // abort previous search or loadMore immediately to keep UI responsive
+    abortSearch();
+    abortLoadMore();
+
+    currentSearchAbort = new AbortController();
+
     set({
       isSearching: true,
+      isLoadingMore: false,
       results: [],
       totalSearched: 0,
       totalMatched: 0,
@@ -132,10 +242,53 @@ export const useSearchStore = create<SearchState>()(
         limit: 50,
       };
 
+      // 优先使用流式搜索，能让 UI 更快看到首批结果/进度。
+      const streamResp = await apiFetch('/_bifrost/api/search/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        signal: currentSearchAbort.signal,
+      });
+
+      const ct = streamResp.headers.get('content-type') || '';
+      if (streamResp.ok && ct.includes('text/event-stream') && streamResp.body) {
+        let accResults: SearchResultItem[] = [];
+
+        for await (const ev of parseSseStream(streamResp.body)) {
+          if (ev.event === 'result') {
+            accResults = [...accResults, ev.data];
+            set({ results: accResults });
+          } else if (ev.event === 'progress') {
+            set({
+              totalSearched: ev.data.total_searched,
+              totalMatched: ev.data.total_matched,
+              nextCursor: ev.data.next_cursor,
+              hasMore: ev.data.has_more_hint,
+            });
+          } else if (ev.event === 'done') {
+            set({
+              totalSearched: ev.data.total_searched,
+              totalMatched: ev.data.total_matched,
+              hasMore: ev.data.has_more,
+              nextCursor: ev.data.next_cursor,
+              searchId: ev.data.search_id,
+              isSearching: false,
+            });
+            return;
+          }
+        }
+
+        // stream ended unexpectedly
+        set({ isSearching: false });
+        return;
+      }
+
+      // fallback: non-streaming
       const response = await apiFetch('/_bifrost/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
+        signal: currentSearchAbort.signal,
       });
 
       if (!response.ok) {
@@ -154,6 +307,11 @@ export const useSearchStore = create<SearchState>()(
         isSearching: false,
       });
     } catch (error) {
+      if (isAbortError(error)) {
+        // aborted by user or replaced by a new search
+        set({ isSearching: false });
+        return;
+      }
       console.error('[SearchStore] Search failed:', error);
       set({ isSearching: false });
     }
@@ -164,6 +322,9 @@ export const useSearchStore = create<SearchState>()(
     if (!keyword.trim() || !hasMore || isLoadingMore || nextCursor === null) {
       return;
     }
+
+    abortLoadMore();
+    currentLoadMoreAbort = new AbortController();
 
     set({ isLoadingMore: true });
 
@@ -176,10 +337,51 @@ export const useSearchStore = create<SearchState>()(
         limit: 50,
       };
 
+      const streamResp = await apiFetch('/_bifrost/api/search/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+        signal: currentLoadMoreAbort.signal,
+      });
+
+      const ct = streamResp.headers.get('content-type') || '';
+      if (streamResp.ok && ct.includes('text/event-stream') && streamResp.body) {
+        let accResults: SearchResultItem[] = results;
+        let baseSearched = get().totalSearched;
+        let baseMatched = get().totalMatched;
+
+        for await (const ev of parseSseStream(streamResp.body)) {
+          if (ev.event === 'result') {
+            accResults = [...accResults, ev.data];
+            set({ results: accResults });
+          } else if (ev.event === 'progress') {
+            set({
+              totalSearched: baseSearched + ev.data.total_searched,
+              totalMatched: baseMatched + ev.data.total_matched,
+              nextCursor: ev.data.next_cursor,
+              hasMore: ev.data.has_more_hint,
+            });
+          } else if (ev.event === 'done') {
+            set({
+              totalSearched: baseSearched + ev.data.total_searched,
+              totalMatched: baseMatched + ev.data.total_matched,
+              hasMore: ev.data.has_more,
+              nextCursor: ev.data.next_cursor,
+              isLoadingMore: false,
+            });
+            return;
+          }
+        }
+
+        set({ isLoadingMore: false });
+        return;
+      }
+
       const response = await apiFetch('/_bifrost/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
+        signal: currentLoadMoreAbort.signal,
       });
 
       if (!response.ok) {
@@ -197,12 +399,24 @@ export const useSearchStore = create<SearchState>()(
         isLoadingMore: false,
       });
     } catch (error) {
+      if (isAbortError(error)) {
+        set({ isLoadingMore: false });
+        return;
+      }
       console.error('[SearchStore] Load more failed:', error);
       set({ isLoadingMore: false });
     }
   },
 
+      cancelSearch: () => {
+        abortSearch();
+        abortLoadMore();
+        set({ isSearching: false, isLoadingMore: false });
+      },
+
       reset: () => {
+        abortSearch();
+        abortLoadMore();
         set({
           mode: 'normal',
           keyword: '',

@@ -7,6 +7,7 @@ use bifrost_admin::{AdminState, BodyRef, BodyStreamWriter, FrameDirection, Traff
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
+use memchr::memchr;
 use tokio::time::Sleep;
 
 use crate::server::BoxBody;
@@ -448,8 +449,35 @@ impl SseTeeBody {
     }
 
     fn process_sse_chunk(&mut self, data: &[u8]) {
-        for &byte in data {
-            if self.prev_byte == Some(b'\n') && byte == b'\n' {
+        if data.is_empty() {
+            return;
+        }
+
+        let mut i = 0;
+        while i < data.len() {
+            let Some(rel) = memchr(b'\n', &data[i..]) else {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(data.len() - i);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
+                    }
+                }
+                self.prev_byte = Some(*data.last().unwrap());
+                return;
+            };
+
+            let pos = i + rel;
+            if pos > i {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(pos - i);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
+                    }
+                }
+                self.prev_byte = Some(data[pos - 1]);
+            }
+
+            if self.prev_byte == Some(b'\n') {
                 if self.event_size > 0 {
                     if let Some(ref state) = self.guard.admin_state {
                         state.sse_hub.add_receive_event(&self.guard.record_id);
@@ -457,18 +485,18 @@ impl SseTeeBody {
                 }
                 self.event_size = 0;
                 self.overflowed = false;
-                self.prev_byte = Some(byte);
-                continue;
+                self.prev_byte = Some(b'\n');
+            } else {
+                if !self.overflowed {
+                    self.event_size = self.event_size.saturating_add(1);
+                    if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
+                        self.overflowed = true;
+                    }
+                }
+                self.prev_byte = Some(b'\n');
             }
-            if self.overflowed {
-                self.prev_byte = Some(byte);
-                continue;
-            }
-            self.event_size = self.event_size.saturating_add(1);
-            if self.max_buffer_size > 0 && self.event_size > self.max_buffer_size {
-                self.overflowed = true;
-            }
-            self.prev_byte = Some(byte);
+
+            i = pos + 1;
         }
     }
 }

@@ -609,10 +609,10 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
             max_body_memory_size: Some(512 * 1024),
             max_body_buffer_size: Some(10 * 1024 * 1024),
             file_retention_days: Some(7),
-            sse_stream_flush_bytes: Some(64 * 1024),
-            sse_stream_flush_interval_ms: Some(200),
-            ws_payload_flush_bytes: Some(256 * 1024),
-            ws_payload_flush_interval_ms: Some(200),
+            sse_stream_flush_bytes: Some(256 * 1024),
+            sse_stream_flush_interval_ms: Some(1000),
+            ws_payload_flush_bytes: Some(512 * 1024),
+            ws_payload_flush_interval_ms: Some(1000),
             ws_payload_max_open_files: Some(128),
         };
         client
@@ -768,43 +768,43 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
         }
         ConfigKey::TrafficSseStreamFlushBytes => {
             let req = UpdatePerformanceConfigRequest {
-                sse_stream_flush_bytes: Some(64 * 1024),
+                sse_stream_flush_bytes: Some(256 * 1024),
                 ..Default::default()
             };
             client
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
-            println!("✓ traffic.sse-stream-flush-bytes reset to 64 KB");
+            println!("✓ traffic.sse-stream-flush-bytes reset to 256 KB");
         }
         ConfigKey::TrafficSseStreamFlushIntervalMs => {
             let req = UpdatePerformanceConfigRequest {
-                sse_stream_flush_interval_ms: Some(200),
+                sse_stream_flush_interval_ms: Some(1000),
                 ..Default::default()
             };
             client
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
-            println!("✓ traffic.sse-stream-flush-interval-ms reset to 200");
+            println!("✓ traffic.sse-stream-flush-interval-ms reset to 1000");
         }
         ConfigKey::TrafficWsPayloadFlushBytes => {
             let req = UpdatePerformanceConfigRequest {
-                ws_payload_flush_bytes: Some(256 * 1024),
+                ws_payload_flush_bytes: Some(512 * 1024),
                 ..Default::default()
             };
             client
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
-            println!("✓ traffic.ws-payload-flush-bytes reset to 256 KB");
+            println!("✓ traffic.ws-payload-flush-bytes reset to 512 KB");
         }
         ConfigKey::TrafficWsPayloadFlushIntervalMs => {
             let req = UpdatePerformanceConfigRequest {
-                ws_payload_flush_interval_ms: Some(200),
+                ws_payload_flush_interval_ms: Some(1000),
                 ..Default::default()
             };
             client
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
-            println!("✓ traffic.ws-payload-flush-interval-ms reset to 200");
+            println!("✓ traffic.ws-payload-flush-interval-ms reset to 1000");
         }
         ConfigKey::TrafficWsPayloadMaxOpenFiles => {
             let req = UpdatePerformanceConfigRequest {

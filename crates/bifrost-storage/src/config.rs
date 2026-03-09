@@ -49,10 +49,10 @@ impl Default for LegacyTrafficConfig {
             max_body_buffer_size: 10 * 1024 * 1024,
             temp_dir: crate::data_dir().join("traffic"),
             file_retention_days: 7,
-            sse_stream_flush_bytes: 64 * 1024,
-            sse_stream_flush_interval_ms: 200,
-            ws_payload_flush_bytes: 256 * 1024,
-            ws_payload_flush_interval_ms: 200,
+            sse_stream_flush_bytes: 256 * 1024,
+            sse_stream_flush_interval_ms: 1000,
+            ws_payload_flush_bytes: 512 * 1024,
+            ws_payload_flush_interval_ms: 1000,
             ws_payload_max_open_files: 128,
         }
     }

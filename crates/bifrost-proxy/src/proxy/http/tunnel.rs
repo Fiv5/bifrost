@@ -107,19 +107,55 @@ pub fn get_https_client(unsafe_ssl: bool) -> &'static HttpsPooledClient {
 }
 
 pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
-    if unsafe_ssl {
-        Arc::new(
-            ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerifier))
-                .with_no_client_auth(),
-        )
+    // 允许 TLS 上游通过 ALPN 协商到 HTTP/2，从而避免被强制降级到 HTTP/1.1 造成大文件下载吞吐下降。
+    // 这里显式打开 h2 + http/1.1，后续会根据协商结果选择对应的 Hyper handshake。
+    let mut config = if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
     } else {
-        Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(build_root_cert_store())
-                .with_no_client_auth(),
-        )
+        ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth()
+    };
+
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Arc::new(config)
+}
+
+fn sanitize_headers_for_http2(headers: &mut hyper::HeaderMap) {
+    use hyper::header;
+
+    // RFC7540: HTTP/2 禁止 hop-by-hop headers。
+    // 同时移除 Connection 指定的额外 header。
+    let extra_to_remove: Vec<header::HeaderName> = headers
+        .get(header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|conn| {
+            conn.split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    headers.remove(header::CONNECTION);
+    for name in extra_to_remove {
+        headers.remove(name);
+    }
+    headers.remove("proxy-connection");
+    headers.remove("keep-alive");
+    headers.remove("transfer-encoding");
+    headers.remove("upgrade");
+    headers.remove("trailer");
+
+    // TE 在 HTTP/2 仅允许 "trailers"。
+    if let Some(te) = headers.get(header::TE).and_then(|v| v.to_str().ok()) {
+        if !te.trim().eq_ignore_ascii_case("trailers") {
+            headers.remove(header::TE);
+        }
     }
 }
 
@@ -1759,77 +1795,169 @@ async fn handle_intercepted_request_with_protocol(
         };
         let tls_ms = tls_start.elapsed().as_millis() as u64;
 
-        let io = TokioIo::new(tls_stream);
-        let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
+        let negotiated_alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+        let use_h2 = matches!(negotiated_alpn.as_deref(), Some(b"h2"));
+        if verbose_logging {
+            debug!(
+                "[{}] [UPSTREAM] negotiated ALPN={:?}, use_h2={}",
+                req_id, negotiated_alpn, use_h2
+            );
+        }
+
+        let mut outgoing_req = outgoing_req;
+        if use_h2 {
+            let (mut parts, body) = outgoing_req.into_parts();
+            sanitize_headers_for_http2(&mut parts.headers);
+            outgoing_req = Request::from_parts(parts, body);
+        }
+
+        // HTTP/2 与 HTTP/1.1 需要不同的 handshake。这里根据 ALPN 选择，并在分支内 spawn 对应 conn，
+        // 避免把不同类型的 conn 暴露到同一个 if 表达式外。
+        if use_h2 {
+            let io = TokioIo::new(tls_stream);
+            let (mut sender, conn) = match hyper::client::conn::http2::Builder::new(
+                TokioExecutor::new(),
+            )
             .handshake(io)
             .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                    req_id,
-                    actual_target_host,
-                    actual_target_port,
-                    method_str,
-                    original_uri,
-                    &client_ip,
-                    &client_app,
-                    client_pid,
-                    &client_path,
-                    e
-                );
-                return Ok(build_conn_error_record_and_response(
-                    "HTTP_HANDSHAKE_FAILED",
-                    format!("HTTP Handshake Failed: {}", e),
-                    Some(tls_ms),
-                ));
-            }
-        };
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(
+                        "[{}] HTTP/2 handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                        req_id,
+                        actual_target_host,
+                        actual_target_port,
+                        method_str,
+                        original_uri,
+                        &client_ip,
+                        &client_app,
+                        client_pid,
+                        &client_path,
+                        e
+                    );
+                    return Ok(build_conn_error_record_and_response(
+                        "HTTP2_HANDSHAKE_FAILED",
+                        format!("HTTP/2 Handshake Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
 
-        let req_id_for_conn = req_id.to_string();
-        let target_host_for_conn = actual_target_host.clone();
-        let target_port_for_conn = actual_target_port;
-        let method_for_conn = method_str.clone();
-        let uri_for_conn = original_uri.clone();
-        let client_ip_for_conn = client_ip.clone();
-        let client_app_for_conn = client_app.clone();
-        let client_pid_for_conn = client_pid;
-        let client_path_for_conn = client_path.clone();
-        tokio::spawn(async move {
-            if let Err(err) = conn.await {
-                error!(
-                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                    req_id_for_conn,
-                    target_host_for_conn,
-                    target_port_for_conn,
-                    method_for_conn,
-                    uri_for_conn,
-                    client_ip_for_conn,
-                    client_app_for_conn,
-                    client_pid_for_conn,
-                    client_path_for_conn,
-                    err
-                );
-            }
-        });
+            let req_id_for_conn = req_id.to_string();
+            let target_host_for_conn = actual_target_host.clone();
+            let target_port_for_conn = actual_target_port;
+            let method_for_conn = method_str.clone();
+            let uri_for_conn = original_uri.clone();
+            let client_ip_for_conn = client_ip.clone();
+            let client_app_for_conn = client_app.clone();
+            let client_pid_for_conn = client_pid;
+            let client_path_for_conn = client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        target_host_for_conn,
+                        target_port_for_conn,
+                        method_for_conn,
+                        uri_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
 
-        let send_start = Instant::now();
-        let response = match sender.send_request(outgoing_req).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!("[{}] Failed to send request: {}", req_id, e);
-                return Ok(build_conn_error_record_and_response(
-                    "REQUEST_FAILED",
-                    format!("Request Failed: {}", e),
-                    Some(tls_ms),
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        (response, Some(tls_ms), wait_ms)
+            let send_start = Instant::now();
+            let response = match sender.send_request(outgoing_req).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[{}] Failed to send request: {}", req_id, e);
+                    return Ok(build_conn_error_record_and_response(
+                        "REQUEST_FAILED",
+                        format!("Request Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            (response, Some(tls_ms), wait_ms)
+        } else {
+            let io = TokioIo::new(tls_stream);
+            let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .handshake(io)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    error!(
+                        "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
+                        req_id,
+                        actual_target_host,
+                        actual_target_port,
+                        method_str,
+                        original_uri,
+                        &client_ip,
+                        &client_app,
+                        client_pid,
+                        &client_path,
+                        e
+                    );
+                    return Ok(build_conn_error_record_and_response(
+                        "HTTP_HANDSHAKE_FAILED",
+                        format!("HTTP Handshake Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+
+            let req_id_for_conn = req_id.to_string();
+            let target_host_for_conn = actual_target_host.clone();
+            let target_port_for_conn = actual_target_port;
+            let method_for_conn = method_str.clone();
+            let uri_for_conn = original_uri.clone();
+            let client_ip_for_conn = client_ip.clone();
+            let client_app_for_conn = client_app.clone();
+            let client_pid_for_conn = client_pid;
+            let client_path_for_conn = client_path.clone();
+            tokio::spawn(async move {
+                if let Err(err) = conn.await {
+                    error!(
+                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
+                        req_id_for_conn,
+                        target_host_for_conn,
+                        target_port_for_conn,
+                        method_for_conn,
+                        uri_for_conn,
+                        client_ip_for_conn,
+                        client_app_for_conn,
+                        client_pid_for_conn,
+                        client_path_for_conn,
+                        err
+                    );
+                }
+            });
+
+            let send_start = Instant::now();
+            let response = match sender.send_request(outgoing_req).await {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("[{}] Failed to send request: {}", req_id, e);
+                    return Ok(build_conn_error_record_and_response(
+                        "REQUEST_FAILED",
+                        format!("Request Failed: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            (response, Some(tls_ms), wait_ms)
+        }
     };
 
     let (mut res_parts, res_body) = response.into_parts();
