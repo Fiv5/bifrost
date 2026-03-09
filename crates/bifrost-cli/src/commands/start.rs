@@ -1204,7 +1204,7 @@ pub fn run_daemon(
                                 std::future::pending::<()>().await;
                             }
                         } => {
-                            info!("Received SIGTERM");
+                            info!("Received shutdown signal (SIGTERM)");
                         },
                     }
 

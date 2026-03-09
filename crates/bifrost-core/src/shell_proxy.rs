@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{BifrostError, Result};
 
@@ -317,8 +317,8 @@ unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"#.to_string(),
         Ok(())
     }
 
-    pub fn recover_from_crash(data_dir: &PathBuf) -> Result<()> {
-        let mut manager = Self::new(data_dir.clone());
+    pub fn recover_from_crash(data_dir: &Path) -> Result<()> {
+        let mut manager = Self::new(data_dir.to_path_buf());
         if manager.backup_file_path().exists() {
             manager.restore()?;
         }
