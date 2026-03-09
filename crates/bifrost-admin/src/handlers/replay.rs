@@ -251,7 +251,7 @@ async fn execute_replay_unified(
         custom_rules: None,
     });
 
-    let (matched_rules, applied_request) = resolve_and_apply_rules(
+    let (resolved_rules, matched_rules, applied_request) = resolve_and_apply_rules(
         &state,
         &rule_config,
         &unified_req.url,
@@ -301,19 +301,28 @@ async fn execute_replay_unified(
         req_builder = req_builder.body(body.clone());
     }
 
+    let start_time = std::time::Instant::now();
+    // NOTE: timeout_ms 只用于“连接建立/首包(headers)获取”的超时控制。
+    // 不能用于整个请求生命周期，否则 SSE 这类长连接会在超时后被错误断开。
     let timeout_ms = unified_req
         .timeout_ms
         .unwrap_or(crate::replay_executor::DEFAULT_TIMEOUT_MS);
-    req_builder = req_builder.timeout(std::time::Duration::from_millis(timeout_ms));
-
-    let start_time = std::time::Instant::now();
-    let response = match req_builder.send().await {
-        Ok(r) => r,
-        Err(e) => {
+    let send_future = req_builder.send();
+    let response = match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send_future)
+        .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             drop(permit);
             let error_msg = format!("Request failed: {}", e);
             error!(replay_id = %replay_id, error = %error_msg, "[UNIFIED_REPLAY] Request failed");
             return error_response(StatusCode::BAD_GATEWAY, &error_msg);
+        }
+        Err(_) => {
+            drop(permit);
+            let error_msg = format!("Request timeout after {}ms", timeout_ms);
+            error!(replay_id = %replay_id, error = %error_msg, "[UNIFIED_REPLAY] Request timed out");
+            return error_response(StatusCode::GATEWAY_TIMEOUT, &error_msg);
         }
     };
 
@@ -413,6 +422,9 @@ async fn execute_replay_unified(
             Ok(b) => decode_replay_body(&response_headers, &b),
             Err(_) => None,
         };
+
+        let (status, response_headers, response_body) =
+            apply_response_rules(&resolved_rules, status, response_headers, response_body);
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         drop(permit);
@@ -1382,8 +1394,14 @@ async fn execute_replay_websocket(
 
     info!(replay_id = %replay_id, url = %url, "Starting WebSocket proxy");
 
-    let (matched_rules, applied_request) =
-        resolve_and_apply_rules(&state, &rule_config, &url, "GET", &upgrade_headers, None);
+    let (_resolved_rules, matched_rules, applied_request) = resolve_and_apply_rules(
+        &state,
+        &rule_config,
+        &url,
+        "GET",
+        &upgrade_headers,
+        None,
+    );
 
     info!(
         replay_id = %replay_id,
@@ -1429,7 +1447,7 @@ async fn execute_replay_websocket(
         )
         .await;
 
-        match connect_websocket(&applied_url).await {
+        match connect_websocket(&applied_url, &applied_request.headers).await {
             Ok(connection) => match connection {
                 WebSocketConnection::Plain(server_ws) => {
                     proxy_websocket(
@@ -1493,13 +1511,26 @@ enum WebSocketConnection {
     Tls(Box<WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>>),
 }
 
-async fn connect_websocket(url: &str) -> Result<WebSocketConnection, String> {
+async fn connect_websocket(url: &str, headers: &[(String, String)]) -> Result<WebSocketConnection, String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
     let parsed_url = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
 
     let is_secure = match parsed_url.scheme() {
         "wss" | "https" => true,
         "ws" | "http" => false,
         scheme => return Err(format!("Unsupported scheme: {}", scheme)),
+    };
+
+    // tungstenite 的 client handshake 期望 ws/wss scheme；兼容用户传入 http/https
+    let ws_url = if parsed_url.scheme() == "http" || parsed_url.scheme() == "https" {
+        let mut new = parsed_url.clone();
+        let scheme = if is_secure { "wss" } else { "ws" };
+        new.set_scheme(scheme)
+            .map_err(|_| format!("Failed to set scheme to {}", scheme))?;
+        new
+    } else {
+        parsed_url.clone()
     };
 
     let host = parsed_url
@@ -1510,7 +1541,7 @@ async fn connect_websocket(url: &str) -> Result<WebSocketConnection, String> {
         .unwrap_or(if is_secure { 443 } else { 80 });
     let addr = format!("{}:{}", host, port);
 
-    debug!(url = %url, host = %host, port = %port, is_secure = %is_secure, "[WS_REPLAY] Connecting to WebSocket");
+    debug!(url = %ws_url.as_str(), host = %host, port = %port, is_secure = %is_secure, "[WS_REPLAY] Connecting to WebSocket");
 
     let tcp_stream = TcpStream::connect(&addr)
         .await
@@ -1528,13 +1559,65 @@ async fn connect_websocket(url: &str) -> Result<WebSocketConnection, String> {
             .await
             .map_err(|e| format!("TLS handshake failed: {}", e))?;
 
-        let (ws_stream, _) = tokio_tungstenite::client_async(url, tls_stream)
+        let mut request = ws_url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| format!("WebSocket request build failed: {}", e))?;
+        for (k, v) in headers {
+            let name = k.to_lowercase();
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "upgrade"
+                    | "connection"
+                    | "sec-websocket-key"
+                    | "sec-websocket-version"
+                    | "sec-websocket-extensions"
+                    | "sec-websocket-protocol"
+            ) {
+                continue;
+            }
+            if let (Ok(header_name), Ok(header_value)) = (
+                http::header::HeaderName::from_bytes(k.as_bytes()),
+                http::header::HeaderValue::from_str(v),
+            ) {
+                request.headers_mut().insert(header_name, header_value);
+            }
+        }
+
+        let (ws_stream, _) = tokio_tungstenite::client_async(request, tls_stream)
             .await
             .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
 
         Ok(WebSocketConnection::Tls(Box::new(ws_stream)))
     } else {
-        let (ws_stream, _) = tokio_tungstenite::client_async(url, tcp_stream)
+        let mut request = ws_url
+            .as_str()
+            .into_client_request()
+            .map_err(|e| format!("WebSocket request build failed: {}", e))?;
+        for (k, v) in headers {
+            let name = k.to_lowercase();
+            if matches!(
+                name.as_str(),
+                "host"
+                    | "upgrade"
+                    | "connection"
+                    | "sec-websocket-key"
+                    | "sec-websocket-version"
+                    | "sec-websocket-extensions"
+                    | "sec-websocket-protocol"
+            ) {
+                continue;
+            }
+            if let (Ok(header_name), Ok(header_value)) = (
+                http::header::HeaderName::from_bytes(k.as_bytes()),
+                http::header::HeaderValue::from_str(v),
+            ) {
+                request.headers_mut().insert(header_name, header_value);
+            }
+        }
+
+        let (ws_stream, _) = tokio_tungstenite::client_async(request, tcp_stream)
             .await
             .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
 
@@ -1700,7 +1783,7 @@ fn resolve_and_apply_rules(
     method: &str,
     headers: &[(String, String)],
     body: Option<&[u8]>,
-) -> (Vec<MatchedRule>, AppliedRequest) {
+) -> (bifrost_core::ResolvedRules, Vec<MatchedRule>, AppliedRequest) {
     let (resolved_rules, matched_rules) = match rule_config.mode {
         RuleMode::None => (bifrost_core::ResolvedRules::default(), vec![]),
         RuleMode::Custom => {
@@ -1736,7 +1819,89 @@ fn resolve_and_apply_rules(
             }
         };
 
-    (matched_rules, applied_request)
+    (resolved_rules, matched_rules, applied_request)
+}
+
+fn extract_inline_content(value: &str) -> String {
+    if value.starts_with('{') && value.ends_with('}') && value.len() > 1 {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_headers(value: &str) -> Option<Vec<(String, String)>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        (&trimmed[1..trimmed.len() - 1], true)
+    } else {
+        (trimmed, trimmed.contains('\n') || trimmed.contains(':'))
+    };
+
+    let mut headers = Vec::new();
+    let delimiter = if content.contains('\n') { '\n' } else { ',' };
+    for part in content.split(delimiter) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let separator = if use_colon { ':' } else { '=' };
+        if let Some(pos) = part.find(separator) {
+            let key = part[..pos].trim().to_string();
+            let val = part[pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                headers.push((key, val));
+            }
+        }
+    }
+
+    if headers.is_empty() {
+        None
+    } else {
+        Some(headers)
+    }
+}
+
+fn apply_response_rules(
+    resolved_rules: &bifrost_core::ResolvedRules,
+    status: u16,
+    mut headers: Vec<(String, String)>,
+    body: Option<String>,
+) -> (u16, Vec<(String, String)>, Option<String>) {
+    use bifrost_core::Protocol;
+
+    let mut final_status = status;
+    let mut final_body = body;
+
+    for rule in &resolved_rules.rules {
+        match rule.rule.protocol {
+            Protocol::ResHeaders => {
+                if let Some(parsed) = parse_headers(&rule.resolved_value) {
+                    for (key, value) in parsed {
+                        let key_lower = key.to_lowercase();
+                        headers.retain(|(k, _)| k.to_lowercase() != key_lower);
+                        headers.push((key, value));
+                    }
+                }
+            }
+            Protocol::StatusCode | Protocol::ReplaceStatus => {
+                if let Ok(code) = rule.resolved_value.parse::<u16>() {
+                    final_status = code;
+                }
+            }
+            Protocol::ResBody => {
+                let content = extract_inline_content(&rule.resolved_value);
+                final_body = Some(content);
+            }
+            _ => {}
+        }
+    }
+
+    (final_status, headers, final_body)
 }
 
 fn resolve_custom_rules(

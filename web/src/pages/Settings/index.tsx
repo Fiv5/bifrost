@@ -101,6 +101,7 @@ export default function Settings() {
   const [pendingLoading, setPendingLoading] = useState(false);
   const {
     systemProxy,
+    cliProxy,
     loading: systemProxyLoading,
     toggleSystemProxy,
   } = useProxyStore();
@@ -757,6 +758,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       children: (
         <ProxyTab
           systemProxy={systemProxy}
+          cliProxy={cliProxy}
           systemProxyLoading={systemProxyLoading}
           onToggleSystemProxy={handleSystemProxyToggle}
           copyProxyConfig={copyProxyConfig}

@@ -6,15 +6,20 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 PROXY_PORT="${PROXY_PORT:-18888}"
 MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-13000}"
+MOCK_SSE_PORT="${MOCK_SSE_PORT:-13001}"
+MOCK_WS_PORT="${MOCK_WS_PORT:-13002}"
 ADMIN_PORT="$PROXY_PORT"
 ADMIN_BASE_URL="http://127.0.0.1:${ADMIN_PORT}/_bifrost"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/ws_client.sh"
 
 BIFROST_PID=""
 MOCK_HTTP_PID=""
+MOCK_SSE_PID=""
+MOCK_WS_PID=""
 passed=0
 failed=0
 
@@ -33,8 +38,27 @@ cleanup() {
         kill "$MOCK_HTTP_PID" 2>/dev/null || true
         wait "$MOCK_HTTP_PID" 2>/dev/null || true
     fi
+
+    if [ -n "$MOCK_SSE_PID" ] && kill -0 "$MOCK_SSE_PID" 2>/dev/null; then
+        echo "  Stopping Mock SSE server (PID: $MOCK_SSE_PID)..."
+        kill "$MOCK_SSE_PID" 2>/dev/null || true
+        wait "$MOCK_SSE_PID" 2>/dev/null || true
+    fi
+
+    if [ -n "$MOCK_WS_PID" ] && kill -0 "$MOCK_WS_PID" 2>/dev/null; then
+        echo "  Stopping Mock WS server (PID: $MOCK_WS_PID)..."
+        kill "$MOCK_WS_PID" 2>/dev/null || true
+        wait "$MOCK_WS_PID" 2>/dev/null || true
+    fi
     
     echo "Cleanup complete."
+}
+
+urlencode() {
+    python3 - "$1" <<'PY'
+import sys, urllib.parse
+print(urllib.parse.quote(sys.argv[1], safe=''))
+PY
 }
 
 trap cleanup EXIT
@@ -62,19 +86,63 @@ start_mock_server() {
     echo "  Mock HTTP server started (PID: $MOCK_HTTP_PID)"
 }
 
+start_sse_server() {
+    echo "Starting Mock SSE Echo Server on port $MOCK_SSE_PORT..."
+    python3 "$SCRIPT_DIR/../mock_servers/sse_echo_server.py" --port "$MOCK_SSE_PORT" > /dev/null 2>&1 &
+    MOCK_SSE_PID=$!
+
+    local timeout=10
+    local waited=0
+    while [ $waited -lt $timeout ]; do
+        if curl -s "http://127.0.0.1:${MOCK_SSE_PORT}/health" >/dev/null 2>&1; then
+            echo "  Mock SSE server started (PID: $MOCK_SSE_PID)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if ! kill -0 "$MOCK_SSE_PID" 2>/dev/null; then
+        echo "Failed to start Mock SSE server"
+        exit 1
+    fi
+    echo "  Mock SSE server started (PID: $MOCK_SSE_PID)"
+}
+
+start_ws_server() {
+    echo "Starting Mock HTTP+WS Echo Server on port $MOCK_WS_PORT..."
+    python3 "$SCRIPT_DIR/../mock_servers/http_ws_echo_server.py" "$MOCK_WS_PORT" > /dev/null 2>&1 &
+    MOCK_WS_PID=$!
+
+    local timeout=10
+    local waited=0
+    while [ $waited -lt $timeout ]; do
+        if curl -s "http://127.0.0.1:${MOCK_WS_PORT}/" >/dev/null 2>&1; then
+            echo "  Mock WS server started (PID: $MOCK_WS_PID)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    if ! kill -0 "$MOCK_WS_PID" 2>/dev/null; then
+        echo "Failed to start Mock WS server"
+        exit 1
+    fi
+    echo "  Mock WS server started (PID: $MOCK_WS_PID)"
+}
+
 start_bifrost() {
     echo "Starting Bifrost proxy on port $PROXY_PORT..."
     cd "$ROOT_DIR"
-    
-    if [ -x "./target/release/bifrost" ]; then
-        BIFROST_DATA_DIR="./.bifrost-e2e-test" ./target/release/bifrost start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
-    else
-        echo "Release binary not found, building..."
-        BIFROST_DATA_DIR="./.bifrost-e2e-test" cargo run --release --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
-    fi
+
+    # 立即编译运行，避免使用已编译的二进制文件（保持与当前代码一致）
+    # 使用 debug 构建缩短首次编译时间
+    BIFROST_DATA_DIR="./.bifrost-e2e-test" cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
     BIFROST_PID=$!
     
-    local timeout=120
+    # cargo run --release 首次编译可能较慢
+    local timeout=420
     local waited=0
     while [ $waited -lt $timeout ]; do
         if curl -s "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
@@ -107,9 +175,10 @@ replay_request() {
     if [ -n "$body" ]; then
         body_field=",\"body\":\"$body\""
     fi
-    
+
+    # replay HTTP 端点已统一为 unified payload（与 /api/replay/execute/unified 相同）
     local request_json
-    request_json="{\"request\":{\"method\":\"$method\",\"url\":\"$url\",\"headers\":$headers_json$body_field},\"rule_config\":$rule_config,\"timeout_ms\":$timeout}"
+    request_json="{\"url\":\"$url\",\"method\":\"$method\",\"headers\":$headers_json$body_field,\"rule_config\":$rule_config,\"timeout_ms\":$timeout}"
     
     if [ "${DEBUG:-}" = "1" ]; then
         echo "[DEBUG] Request JSON: $request_json" >&2
@@ -435,36 +504,124 @@ test_no_rules_mode() {
 test_sse_replay_with_rules() {
     echo ""
     echo "=== Test: SSE Replay with Rules ==="
-    
-    local response
-    response=$(curl -s --max-time 5 -X POST "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/replay/execute/stream" \
+
+    # 让 SSE 流持续 > 10s，用于验证 replay 的 timeout_ms 不会错误断开长连接
+    local upstream_url="http://127.0.0.1:${MOCK_SSE_PORT}/sse/custom?count=30&interval=1"
+    local payload
+    payload=$(cat <<EOF
+{"url":"${upstream_url}","method":"GET","headers":[["Accept","text/event-stream"]],"rule_config":{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-SSE-Test=sse-rule-applied"},"timeout_ms":10000}
+EOF
+)
+
+    local out_file="/tmp/bifrost_replay_sse_${PROXY_PORT}_$$.log"
+    local err_file="/tmp/bifrost_replay_sse_${PROXY_PORT}_$$.err"
+    rm -f "$out_file" "$err_file" || true
+
+    curl -sN -X POST "${ADMIN_BASE_URL}/api/replay/execute/unified" \
         -H "Content-Type: application/json" \
-        -d "{
-            \"url\": \"http://127.0.0.1:${MOCK_HTTP_PORT}/test-sse\",
-            \"method\": \"POST\",
-            \"headers\": [[\"Accept\", \"text/event-stream\"]],
-            \"body\": \"test-sse-body\",
-            \"rule_config\": {
-                \"mode\": \"custom\",
-                \"custom_rules\": \"127.0.0.1 reqHeaders://X-SSE-Test=sse-rule-applied\"
-            }
-        }" 2>&1 || true)
-    
-    if printf '%s' "$response" | grep -q "connection"; then
-        local applied_rules_count
-        applied_rules_count=$(printf '%s' "$response" | grep -o '"applied_rules":\[' | head -1 || echo "")
-        
-        if [ -n "$applied_rules_count" ]; then
-            _log_pass "SSE Replay: connection event with applied_rules returned"
-            ((passed++))
-        else
-            _log_fail "SSE Replay: connection event missing applied_rules" "applied_rules in response" "not found"
-            ((failed++))
-        fi
+        -d "$payload" > "$out_file" 2>"$err_file" &
+    local curl_pid=$!
+
+    sleep 2
+    if ! kill -0 "$curl_pid" 2>/dev/null; then
+        _log_fail "SSE Replay: stream exited too early" ">=2s alive" "exited"
+        ((failed++))
+        return
+    fi
+
+    # 等待超过 10s，如果此时连接被错误断开（历史问题），curl 会提前退出
+    sleep 11
+    if ! kill -0 "$curl_pid" 2>/dev/null; then
+        _log_fail "SSE Replay: stream was disconnected (timeout?)" ">=13s alive" "exited"
+        echo "--- curl stderr ---" >&2
+        tail -20 "$err_file" >&2 || true
+        echo "--- curl stdout ---" >&2
+        tail -20 "$out_file" >&2 || true
+        ((failed++))
+        return
+    fi
+
+    if grep -q '"type_":"connection"' "$out_file" && grep -q '"applied_rules":' "$out_file"; then
+        _log_pass "SSE Replay: connection event received and stream kept alive >10s"
+        ((passed++))
     else
-        _log_fail "SSE Replay: no connection event" "connection event" "not found"
+        _log_fail "SSE Replay: missing connection/applied_rules" "connection + applied_rules" "not found"
+        echo "--- curl stdout ---" >&2
+        tail -40 "$out_file" >&2 || true
         ((failed++))
     fi
+
+    kill "$curl_pid" 2>/dev/null || true
+    wait "$curl_pid" 2>/dev/null || true
+}
+
+test_response_modification_rules() {
+    echo ""
+    echo "=== Test: Response Modification Rules ==="
+
+    local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-res-mod?x=1"
+    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 replaceStatus://201\n127.0.0.1 resHeaders://(X-Replay-Res:ok)\n127.0.0.1 resBody://(replaced)"}'
+
+    local response
+    response=$(replay_request "$url" "GET" '[ ["Accept", "application/json"] ]' "" "$rule_config")
+
+    local status
+    status=$(printf '%s' "$response" | jq -r '.data.status // empty')
+
+    local header_val
+    header_val=$(printf '%s' "$response" | jq -r '.data.headers[]? | select(.[0] | ascii_downcase == "x-replay-res") | .[1]' | head -1)
+
+    local body
+    body=$(printf '%s' "$response" | jq -r '.data.body // empty')
+
+    if [ "$status" = "201" ] && [ "$header_val" = "ok" ] && [ "$body" = "replaced" ]; then
+        _log_pass "Response rules applied: replaceStatus/resHeaders/resBody"
+        ((passed++))
+    else
+        _log_fail "Response rules not applied" "status=201 & X-Replay-Res=ok & body=replaced" "status=$status header=$header_val body=$body"
+        ((failed++))
+    fi
+}
+
+test_websocket_replay_with_rules() {
+    echo ""
+    echo "=== Test: WebSocket Replay with Rules ==="
+
+    local upstream_url="ws://127.0.0.1:${MOCK_WS_PORT}/ws"
+    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-WS-Rule=from-replay"}'
+
+    local ws_url="ws://127.0.0.1:${PROXY_PORT}/_bifrost/api/replay/execute/ws?url=$(urlencode "$upstream_url")&rule_config=$(urlencode "$rule_config")"
+
+    local conn_id
+    conn_id=$(ws_connect "$ws_url")
+    if [ -z "$conn_id" ]; then
+        _log_fail "WebSocket replay connect failed" "connected" "failed"
+        ((failed++))
+        return
+    fi
+
+    local all
+    all=$(ws_wait_messages "$conn_id" 1 50 2>/dev/null || true)
+    if printf '%s' "$all" | grep -q '"type": "connection_info"' && printf '%s' "$all" | grep -qi 'x-ws-rule'; then
+        _log_pass "WebSocket replay: upstream handshake headers include rule header"
+        ((passed++))
+    else
+        _log_fail "WebSocket replay: missing handshake header from rules" "X-WS-Rule in connection_info" "not found"
+        ((failed++))
+    fi
+
+    ws_send "$conn_id" "hello-websocket"
+    local msgs
+    msgs=$(ws_wait_messages "$conn_id" 2 50 2>/dev/null || true)
+    if printf '%s' "$msgs" | grep -q '"type": "echo"' && printf '%s' "$msgs" | grep -q 'hello-websocket'; then
+        _log_pass "WebSocket replay: message proxied and echoed"
+        ((passed++))
+    else
+        _log_fail "WebSocket replay: echo missing" "echo hello-websocket" "not found"
+        ((failed++))
+    fi
+
+    ws_close "$conn_id"
 }
 
 main() {
@@ -475,9 +632,13 @@ main() {
     echo "Configuration:"
     echo "  PROXY_PORT: $PROXY_PORT"
     echo "  MOCK_HTTP_PORT: $MOCK_HTTP_PORT"
+    echo "  MOCK_SSE_PORT: $MOCK_SSE_PORT"
+    echo "  MOCK_WS_PORT: $MOCK_WS_PORT"
     echo ""
     
     start_mock_server
+    start_sse_server
+    start_ws_server
     start_bifrost
     
     sleep 2
@@ -494,6 +655,8 @@ main() {
     test_multiple_rules
     test_no_rules_mode
     test_sse_replay_with_rules
+    test_response_modification_rules
+    test_websocket_replay_with_rules
     
     echo ""
     echo "=========================================="

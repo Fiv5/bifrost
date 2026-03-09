@@ -179,6 +179,11 @@ impl ReplayExecutor {
 
         let mut timing = RequestTiming::default();
 
+        // timeout_ms 只用于“连接建立/握手/首包(headers)获取”的超时控制。
+        // 不用于整个请求生命周期，避免对长连接（如 SSE）造成错误断开。
+        let establish_timeout =
+            std::time::Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+
         let (status, response_headers, response_body) = if let Some(ref mock) = mock_response {
             if !needs_real_request {
                 info!(
@@ -206,6 +211,7 @@ impl ReplayExecutor {
                         &applied_request.headers,
                         body_str.as_deref(),
                         &mut timing,
+                        establish_timeout,
                     )
                     .await
                 {
@@ -224,27 +230,26 @@ impl ReplayExecutor {
                 }
             }
         } else if needs_real_request {
-            let timeout =
-                std::time::Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-
             let body_str = applied_request
                 .body
                 .as_ref()
                 .map(|b| String::from_utf8_lossy(b).to_string());
-            let request_future = self.try_real_request(
-                &host,
-                port,
-                is_https,
-                &applied_request.method,
-                path,
-                &applied_request.headers,
-                body_str.as_deref(),
-                &mut timing,
-            );
-
-            match tokio::time::timeout(timeout, request_future).await {
-                Ok(Ok((s, h, b))) => (s, h, b),
-                Ok(Err(e)) => {
+            match self
+                .try_real_request(
+                    &host,
+                    port,
+                    is_https,
+                    &applied_request.method,
+                    path,
+                    &applied_request.headers,
+                    body_str.as_deref(),
+                    &mut timing,
+                    establish_timeout,
+                )
+                .await
+            {
+                Ok((s, h, b)) => (s, h, b),
+                Err(e) => {
                     let duration_ms = start_time.elapsed().as_millis() as u64;
                     error!(
                         replay_id = %replay_id,
@@ -259,27 +264,6 @@ impl ReplayExecutor {
                         duration_ms,
                         applied_rules: matched_rules,
                         error: Some(e.to_string()),
-                    });
-                }
-                Err(_) => {
-                    let duration_ms = start_time.elapsed().as_millis() as u64;
-                    let timeout_error = format!(
-                        "Request timeout after {}ms",
-                        request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)
-                    );
-                    error!(
-                        replay_id = %replay_id,
-                        error = %timeout_error,
-                        "[REPLAY] Request timed out"
-                    );
-                    return Ok(ReplayExecuteResponse {
-                        traffic_id: String::new(),
-                        status: 0,
-                        headers: vec![],
-                        body: None,
-                        duration_ms,
-                        applied_rules: matched_rules,
-                        error: Some(timeout_error),
                     });
                 }
             }
@@ -466,26 +450,67 @@ impl ReplayExecutor {
         headers: &[(String, String)],
         body: Option<&str>,
         timing: &mut RequestTiming,
+        establish_timeout: std::time::Duration,
     ) -> Result<(u16, Vec<(String, String)>, Option<String>), ReplayError> {
+        let deadline = Instant::now().checked_add(establish_timeout).unwrap_or_else(Instant::now);
+
         let dns_start = Instant::now();
         let connect_addr = format!("{}:{}", host, port);
         timing.dns_ms = Some(dns_start.elapsed().as_millis() as u64);
 
         let connect_start = Instant::now();
-        let tcp_stream = TcpStream::connect(&connect_addr).await.map_err(|e| {
-            ReplayError::ConnectionFailed(format!("Failed to connect to {}: {}", connect_addr, e))
-        })?;
+        let connect_remaining = deadline.saturating_duration_since(Instant::now());
+        if connect_remaining.is_zero() {
+            return Err(ReplayError::ConnectionFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let tcp_stream = match tokio::time::timeout(connect_remaining, TcpStream::connect(&connect_addr)).await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "Failed to connect to {}: {}",
+                    connect_addr, e
+                )))
+            }
+            Err(_) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "Connect timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
         timing.connect_ms = Some(connect_start.elapsed().as_millis() as u64);
 
         let (status, response_headers, response_body, tls_ms) = if is_https {
             let tls_start = Instant::now();
             let (s, h, b) = self
-                .send_https_request(tcp_stream, host, method, path, headers, body)
+                .send_https_request(
+                    tcp_stream,
+                    host,
+                    method,
+                    path,
+                    headers,
+                    body,
+                    establish_timeout,
+                    deadline,
+                )
                 .await?;
             (s, h, b, Some(tls_start.elapsed().as_millis() as u64))
         } else {
             let (s, h, b) = self
-                .send_http_request(tcp_stream, host, method, path, headers, body)
+                .send_http_request(
+                    tcp_stream,
+                    host,
+                    method,
+                    path,
+                    headers,
+                    body,
+                    establish_timeout,
+                    deadline,
+                )
                 .await?;
             (s, h, b, None)
         };
@@ -699,13 +724,34 @@ impl ReplayExecutor {
         path: &str,
         headers: &[(String, String)],
         body: Option<&str>,
+        establish_timeout: std::time::Duration,
+        deadline: Instant,
     ) -> Result<(u16, Vec<(String, String)>, Option<String>), ReplayError> {
         let io = TokioIo::new(stream);
 
-        let (mut sender, conn) = ClientBuilder::new()
-            .handshake(io)
-            .await
-            .map_err(|e| ReplayError::ConnectionFailed(format!("HTTP handshake failed: {}", e)))?;
+        let handshake_remaining = deadline.saturating_duration_since(Instant::now());
+        if handshake_remaining.is_zero() {
+            return Err(ReplayError::ConnectionFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let (mut sender, conn) = match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io)).await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "HTTP handshake failed: {}",
+                    e
+                )))
+            }
+            Err(_) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "HTTP handshake timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
 
         tokio::spawn(async move {
             if let Err(e) = conn.await {
@@ -735,10 +781,25 @@ impl ReplayExecutor {
             .body(http_body_util::Full::new(body_bytes))
             .map_err(|e| ReplayError::RequestFailed(format!("Failed to build request: {}", e)))?;
 
-        let response = sender
-            .send_request(request)
-            .await
-            .map_err(|e| ReplayError::RequestFailed(format!("Request failed: {}", e)))?;
+        let send_remaining = deadline.saturating_duration_since(Instant::now());
+        if send_remaining.is_zero() {
+            return Err(ReplayError::RequestFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let response = match tokio::time::timeout(send_remaining, sender.send_request(request)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                return Err(ReplayError::RequestFailed(format!("Request failed: {}", e)))
+            }
+            Err(_) => {
+                return Err(ReplayError::RequestFailed(format!(
+                    "Request timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
 
         self.parse_response(response).await
     }
@@ -751,6 +812,8 @@ impl ReplayExecutor {
         path: &str,
         headers: &[(String, String)],
         body: Option<&str>,
+        establish_timeout: std::time::Duration,
+        deadline: Instant,
     ) -> Result<(u16, Vec<(String, String)>, Option<String>), ReplayError> {
         let tls_config = get_tls_client_config(self.unsafe_ssl);
         let connector = TlsConnector::from(Arc::new(tls_config));
@@ -758,17 +821,55 @@ impl ReplayExecutor {
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|e| ReplayError::ConnectionFailed(format!("Invalid server name: {}", e)))?;
 
-        let tls_stream = connector
-            .connect(server_name, stream)
-            .await
-            .map_err(|e| ReplayError::ConnectionFailed(format!("TLS handshake failed: {}", e)))?;
+        let tls_remaining = deadline.saturating_duration_since(Instant::now());
+        if tls_remaining.is_zero() {
+            return Err(ReplayError::ConnectionFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let tls_stream = match tokio::time::timeout(tls_remaining, connector.connect(server_name, stream)).await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "TLS handshake failed: {}",
+                    e
+                )))
+            }
+            Err(_) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "TLS handshake timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
 
         let io = TokioIo::new(tls_stream);
 
-        let (mut sender, conn) = ClientBuilder::new()
-            .handshake(io)
-            .await
-            .map_err(|e| ReplayError::ConnectionFailed(format!("HTTPS handshake failed: {}", e)))?;
+        let handshake_remaining = deadline.saturating_duration_since(Instant::now());
+        if handshake_remaining.is_zero() {
+            return Err(ReplayError::ConnectionFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let (mut sender, conn) = match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io)).await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "HTTPS handshake failed: {}",
+                    e
+                )))
+            }
+            Err(_) => {
+                return Err(ReplayError::ConnectionFailed(format!(
+                    "HTTPS handshake timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
 
         tokio::spawn(async move {
             if let Err(e) = conn.await {
@@ -798,10 +899,25 @@ impl ReplayExecutor {
             .body(http_body_util::Full::new(body_bytes))
             .map_err(|e| ReplayError::RequestFailed(format!("Failed to build request: {}", e)))?;
 
-        let response = sender
-            .send_request(request)
-            .await
-            .map_err(|e| ReplayError::RequestFailed(format!("Request failed: {}", e)))?;
+        let send_remaining = deadline.saturating_duration_since(Instant::now());
+        if send_remaining.is_zero() {
+            return Err(ReplayError::RequestFailed(format!(
+                "Request timeout after {}ms",
+                establish_timeout.as_millis()
+            )));
+        }
+        let response = match tokio::time::timeout(send_remaining, sender.send_request(request)).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => {
+                return Err(ReplayError::RequestFailed(format!("Request failed: {}", e)))
+            }
+            Err(_) => {
+                return Err(ReplayError::RequestFailed(format!(
+                    "Request timeout after {}ms",
+                    establish_timeout.as_millis()
+                )))
+            }
+        };
 
         self.parse_response(response).await
     }
