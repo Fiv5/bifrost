@@ -303,26 +303,27 @@ async fn load_body_snapshot_text(
     tokio::task::spawn_blocking(move || match body_ref {
         BodyRef::Inline { data } => truncate_utf8(&data, max_size),
         BodyRef::File { path, .. } => {
-            let len = std::fs::metadata(&path)
-                .map(|m| m.len() as usize)
-                .unwrap_or(0);
-            let size = len.min(max_size);
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let size = (len as usize).min(max_size);
             if size == 0 {
                 return String::new();
             }
-            let range = BodyRef::FileRange {
-                path,
-                offset: 0,
-                size,
-            };
+            let offset = len.saturating_sub(size as u64);
+            let range = BodyRef::FileRange { path, offset, size };
             store.read().load(&range).unwrap_or_default()
         }
         BodyRef::FileRange { path, offset, size } => {
-            let size = size.min(max_size);
-            if size == 0 {
+            let tail_size = size.min(max_size);
+            if tail_size == 0 {
                 return String::new();
             }
-            let range = BodyRef::FileRange { path, offset, size };
+            let end = offset.saturating_add(size as u64);
+            let start = end.saturating_sub(tail_size as u64).max(offset);
+            let range = BodyRef::FileRange {
+                path,
+                offset: start,
+                size: tail_size,
+            };
             store.read().load(&range).unwrap_or_default()
         }
     })

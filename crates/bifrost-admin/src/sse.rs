@@ -159,7 +159,7 @@ impl SseHub {
         let max_event_bytes = self.max_event_bytes.load(Ordering::Relaxed);
         let truncated = max_event_bytes > 0 && raw_event.len() > max_event_bytes;
         let raw_slice = if max_event_bytes == 0 {
-            &[]
+            raw_event
         } else if truncated {
             &raw_event[..max_event_bytes]
         } else {

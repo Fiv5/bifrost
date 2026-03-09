@@ -8,7 +8,7 @@ use bifrost_admin::{
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
-use hyper::body::{Body, Incoming};
+use hyper::body::Incoming;
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
@@ -38,6 +38,7 @@ use crate::server::{
 use crate::transform::apply_res_rules;
 use crate::transform::decompress::get_content_encoding;
 use crate::transform::{apply_body_rules, Phase};
+use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
@@ -189,6 +190,10 @@ pub async fn handle_connect(
             .as_ref()
             .map(|s| s.get_max_body_buffer_size())
             .unwrap_or(proxy_config.max_body_buffer_size);
+        let max_body_probe_size = admin_state
+            .as_ref()
+            .map(|s| s.get_max_body_probe_size())
+            .unwrap_or(proxy_config.max_body_probe_size);
         return handle_tls_interception(
             req,
             &host,
@@ -197,6 +202,7 @@ pub async fn handle_connect(
             tls_config,
             verbose_logging,
             max_body_buffer_size,
+            max_body_probe_size,
             tls_intercept_config.unsafe_ssl,
             ctx,
             admin_state,
@@ -456,6 +462,7 @@ async fn handle_tls_interception(
     tls_config: Arc<TlsConfig>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
@@ -524,6 +531,7 @@ async fn handle_tls_interception(
             rules,
             verbose,
             max_body_buffer_size,
+            max_body_probe_size,
             unsafe_ssl,
             &req_id,
             admin_state.clone(),
@@ -573,6 +581,7 @@ async fn tls_intercept_tunnel(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
@@ -620,6 +629,7 @@ async fn tls_intercept_tunnel(
                 rules,
                 verbose,
                 max_body_buffer_size,
+                max_body_probe_size,
                 unsafe_ssl,
                 client_ip,
                 client_app,
@@ -657,6 +667,7 @@ async fn tls_intercept_tunnel_with_cancel(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     req_id: &str,
     admin_state: Option<Arc<AdminState>>,
@@ -705,6 +716,7 @@ async fn tls_intercept_tunnel_with_cancel(
                 rules,
                 verbose,
                 max_body_buffer_size,
+                max_body_probe_size,
                 unsafe_ssl,
                 client_ip,
                 client_app,
@@ -762,6 +774,35 @@ fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
     connection.to_lowercase().contains("upgrade") && upgrade.to_lowercase() == "websocket"
 }
 
+fn is_likely_text_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() {
+        return false;
+    }
+    if ct.starts_with("text/") {
+        return true;
+    }
+    if ct.starts_with("application/json") {
+        return true;
+    }
+    if ct.contains("+json") {
+        return true;
+    }
+    if ct.starts_with("application/xml") || ct.contains("+xml") {
+        return true;
+    }
+    if ct.starts_with("application/javascript")
+        || ct.starts_with("application/x-javascript")
+        || ct.starts_with("application/ecmascript")
+    {
+        return true;
+    }
+    if ct.starts_with("application/x-www-form-urlencoded") {
+        return true;
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_intercepted_request_with_protocol(
     req: Request<Incoming>,
@@ -772,6 +813,7 @@ async fn handle_intercepted_request_with_protocol(
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
     unsafe_ssl: bool,
     client_ip: String,
     client_app: Option<String>,
@@ -1007,26 +1049,127 @@ async fn handle_intercepted_request_with_protocol(
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
     let has_req_body_override = resolved_rules.req_body.is_some();
     let needs_req_body_read = needs_req_processing && !has_req_body_override;
-    let req_body_size_hint = body.size_hint().upper();
-    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
-    let req_body_too_large = match req_content_length {
-        Some(len) => (len as u64) > max_body_buffer_size_u64,
-        None => req_body_size_hint
-            .map(|len| len > max_body_buffer_size_u64)
-            .unwrap_or(true),
-    };
 
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let body_bytes = if needs_req_body_read && !req_body_too_large {
-        match body.collect().await {
-            Ok(collected) => collected.to_bytes().to_vec(),
-            Err(e) => {
-                error!("[{}] Failed to read request body: {}", req_id, e);
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
+    let body_bytes = if needs_req_body_read {
+        if let Some(len) = req_content_length {
+            if len > max_body_buffer_size {
+                warn!(
+                    "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                    req_id,
+                    len,
+                    max_body_buffer_size
+                );
+                if admin_state.is_some() {
+                    let (tee_body, capture) =
+                        create_request_tee_body(body, admin_state.clone(), req_id.to_string());
+                    streaming_body = Some(tee_body);
+                    req_body_capture = Some(capture);
+                } else {
+                    streaming_body = Some(body.boxed());
+                }
+                Vec::new()
+            } else {
+                let req_content_type = parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let limit = if !is_likely_text_content_type(&req_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => bytes.to_vec(),
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        let size_display = req_content_length
+                            .map(|len| len.to_string())
+                            .unwrap_or_else(|| format!(">{}", limit));
+                        warn!(
+                            "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                            req_id,
+                            size_display,
+                            limit
+                        );
+                        if admin_state.is_some() {
+                            let (tee_body, capture) = create_request_tee_body(
+                                replay_body,
+                                admin_state.clone(),
+                                req_id.to_string(),
+                            );
+                            streaming_body = Some(tee_body);
+                            req_body_capture = Some(capture);
+                        } else {
+                            streaming_body = Some(replay_body.boxed());
+                        }
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        error!("[{}] Failed to read request body: {}", req_id, e);
+                        return Ok(Response::builder()
+                            .status(502)
+                            .body(full_body(b"Bad Gateway".to_vec()))
+                            .unwrap());
+                    }
+                }
+            }
+        } else {
+            let req_content_type = parts
+                .headers
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_lowercase();
+            let limit = if !is_likely_text_content_type(&req_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => bytes.to_vec(),
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    let size_display = req_content_length
+                        .map(|len| len.to_string())
+                        .unwrap_or_else(|| format!(">{}", limit));
+                    warn!(
+                        "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+                        req_id,
+                        size_display,
+                        limit
+                    );
+                    if admin_state.is_some() {
+                        let (tee_body, capture) = create_request_tee_body(
+                            replay_body,
+                            admin_state.clone(),
+                            req_id.to_string(),
+                        );
+                        streaming_body = Some(tee_body);
+                        req_body_capture = Some(capture);
+                    } else {
+                        streaming_body = Some(replay_body.boxed());
+                    }
+                    Vec::new()
+                }
+                Err(e) => {
+                    error!("[{}] Failed to read request body: {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
             }
         }
     } else if let Some(ref new_body) = resolved_rules.req_body {
@@ -1046,21 +1189,10 @@ async fn handle_intercepted_request_with_protocol(
         }
         new_body.to_vec()
     } else {
-        if needs_req_body_read && req_body_too_large {
-            let size_display = req_content_length
-                .map(|len| len.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            warn!(
-                "[{}] [REQ_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-                req_id,
-                size_display,
-                max_body_buffer_size
-            );
-        }
         if admin_state.is_some() {
             let (tee_body, capture) =
                 create_request_tee_body(body, admin_state.clone(), req_id.to_string());
-            streaming_body = Some(tee_body.boxed());
+            streaming_body = Some(tee_body);
             req_body_capture = Some(capture);
         } else {
             streaming_body = Some(body.boxed());
@@ -1764,35 +1896,113 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_body_size_hint = res_body.size_hint().upper();
-    let max_body_buffer_size_u64 = max_body_buffer_size as u64;
-    let res_body_too_large = match res_content_length {
-        Some(len) => (len as u64) > max_body_buffer_size_u64,
-        None => res_body_size_hint
-            .map(|len| len > max_body_buffer_size_u64)
-            .unwrap_or(true),
-    };
-
-    let skip_body_processing = !needs_processing || (res_body_too_large && needs_res_body_read);
-
-    if needs_res_body_read && res_body_too_large {
-        let size_display = res_content_length
-            .map(|len| len.to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        warn!(
-            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
-            req_id,
-            size_display,
-            max_body_buffer_size
-        );
-    }
-
+    let res_content_type = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
     let is_sse = res_parts
         .headers
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().starts_with("text/event-stream"))
         .unwrap_or(false);
+
+    let mut res_body_too_large = false;
+    let mut res_body_limit = max_body_buffer_size;
+    let mut res_body_incoming = Some(res_body);
+    let mut res_body_stream: Option<BoxBody> = None;
+    if !is_sse {
+        res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
+    }
+
+    let mut pre_read_res: Option<(Vec<u8>, u64)> = None;
+    if needs_res_body_read && needs_processing && !is_sse {
+        if let Some(len) = res_content_length {
+            if len > max_body_buffer_size {
+                res_body_too_large = true;
+                res_body_limit = max_body_buffer_size;
+            } else {
+                let receive_start = Instant::now();
+                let body = res_body_stream.take().unwrap();
+                let limit = if !is_likely_text_content_type(&res_content_type) {
+                    let probe = max_body_probe_size.min(max_body_buffer_size);
+                    if probe == 0 {
+                        max_body_buffer_size
+                    } else {
+                        probe
+                    }
+                } else {
+                    max_body_buffer_size
+                };
+                res_body_limit = limit;
+                match read_body_bounded(body, limit).await {
+                    Ok(BoundedBody::Complete(bytes)) => {
+                        let receive_ms = receive_start.elapsed().as_millis() as u64;
+                        pre_read_res = Some((bytes.to_vec(), receive_ms));
+                    }
+                    Ok(BoundedBody::Exceeded(replay_body)) => {
+                        res_body_too_large = true;
+                        res_body_stream = Some(replay_body.boxed());
+                    }
+                    Err(e) => {
+                        error!("[{}] Failed to read response body: {}", req_id, e);
+                        return Ok(Response::builder()
+                            .status(502)
+                            .body(full_body(b"Bad Gateway".to_vec()))
+                            .unwrap());
+                    }
+                }
+            }
+        } else {
+            let receive_start = Instant::now();
+            let body = res_body_stream.take().unwrap();
+            let limit = if !is_likely_text_content_type(&res_content_type) {
+                let probe = max_body_probe_size.min(max_body_buffer_size);
+                if probe == 0 {
+                    max_body_buffer_size
+                } else {
+                    probe
+                }
+            } else {
+                max_body_buffer_size
+            };
+            res_body_limit = limit;
+            match read_body_bounded(body, limit).await {
+                Ok(BoundedBody::Complete(bytes)) => {
+                    let receive_ms = receive_start.elapsed().as_millis() as u64;
+                    pre_read_res = Some((bytes.to_vec(), receive_ms));
+                }
+                Ok(BoundedBody::Exceeded(replay_body)) => {
+                    res_body_too_large = true;
+                    res_body_stream = Some(replay_body.boxed());
+                }
+                Err(e) => {
+                    error!("[{}] Failed to read response body: {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
+            }
+        }
+    }
+
+    let skip_body_processing =
+        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
+
+    if needs_res_body_read && res_body_too_large {
+        let size_display = res_content_length
+            .map(|len| len.to_string())
+            .unwrap_or_else(|| format!(">{}", res_body_limit));
+        warn!(
+            "[{}] [RES_BODY] body too large ({} bytes > {} limit), skipping body rules and streaming forward",
+            req_id,
+            size_display,
+            res_body_limit
+        );
+    }
 
     if skip_body_processing {
         let total_ms = start_time.elapsed().as_millis() as u64;
@@ -1923,6 +2133,7 @@ async fn handle_intercepted_request_with_protocol(
         }
 
         if is_sse {
+            let res_body = res_body_incoming.take().unwrap();
             let tee_body = create_sse_tee_body(
                 res_body,
                 admin_state.clone(),
@@ -1937,6 +2148,7 @@ async fn handle_intercepted_request_with_protocol(
         } else {
             let response_headers_size =
                 calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+            let res_body = res_body_stream.take().unwrap();
             let tee_body = create_tee_body_with_store(
                 res_body,
                 admin_state.clone(),
@@ -1946,14 +2158,17 @@ async fn handle_intercepted_request_with_protocol(
                 Some(traffic_type),
                 response_headers_size,
             );
-            let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
+            let final_body = wrap_throttled_body(tee_body, resolved_rules.res_speed);
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         }
     }
 
-    let (res_body_bytes, receive_ms) = if needs_res_body_read {
+    let (res_body_bytes, receive_ms) = if let Some(v) = pre_read_res.take() {
+        v
+    } else if needs_res_body_read {
         let receive_start = Instant::now();
+        let res_body = res_body_stream.take().unwrap();
         let res_body_bytes = match res_body.collect().await {
             Ok(collected) => collected.to_bytes().to_vec(),
             Err(e) => {

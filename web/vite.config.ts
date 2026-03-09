@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const webPort = Number(process.env.WEB_PORT ?? 3000);
+
 export default defineConfig({
   plugins: [react()],
   optimizeDeps: {
@@ -12,7 +14,7 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 3000,
+    port: webPort,
     proxy: {
       '/_bifrost/api': {
         target: 'http://127.0.0.1:9900',

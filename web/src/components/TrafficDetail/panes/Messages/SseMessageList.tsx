@@ -55,8 +55,38 @@ export const SseMessageList = ({
   const [currentMatch, setCurrentMatch] = useState<number>(-1);
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const followTailRef = useRef(true);
-
+  const scrollButtonStyles = useMemo(
+    () => ({
+      scrollButton: {
+        position: "absolute" as const,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        backgroundColor: token.colorBgElevated,
+        color: token.colorTextSecondary,
+        borderRadius: "50%",
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
+        zIndex: 10,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        transition:
+          "opacity 0.3s ease, transform 0.3s ease, background-color 0.2s",
+      },
+      scrollToTopButton: {
+        top: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+      scrollToBottomButton: {
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+    }),
+    [token],
+  );
   const displayEvents = useMemo(() => {
     if (searchMode !== 'filter' || !normalizedQuery) return events;
     return events.filter((event) => {
@@ -84,26 +114,16 @@ export const SseMessageList = ({
     overscan: 6,
   });
 
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const threshold = 24;
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      followTailRef.current = distance <= threshold;
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    onScroll();
-    return () => {
-      el.removeEventListener('scroll', onScroll);
-    };
-  }, []);
-
-  useEffect(() => {
+  const handleScrollToTop = useCallback(() => {
     if (displayEvents.length === 0) return;
-    if (!followTailRef.current) return;
-    rowVirtualizer.scrollToIndex(displayEvents.length - 1, { align: 'end' });
+    rowVirtualizer.scrollToIndex(0, { align: "start" });
   }, [displayEvents.length, rowVirtualizer]);
+
+  const handleScrollToBottom = useCallback(() => {
+    if (displayEvents.length === 0) return;
+    rowVirtualizer.scrollToIndex(displayEvents.length - 1, { align: "end" });
+  }, [displayEvents.length, rowVirtualizer]);
+
 
   useEffect(() => {
     if (matchedIndices.length === 0) {
@@ -306,7 +326,7 @@ export const SseMessageList = ({
         </Space>
       </div>
 
-      <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <div style={{ flex: 1, overflow: "hidden", minHeight: 0, position: "relative" }}>
         {displayEvents.length === 0 && !loading ? (
           <div
             style={{
@@ -365,6 +385,26 @@ export const SseMessageList = ({
             </div>
           </div>
         )}
+        <div
+          style={{
+            ...scrollButtonStyles.scrollButton,
+            ...scrollButtonStyles.scrollToTopButton,
+          }}
+          onClick={handleScrollToTop}
+          data-testid="sse-scroll-top"
+        >
+          <ArrowUpOutlined style={{ fontSize: 14 }} />
+        </div>
+        <div
+          style={{
+            ...scrollButtonStyles.scrollButton,
+            ...scrollButtonStyles.scrollToBottomButton,
+          }}
+          onClick={handleScrollToBottom}
+          data-testid="sse-scroll-bottom"
+        >
+          <ArrowDownOutlined style={{ fontSize: 14 }} />
+        </div>
       </div>
     </div>
   );

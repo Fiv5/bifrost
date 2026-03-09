@@ -388,10 +388,11 @@ bifrost config set traffic.ws-payload-max-open-files 128
 
 ### 环境变量
 
-| 环境变量           | 说明             | 默认值       |
-| ------------------ | ---------------- | ------------ |
-| `BIFROST_DATA_DIR` | 数据目录路径     | `~/.bifrost` |
-| `RUST_LOG`         | 日志级别和过滤器 | `info`       |
+| 环境变量           | 说明                         | 默认值       |
+| ------------------ | ---------------------------- | ------------ |
+| `BIFROST_DATA_DIR` | 数据目录路径                 | `~/.bifrost` |
+| `RUST_LOG`         | 日志级别和过滤器             | `info`       |
+| `WEB_PORT`         | Web UI 开发服务端口（Vite）  | `3000`       |
 
 通过设置环境变量，可以自定义 Bifrost 的行为：
 

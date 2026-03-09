@@ -34,6 +34,36 @@ pub struct TrafficDbStore {
     cleanup_notifier: RwLock<Option<CleanupNotifier>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct HostMetricsAggregate {
+    pub host: String,
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub http_requests: u64,
+    pub https_requests: u64,
+    pub tunnel_requests: u64,
+    pub ws_requests: u64,
+    pub wss_requests: u64,
+    pub h3_requests: u64,
+    pub socks5_requests: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppMetricsAggregate {
+    pub app_name: String,
+    pub requests: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub http_requests: u64,
+    pub https_requests: u64,
+    pub tunnel_requests: u64,
+    pub ws_requests: u64,
+    pub wss_requests: u64,
+    pub h3_requests: u64,
+    pub socks5_requests: u64,
+}
+
 impl TrafficDbStore {
     pub fn new(
         db_dir: PathBuf,
@@ -878,6 +908,94 @@ impl TrafficDbStore {
             oldest_timestamp: oldest,
             newest_timestamp: newest,
         }
+    }
+
+    pub fn aggregate_host_metrics(&self) -> Vec<HostMetricsAggregate> {
+        let conn = self.read_conn.lock();
+        let sql = "SELECT COALESCE(NULLIF(host, ''), 'Unknown') AS host, \
+                   COUNT(*) AS requests, \
+                   COALESCE(SUM(request_size), 0) AS bytes_sent, \
+                   COALESCE(SUM(response_size), 0) AS bytes_received, \
+                   SUM(CASE WHEN protocol = 'http' THEN 1 ELSE 0 END) AS http_requests, \
+                   SUM(CASE WHEN protocol = 'https' THEN 1 ELSE 0 END) AS https_requests, \
+                   SUM(CASE WHEN protocol = 'tunnel' THEN 1 ELSE 0 END) AS tunnel_requests, \
+                   SUM(CASE WHEN protocol = 'ws' THEN 1 ELSE 0 END) AS ws_requests, \
+                   SUM(CASE WHEN protocol = 'wss' THEN 1 ELSE 0 END) AS wss_requests, \
+                   SUM(CASE WHEN protocol = 'h3' THEN 1 ELSE 0 END) AS h3_requests, \
+                   SUM(CASE WHEN protocol = 'socks5' THEN 1 ELSE 0 END) AS socks5_requests \
+                   FROM traffic_records \
+                   GROUP BY host \
+                   ORDER BY requests DESC";
+
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to prepare host metrics aggregate query");
+                return vec![];
+            }
+        };
+
+        stmt.query_map([], |row| {
+            Ok(HostMetricsAggregate {
+                host: row.get(0)?,
+                requests: row.get::<_, i64>(1)? as u64,
+                bytes_sent: row.get::<_, i64>(2)? as u64,
+                bytes_received: row.get::<_, i64>(3)? as u64,
+                http_requests: row.get::<_, i64>(4)? as u64,
+                https_requests: row.get::<_, i64>(5)? as u64,
+                tunnel_requests: row.get::<_, i64>(6)? as u64,
+                ws_requests: row.get::<_, i64>(7)? as u64,
+                wss_requests: row.get::<_, i64>(8)? as u64,
+                h3_requests: row.get::<_, i64>(9)? as u64,
+                socks5_requests: row.get::<_, i64>(10)? as u64,
+            })
+        })
+        .map(|r| r.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    pub fn aggregate_app_metrics(&self) -> Vec<AppMetricsAggregate> {
+        let conn = self.read_conn.lock();
+        let sql = "SELECT COALESCE(NULLIF(client_app, ''), 'Unknown') AS app_name, \
+                   COUNT(*) AS requests, \
+                   COALESCE(SUM(request_size), 0) AS bytes_sent, \
+                   COALESCE(SUM(response_size), 0) AS bytes_received, \
+                   SUM(CASE WHEN protocol = 'http' THEN 1 ELSE 0 END) AS http_requests, \
+                   SUM(CASE WHEN protocol = 'https' THEN 1 ELSE 0 END) AS https_requests, \
+                   SUM(CASE WHEN protocol = 'tunnel' THEN 1 ELSE 0 END) AS tunnel_requests, \
+                   SUM(CASE WHEN protocol = 'ws' THEN 1 ELSE 0 END) AS ws_requests, \
+                   SUM(CASE WHEN protocol = 'wss' THEN 1 ELSE 0 END) AS wss_requests, \
+                   SUM(CASE WHEN protocol = 'h3' THEN 1 ELSE 0 END) AS h3_requests, \
+                   SUM(CASE WHEN protocol = 'socks5' THEN 1 ELSE 0 END) AS socks5_requests \
+                   FROM traffic_records \
+                   GROUP BY app_name \
+                   ORDER BY requests DESC";
+
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[TRAFFIC_DB] Failed to prepare app metrics aggregate query");
+                return vec![];
+            }
+        };
+
+        stmt.query_map([], |row| {
+            Ok(AppMetricsAggregate {
+                app_name: row.get(0)?,
+                requests: row.get::<_, i64>(1)? as u64,
+                bytes_sent: row.get::<_, i64>(2)? as u64,
+                bytes_received: row.get::<_, i64>(3)? as u64,
+                http_requests: row.get::<_, i64>(4)? as u64,
+                https_requests: row.get::<_, i64>(5)? as u64,
+                tunnel_requests: row.get::<_, i64>(6)? as u64,
+                ws_requests: row.get::<_, i64>(7)? as u64,
+                wss_requests: row.get::<_, i64>(8)? as u64,
+                h3_requests: row.get::<_, i64>(9)? as u64,
+                socks5_requests: row.get::<_, i64>(10)? as u64,
+            })
+        })
+        .map(|r| r.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     pub fn current_sequence(&self) -> u64 {

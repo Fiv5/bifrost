@@ -22,11 +22,13 @@ export interface PerformanceTabProps {
   maxDbSizeMarks: Record<number, string>;
   maxBodyInlineMarks: Record<number, string>;
   maxBodyBufferMarks: Record<number, string>;
+  maxBodyProbeMarks: Record<number, string>;
   fileRetentionMarks: Record<number, string>;
   handleMaxRecordsChange: (value: number | null) => void;
   handleMaxDbSizeChange: (value: number) => void;
   handleMaxBodyMemorySizeChange: (value: number) => void;
   handleMaxBodyBufferSizeChange: (value: number) => void;
+  handleMaxBodyProbeSizeChange: (value: number) => void;
   handleFileRetentionDaysChange: (value: number) => void;
   handleClearBodyCache: () => void;
   formatBytes: (bytes: number) => string;
@@ -43,11 +45,13 @@ export default function PerformanceTab({
   maxDbSizeMarks,
   maxBodyInlineMarks,
   maxBodyBufferMarks,
+  maxBodyProbeMarks,
   fileRetentionMarks,
   handleMaxRecordsChange,
   handleMaxDbSizeChange,
   handleMaxBodyMemorySizeChange,
   handleMaxBodyBufferSizeChange,
+  handleMaxBodyProbeSizeChange,
   handleFileRetentionDaysChange,
   handleClearBodyCache,
   formatBytes,
@@ -187,6 +191,44 @@ export default function PerformanceTab({
                 <Col>
                   <Text code>
                     {formatBytes(trafficDraft?.max_body_buffer_size || 0)}
+                  </Text>
+                </Col>
+              </Row>
+
+              <Divider style={{ margin: "12px 0" }} />
+
+              <Row justify="space-between" align="middle">
+                <Col flex="1" style={{ marginRight: 16 }}>
+                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                    <Text>Max Body Probe Size</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      For non-text or suspected large bodies, only pre-read up to
+                      this size; if exceeded, body processing is skipped and the
+                      body is forwarded as a stream.
+                    </Text>
+                    <Slider
+                      min={0}
+                      max={1 * 1024 * 1024}
+                      step={16 * 1024}
+                      value={trafficDraft?.max_body_probe_size}
+                      onChange={handleMaxBodyProbeSizeChange}
+                      marks={maxBodyProbeMarks}
+                      tooltip={{
+                        formatter: (value) =>
+                          value !== null && value !== undefined
+                            ? value === 0
+                              ? "Off"
+                              : formatBytes(value)
+                            : "",
+                      }}
+                    />
+                  </Space>
+                </Col>
+                <Col>
+                  <Text code>
+                    {trafficDraft?.max_body_probe_size === 0
+                      ? "Off"
+                      : formatBytes(trafficDraft?.max_body_probe_size || 0)}
                   </Text>
                 </Col>
               </Row>

@@ -197,6 +197,7 @@ pub fn run_start(
         unsafe_ssl: unsafe_ssl_final,
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
+        max_body_probe_size: stored_config.traffic.max_body_probe_size,
         enable_socks: true,
         ..Default::default()
     };
@@ -627,6 +628,7 @@ pub fn run_foreground(
             .with_system_proxy_manager_shared(system_proxy_manager.clone())
             .with_config_manager(config_manager)
             .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+            .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
             .with_app_icon_cache(app_icon_cache)
             .with_script_manager(script_manager)
             .with_replay_db_store_shared_opt(replay_db_store);

@@ -1,3 +1,4 @@
+pub mod bounded;
 pub mod http_size;
 pub mod logging;
 pub mod mock;
@@ -19,7 +20,7 @@ pub use process_info::{
 };
 pub use tee::{
     create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
-    store_response_body, BodyCaptureHandle, RequestTeeBody, SseTeeBody, TeeBody,
+    store_response_body, BodyCaptureHandle, SseTeeBody,
 };
 pub use throttle::wrap_throttled_body;
 pub use url::{apply_url_params, apply_url_replace, apply_url_rules, build_redirect_uri};

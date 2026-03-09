@@ -89,16 +89,16 @@ impl TeeBodyDropGuard {
     }
 }
 
-pub struct TeeBody {
-    inner: Incoming,
+struct TeeBody<B> {
+    inner: Pin<Box<B>>,
     guard: TeeBodyDropGuard,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
 
-impl TeeBody {
+impl<B> TeeBody<B> {
     pub fn new(
-        inner: Incoming,
+        inner: B,
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         max_body_size: Option<usize>,
@@ -108,7 +108,7 @@ impl TeeBody {
     ) -> Self {
         let max_size = max_body_size.unwrap_or(DEFAULT_MAX_BODY_BUFFER_SIZE);
         Self {
-            inner,
+            inner: Box::pin(inner),
             guard: TeeBodyDropGuard {
                 admin_state,
                 record_id,
@@ -124,12 +124,18 @@ impl TeeBody {
         }
     }
 
-    pub fn boxed(self) -> BoxBody {
+    pub fn boxed(self) -> BoxBody
+    where
+        B: Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
+    {
         BodyExt::boxed(self)
     }
 }
 
-impl Body for TeeBody {
+impl<B> Body for TeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error>,
+{
     type Data = Bytes;
     type Error = hyper::Error;
 
@@ -141,7 +147,7 @@ impl Body for TeeBody {
             return Poll::Ready(None);
         }
 
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        match self.inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     let len = data.len();
@@ -220,14 +226,14 @@ impl Body for TeeBody {
 }
 
 pub fn create_tee_body_with_store(
-    body: Incoming,
+    body: impl Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     max_body_size: Option<usize>,
     content_encoding: Option<String>,
     traffic_type: Option<TrafficType>,
     response_headers_size: usize,
-) -> TeeBody {
+) -> BoxBody {
     TeeBody::new(
         body,
         admin_state,
@@ -237,6 +243,7 @@ pub fn create_tee_body_with_store(
         traffic_type,
         response_headers_size,
     )
+    .boxed()
 }
 
 #[derive(Clone)]
@@ -277,7 +284,7 @@ impl Drop for RequestTeeBodyDropGuard {
 }
 
 pub struct RequestTeeBody {
-    inner: Incoming,
+    inner: Pin<Box<dyn Body<Data = Bytes, Error = hyper::Error> + Send + Sync>>,
     guard: RequestTeeBodyDropGuard,
 }
 
@@ -289,7 +296,7 @@ impl Body for RequestTeeBody {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        match Pin::new(&mut self.inner).poll_frame(cx) {
+        match self.inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
                     if self.guard.file_writer.is_none() {
@@ -329,10 +336,10 @@ impl Body for RequestTeeBody {
 }
 
 pub fn create_request_tee_body(
-    body: Incoming,
+    body: impl Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
-) -> (RequestTeeBody, BodyCaptureHandle) {
+) -> (BoxBody, BodyCaptureHandle) {
     let capture = BodyCaptureHandle {
         body_ref: Arc::new(Mutex::new(None)),
     };
@@ -344,7 +351,11 @@ pub fn create_request_tee_body(
             body_ref: capture.body_ref.clone(),
         },
     };
-    (RequestTeeBody { inner: body, guard }, capture)
+    let body = RequestTeeBody {
+        inner: Box::pin(body),
+        guard,
+    };
+    (BodyExt::boxed(body), capture)
 }
 
 struct SseTeeBodyDropGuard {

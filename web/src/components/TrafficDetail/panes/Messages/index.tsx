@@ -104,8 +104,38 @@ const WsMessageList = ({
 }: WsMessageListProps) => {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
-  const followTailRef = useRef(true);
-
+  const scrollButtonStyles = useMemo(
+    () => ({
+      scrollButton: {
+        position: "absolute" as const,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 36,
+        height: 36,
+        backgroundColor: token.colorBgElevated,
+        color: token.colorTextSecondary,
+        borderRadius: "50%",
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0, 0, 0, 0.08)",
+        zIndex: 10,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        transition:
+          "opacity 0.3s ease, transform 0.3s ease, background-color 0.2s",
+      },
+      scrollToTopButton: {
+        top: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+      scrollToBottomButton: {
+        bottom: 16,
+        left: "50%",
+        transform: "translateX(-50%)",
+      },
+    }),
+    [token],
+  );
   const rowVirtualizer = useVirtualizer({
     count: frames.length,
     getScrollElement: () => parentRef.current,
@@ -113,27 +143,6 @@ const WsMessageList = ({
     overscan: 6,
     getItemKey: (index) => String(frames[index]?.frame_id ?? index),
   });
-
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const threshold = 24;
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      followTailRef.current = distance <= threshold;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (frames.length === 0) return;
-    if (!followTailRef.current) return;
-    rowVirtualizer.scrollToIndex(frames.length - 1, { align: "end" });
-  }, [frames.length, rowVirtualizer]);
 
   const headerStyle: CSSProperties = {
     display: "grid",
@@ -156,6 +165,16 @@ const WsMessageList = ({
     backgroundColor: token.colorBgContainer,
     borderBottom: `1px solid ${token.colorBorderSecondary}`,
   };
+
+  const handleScrollToTop = useCallback(() => {
+    if (frames.length === 0) return;
+    rowVirtualizer.scrollToIndex(0, { align: "start" });
+  }, [frames.length, rowVirtualizer]);
+
+  const handleScrollToBottom = useCallback(() => {
+    if (frames.length === 0) return;
+    rowVirtualizer.scrollToIndex(frames.length - 1, { align: "end" });
+  }, [frames.length, rowVirtualizer]);
 
   if (frames.length === 0) {
     return (
@@ -185,11 +204,12 @@ const WsMessageList = ({
         <span>Preview</span>
         <span />
       </div>
-      <div
-        ref={parentRef}
-        style={{ flex: 1, minHeight: 0, overflow: "auto" }}
-        data-testid="ws-frames-table"
-      >
+      <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        <div
+          ref={parentRef}
+          style={{ height: "100%", overflow: "auto" }}
+          data-testid="ws-frames-table"
+        >
         <div
           style={{
             height: rowVirtualizer.getTotalSize(),
@@ -273,6 +293,27 @@ const WsMessageList = ({
               </div>
             );
           })}
+        </div>
+      </div>
+        <div
+          style={{
+            ...scrollButtonStyles.scrollButton,
+            ...scrollButtonStyles.scrollToTopButton,
+          }}
+          onClick={handleScrollToTop}
+          data-testid="ws-scroll-top"
+        >
+          <ArrowUpOutlined style={{ fontSize: 14 }} />
+        </div>
+        <div
+          style={{
+            ...scrollButtonStyles.scrollButton,
+            ...scrollButtonStyles.scrollToBottomButton,
+          }}
+          onClick={handleScrollToBottom}
+          data-testid="ws-scroll-bottom"
+        >
+          <ArrowDownOutlined style={{ fontSize: 14 }} />
         </div>
       </div>
     </div>
@@ -359,7 +400,8 @@ export const Messages = ({
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
   const [loading, setLoading] = useState(false);
-  const [lastFrameId, setLastFrameId] = useState(0);
+  const [lastFetchedFrameId, setLastFetchedFrameId] = useState(0);
+  const [lastSeenFrameId, setLastSeenFrameId] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const tableRef = useRef<HTMLDivElement>(null);
   const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(
@@ -390,6 +432,26 @@ export const Messages = ({
     (state) => state.appendSseResponseBody,
   );
 
+  const mergeWsFrames = useCallback((base: WebSocketFrame[], incoming: WebSocketFrame[]) => {
+    if (incoming.length === 0) return base;
+    const byId = new Map<number, WebSocketFrame>();
+    for (const f of base) {
+      byId.set(f.frame_id, f);
+    }
+    for (const f of incoming) {
+      const existing = byId.get(f.frame_id);
+      if (!existing) {
+        byId.set(f.frame_id, f);
+        continue;
+      }
+      const shouldReplace = !existing.payload_preview && !!f.payload_preview;
+      if (shouldReplace) {
+        byId.set(f.frame_id, { ...existing, ...f });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.frame_id - b.frame_id);
+  }, []);
+
   const fetchFrames = useCallback(
     async (after?: number) => {
       setLoading(true);
@@ -407,13 +469,18 @@ export const Messages = ({
           throw new Error("Failed to fetch frames");
         }
         const data = await response.json();
+        const nextFrames = (data.frames || []) as WebSocketFrame[];
 
         if (after !== undefined) {
-          setFrames((prev) => [...prev, ...data.frames]);
+          setFrames((prev) => mergeWsFrames(prev, nextFrames));
         } else {
-          setFrames(data.frames);
+          setFrames(mergeWsFrames([], nextFrames));
         }
-        setLastFrameId(data.last_frame_id);
+        if (nextFrames.length > 0) {
+          const lastId = nextFrames[nextFrames.length - 1].frame_id;
+          setLastFetchedFrameId(lastId);
+          setLastSeenFrameId((prev) => Math.max(prev, lastId));
+        }
         setHasMore(data.has_more);
       } catch (error) {
         console.error("Failed to fetch frames:", error);
@@ -446,6 +513,9 @@ export const Messages = ({
 
   useEffect(() => {
     setFrames([]);
+    setLastFetchedFrameId(0);
+    setLastSeenFrameId(0);
+    setHasMore(false);
     setWsPayloadById({});
     inflightWsPayloadIdsRef.current.clear();
     setSseEvents([]);
@@ -483,13 +553,8 @@ export const Messages = ({
     eventSource.onmessage = (event) => {
       try {
         const frame = JSON.parse(event.data) as WebSocketFrame;
-        setFrames((prev) => {
-          if (prev.some((f) => f.frame_id === frame.frame_id)) {
-            return prev;
-          }
-          return [...prev, frame];
-        });
-        setLastFrameId(frame.frame_id);
+        setFrames((prev) => mergeWsFrames(prev, [frame]));
+        setLastSeenFrameId((prev) => Math.max(prev, frame.frame_id));
       } catch (error) {
         console.error("Failed to parse frame event:", error);
       }
@@ -953,10 +1018,10 @@ export const Messages = ({
               disabled={frames.length === 0}
             />
           </Tooltip>
-          {hasMore && (
+          {(hasMore || lastSeenFrameId > lastFetchedFrameId) && (
             <Button
               size="small"
-              onClick={() => fetchFrames(lastFrameId)}
+              onClick={() => fetchFrames(lastFetchedFrameId)}
               loading={loading}
             >
               Load More

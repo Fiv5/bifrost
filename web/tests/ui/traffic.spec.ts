@@ -3,7 +3,7 @@ import type { APIRequestContext } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import WebSocket, { WebSocketServer } from "ws";
 import { HttpProxyAgent } from "http-proxy-agent";
 
@@ -247,6 +247,113 @@ test("WebSocket 帧与 size 更新展示正确", async ({ page, request }) => {
   await server.close();
 });
 
+test("WebSocket 外部站点回显与 size 增长", async ({ page, request }) => {
+  await clearTraffic(request);
+  await sendWsViaProxy("wss://echo.websocket.org/");
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  const wsRow = page
+    .getByTestId("traffic-row")
+    .filter({ hasText: "echo.websocket.org" })
+    .first();
+  await expect(wsRow).toBeVisible();
+
+  await expect
+    .poll(async () => {
+      const frameCountAttr = await wsRow.getAttribute("data-frame-count");
+      return Number(frameCountAttr ?? "0");
+    })
+    .toBeGreaterThanOrEqual(2);
+
+  await wsRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
+  await expect(page.getByTestId("ws-frames-table")).toContainText("hello");
+  await expect(page.getByTestId("ws-frames-table")).toContainText("6 B");
+});
+
+test("WebSocket 列表未到底部时不应强制滚动到底部", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startWsServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const wsPath = `/ws-scroll-${token}`;
+  const wsUrl = `ws://127.0.0.1:${server.port}${wsPath}`;
+
+  const agent = new HttpProxyAgent(proxyUrl);
+  const ws = new WebSocket(wsUrl, { agent });
+
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+
+  for (let i = 0; i < 120; i += 1) {
+    ws.send(`seed-${token}-${i}`);
+  }
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  const wsRow = page
+    .getByTestId("traffic-row")
+    .filter({ hasText: wsPath })
+    .last();
+  await expect(wsRow).toBeVisible();
+  await wsRow.click();
+  await page.getByTestId("response-tab-messages").click();
+
+  await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
+
+  const summary = page.getByTestId("ws-frames-summary");
+  const summaryHandle = await summary.elementHandle();
+  if (summaryHandle) {
+    await page.waitForFunction(
+      (el: SVGElement | HTMLElement) => {
+        const text = el.textContent || "";
+        const match = text.match(/(\d+)\s+of\s+(\d+)\s+frames/);
+        if (!match) return false;
+        return Number(match[1]) >= 50;
+      },
+      summaryHandle,
+    );
+  }
+
+  const scrollContainer = page.getByTestId("ws-frames-table");
+  await scrollContainer.evaluate((el) => {
+    el.scrollTop = 0;
+    el.dispatchEvent(new Event("scroll"));
+  });
+  const scrollTopBefore = await scrollContainer.evaluate((el) => el.scrollTop);
+
+  for (let i = 120; i < 140; i += 1) {
+    ws.send(`append-${token}-${i}`);
+  }
+
+  if (summaryHandle) {
+    await page.waitForFunction(
+      (el: SVGElement | HTMLElement) => {
+        const text = el.textContent || "";
+        const match = text.match(/(\d+)\s+of\s+(\d+)\s+frames/);
+        if (!match) return false;
+        return Number(match[1]) >= 70;
+      },
+      summaryHandle,
+    );
+  }
+
+  const scrollTopAfter = await scrollContainer.evaluate((el) => el.scrollTop);
+  expect(scrollTopAfter).toBe(scrollTopBefore);
+
+  await new Promise<void>((resolve) => {
+    ws.once("close", resolve);
+    ws.close();
+  });
+  await server.close();
+});
+
 test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startSseServer();
@@ -275,4 +382,63 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await expect(page.getByTestId("sse-message-list")).toContainText("beta");
 
   await server.close();
+});
+
+test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) => {
+  await clearTraffic(request);
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "6",
+      "-x",
+      proxyUrl,
+      "https://echo.websocket.org/.sse",
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const row = page
+      .getByTestId("traffic-row")
+      .filter({ hasText: "echo.websocket.org" })
+      .first();
+    await expect(row).toBeVisible();
+
+    const sizeBefore = Number((await row.getAttribute("data-response-size")) || "0");
+    await expect
+      .poll(async () => {
+        const size = await row.getAttribute("data-response-size");
+        return Number(size || "0");
+      })
+      .toBeGreaterThan(sizeBefore);
+
+    await row.click();
+    await page.getByTestId("response-tab-messages").click();
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect
+      .poll(async () => {
+        const text = await page.getByTestId("sse-message-count").textContent();
+        const match = text?.match(/(\d+)\s+events/);
+        return match ? Number(match[1]) : 0;
+      })
+      .toBeGreaterThan(0);
+  } finally {
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
 });

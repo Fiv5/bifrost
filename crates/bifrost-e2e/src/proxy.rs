@@ -697,6 +697,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
             enable_socks: true,
         };
 
@@ -758,6 +759,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
             enable_socks: true,
         };
 
@@ -823,6 +825,7 @@ impl ProxyInstance {
             allow_lan: true,
             unsafe_ssl,
             max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
             enable_socks: true,
         };
 

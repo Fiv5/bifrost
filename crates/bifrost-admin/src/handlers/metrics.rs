@@ -1,10 +1,60 @@
 use std::collections::HashMap;
 
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
+use crate::traffic::SocketStatus;
+use crate::traffic_db::{AppMetricsAggregate, HostMetricsAggregate};
+
+#[derive(Debug, Clone)]
+struct MetricTraffic {
+    id: String,
+    host: String,
+    protocol: String,
+    request_size: u64,
+    response_size: u64,
+    is_websocket: bool,
+    is_sse: bool,
+    is_tunnel: bool,
+    socket_status: Option<SocketStatus>,
+    client_app: Option<String>,
+}
+
+impl From<crate::traffic::TrafficSummary> for MetricTraffic {
+    fn from(value: crate::traffic::TrafficSummary) -> Self {
+        Self {
+            id: value.id,
+            host: value.host,
+            protocol: value.protocol,
+            request_size: value.request_size as u64,
+            response_size: value.response_size as u64,
+            is_websocket: value.is_websocket,
+            is_sse: value.is_sse,
+            is_tunnel: value.is_tunnel,
+            socket_status: value.socket_status,
+            client_app: value.client_app,
+        }
+    }
+}
+
+async fn load_metric_traffic(state: SharedAdminState) -> Vec<MetricTraffic> {
+    if let Some(ref traffic_store) = state.traffic_store {
+        return traffic_store
+            .get_all()
+            .into_iter()
+            .map(MetricTraffic::from)
+            .collect();
+    }
+
+    state
+        .traffic_recorder
+        .get_all()
+        .into_iter()
+        .map(MetricTraffic::from)
+        .collect()
+}
 
 pub async fn handle_metrics(
     req: Request<Incoming>,
@@ -47,7 +97,7 @@ async fn get_metrics_history(req: Request<Incoming>, state: SharedAdminState) ->
     json_response(&history)
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppMetrics {
     pub app_name: String,
     pub requests: u64,
@@ -66,11 +116,50 @@ pub struct AppMetrics {
 async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
     let mut app_stats: HashMap<String, AppMetrics> = HashMap::new();
 
-    if let Some(ref traffic_store) = state.traffic_store {
-        let records = traffic_store.get_all();
+    if let Some(ref db_store) = state.traffic_db_store {
+        let db_store = db_store.clone();
+        let aggregates = tokio::task::spawn_blocking(move || db_store.aggregate_app_metrics())
+            .await
+            .unwrap_or_default();
+        for aggregate in aggregates {
+            let AppMetricsAggregate {
+                app_name,
+                requests,
+                bytes_sent,
+                bytes_received,
+                http_requests,
+                https_requests,
+                tunnel_requests,
+                ws_requests,
+                wss_requests,
+                h3_requests,
+                socks5_requests,
+            } = aggregate;
+            app_stats.insert(
+                app_name.clone(),
+                AppMetrics {
+                    app_name,
+                    requests,
+                    bytes_sent,
+                    bytes_received,
+                    http_requests,
+                    https_requests,
+                    tunnel_requests,
+                    ws_requests,
+                    wss_requests,
+                    h3_requests,
+                    socks5_requests,
+                    active_connections: 0,
+                },
+            );
+        }
+    } else {
+        let records = load_metric_traffic(state.clone()).await;
 
         for mut record in records {
-            if record.is_websocket || record.is_sse || record.is_tunnel {
+            if (record.is_websocket || record.is_sse || record.is_tunnel)
+                && record.socket_status.is_none()
+            {
                 if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
                     record.socket_status = Some(status);
                 }
@@ -95,12 +184,12 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
                     entry.bytes_sent += socket_status.send_bytes;
                     entry.bytes_received += socket_status.receive_bytes;
                 } else {
-                    entry.bytes_sent += record.request_size as u64;
-                    entry.bytes_received += record.response_size as u64;
+                    entry.bytes_sent += record.request_size;
+                    entry.bytes_received += record.response_size;
                 }
             } else {
-                entry.bytes_sent += record.request_size as u64;
-                entry.bytes_received += record.response_size as u64;
+                entry.bytes_sent += record.request_size;
+                entry.bytes_received += record.response_size;
             }
 
             match record.protocol.as_str() {
@@ -133,7 +222,7 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
     json_response(&result)
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HostMetrics {
     pub host: String,
     pub requests: u64,
@@ -152,11 +241,50 @@ pub struct HostMetrics {
 async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
     let mut host_stats: HashMap<String, HostMetrics> = HashMap::new();
 
-    if let Some(ref traffic_store) = state.traffic_store {
-        let records = traffic_store.get_all();
+    if let Some(ref db_store) = state.traffic_db_store {
+        let db_store = db_store.clone();
+        let aggregates = tokio::task::spawn_blocking(move || db_store.aggregate_host_metrics())
+            .await
+            .unwrap_or_default();
+        for aggregate in aggregates {
+            let HostMetricsAggregate {
+                host,
+                requests,
+                bytes_sent,
+                bytes_received,
+                http_requests,
+                https_requests,
+                tunnel_requests,
+                ws_requests,
+                wss_requests,
+                h3_requests,
+                socks5_requests,
+            } = aggregate;
+            host_stats.insert(
+                host.clone(),
+                HostMetrics {
+                    host,
+                    requests,
+                    bytes_sent,
+                    bytes_received,
+                    http_requests,
+                    https_requests,
+                    tunnel_requests,
+                    ws_requests,
+                    wss_requests,
+                    h3_requests,
+                    socks5_requests,
+                    active_connections: 0,
+                },
+            );
+        }
+    } else {
+        let records = load_metric_traffic(state.clone()).await;
 
         for mut record in records {
-            if record.is_websocket || record.is_sse || record.is_tunnel {
+            if (record.is_websocket || record.is_sse || record.is_tunnel)
+                && record.socket_status.is_none()
+            {
                 if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
                     record.socket_status = Some(status);
                 }
@@ -182,12 +310,12 @@ async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
                     entry.bytes_sent += socket_status.send_bytes;
                     entry.bytes_received += socket_status.receive_bytes;
                 } else {
-                    entry.bytes_sent += record.request_size as u64;
-                    entry.bytes_received += record.response_size as u64;
+                    entry.bytes_sent += record.request_size;
+                    entry.bytes_received += record.response_size;
                 }
             } else {
-                entry.bytes_sent += record.request_size as u64;
-                entry.bytes_received += record.response_size as u64;
+                entry.bytes_sent += record.request_size;
+                entry.bytes_received += record.response_size;
             }
 
             match record.protocol.as_str() {
@@ -233,4 +361,108 @@ fn parse_limit(query: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use http_body_util::BodyExt;
+
+    use super::*;
+    use crate::state::AdminState;
+    use crate::traffic::TrafficRecord;
+    use crate::traffic_db::TrafficDbStore;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bifrost-{}-{}", name, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn host_metrics_include_traffic_db_records() {
+        let db_dir = temp_dir("metrics-hosts");
+        let db_store = TrafficDbStore::new(db_dir.clone(), 5000, 0, None).unwrap();
+
+        let state = Arc::new(AdminState::new(0).with_traffic_db_store(db_store));
+
+        let mut record = TrafficRecord::new(
+            "req-1".to_string(),
+            "GET".to_string(),
+            "https://example.com/a".to_string(),
+        );
+        record.status = 200;
+        record.request_size = 10;
+        record.response_size = 20;
+        state.record_traffic(record);
+
+        let resp = super::get_host_metrics(state).await;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics: Vec<HostMetrics> = serde_json::from_slice(&body).unwrap();
+
+        let m = metrics.iter().find(|m| m.host == "example.com").unwrap();
+        assert_eq!(m.requests, 1);
+        assert_eq!(m.bytes_sent, 10);
+        assert_eq!(m.bytes_received, 20);
+        assert_eq!(m.https_requests, 1);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn app_metrics_include_traffic_db_records() {
+        let db_dir = temp_dir("metrics-apps");
+        let db_store = TrafficDbStore::new(db_dir.clone(), 5000, 0, None).unwrap();
+
+        let state = Arc::new(AdminState::new(0).with_traffic_db_store(db_store));
+
+        let mut record = TrafficRecord::new(
+            "req-2".to_string(),
+            "GET".to_string(),
+            "https://example.com/b".to_string(),
+        );
+        record.status = 200;
+        record.request_size = 7;
+        record.response_size = 9;
+        record.client_app = Some("TestApp".to_string());
+        state.record_traffic(record);
+
+        let resp = super::get_app_metrics(state).await;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics: Vec<AppMetrics> = serde_json::from_slice(&body).unwrap();
+
+        let m = metrics.iter().find(|m| m.app_name == "TestApp").unwrap();
+        assert_eq!(m.requests, 1);
+        assert_eq!(m.bytes_sent, 7);
+        assert_eq!(m.bytes_received, 9);
+        assert_eq!(m.https_requests, 1);
+
+        std::fs::remove_dir_all(&db_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn host_metrics_include_in_memory_records() {
+        let state = Arc::new(AdminState::new(0));
+
+        let mut record = TrafficRecord::new(
+            "req-3".to_string(),
+            "GET".to_string(),
+            "http://example.net/c".to_string(),
+        );
+        record.status = 200;
+        record.request_size = 3;
+        record.response_size = 5;
+        state.record_traffic(record);
+
+        let resp = super::get_host_metrics(state).await;
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let metrics: Vec<HostMetrics> = serde_json::from_slice(&body).unwrap();
+
+        let m = metrics.iter().find(|m| m.host == "example.net").unwrap();
+        assert_eq!(m.requests, 1);
+        assert_eq!(m.bytes_sent, 3);
+        assert_eq!(m.bytes_received, 5);
+        assert_eq!(m.http_requests, 1);
+    }
 }

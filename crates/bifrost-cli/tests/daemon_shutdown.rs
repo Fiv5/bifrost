@@ -68,6 +68,7 @@ mod unix_tests {
         );
 
         let err_file = log_dir.join("bifrost.err");
+        let log_file = log_dir.join("bifrost.log");
         for _ in 0..200 {
             if err_file.exists() {
                 if let Ok(content) = std::fs::read_to_string(&err_file) {
@@ -76,14 +77,24 @@ mod unix_tests {
                     }
                 }
             }
+            if log_file.exists() {
+                if let Ok(content) = std::fs::read_to_string(&log_file) {
+                    if content.contains("Received shutdown signal") {
+                        return;
+                    }
+                }
+            }
             sleep(Duration::from_millis(50));
         }
 
-        let content = std::fs::read_to_string(&err_file).unwrap_or_default();
+        let err_content = std::fs::read_to_string(&err_file).unwrap_or_default();
+        let log_content = std::fs::read_to_string(&log_file).unwrap_or_default();
         assert!(
-            content.contains("Received shutdown signal"),
-            "daemon did not report graceful shutdown, bifrost.err: {}",
-            content
+            err_content.contains("Received shutdown signal")
+                || log_content.contains("Received shutdown signal"),
+            "daemon did not report graceful shutdown, bifrost.err: {}, bifrost.log: {}",
+            err_content,
+            log_content
         );
     }
 }

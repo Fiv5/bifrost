@@ -171,6 +171,9 @@ impl ConfigManager {
         if let Some(max_body_buffer_size) = update.max_body_buffer_size {
             config.traffic.max_body_buffer_size = max_body_buffer_size;
         }
+        if let Some(max_body_probe_size) = update.max_body_probe_size {
+            config.traffic.max_body_probe_size = max_body_probe_size;
+        }
         if let Some(file_retention_days) = update.file_retention_days {
             config.traffic.file_retention_days = file_retention_days;
         }
@@ -427,6 +430,7 @@ impl ConfigManager {
                 max_db_size_bytes: 2 * 1024 * 1024 * 1024,
                 max_body_memory_size: legacy.traffic.max_body_memory_size,
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
+                max_body_probe_size: 64 * 1024,
                 file_retention_days: legacy.traffic.file_retention_days,
                 sse_stream_flush_bytes: legacy.traffic.sse_stream_flush_bytes,
                 sse_stream_flush_interval_ms: legacy.traffic.sse_stream_flush_interval_ms,
