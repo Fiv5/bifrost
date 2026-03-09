@@ -24,3 +24,4 @@ web/test-results/
 log/
 .cargo-target-e2e-*/
 .cargo-target-e2e/
+.bifrost-*/

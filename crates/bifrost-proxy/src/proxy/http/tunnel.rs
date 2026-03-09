@@ -1241,10 +1241,12 @@ async fn handle_intercepted_request_with_protocol(
         req_content_length.unwrap_or(0)
     };
 
-    let parsed_uri: hyper::Uri = match target_uri.parse() {
+    // 直连上游时，请求行必须使用 origin-form（`/path?query`），
+    // 避免把 absolute-form（`https://host/path`）发给 CDN/源站导致 400。
+    let upstream_uri: hyper::Uri = match path.parse() {
         Ok(u) => u,
         Err(e) => {
-            error!("[{}] Failed to parse URI: {}", req_id, e);
+            error!("[{}] Failed to parse upstream path as URI: {}", req_id, e);
             return Ok(Response::builder()
                 .status(502)
                 .body(full_body(b"Bad Gateway".to_vec()))
@@ -1252,7 +1254,7 @@ async fn handle_intercepted_request_with_protocol(
         }
     };
 
-    let mut new_req = Request::builder().method(actual_method).uri(&parsed_uri);
+    let mut new_req = Request::builder().method(actual_method).uri(&upstream_uri);
 
     let mut skip_referer = false;
     let mut skip_ua = false;
@@ -1277,7 +1279,18 @@ async fn handle_intercepted_request_with_protocol(
         }
         new_req = new_req.header(name, value);
     }
-    new_req = new_req.header(hyper::header::HOST, &actual_target_host);
+    let host_header_value = if actual_use_http {
+        if actual_target_port == 80 {
+            actual_target_host.clone()
+        } else {
+            format!("{}:{}", actual_target_host, actual_target_port)
+        }
+    } else if actual_target_port == 443 {
+        actual_target_host.clone()
+    } else {
+        format!("{}:{}", actual_target_host, actual_target_port)
+    };
+    new_req = new_req.header(hyper::header::HOST, host_header_value);
     if streaming_body.is_none() {
         new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
     } else if let Some(content_length) = req_content_length {
