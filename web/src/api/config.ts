@@ -106,6 +106,8 @@ export interface SandboxNetConfig {
 export interface SandboxLimitsConfig {
   timeout_ms: number;
   max_memory_bytes: number;
+  max_decode_input_bytes: number;
+  max_decompress_output_bytes: number;
 }
 
 export interface SandboxConfig {

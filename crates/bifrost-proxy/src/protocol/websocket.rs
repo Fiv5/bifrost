@@ -1,12 +1,152 @@
-use std::io::Read;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use flate2::read::DeflateDecoder;
+use flate2::{Decompress, FlushDecompress, Status};
 use futures_util::Stream;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+
+#[derive(Debug, Clone, Default)]
+pub struct PerMessageDeflateConfig {
+    pub client_no_context_takeover: bool,
+    pub server_no_context_takeover: bool,
+    pub client_max_window_bits: Option<u8>,
+    pub server_max_window_bits: Option<u8>,
+}
+
+impl PerMessageDeflateConfig {
+    pub fn enabled(&self) -> bool {
+        true
+    }
+}
+
+/// 解析 `Sec-WebSocket-Extensions` 中的 `permessage-deflate` 配置。
+///
+/// 仅关注：
+/// - `server_no_context_takeover` / `client_no_context_takeover`
+/// - `server_max_window_bits` / `client_max_window_bits`
+pub fn parse_permessage_deflate_config(extensions: &str) -> Option<PerMessageDeflateConfig> {
+    let mut found: Option<PerMessageDeflateConfig> = None;
+
+    for ext in extensions.split(',') {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+
+        // name; param1; param2=xxx
+        let mut parts = ext.split(';').map(|s| s.trim()).filter(|s| !s.is_empty());
+        let name = parts.next()?;
+        if !name.eq_ignore_ascii_case("permessage-deflate") {
+            continue;
+        }
+
+        let mut cfg = PerMessageDeflateConfig::default();
+        for p in parts {
+            if p.eq_ignore_ascii_case("client_no_context_takeover") {
+                cfg.client_no_context_takeover = true;
+                continue;
+            }
+            if p.eq_ignore_ascii_case("server_no_context_takeover") {
+                cfg.server_no_context_takeover = true;
+                continue;
+            }
+
+            if let Some((k, v)) = p.split_once('=') {
+                let k = k.trim();
+                let v = v.trim();
+                if k.eq_ignore_ascii_case("client_max_window_bits") {
+                    if let Ok(bits) = v.parse::<u8>() {
+                        cfg.client_max_window_bits = Some(bits);
+                    }
+                } else if k.eq_ignore_ascii_case("server_max_window_bits") {
+                    if let Ok(bits) = v.parse::<u8>() {
+                        cfg.server_max_window_bits = Some(bits);
+                    }
+                }
+            }
+        }
+
+        found = Some(cfg);
+        break;
+    }
+
+    found
+}
+
+/// permessage-deflate 的增量解压器。
+///
+/// - context takeover：跨消息复用 inflater 状态
+/// - no_context_takeover：每条消息前 reset
+#[derive(Debug)]
+pub struct PerMessageDeflateInflater {
+    inner: Decompress,
+}
+
+impl PerMessageDeflateInflater {
+    pub fn new() -> Self {
+        // `false` 表示 raw DEFLATE（无 zlib header），符合 permessage-deflate。
+        Self {
+            inner: Decompress::new(false),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.inner = Decompress::new(false);
+    }
+
+    pub fn decompress_message(&mut self, payload: &[u8]) -> Result<Bytes, flate2::DecompressError> {
+        if payload.is_empty() {
+            return Ok(Bytes::new());
+        }
+
+        // permessage-deflate：每条消息以 SYNC_FLUSH 结束，但不会携带 trailer。
+        // 追加 0x00 0x00 0xff 0xff 以补齐 flush 边界。
+        let mut input = Vec::with_capacity(payload.len() + 4);
+        input.extend_from_slice(payload);
+        if !payload.ends_with(&[0x00, 0x00, 0xff, 0xff]) {
+            input.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+        }
+
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut input_pos = 0usize;
+
+        while input_pos < input.len() {
+            let before_in = self.inner.total_in();
+            let before_out = self.inner.total_out();
+
+            let status =
+                self.inner
+                    .decompress(&input[input_pos..], &mut buf, FlushDecompress::Sync)?;
+
+            let used_in = (self.inner.total_in() - before_in) as usize;
+            let produced_out = (self.inner.total_out() - before_out) as usize;
+
+            if produced_out > 0 {
+                out.extend_from_slice(&buf[..produced_out]);
+            }
+            input_pos = input_pos.saturating_add(used_in);
+
+            // 在 SYNC_FLUSH 模式下，通常不会 StreamEnd，但这里允许提前退出。
+            if matches!(status, Status::StreamEnd) {
+                break;
+            }
+            if used_in == 0 && produced_out == 0 {
+                break;
+            }
+        }
+
+        Ok(Bytes::from(out))
+    }
+}
+
+impl Default for PerMessageDeflateInflater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -263,13 +403,9 @@ impl WebSocketFrame {
             return self.payload.clone();
         }
 
-        let mut data = self.payload.to_vec();
-        data.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
-
-        let mut decoder = DeflateDecoder::new(&data[..]);
-        let mut decompressed = Vec::new();
-        match decoder.read_to_end(&mut decompressed) {
-            Ok(_) => Bytes::from(decompressed),
+        let mut inflater = PerMessageDeflateInflater::new();
+        match inflater.decompress_message(self.payload.as_ref()) {
+            Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!("[WS] Failed to decompress frame payload: {}", e);
                 self.payload.clone()
@@ -283,9 +419,7 @@ impl WebSocketFrame {
 }
 
 pub fn parse_permessage_deflate(extensions: &str) -> bool {
-    extensions
-        .split(',')
-        .any(|ext| ext.trim().starts_with("permessage-deflate"))
+    parse_permessage_deflate_config(extensions).is_some()
 }
 
 pub fn extract_sec_websocket_extensions(response: &str) -> Option<String> {
@@ -647,6 +781,7 @@ impl WebSocketForwarder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compress, Compression, FlushCompress};
 
     #[test]
     fn test_opcode_from_u8() {
@@ -829,6 +964,90 @@ mod tests {
         ));
         assert!(!parse_permessage_deflate("x-webkit-deflate-frame"));
         assert!(!parse_permessage_deflate(""));
+    }
+
+    #[test]
+    fn test_parse_permessage_deflate_config_params() {
+        let cfg = parse_permessage_deflate_config(
+            "permessage-deflate; server_no_context_takeover; client_no_context_takeover; client_max_window_bits=15; server_max_window_bits=10",
+        )
+        .unwrap();
+
+        assert!(cfg.enabled());
+        assert!(cfg.server_no_context_takeover);
+        assert!(cfg.client_no_context_takeover);
+        assert_eq!(cfg.client_max_window_bits, Some(15));
+        assert_eq!(cfg.server_max_window_bits, Some(10));
+
+        let cfg2 =
+            parse_permessage_deflate_config("foo, permessage-deflate; client_max_window_bits; bar")
+                .unwrap();
+        assert!(cfg2.enabled());
+    }
+
+    fn compress_permessage_deflate_takeover(compressor: &mut Compress, input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+
+        // 把 input 压缩并做一次 sync flush
+        let mut input_pos = 0usize;
+        while input_pos < input.len() {
+            let before_in = compressor.total_in();
+            let before_out = compressor.total_out();
+
+            let _ = compressor
+                .compress(&input[input_pos..], &mut buf, FlushCompress::Sync)
+                .unwrap();
+
+            let used_in = (compressor.total_in() - before_in) as usize;
+            let produced_out = (compressor.total_out() - before_out) as usize;
+            if produced_out > 0 {
+                out.extend_from_slice(&buf[..produced_out]);
+            }
+            input_pos = input_pos.saturating_add(used_in);
+            if used_in == 0 && produced_out == 0 {
+                break;
+            }
+        }
+
+        // 对空输入再 flush 一次，把剩余输出取出来（避免长循环卡住）
+        let before_out = compressor.total_out();
+        let _ = compressor
+            .compress(&[], &mut buf, FlushCompress::Sync)
+            .unwrap();
+        let produced_out = (compressor.total_out() - before_out) as usize;
+        if produced_out > 0 {
+            out.extend_from_slice(&buf[..produced_out]);
+        }
+
+        // permessage-deflate：去掉结尾 0x00 0x00 0xff 0xff
+        if out.len() >= 4 && out[out.len() - 4..] == [0x00, 0x00, 0xff, 0xff] {
+            out.truncate(out.len() - 4);
+        }
+        out
+    }
+
+    #[test]
+    fn test_permessage_deflate_context_takeover_inflater() {
+        let msg1 = b"hello hello hello hello hello";
+        let msg2 = b"world hello hello hello world";
+
+        // 模拟 context takeover：复用同一个 compressor
+        let mut compressor = Compress::new(Compression::default(), false);
+        let c1 = compress_permessage_deflate_takeover(&mut compressor, msg1);
+        let c2 = compress_permessage_deflate_takeover(&mut compressor, msg2);
+
+        // 正确解法：同一个 inflater 连续解两条消息
+        let mut inflater = PerMessageDeflateInflater::new();
+        let d1 = inflater.decompress_message(&c1).unwrap();
+        let d2 = inflater.decompress_message(&c2).unwrap();
+        assert_eq!(d1.as_ref(), msg1);
+        assert_eq!(d2.as_ref(), msg2);
+
+        // 旧行为（每条消息新建 inflater）：第二条消息往往无法正确解压
+        let mut fresh = PerMessageDeflateInflater::new();
+        let d2_bad = fresh.decompress_message(&c2);
+        assert!(d2_bad.is_err() || d2_bad.unwrap().as_ref() != msg2);
     }
 
     #[test]

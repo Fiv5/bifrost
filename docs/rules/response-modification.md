@@ -39,7 +39,7 @@ www.example.com resHeaders://{my-res-headers}
 ````
 ``` my-res-headers
 X-Version: 1.0
-X-Server: whistle
+X-Server: bifrost
 ```
 ````
 

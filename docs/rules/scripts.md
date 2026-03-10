@@ -157,8 +157,16 @@ max_response_bytes = 1048576
 
 [sandbox.limits]
 timeout_ms = 10000
-max_memory_bytes = 16777216
+max_memory_bytes = 33554432
+max_decode_input_bytes = 2097152
+max_decompress_output_bytes = 10485760
 ```
+
+说明：
+
+- `max_memory_bytes`：QuickJS 沙箱内存上限，超出会导致脚本失败
+- `max_decode_input_bytes`：decode 输入 bytes 上限，超过会跳过 decode（避免大 payload 解码造成性能/内存风险）
+- `max_decompress_output_bytes`：HTTP body 解压输出上限，超过会放弃解压并回退到原始压缩数据（避免压缩炸弹）
 
 ### 管理端动态修改
 

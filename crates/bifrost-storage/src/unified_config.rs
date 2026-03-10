@@ -93,13 +93,19 @@ impl Default for SandboxNetConfig {
 pub struct SandboxLimitsConfig {
     pub timeout_ms: u64,
     pub max_memory_bytes: usize,
+    /// decode:// 脚本的输入最大字节数（解压后 bytes）。超过则跳过 decode，避免性能/内存风险。
+    pub max_decode_input_bytes: usize,
+    /// HTTP body 解压后的最大输出字节数（用于防止压缩炸弹）。超过则放弃解压并回退到原始压缩数据。
+    pub max_decompress_output_bytes: usize,
 }
 
 impl Default for SandboxLimitsConfig {
     fn default() -> Self {
         Self {
             timeout_ms: 10_000,
-            max_memory_bytes: 16 * 1024 * 1024,
+            max_memory_bytes: 32 * 1024 * 1024,
+            max_decode_input_bytes: 2 * 1024 * 1024,
+            max_decompress_output_bytes: 10 * 1024 * 1024,
         }
     }
 }
@@ -130,6 +136,8 @@ pub struct SandboxNetConfigUpdate {
 pub struct SandboxLimitsConfigUpdate {
     pub timeout_ms: Option<u64>,
     pub max_memory_bytes: Option<usize>,
+    pub max_decode_input_bytes: Option<usize>,
+    pub max_decompress_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

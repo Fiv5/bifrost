@@ -181,6 +181,8 @@ pub struct UpdateSandboxNetConfigRequest {
 pub struct UpdateSandboxLimitsConfigRequest {
     pub timeout_ms: Option<u64>,
     pub max_memory_bytes: Option<usize>,
+    pub max_decode_input_bytes: Option<usize>,
+    pub max_decompress_output_bytes: Option<usize>,
 }
 
 async fn update_sandbox_config(
@@ -278,6 +280,22 @@ async fn update_sandbox_config(
                 );
             }
         }
+        if let Some(v) = limits.max_decode_input_bytes {
+            if v == 0 {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "limits.max_decode_input_bytes must be > 0",
+                );
+            }
+        }
+        if let Some(v) = limits.max_decompress_output_bytes {
+            if v == 0 {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "limits.max_decompress_output_bytes must be > 0",
+                );
+            }
+        }
     }
 
     let update = SandboxConfigUpdate {
@@ -295,6 +313,8 @@ async fn update_sandbox_config(
         limits: request.limits.map(|l| SandboxLimitsConfigUpdate {
             timeout_ms: l.timeout_ms,
             max_memory_bytes: l.max_memory_bytes,
+            max_decode_input_bytes: l.max_decode_input_bytes,
+            max_decompress_output_bytes: l.max_decompress_output_bytes,
         }),
     };
 

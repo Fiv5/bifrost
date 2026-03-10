@@ -138,3 +138,7 @@ example.com resBody://{mockBody}
 1. **逐步验证**：从简单规则开始，逐步添加复杂条件
 2. **日志查看**：使用 Bifrost Network 界面的 Overview 面板查看规则匹配情况
 3. **临时禁用**：使用 `#` 注释或 `lineProps://disabled` 暂时禁用规则
+
+## 扩展阅读
+
+- [规则协议手册](./rules/README.md)：按协议查看各能力说明与示例

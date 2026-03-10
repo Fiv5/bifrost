@@ -47,7 +47,7 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             timeout_ms: 10000,
-            max_memory: 16 * 1024 * 1024,
+            max_memory: 32 * 1024 * 1024,
             file_root: None,
             file_allowed_dirs: Vec::new(),
             allow_network: false,

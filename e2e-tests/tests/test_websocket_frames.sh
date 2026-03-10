@@ -31,7 +31,7 @@ source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 TESTS_PASSED=0
 TESTS_FAILED=0
 
-BIFROST_DATA_DIR=""
+BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-}"
 BIFROST_PID=""
 WS_SERVER_PID=""
 
@@ -47,7 +47,10 @@ cleanup() {
     fi
 
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
-        rm -rf "$BIFROST_DATA_DIR"
+        # 仅清理本测试创建的临时目录，避免误删用户自定义目录
+        if [[ "$BIFROST_DATA_DIR" == "$ROOT_DIR/.bifrost-e2e"* ]]; then
+            rm -rf "$BIFROST_DATA_DIR"
+        fi
     fi
 }
 
@@ -91,7 +94,10 @@ start_ws_server() {
 start_bifrost() {
     (cd "$ROOT_DIR" && cargo build --bin bifrost)
 
-    BIFROST_DATA_DIR="$(mktemp -d)"
+    if [[ -z "$BIFROST_DATA_DIR" ]]; then
+        BIFROST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-test/ws_frames_${PROXY_PORT}_$$"
+    fi
+    mkdir -p "$BIFROST_DATA_DIR"
     export BIFROST_DATA_DIR
 
     local log_file="$BIFROST_DATA_DIR/proxy.log"
