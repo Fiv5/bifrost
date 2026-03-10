@@ -11,7 +11,7 @@
   <a href="https://github.com/bifrost-proxy/bifrost/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
-Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供强大的请求拦截、修改和规则配置能力，支持 TLS 解密、脚本扩展等高级功能，支持强大的模糊搜索，支持导入导出分享，支持一键重放请求。提供类似 postman 的请求管理和验证能力，无缝和代理能力集成。
+Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供请求拦截、修改与规则配置能力，支持 TLS 拦截、脚本扩展、流量查看与请求重放，并提供 Web UI 管理界面。
 
 ## ✨ 特性
 
@@ -27,12 +27,12 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 | ------------- | -------- | --------------------------- |
 | HTTP/1.1      | ✅       | 完整支持                    |
 | HTTP/2        | ✅       | 帧级别处理，支持多路复用    |
-| HTTP/3 (QUIC) | ✅       | 基于 Quinn 实现，支持 0-RTT |
+| HTTP/3 (QUIC) | ✅       | 基于 Quinn 实现 |
 | HTTPS         | ✅       | TLS 1.2/1.3，支持 MITM 拦截 |
 | SOCKS5 TCP    | ✅       | 支持用户名/密码认证         |
 | SOCKS5 UDP    | ✅       | UDP ASSOCIATE 完整支持      |
 | WebSocket     | ✅       | ws:// 和 wss:// 协议        |
-| CONNECT-UDP   | ✅       | MASQUE 协议 (RFC 9298)      |
+| CONNECT-UDP   | ✅       | MASQUE (RFC 9298)           |
 | gRPC          | ✅       | 基于 HTTP/2                 |
 | SSE           | ✅       | Server-Sent Events          |
 
@@ -45,7 +45,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 ### 📝 强大的规则引擎
 
-- **72 种规则协议** - 覆盖路由、修改、注入、控制等场景
+- **丰富的规则协议** - 覆盖路由、修改、注入、控制等场景（详见 `docs/rule.md` 与 `docs/operation.md`）
 - **多种匹配模式** - 域名、IP、正则、通配符、路径匹配
 - **请求/响应修改** - Headers、Body、Cookies、状态码等
 - **内容注入** - HTML/JS/CSS 注入
@@ -61,9 +61,23 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 ### 📜 JavaScript 脚本引擎
 
 - 基于 **QuickJS** 的安全沙盒执行环境
-- 支持请求脚本 (`reqScript`) 和响应脚本 (`resScript`)
-- 内置超时控制和内存限制
+- 支持请求脚本（`reqScript`）、响应脚本（`resScript`）与 decode 脚本（`decode`）
+- 内置超时控制与内存限制（默认内存上限 32MB）
 - 支持脚本在线编辑和测试
+
+#### 🧱 沙箱（Sandbox）
+
+脚本在沙箱中执行，限制项以 `config.toml` 的 `sandbox.*` 为准：
+
+- `sandbox.limits.timeout_ms`：执行超时
+- `sandbox.limits.max_memory_bytes`：QuickJS 内存上限（默认 32MB）
+- `sandbox.limits.max_decode_input_bytes`：decode 输入 bytes 上限（默认 2MB；超过会跳过 decode）
+- `sandbox.limits.max_decompress_output_bytes`：HTTP body 解压输出上限（默认 10MB；超过会放弃解压回退原始压缩数据）
+- `sandbox.file.*`：file API 的目录与单次读写大小限制
+- `sandbox.net.*`：net API 的开关、超时与请求/响应大小限制
+
+- 详细说明与默认限制：`docs/scripts.md`
+- 规则侧脚本用法：`docs/rules/scripts.md`
 
 ### 🔄 请求重放与管理
 
@@ -83,17 +97,21 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 ## 项目结构
 
 ```
-rust/
+.
 ├── crates/
 │   ├── bifrost-core/       # 核心库：规则解析、匹配器、协议定义
-│   ├── bifrost-proxy/      # 代理服务器：HTTP/SOCKS5 代理实现
+│   ├── bifrost-proxy/      # 代理服务器：HTTP/SOCKS5/HTTP3/WebSocket 等实现
 │   ├── bifrost-tls/        # TLS 处理：CA 证书管理、动态证书生成
 │   ├── bifrost-storage/    # 存储层：配置和规则持久化
 │   ├── bifrost-script/     # 脚本引擎：基于 QuickJS 的 JavaScript 执行
-│   ├── bifrost-admin/      # 管理后台：Web UI、API、请求重放
-│   ├── bifrost-cli/        # 命令行工具
-│   └── bifrost-tests/      # 集成测试
-└── tests/                  # 端到端测试
+│   ├── bifrost-admin/      # 管理后台：Web UI 静态资源与 Admin API
+│   ├── bifrost-cli/        # 命令行工具（bin: bifrost）
+│   ├── bifrost-e2e/        # E2E runner（Rust）
+│   └── bifrost-tests/      # 测试辅助 crate
+├── web/                    # Web 管理端（Vite + React）
+├── docs/                   # 文档
+├── e2e-tests/              # E2E 脚本与规则集（bash/python）
+└── tests/                  # Rust 集成测试
 ```
 
 ## 安装
@@ -545,6 +563,8 @@ api.example.com reqHeaders://(Authorization: ${env.API_TOKEN})
 # 规则文件内的块级变量
 ```values
 API_HOST=local.dev:3000
+```
+
 ````
 
 # 使用变量
@@ -561,7 +581,7 @@ Bifrost 支持类似其他代理工具的规则语法：
 # Host 映射
 
 example.com host://127.0.0.1
-\*.api.example.com host://192.168.1.100
+*.api.example.com host://192.168.1.100
 
 # 代理转发
 
@@ -594,7 +614,7 @@ example.com resSpeed://10
 # DNS 解析
 
 example.com dns://8.8.8.8
-\*.internal.corp dns://192.168.1.1:53
+*.internal.corp dns://192.168.1.1:53
 api.service.com dns://8.8.8.8,8.8.4.4
 
 # TLS 控制

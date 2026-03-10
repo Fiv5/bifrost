@@ -239,6 +239,12 @@ impl ConfigManager {
             if let Some(max_memory_bytes) = limits.max_memory_bytes {
                 config.sandbox.limits.max_memory_bytes = max_memory_bytes;
             }
+            if let Some(max_decode_input_bytes) = limits.max_decode_input_bytes {
+                config.sandbox.limits.max_decode_input_bytes = max_decode_input_bytes;
+            }
+            if let Some(max_decompress_output_bytes) = limits.max_decompress_output_bytes {
+                config.sandbox.limits.max_decompress_output_bytes = max_decompress_output_bytes;
+            }
         }
 
         self.save_config(&config)?;

@@ -21,7 +21,7 @@ impl Default for ScriptEngineConfig {
         Self {
             scripts_dir: PathBuf::from("scripts"),
             timeout_ms: 10000,
-            max_memory: 16 * 1024 * 1024,
+            max_memory: 32 * 1024 * 1024,
         }
     }
 }

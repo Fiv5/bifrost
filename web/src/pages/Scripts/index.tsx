@@ -1140,7 +1140,11 @@ export default function ScriptsPage() {
   const [sandboxNetMaxRespBytes, setSandboxNetMaxRespBytes] = useState(1024 * 1024);
   const [sandboxNetTimeoutMs, setSandboxNetTimeoutMs] = useState(5000);
   const [sandboxTimeoutMs, setSandboxTimeoutMs] = useState(10000);
-  const [sandboxMaxMemoryBytes, setSandboxMaxMemoryBytes] = useState(16 * 1024 * 1024);
+  const [sandboxMaxMemoryBytes, setSandboxMaxMemoryBytes] = useState(32 * 1024 * 1024);
+  const [sandboxMaxDecodeInputBytes, setSandboxMaxDecodeInputBytes] = useState(2 * 1024 * 1024);
+  const [sandboxMaxDecompressOutputBytes, setSandboxMaxDecompressOutputBytes] = useState(
+    10 * 1024 * 1024,
+  );
 
   useEffect(() => {
     fetchScripts();
@@ -1367,6 +1371,8 @@ export default function ScriptsPage() {
       setSandboxNetTimeoutMs(cfg.net.timeout_ms);
       setSandboxTimeoutMs(cfg.limits.timeout_ms);
       setSandboxMaxMemoryBytes(cfg.limits.max_memory_bytes);
+      setSandboxMaxDecodeInputBytes(cfg.limits.max_decode_input_bytes);
+      setSandboxMaxDecompressOutputBytes(cfg.limits.max_decompress_output_bytes);
     } catch {
       message.error("加载 Sandbox 配置失败");
     } finally {
@@ -1392,7 +1398,18 @@ export default function ScriptsPage() {
     const netTimeout = asPositiveInt(sandboxNetTimeoutMs);
     const timeoutMs = asPositiveInt(sandboxTimeoutMs);
     const memBytes = asPositiveInt(sandboxMaxMemoryBytes);
-    if (!fileMax || !netReqMax || !netRespMax || !netTimeout || !timeoutMs || !memBytes) {
+    const maxDecodeBytes = asPositiveInt(sandboxMaxDecodeInputBytes);
+    const maxDecompressBytes = asPositiveInt(sandboxMaxDecompressOutputBytes);
+    if (
+      !fileMax ||
+      !netReqMax ||
+      !netRespMax ||
+      !netTimeout ||
+      !timeoutMs ||
+      !memBytes ||
+      !maxDecodeBytes ||
+      !maxDecompressBytes
+    ) {
       message.error("数值配置必须为正整数");
       return;
     }
@@ -1425,6 +1442,8 @@ export default function ScriptsPage() {
         limits: {
           timeout_ms: timeoutMs,
           max_memory_bytes: memBytes,
+          max_decode_input_bytes: maxDecodeBytes,
+          max_decompress_output_bytes: maxDecompressBytes,
         },
       });
       message.success("Sandbox 配置已保存");
@@ -1444,6 +1463,8 @@ export default function ScriptsPage() {
     sandboxNetMaxRespBytes,
     sandboxTimeoutMs,
     sandboxMaxMemoryBytes,
+    sandboxMaxDecodeInputBytes,
+    sandboxMaxDecompressOutputBytes,
   ]);
 
   const handleSearch = useCallback(
@@ -1875,6 +1896,24 @@ export default function ScriptsPage() {
                 type="number"
                 value={sandboxMaxMemoryBytes}
                 onChange={(e) => setSandboxMaxMemoryBytes(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="decode 输入最大字节数 (limits.max_decode_input_bytes)">
+              <Input
+                type="number"
+                value={sandboxMaxDecodeInputBytes}
+                onChange={(e) =>
+                  setSandboxMaxDecodeInputBytes(Number(e.target.value))
+                }
+              />
+            </Form.Item>
+            <Form.Item label="HTTP 解压输出最大字节数 (limits.max_decompress_output_bytes)">
+              <Input
+                type="number"
+                value={sandboxMaxDecompressOutputBytes}
+                onChange={(e) =>
+                  setSandboxMaxDecompressOutputBytes(Number(e.target.value))
+                }
               />
             </Form.Item>
           </Form>
