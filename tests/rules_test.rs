@@ -4,7 +4,7 @@ use bifrost_core::{DomainMatcher, MatchResult, Matcher, RegexMatcher, WildcardMa
 
 #[test]
 fn test_all_protocols() {
-    assert_eq!(ALL_PROTOCOLS.len(), 65, "Should have exactly 65 protocols");
+    assert_eq!(ALL_PROTOCOLS.len(), 66, "Should have exactly 66 protocols");
 
     let protocol_names = [
         "host",
@@ -15,6 +15,7 @@ fn test_all_protocols() {
         "wss",
         "proxy",
         "pac",
+        "decode",
         "redirect",
         "file",
         "tpl",
@@ -85,8 +86,8 @@ fn test_all_protocols() {
 
     assert_eq!(
         protocol_names.len(),
-        65,
-        "Test should cover all 65 protocols"
+        66,
+        "Test should cover all 66 protocols"
     );
 }
 
