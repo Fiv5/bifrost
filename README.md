@@ -14,6 +14,11 @@
 Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [Whistle](https://github.com/avwo/whistle)。它提供请求拦截、修改与规则配置能力，支持 TLS 拦截、脚本扩展、流量查看与请求重放，并提供 Web UI 管理界面。
 
 ## ✨ 特性
+![network.png](assets/network.png)
+![scripts.png](assets/scripts.png)
+![rules.png](assets/rules.png)
+![replay.png](assets/replay.png)
+![metrics.png](assets/metrics.png)
 
 ### 🚀 高性能
 
