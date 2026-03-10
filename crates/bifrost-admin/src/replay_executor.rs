@@ -452,7 +452,9 @@ impl ReplayExecutor {
         timing: &mut RequestTiming,
         establish_timeout: std::time::Duration,
     ) -> Result<(u16, Vec<(String, String)>, Option<String>), ReplayError> {
-        let deadline = Instant::now().checked_add(establish_timeout).unwrap_or_else(Instant::now);
+        let deadline = Instant::now()
+            .checked_add(establish_timeout)
+            .unwrap_or_else(Instant::now);
 
         let dns_start = Instant::now();
         let connect_addr = format!("{}:{}", host, port);
@@ -466,7 +468,11 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let tcp_stream = match tokio::time::timeout(connect_remaining, TcpStream::connect(&connect_addr)).await
+        let tcp_stream = match tokio::time::timeout(
+            connect_remaining,
+            TcpStream::connect(&connect_addr),
+        )
+        .await
         {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
@@ -716,6 +722,7 @@ impl ReplayExecutor {
         HashMap::new()
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_http_request(
         &self,
         stream: TcpStream,
@@ -736,22 +743,24 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let (mut sender, conn) = match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io)).await
-        {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "HTTP handshake failed: {}",
-                    e
-                )))
-            }
-            Err(_) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "HTTP handshake timeout after {}ms",
-                    establish_timeout.as_millis()
-                )))
-            }
-        };
+        let (mut sender, conn) =
+            match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io))
+                .await
+            {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "HTTP handshake failed: {}",
+                        e
+                    )))
+                }
+                Err(_) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "HTTP handshake timeout after {}ms",
+                        establish_timeout.as_millis()
+                    )))
+                }
+            };
 
         tokio::spawn(async move {
             if let Err(e) = conn.await {
@@ -788,11 +797,11 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let response = match tokio::time::timeout(send_remaining, sender.send_request(request)).await {
+        let response = match tokio::time::timeout(send_remaining, sender.send_request(request))
+            .await
+        {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                return Err(ReplayError::RequestFailed(format!("Request failed: {}", e)))
-            }
+            Ok(Err(e)) => return Err(ReplayError::RequestFailed(format!("Request failed: {}", e))),
             Err(_) => {
                 return Err(ReplayError::RequestFailed(format!(
                     "Request timeout after {}ms",
@@ -804,6 +813,7 @@ impl ReplayExecutor {
         self.parse_response(response).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_https_request(
         &self,
         stream: TcpStream,
@@ -828,22 +838,23 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let tls_stream = match tokio::time::timeout(tls_remaining, connector.connect(server_name, stream)).await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "TLS handshake failed: {}",
-                    e
-                )))
-            }
-            Err(_) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "TLS handshake timeout after {}ms",
-                    establish_timeout.as_millis()
-                )))
-            }
-        };
+        let tls_stream =
+            match tokio::time::timeout(tls_remaining, connector.connect(server_name, stream)).await
+            {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "TLS handshake failed: {}",
+                        e
+                    )))
+                }
+                Err(_) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "TLS handshake timeout after {}ms",
+                        establish_timeout.as_millis()
+                    )))
+                }
+            };
 
         let io = TokioIo::new(tls_stream);
 
@@ -854,22 +865,24 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let (mut sender, conn) = match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io)).await
-        {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "HTTPS handshake failed: {}",
-                    e
-                )))
-            }
-            Err(_) => {
-                return Err(ReplayError::ConnectionFailed(format!(
-                    "HTTPS handshake timeout after {}ms",
-                    establish_timeout.as_millis()
-                )))
-            }
-        };
+        let (mut sender, conn) =
+            match tokio::time::timeout(handshake_remaining, ClientBuilder::new().handshake(io))
+                .await
+            {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "HTTPS handshake failed: {}",
+                        e
+                    )))
+                }
+                Err(_) => {
+                    return Err(ReplayError::ConnectionFailed(format!(
+                        "HTTPS handshake timeout after {}ms",
+                        establish_timeout.as_millis()
+                    )))
+                }
+            };
 
         tokio::spawn(async move {
             if let Err(e) = conn.await {
@@ -906,11 +919,11 @@ impl ReplayExecutor {
                 establish_timeout.as_millis()
             )));
         }
-        let response = match tokio::time::timeout(send_remaining, sender.send_request(request)).await {
+        let response = match tokio::time::timeout(send_remaining, sender.send_request(request))
+            .await
+        {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => {
-                return Err(ReplayError::RequestFailed(format!("Request failed: {}", e)))
-            }
+            Ok(Err(e)) => return Err(ReplayError::RequestFailed(format!("Request failed: {}", e))),
             Err(_) => {
                 return Err(ReplayError::RequestFailed(format!(
                     "Request timeout after {}ms",

@@ -137,12 +137,14 @@ start_bifrost() {
     cd "$ROOT_DIR"
 
     # 立即编译运行，避免使用已编译的二进制文件（保持与当前代码一致）
-    # 使用 debug 构建缩短首次编译时间
-    BIFROST_DATA_DIR="./.bifrost-e2e-test" cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
+    # 使用独立的 target 目录，避免与其它 cargo 进程抢占构建锁
+    local target_dir="./target-e2e-${PROXY_PORT}"
+    BIFROST_DATA_DIR="./.bifrost-e2e-test" CARGO_TARGET_DIR="$target_dir" \
+        cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
     BIFROST_PID=$!
     
-    # cargo run --release 首次编译可能较慢
-    local timeout=420
+    # cargo run 首次编译可能较慢
+    local timeout=580
     local waited=0
     while [ $waited -lt $timeout ]; do
         if curl -s "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
@@ -592,17 +594,17 @@ test_websocket_replay_with_rules() {
 
     local ws_url="ws://127.0.0.1:${PROXY_PORT}/_bifrost/api/replay/execute/ws?url=$(urlencode "$upstream_url")&rule_config=$(urlencode "$rule_config")"
 
-    local conn_id
-    conn_id=$(ws_connect "$ws_url")
-    if [ -z "$conn_id" ]; then
-        _log_fail "WebSocket replay connect failed" "connected" "failed"
+    if ! command -v websocat >/dev/null 2>&1; then
+        _log_fail "WebSocket replay: websocat not installed" "websocat available" "not found"
         ((failed++))
         return
     fi
 
-    local all
-    all=$(ws_wait_messages "$conn_id" 1 50 2>/dev/null || true)
-    if printf '%s' "$all" | grep -q '"type": "connection_info"' && printf '%s' "$all" | grep -qi 'x-ws-rule'; then
+    # 一次连接：发送 1 条消息，期望收到 2 条（welcome + echo），然后退出
+    local output
+    output=$(printf '%s\n' "hello-websocket" | websocat -q -t -n --max-messages 1 --max-messages-rev 2 "$ws_url" 2>/dev/null || true)
+
+    if printf '%s' "$output" | grep -q '"type": "connection_info"' && printf '%s' "$output" | grep -qi 'x-ws-rule'; then
         _log_pass "WebSocket replay: upstream handshake headers include rule header"
         ((passed++))
     else
@@ -610,18 +612,13 @@ test_websocket_replay_with_rules() {
         ((failed++))
     fi
 
-    ws_send "$conn_id" "hello-websocket"
-    local msgs
-    msgs=$(ws_wait_messages "$conn_id" 2 50 2>/dev/null || true)
-    if printf '%s' "$msgs" | grep -q '"type": "echo"' && printf '%s' "$msgs" | grep -q 'hello-websocket'; then
+    if printf '%s' "$output" | grep -q '"type": "echo"' && printf '%s' "$output" | grep -q 'hello-websocket'; then
         _log_pass "WebSocket replay: message proxied and echoed"
         ((passed++))
     else
         _log_fail "WebSocket replay: echo missing" "echo hello-websocket" "not found"
         ((failed++))
     fi
-
-    ws_close "$conn_id"
 }
 
 main() {

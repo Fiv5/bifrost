@@ -308,8 +308,11 @@ async fn execute_replay_unified(
         .timeout_ms
         .unwrap_or(crate::replay_executor::DEFAULT_TIMEOUT_MS);
     let send_future = req_builder.send();
-    let response = match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send_future)
-        .await
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        send_future,
+    )
+    .await
     {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
@@ -1394,14 +1397,8 @@ async fn execute_replay_websocket(
 
     info!(replay_id = %replay_id, url = %url, "Starting WebSocket proxy");
 
-    let (_resolved_rules, matched_rules, applied_request) = resolve_and_apply_rules(
-        &state,
-        &rule_config,
-        &url,
-        "GET",
-        &upgrade_headers,
-        None,
-    );
+    let (_resolved_rules, matched_rules, applied_request) =
+        resolve_and_apply_rules(&state, &rule_config, &url, "GET", &upgrade_headers, None);
 
     info!(
         replay_id = %replay_id,
@@ -1511,8 +1508,12 @@ enum WebSocketConnection {
     Tls(Box<WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>>),
 }
 
-async fn connect_websocket(url: &str, headers: &[(String, String)]) -> Result<WebSocketConnection, String> {
+async fn connect_websocket(
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<WebSocketConnection, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
 
     let parsed_url = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
 
@@ -1578,8 +1579,8 @@ async fn connect_websocket(url: &str, headers: &[(String, String)]) -> Result<We
                 continue;
             }
             if let (Ok(header_name), Ok(header_value)) = (
-                http::header::HeaderName::from_bytes(k.as_bytes()),
-                http::header::HeaderValue::from_str(v),
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
             ) {
                 request.headers_mut().insert(header_name, header_value);
             }
@@ -1610,8 +1611,8 @@ async fn connect_websocket(url: &str, headers: &[(String, String)]) -> Result<We
                 continue;
             }
             if let (Ok(header_name), Ok(header_value)) = (
-                http::header::HeaderName::from_bytes(k.as_bytes()),
-                http::header::HeaderValue::from_str(v),
+                HeaderName::from_bytes(k.as_bytes()),
+                HeaderValue::from_str(v),
             ) {
                 request.headers_mut().insert(header_name, header_value);
             }
@@ -1783,7 +1784,11 @@ fn resolve_and_apply_rules(
     method: &str,
     headers: &[(String, String)],
     body: Option<&[u8]>,
-) -> (bifrost_core::ResolvedRules, Vec<MatchedRule>, AppliedRequest) {
+) -> (
+    bifrost_core::ResolvedRules,
+    Vec<MatchedRule>,
+    AppliedRequest,
+) {
     let (resolved_rules, matched_rules) = match rule_config.mode {
         RuleMode::None => (bifrost_core::ResolvedRules::default(), vec![]),
         RuleMode::Custom => {
