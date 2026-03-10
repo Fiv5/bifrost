@@ -340,6 +340,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 };
             }
         };
@@ -389,6 +390,7 @@ impl ScriptEngine {
                     logs,
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
             Ok(Err(e)) => {
@@ -417,6 +419,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
             Err(e) => {
@@ -435,6 +438,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
         }
@@ -476,6 +480,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 };
             }
         };
@@ -528,6 +533,7 @@ impl ScriptEngine {
                     logs,
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
             Ok(Err(e)) => {
@@ -556,6 +562,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
             Err(e) => {
@@ -574,6 +581,7 @@ impl ScriptEngine {
                     logs: vec![],
                     request_modifications: None,
                     response_modifications: None,
+                    decode_output: None,
                 }
             }
         }
@@ -753,6 +761,7 @@ impl ScriptEngine {
                             logs,
                             request_modifications: request_mods,
                             response_modifications: None,
+                            decode_output: None,
                         }
                     }
                     Ok(Err(e)) => ScriptExecutionResult {
@@ -764,6 +773,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                     Err(e) => ScriptExecutionResult {
                         script_name: "test".to_string(),
@@ -774,6 +784,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                 }
             }
@@ -814,6 +825,7 @@ impl ScriptEngine {
                             logs,
                             request_modifications: None,
                             response_modifications: response_mods,
+                            decode_output: None,
                         }
                     }
                     Ok(Err(e)) => ScriptExecutionResult {
@@ -825,6 +837,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                     Err(e) => ScriptExecutionResult {
                         script_name: "test".to_string(),
@@ -835,6 +848,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                 }
             }
@@ -869,7 +883,7 @@ impl ScriptEngine {
                 .await;
 
                 match result {
-                    Ok(Ok((_decoded, logs))) => ScriptExecutionResult {
+                    Ok(Ok((decoded, logs))) => ScriptExecutionResult {
                         script_name: "test".to_string(),
                         script_type,
                         success: true,
@@ -878,6 +892,7 @@ impl ScriptEngine {
                         logs,
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: Some(decoded),
                     },
                     Ok(Err(e)) => ScriptExecutionResult {
                         script_name: "test".to_string(),
@@ -888,6 +903,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                     Err(e) => ScriptExecutionResult {
                         script_name: "test".to_string(),
@@ -898,6 +914,7 @@ impl ScriptEngine {
                         logs: vec![],
                         request_modifications: None,
                         response_modifications: None,
+                        decode_output: None,
                     },
                 }
             }
@@ -1021,6 +1038,54 @@ mod tests {
 
         let scripts = engine.list_scripts(ScriptType::Request).await.unwrap();
         assert_eq!(scripts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_decode_test_returns_output() {
+        let temp_dir = TempDir::new().unwrap();
+        let engine = ScriptEngine::new(ScriptEngineConfig {
+            scripts_dir: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        });
+        engine.init().await.unwrap();
+
+        let mut headers = HashMap::new();
+        headers.insert("Content-Type".to_string(), "text/plain".to_string());
+        let request = RequestData {
+            url: "https://example.com/".to_string(),
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            path: "/".to_string(),
+            protocol: "https".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            client_app: None,
+            headers,
+            body: Some("hello".to_string()),
+        };
+        let ctx = ScriptContext {
+            request_id: "test".to_string(),
+            script_name: "test".to_string(),
+            script_type: ScriptType::Decode,
+            values: HashMap::new(),
+            matched_rules: vec![],
+        };
+
+        let script = r#"
+log.info("decode phase:", ctx.phase);
+ctx.output = { code: "0", data: request.body, msg: "" };
+"#;
+
+        let result = engine
+            .test_script(ScriptType::Decode, script, Some(&request), None, &ctx)
+            .await;
+
+        assert!(result.success);
+        assert!(result.decode_output.is_some());
+        let out = result.decode_output.unwrap();
+        assert_eq!(out.code, "0");
+        assert_eq!(out.data, "hello");
+        assert_eq!(out.msg, "");
+        assert!(!result.logs.is_empty());
     }
 
     #[test]

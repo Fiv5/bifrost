@@ -19,6 +19,8 @@ WS_SERVER_PID=""
 SSE_SERVER_PID=""
 BIFROST_DATA_DIR=""
 BIFROST_LOG_FILE=""
+STARTED_BIFROST=0
+CREATED_DATA_DIR=0
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -133,7 +135,25 @@ start_sse_server() {
 start_bifrost() {
     log_info "Starting Bifrost proxy on port $PROXY_PORT..."
 
-    BIFROST_DATA_DIR=$(mktemp -d)
+    if [[ "${SKIP_START_PROXY:-0}" == "1" ]]; then
+        local max_wait=30
+        local waited=0
+        while [[ $waited -lt $max_wait ]]; do
+            if curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/system" > /dev/null 2>&1; then
+                log_info "Using existing Bifrost proxy at $ADMIN_HOST:$ADMIN_PORT"
+                return 0
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+        log_fail "Existing Bifrost proxy not ready at $ADMIN_HOST:$ADMIN_PORT"
+        return 1
+    fi
+
+    if [[ -z "${BIFROST_DATA_DIR:-}" ]]; then
+        BIFROST_DATA_DIR=$(mktemp -d)
+        CREATED_DATA_DIR=1
+    fi
     export BIFROST_DATA_DIR
 
     BIFROST_LOG_FILE=$(mktemp)
@@ -144,9 +164,10 @@ start_bifrost() {
     cd "$rust_dir" || return 1
 
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-        cargo run --release --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl \
+        cargo run --bin bifrost -- start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl \
         >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
+    STARTED_BIFROST=1
 
     local max_wait=90
     local waited=0
@@ -179,7 +200,7 @@ start_bifrost() {
 cleanup() {
     log_info "Cleaning up..."
 
-    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
+    if [[ "$STARTED_BIFROST" == "1" && -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
         kill "$BIFROST_PID" 2>/dev/null
         wait "$BIFROST_PID" 2>/dev/null
         log_info "Stopped Bifrost proxy"
@@ -197,7 +218,7 @@ cleanup() {
         log_info "Stopped SSE server"
     fi
 
-    if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
+    if [[ "$CREATED_DATA_DIR" == "1" && -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
         rm -rf "$BIFROST_DATA_DIR"
         log_info "Cleaned up data directory"
     fi
@@ -213,14 +234,26 @@ cleanup() {
 generate_ws_traffic() {
     log_info "Generating WebSocket traffic..."
 
-    for i in $(seq 1 3); do
-        curl -s --max-time 3 -x "http://$PROXY_HOST:$PROXY_PORT" \
+    local ok=0
+    for _ in $(seq 1 3); do
+        local headers
+        headers=$(curl -sS --max-time 3 -x "http://$PROXY_HOST:$PROXY_PORT" --http1.1 \
             -H "Connection: Upgrade" \
             -H "Upgrade: websocket" \
             -H "Sec-WebSocket-Version: 13" \
             -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-            "http://$PROXY_HOST:$WS_PORT/" > /dev/null 2>&1 || true
+            "http://$PROXY_HOST:$WS_PORT/" -D - -o /dev/null 2>/dev/null || true)
+        if echo "$headers" | head -n 1 | grep -q "101"; then
+            ok=1
+            break
+        fi
+        sleep 0.3
     done
+
+    if [[ "$ok" != "1" ]]; then
+        log_fail "Failed to generate WebSocket traffic (no 101 response)"
+        return 1
+    fi
 
     sleep 1
     log_info "WebSocket traffic generated"

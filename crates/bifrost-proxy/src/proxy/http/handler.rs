@@ -2554,7 +2554,8 @@ async fn handle_http_websocket(
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
-        let mut record = bifrost_admin::TrafficRecord::new(record_id.clone(), method, ws_url);
+        let mut record =
+            bifrost_admin::TrafficRecord::new(record_id.clone(), method.clone(), ws_url);
         record.status = 101;
         record.protocol = record_protocol.to_string();
         record.duration_ms = total_ms;
@@ -2567,7 +2568,7 @@ async fn handle_http_websocket(
             receive_ms: None,
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(response_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
@@ -2583,6 +2584,12 @@ async fn handle_http_websocket(
 
     let record_id_clone = record_id.clone();
     let admin_state_clone = admin_state.clone();
+    let ws_ctx = ctx.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = ws_url.clone();
+    let ws_req_method = method.clone();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -2593,6 +2600,12 @@ async fn handle_http_websocket(
                     admin_state_clone.clone(),
                     compression_enabled,
                     upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {

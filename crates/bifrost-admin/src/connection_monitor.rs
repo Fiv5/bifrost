@@ -21,15 +21,25 @@ pub struct WebSocketFrameRecord {
     pub direction: FrameDirection,
     pub frame_type: FrameType,
     pub payload_size: usize,
+    pub payload_is_text: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_preview: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_ref: Option<BodyRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_payload_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_payload_is_text: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_payload_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_payload_ref: Option<BodyRef>,
     pub is_masked: bool,
     pub is_fin: bool,
 }
 
 impl WebSocketFrameRecord {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         frame_id: u64,
         direction: FrameDirection,
@@ -38,13 +48,11 @@ impl WebSocketFrameRecord {
         is_masked: bool,
         is_fin: bool,
         preview_limit: usize,
+        payload_is_text: bool,
     ) -> Self {
         let payload_preview = if preview_limit == 0 || payload.is_empty() {
             None
-        } else if frame_type == FrameType::Text
-            || frame_type == FrameType::Close
-            || frame_type == FrameType::Sse
-        {
+        } else if payload_is_text {
             let preview_bytes = &payload[..payload.len().min(preview_limit)];
             Some(String::from_utf8_lossy(preview_bytes).to_string())
         } else if payload.len() <= preview_limit {
@@ -65,8 +73,13 @@ impl WebSocketFrameRecord {
             direction,
             frame_type,
             payload_size: payload.len(),
+            payload_is_text,
             payload_preview,
             payload_ref: None,
+            raw_payload_size: None,
+            raw_payload_is_text: None,
+            raw_payload_preview: None,
+            raw_payload_ref: None,
             is_masked,
             is_fin,
         }
@@ -86,8 +99,13 @@ impl WebSocketFrameRecord {
             direction: FrameDirection::Receive,
             frame_type: FrameType::Sse,
             payload_size: payload.len(),
+            payload_is_text: true,
             payload_preview,
             payload_ref: None,
+            raw_payload_size: None,
+            raw_payload_is_text: None,
+            raw_payload_preview: None,
+            raw_payload_ref: None,
             is_masked: false,
             is_fin: true,
         }
@@ -105,8 +123,13 @@ impl WebSocketFrameRecord {
             direction: FrameDirection::Receive,
             frame_type: FrameType::Sse,
             payload_size,
+            payload_is_text: true,
             payload_preview,
             payload_ref,
+            raw_payload_size: None,
+            raw_payload_is_text: None,
+            raw_payload_preview: None,
+            raw_payload_ref: None,
             is_masked: false,
             is_fin: true,
         }
@@ -254,6 +277,8 @@ impl ConnectionMonitor {
         direction: FrameDirection,
         frame_type: FrameType,
         payload: &[u8],
+        payload_is_text: bool,
+        raw_payload: Option<&[u8]>,
         is_masked: bool,
         is_fin: bool,
         body_store: Option<&SharedBodyStore>,
@@ -288,32 +313,79 @@ impl ConnectionMonitor {
             is_masked,
             is_fin,
             self.preview_limit,
+            payload_is_text,
         );
         if !payload.is_empty() {
-            let payload_ref = if let Some(ws_payload_store) = ws_payload_store {
-                ws_payload_store.append_bytes(connection_id, payload)
-            } else {
-                None
+            let direction_str = match direction {
+                FrameDirection::Send => "send",
+                FrameDirection::Receive => "recv",
             };
-            if payload_ref.is_some() {
-                frame.payload_ref = payload_ref;
-            } else if let Some(body_store) = body_store {
-                let direction_str = match direction {
-                    FrameDirection::Send => "send",
-                    FrameDirection::Receive => "recv",
+
+            if raw_payload.is_some() {
+                let raw = raw_payload.unwrap_or(payload);
+                let raw_is_text = frame_type == FrameType::Text
+                    || frame_type == FrameType::Close
+                    || frame_type == FrameType::Sse;
+                frame.raw_payload_size = Some(raw.len());
+                frame.raw_payload_is_text = Some(raw_is_text);
+                frame.raw_payload_preview = if self.preview_limit == 0 || raw.is_empty() {
+                    None
+                } else if raw_is_text {
+                    let preview_bytes = &raw[..raw.len().min(self.preview_limit)];
+                    Some(String::from_utf8_lossy(preview_bytes).to_string())
+                } else if raw.len() <= self.preview_limit {
+                    Some(base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        raw,
+                    ))
+                } else {
+                    Some(base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &raw[..self.preview_limit],
+                    ))
                 };
-                let ref_key = format!("{}_frame_{}_{}", connection_id, frame_id, direction_str);
-                let payload_for_store: Vec<u8> = match frame_type {
-                    FrameType::Text | FrameType::Close | FrameType::Sse => payload.to_vec(),
-                    _ => {
-                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload)
+
+                let raw_ref = if let Some(ws_payload_store) = ws_payload_store {
+                    ws_payload_store.append_bytes(connection_id, raw)
+                } else {
+                    None
+                };
+
+                if raw_ref.is_some() {
+                    frame.raw_payload_ref = raw_ref;
+                } else if let Some(body_store) = body_store {
+                    let ref_key =
+                        format!("{}_frame_{}_{}_raw", connection_id, frame_id, direction_str);
+                    let raw_for_store: Vec<u8> = if raw_is_text {
+                        raw.to_vec()
+                    } else {
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw)
                             .into_bytes()
-                    }
+                    };
+                    frame.raw_payload_ref =
+                        body_store
+                            .read()
+                            .store_force_file(&ref_key, "frame", &raw_for_store);
+                }
+            }
+
+            if let Some(body_store) = body_store {
+                let ref_key = format!("{}_frame_{}_{}", connection_id, frame_id, direction_str);
+                let payload_for_store: Vec<u8> = if payload_is_text {
+                    payload.to_vec()
+                } else {
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, payload)
+                        .into_bytes()
                 };
-                frame.payload_ref =
-                    body_store
-                        .read()
-                        .store_force_file(&ref_key, "frame", &payload_for_store);
+                frame.payload_ref = body_store
+                    .read()
+                    .store(&ref_key, "frame", &payload_for_store);
+            } else if let Some(ws_payload_store) = ws_payload_store {
+                frame.payload_ref = ws_payload_store.append_bytes(connection_id, payload);
+            } else {
+                frame.payload_ref = Some(BodyRef::Inline {
+                    data: String::from_utf8_lossy(payload).to_string(),
+                });
             }
         }
 
@@ -731,6 +803,8 @@ mod tests {
             FrameType::Text,
             b"Hello, World!",
             true,
+            None,
+            true,
             true,
             None,
             None,
@@ -756,6 +830,8 @@ mod tests {
                 FrameDirection::Send,
                 FrameType::Text,
                 format!("Message {}", i).as_bytes(),
+                true,
+                None,
                 true,
                 true,
                 None,
@@ -796,6 +872,8 @@ mod tests {
             FrameType::Text,
             b"test",
             true,
+            None,
+            true,
             true,
             None,
             None,
@@ -806,6 +884,8 @@ mod tests {
             FrameDirection::Receive,
             FrameType::Text,
             b"response",
+            true,
+            None,
             false,
             true,
             None,

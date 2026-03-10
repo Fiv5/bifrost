@@ -61,6 +61,8 @@ pub struct ScriptExecutionResult {
     pub request_modifications: Option<TestRequestModifications>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_modifications: Option<TestResponseModifications>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_output: Option<DecodeOutput>,
 }
 
 /// decode 脚本的标准输出结构：

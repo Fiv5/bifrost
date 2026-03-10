@@ -2,8 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, ConnectionInfo, FrameDirection, FrameType, RequestTiming, TrafficRecord,
-    TrafficType,
+    AdminState, ConnectionInfo, FrameDirection, RequestTiming, TrafficRecord, TrafficType,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -33,7 +32,6 @@ use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
 use crate::dns::DnsResolver;
-use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{
     empty_body, full_body, with_trailers, BoxBody, ProxyConfig, ResolvedRules, RulesResolver,
     TlsConfig, TlsInterceptConfig,
@@ -51,8 +49,6 @@ use crate::utils::tee::{
     BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
-
-use futures_util::StreamExt;
 
 type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
@@ -2778,6 +2774,12 @@ async fn handle_intercepted_websocket(
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
+    let req_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
     if let Some(ref state) = admin_state {
         state
             .metrics_collector
@@ -2801,11 +2803,6 @@ async fn handle_intercepted_websocket(
             receive_ms: None,
             total_ms,
         });
-        let req_headers: Vec<(String, String)> = req
-            .headers()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
         record.request_headers = Some(req_headers.clone());
         record.request_content_type = req_headers
             .iter()
@@ -2835,17 +2832,38 @@ async fn handle_intercepted_websocket(
     let stream = stream_read.unsplit(stream_write);
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = format!("wss://{}{}", original_host, path);
+    let ws_req_method = "GET".to_string();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
+    let ws_ctx = RequestContext::new()
+        .with_request_info(
+            ws_req_url.clone(),
+            ws_req_method.clone(),
+            original_host.to_string(),
+            path.to_string(),
+            String::new(),
+            client_ip.clone(),
+        )
+        .with_client_process(client_app.clone(), client_pid, client_path.clone());
 
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_bidirectional_generic_with_capture(
+                if let Err(e) = super::websocket::websocket_bidirectional_generic_with_capture(
                     upgraded,
                     stream,
                     &req_id_owned,
                     admin_state_clone.clone(),
                     compression_enabled,
                     upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {
@@ -2983,173 +3001,6 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
 
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
-
-fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
-    match opcode {
-        Opcode::Continuation => FrameType::Continuation,
-        Opcode::Text => FrameType::Text,
-        Opcode::Binary => FrameType::Binary,
-        Opcode::Close => FrameType::Close,
-        Opcode::Ping => FrameType::Ping,
-        Opcode::Pong => FrameType::Pong,
-    }
-}
-
-async fn websocket_bidirectional_generic_with_capture<S>(
-    upgraded: Upgraded,
-    target: S,
-    record_id: &str,
-    admin_state: Option<Arc<AdminState>>,
-    compression_enabled: bool,
-    upstream_leftover: bytes::BytesMut,
-) -> Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let client = TokioIo::new(upgraded);
-    let (target_read, target_write) = tokio::io::split(target);
-    let (client_read, client_write) = tokio::io::split(client);
-
-    let record_id_owned = record_id.to_string();
-    let admin_state_c2s = admin_state.clone();
-    let admin_state_s2c = admin_state.clone();
-
-    let client_to_server = async move {
-        let mut reader = WebSocketReader::new(client_read);
-        let mut writer = WebSocketWriter::new(target_write, true);
-
-        while let Some(result) = reader.next().await {
-            let frame = match result {
-                Ok(f) => f,
-                Err(e) => {
-                    debug!("Client read error: {}", e);
-                    break;
-                }
-            };
-
-            if let Some(ref state) = admin_state_c2s {
-                state
-                    .metrics_collector
-                    .add_bytes_sent_by_type(TrafficType::Wss, frame.payload.len() as u64);
-
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
-                } else {
-                    frame.payload.clone()
-                };
-
-                state.connection_monitor.record_frame(
-                    &record_id_owned,
-                    FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
-                    frame.mask.is_some(),
-                    frame.fin,
-                    state.body_store.as_ref(),
-                    state.ws_payload_store.as_ref(),
-                    state.frame_store.as_ref(),
-                );
-
-                if frame.opcode == Opcode::Close {
-                    let close_code = frame.close_code();
-                    let close_reason = frame.close_reason().map(str::to_string);
-                    state.connection_monitor.set_connection_closed(
-                        &record_id_owned,
-                        close_code,
-                        close_reason,
-                        state.frame_store.as_ref(),
-                        state.ws_payload_store.as_ref(),
-                    );
-                }
-            }
-
-            if let Err(e) = writer.write_frame(frame).await {
-                debug!("Server write error: {}", e);
-                break;
-            }
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let record_id_owned2 = record_id.to_string();
-    let server_to_client = async move {
-        let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
-        let mut writer = WebSocketWriter::new(client_write, false);
-
-        while let Some(result) = reader.next().await {
-            let frame = match result {
-                Ok(f) => f,
-                Err(e) => {
-                    debug!("Server read error: {}", e);
-                    break;
-                }
-            };
-
-            if let Some(ref state) = admin_state_s2c {
-                state
-                    .metrics_collector
-                    .add_bytes_received_by_type(TrafficType::Wss, frame.payload.len() as u64);
-
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
-                } else {
-                    frame.payload.clone()
-                };
-
-                state.connection_monitor.record_frame(
-                    &record_id_owned2,
-                    FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
-                    frame.mask.is_some(),
-                    frame.fin,
-                    state.body_store.as_ref(),
-                    state.ws_payload_store.as_ref(),
-                    state.frame_store.as_ref(),
-                );
-
-                if frame.opcode == Opcode::Close {
-                    let close_code = frame.close_code();
-                    let close_reason = frame.close_reason().map(str::to_string);
-                    state.connection_monitor.set_connection_closed(
-                        &record_id_owned2,
-                        close_code,
-                        close_reason,
-                        state.frame_store.as_ref(),
-                        state.ws_payload_store.as_ref(),
-                    );
-                }
-            }
-
-            if let Err(e) = writer.write_frame(frame).await {
-                debug!("Client write error: {}", e);
-                break;
-            }
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let result = tokio::try_join!(client_to_server, server_to_client);
-
-    match result {
-        Ok(_) => {
-            debug!("WebSocket connection closed normally");
-            Ok(())
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::ConnectionReset
-                || e.kind() == std::io::ErrorKind::BrokenPipe
-            {
-                debug!("WebSocket connection closed: {}", e);
-                Ok(())
-            } else {
-                Err(BifrostError::Network(format!("WebSocket error: {}", e)))
-            }
-        }
-    }
-}
 
 pub struct SingleCertResolver(pub Arc<CertifiedKey>);
 

@@ -6,6 +6,7 @@ pub mod frames;
 pub mod metrics;
 pub mod proxy;
 pub mod replay;
+mod replay_ws;
 pub mod rules;
 pub mod scripts;
 pub mod search;

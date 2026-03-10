@@ -259,6 +259,73 @@ test_ws_connection_list() {
     return 1
 }
 
+test_ws_binary_payload_decode_and_search() {
+    log_test "WebSocket binary payload decode://utf8 + searchable"
+
+    delete_rule "ws_decode_test" >/dev/null 2>&1 || true
+    create_rule "ws_decode_test" "* decode://utf8" true >/dev/null 2>&1 || true
+    enable_rule "ws_decode_test" >/dev/null 2>&1 || true
+
+    clear_traffic >/dev/null 2>&1 || true
+    sleep 0.5
+
+    local msg="hello_decode_test"
+    python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
+        --proxy-host "$PROXY_HOST" \
+        --proxy-port "$PROXY_PORT" \
+        --host-header "$WS_HOST_HEADER" \
+        --path "/ws/binary" \
+        --message "$msg" \
+        --messages 2 \
+        --timeout 15.0 \
+        --expect-binary >/dev/null 2>&1 || true
+    sleep 1
+
+    local traffic_id
+    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws/binary" 20)
+    if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
+        fail "No WebSocket binary traffic recorded"
+        return 1
+    fi
+
+    local frames_response
+    frames_response=$(get_frames "$traffic_id")
+    local binary_recv_frame_id
+    binary_recv_frame_id=$(echo "$frames_response" | jq -r '.frames[] | select(.direction=="receive" and .frame_type=="binary") | .frame_id' | head -n 1)
+    if [[ -z "$binary_recv_frame_id" || "$binary_recv_frame_id" == "null" || "${binary_recv_frame_id:-0}" -le 0 ]]; then
+        fail "No receive binary frame found"
+        return 1
+    fi
+
+    local frame_detail
+    frame_detail=$(get_frame_detail "$traffic_id" "$binary_recv_frame_id")
+    local full_payload
+    full_payload=$(echo "$frame_detail" | jq -r '.full_payload // ""')
+    if [[ "$full_payload" != *"$msg"* ]]; then
+        fail "Decoded full_payload should contain message (got: $full_payload)"
+        return 1
+    fi
+
+    local expected_raw_b64
+    expected_raw_b64=$(python3 -c "import base64; print(base64.b64encode(b'$msg').decode())")
+    local raw_full_payload
+    raw_full_payload=$(echo "$frame_detail" | jq -r '.raw_full_payload // ""')
+    if [[ -n "$raw_full_payload" && "$raw_full_payload" != "$expected_raw_b64" ]]; then
+        fail "raw_full_payload should be base64 of message (got: $raw_full_payload)"
+        return 1
+    fi
+
+    local search_response
+    search_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{\"keyword\":\"$msg\"}" "${ADMIN_BASE_URL}/api/search")
+    if ! echo "$search_response" | jq -e --arg id "$traffic_id" '.results[].record.id | select(. == $id)' >/dev/null 2>&1; then
+        fail "Search should find traffic by decoded ws payload"
+        return 1
+    fi
+
+    pass "Decoded binary payload stored & searchable"
+    return 0
+}
+
 run_all_tests() {
     check_deps
     start_ws_server
@@ -267,6 +334,7 @@ run_all_tests() {
     test_ws_text_frame_forwarding || true
     test_ws_frames_capture || true
     test_ws_frame_directions || true
+    test_ws_binary_payload_decode_and_search || true
     test_ws_connection_list || true
 
     echo ""

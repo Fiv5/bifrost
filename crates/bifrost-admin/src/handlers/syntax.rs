@@ -19,6 +19,7 @@ pub struct ScriptListItem {
 pub struct ScriptsInfo {
     pub request_scripts: Vec<ScriptListItem>,
     pub response_scripts: Vec<ScriptListItem>,
+    pub decode_scripts: Vec<ScriptListItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,14 +78,48 @@ async fn get_unified_syntax(state: SharedAdminState) -> Response<BoxBody> {
             })
             .collect();
 
+        let mut decode_scripts: Vec<ScriptListItem> = vec![
+            ScriptListItem {
+                name: "utf8".to_string(),
+                description: Some("Built-in UTF-8 (lossy) decoder".to_string()),
+            },
+            ScriptListItem {
+                name: "default".to_string(),
+                description: Some("Alias of built-in UTF-8 decoder".to_string()),
+            },
+        ];
+
+        let mut user_decode_scripts: Vec<ScriptListItem> = engine
+            .list_scripts(bifrost_script::ScriptType::Decode)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| ScriptListItem {
+                name: s.name,
+                description: s.description,
+            })
+            .collect();
+        decode_scripts.append(&mut user_decode_scripts);
+
         ScriptsInfo {
             request_scripts,
             response_scripts,
+            decode_scripts,
         }
     } else {
         ScriptsInfo {
             request_scripts: Vec::new(),
             response_scripts: Vec::new(),
+            decode_scripts: vec![
+                ScriptListItem {
+                    name: "utf8".to_string(),
+                    description: Some("Built-in UTF-8 (lossy) decoder".to_string()),
+                },
+                ScriptListItem {
+                    name: "default".to_string(),
+                    description: Some("Alias of built-in UTF-8 decoder".to_string()),
+                },
+            ],
         }
     };
 

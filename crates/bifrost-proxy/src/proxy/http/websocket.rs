@@ -15,6 +15,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
+use super::ws_decode::decode_ws_payload_for_storage;
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
@@ -177,7 +178,7 @@ pub async fn handle_websocket_upgrade(
             receive_ms: None,
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.client_ip = peer_addr.ip().to_string();
@@ -191,6 +192,16 @@ pub async fn handle_websocket_upgrade(
     }
 
     let record_id_clone = record_id.clone();
+    let ws_ctx = ctx.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = format!(
+        "ws://{}{}",
+        host,
+        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+    );
+    let ws_req_method = "GET".to_string();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -201,6 +212,12 @@ pub async fn handle_websocket_upgrade(
                     admin_state.clone(),
                     compression_enabled,
                     upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {
@@ -378,6 +395,7 @@ fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn websocket_bidirectional_with_capture(
     upgraded: Upgraded,
     target: TcpStream,
@@ -385,6 +403,12 @@ async fn websocket_bidirectional_with_capture(
     admin_state: Option<Arc<AdminState>>,
     compression_enabled: bool,
     upstream_leftover: bytes::BytesMut,
+    ctx: RequestContext,
+    resolved_rules: crate::server::ResolvedRules,
+    request_url: String,
+    request_method: String,
+    request_headers: Vec<(String, String)>,
+    decode_scripts: Vec<String>,
 ) -> Result<()> {
     let client = TokioIo::new(upgraded);
     let (target_read, target_write) = target.into_split();
@@ -393,6 +417,18 @@ async fn websocket_bidirectional_with_capture(
     let record_id_owned = record_id.to_string();
     let admin_state_c2s = admin_state.clone();
     let admin_state_s2c = admin_state.clone();
+    let ctx_c2s = ctx.clone();
+    let ctx_s2c = ctx;
+    let rules_c2s = resolved_rules.clone();
+    let rules_s2c = resolved_rules;
+    let url_c2s = request_url.clone();
+    let url_s2c = request_url;
+    let method_c2s = request_method.clone();
+    let method_s2c = request_method;
+    let headers_c2s = request_headers.clone();
+    let headers_s2c = request_headers;
+    let scripts_c2s = decode_scripts.clone();
+    let scripts_s2c = decode_scripts;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
@@ -412,17 +448,49 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_c2s,
+                        &scripts_c2s,
+                        &ctx_c2s,
+                        &rules_c2s,
+                        &url_c2s,
+                        &method_c2s,
+                        &headers_c2s,
+                        FrameDirection::Send,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -472,17 +540,49 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_s2c,
+                        &scripts_s2c,
+                        &ctx_s2c,
+                        &rules_s2c,
+                        &url_s2c,
+                        &method_s2c,
+                        &headers_s2c,
+                        FrameDirection::Receive,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -551,6 +651,7 @@ async fn websocket_bidirectional_with_capture(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn websocket_bidirectional_generic_with_capture<S>(
     upgraded: Upgraded,
     target: S,
@@ -558,6 +659,12 @@ pub async fn websocket_bidirectional_generic_with_capture<S>(
     admin_state: Option<Arc<AdminState>>,
     compression_enabled: bool,
     upstream_leftover: bytes::BytesMut,
+    ctx: RequestContext,
+    resolved_rules: crate::server::ResolvedRules,
+    request_url: String,
+    request_method: String,
+    request_headers: Vec<(String, String)>,
+    decode_scripts: Vec<String>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -569,6 +676,18 @@ where
     let record_id_owned = record_id.to_string();
     let admin_state_c2s = admin_state.clone();
     let admin_state_s2c = admin_state.clone();
+    let ctx_c2s = ctx.clone();
+    let ctx_s2c = ctx;
+    let rules_c2s = resolved_rules.clone();
+    let rules_s2c = resolved_rules;
+    let url_c2s = request_url.clone();
+    let url_s2c = request_url;
+    let method_c2s = request_method.clone();
+    let method_s2c = request_method;
+    let headers_c2s = request_headers.clone();
+    let headers_s2c = request_headers;
+    let scripts_c2s = decode_scripts.clone();
+    let scripts_s2c = decode_scripts;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
@@ -588,17 +707,49 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_c2s,
+                        &scripts_c2s,
+                        &ctx_c2s,
+                        &rules_c2s,
+                        &url_c2s,
+                        &method_c2s,
+                        &headers_c2s,
+                        FrameDirection::Send,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -648,17 +799,49 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_s2c,
+                        &scripts_s2c,
+                        &ctx_s2c,
+                        &rules_s2c,
+                        &url_s2c,
+                        &method_s2c,
+                        &headers_s2c,
+                        FrameDirection::Receive,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),

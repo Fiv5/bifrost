@@ -113,6 +113,7 @@ interface BifrostContext {
   readonly scriptName: string;
   readonly scriptType: "request" | "response" | "decode";
   readonly phase?: "request" | "response";
+  output?: BifrostDecodeOutput;
   readonly values: Record<string, string>;
   readonly matchedRules: Array<{ pattern: string; protocol: string; value: string }>;
 }
@@ -144,6 +145,7 @@ interface BifrostNet {
 declare const request: BifrostDecodeRequest;
 declare const response: BifrostDecodeResponse | null;
 declare const ctx: BifrostContext;
+declare let output: BifrostDecodeOutput | undefined;
 declare const log: BifrostLog;
 declare const console: BifrostLog;
 declare const file: BifrostFile;
@@ -972,7 +974,44 @@ function TestResultPanel({
           <>
             {testResult.error && (
               <div style={{ marginBottom: 12 }}>
-                <Text type="danger">{testResult.error}</Text>
+                <pre
+                  style={{
+                    background:
+                      resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                    color: token.colorError,
+                    padding: 8,
+                    borderRadius: 4,
+                    fontSize: 12,
+                    overflow: "auto",
+                    maxHeight: 200,
+                    margin: 0,
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {testResult.error}
+                </pre>
+              </div>
+            )}
+
+            {testResult.decode_output && (
+              <div style={{ marginBottom: 12 }}>
+                <Text strong>Decode Output:</Text>
+                <pre
+                  style={{
+                    background:
+                      resolvedTheme === "dark" ? "#1f1f1f" : "#f5f5f5",
+                    color: resolvedTheme === "dark" ? "#e6e6e6" : "#1f1f1f",
+                    padding: 8,
+                    borderRadius: 4,
+                    fontSize: 12,
+                    overflow: "auto",
+                    maxHeight: 200,
+                    margin: "8px 0 0",
+                  }}
+                >
+                  {JSON.stringify(testResult.decode_output, null, 2)}
+                </pre>
               </div>
             )}
 

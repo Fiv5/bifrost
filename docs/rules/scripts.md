@@ -79,6 +79,13 @@ pattern decode://my-decode
 
 - `ctx.phase === "request"`：解码请求体（此时 `response === null`）
 - `ctx.phase === "response"`：解码响应体（此时 `response.request` 带有请求快照）
+- `ctx.phase === "websocket_send"`：解码 WebSocket 客户端→服务端帧 payload（payload 作为 requestBodyBytes）
+- `ctx.phase === "websocket_recv"`：解码 WebSocket 服务端→客户端帧 payload（payload 作为 responseBodyBytes）
+
+### 内置解码器
+
+- `decode://utf8`：内置 UTF-8（lossy）解码器
+- `decode://default`：等价于 `decode://utf8`
 
 ### 输出约定
 
