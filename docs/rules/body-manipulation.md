@@ -485,7 +485,7 @@ www.example.com resAppend://{tracking} includeFilter://resH:content-type=text/ht
 1. **编码**：内联内容会自动进行适当的编码处理
 2. **JSON 合并**：`reqMerge`/`resMerge` 只对 JSON 格式的 Body 有效
 3. **替换顺序**：多个替换规则按定义顺序执行
-4. **文件路径**：本地文件路径需要使用绝对路径或相对于 Whistle 工作目录
+4. **文件路径**：本地文件路径建议使用绝对路径（以 `/` 开头）；相对路径的行为会受运行目录影响
 5. **CORS**：使用 `file` 协议时，可能需要配合 `resCors` 处理跨域
 
 ---

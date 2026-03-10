@@ -287,5 +287,5 @@ www.example.com host://backend.local resCors://*
 
 1. **端口保留**：使用 `host` 时，原始请求的路径和查询参数会保留
 2. **Host 头部**：默认情况下，`Host` 头部会更新为目标主机
-3. **HTTPS 处理**：对于 HTTPS 请求，需要安装 Whistle 证书才能进行内容修改
+3. **HTTPS 处理**：对于 HTTPS 请求，需要安装/信任 Bifrost CA 证书才能进行内容修改
 4. **优先级**：`xhost`/`xproxy`/`xsocks` 比普通版本优先级更高
