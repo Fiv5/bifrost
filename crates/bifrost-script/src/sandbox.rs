@@ -5,15 +5,42 @@ use rquickjs::{Context, Ctx, Function, Object, Runtime, Value};
 use serde_json::Value as JsonValue;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
+const DEFAULT_NETWORK_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_MAX_FILE_BYTES: usize = 1024 * 1024; // 1MiB
+const DEFAULT_MAX_NET_REQUEST_BYTES: usize = 256 * 1024; // 256KiB
+const DEFAULT_MAX_NET_RESPONSE_BYTES: usize = 1024 * 1024; // 1MiB
+
 pub struct SandboxConfig {
     pub timeout_ms: u64,
     pub max_memory: usize,
+    /// 当为 Some 时，启用 `file.xxx`，并将所有路径限制在该目录下（相对路径）。
+    pub file_root: Option<PathBuf>,
+    /// 额外允许访问的系统目录（绝对路径）。
+    pub file_allowed_dirs: Vec<PathBuf>,
+    /// 是否允许脚本发起网络请求（`net.xxx`）。
+    pub allow_network: bool,
+    pub network_timeout_ms: u64,
+    pub max_file_bytes: usize,
+    pub max_net_request_bytes: usize,
+    pub max_net_response_bytes: usize,
+}
+
+fn bytes_to_hex_limited(bytes: &[u8], max_bytes: usize) -> (String, bool) {
+    let truncated = bytes.len() > max_bytes;
+    let slice = &bytes[..bytes.len().min(max_bytes)];
+    let mut out = String::with_capacity(slice.len().saturating_mul(2));
+    for b in slice {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{:02x}", b);
+    }
+    (out, truncated)
 }
 
 impl Default for SandboxConfig {
@@ -21,6 +48,13 @@ impl Default for SandboxConfig {
         Self {
             timeout_ms: 10000,
             max_memory: 16 * 1024 * 1024,
+            file_root: None,
+            file_allowed_dirs: Vec::new(),
+            allow_network: false,
+            network_timeout_ms: DEFAULT_NETWORK_TIMEOUT_MS,
+            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            max_net_request_bytes: DEFAULT_MAX_NET_REQUEST_BYTES,
+            max_net_response_bytes: DEFAULT_MAX_NET_RESPONSE_BYTES,
         }
     }
 }
@@ -66,6 +100,10 @@ impl Sandbox {
     pub fn new(config: SandboxConfig) -> Result<Self> {
         let runtime = Runtime::new().map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
         runtime.set_memory_limit(config.max_memory);
+
+        if let Some(ref root) = config.file_root {
+            std::fs::create_dir_all(root)?;
+        }
 
         let interrupt_state = Arc::new(InterruptState::new(config.timeout_ms));
         let interrupt_state_clone = interrupt_state.clone();
@@ -129,7 +167,7 @@ impl Sandbox {
                 ctx.script_name.clone(),
                 ctx.request_id.clone(),
             )?;
-            self.setup_ctx_object(&js_ctx, ctx)?;
+            self.setup_ctx_object(&js_ctx, ctx, "request")?;
             self.setup_request_object(
                 &js_ctx,
                 request,
@@ -137,6 +175,8 @@ impl Sandbox {
                 request_body.clone(),
                 request_method.clone(),
             )?;
+            self.setup_file_object(&js_ctx)?;
+            self.setup_net_object(&js_ctx)?;
             self.remove_dangerous_globals(&js_ctx)?;
 
             if let Err(e) = js_ctx.eval::<(), _>(script) {
@@ -257,7 +297,7 @@ impl Sandbox {
                 ctx.script_name.clone(),
                 ctx.request_id.clone(),
             )?;
-            self.setup_ctx_object(&js_ctx, ctx)?;
+            self.setup_ctx_object(&js_ctx, ctx, "response")?;
             self.setup_response_object(
                 &js_ctx,
                 response,
@@ -266,6 +306,8 @@ impl Sandbox {
                 response_status.clone(),
                 response_status_text.clone(),
             )?;
+            self.setup_file_object(&js_ctx)?;
+            self.setup_net_object(&js_ctx)?;
             self.remove_dangerous_globals(&js_ctx)?;
 
             if let Err(e) = js_ctx.eval::<(), _>(script) {
@@ -371,6 +413,112 @@ impl Sandbox {
         Ok((mods_result, logs_result))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_decode_script(
+        &mut self,
+        script: &str,
+        phase: &str,
+        request: &RequestData,
+        request_body_bytes: &[u8],
+        response: &ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &ScriptContext,
+    ) -> Result<(DecodeOutput, Vec<ScriptLogEntry>)> {
+        self.reset_interrupt_state();
+
+        // 为避免把大体积二进制直接塞进 JS（尤其是 hex），这里对展示型字段做截断。
+        const MAX_HEX_BYTES: usize = 256 * 1024;
+
+        let logs = Rc::new(RefCell::new(Vec::new()));
+
+        let eval_result = self.context.with(|js_ctx| {
+            self.setup_log_object(
+                &js_ctx,
+                logs.clone(),
+                ctx.script_name.clone(),
+                ctx.request_id.clone(),
+            )?;
+            self.setup_ctx_object(&js_ctx, ctx, phase)?;
+
+            if phase.eq_ignore_ascii_case("response") {
+                // 响应阶段：仅提供 response（并在 response.request 中携带 request 快照）
+                // 为兼容性，额外把 request 快照挂到全局 request（不包含二进制 body）
+                self.setup_decode_request_snapshot_object(&js_ctx, &response.request)?;
+                self.setup_decode_response_object(
+                    &js_ctx,
+                    response,
+                    response_body_bytes,
+                    MAX_HEX_BYTES,
+                )?;
+            } else {
+                // 请求阶段：仅提供 request
+                self.setup_decode_request_object(
+                    &js_ctx,
+                    request,
+                    request_body_bytes,
+                    MAX_HEX_BYTES,
+                )?;
+                js_ctx
+                    .globals()
+                    .set("response", Value::new_null(js_ctx.clone()))
+                    .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+            }
+
+            self.setup_file_object(&js_ctx)?;
+            self.setup_net_object(&js_ctx)?;
+            self.remove_dangerous_globals(&js_ctx)?;
+
+            let out_val = match js_ctx.eval::<Value, _>(script) {
+                Ok(v) => v,
+                Err(e) => {
+                    let exc = js_ctx.catch();
+                    let err_detail = if exc.is_exception() || exc.is_error() {
+                        if let Some(exc_obj) = exc.as_object() {
+                            let msg = exc_obj.get::<_, String>("message").ok().unwrap_or_default();
+                            let stack = exc_obj.get::<_, String>("stack").ok().unwrap_or_default();
+                            if !msg.is_empty() {
+                                if !stack.is_empty() {
+                                    format!("{}\n{}", msg, stack)
+                                } else {
+                                    msg
+                                }
+                            } else {
+                                format!("{:?}", exc)
+                            }
+                        } else if let Some(exc_str) = exc.clone().into_string() {
+                            exc_str.to_string().unwrap_or_else(|_| format!("{:?}", exc))
+                        } else {
+                            format!("{:?}", exc)
+                        }
+                    } else {
+                        format!("{:?}", exc)
+                    };
+                    return Err(ScriptError::ExecutionFailed(format!(
+                        "{}: {}",
+                        e, err_detail
+                    )));
+                }
+            };
+
+            let output = self.parse_decode_output_from_js(&js_ctx, out_val)?;
+            Ok::<DecodeOutput, ScriptError>(output)
+        });
+
+        if let Some(timeout_err) = self.check_and_return_timeout_error() {
+            warn!(
+                target: "bifrost::script",
+                script_name = %ctx.script_name,
+                timeout_ms = self.config.timeout_ms,
+                "Script execution timed out"
+            );
+            return timeout_err;
+        }
+
+        let output = eval_result?;
+        let logs_result = logs.borrow().clone();
+        Ok((output, logs_result))
+    }
+
     fn setup_log_object(
         &self,
         js_ctx: &Ctx,
@@ -472,7 +620,12 @@ impl Sandbox {
         Ok(())
     }
 
-    fn setup_ctx_object(&self, js_ctx: &Ctx, script_ctx: &ScriptContext) -> Result<()> {
+    fn setup_ctx_object(
+        &self,
+        js_ctx: &Ctx,
+        script_ctx: &ScriptContext,
+        phase: &str,
+    ) -> Result<()> {
         let ctx_obj =
             Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
 
@@ -484,6 +637,10 @@ impl Sandbox {
             .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
         ctx_obj
             .set("scriptType", script_ctx.script_type.to_string())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        ctx_obj
+            .set("phase", phase.to_string())
             .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
 
         let values_obj =
@@ -651,6 +808,276 @@ impl Sandbox {
         Ok(())
     }
 
+    fn setup_decode_request_object(
+        &self,
+        js_ctx: &Ctx,
+        request: &RequestData,
+        body_bytes: &[u8],
+        max_inline_bytes: usize,
+    ) -> Result<()> {
+        let req =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        req.set("url", request.url.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("host", request.host.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("path", request.path.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("protocol", request.protocol.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("clientIp", request.client_ip.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("clientApp", request.client_app.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("method", request.method.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let headers_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        for (k, v) in &request.headers {
+            headers_obj
+                .set(k.as_str(), v.clone())
+                .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        }
+        req.set("headers", headers_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let (body_hex, body_hex_truncated) = bytes_to_hex_limited(body_bytes, max_inline_bytes);
+        let body_text =
+            String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(max_inline_bytes)])
+                .to_string();
+        let body_text_truncated = body_bytes.len() > max_inline_bytes;
+
+        req.set("body", body_text)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodySize", body_bytes.len() as u64)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyHex", body_hex)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyHexTruncated", body_hex_truncated)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyTextTruncated", body_text_truncated)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let globals = js_ctx.globals();
+        globals
+            .set("request", req)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn setup_decode_request_snapshot_object(
+        &self,
+        js_ctx: &Ctx,
+        request: &RequestData,
+    ) -> Result<()> {
+        let req =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        req.set("url", request.url.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("host", request.host.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("path", request.path.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("protocol", request.protocol.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("clientIp", request.client_ip.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("clientApp", request.client_app.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("method", request.method.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let headers_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        for (k, v) in &request.headers {
+            headers_obj
+                .set(k.as_str(), v.clone())
+                .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        }
+        req.set("headers", headers_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        req.set("body", Value::new_null(js_ctx.clone()))
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodySize", 0u64)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyHex", "".to_string())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyHexTruncated", false)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req.set("bodyTextTruncated", false)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let globals = js_ctx.globals();
+        globals
+            .set("request", req)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn setup_decode_response_object(
+        &self,
+        js_ctx: &Ctx,
+        response: &ResponseData,
+        body_bytes: &[u8],
+        max_inline_bytes: usize,
+    ) -> Result<()> {
+        let res =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        res.set("status", response.status)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        res.set("statusText", response.status_text.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let headers_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        for (k, v) in &response.headers {
+            headers_obj
+                .set(k.as_str(), v.clone())
+                .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        }
+        res.set("headers", headers_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let (body_hex, body_hex_truncated) = bytes_to_hex_limited(body_bytes, max_inline_bytes);
+        let body_text =
+            String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(max_inline_bytes)])
+                .to_string();
+        let body_text_truncated = body_bytes.len() > max_inline_bytes;
+
+        res.set("body", body_text)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        res.set("bodySize", body_bytes.len() as u64)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        res.set("bodyHex", body_hex)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        res.set("bodyHexTruncated", body_hex_truncated)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        res.set("bodyTextTruncated", body_text_truncated)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let req_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("url", response.request.url.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("method", response.request.method.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("host", response.request.host.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("path", response.request.path.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("protocol", response.request.protocol.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("clientIp", response.request.client_ip.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        req_obj
+            .set("clientApp", response.request.client_app.clone())
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let req_headers_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        for (k, v) in &response.request.headers {
+            req_headers_obj
+                .set(k.as_str(), v.clone())
+                .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        }
+        req_obj
+            .set("headers", req_headers_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        res.set("request", req_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let globals = js_ctx.globals();
+        globals
+            .set("response", res)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn parse_decode_output_from_js<'js>(
+        &self,
+        js_ctx: &Ctx<'js>,
+        out_val: Value<'js>,
+    ) -> Result<DecodeOutput> {
+        let mut v = out_val;
+        if v.is_undefined() || v.is_null() {
+            if let Ok(v2) = js_ctx.eval::<Value, _>("ctx.output") {
+                if !v2.is_undefined() && !v2.is_null() {
+                    v = v2;
+                }
+            }
+        }
+        if v.is_undefined() || v.is_null() {
+            if let Ok(v2) = js_ctx.eval::<Value, _>("output") {
+                if !v2.is_undefined() && !v2.is_null() {
+                    v = v2;
+                }
+            }
+        }
+
+        if v.is_undefined() || v.is_null() {
+            return Err(ScriptError::ExecutionFailed(
+                "decode 脚本未输出结果：请返回 {data,code,msg} 或设置 ctx.output/output"
+                    .to_string(),
+            ));
+        }
+
+        // 允许直接返回 JSON 字符串
+        let json_text = if let Some(s) = v.clone().into_string() {
+            s.to_string()
+                .map_err(|e| ScriptError::ExecutionFailed(e.to_string()))?
+        } else {
+            let globals = js_ctx.globals();
+            globals
+                .set("__bifrost_decode_output", v)
+                .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+            js_ctx
+                .eval::<String, _>("JSON.stringify(__bifrost_decode_output)")
+                .map_err(|e| ScriptError::ExecutionFailed(e.to_string()))?
+        };
+
+        let parsed: JsonValue = serde_json::from_str(&json_text).map_err(|e| {
+            ScriptError::ExecutionFailed(format!("decode 输出不是有效 JSON: {}", e))
+        })?;
+        let obj = parsed.as_object().ok_or_else(|| {
+            ScriptError::ExecutionFailed("decode 输出必须是 JSON object".to_string())
+        })?;
+
+        let code = obj
+            .get("code")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                ScriptError::ExecutionFailed("decode 输出缺少字符串字段 code".to_string())
+            })?
+            .to_string();
+        let data = obj
+            .get("data")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let msg = obj
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(DecodeOutput { data, code, msg })
+    }
+
     fn remove_dangerous_globals(&self, js_ctx: &Ctx) -> Result<()> {
         let globals = js_ctx.globals();
 
@@ -660,6 +1087,408 @@ impl Sandbox {
         }
 
         Ok(())
+    }
+
+    fn setup_file_object(&self, js_ctx: &Ctx) -> Result<()> {
+        let file_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let enabled = self.config.file_root.is_some() || !self.config.file_allowed_dirs.is_empty();
+        file_obj
+            .set("enabled", enabled)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let max_file_bytes = self.config.max_file_bytes;
+
+        let read_text = Function::new(
+            js_ctx.clone(),
+            move |path: String| -> rquickjs::Result<String> {
+                let full =
+                    resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &path, false)
+                        .map_err(|e| js_err("file", "readText", e))?;
+                let metadata =
+                    std::fs::metadata(&full).map_err(|e| js_err("file", "readText", e))?;
+                let size = metadata.len() as usize;
+                if size > max_file_bytes {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "file",
+                        "readText",
+                        format!("文件过大: {} bytes (limit {})", size, max_file_bytes),
+                    ));
+                }
+                std::fs::read_to_string(&full).map_err(|e| js_err("file", "readText", e))
+            },
+        );
+        file_obj
+            .set("readText", read_text)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let write_text = Function::new(
+            js_ctx.clone(),
+            move |path: String, content: String| -> rquickjs::Result<bool> {
+                if content.len() > max_file_bytes {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "file",
+                        "writeText",
+                        format!(
+                            "写入内容过大: {} bytes (limit {})",
+                            content.len(),
+                            max_file_bytes
+                        ),
+                    ));
+                }
+                let full = resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &path, true)
+                    .map_err(|e| js_err("file", "writeText", e))?;
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| js_err("file", "writeText", e))?;
+                }
+                std::fs::write(&full, content).map_err(|e| js_err("file", "writeText", e))?;
+                Ok(true)
+            },
+        );
+        file_obj
+            .set("writeText", write_text)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let append_text = Function::new(
+            js_ctx.clone(),
+            move |path: String, content: String| -> rquickjs::Result<bool> {
+                use std::io::Write;
+
+                if content.len() > max_file_bytes {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "file",
+                        "appendText",
+                        format!(
+                            "追加内容过大: {} bytes (limit {})",
+                            content.len(),
+                            max_file_bytes
+                        ),
+                    ));
+                }
+
+                let full = resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &path, true)
+                    .map_err(|e| js_err("file", "appendText", e))?;
+                if let Some(parent) = full.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| js_err("file", "appendText", e))?;
+                }
+                let mut f = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&full)
+                    .map_err(|e| js_err("file", "appendText", e))?;
+                f.write_all(content.as_bytes())
+                    .map_err(|e| js_err("file", "appendText", e))?;
+                Ok(true)
+            },
+        );
+        file_obj
+            .set("appendText", append_text)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let exists = Function::new(
+            js_ctx.clone(),
+            move |path: String| -> rquickjs::Result<bool> {
+                let full =
+                    resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &path, false)
+                        .map_err(|e| js_err("file", "exists", e))?;
+                Ok(full.exists())
+            },
+        );
+        file_obj
+            .set("exists", exists)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let remove = Function::new(
+            js_ctx.clone(),
+            move |path: String| -> rquickjs::Result<bool> {
+                let full =
+                    resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &path, false)
+                        .map_err(|e| js_err("file", "remove", e))?;
+                if full.is_dir() {
+                    std::fs::remove_dir_all(&full).map_err(|e| js_err("file", "remove", e))?;
+                } else if full.exists() {
+                    std::fs::remove_file(&full).map_err(|e| js_err("file", "remove", e))?;
+                }
+                Ok(true)
+            },
+        );
+        file_obj
+            .set("remove", remove)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let file_root = self.config.file_root.clone();
+        let file_allowed_dirs = self.config.file_allowed_dirs.clone();
+        let list_dir = Function::new(
+            js_ctx.clone(),
+            move |path: Option<String>| -> rquickjs::Result<Vec<String>> {
+                let rel = path.unwrap_or_else(|| ".".to_string());
+                let full = resolve_file_path(file_root.as_deref(), &file_allowed_dirs, &rel, false)
+                    .map_err(|e| js_err("file", "listDir", e))?;
+                let mut out = Vec::new();
+                for entry in std::fs::read_dir(&full).map_err(|e| js_err("file", "listDir", e))? {
+                    let entry = entry.map_err(|e| js_err("file", "listDir", e))?;
+                    if let Some(name) = entry.file_name().to_str() {
+                        out.push(name.to_string());
+                    }
+                }
+                out.sort();
+                Ok(out)
+            },
+        );
+        file_obj
+            .set("listDir", list_dir)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let globals = js_ctx.globals();
+        globals
+            .set("file", file_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn setup_net_object(&self, js_ctx: &Ctx) -> Result<()> {
+        let net_obj =
+            Object::new(js_ctx.clone()).map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        net_obj
+            .set("enabled", self.config.allow_network)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let allow_network = self.config.allow_network;
+        let timeout_ms = self.config.network_timeout_ms;
+        let max_req = self.config.max_net_request_bytes;
+        let max_resp = self.config.max_net_response_bytes;
+
+        // 说明：由于 QuickJS 在当前模式下为同步执行，网络接口采用阻塞请求，并返回 JSON 字符串。
+        // JS 侧可用 JSON.parse(...) 获取结构化结果。
+        let fetch = Function::new(
+            js_ctx.clone(),
+            move |url: String, options_json: Option<String>| -> rquickjs::Result<String> {
+                if !allow_network {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "net",
+                        "fetch",
+                        "net API 未启用",
+                    ));
+                }
+
+                let parsed = reqwest::Url::parse(&url).map_err(|e| js_err("net", "fetch", e))?;
+                let scheme = parsed.scheme();
+                if scheme != "http" && scheme != "https" {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "net",
+                        "fetch",
+                        format!("仅允许 http/https，当前为: {}", scheme),
+                    ));
+                }
+
+                let mut method = "GET".to_string();
+                let mut headers = HashMap::<String, String>::new();
+                let mut body: Option<String> = None;
+                let mut req_timeout_ms = timeout_ms;
+
+                if let Some(json) = options_json {
+                    let v: JsonValue =
+                        serde_json::from_str(&json).map_err(|e| js_err("net", "fetch", e))?;
+                    if let Some(m) = v.get("method").and_then(|x| x.as_str()) {
+                        method = m.to_string();
+                    }
+                    if let Some(t) = v.get("timeoutMs").and_then(|x| x.as_u64()) {
+                        req_timeout_ms = t;
+                    }
+                    if let Some(h) = v.get("headers").and_then(|x| x.as_object()) {
+                        for (k, vv) in h {
+                            let val = vv
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| vv.to_string());
+                            headers.insert(k.to_string(), val);
+                        }
+                    }
+                    if let Some(b) = v.get("body") {
+                        match b {
+                            JsonValue::Null => body = None,
+                            JsonValue::String(s) => body = Some(s.clone()),
+                            other => body = Some(other.to_string()),
+                        }
+                    }
+                }
+
+                if let Some(ref b) = body {
+                    if b.len() > max_req {
+                        return Err(rquickjs::Error::new_from_js_message(
+                            "net",
+                            "fetch",
+                            format!("请求体过大: {} bytes (limit {})", b.len(), max_req),
+                        ));
+                    }
+                }
+
+                let m = reqwest::Method::from_bytes(method.as_bytes())
+                    .map_err(|e| js_err("net", "fetch", e))?;
+                let client = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_millis(req_timeout_ms))
+                    .build()
+                    .map_err(|e| js_err("net", "fetch", e))?;
+
+                let mut req = client.request(m, parsed);
+                for (k, v) in headers.iter() {
+                    req = req.header(k, v);
+                }
+                if let Some(b) = body {
+                    req = req.body(b);
+                }
+
+                let resp = req.send().map_err(|e| js_err("net", "fetch", e))?;
+                let status = resp.status();
+
+                let mut resp_headers = HashMap::<String, String>::new();
+                for (k, v) in resp.headers().iter() {
+                    resp_headers.insert(k.to_string(), v.to_str().unwrap_or("").to_string());
+                }
+
+                use std::io::Read;
+                let mut buf = Vec::new();
+                let mut limited = resp.take(max_resp as u64);
+                std::io::Read::read_to_end(&mut limited, &mut buf)
+                    .map_err(|e| js_err("net", "fetch", e))?;
+                if buf.len() >= max_resp {
+                    return Err(rquickjs::Error::new_from_js_message(
+                        "net",
+                        "fetch",
+                        format!("响应体过大，已达到限制: {} bytes", max_resp),
+                    ));
+                }
+                let body_text = String::from_utf8_lossy(&buf).to_string();
+
+                let out = serde_json::json!({
+                    "status": status.as_u16(),
+                    "ok": status.is_success(),
+                    "headers": resp_headers,
+                    "body": body_text,
+                });
+                Ok(out.to_string())
+            },
+        );
+
+        net_obj
+            .set("fetch", fetch)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        // alias
+        let fetch_alias: Function = net_obj
+            .get("fetch")
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+        net_obj
+            .set("request", fetch_alias)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        let globals = js_ctx.globals();
+        globals
+            .set("net", net_obj)
+            .map_err(|e| ScriptError::QuickJsError(e.to_string()))?;
+
+        Ok(())
+    }
+}
+
+fn js_err<E: std::fmt::Display>(from: &'static str, to: &'static str, e: E) -> rquickjs::Error {
+    rquickjs::Error::new_from_js_message(from, to, e.to_string())
+}
+
+fn resolve_file_path(
+    primary_dir: Option<&Path>,
+    allowed_dirs: &[PathBuf],
+    user_path: &str,
+    for_write: bool,
+) -> std::io::Result<PathBuf> {
+    if user_path.is_empty() {
+        return Err(std::io::Error::other("路径不能为空"));
+    }
+
+    // 允许访问的根目录集合：primary_dir + allowed_dirs
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(p) = primary_dir {
+        roots.push(p.to_path_buf());
+    }
+    roots.extend(allowed_dirs.iter().cloned());
+
+    if roots.is_empty() {
+        return Err(std::io::Error::other("file API 未启用"));
+    }
+
+    let p = Path::new(user_path);
+
+    if p.is_absolute() {
+        return resolve_under_roots(p, &roots, for_write);
+    }
+
+    // 相对路径：禁止 .. 等跳转
+    for c in p.components() {
+        match c {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => return Err(std::io::Error::other("不允许使用 ..")),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(std::io::Error::other("不允许根路径/前缀"))
+            }
+        }
+    }
+
+    // 相对路径的落点目录：优先 primary_dir，否则使用 allowed_dirs 的第一个
+    let base = primary_dir
+        .or_else(|| allowed_dirs.first().map(|p| p.as_path()))
+        .ok_or_else(|| std::io::Error::other("未配置可用目录"))?;
+
+    resolve_under_roots(&base.join(p), &roots, for_write)
+}
+
+fn resolve_under_roots(
+    path: &Path,
+    roots: &[PathBuf],
+    for_write: bool,
+) -> std::io::Result<PathBuf> {
+    let root_canons: Vec<PathBuf> = roots
+        .iter()
+        .map(|r| r.canonicalize().unwrap_or_else(|_| r.to_path_buf()))
+        .collect();
+
+    if path.exists() {
+        let canon = path.canonicalize()?;
+        if !root_canons.iter().any(|r| canon.starts_with(r)) {
+            return Err(std::io::Error::other("路径超出允许目录范围"));
+        }
+        return Ok(canon);
+    }
+
+    // 不存在时：通过最近存在的父目录做一次 canonicalize 校验（防止符号链接逃逸）
+    let mut parent = path.parent();
+    while let Some(p) = parent {
+        if p.exists() {
+            let canon_parent = p.canonicalize()?;
+            if !root_canons.iter().any(|r| canon_parent.starts_with(r)) {
+                return Err(std::io::Error::other("路径超出允许目录范围"));
+            }
+            return Ok(path.to_path_buf());
+        }
+        parent = p.parent();
+    }
+
+    // 没有任何已存在的父目录，无法判断
+    if for_write {
+        Err(std::io::Error::other("目标路径父目录不存在"))
+    } else {
+        Ok(path.to_path_buf())
     }
 }
 
@@ -752,6 +1581,7 @@ mod tests {
         let mut sandbox = Sandbox::new(SandboxConfig {
             timeout_ms: 100,
             max_memory: 16 * 1024 * 1024,
+            ..Default::default()
         })
         .unwrap();
 
@@ -797,6 +1627,7 @@ mod tests {
         let mut sandbox = Sandbox::new(SandboxConfig {
             timeout_ms: 100,
             max_memory: 16 * 1024 * 1024,
+            ..Default::default()
         })
         .unwrap();
 
@@ -838,5 +1669,133 @@ mod tests {
             "Timeout should trigger within 500ms, took {:?}",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_file_read_write_in_sandbox() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut sandbox = Sandbox::new(SandboxConfig {
+            file_root: Some(tmp.path().to_path_buf()),
+            file_allowed_dirs: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let request = RequestData {
+            url: "https://example.com/api".to_string(),
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            path: "/api".to_string(),
+            protocol: "https".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            client_app: Some("test".to_string()),
+            headers: HashMap::new(),
+            body: None,
+        };
+        let ctx = ScriptContext {
+            request_id: "test-file".to_string(),
+            script_name: "file-test".to_string(),
+            script_type: ScriptType::Request,
+            values: HashMap::new(),
+            matched_rules: vec![],
+        };
+
+        let script = r#"
+            file.writeText("state/hello.txt", "hello");
+            var v = file.readText("state/hello.txt");
+            log.info("file:", v);
+        "#;
+
+        let result = sandbox.execute_request_script(script, &request, &ctx);
+        assert!(result.is_ok());
+        let (_, logs) = result.unwrap();
+        assert!(logs.iter().any(|l| l.message.contains("hello")));
+        assert!(tmp.path().join("state/hello.txt").exists());
+    }
+
+    #[test]
+    fn test_file_path_traversal_denied() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut sandbox = Sandbox::new(SandboxConfig {
+            file_root: Some(tmp.path().to_path_buf()),
+            file_allowed_dirs: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let request = RequestData {
+            url: "https://example.com/api".to_string(),
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            path: "/api".to_string(),
+            protocol: "https".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            client_app: None,
+            headers: HashMap::new(),
+            body: None,
+        };
+        let ctx = ScriptContext {
+            request_id: "test-file".to_string(),
+            script_name: "file-test".to_string(),
+            script_type: ScriptType::Request,
+            values: HashMap::new(),
+            matched_rules: vec![],
+        };
+
+        // 说明：当前实现禁止相对路径的 ..，避免逃逸
+        let script = r#"
+            file.readText("../evil.txt");
+        "#;
+        let result = sandbox.execute_request_script(script, &request, &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("不允许") || err.contains("sandbox"));
+    }
+
+    #[test]
+    fn test_file_absolute_path_allowed_when_configured() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let allow_dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(allow_dir.path().join("a.txt"), "ok").unwrap();
+
+        let mut sandbox = Sandbox::new(SandboxConfig {
+            file_root: Some(tmp.path().to_path_buf()),
+            file_allowed_dirs: vec![allow_dir.path().to_path_buf()],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let request = RequestData {
+            url: "https://example.com/api".to_string(),
+            method: "GET".to_string(),
+            host: "example.com".to_string(),
+            path: "/api".to_string(),
+            protocol: "https".to_string(),
+            client_ip: "127.0.0.1".to_string(),
+            client_app: None,
+            headers: HashMap::new(),
+            body: None,
+        };
+        let ctx = ScriptContext {
+            request_id: "test-file".to_string(),
+            script_name: "file-test".to_string(),
+            script_type: ScriptType::Request,
+            values: HashMap::new(),
+            matched_rules: vec![],
+        };
+
+        let abs = allow_dir.path().join("a.txt").to_string_lossy().to_string();
+        let script = format!(
+            r#"
+            var v = file.readText("{}");
+            log.info("abs:", v);
+            "#,
+            abs.replace('\\', "\\\\")
+        );
+
+        let result = sandbox.execute_request_script(&script, &request, &ctx);
+        assert!(result.is_ok());
+        let (_, logs) = result.unwrap();
+        assert!(logs.iter().any(|l| l.message.contains("ok")));
     }
 }

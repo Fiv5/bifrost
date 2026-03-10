@@ -2,8 +2,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use bifrost_admin::{
-    AdminState, ConnectionInfo, FrameDirection, FrameType, RequestTiming, TrafficRecord,
-    TrafficType,
+    AdminState, ConnectionInfo, FrameDirection, RequestTiming, TrafficRecord, TrafficType,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -12,7 +11,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Request, Response};
+use hyper::{Request, Response, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -29,8 +28,10 @@ use super::handler::{
     needs_request_body_processing, needs_response_override, parse_and_record_sse_events,
     ConnectionErrorInfo,
 };
+use super::ws_handshake::{
+    header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
+};
 use crate::dns::DnsResolver;
-use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{
     empty_body, full_body, with_trailers, BoxBody, ProxyConfig, ResolvedRules, RulesResolver,
     TlsConfig, TlsInterceptConfig,
@@ -49,8 +50,6 @@ use crate::utils::tee::{
 };
 use crate::utils::throttle::wrap_throttled_body;
 
-use futures_util::StreamExt;
-
 type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     http_body_util::Full<Bytes>,
@@ -58,6 +57,36 @@ type HttpsPooledClient = Client<
 
 static HTTPS_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
 static HTTPS_UNSAFE_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
+
+fn parse_host_rule(host_rule: &str) -> Option<(String, Option<u16>, Option<String>)> {
+    let mut s = host_rule.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // 兼容规则里携带 scheme（http/https/ws/wss/host/xhost/proxy/pac）以及可选路径、query。
+    // 目标：稳定提取 host / port / path_and_query。
+    for prefix in [
+        "http://", "https://", "ws://", "wss://", "host://", "xhost://", "proxy://", "pac://",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+
+    // `Uri` 解析需要 scheme；这里统一补一个 http scheme，仅用于解析 authority / path。
+    let uri: Uri = format!("http://{}", s).parse().ok()?;
+    let authority = uri.authority()?;
+    let host = authority.host().to_string();
+    let port = authority.port_u16();
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .filter(|pq| pq != "/");
+
+    Some((host, port, path_and_query))
+}
 
 fn get_https_pooled_client() -> &'static HttpsPooledClient {
     HTTPS_POOLED_CLIENT.get_or_init(|| {
@@ -275,18 +304,16 @@ pub async fn handle_connect(
     }
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
-        let host_rule_clean = host_rule.trim_end_matches('/');
-        let parts: Vec<&str> = host_rule_clean.split(':').collect();
-        let h = parts[0].to_string();
-        let p = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(port)
-        } else {
-            match resolved_rules.host_protocol {
-                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
-                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
-                _ => port,
-            }
+        let (h, parsed_port) = match parse_host_rule(host_rule) {
+            Some((h, p, _path)) => (h, p),
+            None => (host_rule.trim_end_matches('/').to_string(), None),
         };
+
+        let p = parsed_port.unwrap_or(match resolved_rules.host_protocol {
+            Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+            Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+            _ => port,
+        });
         debug!(
             "[{}] CONNECT tunnel target redirected: {}:{} -> {}:{} (protocol={:?})",
             ctx.id_str(),
@@ -949,54 +976,64 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let (actual_target_host, actual_target_port, actual_use_http) = if resolved_rules.ignored.host {
-        debug!(
-            "[{}] Passthrough rule applied: request will be forwarded to original target {}:{}",
-            req_id, original_host, original_port
-        );
-        (original_host.to_string(), original_port, false)
-    } else if let Some(ref host_rule) = resolved_rules.host {
-        let host_rule_clean = host_rule.trim_end_matches('/');
-        let parts: Vec<&str> = host_rule_clean.split(':').collect();
-        let h = parts[0].to_string();
-        let p = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(original_port)
-        } else {
-            match resolved_rules.host_protocol {
+    let (actual_target_host, actual_target_port, actual_use_http, actual_target_path) =
+        if resolved_rules.ignored.host {
+            debug!(
+                "[{}] Passthrough rule applied: request will be forwarded to original target {}:{}",
+                req_id, original_host, original_port
+            );
+            (
+                original_host.to_string(),
+                original_port,
+                false,
+                path.to_string(),
+            )
+        } else if let Some(ref host_rule) = resolved_rules.host {
+            let (h, parsed_port, parsed_path) = match parse_host_rule(host_rule) {
+                Some((h, p, path_and_query)) => (h, p, path_and_query),
+                None => (host_rule.trim_end_matches('/').to_string(), None, None),
+            };
+
+            let p = parsed_port.unwrap_or(match resolved_rules.host_protocol {
                 Some(Protocol::Http) | Some(Protocol::Ws) => 80,
                 Some(Protocol::Https) | Some(Protocol::Wss) => 443,
                 _ => original_port,
-            }
-        };
-        let use_http_override = match resolved_rules.host_protocol {
-            Some(Protocol::Http) | Some(Protocol::Ws) => true,
-            Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
-            _ => false,
-        };
-        debug!(
+            });
+            let use_http_override = match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => true,
+                Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
+                _ => false,
+            };
+            let target_path = parsed_path.unwrap_or_else(|| path.to_string());
+            debug!(
                 "[{}] Host rule applied: original={}:{} -> target={}:{}, host_protocol={:?}, use_http={}",
                 req_id, original_host, original_port, h, p, resolved_rules.host_protocol, use_http_override
             );
-        (h, p, use_http_override)
-    } else {
-        (original_host.to_string(), original_port, false)
-    };
+            (h, p, use_http_override, target_path)
+        } else {
+            (
+                original_host.to_string(),
+                original_port,
+                false,
+                path.to_string(),
+            )
+        };
 
     let target_uri = if actual_use_http {
         if actual_target_port == 80 {
-            format!("http://{}{}", actual_target_host, path)
+            format!("http://{}{}", actual_target_host, actual_target_path)
         } else {
             format!(
                 "http://{}:{}{}",
-                actual_target_host, actual_target_port, path
+                actual_target_host, actual_target_port, actual_target_path
             )
         }
     } else if actual_target_port == 443 {
-        format!("https://{}{}", actual_target_host, path)
+        format!("https://{}{}", actual_target_host, actual_target_path)
     } else {
         format!(
             "https://{}:{}{}",
-            actual_target_host, actual_target_port, path
+            actual_target_host, actual_target_port, actual_target_path
         )
     };
 
@@ -2686,38 +2723,62 @@ async fn handle_intercepted_websocket(
             .unwrap());
     }
 
-    let mut response_buf = vec![0u8; 4096];
-    let n = match stream_read.read(&mut response_buf).await {
-        Ok(n) => n,
-        Err(e) => {
-            error!(
-                "[{}] Failed to read WebSocket handshake response: {}",
-                req_id, e
-            );
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
+    let (upstream_resp, upstream_leftover) =
+        match read_http1_response_with_leftover(&mut stream_read).await {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to read WebSocket handshake response: {}",
+                    req_id, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
 
-    let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
-        error!("[{}] WebSocket handshake failed: {}", req_id, response_str);
+    if upstream_resp.status_code != 101 {
+        error!(
+            "[{}] WebSocket handshake failed: {} {}",
+            req_id, upstream_resp.status_code, upstream_resp.status_text
+        );
         return Ok(Response::builder()
             .status(502)
             .body(full_body(b"WebSocket handshake failed".to_vec()))
             .unwrap());
     }
 
-    let sec_accept = extract_sec_websocket_accept(&response_str);
-    let sec_protocol = extract_sec_websocket_protocol(&response_str);
+    let sec_accept = upstream_resp
+        .header("Sec-WebSocket-Accept")
+        .map(|v| v.to_string());
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
 
-    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
-        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+    let client_protocol = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    let client_extensions = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok());
+
+    let sec_protocol = negotiate_protocol(client_protocol, upstream_protocol);
+    let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(crate::protocol::parse_permessage_deflate)
         .unwrap_or(false);
+    let upstream_headers = upstream_resp.headers.clone();
 
     let total_ms = start_time.elapsed().as_millis() as u64;
+
+    let req_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
 
     if let Some(ref state) = admin_state {
         state
@@ -2742,11 +2803,6 @@ async fn handle_intercepted_websocket(
             receive_ms: None,
             total_ms,
         });
-        let req_headers: Vec<(String, String)> = req
-            .headers()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
         record.request_headers = Some(req_headers.clone());
         record.request_content_type = req_headers
             .iter()
@@ -2776,16 +2832,38 @@ async fn handle_intercepted_websocket(
     let stream = stream_read.unsplit(stream_write);
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = format!("wss://{}{}", original_host, path);
+    let ws_req_method = "GET".to_string();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
+    let ws_ctx = RequestContext::new()
+        .with_request_info(
+            ws_req_url.clone(),
+            ws_req_method.clone(),
+            original_host.to_string(),
+            path.to_string(),
+            String::new(),
+            client_ip.clone(),
+        )
+        .with_client_process(client_app.clone(), client_pid, client_path.clone());
 
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_bidirectional_generic_with_capture(
+                if let Err(e) = super::websocket::websocket_bidirectional_generic_with_capture(
                     upgraded,
                     stream,
                     &req_id_owned,
                     admin_state_clone.clone(),
                     compression_enabled,
+                    upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {
@@ -2823,6 +2901,22 @@ async fn handle_intercepted_websocket(
         response = response.header("Sec-WebSocket-Protocol", protocol);
     }
 
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+
+    for (name, value) in upstream_headers {
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
+        {
+            response = response.header(name, value);
+        }
+    }
+
     Ok(response.body(empty_body()).unwrap())
 }
 
@@ -2855,6 +2949,31 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
         path, target_host, ws_key, ws_version
     );
 
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("sec-websocket-protocol")
+            || n.eq_ignore_ascii_case("sec-websocket-extensions")
+            || n.eq_ignore_ascii_case("origin")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        if let Ok(v) = value.to_str() {
+            handshake.push_str(&format!("{}: {}\r\n", n, v));
+        }
+    }
+
     if let Some(protocol) = req
         .headers()
         .get("Sec-WebSocket-Protocol")
@@ -2880,204 +2999,8 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
     handshake
 }
 
-fn extract_sec_websocket_accept(response: &str) -> Option<String> {
-    for line in response.lines() {
-        if line.to_lowercase().starts_with("sec-websocket-accept:") {
-            return Some(
-                line.split(':')
-                    .skip(1)
-                    .collect::<String>()
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    None
-}
-
-fn extract_sec_websocket_protocol(response: &str) -> Option<String> {
-    for line in response.lines() {
-        if line.to_lowercase().starts_with("sec-websocket-protocol:") {
-            return Some(
-                line.split(':')
-                    .skip(1)
-                    .collect::<String>()
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    None
-}
-
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
-
-fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
-    match opcode {
-        Opcode::Continuation => FrameType::Continuation,
-        Opcode::Text => FrameType::Text,
-        Opcode::Binary => FrameType::Binary,
-        Opcode::Close => FrameType::Close,
-        Opcode::Ping => FrameType::Ping,
-        Opcode::Pong => FrameType::Pong,
-    }
-}
-
-async fn websocket_bidirectional_generic_with_capture<S>(
-    upgraded: Upgraded,
-    target: S,
-    record_id: &str,
-    admin_state: Option<Arc<AdminState>>,
-    compression_enabled: bool,
-) -> Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let client = TokioIo::new(upgraded);
-    let (target_read, target_write) = tokio::io::split(target);
-    let (client_read, client_write) = tokio::io::split(client);
-
-    let record_id_owned = record_id.to_string();
-    let admin_state_c2s = admin_state.clone();
-    let admin_state_s2c = admin_state.clone();
-
-    let client_to_server = async move {
-        let mut reader = WebSocketReader::new(client_read);
-        let mut writer = WebSocketWriter::new(target_write, true);
-
-        while let Some(result) = reader.next().await {
-            let frame = match result {
-                Ok(f) => f,
-                Err(e) => {
-                    debug!("Client read error: {}", e);
-                    break;
-                }
-            };
-
-            if let Some(ref state) = admin_state_c2s {
-                state
-                    .metrics_collector
-                    .add_bytes_sent_by_type(TrafficType::Wss, frame.payload.len() as u64);
-
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
-                } else {
-                    frame.payload.clone()
-                };
-
-                state.connection_monitor.record_frame(
-                    &record_id_owned,
-                    FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
-                    frame.mask.is_some(),
-                    frame.fin,
-                    state.body_store.as_ref(),
-                    state.ws_payload_store.as_ref(),
-                    state.frame_store.as_ref(),
-                );
-
-                if frame.opcode == Opcode::Close {
-                    let close_code = frame.close_code();
-                    let close_reason = frame.close_reason().map(str::to_string);
-                    state.connection_monitor.set_connection_closed(
-                        &record_id_owned,
-                        close_code,
-                        close_reason,
-                        state.frame_store.as_ref(),
-                        state.ws_payload_store.as_ref(),
-                    );
-                }
-            }
-
-            if let Err(e) = writer.write_frame(frame).await {
-                debug!("Server write error: {}", e);
-                break;
-            }
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let record_id_owned2 = record_id.to_string();
-    let server_to_client = async move {
-        let mut reader = WebSocketReader::new(target_read);
-        let mut writer = WebSocketWriter::new(client_write, false);
-
-        while let Some(result) = reader.next().await {
-            let frame = match result {
-                Ok(f) => f,
-                Err(e) => {
-                    debug!("Server read error: {}", e);
-                    break;
-                }
-            };
-
-            if let Some(ref state) = admin_state_s2c {
-                state
-                    .metrics_collector
-                    .add_bytes_received_by_type(TrafficType::Wss, frame.payload.len() as u64);
-
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
-                } else {
-                    frame.payload.clone()
-                };
-
-                state.connection_monitor.record_frame(
-                    &record_id_owned2,
-                    FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
-                    frame.mask.is_some(),
-                    frame.fin,
-                    state.body_store.as_ref(),
-                    state.ws_payload_store.as_ref(),
-                    state.frame_store.as_ref(),
-                );
-
-                if frame.opcode == Opcode::Close {
-                    let close_code = frame.close_code();
-                    let close_reason = frame.close_reason().map(str::to_string);
-                    state.connection_monitor.set_connection_closed(
-                        &record_id_owned2,
-                        close_code,
-                        close_reason,
-                        state.frame_store.as_ref(),
-                        state.ws_payload_store.as_ref(),
-                    );
-                }
-            }
-
-            if let Err(e) = writer.write_frame(frame).await {
-                debug!("Client write error: {}", e);
-                break;
-            }
-        }
-
-        Ok::<_, std::io::Error>(())
-    };
-
-    let result = tokio::try_join!(client_to_server, server_to_client);
-
-    match result {
-        Ok(_) => {
-            debug!("WebSocket connection closed normally");
-            Ok(())
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::ConnectionReset
-                || e.kind() == std::io::ErrorKind::BrokenPipe
-            {
-                debug!("WebSocket connection closed: {}", e);
-                Ok(())
-            } else {
-                Err(BifrostError::Network(format!("WebSocket error: {}", e)))
-            }
-        }
-    }
-}
 
 pub struct SingleCertResolver(pub Arc<CertifiedKey>);
 

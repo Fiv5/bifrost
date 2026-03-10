@@ -8,8 +8,8 @@ use tracing::info;
 use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
-    AccessConfigUpdate, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig,
-    TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
+    AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, SystemProxyConfigUpdate, TlsConfig,
+    TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
 use crate::LegacyBifrostConfig;
@@ -21,6 +21,7 @@ pub enum ConfigChangeEvent {
     TlsConfigChanged(TlsConfig),
     AccessConfigChanged,
     SystemProxyConfigChanged,
+    SandboxConfigChanged,
     RulesChanged,
     ValuesChanged(String),
     StateChanged,
@@ -196,6 +197,56 @@ impl ConfigManager {
         self.save_config(&config)?;
 
         Ok(config.traffic.clone())
+    }
+
+    pub async fn update_sandbox_config(
+        &self,
+        update: SandboxConfigUpdate,
+    ) -> Result<SandboxConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(file) = update.file {
+            if let Some(dir) = file.sandbox_dir {
+                config.sandbox.file.sandbox_dir = dir;
+            }
+            if let Some(allowed) = file.allowed_dirs {
+                config.sandbox.file.allowed_dirs = allowed;
+            }
+            if let Some(max_bytes) = file.max_bytes {
+                config.sandbox.file.max_bytes = max_bytes;
+            }
+        }
+
+        if let Some(net) = update.net {
+            if let Some(enabled) = net.enabled {
+                config.sandbox.net.enabled = enabled;
+            }
+            if let Some(timeout_ms) = net.timeout_ms {
+                config.sandbox.net.timeout_ms = timeout_ms;
+            }
+            if let Some(max_request_bytes) = net.max_request_bytes {
+                config.sandbox.net.max_request_bytes = max_request_bytes;
+            }
+            if let Some(max_response_bytes) = net.max_response_bytes {
+                config.sandbox.net.max_response_bytes = max_response_bytes;
+            }
+        }
+
+        if let Some(limits) = update.limits {
+            if let Some(timeout_ms) = limits.timeout_ms {
+                config.sandbox.limits.timeout_ms = timeout_ms;
+            }
+            if let Some(max_memory_bytes) = limits.max_memory_bytes {
+                config.sandbox.limits.max_memory_bytes = max_memory_bytes;
+            }
+        }
+
+        self.save_config(&config)?;
+        let _ = self
+            .change_notifier
+            .send(ConfigChangeEvent::SandboxConfigChanged);
+
+        Ok(config.sandbox.clone())
     }
 
     pub async fn get_ui_config(&self) -> UiConfig {
@@ -438,6 +489,7 @@ impl ConfigManager {
                 ws_payload_flush_interval_ms: legacy.traffic.ws_payload_flush_interval_ms,
                 ws_payload_max_open_files: legacy.traffic.ws_payload_max_open_files,
             },
+            sandbox: SandboxConfig::default(),
             paths: PathsConfig::for_data_dir(data_dir),
             ui: UiConfig::default(),
         }

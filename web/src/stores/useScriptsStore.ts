@@ -11,6 +11,8 @@ const REQUEST_SCRIPT_TEMPLATE = `// ============================================
 //   - request: The HTTP request (modifiable: method, headers, body)
 //   - ctx: Script context with metadata and configuration
 //   - log/console: Logging interface
+//   - file: Sandbox file API (relative path under scripts/_sandbox)
+//   - net: Network request API (returns JSON string)
 // ============================================================
 
 // --- Logging Examples ---
@@ -71,6 +73,15 @@ if (ctx.matchedRules.length > 0) {
     log.debug("  Pattern:", rule.pattern, "->", rule.value);
   });
 }
+
+// --- File API Examples ---
+// file.writeText("state/last-request.txt", request.url);
+// var lastUrl = file.readText("state/last-request.txt");
+// log.debug("Last URL:", lastUrl);
+
+// --- Network API Examples ---
+// var res = JSON.parse(net.fetch("https://httpbin.org/get"));
+// log.info("Fetch status:", res.status);
 `;
 
 const RESPONSE_SCRIPT_TEMPLATE = `// ============================================================
@@ -82,6 +93,8 @@ const RESPONSE_SCRIPT_TEMPLATE = `// ===========================================
 //   - response: The HTTP response (modifiable: status, statusText, headers, body)
 //   - ctx: Script context with metadata and configuration
 //   - log/console: Logging interface
+//   - file: Sandbox file API (relative path under scripts/_sandbox)
+//   - net: Network request API (returns JSON string)
 // ============================================================
 
 // --- Logging Examples ---
@@ -171,11 +184,55 @@ log.debug("Request ID:", ctx.requestId);
 if (ctx.matchedRules.length > 0) {
   log.info("Matched", ctx.matchedRules.length, "rules");
 }
+
+// --- File API Examples ---
+// file.appendText("state/response.log", "status=" + response.status + "\n");
+
+// --- Network API Examples ---
+// var ping = JSON.parse(net.fetch("https://httpbin.org/status/204"));
+// log.debug("Ping ok:", ping.ok);
+`;
+
+const DECODE_SCRIPT_TEMPLATE = `// ============================================================
+// Bifrost Decode Script Template
+// ============================================================
+// This script runs in decode mode.
+// ctx.phase indicates current stage: "request" | "response"
+//
+// Available objects:
+//   - request: request snapshot (when ctx.phase=="request", contains body/bodyHex)
+//   - response: response snapshot (only when ctx.phase=="response")
+//   - ctx: Script context with metadata and configuration
+//   - log/console: Logging interface
+//   - file: Sandbox file API
+//   - net: Network request API (returns JSON string)
+//
+// Output:
+//   - set ctx.output = { code: "0", data: "...", msg: "" } on success
+//   - set ctx.output = { code: "1", data: "", msg: "reason" } on failure
+// ============================================================
+
+log.info("decode phase:", ctx.phase);
+
+// Example: decode request/response body (text)
+var text = "";
+if (ctx.phase === "request") {
+  text = request.body || "";
+} else {
+  text = response.body || "";
+}
+
+ctx.output = {
+  code: "0",
+  data: text,
+  msg: "",
+};
 `;
 
 interface ScriptsState {
   requestScripts: ScriptInfo[];
   responseScripts: ScriptInfo[];
+  decodeScripts: ScriptInfo[];
   selectedScript: ScriptDetail | null;
   selectedType: ScriptType;
   loading: boolean;
@@ -197,6 +254,7 @@ interface ScriptsState {
 export const useScriptsStore = create<ScriptsState>((set, get) => ({
   requestScripts: [],
   responseScripts: [],
+  decodeScripts: [],
   selectedScript: null,
   selectedType: 'request',
   loading: false,
@@ -212,6 +270,7 @@ export const useScriptsStore = create<ScriptsState>((set, get) => ({
       set({
         requestScripts: data.request,
         responseScripts: data.response,
+        decodeScripts: data.decode,
         loading: false,
       });
     } catch (e) {
@@ -267,9 +326,12 @@ export const useScriptsStore = create<ScriptsState>((set, get) => ({
       selectedScript: {
         name: '',
         script_type: type,
-        content: type === 'request'
-          ? REQUEST_SCRIPT_TEMPLATE
-          : RESPONSE_SCRIPT_TEMPLATE,
+        content:
+          type === 'request'
+            ? REQUEST_SCRIPT_TEMPLATE
+            : type === 'response'
+              ? RESPONSE_SCRIPT_TEMPLATE
+              : DECODE_SCRIPT_TEMPLATE,
         created_at: Date.now(),
         updated_at: Date.now(),
       },

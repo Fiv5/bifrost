@@ -648,8 +648,13 @@ mod tests {
             direction: FrameDirection::Send,
             frame_type: FrameType::Text,
             payload_size: payload.len(),
+            payload_is_text: true,
             payload_preview: Some(payload.to_string()),
             payload_ref: None,
+            raw_payload_size: None,
+            raw_payload_is_text: None,
+            raw_payload_preview: None,
+            raw_payload_ref: None,
             is_masked: false,
             is_fin: true,
         }

@@ -1082,7 +1082,26 @@ GET /api/proxy/system/support
 }
 ```
 
-### 8.4 获取代理地址信息
+### 8.4 获取 CLI 代理状态（环境变量）
+
+用于展示命令行代理（写入 shell rc 文件的 http_proxy 等变量）是否启用。
+
+```
+GET /api/proxy/cli
+```
+
+**响应**:
+
+```json
+{
+  "enabled": true,
+  "shell": "zsh",
+  "config_files": ["~/.zshrc", "~/.zprofile"],
+  "proxy_url": "http://127.0.0.1:9900"
+}
+```
+
+### 8.5 获取代理地址信息
 
 ```
 GET /api/proxy/address
@@ -1106,7 +1125,7 @@ GET /api/proxy/address
 
 **应用场景**: 获取代理地址供客户端配置。
 
-### 8.5 获取代理地址二维码
+### 8.6 获取代理地址二维码
 
 ```
 GET /public/proxy/qrcode

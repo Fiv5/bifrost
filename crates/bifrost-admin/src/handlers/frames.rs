@@ -83,29 +83,29 @@ pub async fn get_frames(
         fs.flush();
     }
 
-    let (file_frames, pending_frames) = if let Some(fs) = frame_store.as_ref() {
+    let (file_frames, file_has_more, pending_frames) = if let Some(fs) = frame_store.as_ref() {
         let fs = fs.clone();
         let fs_for_file = fs.clone();
         let conn_id_clone = conn_id.clone();
-        let file_frames = match tokio::task::spawn_blocking(move || {
+        let (file_frames, file_has_more) = match tokio::task::spawn_blocking(move || {
             fs_for_file.load_frames(&conn_id_clone, after, limit)
         })
         .await
         {
-            Ok(Ok((frames, _))) => frames,
+            Ok(Ok((frames, has_more))) => (frames, has_more),
             Ok(Err(e)) => {
                 tracing::warn!("[FRAMES API] Failed to load frames from file: {}", e);
-                Vec::new()
+                (Vec::new(), false)
             }
             Err(e) => {
                 tracing::warn!("[FRAMES API] spawn_blocking failed: {}", e);
-                Vec::new()
+                (Vec::new(), false)
             }
         };
         let pending_frames = fs.load_pending_frames(&conn_id, after, limit);
-        (file_frames, pending_frames)
+        (file_frames, file_has_more, pending_frames)
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), false, Vec::new())
     };
 
     let (mem_frames, is_active) = {
@@ -153,7 +153,7 @@ pub async fn get_frames(
     }
 
     all_frames.sort_by_key(|f| f.frame_id);
-    let has_more = all_frames.len() > limit;
+    let has_more = file_has_more || all_frames.len() > limit;
     let frames: Vec<_> = all_frames.into_iter().take(limit).collect();
 
     let has_data = !frames.is_empty()
@@ -340,15 +340,13 @@ pub async fn get_frame_detail(
     });
 
     if let Some(frame) = frame {
+        let mut full_payload: Option<String> = None;
+        let mut raw_full_payload: Option<String> = None;
+
         if let Some(ref body_ref) = frame.payload_ref {
             if let BodyRef::Inline { data } = body_ref {
-                let body = serde_json::json!({
-                    "frame": frame.clone(),
-                    "full_payload": data
-                });
-                return json_response(&body);
-            }
-            if let Some(ref ws_payload_store) = state.ws_payload_store {
+                full_payload = Some(data.clone());
+            } else if let Some(ref ws_payload_store) = state.ws_payload_store {
                 if ws_payload_store.is_ws_payload_ref(body_ref) {
                     let body_ref_clone = body_ref.clone();
                     let store_clone = ws_payload_store.clone();
@@ -361,27 +359,19 @@ pub async fn get_frame_detail(
                     .flatten();
 
                     if let Some(payload_bytes) = data {
-                        let payload = match frame_clone.frame_type {
-                            FrameType::Text | FrameType::Close | FrameType::Sse => {
-                                String::from_utf8_lossy(&payload_bytes).to_string()
-                            }
-                            _ => base64::Engine::encode(
+                        full_payload = Some(if frame_clone.payload_is_text {
+                            String::from_utf8_lossy(&payload_bytes).to_string()
+                        } else {
+                            base64::Engine::encode(
                                 &base64::engine::general_purpose::STANDARD,
                                 payload_bytes,
-                            ),
-                        };
-                        let body = serde_json::json!({
-                            "frame": frame_clone,
-                            "full_payload": payload
+                            )
                         });
-                        return json_response(&body);
                     }
                 }
-            }
-            if let Some(ref body_store) = state.body_store {
+            } else if let Some(ref body_store) = state.body_store {
                 let body_ref_clone = body_ref.clone();
                 let body_store_clone = body_store.clone();
-                let frame_clone = frame.clone();
 
                 let data = tokio::task::spawn_blocking(move || {
                     let store = body_store_clone.read();
@@ -392,13 +382,63 @@ pub async fn get_frame_detail(
                 .flatten();
 
                 if let Some(payload_data) = data {
-                    let body = serde_json::json!({
-                        "frame": frame_clone,
-                        "full_payload": payload_data
-                    });
-                    return json_response(&body);
+                    full_payload = Some(payload_data);
                 }
             }
+        }
+
+        if let Some(ref body_ref) = frame.raw_payload_ref {
+            if let BodyRef::Inline { data } = body_ref {
+                raw_full_payload = Some(data.clone());
+            } else if let Some(ref ws_payload_store) = state.ws_payload_store {
+                if ws_payload_store.is_ws_payload_ref(body_ref) {
+                    let body_ref_clone = body_ref.clone();
+                    let store_clone = ws_payload_store.clone();
+                    let frame_clone = frame.clone();
+                    let data = tokio::task::spawn_blocking(move || {
+                        store_clone.read_range(&body_ref_clone)
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+
+                    if let Some(payload_bytes) = data {
+                        let raw_is_text = frame_clone.raw_payload_is_text.unwrap_or(false);
+                        raw_full_payload = Some(if raw_is_text {
+                            String::from_utf8_lossy(&payload_bytes).to_string()
+                        } else {
+                            base64::Engine::encode(
+                                &base64::engine::general_purpose::STANDARD,
+                                payload_bytes,
+                            )
+                        });
+                    }
+                }
+            } else if let Some(ref body_store) = state.body_store {
+                let body_ref_clone = body_ref.clone();
+                let body_store_clone = body_store.clone();
+
+                let data = tokio::task::spawn_blocking(move || {
+                    let store = body_store_clone.read();
+                    store.load(&body_ref_clone)
+                })
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(payload_data) = data {
+                    raw_full_payload = Some(payload_data);
+                }
+            }
+        }
+
+        if full_payload.is_some() || raw_full_payload.is_some() {
+            let body = serde_json::json!({
+                "frame": frame.clone(),
+                "full_payload": full_payload.unwrap_or_default(),
+                "raw_full_payload": raw_full_payload,
+            });
+            return json_response(&body);
         }
 
         if frame.frame_type == FrameType::Sse {
@@ -463,5 +503,67 @@ pub async fn get_frame_detail(
                 frame_id, connection_id
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use http_body_util::BodyExt;
+    use serde::Deserialize;
+
+    use super::get_frames;
+    use crate::connection_monitor::WebSocketFrameRecord;
+    use crate::frame_store::FrameStore;
+    use crate::state::AdminState;
+    use crate::traffic::{FrameDirection, FrameType};
+
+    #[derive(Debug, Deserialize)]
+    struct FramesResponseForTest {
+        frames: Vec<WebSocketFrameRecord>,
+        last_frame_id: u64,
+        has_more: bool,
+    }
+
+    #[tokio::test]
+    async fn frames_has_more_true_when_file_has_more() {
+        let dir = std::env::temp_dir().join(format!("bifrost-admin-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let frame_store = Arc::new(FrameStore::new(dir.clone(), None));
+        let connection_id = "test-connection";
+
+        for frame_id in 1..=101u64 {
+            let frame = WebSocketFrameRecord::new(
+                frame_id,
+                FrameDirection::Receive,
+                FrameType::Text,
+                b"hi",
+                false,
+                true,
+                256,
+                true,
+            );
+            frame_store.append_frame(connection_id, &frame).unwrap();
+        }
+        frame_store.flush();
+
+        let mut state = AdminState::new(0);
+        state.frame_store = Some(frame_store);
+        let state = Arc::new(state);
+
+        let resp = get_frames(state, connection_id, Some("limit=100")).await;
+        assert!(resp.status().is_success());
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: FramesResponseForTest = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(parsed.frames.len(), 100);
+        assert_eq!(parsed.last_frame_id, 100);
+        assert!(parsed.has_more);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

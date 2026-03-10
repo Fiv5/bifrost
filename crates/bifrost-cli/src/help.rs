@@ -91,11 +91,14 @@ QUICK START (common workflows)
      HTTP(S) proxy:  127.0.0.1:{port}
      SOCKS5 proxy:   127.0.0.1:{port}  (or use --socks5-port)
 
-  2) Enable system proxy (so browsers/apps use it automatically)
+  2) Enable CLI proxy env vars (so terminal tools use it automatically)
+     bifrost -p {port} start --cli-proxy
+
+  3) Enable system proxy (so browsers/apps use it automatically)
      bifrost system-proxy enable --host 127.0.0.1 --port {port}
      bifrost system-proxy status
 
-  3) Stop / inspect
+  4) Stop / inspect
      bifrost status
      bifrost stop
 

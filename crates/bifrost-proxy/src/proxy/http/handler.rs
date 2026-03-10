@@ -22,6 +22,9 @@ use url::Url;
 use crate::dns::DnsResolver;
 
 use super::tunnel::get_tls_client_config;
+use super::ws_handshake::{
+    header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
+};
 use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
@@ -396,6 +399,115 @@ fn headers_to_hashmap(headers: &[(String, String)]) -> HashMap<String, String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn apply_decode_scripts_for_storage(
+    admin_state: &Option<Arc<AdminState>>,
+    script_names: &[String],
+    phase: &str,
+    ctx: &RequestContext,
+    resolved_rules: &ResolvedRules,
+    request_data: &RequestData,
+    response_data: &ResponseData,
+    values: &HashMap<String, String>,
+    body_bytes: Bytes,
+) -> Bytes {
+    if script_names.is_empty() || body_bytes.is_empty() {
+        return body_bytes;
+    }
+
+    let state = match admin_state {
+        Some(s) => s,
+        None => return body_bytes,
+    };
+
+    let manager = match &state.script_manager {
+        Some(m) => m,
+        None => return body_bytes,
+    };
+
+    let cfg = if let Some(cm) = state.config_manager.as_ref() {
+        Some(cm.config().await)
+    } else {
+        None
+    };
+
+    // 性能保护：decode 的输入过大时直接跳过（落库仍然保存原始内容）
+    const MAX_DECODE_INPUT_BYTES: usize = 2 * 1024 * 1024;
+    if body_bytes.len() > MAX_DECODE_INPUT_BYTES {
+        warn!(
+            "[{}] [DECODE] skip decode ({} bytes > {} limit)",
+            ctx.id_str(),
+            body_bytes.len(),
+            MAX_DECODE_INPUT_BYTES
+        );
+        return body_bytes;
+    }
+
+    let matched_rules = build_matched_rules_info(resolved_rules);
+    let mut current = body_bytes.to_vec();
+
+    let mgr = manager.read().await;
+    for script_name in script_names {
+        let script_ctx = ScriptContext {
+            request_id: ctx.id_str().to_string(),
+            script_name: script_name.clone(),
+            script_type: ScriptType::Decode,
+            values: values.clone(),
+            matched_rules: matched_rules.clone(),
+        };
+
+        let (req_bytes, res_bytes) = if phase.eq_ignore_ascii_case("request") {
+            (current.as_slice(), &[][..])
+        } else {
+            (&[][..], current.as_slice())
+        };
+
+        let result = if let Some(ref cfg) = cfg {
+            mgr.engine()
+                .execute_decode_script_with_config(
+                    script_name,
+                    phase,
+                    request_data,
+                    req_bytes,
+                    response_data,
+                    res_bytes,
+                    &script_ctx,
+                    cfg,
+                )
+                .await
+        } else {
+            mgr.engine()
+                .execute_decode_script(
+                    script_name,
+                    phase,
+                    request_data,
+                    req_bytes,
+                    response_data,
+                    res_bytes,
+                    &script_ctx,
+                )
+                .await
+        };
+
+        match result {
+            Ok((out, _logs)) => {
+                if out.code == "0" {
+                    current = out.data.into_bytes();
+                } else {
+                    current = out.msg.into_bytes();
+                    break;
+                }
+            }
+            Err(e) => {
+                current = format!("decode 脚本执行失败: {}", e).into_bytes();
+                break;
+            }
+        }
+    }
+
+    Bytes::from(current)
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_request_scripts(
     admin_state: &Option<Arc<AdminState>>,
     script_names: &[String],
@@ -419,6 +531,12 @@ async fn execute_request_scripts(
     let manager = match &state.script_manager {
         Some(m) => m,
         None => return vec![],
+    };
+
+    let cfg = if let Some(cm) = state.config_manager.as_ref() {
+        Some(cm.config().await)
+    } else {
+        None
     };
 
     let matched_rules = build_matched_rules_info(resolved_rules);
@@ -445,9 +563,13 @@ async fn execute_request_scripts(
     };
 
     let mgr = manager.read().await;
-    let results = mgr
-        .execute_request_scripts(script_names, &mut request_data, &script_ctx)
-        .await;
+    let results = if let Some(ref cfg) = cfg {
+        mgr.execute_request_scripts_with_config(script_names, &mut request_data, &script_ctx, cfg)
+            .await
+    } else {
+        mgr.execute_request_scripts(script_names, &mut request_data, &script_ctx)
+            .await
+    };
 
     if results.iter().any(|r| r.success) {
         *method = request_data.method;
@@ -487,6 +609,12 @@ async fn execute_response_scripts(
         None => return vec![],
     };
 
+    let cfg = if let Some(cm) = state.config_manager.as_ref() {
+        Some(cm.config().await)
+    } else {
+        None
+    };
+
     let matched_rules = build_matched_rules_info(resolved_rules);
     let (host, path, protocol) = parse_url_parts(request_url);
 
@@ -517,9 +645,13 @@ async fn execute_response_scripts(
     };
 
     let mgr = manager.read().await;
-    let results = mgr
-        .execute_response_scripts(script_names, &mut response_data, &script_ctx)
-        .await;
+    let results = if let Some(ref cfg) = cfg {
+        mgr.execute_response_scripts_with_config(script_names, &mut response_data, &script_ctx, cfg)
+            .await
+    } else {
+        mgr.execute_response_scripts(script_names, &mut response_data, &script_ctx)
+            .await
+    };
 
     if results.iter().any(|r| r.success) {
         *status = response_data.status;
@@ -1058,6 +1190,38 @@ pub async fn handle_http_request(
                 record.error_message = Some(error_msg);
                 record.request_body_ref = if let Some(ref capture) = req_body_capture {
                     capture.take()
+                } else if let Some(ref body_store) = state.body_store {
+                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
+                    let request_data = RequestData {
+                        url: record_url.clone(),
+                        method: method.clone(),
+                        host: req_host,
+                        path: req_path,
+                        protocol: req_proto,
+                        client_ip: ctx.client_ip.clone(),
+                        client_app: ctx.client_app.clone(),
+                        headers: headers_to_hashmap(&req_headers),
+                        body: None,
+                    };
+                    let decompressed_req_body =
+                        decompress_body(&final_body, req_content_encoding.as_deref());
+                    let decoded_req_body = apply_decode_scripts_for_storage(
+                        &admin_state,
+                        &resolved_rules.decode_scripts,
+                        "request",
+                        ctx,
+                        &resolved_rules,
+                        &request_data,
+                        &ResponseData {
+                            request: request_data.clone(),
+                            ..Default::default()
+                        },
+                        &values,
+                        decompressed_req_body,
+                    )
+                    .await;
+                    let store = body_store.read();
+                    store.store(&ctx.id_str(), "req", decoded_req_body.as_ref())
                 } else {
                     store_request_body(
                         &admin_state,
@@ -1076,8 +1240,47 @@ pub async fn handle_http_request(
                 } else {
                     build_error_body(502, &error_info)
                 };
-                record.response_body_ref =
-                    store_response_body(&admin_state, &ctx.id_str(), &response_body);
+                record.response_body_ref = if let Some(ref body_store) = state.body_store {
+                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
+                    let request_data = RequestData {
+                        url: record_url.clone(),
+                        method: method.clone(),
+                        host: req_host,
+                        path: req_path,
+                        protocol: req_proto,
+                        client_ip: ctx.client_ip.clone(),
+                        client_app: ctx.client_app.clone(),
+                        headers: headers_to_hashmap(&req_headers),
+                        body: None,
+                    };
+                    let response_data = ResponseData {
+                        status: record.status,
+                        status_text: StatusCode::from_u16(record.status)
+                            .ok()
+                            .and_then(|s| s.canonical_reason())
+                            .unwrap_or("ERROR")
+                            .to_string(),
+                        headers: HashMap::new(),
+                        body: None,
+                        request: request_data,
+                    };
+                    let decoded_res_body = apply_decode_scripts_for_storage(
+                        &admin_state,
+                        &resolved_rules.decode_scripts,
+                        "response",
+                        ctx,
+                        &resolved_rules,
+                        &response_data.request,
+                        &response_data,
+                        &values,
+                        response_body.clone(),
+                    )
+                    .await;
+                    let store = body_store.read();
+                    store.store(&ctx.id_str(), "res", decoded_res_body.as_ref())
+                } else {
+                    store_response_body(&admin_state, &ctx.id_str(), &response_body)
+                };
                 state.record_traffic(record);
             }
 
@@ -1169,6 +1372,23 @@ pub async fn handle_http_request(
                 record.error_message = Some(final_error_msg);
                 record.request_body_ref = if let Some(ref capture) = req_body_capture {
                     capture.take()
+                } else if let Some(ref body_store) = state.body_store {
+                    let store = body_store.read();
+                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
+                    let _request_data = RequestData {
+                        url: record_url.clone(),
+                        method: method.clone(),
+                        host: req_host,
+                        path: req_path,
+                        protocol: req_proto,
+                        client_ip: ctx.client_ip.clone(),
+                        client_app: ctx.client_app.clone(),
+                        headers: headers_to_hashmap(&req_headers),
+                        body: None,
+                    };
+                    let decompressed_req_body =
+                        decompress_body(&final_body, req_content_encoding.as_deref());
+                    store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref())
                 } else {
                     store_request_body(
                         &admin_state,
@@ -1187,8 +1407,35 @@ pub async fn handle_http_request(
                 } else {
                     build_error_body(502, &error_info)
                 };
-                record.response_body_ref =
-                    store_response_body(&admin_state, &ctx.id_str(), &response_body);
+                record.response_body_ref = if let Some(ref body_store) = state.body_store {
+                    let store = body_store.read();
+                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
+                    let request_data = RequestData {
+                        url: record_url.clone(),
+                        method: method.clone(),
+                        host: req_host,
+                        path: req_path,
+                        protocol: req_proto,
+                        client_ip: ctx.client_ip.clone(),
+                        client_app: ctx.client_app.clone(),
+                        headers: headers_to_hashmap(&req_headers),
+                        body: None,
+                    };
+                    let _response_data = ResponseData {
+                        status: record.status,
+                        status_text: StatusCode::from_u16(record.status)
+                            .ok()
+                            .and_then(|s| s.canonical_reason())
+                            .unwrap_or("ERROR")
+                            .to_string(),
+                        headers: HashMap::new(),
+                        body: None,
+                        request: request_data,
+                    };
+                    store.store(&ctx.id_str(), "res", response_body.as_ref())
+                } else {
+                    store_response_body(&admin_state, &ctx.id_str(), &response_body)
+                };
                 state.record_traffic(record);
             }
             if needs_response_override(&resolved_rules) {
@@ -1934,17 +2181,67 @@ pub async fn handle_http_request(
         }
 
         if let Some(ref body_store) = state.body_store {
-            let store = body_store.read();
+            // decode://script：在落库前进行解码（请求/响应两阶段）
+            let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
+            let request_data = RequestData {
+                url: record_url.clone(),
+                method: method.clone(),
+                host: req_host,
+                path: req_path,
+                protocol: req_proto,
+                client_ip: ctx.client_ip.clone(),
+                client_app: ctx.client_app.clone(),
+                headers: headers_to_hashmap(&req_headers),
+                body: None,
+            };
 
             let decompressed_req_body =
                 decompress_body(&final_body, req_content_encoding.as_deref());
-            record.request_body_ref =
-                store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref());
+            let decoded_req_body = apply_decode_scripts_for_storage(
+                &admin_state,
+                &resolved_rules.decode_scripts,
+                "request",
+                ctx,
+                &resolved_rules,
+                &request_data,
+                &ResponseData {
+                    request: request_data.clone(),
+                    ..Default::default()
+                },
+                &values,
+                Bytes::from(decompressed_req_body.to_vec()),
+            )
+            .await;
 
             let decompressed_res_body =
                 decompress_body(&final_res_body, res_content_encoding.as_deref());
-            record.response_body_ref =
-                store.store(&ctx.id_str(), "res", decompressed_res_body.as_ref());
+            let response_data = ResponseData {
+                status: res_parts.status.as_u16(),
+                status_text: res_parts
+                    .status
+                    .canonical_reason()
+                    .unwrap_or("OK")
+                    .to_string(),
+                headers: headers_to_hashmap(&res_headers),
+                body: None,
+                request: request_data,
+            };
+            let decoded_res_body = apply_decode_scripts_for_storage(
+                &admin_state,
+                &resolved_rules.decode_scripts,
+                "response",
+                ctx,
+                &resolved_rules,
+                &response_data.request,
+                &response_data,
+                &values,
+                Bytes::from(decompressed_res_body.to_vec()),
+            )
+            .await;
+
+            let store = body_store.read();
+            record.request_body_ref = store.store(&ctx.id_str(), "req", decoded_req_body.as_ref());
+            record.response_body_ref = store.store(&ctx.id_str(), "res", decoded_res_body.as_ref());
         }
 
         if !req_script_results.is_empty() {
@@ -2069,7 +2366,7 @@ async fn handle_http_websocket(
 ) -> Result<Response<BoxBody>> {
     use super::websocket::websocket_bidirectional_generic_with_capture;
     use crate::server::empty_body;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio_rustls::rustls::pki_types::ServerName;
 
     let start_time = Instant::now();
@@ -2207,23 +2504,37 @@ async fn handle_http_websocket(
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to send WS handshake: {}", e)))?;
 
-    let mut response_buf = vec![0u8; 4096];
-    let n = target_stream.read(&mut response_buf).await.map_err(|e| {
-        BifrostError::Network(format!("Failed to read WS handshake response: {}", e))
-    })?;
-
-    let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
+    let (upstream_resp, upstream_leftover) =
+        read_http1_response_with_leftover(&mut target_stream).await?;
+    if upstream_resp.status_code != 101 {
         return Err(BifrostError::Network(format!(
-            "WebSocket handshake failed: {}",
-            response_str
+            "WebSocket handshake failed: {} {}",
+            upstream_resp.status_code, upstream_resp.status_text
         )));
     }
 
-    let (response_headers, sec_accept) = parse_websocket_response(&response_str);
+    let response_headers = upstream_resp.headers.clone();
+    let sec_accept = upstream_resp
+        .header("Sec-WebSocket-Accept")
+        .map(|v| v.to_string());
 
-    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
-        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
+
+    let client_protocol = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    let client_extensions = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok());
+
+    let negotiated_protocol = negotiate_protocol(client_protocol, upstream_protocol);
+    let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(crate::protocol::parse_permessage_deflate)
         .unwrap_or(false);
 
     let total_ms = start_time.elapsed().as_millis() as u64;
@@ -2243,7 +2554,8 @@ async fn handle_http_websocket(
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
-        let mut record = bifrost_admin::TrafficRecord::new(record_id.clone(), method, ws_url);
+        let mut record =
+            bifrost_admin::TrafficRecord::new(record_id.clone(), method.clone(), ws_url);
         record.status = 101;
         record.protocol = record_protocol.to_string();
         record.duration_ms = total_ms;
@@ -2256,7 +2568,7 @@ async fn handle_http_websocket(
             receive_ms: None,
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(response_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
@@ -2272,6 +2584,12 @@ async fn handle_http_websocket(
 
     let record_id_clone = record_id.clone();
     let admin_state_clone = admin_state.clone();
+    let ws_ctx = ctx.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = ws_url.clone();
+    let ws_req_method = method.clone();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -2281,6 +2599,13 @@ async fn handle_http_websocket(
                     &record_id_clone,
                     admin_state_clone.clone(),
                     compression_enabled,
+                    upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {
@@ -2312,10 +2637,21 @@ async fn handle_http_websocket(
         response = response.header("Sec-WebSocket-Accept", accept);
     }
 
+    if let Some(protocol) = negotiated_protocol {
+        response = response.header("Sec-WebSocket-Protocol", protocol);
+    }
+
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+
     for (name, value) in response_headers {
-        if name.to_lowercase() != "upgrade"
-            && name.to_lowercase() != "connection"
-            && name.to_lowercase() != "sec-websocket-accept"
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
         {
             response = response.header(name, value);
         }
@@ -2363,6 +2699,30 @@ fn build_http_websocket_handshake(
         path, host_header, ws_key, ws_version
     );
 
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("sec-websocket-protocol")
+            || n.eq_ignore_ascii_case("sec-websocket-extensions")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        if let Ok(v) = value.to_str() {
+            handshake.push_str(&format!("{}: {}\r\n", n, v));
+        }
+    }
+
     if let Some(protocol) = req.headers().get("Sec-WebSocket-Protocol") {
         if let Ok(protocol_str) = protocol.to_str() {
             handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocol_str));
@@ -2377,27 +2737,6 @@ fn build_http_websocket_handshake(
 
     handshake.push_str("\r\n");
     Ok(handshake)
-}
-
-fn parse_websocket_response(response_str: &str) -> (Vec<(String, String)>, Option<String>) {
-    let mut headers = Vec::new();
-    let mut sec_accept = None;
-
-    for line in response_str.lines().skip(1) {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_string();
-            let value = value.trim().to_string();
-            if name.to_lowercase() == "sec-websocket-accept" {
-                sec_accept = Some(value.clone());
-            }
-            headers.push((name, value));
-        }
-    }
-
-    (headers, sec_accept)
 }
 
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {

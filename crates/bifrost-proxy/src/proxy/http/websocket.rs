@@ -11,14 +11,15 @@ use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
-use crate::protocol::{
-    extract_sec_websocket_extensions, parse_permessage_deflate, Opcode, WebSocketReader,
-    WebSocketWriter,
+use super::ws_decode::decode_ws_payload_for_storage;
+use super::ws_handshake::{
+    header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
+use crate::protocol::{parse_permessage_deflate, Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
@@ -105,25 +106,37 @@ pub async fn handle_websocket_upgrade(
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to send handshake: {}", e)))?;
 
-    let mut response_buf = vec![0u8; 4096];
-    let n = target_stream
-        .read(&mut response_buf)
-        .await
-        .map_err(|e| BifrostError::Network(format!("Failed to read handshake response: {}", e)))?;
-
-    let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
+    let (upstream_resp, upstream_leftover) =
+        read_http1_response_with_leftover(&mut target_stream).await?;
+    if upstream_resp.status_code != 101 {
         return Err(BifrostError::Network(format!(
-            "WebSocket handshake failed: {}",
-            response_str
+            "WebSocket handshake failed: {} {}",
+            upstream_resp.status_code, upstream_resp.status_text
         )));
     }
 
-    let sec_accept = extract_sec_websocket_accept(&response_str);
+    let sec_accept = upstream_resp
+        .header("Sec-WebSocket-Accept")
+        .map(|v| v.to_string());
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
 
-    let compression_enabled = extract_sec_websocket_extensions(&response_str)
-        .map(|ext| parse_permessage_deflate(&ext))
+    let client_protocol = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    let client_extensions = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok());
+
+    let negotiated_protocol = negotiate_protocol(client_protocol, upstream_protocol);
+    let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(parse_permessage_deflate)
         .unwrap_or(false);
+    let upstream_headers = upstream_resp.headers.clone();
 
     let total_ms = start_time.elapsed().as_millis() as u64;
     let record_id = ctx.id_str();
@@ -165,7 +178,7 @@ pub async fn handle_websocket_upgrade(
             receive_ms: None,
             total_ms,
         });
-        record.request_headers = Some(req_headers);
+        record.request_headers = Some(req_headers.clone());
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         record.client_ip = peer_addr.ip().to_string();
@@ -179,6 +192,16 @@ pub async fn handle_websocket_upgrade(
     }
 
     let record_id_clone = record_id.clone();
+    let ws_ctx = ctx.clone();
+    let ws_rules = resolved_rules.clone();
+    let ws_req_url = format!(
+        "ws://{}{}",
+        host,
+        uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
+    );
+    let ws_req_method = "GET".to_string();
+    let ws_req_headers = req_headers.clone();
+    let ws_decode_scripts = ws_rules.decode_scripts.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -188,6 +211,13 @@ pub async fn handle_websocket_upgrade(
                     &record_id_clone,
                     admin_state.clone(),
                     compression_enabled,
+                    upstream_leftover,
+                    ws_ctx,
+                    ws_rules,
+                    ws_req_url,
+                    ws_req_method,
+                    ws_req_headers,
+                    ws_decode_scripts,
                 )
                 .await
                 {
@@ -217,6 +247,26 @@ pub async fn handle_websocket_upgrade(
 
     if let Some(accept) = sec_accept {
         response = response.header("Sec-WebSocket-Accept", accept);
+    }
+
+    if let Some(protocol) = negotiated_protocol {
+        response = response.header("Sec-WebSocket-Protocol", protocol);
+    }
+
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+
+    for (name, value) in upstream_headers {
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
+        {
+            response = response.header(name, value);
+        }
     }
 
     Ok(response.body(empty_body()).unwrap())
@@ -257,6 +307,30 @@ fn build_websocket_handshake(req: &Request<Incoming>) -> Result<String> {
         path, host, ws_key, ws_version
     );
 
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("sec-websocket-protocol")
+            || n.eq_ignore_ascii_case("sec-websocket-extensions")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        if let Ok(v) = value.to_str() {
+            handshake.push_str(&format!("{}: {}\r\n", n, v));
+        }
+    }
+
     if let Some(protocol) = req
         .headers()
         .get("Sec-WebSocket-Protocol")
@@ -278,6 +352,7 @@ fn build_websocket_handshake(req: &Request<Incoming>) -> Result<String> {
     Ok(handshake)
 }
 
+#[cfg(test)]
 fn extract_sec_websocket_accept(response: &str) -> Option<String> {
     for line in response.lines() {
         if line.to_lowercase().starts_with("sec-websocket-accept:") {
@@ -320,12 +395,20 @@ fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn websocket_bidirectional_with_capture(
     upgraded: Upgraded,
     target: TcpStream,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
     compression_enabled: bool,
+    upstream_leftover: bytes::BytesMut,
+    ctx: RequestContext,
+    resolved_rules: crate::server::ResolvedRules,
+    request_url: String,
+    request_method: String,
+    request_headers: Vec<(String, String)>,
+    decode_scripts: Vec<String>,
 ) -> Result<()> {
     let client = TokioIo::new(upgraded);
     let (target_read, target_write) = target.into_split();
@@ -334,6 +417,18 @@ async fn websocket_bidirectional_with_capture(
     let record_id_owned = record_id.to_string();
     let admin_state_c2s = admin_state.clone();
     let admin_state_s2c = admin_state.clone();
+    let ctx_c2s = ctx.clone();
+    let ctx_s2c = ctx;
+    let rules_c2s = resolved_rules.clone();
+    let rules_s2c = resolved_rules;
+    let url_c2s = request_url.clone();
+    let url_s2c = request_url;
+    let method_c2s = request_method.clone();
+    let method_s2c = request_method;
+    let headers_c2s = request_headers.clone();
+    let headers_s2c = request_headers;
+    let scripts_c2s = decode_scripts.clone();
+    let scripts_s2c = decode_scripts;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
@@ -353,17 +448,49 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_c2s,
+                        &scripts_c2s,
+                        &ctx_c2s,
+                        &rules_c2s,
+                        &url_c2s,
+                        &method_c2s,
+                        &headers_c2s,
+                        FrameDirection::Send,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -396,7 +523,7 @@ async fn websocket_bidirectional_with_capture(
 
     let record_id_owned2 = record_id.to_string();
     let server_to_client = async move {
-        let mut reader = WebSocketReader::new(target_read);
+        let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
 
         while let Some(result) = reader.next().await {
@@ -413,17 +540,49 @@ async fn websocket_bidirectional_with_capture(
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_s2c,
+                        &scripts_s2c,
+                        &ctx_s2c,
+                        &rules_s2c,
+                        &url_s2c,
+                        &method_s2c,
+                        &headers_s2c,
+                        FrameDirection::Receive,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -492,12 +651,20 @@ async fn websocket_bidirectional_with_capture(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn websocket_bidirectional_generic_with_capture<S>(
     upgraded: Upgraded,
     target: S,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
     compression_enabled: bool,
+    upstream_leftover: bytes::BytesMut,
+    ctx: RequestContext,
+    resolved_rules: crate::server::ResolvedRules,
+    request_url: String,
+    request_method: String,
+    request_headers: Vec<(String, String)>,
+    decode_scripts: Vec<String>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -509,6 +676,18 @@ where
     let record_id_owned = record_id.to_string();
     let admin_state_c2s = admin_state.clone();
     let admin_state_s2c = admin_state.clone();
+    let ctx_c2s = ctx.clone();
+    let ctx_s2c = ctx;
+    let rules_c2s = resolved_rules.clone();
+    let rules_s2c = resolved_rules;
+    let url_c2s = request_url.clone();
+    let url_s2c = request_url;
+    let method_c2s = request_method.clone();
+    let method_s2c = request_method;
+    let headers_c2s = request_headers.clone();
+    let headers_s2c = request_headers;
+    let scripts_c2s = decode_scripts.clone();
+    let scripts_s2c = decode_scripts;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
@@ -528,17 +707,49 @@ where
                     .metrics_collector
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_c2s,
+                        &scripts_c2s,
+                        &ctx_c2s,
+                        &rules_c2s,
+                        &url_c2s,
+                        &method_c2s,
+                        &headers_c2s,
+                        FrameDirection::Send,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned,
                     FrameDirection::Send,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),
@@ -571,7 +782,7 @@ where
 
     let record_id_owned2 = record_id.to_string();
     let server_to_client = async move {
-        let mut reader = WebSocketReader::new(target_read);
+        let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
 
         while let Some(result) = reader.next().await {
@@ -588,17 +799,49 @@ where
                     .metrics_collector
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
+                let frame_type = opcode_to_frame_type(frame.opcode);
                 let payload_for_record = if compression_enabled && frame.is_compressed() {
                     frame.decompress_payload()
                 } else {
                     frame.payload.clone()
                 };
 
+                let decoded = if matches!(
+                    frame_type,
+                    FrameType::Text | FrameType::Binary | FrameType::Continuation
+                ) {
+                    decode_ws_payload_for_storage(
+                        &admin_state_s2c,
+                        &scripts_s2c,
+                        &ctx_s2c,
+                        &rules_s2c,
+                        &url_s2c,
+                        &method_s2c,
+                        &headers_s2c,
+                        FrameDirection::Receive,
+                        frame_type,
+                        payload_for_record.as_ref(),
+                    )
+                    .await
+                } else {
+                    None
+                };
+
+                let payload_is_text = decoded.is_some()
+                    || matches!(
+                        frame_type,
+                        FrameType::Text | FrameType::Close | FrameType::Sse
+                    );
+
                 state.connection_monitor.record_frame(
                     &record_id_owned2,
                     FrameDirection::Receive,
-                    opcode_to_frame_type(frame.opcode),
-                    &payload_for_record,
+                    frame_type,
+                    decoded
+                        .as_deref()
+                        .unwrap_or_else(|| payload_for_record.as_ref()),
+                    payload_is_text,
+                    decoded.as_ref().map(|_| payload_for_record.as_ref()),
                     frame.mask.is_some(),
                     frame.fin,
                     state.body_store.as_ref(),

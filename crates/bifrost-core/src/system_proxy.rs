@@ -526,23 +526,6 @@ impl SystemProxyManager {
             BifrostError::Config(format!("Failed to deserialize proxy backup: {}", e))
         })?;
 
-        if let Ok(current) = Self::get_current() {
-            if backup.host == current.host
-                && backup.port == current.port
-                && backup.enable == current.enable
-            {
-                tracing::warn!(
-                    "Backup config matches current proxy config (host={}, port={}), cleaning up invalid backup",
-                    backup.host,
-                    backup.port
-                );
-                self.remove_backup();
-                return Err(BifrostError::Config(
-                    "Invalid backup: matches current proxy config".to_string(),
-                ));
-            }
-        }
-
         Ok(backup.into())
     }
 
@@ -565,25 +548,37 @@ impl SystemProxyManager {
             BifrostError::Config(format!("Failed to deserialize proxy backup: {}", e))
         })?;
 
-        if let Ok(current) = Self::get_current() {
-            if backup.host == current.host
-                && backup.port == current.port
-                && backup.enable == current.enable
-            {
-                tracing::warn!(
-                    "Crash recovery: backup config matches current proxy config (host={}, port={}), cleaning up invalid backup",
-                    backup.host,
-                    backup.port
-                );
-                std::fs::remove_file(&backup_path)?;
-                return Ok(());
+        let proxy: Sysproxy = backup.into();
+        #[cfg(target_os = "macos")]
+        {
+            let result = if proxy.enable {
+                set_macos_all_services_proxy(&proxy.host, proxy.port, &proxy.bypass)
+            } else {
+                disable_macos_all_services_proxy()
+            };
+            if let Err(e) = result {
+                let msg = e.to_string();
+                if msg.contains("RequiresAdmin") {
+                    if proxy.enable {
+                        set_macos_all_services_proxy_with_gui_auth(
+                            &proxy.host,
+                            proxy.port,
+                            &proxy.bypass,
+                        )?;
+                    } else {
+                        disable_macos_all_services_proxy_with_gui_auth()?;
+                    }
+                } else {
+                    return Err(e);
+                }
             }
         }
-
-        let proxy: Sysproxy = backup.into();
-        proxy.set_system_proxy().map_err(|e| {
-            BifrostError::Config(format!("Failed to restore system proxy from crash: {}", e))
-        })?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            proxy.set_system_proxy().map_err(|e| {
+                BifrostError::Config(format!("Failed to restore system proxy from crash: {}", e))
+            })?;
+        }
 
         std::fs::remove_file(&backup_path)?;
         tracing::info!("Recovered system proxy from previous crash");

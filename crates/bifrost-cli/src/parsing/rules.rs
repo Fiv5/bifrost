@@ -514,6 +514,9 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             Protocol::ResScript => {
                 result.res_scripts.push(value.to_string());
             }
+            Protocol::Decode => {
+                result.decode_scripts.push(value.to_string());
+            }
             Protocol::Auth => {
                 result.auth = Some(value.to_string());
             }

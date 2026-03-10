@@ -1,6 +1,6 @@
 import client from './client';
 
-export type ScriptType = 'request' | 'response';
+export type ScriptType = 'request' | 'response' | 'decode';
 
 export interface ScriptInfo {
   name: string;
@@ -17,6 +17,7 @@ export interface ScriptDetail extends ScriptInfo {
 export interface ScriptsListResponse {
   request: ScriptInfo[];
   response: ScriptInfo[];
+  decode: ScriptInfo[];
 }
 
 export interface SaveScriptRequest {
@@ -60,6 +61,12 @@ export interface TestResponseModifications {
   body?: string;
 }
 
+export interface DecodeOutput {
+  data: string;
+  code: string;
+  msg: string;
+}
+
 export interface ScriptExecutionResult {
   script_name: string;
   script_type: ScriptType;
@@ -69,6 +76,7 @@ export interface ScriptExecutionResult {
   logs: ScriptLogEntry[];
   request_modifications?: TestRequestModifications;
   response_modifications?: TestResponseModifications;
+  decode_output?: DecodeOutput;
 }
 
 export const scriptsApi = {

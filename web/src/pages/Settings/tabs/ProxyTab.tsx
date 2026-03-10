@@ -30,7 +30,7 @@ import {
 } from "@ant-design/icons";
 import type { SystemOverview } from "../../../types";
 import { getProxyQRCodeUrl } from "../../../api/proxy";
-import type { ProxyAddressInfo, SystemProxyStatus } from "../../../api/proxy";
+import type { CliProxyStatus, ProxyAddressInfo, SystemProxyStatus } from "../../../api/proxy";
 import type { TlsConfig } from "../../../api/config";
 
 const { Text } = Typography;
@@ -469,6 +469,7 @@ const formatUptime = (secs: number): string => {
 
 export interface ProxyTabProps {
   systemProxy: SystemProxyStatus | null;
+  cliProxy: CliProxyStatus | null;
   systemProxyLoading: boolean;
   onToggleSystemProxy: (enabled: boolean) => void;
   copyProxyConfig: () => void;
@@ -502,6 +503,7 @@ export interface ProxyTabProps {
 
 export default function ProxyTab({
   systemProxy,
+  cliProxy,
   systemProxyLoading,
   onToggleSystemProxy,
   copyProxyConfig,
@@ -532,6 +534,35 @@ export default function ProxyTab({
   handleRemoveAppExcludePattern,
   appSuggestions,
 }: ProxyTabProps) {
+  const cliProxyDisplay = useMemo(() => {
+    if (!cliProxy) {
+      return {
+        tag: null as null | { color: string; text: string },
+        detail: "Loading...",
+      };
+    }
+
+    const tag = {
+      color: cliProxy.enabled ? "green" : "default",
+      text: cliProxy.enabled ? "Enabled" : "Disabled",
+    };
+
+    const shortFiles = (cliProxy.config_files || [])
+      .filter(Boolean)
+      .map((p) => p.split(/[/\\]/).pop() || p);
+
+    let filesText = "-";
+    if (shortFiles.length === 1) filesText = shortFiles[0];
+    else if (shortFiles.length === 2) filesText = `${shortFiles[0]}, ${shortFiles[1]}`;
+    else if (shortFiles.length > 2)
+      filesText = `${shortFiles[0]}, ${shortFiles[1]} (+${shortFiles.length - 2} more)`;
+
+    return {
+      tag,
+      detail: `Shell: ${cliProxy.shell || "-"} · Files: ${filesText}`,
+    };
+  }, [cliProxy]);
+
   return (
     <div>
       <Row gutter={[16, 16]}>
@@ -567,6 +598,41 @@ export default function ProxyTab({
               <Text type="secondary" style={{ fontSize: 12 }}>
                 Route all system traffic through this proxy
               </Text>
+
+              <Divider style={{ margin: "12px 0" }} />
+
+              <Row justify="space-between" align="middle">
+                <Col>
+                  <Space>
+                    <Text>CLI Proxy (ENV)</Text>
+                    <Tooltip title="Persist proxy environment variables in your shell config so new terminals inherit the proxy">
+                      <ExclamationCircleOutlined style={{ color: "#8c8c8c" }} />
+                    </Tooltip>
+                  </Space>
+                </Col>
+                <Col>
+                  {cliProxyDisplay.tag ? (
+                    <Tag color={cliProxyDisplay.tag.color}>{cliProxyDisplay.tag.text}</Tag>
+                  ) : (
+                    <Text type="secondary">Loading...</Text>
+                  )}
+                </Col>
+              </Row>
+              <Tooltip
+                title={
+                  cliProxy
+                    ? (
+                        <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                          {`Proxy URL: ${cliProxy.proxy_url}\nConfig files:\n${(cliProxy.config_files || []).join("\n") || "-"}`}
+                        </pre>
+                      )
+                    : undefined
+                }
+              >
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {cliProxyDisplay.detail}
+                </Text>
+              </Tooltip>
             </Space>
           </Card>
         </Col>

@@ -91,6 +91,10 @@ run_single_test() {
     local log_file="${RESULTS_DIR}/log_${test_index}.txt"
     local data_dir="${RESULTS_DIR}/data_${test_index}"
 
+    # 并行场景下，首次 HTTPS 请求可能因为证书/密钥生成 + CPU 竞争导致耗时显著增加。
+    # test_utils/http_client.sh 默认 TIMEOUT=10s，容易在高并发下触发 curl 000。
+    local timeout="${TIMEOUT:-60}"
+
     mkdir -p "$data_dir"
 
     {
@@ -98,7 +102,7 @@ run_single_test() {
         echo "PROXY_PORT=$proxy_port"
 
         local test_id="${rel_path}:${proxy_port}"
-        if TEST_ID="$test_id" "$SCRIPT_DIR/test_rules.sh" \
+        if TIMEOUT="$timeout" TEST_ID="$test_id" "$SCRIPT_DIR/test_rules.sh" \
             --no-build \
             --use-binary \
             --skip-mock-servers \
@@ -219,6 +223,36 @@ SKIP_BUILD="false"
 VERBOSE="false"
 BASE_PORT=9000
 
+pick_available_base_port() {
+    local requested_base_port="$1"
+    local suite_count="$2"
+    local attempt=0
+
+    # 需要保证 [base_port, base_port + suite_count - 1] 这一段端口都空闲，
+    # 否则并行运行时会出现“误连旧进程/绑定失败”等随机用例失败。
+    while [[ $attempt -lt 30 ]]; do
+        local candidate=$((requested_base_port + attempt * 100))
+        local ok=true
+
+        for ((p=candidate; p<candidate + suite_count; p++)); do
+            if lsof -i ":${p}" -t >/dev/null 2>&1; then
+                ok=false
+                break
+            fi
+        done
+
+        if [[ "$ok" == "true" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+
+        attempt=$((attempt + 1))
+    done
+
+    # 回退：返回原值，由后续单测自行报错。
+    echo "$requested_base_port"
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -297,6 +331,15 @@ main() {
         warn "没有找到测试文件"
         exit 0
     fi
+
+    # 如果默认端口段被占用（例如本机已有 bifrost 或其它服务占用 9000），
+    # 自动选择一个可用的连续端口段，避免并行测试误连旧进程/绑定失败。
+    local selected_base_port
+    selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites")
+    if [[ "$selected_base_port" != "$BASE_PORT" ]]; then
+        warn "起始端口 ${BASE_PORT} 的端口段已被占用，自动切换到 ${selected_base_port}"
+    fi
+    BASE_PORT="$selected_base_port"
 
     info "找到 $total_suites 个测试套件，使用 $JOBS 个并行任务"
 

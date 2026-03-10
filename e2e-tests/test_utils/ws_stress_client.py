@@ -106,6 +106,7 @@ def run(
     message_text: str,
     messages: int,
     timeout_s: float,
+    expect_binary: bool,
 ):
     key = base64.b64encode(os.urandom(16)).decode("ascii")
     expected_accept = base64.b64encode(
@@ -136,12 +137,13 @@ def run(
         for _ in range(messages):
             sock.sendall(_ws_make_client_text_frame(payload))
 
-        recv_text = 0
+        recv_ok = 0
         start = time.time()
-        while recv_text < messages and (time.time() - start) < timeout_s:
+        expected_opcode = 2 if expect_binary else 1
+        while recv_ok < messages and (time.time() - start) < timeout_s:
             _, opcode, _payload = _ws_read_frame(sock, timeout_s)
-            if opcode == 1:
-                recv_text += 1
+            if opcode == expected_opcode:
+                recv_ok += 1
             elif opcode == 8:
                 break
             elif opcode == 9:
@@ -152,8 +154,8 @@ def run(
                 sock.sendall(bytes(pong) + pong_payload)
 
         sock.sendall(_ws_make_client_close_frame(1000))
-        if recv_text < messages:
-            raise RuntimeError(f"expected {messages} messages, got {recv_text}")
+        if recv_ok < messages:
+            raise RuntimeError(f"expected {messages} messages, got {recv_ok}")
     finally:
         try:
             sock.close()
@@ -170,6 +172,7 @@ def main():
     ap.add_argument("--message", default='{"type":"ping"}')
     ap.add_argument("--messages", type=int, default=1000)
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument("--expect-binary", action="store_true")
     args = ap.parse_args()
 
     run(
@@ -180,9 +183,9 @@ def main():
         message_text=args.message,
         messages=args.messages,
         timeout_s=args.timeout,
+        expect_binary=args.expect_binary,
     )
 
 
 if __name__ == "__main__":
     main()
-

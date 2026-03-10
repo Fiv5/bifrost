@@ -5,7 +5,8 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULES_DIR="${SCRIPT_DIR}/rules"
-TEST_DATA_DIR="${PROJECT_DIR}/.bifrost-test"
+# 优先使用 BIFROST_DATA_DIR，避免覆盖本机已有数据；也便于并行/多开测试。
+TEST_DATA_DIR="${BIFROST_DATA_DIR:-${PROJECT_DIR}/.bifrost-test}"
 
 source "$SCRIPT_DIR/test_utils/assert.sh"
 source "$SCRIPT_DIR/test_utils/http_client.sh"
@@ -18,6 +19,8 @@ ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-3000}"
 ECHO_HTTPS_PORT="${ECHO_HTTPS_PORT:-3443}"
 ECHO_WS_PORT="${ECHO_WS_PORT:-3020}"
 ECHO_WSS_PORT="${ECHO_WSS_PORT:-3021}"
+ECHO_SSE_PORT="${ECHO_SSE_PORT:-3003}"
+ECHO_PROXY_PORT="${ECHO_PROXY_PORT:-9999}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -50,6 +53,9 @@ usage() {
     echo "  ECHO_HTTP_PORT     HTTP Echo 服务器端口 (默认: 3000)"
     echo "  ECHO_HTTPS_PORT    HTTPS Echo 服务器端口 (默认: 3443)"
     echo "  ECHO_WS_PORT       WebSocket Echo 服务器端口 (默认: 3020)"
+    echo "  ECHO_WSS_PORT      WebSocket Secure Echo 服务器端口 (默认: 3021)"
+    echo "  ECHO_SSE_PORT      SSE Echo 服务器端口 (默认: 3003)"
+    echo "  ECHO_PROXY_PORT    HTTP Proxy Echo 服务器端口 (默认: 9999)"
     echo ""
     echo "示例:"
     echo "  $0 rules/forwarding/http_to_http.txt"
@@ -196,7 +202,16 @@ start_echo_servers() {
         return 0
     fi
 
-    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
+    # 端口可能被上一次异常退出遗留的 mock 进程占用；先清理再启动。
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+
+    HTTP_PORT="$ECHO_HTTP_PORT" \
+    HTTPS_PORT="$ECHO_HTTPS_PORT" \
+    WS_PORT="$ECHO_WS_PORT" \
+    WSS_PORT="$ECHO_WSS_PORT" \
+    SSE_PORT="$ECHO_SSE_PORT" \
+    PROXY_PORT="$ECHO_PROXY_PORT" \
+        "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
 
     sleep 2
 
@@ -220,12 +235,44 @@ preprocess_rules_file() {
 start_proxy() {
     header "启动代理服务器"
 
+    # 端口可能被前一次测试遗留进程占用；如果不确保端口释放，
+    # 后续的健康检查可能会连到“旧进程”，导致用例误判。
     if lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1; then
-        local existing_pid=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | head -1)
-        warn "端口 ${PROXY_PORT} 已被占用 (PID: $existing_pid)"
+        local pids
+        pids=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | sort -u | tr '\n' ' ' | xargs echo -n 2>/dev/null || true)
+        warn "端口 ${PROXY_PORT} 已被占用 (PID: ${pids:-unknown})"
         info "尝试终止现有进程..."
-        kill "$existing_pid" 2>/dev/null || true
-        sleep 1
+        if [[ -n "$pids" ]]; then
+            # 优先优雅退出
+            kill $pids 2>/dev/null || true
+        fi
+
+        local wait_free=0
+        while lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1 && [[ $wait_free -lt 20 ]]; do
+            sleep 0.5
+            wait_free=$((wait_free + 1))
+        done
+
+        if lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1; then
+            info "端口仍被占用，强制终止..."
+            local pids_force
+            pids_force=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | sort -u | tr '\n' ' ' | xargs echo -n 2>/dev/null || true)
+            if [[ -n "$pids_force" ]]; then
+                kill -9 $pids_force 2>/dev/null || true
+            fi
+
+            wait_free=0
+            while lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1 && [[ $wait_free -lt 20 ]]; do
+                sleep 0.5
+                wait_free=$((wait_free + 1))
+            done
+        fi
+
+        if lsof -i ":${PROXY_PORT}" -t >/dev/null 2>&1; then
+            echo -e "${RED}✗${NC} 端口 ${PROXY_PORT} 仍被占用，无法启动测试代理"
+            lsof -i ":${PROXY_PORT}" 2>/dev/null || true
+            exit 1
+        fi
     fi
 
     info "启动代理 (端口: ${PROXY_PORT})..."
@@ -264,10 +311,22 @@ start_proxy() {
     local max_wait=180
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
-        if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
-            echo -e "${GREEN}✓${NC} 代理服务器已启动 (PID: $PROXY_PID)"
-            echo -e "${GREEN}✓${NC} 规则已从文件加载: ${RULE_FILE}"
-            return 0
+        # 如果进程已经退出，直接失败并提示日志位置。
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            echo -e "${RED}✗${NC} 代理进程已退出 (PID: $PROXY_PID)"
+            echo -e "${RED}✗${NC} 请检查: ${TEST_DATA_DIR}/logs"
+            exit 1
+        fi
+
+        # 确认监听端口的 PID 就是我们刚启动的进程，避免误连到旧服务。
+        local bound_pid
+        bound_pid=$(lsof -i ":${PROXY_PORT}" -t 2>/dev/null | head -1 || true)
+        if [[ -n "$bound_pid" && "$bound_pid" == "$PROXY_PID" ]]; then
+            if curl -s --proxy "$PROXY" --connect-timeout 1 http://example.com >/dev/null 2>&1; then
+                echo -e "${GREEN}✓${NC} 代理服务器已启动 (PID: $PROXY_PID)"
+                echo -e "${GREEN}✓${NC} 规则已从文件加载: ${RULE_FILE}"
+                return 0
+            fi
         fi
         sleep 1
         waited=$((waited + 1))
@@ -389,7 +448,7 @@ test_redirect_rule() {
         -k \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "$test_url" 2>/dev/null) || HTTP_STATUS="000"
 
     HTTP_HEADERS=$(cat "$_temp_headers_file")
@@ -400,7 +459,11 @@ test_redirect_rule() {
     assert_header_exists "Location" "$HTTP_HEADERS" "重定向应包含 Location 头"
 
     if [[ -n "$target" ]]; then
-        assert_header_contains "Location" "$target" "$HTTP_HEADERS" "Location 应指向目标地址"
+        local expected_location="$target"
+        if [[ "$expected_location" =~ ^[0-9]{3}:.+ ]]; then
+            expected_location="${expected_location#*:}"
+        fi
+        assert_header_contains "Location" "$expected_location" "$HTTP_HEADERS" "Location 应指向目标地址"
     fi
 }
 
@@ -514,7 +577,9 @@ test_ua_change() {
     echo "    请求: $test_url"
     echo "    期望 UA: $expected_ua"
 
-    http_get "$test_url"
+    # TLS 拦截场景下，curl 会看到由本地 CA 签发的证书；测试用例不要求安装/信任该 CA，
+    # 因此这里使用 -k 的 https_request，避免出现 http_code=000。
+    https_request "$test_url"
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
 
@@ -616,7 +681,7 @@ test_cors() {
         -H "Origin: https://example.com" \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "$test_url" 2>/dev/null) || HTTP_STATUS="000"
 
     HTTP_HEADERS=$(cat "$_temp_headers_file")
@@ -677,12 +742,15 @@ test_websocket_forward() {
     local tmpfile=$(mktemp)
     local headers_file=$(mktemp)
 
+    # WebSocket 握手会升级连接并保持打开；如果 max-time 过大，curl 会一直等待直到超时，
+    # 导致测试套件耗时暴涨。这里使用独立的握手超时，确保只验证握手阶段。
+    local ws_timeout="${WS_HANDSHAKE_TIMEOUT:-5}"
     local ws_response_code
     ws_response_code=$(curl -s -w "%{http_code}" \
         --proxy "$PROXY" \
         -k \
         --connect-timeout 5 \
-        --max-time 10 \
+        --max-time "$ws_timeout" \
         -H "Upgrade: websocket" \
         -H "Connection: Upgrade" \
         -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
@@ -903,7 +971,7 @@ test_html_inject() {
         -H "Accept: text/html" \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "$test_url" 2>/dev/null) || HTTP_STATUS="000"
 
     HTTP_HEADERS=$(cat "$_temp_headers_file")
@@ -943,7 +1011,7 @@ test_js_inject() {
         -H "Accept: application/javascript" \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "$test_url" 2>/dev/null) || HTTP_STATUS="000"
 
     HTTP_HEADERS=$(cat "$_temp_headers_file")
@@ -983,7 +1051,7 @@ test_css_inject() {
         -H "Accept: text/css" \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "$test_url" 2>/dev/null) || HTTP_STATUS="000"
 
     HTTP_HEADERS=$(cat "$_temp_headers_file")
@@ -1204,7 +1272,7 @@ test_include_filter_semantic() {
             -X "$test_method" \
             -D "$_temp_headers_file" \
             -o "$_temp_body_file" \
-            --max-time 10 \
+            --max-time "${TIMEOUT:-10}" \
             "$test_url" 2>/dev/null) || HTTP_STATUS="000"
         HTTP_HEADERS=$(cat "$_temp_headers_file")
         HTTP_BODY=$(cat "$_temp_body_file")
@@ -1263,7 +1331,7 @@ test_exclude_filter_semantic() {
             -X DELETE \
             -D "$_temp_headers_file" \
             -o "$_temp_body_file" \
-            --max-time 10 \
+            --max-time "${TIMEOUT:-10}" \
             "$test_url" 2>/dev/null) || HTTP_STATUS="000"
         HTTP_HEADERS=$(cat "$_temp_headers_file")
         HTTP_BODY=$(cat "$_temp_body_file")
@@ -1277,7 +1345,7 @@ test_exclude_filter_semantic() {
             -X "$test_method" \
             -D "$_temp_headers_file" \
             -o "$_temp_body_file" \
-            --max-time 10 \
+            --max-time "${TIMEOUT:-10}" \
             "$test_url" 2>/dev/null) || HTTP_STATUS="000"
         HTTP_HEADERS=$(cat "$_temp_headers_file")
         HTTP_BODY=$(cat "$_temp_body_file")
@@ -2487,7 +2555,7 @@ run_line_block_tests() {
         -k \
         -D "$_temp_headers_file" \
         -o "$_temp_body_file" \
-        --max-time 10 \
+        --max-time "${TIMEOUT:-10}" \
         "http://lb-filter.local/admin/users" 2>/dev/null) || HTTP_STATUS="000"
     rm -f "$_temp_headers_file" "$_temp_body_file"
 

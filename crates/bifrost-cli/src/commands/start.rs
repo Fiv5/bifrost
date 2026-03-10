@@ -94,6 +94,8 @@ pub fn run_start(
     rules_file: Option<PathBuf>,
     system_proxy: bool,
     proxy_bypass: Option<String>,
+    cli_proxy: bool,
+    cli_proxy_no_proxy: Option<String>,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
@@ -291,6 +293,8 @@ pub fn run_start(
                 all_values.clone(),
                 enable_system_proxy,
                 system_proxy_bypass.clone(),
+                cli_proxy,
+                cli_proxy_no_proxy.clone(),
                 config_manager,
                 log_dir.clone(),
                 log_retention_days,
@@ -309,6 +313,8 @@ pub fn run_start(
             all_values,
             enable_system_proxy,
             system_proxy_bypass,
+            cli_proxy,
+            cli_proxy_no_proxy,
             disconnect_on_config_change,
             config_manager,
         )?;
@@ -324,6 +330,8 @@ pub fn run_foreground(
     cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
+    enable_cli_proxy: bool,
+    cli_proxy_no_proxy: Option<String>,
     disconnect_on_config_change: bool,
     config_manager: ConfigManager,
 ) -> bifrost_core::Result<()> {
@@ -354,9 +362,13 @@ pub fn run_foreground(
         bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
     ));
     let _system_proxy_restore_guard = SystemProxyRestoreGuard::new(system_proxy_manager.clone());
+    let mut shell_proxy_manager = bifrost_core::ShellProxyManager::new(bifrost_dir.clone());
 
     if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
         tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
+    }
+    if let Err(e) = bifrost_core::ShellProxyManager::recover_from_crash(&bifrost_dir) {
+        tracing::warn!("Failed to recover CLI proxy from previous crash: {}", e);
     }
 
     let mut system_proxy_enabled = false;
@@ -408,6 +420,31 @@ pub fn run_foreground(
                 } else {
                     eprintln!("  ✗ Failed to enable system proxy: {}", e);
                 }
+            }
+        }
+    }
+
+    let mut cli_proxy_enabled = false;
+    let cli_proxy_no_proxy =
+        cli_proxy_no_proxy.unwrap_or_else(|| "localhost,127.0.0.1,::1,*.local".to_string());
+    let cli_proxy_host = if config.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        config.host.clone()
+    };
+    if enable_cli_proxy {
+        match shell_proxy_manager.enable_persistent(
+            &cli_proxy_host,
+            config.port,
+            &cli_proxy_no_proxy,
+        ) {
+            Ok(()) => {
+                cli_proxy_enabled = true;
+            }
+            Err(e) => {
+                eprintln!("  ✗ Failed to enable CLI proxy: {}", e);
+                remove_pid()?;
+                return Err(e);
             }
         }
     }
@@ -491,6 +528,21 @@ pub fn run_foreground(
     }
 
     println!();
+    println!("🖥️  CLI PROXY (ENV)");
+    if cli_proxy_enabled {
+        println!("   Status:        ✓ Enabled");
+        println!(
+            "   Proxy:         http://{}:{}",
+            cli_proxy_host, config.port
+        );
+        println!("   No Proxy:      {}", cli_proxy_no_proxy);
+    } else if enable_cli_proxy {
+        println!("   Status:        ⚠ Requested but not enabled");
+    } else {
+        println!("   Status:        Disabled");
+    }
+
+    println!();
     println!("🛡️  ACCESS CONTROL");
     println!("   Mode:          {}", config.access_mode);
     if !config.client_whitelist.is_empty() {
@@ -531,190 +583,225 @@ pub fn run_foreground(
     })?;
 
     rt.block_on(async {
-        let stored_config = config_manager.config().await;
-        let body_temp_dir = bifrost_dir.join("body_cache");
-        let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
-            body_temp_dir,
-            stored_config.traffic.max_body_memory_size,
-            stored_config.traffic.file_retention_days,
-            stored_config.traffic.sse_stream_flush_bytes,
-            Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
-        )));
-        bifrost_admin::start_body_cleanup_task(body_store.clone());
+        let result: bifrost_core::Result<()> = async {
+            let stored_config = config_manager.config().await;
+            let body_temp_dir = bifrost_dir.join("body_cache");
+            let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
+                body_temp_dir,
+                stored_config.traffic.max_body_memory_size,
+                stored_config.traffic.file_retention_days,
+                stored_config.traffic.sse_stream_flush_bytes,
+                Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
+            )));
+            bifrost_admin::start_body_cleanup_task(body_store.clone());
 
-        let ws_payload_store = Arc::new(WsPayloadStore::new(
-            bifrost_dir.clone(),
-            stored_config.traffic.ws_payload_flush_bytes,
-            Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
-            stored_config.traffic.ws_payload_max_open_files,
-            stored_config.traffic.file_retention_days,
-        ));
-        start_ws_payload_cleanup_task(ws_payload_store.clone());
+            let ws_payload_store = Arc::new(WsPayloadStore::new(
+                bifrost_dir.clone(),
+                stored_config.traffic.ws_payload_flush_bytes,
+                Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
+                stored_config.traffic.ws_payload_max_open_files,
+                stored_config.traffic.file_retention_days,
+            ));
+            start_ws_payload_cleanup_task(ws_payload_store.clone());
 
-        let traffic_dir = bifrost_dir.join("traffic");
-        let traffic_db_store = Arc::new(
-            bifrost_admin::TrafficDbStore::new(
-                traffic_dir,
-                stored_config.traffic.max_records,
-                stored_config.traffic.max_db_size_bytes,
+            let traffic_dir = bifrost_dir.join("traffic");
+            let traffic_db_store = Arc::new(
+                bifrost_admin::TrafficDbStore::new(
+                    traffic_dir,
+                    stored_config.traffic.max_records,
+                    stored_config.traffic.max_db_size_bytes,
+                    Some(stored_config.traffic.file_retention_days * 24),
+                )
+                .expect("Failed to create traffic database"),
+            );
+
+            let (async_traffic_writer, async_traffic_rx) =
+                AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+            let async_traffic_writer = Arc::new(async_traffic_writer);
+            let _async_traffic_task = start_async_traffic_processor(
+                async_traffic_rx,
+                Some(traffic_db_store.clone()),
+                None,
+            );
+
+            let frame_store = Arc::new(bifrost_admin::FrameStore::new(
+                bifrost_dir.clone(),
                 Some(stored_config.traffic.file_retention_days * 24),
-            )
-            .expect("Failed to create traffic database"),
-        );
+            ));
+            start_frame_cleanup_task(frame_store.clone());
 
-        let (async_traffic_writer, async_traffic_rx) =
-            AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
-        let async_traffic_writer = Arc::new(async_traffic_writer);
-        let _async_traffic_task =
-            start_async_traffic_processor(async_traffic_rx, Some(traffic_db_store.clone()), None);
+            let cleanup_body_store = body_store.clone();
+            let cleanup_frame_store = frame_store.clone();
+            let cleanup_ws_payload_store = ws_payload_store.clone();
+            traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+                let _ = cleanup_body_store.write().delete_by_ids(ids);
+                let _ = cleanup_frame_store.delete_by_ids(ids);
+                let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+            }));
 
-        let frame_store = Arc::new(bifrost_admin::FrameStore::new(
-            bifrost_dir.clone(),
-            Some(stored_config.traffic.file_retention_days * 24),
-        ));
-        start_frame_cleanup_task(frame_store.clone());
-
-        let cleanup_body_store = body_store.clone();
-        let cleanup_frame_store = frame_store.clone();
-        let cleanup_ws_payload_store = ws_payload_store.clone();
-        traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
-            let _ = cleanup_body_store.write().delete_by_ids(ids);
-            let _ = cleanup_frame_store.delete_by_ids(ids);
-            let _ = cleanup_ws_payload_store.delete_by_ids(ids);
-        }));
-
-        let values_storage = config_manager.values_storage().await;
-        let rules_storage = config_manager.rules_storage().await;
-        let mut values = {
-            use bifrost_core::ValueStore;
-            values_storage.as_hashmap()
-        };
-        for (k, v) in cli_values {
-            values.entry(k).or_insert(v);
-        }
-
-        let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
-
-        let runtime_config = RuntimeConfig {
-            enable_tls_interception: config.enable_tls_interception,
-            intercept_exclude: config.intercept_exclude.clone(),
-            intercept_include: config.intercept_include.clone(),
-            app_intercept_exclude: config.app_intercept_exclude.clone(),
-            app_intercept_include: config.app_intercept_include.clone(),
-            unsafe_ssl: config.unsafe_ssl,
-            disconnect_on_config_change,
-        };
-        let connection_registry =
-            bifrost_admin::ConnectionRegistry::new(disconnect_on_config_change);
-
-        let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
-
-        let scripts_dir = bifrost_dir.join("scripts");
-        let script_manager = bifrost_admin::ScriptManager::new(scripts_dir);
-        if let Err(e) = script_manager.init().await {
-            tracing::warn!("Failed to initialize script manager: {}", e);
-        }
-
-        let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
-            Ok(store) => Some(Arc::new(store)),
-            Err(e) => {
-                tracing::warn!("Failed to initialize replay store: {}", e);
-                None
+            let values_storage = config_manager.values_storage().await;
+            let rules_storage = config_manager.rules_storage().await;
+            let mut values = {
+                use bifrost_core::ValueStore;
+                values_storage.as_hashmap()
+            };
+            for (k, v) in cli_values {
+                values.entry(k).or_insert(v);
             }
-        };
 
-        let admin_state = AdminState::new(config.port)
-            .with_body_store(body_store)
-            .with_ws_payload_store(ws_payload_store)
-            .with_async_traffic_writer_shared(async_traffic_writer)
-            .with_traffic_db_store_shared(traffic_db_store.clone())
-            .with_frame_store_shared(frame_store)
-            .with_runtime_config(runtime_config)
-            .with_connection_registry(connection_registry)
-            .with_values_storage(values_storage)
-            .with_rules_storage(rules_storage)
-            .with_ca_cert_path(ca_cert_path)
-            .with_system_proxy_manager_shared(system_proxy_manager.clone())
-            .with_config_manager(config_manager)
-            .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
-            .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
-            .with_app_icon_cache(app_icon_cache)
-            .with_script_manager(script_manager)
-            .with_replay_db_store_shared_opt(replay_db_store);
+            let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 
-        bifrost_admin::start_db_cleanup_task(traffic_db_store);
-        bifrost_admin::start_connection_cleanup_task(admin_state.connection_monitor.clone());
+            let runtime_config = RuntimeConfig {
+                enable_tls_interception: config.enable_tls_interception,
+                intercept_exclude: config.intercept_exclude.clone(),
+                intercept_include: config.intercept_include.clone(),
+                app_intercept_exclude: config.app_intercept_exclude.clone(),
+                app_intercept_include: config.app_intercept_include.clone(),
+                unsafe_ssl: config.unsafe_ssl,
+                disconnect_on_config_change,
+            };
+            let connection_registry =
+                bifrost_admin::ConnectionRegistry::new(disconnect_on_config_change);
 
-        let metrics_collector = admin_state.metrics_collector.clone();
-        let rules_storage_for_resolver = admin_state.rules_storage.clone();
-        let config_manager_for_resolver = admin_state.config_manager.clone();
-        let values_storage_for_resolver = admin_state
-            .values_storage
-            .clone()
-            .expect("values_storage should be set");
-        let connection_registry_for_resolver = admin_state.connection_registry.clone();
-        let runtime_config_for_resolver = admin_state.runtime_config.clone();
+            let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
-        let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
-        let mut merged_values = values.clone();
-        for (k, v) in inline_values {
-            merged_values.entry(k).or_insert(v);
-        }
-        let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
-            cli_rules,
-            stored_rules,
-            merged_values,
-        ));
+            let scripts_dir = bifrost_dir.join("scripts");
+            let script_manager = bifrost_admin::ScriptManager::new(scripts_dir);
+            if let Err(e) = script_manager.init().await {
+                tracing::warn!("Failed to initialize script manager: {}", e);
+            }
 
-        log_resolver_rules(&resolver);
-
-        let unsafe_ssl = config.unsafe_ssl;
-        let server = ProxyServer::new(config)
-            .with_tls_config(tls_config)
-            .with_admin_state(admin_state)
-            .with_rules(resolver.clone());
-
-        let admin_state_arc = server
-            .admin_state()
-            .cloned()
-            .expect("admin_state should be set");
-
-        let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
-            admin_state_arc.clone(),
-            unsafe_ssl,
-        ));
-        admin_state_arc.set_replay_executor(replay_executor);
-
-        let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-        let _push_tasks = start_push_tasks(push_manager.clone());
-        let server = server.with_push_manager(push_manager);
-
-        let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
-
-        let rules_watcher_task = spawn_rules_watcher_task(
-            config_manager_for_resolver,
-            rules_storage_for_resolver,
-            values_storage_for_resolver,
-            resolver.clone(),
-            connection_registry_for_resolver,
-            runtime_config_for_resolver,
-        );
-
-        tokio::select! {
-            result = server.run() => {
-                if let Err(e) = result {
-                    eprintln!("Server error: {}", e);
+            let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
+                Ok(store) => Some(Arc::new(store)),
+                Err(e) => {
+                    tracing::warn!("Failed to initialize replay store: {}", e);
+                    None
                 }
-            }
-            _ = wait_for_shutdown_signal() => {
-                info!("Received shutdown signal");
-                println!("\nShutting down...");
-            }
-        }
+            };
 
-        rules_watcher_task.abort();
+            let admin_state = AdminState::new(config.port)
+                .with_body_store(body_store)
+                .with_ws_payload_store(ws_payload_store)
+                .with_async_traffic_writer_shared(async_traffic_writer)
+                .with_traffic_db_store_shared(traffic_db_store.clone())
+                .with_frame_store_shared(frame_store)
+                .with_runtime_config(runtime_config)
+                .with_connection_registry(connection_registry)
+                .with_values_storage(values_storage)
+                .with_rules_storage(rules_storage)
+                .with_ca_cert_path(ca_cert_path)
+                .with_system_proxy_manager_shared(system_proxy_manager.clone())
+                .with_config_manager(config_manager)
+                .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+                .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
+                .with_app_icon_cache(app_icon_cache)
+                .with_script_manager(script_manager)
+                .with_replay_db_store_shared_opt(replay_db_store);
+
+            bifrost_admin::start_db_cleanup_task(traffic_db_store);
+            bifrost_admin::start_connection_cleanup_task(admin_state.connection_monitor.clone());
+
+            let metrics_collector = admin_state.metrics_collector.clone();
+            let rules_storage_for_resolver = admin_state.rules_storage.clone();
+            let config_manager_for_resolver = admin_state.config_manager.clone();
+            let values_storage_for_resolver = admin_state
+                .values_storage
+                .clone()
+                .expect("values_storage should be set");
+            let connection_registry_for_resolver = admin_state.connection_registry.clone();
+            let runtime_config_for_resolver = admin_state.runtime_config.clone();
+
+            let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
+            let mut merged_values = values.clone();
+            for (k, v) in inline_values {
+                merged_values.entry(k).or_insert(v);
+            }
+            let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
+                cli_rules,
+                stored_rules,
+                merged_values,
+            ));
+
+            log_resolver_rules(&resolver);
+
+            let unsafe_ssl = config.unsafe_ssl;
+            let server = ProxyServer::new(config)
+                .with_tls_config(tls_config)
+                .with_admin_state(admin_state)
+                .with_rules(resolver.clone());
+
+            let admin_state_arc = server
+                .admin_state()
+                .cloned()
+                .expect("admin_state should be set");
+
+            let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
+                admin_state_arc.clone(),
+                unsafe_ssl,
+            ));
+            admin_state_arc.set_replay_executor(replay_executor);
+
+            let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+            let _push_tasks = start_push_tasks(push_manager.clone());
+            let server = server.with_push_manager(push_manager);
+
+            let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
+
+            let rules_watcher_task = spawn_rules_watcher_task(
+                config_manager_for_resolver,
+                rules_storage_for_resolver,
+                values_storage_for_resolver,
+                resolver.clone(),
+                connection_registry_for_resolver,
+                runtime_config_for_resolver,
+            );
+
+            tokio::select! {
+                result = server.run() => {
+                    if let Err(e) = result {
+                        eprintln!("Server error: {}", e);
+                    }
+                }
+                _ = wait_for_shutdown_signal() => {
+                    info!("Received shutdown signal");
+                    println!("\nShutting down...");
+                },
+                _ = async {
+                    #[cfg(unix)]
+                    {
+                        let Ok(mut sigterm) = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::terminate(),
+                        ) else {
+                            std::future::pending::<()>().await;
+                            return;
+                        };
+                        sigterm.recv().await;
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    info!("Received SIGTERM");
+                    println!("\nShutting down...");
+                },
+            }
+
+            rules_watcher_task.abort();
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = result {
+            eprintln!("Runtime error: {}", e);
+        }
     });
 
+    if cli_proxy_enabled {
+        if let Err(e) = shell_proxy_manager.restore() {
+            eprintln!("Failed to restore CLI proxy: {}", e);
+        }
+    }
     remove_pid()?;
     println!("Bifrost proxy stopped.");
     Ok(())
@@ -728,6 +815,8 @@ pub fn run_daemon(
     cli_values: HashMap<String, String>,
     enable_system_proxy: bool,
     system_proxy_bypass: String,
+    enable_cli_proxy: bool,
+    cli_proxy_no_proxy: Option<String>,
     config_manager: ConfigManager,
     log_dir: PathBuf,
     log_retention_days: u32,
@@ -829,11 +918,13 @@ pub fn run_daemon(
             let system_proxy_manager = std::sync::Arc::new(tokio::sync::RwLock::new(
                 bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
             ));
-            let _system_proxy_restore_guard =
-                SystemProxyRestoreGuard::new(system_proxy_manager.clone());
+            let mut shell_proxy_manager = bifrost_core::ShellProxyManager::new(bifrost_dir.clone());
 
             if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
                 tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
+            }
+            if let Err(e) = bifrost_core::ShellProxyManager::recover_from_crash(&bifrost_dir) {
+                tracing::warn!("Failed to recover CLI proxy from previous crash: {}", e);
             }
 
             if enable_system_proxy {
@@ -881,6 +972,27 @@ pub fn run_daemon(
                 }
             }
 
+            let mut cli_proxy_enabled = false;
+            let cli_proxy_no_proxy =
+                cli_proxy_no_proxy.unwrap_or_else(|| "localhost,127.0.0.1,::1,*.local".to_string());
+            let cli_proxy_host = if config.host == "0.0.0.0" {
+                "127.0.0.1".to_string()
+            } else {
+                config.host.clone()
+            };
+            if enable_cli_proxy {
+                if let Err(e) = shell_proxy_manager.enable_persistent(
+                    &cli_proxy_host,
+                    config.port,
+                    &cli_proxy_no_proxy,
+                ) {
+                    eprintln!("Failed to enable CLI proxy: {}", e);
+                    remove_pid()?;
+                    std::process::exit(1);
+                }
+                cli_proxy_enabled = true;
+            }
+
             let rt = tokio::runtime::Runtime::new().map_err(|e| {
                 bifrost_core::BifrostError::Config(format!("Failed to create runtime: {}", e))
             })?;
@@ -894,195 +1006,209 @@ pub fn run_daemon(
                     host: Some(config.host.clone()),
                 };
                 write_runtime_info(&runtime_info).expect("Failed to write runtime info");
-                let shutdown = tokio::spawn(wait_for_shutdown_signal());
-                tokio::task::yield_now().await;
+                // 先安装 shutdown 信号监听，避免初始化阶段收到 SIGTERM 导致直接退出、但无法记录优雅退出日志。
+                // 这也能让 `bifrost stop` 在 daemon 启动早期更可靠。
+                let result: bifrost_core::Result<()> = tokio::select! {
+                    _ = wait_for_shutdown_signal() => {
+                        // 注意：daemon 场景下 tracing 日志可能写入 rolling file（例如 bifrost.YYYY-MM-DD.log），
+                        // 这里同时写到 stdout，确保 stop/测试能在 bifrost.log 中观察到“优雅退出”。
+                        info!("Received shutdown signal");
+                        println!("Received shutdown signal");
+                        Ok(())
+                    }
+                    result = async {
+                    let stored_config = config_manager.config().await;
+                    let body_temp_dir = bifrost_dir.join("body_cache");
+                    let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
+                        body_temp_dir,
+                        stored_config.traffic.max_body_memory_size,
+                        stored_config.traffic.file_retention_days,
+                        stored_config.traffic.sse_stream_flush_bytes,
+                        Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
+                    )));
+                    bifrost_admin::start_body_cleanup_task(body_store.clone());
 
-                let stored_config = config_manager.config().await;
-                let body_temp_dir = bifrost_dir.join("body_cache");
-                let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
-                    body_temp_dir,
-                    stored_config.traffic.max_body_memory_size,
-                    stored_config.traffic.file_retention_days,
-                    stored_config.traffic.sse_stream_flush_bytes,
-                    Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
-                )));
-                bifrost_admin::start_body_cleanup_task(body_store.clone());
+                    let ws_payload_store = Arc::new(WsPayloadStore::new(
+                        bifrost_dir.clone(),
+                        stored_config.traffic.ws_payload_flush_bytes,
+                        Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
+                        stored_config.traffic.ws_payload_max_open_files,
+                        stored_config.traffic.file_retention_days,
+                    ));
+                    start_ws_payload_cleanup_task(ws_payload_store.clone());
 
-                let ws_payload_store = Arc::new(WsPayloadStore::new(
-                    bifrost_dir.clone(),
-                    stored_config.traffic.ws_payload_flush_bytes,
-                    Duration::from_millis(stored_config.traffic.ws_payload_flush_interval_ms),
-                    stored_config.traffic.ws_payload_max_open_files,
-                    stored_config.traffic.file_retention_days,
-                ));
-                start_ws_payload_cleanup_task(ws_payload_store.clone());
+                    let traffic_dir = bifrost_dir.join("traffic");
+                    let traffic_db_store = Arc::new(
+                        bifrost_admin::TrafficDbStore::new(
+                            traffic_dir,
+                            stored_config.traffic.max_records,
+                            stored_config.traffic.max_db_size_bytes,
+                            Some(stored_config.traffic.file_retention_days * 24),
+                        )
+                        .expect("Failed to create traffic database"),
+                    );
 
-                let traffic_dir = bifrost_dir.join("traffic");
-                let traffic_db_store = Arc::new(
-                    bifrost_admin::TrafficDbStore::new(
-                        traffic_dir,
-                        stored_config.traffic.max_records,
-                        stored_config.traffic.max_db_size_bytes,
+                    let (async_traffic_writer, async_traffic_rx) =
+                        AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
+                    let async_traffic_writer = Arc::new(async_traffic_writer);
+                    let _async_traffic_task = start_async_traffic_processor(
+                        async_traffic_rx,
+                        Some(traffic_db_store.clone()),
+                        None,
+                    );
+
+                    let frame_store = Arc::new(bifrost_admin::FrameStore::new(
+                        bifrost_dir.clone(),
                         Some(stored_config.traffic.file_retention_days * 24),
-                    )
-                    .expect("Failed to create traffic database"),
-                );
+                    ));
+                    start_frame_cleanup_task(frame_store.clone());
 
-                let (async_traffic_writer, async_traffic_rx) =
-                    AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
-                let async_traffic_writer = Arc::new(async_traffic_writer);
-                let _async_traffic_task = start_async_traffic_processor(
-                    async_traffic_rx,
-                    Some(traffic_db_store.clone()),
-                    None,
-                );
+                    let cleanup_body_store = body_store.clone();
+                    let cleanup_frame_store = frame_store.clone();
+                    let cleanup_ws_payload_store = ws_payload_store.clone();
+                    traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
+                        let _ = cleanup_body_store.write().delete_by_ids(ids);
+                        let _ = cleanup_frame_store.delete_by_ids(ids);
+                        let _ = cleanup_ws_payload_store.delete_by_ids(ids);
+                    }));
 
-                let frame_store = Arc::new(bifrost_admin::FrameStore::new(
-                    bifrost_dir.clone(),
-                    Some(stored_config.traffic.file_retention_days * 24),
-                ));
-                start_frame_cleanup_task(frame_store.clone());
-
-                let cleanup_body_store = body_store.clone();
-                let cleanup_frame_store = frame_store.clone();
-                let cleanup_ws_payload_store = ws_payload_store.clone();
-                traffic_db_store.set_cleanup_notifier(Arc::new(move |ids| {
-                    let _ = cleanup_body_store.write().delete_by_ids(ids);
-                    let _ = cleanup_frame_store.delete_by_ids(ids);
-                    let _ = cleanup_ws_payload_store.delete_by_ids(ids);
-                }));
-
-                let values_storage = config_manager.values_storage().await;
-                let rules_storage = config_manager.rules_storage().await;
-                let mut values = {
-                    use bifrost_core::ValueStore;
-                    values_storage.as_hashmap()
-                };
-                for (k, v) in cli_values {
-                    values.entry(k).or_insert(v);
-                }
-
-                let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
-
-                let runtime_config = RuntimeConfig {
-                    enable_tls_interception: config.enable_tls_interception,
-                    intercept_exclude: config.intercept_exclude.clone(),
-                    intercept_include: config.intercept_include.clone(),
-                    app_intercept_exclude: config.app_intercept_exclude.clone(),
-                    app_intercept_include: config.app_intercept_include.clone(),
-                    unsafe_ssl: config.unsafe_ssl,
-                    disconnect_on_config_change: true,
-                };
-                let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
-                let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
-
-                let scripts_dir = bifrost_dir.join("scripts");
-                let script_manager = bifrost_admin::ScriptManager::new(scripts_dir);
-                if let Err(e) = script_manager.init().await {
-                    tracing::warn!("Failed to initialize script manager: {}", e);
-                }
-
-                let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
-                    Ok(store) => Some(Arc::new(store)),
-                    Err(e) => {
-                        tracing::warn!("Failed to initialize replay store: {}", e);
-                        None
+                    let values_storage = config_manager.values_storage().await;
+                    let rules_storage = config_manager.rules_storage().await;
+                    let mut values = {
+                        use bifrost_core::ValueStore;
+                        values_storage.as_hashmap()
+                    };
+                    for (k, v) in cli_values {
+                        values.entry(k).or_insert(v);
                     }
-                };
 
-                let admin_state = AdminState::new(config.port)
-                    .with_body_store(body_store)
-                    .with_ws_payload_store(ws_payload_store)
-                    .with_async_traffic_writer_shared(async_traffic_writer)
-                    .with_traffic_db_store_shared(traffic_db_store.clone())
-                    .with_frame_store_shared(frame_store)
-                    .with_runtime_config(runtime_config)
-                    .with_connection_registry(connection_registry)
-                    .with_values_storage(values_storage)
-                    .with_rules_storage(rules_storage)
-                    .with_ca_cert_path(ca_cert_path)
-                    .with_system_proxy_manager_shared(system_proxy_manager.clone())
-                    .with_config_manager(config_manager)
-                    .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
-                    .with_app_icon_cache(app_icon_cache)
-                    .with_script_manager(script_manager)
-                    .with_replay_db_store_shared_opt(replay_db_store);
+                    let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 
-                bifrost_admin::start_db_cleanup_task(traffic_db_store);
-                bifrost_admin::start_connection_cleanup_task(
-                    admin_state.connection_monitor.clone(),
-                );
+                    let runtime_config = RuntimeConfig {
+                        enable_tls_interception: config.enable_tls_interception,
+                        intercept_exclude: config.intercept_exclude.clone(),
+                        intercept_include: config.intercept_include.clone(),
+                        app_intercept_exclude: config.app_intercept_exclude.clone(),
+                        app_intercept_include: config.app_intercept_include.clone(),
+                        unsafe_ssl: config.unsafe_ssl,
+                        disconnect_on_config_change: true,
+                    };
+                    let connection_registry = bifrost_admin::ConnectionRegistry::new(true);
+                    let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
 
-                let metrics_collector = admin_state.metrics_collector.clone();
-                let rules_storage_for_resolver = admin_state.rules_storage.clone();
-                let config_manager_for_resolver = admin_state.config_manager.clone();
-                let values_storage_for_resolver = admin_state
-                    .values_storage
-                    .clone()
-                    .expect("values_storage should be set");
-                let connection_registry_for_resolver = admin_state.connection_registry.clone();
-                let runtime_config_for_resolver = admin_state.runtime_config.clone();
+                    let scripts_dir = bifrost_dir.join("scripts");
+                    let script_manager = bifrost_admin::ScriptManager::new(scripts_dir);
+                    if let Err(e) = script_manager.init().await {
+                        tracing::warn!("Failed to initialize script manager: {}", e);
+                    }
 
-                let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
-                let mut merged_values = values.clone();
-                for (k, v) in inline_values {
-                    merged_values.entry(k).or_insert(v);
-                }
-                let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
-                    cli_rules,
-                    stored_rules,
-                    merged_values,
-                ));
-
-                log_resolver_rules(&resolver);
-
-                let unsafe_ssl = config.unsafe_ssl;
-                let server = ProxyServer::new(config)
-                    .with_tls_config(tls_config)
-                    .with_admin_state(admin_state)
-                    .with_rules(resolver.clone());
-
-                let admin_state_arc = server
-                    .admin_state()
-                    .cloned()
-                    .expect("admin_state should be set");
-
-                let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
-                    admin_state_arc.clone(),
-                    unsafe_ssl,
-                ));
-                admin_state_arc.set_replay_executor(replay_executor);
-
-                let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-                let _push_tasks = start_push_tasks(push_manager.clone());
-                let server = server.with_push_manager(push_manager);
-
-                let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
-
-                let rules_watcher_task = spawn_rules_watcher_task(
-                    config_manager_for_resolver,
-                    rules_storage_for_resolver,
-                    values_storage_for_resolver,
-                    resolver.clone(),
-                    connection_registry_for_resolver,
-                    runtime_config_for_resolver,
-                );
-
-                tokio::select! {
-                    result = server.run() => {
-                        if let Err(e) = result {
-                            eprintln!("Server error: {}", e);
+                    let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
+                        Ok(store) => Some(Arc::new(store)),
+                        Err(e) => {
+                            tracing::warn!("Failed to initialize replay store: {}", e);
+                            None
                         }
-                    }
-                    _ = shutdown => {
-                        tracing::info!("Received shutdown signal");
-                        eprintln!("Received shutdown signal");
-                    }
-                }
+                    };
 
-                rules_watcher_task.abort();
+                    let admin_state = AdminState::new(config.port)
+                        .with_body_store(body_store)
+                        .with_ws_payload_store(ws_payload_store)
+                        .with_async_traffic_writer_shared(async_traffic_writer)
+                        .with_traffic_db_store_shared(traffic_db_store.clone())
+                        .with_frame_store_shared(frame_store)
+                        .with_runtime_config(runtime_config)
+                        .with_connection_registry(connection_registry)
+                        .with_values_storage(values_storage)
+                        .with_rules_storage(rules_storage)
+                        .with_ca_cert_path(ca_cert_path)
+                        .with_system_proxy_manager_shared(system_proxy_manager.clone())
+                        .with_config_manager(config_manager)
+                        .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
+                        .with_app_icon_cache(app_icon_cache)
+                        .with_script_manager(script_manager)
+                        .with_replay_db_store_shared_opt(replay_db_store);
+
+                    bifrost_admin::start_db_cleanup_task(traffic_db_store);
+                    bifrost_admin::start_connection_cleanup_task(
+                        admin_state.connection_monitor.clone(),
+                    );
+
+                    let metrics_collector = admin_state.metrics_collector.clone();
+                    let rules_storage_for_resolver = admin_state.rules_storage.clone();
+                    let config_manager_for_resolver = admin_state.config_manager.clone();
+                    let values_storage_for_resolver = admin_state
+                        .values_storage
+                        .clone()
+                        .expect("values_storage should be set");
+                    let connection_registry_for_resolver = admin_state.connection_registry.clone();
+                    let runtime_config_for_resolver = admin_state.runtime_config.clone();
+
+                    let (stored_rules, inline_values) =
+                        load_stored_rules(&rules_storage_for_resolver);
+                    let mut merged_values = values.clone();
+                    for (k, v) in inline_values {
+                        merged_values.entry(k).or_insert(v);
+                    }
+                    let resolver: SharedDynamicRulesResolver = Arc::new(DynamicRulesResolver::new(
+                        cli_rules,
+                        stored_rules,
+                        merged_values,
+                    ));
+
+                    log_resolver_rules(&resolver);
+
+                    let unsafe_ssl = config.unsafe_ssl;
+                    let server = ProxyServer::new(config)
+                        .with_tls_config(tls_config)
+                        .with_admin_state(admin_state)
+                        .with_rules(resolver.clone());
+
+                    let admin_state_arc = server
+                        .admin_state()
+                        .cloned()
+                        .expect("admin_state should be set");
+
+                    let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
+                        admin_state_arc.clone(),
+                        unsafe_ssl,
+                    ));
+                    admin_state_arc.set_replay_executor(replay_executor);
+
+                    let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
+                    let _push_tasks = start_push_tasks(push_manager.clone());
+                    let server = server.with_push_manager(push_manager);
+
+                    let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
+
+                    let rules_watcher_task = spawn_rules_watcher_task(
+                        config_manager_for_resolver,
+                        rules_storage_for_resolver,
+                        values_storage_for_resolver,
+                        resolver.clone(),
+                        connection_registry_for_resolver,
+                        runtime_config_for_resolver,
+                    );
+
+                    if let Err(e) = server.run().await {
+                        eprintln!("Server error: {}", e);
+                    }
+
+                    rules_watcher_task.abort();
+                    Ok(())
+                }
+                => result,
+                };
+
+                if let Err(e) = result {
+                    eprintln!("Runtime error: {}", e);
+                }
             });
 
+            if cli_proxy_enabled {
+                if let Err(e) = shell_proxy_manager.restore() {
+                    eprintln!("Failed to restore CLI proxy: {}", e);
+                }
+            }
             if let Err(e) = system_proxy_manager.blocking_write().restore() {
                 eprintln!("Failed to restore system proxy: {}", e);
             }

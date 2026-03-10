@@ -6,6 +6,7 @@ pub mod matcher;
 pub mod panic_handler;
 pub mod protocol;
 pub mod rule;
+pub mod shell_proxy;
 pub mod syntax;
 pub mod system_proxy;
 
@@ -30,6 +31,7 @@ pub use rule::{
     ResolvedRules, Rule, RuleGroup, RuleGroupManager, RuleParser, RulesResolver, ScriptReference,
     SharedValueStore, TemplateEngine, ValidationResult, ValueStore, VariableInfo,
 };
+pub use shell_proxy::{ShellProxyManager, ShellProxyStatus, ShellType};
 pub use syntax::{
     get_all_protocols, get_filter_value_specs, get_pattern_types, get_syntax_info,
     get_template_variables, validate_filter_value, FilterValidationError, PatternInfo,

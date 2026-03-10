@@ -5,20 +5,24 @@ use std::sync::Arc;
 
 use base64::Engine;
 use bifrost_core::{parse_rules, RequestContext, Rule, RulesResolver, ValueStore};
-use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use bytes::{Bytes, BytesMut};
+use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, upgrade, Method, Request, Response, StatusCode, Uri};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio_rustls::TlsConnector;
 
-use tokio_tungstenite::{tungstenite::protocol::Message, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
+use super::replay_ws::{
+    compute_accept_key, generate_sec_websocket_key, header_values, negotiate_extensions,
+    negotiate_protocol, parse_permessage_deflate, read_http1_response_with_leftover, HttpResponse,
+    Opcode, WebSocketReader, WebSocketWriter,
+};
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::push::SharedPushManager;
 use crate::replay_db::{
@@ -27,7 +31,7 @@ use crate::replay_db::{
 };
 use crate::request_rules::{apply_all_request_rules, build_applied_rules, AppliedRequest};
 use crate::state::SharedAdminState;
-use crate::traffic::{MatchedRule, TrafficRecord};
+use crate::traffic::{FrameDirection, FrameType, MatchedRule, TrafficRecord};
 
 static REPLAY_SEMAPHORE: once_cell::sync::Lazy<Arc<Semaphore>> =
     once_cell::sync::Lazy::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_REPLAYS)));
@@ -112,13 +116,6 @@ pub struct StreamEvent {
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebSocketMessage {
-    pub type_: String,
-    pub data: String,
-    pub timestamp: u64,
 }
 
 pub async fn handle_replay(
@@ -251,7 +248,7 @@ async fn execute_replay_unified(
         custom_rules: None,
     });
 
-    let (matched_rules, applied_request) = resolve_and_apply_rules(
+    let (resolved_rules, matched_rules, applied_request) = resolve_and_apply_rules(
         &state,
         &rule_config,
         &unified_req.url,
@@ -301,19 +298,31 @@ async fn execute_replay_unified(
         req_builder = req_builder.body(body.clone());
     }
 
+    let start_time = std::time::Instant::now();
+    // NOTE: timeout_ms 只用于“连接建立/首包(headers)获取”的超时控制。
+    // 不能用于整个请求生命周期，否则 SSE 这类长连接会在超时后被错误断开。
     let timeout_ms = unified_req
         .timeout_ms
         .unwrap_or(crate::replay_executor::DEFAULT_TIMEOUT_MS);
-    req_builder = req_builder.timeout(std::time::Duration::from_millis(timeout_ms));
-
-    let start_time = std::time::Instant::now();
-    let response = match req_builder.send().await {
-        Ok(r) => r,
-        Err(e) => {
+    let send_future = req_builder.send();
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        send_future,
+    )
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             drop(permit);
             let error_msg = format!("Request failed: {}", e);
             error!(replay_id = %replay_id, error = %error_msg, "[UNIFIED_REPLAY] Request failed");
             return error_response(StatusCode::BAD_GATEWAY, &error_msg);
+        }
+        Err(_) => {
+            drop(permit);
+            let error_msg = format!("Request timeout after {}ms", timeout_ms);
+            error!(replay_id = %replay_id, error = %error_msg, "[UNIFIED_REPLAY] Request timed out");
+            return error_response(StatusCode::GATEWAY_TIMEOUT, &error_msg);
         }
     };
 
@@ -413,6 +422,9 @@ async fn execute_replay_unified(
             Ok(b) => decode_replay_body(&response_headers, &b),
             Err(_) => None,
         };
+
+        let (status, response_headers, response_body) =
+            apply_response_rules(&resolved_rules, status, response_headers, response_body);
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
         drop(permit);
@@ -1313,17 +1325,41 @@ async fn execute_replay_websocket(
     state: SharedAdminState,
     push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
-    use hyper::upgrade;
-    use tokio_tungstenite::WebSocketStream;
+    if req.method() != Method::GET {
+        return method_not_allowed();
+    }
 
     let upgrade_header = req
         .headers()
         .get("Upgrade")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-
     if !upgrade_header.eq_ignore_ascii_case("websocket") {
         return error_response(StatusCode::BAD_REQUEST, "Invalid upgrade header");
+    }
+
+    let connection_header = req
+        .headers()
+        .get("Connection")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !header_contains_token(connection_header, "upgrade") {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid connection header");
+    }
+
+    let ws_version = req
+        .headers()
+        .get("Sec-WebSocket-Version")
+        .and_then(|v| v.to_str().ok());
+    if let Some(v) = ws_version {
+        if v.trim() != "13" {
+            return Response::builder()
+                .status(StatusCode::UPGRADE_REQUIRED)
+                .header("Sec-WebSocket-Version", "13")
+                .header("Access-Control-Allow-Origin", "*")
+                .body(BoxBody::default())
+                .unwrap();
+        }
     }
 
     let ws_key = match req.headers().get("Sec-WebSocket-Key") {
@@ -1332,6 +1368,24 @@ async fn execute_replay_websocket(
             return error_response(StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Key header");
         }
     };
+    let key_ok = base64::engine::general_purpose::STANDARD
+        .decode(ws_key.as_bytes())
+        .map(|v| v.len() == 16)
+        .unwrap_or(false);
+    if !key_ok {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid Sec-WebSocket-Key header");
+    }
+
+    let client_protocol_offer = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let client_extensions_offer = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     let upgrade_headers: Vec<(String, String)> = req
         .headers()
@@ -1340,13 +1394,7 @@ async fn execute_replay_websocket(
             let name = k.as_str().to_lowercase();
             !matches!(
                 name.as_str(),
-                "upgrade"
-                    | "connection"
-                    | "sec-websocket-key"
-                    | "sec-websocket-version"
-                    | "sec-websocket-extensions"
-                    | "sec-websocket-protocol"
-                    | "host"
+                "upgrade" | "connection" | "sec-websocket-key" | "sec-websocket-version" | "host"
             )
         })
         .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
@@ -1382,7 +1430,7 @@ async fn execute_replay_websocket(
 
     info!(replay_id = %replay_id, url = %url, "Starting WebSocket proxy");
 
-    let (matched_rules, applied_request) =
+    let (_resolved_rules, matched_rules, applied_request) =
         resolve_and_apply_rules(&state, &rule_config, &url, "GET", &upgrade_headers, None);
 
     info!(
@@ -1404,293 +1452,569 @@ async fn execute_replay_websocket(
             &traffic_id,
             "GET",
             &applied_request.url,
-            200,
+            101,
             0,
             &rule_config,
         );
     }
 
-    let accept_key = generate_accept_key(&ws_key);
-    let applied_url = applied_request.url.clone();
+    state.connection_monitor.register_connection(&traffic_id);
 
+    let unsafe_ssl = state.runtime_config.read().await.unsafe_ssl;
+    let (upstream_stream, upstream_resp, upstream_leftover) = match connect_upstream_websocket(
+        &applied_request.url,
+        &applied_request.headers,
+        unsafe_ssl,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("Failed to connect to target WebSocket: {}", e),
+            )
+        }
+    };
+
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
+    let negotiated_protocol =
+        negotiate_protocol(client_protocol_offer.as_deref(), upstream_protocol);
+    let negotiated_extensions =
+        negotiate_extensions(client_extensions_offer.as_deref(), &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(parse_permessage_deflate)
+        .unwrap_or(false);
+
+    let accept_key = compute_accept_key(&ws_key);
+    let upstream_headers = upstream_resp.headers.clone();
+
+    let replay_id_for_task = replay_id.clone();
+    let traffic_id_for_task = traffic_id.clone();
+    let state_for_task = state.clone();
+    let frame_store = state.frame_store.clone();
+    let ws_payload_store = state.ws_payload_store.clone();
     tokio::spawn(async move {
-        let upgraded = match upgrade::on(req).await {
-            Ok(u) => u,
-            Err(e) => {
+        let upgraded = match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            upgrade::on(req),
+        )
+        .await
+        {
+            Ok(Ok(u)) => u,
+            Ok(Err(e)) => {
                 error!(error = %e, "WebSocket upgrade failed");
+                return;
+            }
+            Err(_) => {
+                error!("WebSocket upgrade timeout");
                 return;
             }
         };
 
-        let client_ws = WebSocketStream::from_raw_socket(
-            hyper_util::rt::TokioIo::new(upgraded),
-            tokio_tungstenite::tungstenite::protocol::Role::Server,
-            None,
+        if let Err(e) = websocket_bidirectional_generic_with_capture(
+            upgraded,
+            upstream_stream,
+            upstream_leftover,
+            &traffic_id_for_task,
+            &state_for_task,
+            compression_enabled,
         )
-        .await;
-
-        match connect_websocket(&applied_url).await {
-            Ok(connection) => match connection {
-                WebSocketConnection::Plain(server_ws) => {
-                    proxy_websocket(
-                        client_ws,
-                        *server_ws,
-                        &replay_id,
-                        &traffic_id,
-                        request_id,
-                        &state,
-                    )
-                    .await;
-                }
-                WebSocketConnection::Tls(server_ws) => {
-                    proxy_websocket(
-                        client_ws,
-                        *server_ws,
-                        &replay_id,
-                        &traffic_id,
-                        request_id,
-                        &state,
-                    )
-                    .await;
-                }
-            },
-            Err(e) => {
-                error!(error = %e, replay_id = %replay_id, "Failed to connect to target WebSocket");
-                let (mut sender, _) = client_ws.split();
-                let error_msg = Message::Text(
-                    format!("Error: Failed to connect to target WebSocket: {}", e).into(),
-                );
-                let _ = sender.send(error_msg).await;
-            }
+        .await
+        {
+            error!(error = %e, replay_id = %replay_id_for_task, traffic_id = %traffic_id_for_task, "WebSocket replay tunnel error");
         }
 
-        info!(replay_id = %replay_id, traffic_id = %traffic_id, "WebSocket proxy closed");
+        let should_close = state_for_task
+            .connection_monitor
+            .get_connection_status(&traffic_id_for_task)
+            .map(|s| s.is_open)
+            .unwrap_or(false);
+        if should_close {
+            state_for_task.connection_monitor.set_connection_closed(
+                &traffic_id_for_task,
+                None,
+                None,
+                frame_store.as_ref(),
+                ws_payload_store.as_ref(),
+            );
+        }
+        persist_socket_summary(&state_for_task, &traffic_id_for_task);
+
+        info!(replay_id = %replay_id_for_task, traffic_id = %traffic_id_for_task, "WebSocket proxy closed");
     });
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
         .header("Sec-WebSocket-Accept", accept_key)
-        .header("Access-Control-Allow-Origin", "*")
-        .body(BoxBody::default())
-        .unwrap()
+        .header("Access-Control-Allow-Origin", "*");
+
+    if let Some(protocol) = negotiated_protocol {
+        response = response.header("Sec-WebSocket-Protocol", protocol);
+    }
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+    for (name, value) in upstream_headers {
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
+        {
+            response = response.header(name, value);
+        }
+    }
+
+    response.body(BoxBody::default()).unwrap()
 }
 
-fn generate_accept_key(key: &str) -> String {
-    use base64::engine::general_purpose::STANDARD as BASE64;
-    use sha1::{Digest, Sha1};
-
-    const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    let mut hasher = Sha1::new();
-    hasher.update(key.as_bytes());
-    hasher.update(WS_GUID.as_bytes());
-    BASE64.encode(hasher.finalize())
+fn header_contains_token(header_value: &str, token: &str) -> bool {
+    header_value
+        .split(',')
+        .flat_map(|s| s.split(';'))
+        .map(|s| s.trim().to_ascii_lowercase())
+        .any(|t| t == token)
 }
 
-enum WebSocketConnection {
-    Plain(Box<WebSocketStream<TcpStream>>),
-    Tls(Box<WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>>),
-}
+trait WsIo: AsyncRead + AsyncWrite {}
+impl<T: AsyncRead + AsyncWrite + ?Sized> WsIo for T {}
+type BoxedWsStream = Box<dyn WsIo + Unpin + Send>;
 
-async fn connect_websocket(url: &str) -> Result<WebSocketConnection, String> {
+async fn connect_upstream_websocket(
+    url: &str,
+    headers: &[(String, String)],
+    unsafe_ssl: bool,
+) -> Result<(BoxedWsStream, HttpResponse, BytesMut), String> {
     let parsed_url = url::Url::parse(url).map_err(|e| format!("Invalid URL: {}", e))?;
-
     let is_secure = match parsed_url.scheme() {
         "wss" | "https" => true,
         "ws" | "http" => false,
         scheme => return Err(format!("Unsupported scheme: {}", scheme)),
     };
 
-    let host = parsed_url
+    let ws_url = if parsed_url.scheme() == "http" || parsed_url.scheme() == "https" {
+        let mut new = parsed_url.clone();
+        let scheme = if is_secure { "wss" } else { "ws" };
+        new.set_scheme(scheme)
+            .map_err(|_| format!("Failed to set scheme to {}", scheme))?;
+        new
+    } else {
+        parsed_url.clone()
+    };
+
+    let host = ws_url
         .host_str()
-        .ok_or_else(|| "Missing host".to_string())?;
-    let port = parsed_url
-        .port()
-        .unwrap_or(if is_secure { 443 } else { 80 });
+        .ok_or_else(|| "Missing host".to_string())?
+        .to_string();
+    let port = ws_url.port().unwrap_or(if is_secure { 443 } else { 80 });
     let addr = format!("{}:{}", host, port);
 
-    debug!(url = %url, host = %host, port = %port, is_secure = %is_secure, "[WS_REPLAY] Connecting to WebSocket");
+    debug!(
+        url = %ws_url.as_str(),
+        host = %host,
+        port = %port,
+        is_secure = %is_secure,
+        "[WS_REPLAY] Connecting to upstream WebSocket"
+    );
 
     let tcp_stream = TcpStream::connect(&addr)
         .await
         .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
 
+    let _ = tcp_stream.set_nodelay(true);
+
+    let path = {
+        let mut p = ws_url.path().to_string();
+        if p.is_empty() {
+            p.push('/');
+        }
+        if let Some(q) = ws_url.query() {
+            p.push('?');
+            p.push_str(q);
+        }
+        p
+    };
+
+    let host_header = if (is_secure && port == 443) || (!is_secure && port == 80) {
+        host.clone()
+    } else {
+        format!("{}:{}", host, port)
+    };
+
+    let ws_key = generate_sec_websocket_key();
+    let handshake = build_upstream_websocket_handshake(&path, &host_header, &ws_key, headers);
+
     if is_secure {
-        let tls_config = get_ws_tls_client_config();
-        let connector = TlsConnector::from(Arc::new(tls_config));
-
-        let server_name = ServerName::try_from(host.to_string())
-            .map_err(|e| format!("Invalid server name: {}", e))?;
-
-        let tls_stream = connector
+        let connector = TlsConnector::from(Arc::new(get_ws_tls_client_config(unsafe_ssl)));
+        let server_name =
+            ServerName::try_from(host).map_err(|e| format!("Invalid server name: {}", e))?;
+        let mut tls_stream = connector
             .connect(server_name, tcp_stream)
             .await
             .map_err(|e| format!("TLS handshake failed: {}", e))?;
 
-        let (ws_stream, _) = tokio_tungstenite::client_async(url, tls_stream)
+        tls_stream
+            .write_all(handshake.as_bytes())
             .await
-            .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
+            .map_err(|e| format!("Failed to send handshake: {}", e))?;
 
-        Ok(WebSocketConnection::Tls(Box::new(ws_stream)))
+        let (resp, leftover) = read_http1_response_with_leftover(&mut tls_stream).await?;
+        validate_upstream_handshake(&resp, &ws_key)?;
+        Ok((Box::new(tls_stream), resp, leftover))
     } else {
-        let (ws_stream, _) = tokio_tungstenite::client_async(url, tcp_stream)
+        let mut stream = tcp_stream;
+        stream
+            .write_all(handshake.as_bytes())
             .await
-            .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
+            .map_err(|e| format!("Failed to send handshake: {}", e))?;
 
-        Ok(WebSocketConnection::Plain(Box::new(ws_stream)))
+        let (resp, leftover) = read_http1_response_with_leftover(&mut stream).await?;
+        validate_upstream_handshake(&resp, &ws_key)?;
+        Ok((Box::new(stream), resp, leftover))
     }
 }
 
-fn get_ws_tls_client_config() -> rustls::ClientConfig {
+fn build_upstream_websocket_handshake(
+    path: &str,
+    host: &str,
+    key: &str,
+    headers: &[(String, String)],
+) -> String {
+    let mut handshake = format!(
+        "GET {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: {}\r\n\
+         Sec-WebSocket-Version: 13\r\n",
+        path, host, key
+    );
+
+    for (name, value) in headers {
+        if should_skip_ws_forward_header(name) {
+            continue;
+        }
+        handshake.push_str(&format!("{}: {}\r\n", name, value));
+    }
+    handshake.push_str("\r\n");
+    handshake
+}
+
+fn should_skip_ws_forward_header(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "host"
+            | "upgrade"
+            | "connection"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "content-length"
+            | "transfer-encoding"
+            | "proxy-connection"
+            | "keep-alive"
+            | "te"
+            | "trailer"
+    )
+}
+
+fn validate_upstream_handshake(resp: &HttpResponse, ws_key: &str) -> Result<(), String> {
+    if resp.status_code != 101 {
+        return Err(format!(
+            "WebSocket handshake failed: {} {}",
+            resp.status_code, resp.status_text
+        ));
+    }
+    let expected = compute_accept_key(ws_key);
+    let got = resp
+        .header("Sec-WebSocket-Accept")
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if got != expected {
+        return Err("Invalid Sec-WebSocket-Accept from upstream".to_string());
+    }
+    Ok(())
+}
+
+fn get_ws_tls_client_config(unsafe_ssl: bool) -> rustls::ClientConfig {
     use rustls::{ClientConfig, RootCertStore};
 
-    let mut root_store = RootCertStore::empty();
-    let certs = rustls_native_certs::load_native_certs();
-    for cert in certs.certs {
-        let _ = root_store.add(cert);
-    }
+    if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoCertificateVerification {}))
+            .with_no_client_auth()
+    } else {
+        let mut root_store = RootCertStore::empty();
+        let certs = rustls_native_certs::load_native_certs();
+        for cert in certs.certs {
+            let _ = root_store.add(cert);
+        }
 
-    ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth()
+        ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth()
+    }
 }
 
-async fn proxy_websocket<S>(
-    client_ws: WebSocketStream<hyper_util::rt::TokioIo<upgrade::Upgraded>>,
-    server_ws: WebSocketStream<S>,
-    replay_id: &str,
-    traffic_id: &str,
-    _request_id: Option<String>,
-    state: &SharedAdminState,
-) where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut client_tx, mut client_rx) = client_ws.split();
-    let (mut server_tx, mut server_rx) = server_ws.split();
+#[derive(Debug)]
+struct NoCertificateVerification;
 
-    let replay_id_clone = replay_id.to_string();
-    let traffic_id_clone = traffic_id.to_string();
-    let state_clone = state.clone();
-
-    let client_to_server = tokio::spawn(async move {
-        while let Some(Ok(msg)) = client_rx.next().await {
-            match msg {
-                Message::Text(text) => {
-                    info!(replay_id = %replay_id_clone, "Client -> Server: {}", text);
-                    // Record message
-                    record_websocket_message(
-                        &state_clone,
-                        &replay_id_clone,
-                        &traffic_id_clone,
-                        &None,
-                        "send",
-                        &text,
-                    );
-                    if let Err(e) = server_tx.send(Message::Text(text)).await {
-                        error!(error = %e, replay_id = %replay_id_clone, "Failed to send to server");
-                        break;
-                    }
-                }
-                Message::Binary(data) => {
-                    info!(replay_id = %replay_id_clone, "Client -> Server: [Binary data]");
-                    // Record message
-                    record_websocket_message(
-                        &state_clone,
-                        &replay_id_clone,
-                        &traffic_id_clone,
-                        &None,
-                        "send_binary",
-                        &base64::engine::general_purpose::STANDARD.encode(&data),
-                    );
-                    if let Err(e) = server_tx.send(Message::Binary(data)).await {
-                        error!(error = %e, replay_id = %replay_id_clone, "Failed to send to server");
-                        break;
-                    }
-                }
-                Message::Ping(data) => {
-                    if let Err(_e) = server_tx.send(Message::Ping(data)).await {
-                        break;
-                    }
-                }
-                Message::Pong(data) => {
-                    if let Err(_e) = server_tx.send(Message::Pong(data)).await {
-                        break;
-                    }
-                }
-                Message::Close(_) => {
-                    let _ = server_tx.send(Message::Close(None)).await;
-                    break;
-                }
-                Message::Frame(_) => {}
-            }
-        }
-    });
-
-    let replay_id_clone2 = replay_id.to_string();
-    let traffic_id_clone2 = traffic_id.to_string();
-    let state_clone2 = state.clone();
-
-    let server_to_client = tokio::spawn(async move {
-        while let Some(Ok(msg)) = server_rx.next().await {
-            match msg {
-                Message::Text(text) => {
-                    info!(replay_id = %replay_id_clone2, "Server -> Client: {}", text);
-                    // Record message
-                    record_websocket_message(
-                        &state_clone2,
-                        &replay_id_clone2,
-                        &traffic_id_clone2,
-                        &None,
-                        "receive",
-                        &text,
-                    );
-                    if let Err(e) = client_tx.send(Message::Text(text)).await {
-                        error!(error = %e, replay_id = %replay_id_clone2, "Failed to send to client");
-                        break;
-                    }
-                }
-                Message::Binary(data) => {
-                    info!(replay_id = %replay_id_clone2, "Server -> Client: [Binary data]");
-                    // Record message
-                    record_websocket_message(
-                        &state_clone2,
-                        &replay_id_clone2,
-                        &traffic_id_clone2,
-                        &None,
-                        "receive_binary",
-                        &base64::engine::general_purpose::STANDARD.encode(&data),
-                    );
-                    if let Err(e) = client_tx.send(Message::Binary(data)).await {
-                        error!(error = %e, replay_id = %replay_id_clone2, "Failed to send to client");
-                        break;
-                    }
-                }
-                Message::Ping(data) => {
-                    if let Err(_e) = client_tx.send(Message::Ping(data)).await {
-                        break;
-                    }
-                }
-                Message::Pong(data) => {
-                    if let Err(_e) = client_tx.send(Message::Pong(data)).await {
-                        break;
-                    }
-                }
-                Message::Close(_) => {
-                    let _ = client_tx.send(Message::Close(None)).await;
-                    break;
-                }
-                Message::Frame(_) => {}
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = client_to_server => {}
-        _ = server_to_client => {}
+impl rustls::client::danger::ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
-    info!(replay_id = %replay_id, traffic_id = %traffic_id, "WebSocket proxy closed");
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+            rustls::SignatureScheme::RSA_PSS_SHA384,
+            rustls::SignatureScheme::RSA_PSS_SHA512,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
+}
+
+fn opcode_to_frame_type(opcode: Opcode) -> FrameType {
+    match opcode {
+        Opcode::Continuation => FrameType::Continuation,
+        Opcode::Text => FrameType::Text,
+        Opcode::Binary => FrameType::Binary,
+        Opcode::Close => FrameType::Close,
+        Opcode::Ping => FrameType::Ping,
+        Opcode::Pong => FrameType::Pong,
+    }
+}
+
+async fn websocket_bidirectional_generic_with_capture(
+    upgraded: upgrade::Upgraded,
+    target: BoxedWsStream,
+    upstream_leftover: BytesMut,
+    connection_id: &str,
+    state: &SharedAdminState,
+    compression_enabled: bool,
+) -> Result<(), String> {
+    let client = hyper_util::rt::TokioIo::new(upgraded);
+    let (target_read, target_write) = tokio::io::split(target);
+    let (client_read, client_write) = tokio::io::split(client);
+
+    let id_c2s = connection_id.to_string();
+    let id_s2c = connection_id.to_string();
+    let state_c2s = state.clone();
+    let state_s2c = state.clone();
+
+    let client_to_server = async move {
+        let mut reader = WebSocketReader::new(client_read);
+        let mut writer = WebSocketWriter::new(target_write, true);
+
+        loop {
+            let Some(frame) = reader
+                .next_frame()
+                .await
+                .map_err(|e| format!("Client read error: {}", e))?
+            else {
+                break;
+            };
+
+            let frame_type = opcode_to_frame_type(frame.opcode);
+            let can_decompress = compression_enabled
+                && frame.fin
+                && frame.rsv1
+                && matches!(frame.opcode, Opcode::Text | Opcode::Binary);
+            let raw_payload = if can_decompress {
+                Some(frame.payload.clone())
+            } else {
+                None
+            };
+            let payload_for_record = if can_decompress {
+                frame.decompress_payload()
+            } else {
+                frame.payload.clone()
+            };
+
+            let payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+            state_c2s.connection_monitor.record_frame(
+                &id_c2s,
+                FrameDirection::Send,
+                frame_type,
+                payload_for_record.as_ref(),
+                payload_is_text,
+                raw_payload.as_ref().map(|b| b.as_ref()),
+                frame.mask.is_some(),
+                frame.fin,
+                state_c2s.body_store.as_ref(),
+                state_c2s.ws_payload_store.as_ref(),
+                state_c2s.frame_store.as_ref(),
+            );
+
+            if frame.opcode == Opcode::Close {
+                let code = frame.close_code();
+                let reason = frame.close_reason().map(str::to_string);
+                state_c2s.connection_monitor.set_connection_closed(
+                    &id_c2s,
+                    code,
+                    reason,
+                    state_c2s.frame_store.as_ref(),
+                    state_c2s.ws_payload_store.as_ref(),
+                );
+                writer
+                    .write_frame(frame)
+                    .await
+                    .map_err(|e| format!("Server write error: {}", e))?;
+                break;
+            }
+
+            writer
+                .write_frame(frame)
+                .await
+                .map_err(|e| format!("Server write error: {}", e))?;
+        }
+
+        Ok::<_, String>(())
+    };
+
+    let server_to_client = async move {
+        let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
+        let mut writer = WebSocketWriter::new(client_write, false);
+
+        loop {
+            let Some(frame) = reader
+                .next_frame()
+                .await
+                .map_err(|e| format!("Server read error: {}", e))?
+            else {
+                break;
+            };
+
+            let frame_type = opcode_to_frame_type(frame.opcode);
+            let can_decompress = compression_enabled
+                && frame.fin
+                && frame.rsv1
+                && matches!(frame.opcode, Opcode::Text | Opcode::Binary);
+            let raw_payload = if can_decompress {
+                Some(frame.payload.clone())
+            } else {
+                None
+            };
+            let payload_for_record = if can_decompress {
+                frame.decompress_payload()
+            } else {
+                frame.payload.clone()
+            };
+
+            let payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+            state_s2c.connection_monitor.record_frame(
+                &id_s2c,
+                FrameDirection::Receive,
+                frame_type,
+                payload_for_record.as_ref(),
+                payload_is_text,
+                raw_payload.as_ref().map(|b| b.as_ref()),
+                frame.mask.is_some(),
+                frame.fin,
+                state_s2c.body_store.as_ref(),
+                state_s2c.ws_payload_store.as_ref(),
+                state_s2c.frame_store.as_ref(),
+            );
+
+            if frame.opcode == Opcode::Close {
+                let code = frame.close_code();
+                let reason = frame.close_reason().map(str::to_string);
+                state_s2c.connection_monitor.set_connection_closed(
+                    &id_s2c,
+                    code,
+                    reason,
+                    state_s2c.frame_store.as_ref(),
+                    state_s2c.ws_payload_store.as_ref(),
+                );
+                writer
+                    .write_frame(frame)
+                    .await
+                    .map_err(|e| format!("Client write error: {}", e))?;
+                break;
+            }
+
+            writer
+                .write_frame(frame)
+                .await
+                .map_err(|e| format!("Client write error: {}", e))?;
+        }
+
+        Ok::<_, String>(())
+    };
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::try_join!(client_to_server, server_to_client)
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Ok(()),
+    }
+}
+
+fn persist_socket_summary(state: &SharedAdminState, record_id: &str) {
+    let status = state.connection_monitor.get_connection_status(record_id);
+    let last_frame_id = state
+        .connection_monitor
+        .get_last_frame_id(record_id)
+        .unwrap_or(0);
+    let frame_count = status.as_ref().map(|s| s.frame_count).unwrap_or(0);
+    let status = status.map(|mut s| {
+        s.is_open = false;
+        s
+    });
+    let response_size = status
+        .as_ref()
+        .map(|s| s.send_bytes + s.receive_bytes)
+        .unwrap_or(0) as usize;
+    state.update_traffic_by_id(record_id, move |record| {
+        record.response_size = response_size;
+        record.frame_count = frame_count;
+        record.last_frame_id = last_frame_id;
+        if let Some(ref s) = status {
+            record.socket_status = Some(s.clone());
+        }
+    });
 }
 
 fn resolve_and_apply_rules(
@@ -1700,7 +2024,11 @@ fn resolve_and_apply_rules(
     method: &str,
     headers: &[(String, String)],
     body: Option<&[u8]>,
-) -> (Vec<MatchedRule>, AppliedRequest) {
+) -> (
+    bifrost_core::ResolvedRules,
+    Vec<MatchedRule>,
+    AppliedRequest,
+) {
     let (resolved_rules, matched_rules) = match rule_config.mode {
         RuleMode::None => (bifrost_core::ResolvedRules::default(), vec![]),
         RuleMode::Custom => {
@@ -1736,7 +2064,89 @@ fn resolve_and_apply_rules(
             }
         };
 
-    (matched_rules, applied_request)
+    (resolved_rules, matched_rules, applied_request)
+}
+
+fn extract_inline_content(value: &str) -> String {
+    if value.starts_with('{') && value.ends_with('}') && value.len() > 1 {
+        value[1..value.len() - 1].to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+fn parse_headers(value: &str) -> Option<Vec<(String, String)>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        (&trimmed[1..trimmed.len() - 1], true)
+    } else {
+        (trimmed, trimmed.contains('\n') || trimmed.contains(':'))
+    };
+
+    let mut headers = Vec::new();
+    let delimiter = if content.contains('\n') { '\n' } else { ',' };
+    for part in content.split(delimiter) {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let separator = if use_colon { ':' } else { '=' };
+        if let Some(pos) = part.find(separator) {
+            let key = part[..pos].trim().to_string();
+            let val = part[pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                headers.push((key, val));
+            }
+        }
+    }
+
+    if headers.is_empty() {
+        None
+    } else {
+        Some(headers)
+    }
+}
+
+fn apply_response_rules(
+    resolved_rules: &bifrost_core::ResolvedRules,
+    status: u16,
+    mut headers: Vec<(String, String)>,
+    body: Option<String>,
+) -> (u16, Vec<(String, String)>, Option<String>) {
+    use bifrost_core::Protocol;
+
+    let mut final_status = status;
+    let mut final_body = body;
+
+    for rule in &resolved_rules.rules {
+        match rule.rule.protocol {
+            Protocol::ResHeaders => {
+                if let Some(parsed) = parse_headers(&rule.resolved_value) {
+                    for (key, value) in parsed {
+                        let key_lower = key.to_lowercase();
+                        headers.retain(|(k, _)| k.to_lowercase() != key_lower);
+                        headers.push((key, value));
+                    }
+                }
+            }
+            Protocol::StatusCode | Protocol::ReplaceStatus => {
+                if let Ok(code) = rule.resolved_value.parse::<u16>() {
+                    final_status = code;
+                }
+            }
+            Protocol::ResBody => {
+                let content = extract_inline_content(&rule.resolved_value);
+                final_body = Some(content);
+            }
+            _ => {}
+        }
+    }
+
+    (final_status, headers, final_body)
 }
 
 fn resolve_custom_rules(
@@ -1867,6 +2277,23 @@ fn record_traffic_for_stream(
     let host = uri.host().unwrap_or("unknown").to_string();
     let path = uri.path().to_string();
     let scheme = uri.scheme_str().unwrap_or("http");
+    let (recorded_url, protocol) = if is_sse {
+        (applied_request.url.clone(), scheme.to_string())
+    } else {
+        let url = if scheme == "http" {
+            applied_request.url.replacen("http://", "ws://", 1)
+        } else if scheme == "https" {
+            applied_request.url.replacen("https://", "wss://", 1)
+        } else {
+            applied_request.url.clone()
+        };
+        let protocol = if scheme == "https" || scheme == "wss" {
+            "wss".to_string()
+        } else {
+            "ws".to_string()
+        };
+        (url, protocol)
+    };
 
     let request_content_type = applied_request
         .headers
@@ -1890,10 +2317,10 @@ fn record_traffic_for_stream(
         timestamp,
         host,
         method: applied_request.method.clone(),
-        url: applied_request.url.clone(),
+        url: recorded_url,
         path,
-        status: 200,
-        protocol: scheme.to_string(),
+        status: if is_sse { 200 } else { 101 },
+        protocol,
         content_type: None,
         request_content_type,
         request_size: applied_request.body.as_ref().map(|b| b.len()).unwrap_or(0),
@@ -1938,34 +2365,6 @@ fn record_traffic_for_stream(
     }
 
     traffic_id
-}
-
-fn record_websocket_message(
-    state: &SharedAdminState,
-    replay_id: &str,
-    traffic_id: &str,
-    _request_id: &Option<String>,
-    direction: &str,
-    data: &str,
-) {
-    let timestamp = chrono::Utc::now().timestamp_millis() as u64;
-    let message = WebSocketMessage {
-        type_: direction.to_string(),
-        data: data.to_string(),
-        timestamp,
-    };
-
-    // Store message in body store
-    if let Some(ref body_store) = state.body_store {
-        let message_json = serde_json::to_string(&message).unwrap();
-        let _ = body_store.read().store(
-            traffic_id,
-            &format!("ws_{}_{}", direction, timestamp),
-            message_json.as_bytes(),
-        );
-    }
-
-    info!(replay_id = %replay_id, traffic_id = %traffic_id, direction = %direction, timestamp = %timestamp, "Recorded WebSocket message");
 }
 
 fn record_sse_event(

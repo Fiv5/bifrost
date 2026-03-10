@@ -1,9 +1,11 @@
 use bifrost_storage::{
-    CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, TlsConfigUpdate,
+    CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, SandboxConfigUpdate,
+    SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, TlsConfigUpdate,
     TrafficConfigUpdate, UiConfigUpdate,
 };
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
@@ -103,6 +105,11 @@ pub async fn handle_config(
             Method::PUT => update_performance_config(req, state).await,
             _ => method_not_allowed(),
         },
+        "/api/config/sandbox" | "/api/config/sandbox/" => match method {
+            Method::GET => get_sandbox_config(state).await,
+            Method::PUT => update_sandbox_config(req, state).await,
+            _ => method_not_allowed(),
+        },
         "/api/config/performance/clear-cache" | "/api/config/performance/clear-cache/" => {
             match method {
                 Method::DELETE => clear_body_cache(state).await,
@@ -130,6 +137,179 @@ pub async fn handle_config(
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
+    }
+}
+
+async fn get_sandbox_config(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let config = config_manager.config().await;
+    json_response(&config.sandbox)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSandboxConfigRequest {
+    #[serde(default)]
+    pub file: Option<UpdateSandboxFileConfigRequest>,
+    #[serde(default)]
+    pub net: Option<UpdateSandboxNetConfigRequest>,
+    #[serde(default)]
+    pub limits: Option<UpdateSandboxLimitsConfigRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSandboxFileConfigRequest {
+    pub sandbox_dir: Option<String>,
+    pub allowed_dirs: Option<Vec<String>>,
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSandboxNetConfigRequest {
+    pub enabled: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_request_bytes: Option<usize>,
+    pub max_response_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSandboxLimitsConfigRequest {
+    pub timeout_ms: Option<u64>,
+    pub max_memory_bytes: Option<usize>,
+}
+
+async fn update_sandbox_config(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: UpdateSandboxConfigRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    // 简单校验
+    if let Some(ref file) = request.file {
+        if let Some(ref dir) = file.sandbox_dir {
+            if dir.trim().is_empty() {
+                return error_response(StatusCode::BAD_REQUEST, "sandbox_dir cannot be empty");
+            }
+        }
+        if let Some(ref dirs) = file.allowed_dirs {
+            for d in dirs {
+                let dd = d.trim();
+                if dd.is_empty() {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "allowed_dirs contains empty entry",
+                    );
+                }
+                if !Path::new(dd).is_absolute() {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        "allowed_dirs must be absolute paths",
+                    );
+                }
+            }
+        }
+        if let Some(max_bytes) = file.max_bytes {
+            if max_bytes == 0 {
+                return error_response(StatusCode::BAD_REQUEST, "file.max_bytes must be > 0");
+            }
+        }
+    }
+    if let Some(ref net) = request.net {
+        if let Some(timeout_ms) = net.timeout_ms {
+            if timeout_ms == 0 {
+                return error_response(StatusCode::BAD_REQUEST, "net.timeout_ms must be > 0");
+            }
+        }
+        if let Some(v) = net.max_request_bytes {
+            if v == 0 {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "net.max_request_bytes must be > 0",
+                );
+            }
+        }
+        if let Some(v) = net.max_response_bytes {
+            if v == 0 {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "net.max_response_bytes must be > 0",
+                );
+            }
+        }
+    }
+    if let Some(ref limits) = request.limits {
+        if let Some(timeout_ms) = limits.timeout_ms {
+            if timeout_ms == 0 {
+                return error_response(StatusCode::BAD_REQUEST, "limits.timeout_ms must be > 0");
+            }
+        }
+        if let Some(mem) = limits.max_memory_bytes {
+            if mem == 0 {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "limits.max_memory_bytes must be > 0",
+                );
+            }
+        }
+    }
+
+    let update = SandboxConfigUpdate {
+        file: request.file.map(|f| SandboxFileConfigUpdate {
+            sandbox_dir: f.sandbox_dir,
+            allowed_dirs: f.allowed_dirs,
+            max_bytes: f.max_bytes,
+        }),
+        net: request.net.map(|n| SandboxNetConfigUpdate {
+            enabled: n.enabled,
+            timeout_ms: n.timeout_ms,
+            max_request_bytes: n.max_request_bytes,
+            max_response_bytes: n.max_response_bytes,
+        }),
+        limits: request.limits.map(|l| SandboxLimitsConfigUpdate {
+            timeout_ms: l.timeout_ms,
+            max_memory_bytes: l.max_memory_bytes,
+        }),
+    };
+
+    match config_manager.update_sandbox_config(update).await {
+        Ok(sandbox) => {
+            tracing::info!("Sandbox config updated and persisted");
+            json_response(&sandbox)
+        }
+        Err(e) => {
+            tracing::error!("Failed to persist sandbox config: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to save config: {}", e),
+            )
+        }
     }
 }
 

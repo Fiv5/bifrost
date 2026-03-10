@@ -316,6 +316,8 @@ bifrost start --unsafe-ssl
 | `--rules-file <PATH>`           | 规则文件路径，每行一条规则                                       |
 | `--system-proxy`                | 启用系统代理配置                                                 |
 | `--proxy-bypass <LIST>`         | 系统代理绕过列表，逗号分隔                                       |
+| `--cli-proxy`                   | 启用命令行代理环境变量（仅代理运行期间生效）                     |
+| `--cli-proxy-no-proxy <LIST>`   | 命令行代理 no-proxy 列表，逗号分隔                               |
 
 ### 基本命令
 
@@ -384,6 +386,10 @@ bifrost config set traffic.sse-stream-flush-interval-ms 200
 bifrost config set traffic.ws-payload-flush-bytes 256KB
 bifrost config set traffic.ws-payload-flush-interval-ms 200
 bifrost config set traffic.ws-payload-max-open-files 128
+
+# 命令行代理（环境变量）管理：仅在代理运行期间写入 http_proxy 等变量（对新开终端生效）
+bifrost -p 9900 start --cli-proxy
+bifrost -p 9900 start --cli-proxy --cli-proxy-no-proxy "localhost,127.0.0.1,::1,*.local"
 ```
 
 ### 环境变量
@@ -644,66 +650,65 @@ Bifrost 内置基于 QuickJS 的 JavaScript 脚本引擎，支持通过脚本动
 
 ### 请求脚本示例
 
-请求脚本接收 `request` 对象，返回修改后的请求数据：
+脚本会在沙箱中直接执行（不需要导出 `main`），通过修改全局 `request` 对象来生效。
 
 ```javascript
-function main(request, context) {
-  return {
-    url: request.url,
-    method: request.method,
-    headers: {
-      ...request.headers,
-      Authorization: "Bearer " + context.values.API_TOKEN,
-      "X-Custom-Header": "custom-value",
-    },
-    body: request.body,
-  };
+log.info("Processing request:", request.method, request.url);
+
+// 从 Values 里读取配置
+var token = ctx.values["API_TOKEN"];
+if (token) {
+  request.headers["Authorization"] = "Bearer " + token;
 }
+
+// 修改请求头 / 方法 / body
+request.headers["X-Custom-Header"] = "custom-value";
+// request.method = "POST";
+// request.body = JSON.stringify({ hello: "world" });
 ```
 
-**request 对象结构：**
+**request 对象结构（可修改字段：`method` / `headers` / `body`）：**
 
-| 属性      | 类型   | 说明      |
-| --------- | ------ | --------- |
-| `url`     | string | 请求 URL  |
-| `method`  | string | HTTP 方法 |
-| `headers` | object | 请求头    |
-| `body`    | string | 请求体    |
+| 属性        | 类型            | 说明 |
+| ----------- | --------------- | ---- |
+| `url`       | string          | 完整请求 URL（只读） |
+| `host`      | string          | Host（只读） |
+| `path`      | string          | Path（只读） |
+| `protocol`  | string          | `http` / `https`（只读） |
+| `clientIp`  | string          | 客户端 IP（只读） |
+| `clientApp` | string \| null  | 客户端应用标识（只读） |
+| `method`    | string          | HTTP 方法（可修改） |
+| `headers`   | object          | 请求头（可修改） |
+| `body`      | string \| null  | 请求体（可修改） |
 
-**context 对象结构：**
+**ctx 对象结构：**
 
-| 属性            | 类型     | 说明                     |
-| --------------- | -------- | ------------------------ |
-| `values`        | object   | Values 变量（key-value） |
-| `matched_rules` | string[] | 匹配到的规则列表         |
+| 属性           | 类型     | 说明 |
+| -------------- | -------- | ---- |
+| `requestId`    | string   | 请求 ID |
+| `scriptName`   | string   | 脚本名称 |
+| `scriptType`   | string   | `request` / `response` |
+| `values`       | object   | Values 变量（key-value） |
+| `matchedRules` | object[] | 命中规则列表（pattern/protocol/value） |
 
 ### 响应脚本示例
 
-响应脚本接收 `response` 对象，返回修改后的响应数据：
+脚本会在沙箱中直接执行，通过修改全局 `response` 对象来生效。
 
 ```javascript
-function main(response, context) {
-  let body = response.body;
+log.info("Processing response:", response.status, response.statusText);
 
-  if (response.headers["content-type"]?.includes("application/json")) {
-    try {
-      let data = JSON.parse(body);
-      data.injected = true;
-      data.timestamp = Date.now();
-      body = JSON.stringify(data);
-    } catch (e) {
-      // 解析失败，保持原始 body
-    }
+response.headers["X-Modified-By"] = "bifrost-script";
+
+if (response.headers["content-type"]?.includes("application/json") && response.body) {
+  try {
+    var data = JSON.parse(response.body);
+    data.injected = true;
+    data.timestamp = Date.now();
+    response.body = JSON.stringify(data);
+  } catch (e) {
+    // 解析失败则保持原始 body
   }
-
-  return {
-    status: response.status,
-    headers: {
-      ...response.headers,
-      "X-Modified-By": "bifrost-script",
-    },
-    body: body,
-  };
 }
 ```
 
@@ -751,6 +756,29 @@ api.example.com reqScript://add-headers resScript://transform
 | 执行超时 | 10 秒  | 脚本执行超时自动终止          |
 | 内存限制 | 16 MB  | 脚本内存使用上限              |
 | 危险函数 | 禁用   | `eval`、`Function` 等已被移除 |
+
+### 文件与网络 API
+
+脚本引擎额外提供：
+
+- `file.xxx`：文件读写（默认仅允许访问 `~/.bifrost/scripts/_sandbox/` 下的相对路径；可通过 `~/.bifrost/config.toml` 的 `sandbox.file` 配置目录与 `allowed_dirs` 白名单）
+- `net.fetch(url, optionsJson?)`：网络请求（阻塞执行，返回 JSON 字符串，使用 `JSON.parse(...)` 解析；可通过 `sandbox.net.enabled` 开关，并受 `sandbox.net.*` 的大小/超时限制）
+
+`file` 示例：
+
+```javascript
+file.writeText("state/hello.txt", "hello");
+log.info(file.readText("state/hello.txt"));
+```
+
+沙箱相关配置位于 `~/.bifrost/config.toml` 的 `sandbox` 字段下，也可在管理端 **Scripts** 页面左侧齿轮按钮在线修改并持久化。
+
+`net.fetch` 返回结构示例：
+
+```javascript
+var res = JSON.parse(net.fetch("https://httpbin.org/get"));
+log.info(res.status, res.ok);
+```
 
 ## 请求重放与管理
 
@@ -826,10 +854,11 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 
 ## 配置
 
-默认配置文件位于 `~/.bifrost/`：
+默认配置文件为 `~/.bifrost/config.toml`（TOML 格式）：
 
 ```
 ~/.bifrost/
+├── config.toml     # 配置文件（TOML）
 ├── bifrost.pid     # 进程 PID 文件
 ├── bifrost.log     # 日志文件
 ├── bifrost.err     # 错误日志
@@ -837,7 +866,9 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 ├── values/         # Values 变量目录
 ├── scripts/        # 脚本目录
 │   ├── request/    # 请求脚本
-│   └── response/   # 响应脚本
+│   ├── response/   # 响应脚本
+│   ├── decode/     # decode 脚本
+│   └── _sandbox/   # 脚本沙箱文件目录（默认）
 ├── certs/          # 证书目录
 │   ├── ca.crt      # CA 证书
 │   └── ca.key      # CA 私钥

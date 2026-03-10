@@ -88,6 +88,8 @@ fn main() {
             ref rules_file,
             system_proxy,
             ref proxy_bypass,
+            cli_proxy,
+            ref cli_proxy_no_proxy,
         }) => {
             let effective_port = port.unwrap_or(cli.port);
             let effective_host = host.clone().unwrap_or_else(|| cli.host.clone());
@@ -118,6 +120,8 @@ fn main() {
                 rules_file.clone(),
                 system_proxy,
                 proxy_bypass.clone(),
+                cli_proxy,
+                cli_proxy_no_proxy.clone(),
             )
         }
         Some(Commands::Stop) => run_stop(),
@@ -296,6 +300,8 @@ fn main() {
             false,
             false,
             vec![],
+            None,
+            false,
             None,
             false,
             None,

@@ -76,6 +76,8 @@ start [OPTIONS]                   Start the proxy server (default)
   --rules-file <PATH>                 Path to rules file
   --system-proxy                      Enable system proxy
   --proxy-bypass <LIST>               System proxy bypass list
+  --cli-proxy                         Enable CLI proxy env vars while proxy is running
+  --cli-proxy-no-proxy <LIST>         CLI proxy no-proxy list
 
   TLS Interception Priority (highest to lowest):
     1. Rule-based (tlsIntercept://, tlsPassthrough://)
@@ -106,6 +108,7 @@ system-proxy <ACTION>             Manage system proxy
   enable [--host h] [--port p] [--bypass list]
                                     Enable system proxy
   disable                           Disable system proxy
+
 
 whitelist <ACTION>                Manage access control
   list                              List whitelist entries
@@ -352,6 +355,16 @@ pub enum Commands {
             help = "System proxy bypass list (comma-separated, e.g., 'localhost,127.0.0.1,*.local')"
         )]
         proxy_bypass: Option<String>,
+        #[arg(
+            long,
+            help = "Enable CLI proxy env vars while proxy is running (writes to shell rc files)"
+        )]
+        cli_proxy: bool,
+        #[arg(
+            long,
+            help = "CLI proxy no-proxy list (comma-separated, e.g., 'localhost,127.0.0.1,*.local')"
+        )]
+        cli_proxy_no_proxy: Option<String>,
     },
     #[command(about = "Stop the proxy server")]
     Stop,

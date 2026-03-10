@@ -288,6 +288,13 @@ print_summary() {
 }
 
 main() {
+    trap admin_cleanup_bifrost EXIT
+
+    if ! admin_ensure_bifrost; then
+        log_fail "Admin server is not reachable and failed to start"
+        exit 1
+    fi
+
     log_info "Starting System/Metrics Admin API Tests"
     log_info "Admin: $ADMIN_HOST:$ADMIN_PORT"
     echo ""
