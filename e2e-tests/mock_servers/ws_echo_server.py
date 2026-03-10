@@ -30,6 +30,8 @@ import ssl
 import struct
 import sys
 import tempfile
+import urllib.parse
+import zlib
 from datetime import datetime
 
 
@@ -137,7 +139,7 @@ def compute_accept_key(key):
     return base64.b64encode(sha1).decode()
 
 
-def create_ws_frame(payload, opcode=1, mask=False, fin=True):
+def create_ws_frame(payload, opcode=1, mask=False, fin=True, rsv1=False):
     """创建 WebSocket 帧"""
     if isinstance(payload, str):
         payload = payload.encode('utf-8')
@@ -146,6 +148,8 @@ def create_ws_frame(payload, opcode=1, mask=False, fin=True):
     first_byte = opcode
     if fin:
         first_byte |= 0x80
+    if rsv1:
+        first_byte |= 0x40
     header = bytes([first_byte])
 
     if length <= 125:
@@ -156,6 +160,31 @@ def create_ws_frame(payload, opcode=1, mask=False, fin=True):
         header += bytes([127]) + struct.pack('>Q', length)
 
     return header + payload
+
+
+def get_header_ci(headers: dict, name: str):
+    for k, v in headers.items():
+        if k.lower() == name.lower():
+            return v
+    return None
+
+
+def parse_path_and_query(raw_path: str):
+    try:
+        u = urllib.parse.urlparse(raw_path)
+        return u.path or raw_path, urllib.parse.parse_qs(u.query)
+    except Exception:
+        return raw_path, {}
+
+
+def make_permessage_deflate_raw(payload: bytes) -> bytes:
+    """生成 permessage-deflate 格式的 raw DEFLATE + SYNC_FLUSH（去掉 trailer）。"""
+    c = zlib.compressobj(wbits=-15)
+    out = c.compress(payload) + c.flush(zlib.Z_SYNC_FLUSH)
+    # RFC 7692：消息以 SYNC_FLUSH 结束，但不携带 0x00 0x00 0xff 0xff trailer
+    if out.endswith(b"\x00\x00\xff\xff"):
+        out = out[:-4]
+    return out
 
 
 def create_close_frame(code=1000, reason=""):
@@ -226,6 +255,8 @@ class WebSocketConnection:
             self.headers = headers or {}
             self.path = path or '/'
 
+            path_only, query = parse_path_and_query(self.path)
+
             log(f"{'='*60}")
             log(f"New connection from {self.client_addr}")
             log(f"Request: {method} {path}")
@@ -242,15 +273,35 @@ class WebSocketConnection:
             accept_key = compute_accept_key(ws_key)
             protocol = 'wss' if self.use_ssl else 'ws'
 
-            response = (
-                'HTTP/1.1 101 Switching Protocols\r\n'
-                'Upgrade: websocket\r\n'
-                'Connection: Upgrade\r\n'
-                f'Sec-WebSocket-Accept: {accept_key}\r\n'
-                'X-Echo-Server: bifrost-ws-test\r\n'
-                f'X-Protocol: {protocol}\r\n'
-                '\r\n'
+            ext_offer = get_header_ci(self.headers, 'Sec-WebSocket-Extensions') or ""
+            protocol_offer = get_header_ci(self.headers, 'Sec-WebSocket-Protocol')
+            selected_protocol = None
+            if protocol_offer:
+                # 选择第一个子协议，便于测试 replay 的协议协商透传
+                selected_protocol = protocol_offer.split(',', 1)[0].strip() or None
+
+            accept_extensions = None
+            if "permessage-deflate" in ext_offer.lower():
+                accept_extensions = "permessage-deflate"
+
+            response_lines = [
+                'HTTP/1.1 101 Switching Protocols\r\n',
+                'Upgrade: websocket\r\n',
+                'Connection: Upgrade\r\n',
+                f'Sec-WebSocket-Accept: {accept_key}\r\n',
+            ]
+            if selected_protocol:
+                response_lines.append(f'Sec-WebSocket-Protocol: {selected_protocol}\r\n')
+            if accept_extensions:
+                response_lines.append(f'Sec-WebSocket-Extensions: {accept_extensions}\r\n')
+            response_lines.extend(
+                [
+                    'X-Echo-Server: bifrost-ws-test\r\n',
+                    f'X-Protocol: {protocol}\r\n',
+                    '\r\n',
+                ]
             )
+            response = ''.join(response_lines)
             self.writer.write(response.encode())
             await self.writer.drain()
 
@@ -272,18 +323,24 @@ class WebSocketConnection:
                 "timestamp": datetime.now().isoformat()
             })
 
-            self.writer.write(create_ws_frame(welcome_msg))
-            await self.writer.drain()
-            log(f"Sent welcome message with connection info")
+            # 某些用例需要避免额外的 welcome 干扰（如长连接/压缩分片测试）
+            if not (path_only.startswith("/ws/idle") or path_only.startswith("/ws/deflate_frag")):
+                self.writer.write(create_ws_frame(welcome_msg))
+                await self.writer.drain()
+                log(f"Sent welcome message with connection info")
 
-            if self.path.startswith("/ws/broadcast"):
+            if path_only.startswith("/ws/broadcast"):
                 await self.handle_broadcast_mode()
-            elif self.path.startswith("/ws/ping"):
+            elif path_only.startswith("/ws/ping"):
                 await self.handle_ping_mode()
-            elif self.path.startswith("/ws/close"):
+            elif path_only.startswith("/ws/close"):
                 await self.handle_close_mode()
-            elif self.path.startswith("/ws/binary"):
+            elif path_only.startswith("/ws/binary"):
                 await self.handle_binary_mode()
+            elif path_only.startswith("/ws/idle"):
+                await self.handle_idle_mode(query)
+            elif path_only.startswith("/ws/deflate_frag"):
+                await self.handle_deflate_frag_mode()
             else:
                 await self.message_loop()
 
@@ -425,9 +482,48 @@ class WebSocketConnection:
 
             except asyncio.TimeoutError:
                 break
-            except Exception as e:
-                log(f"Error in binary mode: {e}")
-                break
+
+    async def handle_idle_mode(self, query: dict):
+        """长连接模式：延迟发送消息，用于验证 replay 长连接不会被 30s 强制断开。"""
+        delay = 35
+        msg = "late_message"
+        try:
+            if "delay" in query and query["delay"]:
+                delay = int(query["delay"][0])
+            if "msg" in query and query["msg"]:
+                msg = query["msg"][0]
+        except Exception:
+            pass
+
+        log(f"Idle mode: waiting {delay}s then sending message")
+        await asyncio.sleep(max(delay, 0))
+        self.writer.write(create_ws_frame(msg, opcode=1))
+        await self.writer.drain()
+        log("Idle mode: message sent")
+        # 保持连接一小段时间，给客户端/代理捕获
+        await asyncio.sleep(1)
+        self.writer.write(create_close_frame(1000, "idle complete"))
+        await self.writer.drain()
+
+    async def handle_deflate_frag_mode(self):
+        """发送 permessage-deflate + fragmentation 的压缩消息。"""
+        text = b"hello-deflate-frag"
+        compressed = make_permessage_deflate_raw(text)
+        # 分成两帧：首帧 opcode=Text + rsv1=1 + fin=0；续帧 opcode=Continuation + fin=1
+        mid = max(1, len(compressed) // 2)
+        part1 = compressed[:mid]
+        part2 = compressed[mid:]
+
+        log(f"Deflate-frag mode: sending compressed fragmented message ({len(compressed)} bytes)")
+        self.writer.write(create_ws_frame(part1, opcode=1, fin=False, rsv1=True))
+        await self.writer.drain()
+        await asyncio.sleep(0.05)
+        self.writer.write(create_ws_frame(part2, opcode=0, fin=True, rsv1=False))
+        await self.writer.drain()
+
+        await asyncio.sleep(0.2)
+        self.writer.write(create_close_frame(1000, "deflate frag complete"))
+        await self.writer.drain()
 
 
 async def start_server(host, port, use_ssl=False):

@@ -592,19 +592,23 @@ test_websocket_replay_with_rules() {
     local upstream_url="ws://127.0.0.1:${MOCK_WS_PORT}/ws"
     local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-WS-Rule=from-replay"}'
 
-    local ws_url="ws://127.0.0.1:${PROXY_PORT}/_bifrost/api/replay/execute/ws?url=$(urlencode "$upstream_url")&rule_config=$(urlencode "$rule_config")"
+    local encoded_url encoded_rule
+    encoded_url=$(urlencode "$upstream_url")
+    encoded_rule=$(urlencode "$rule_config")
+    local ws_path="/_bifrost/api/replay/execute/ws?url=${encoded_url}&rule_config=${encoded_rule}"
 
-    if ! command -v websocat >/dev/null 2>&1; then
-        _log_fail "WebSocket replay: websocat not installed" "websocat available" "not found"
-        ((failed++))
-        return
-    fi
-
-    # 一次连接：发送 1 条消息，期望收到 2 条（welcome + echo），然后退出
-    local output
-    output=$(printf '%s\n' "hello-websocket" | websocat -q -t -n --max-messages 1 --max-messages-rev 2 "$ws_url" 2>/dev/null || true)
-
-    if printf '%s' "$output" | grep -q '"type": "connection_info"' && printf '%s' "$output" | grep -qi 'x-ws-rule'; then
+    # 1) 仅握手：验证规则注入的 Header 能在上游回传的 connection_info 中出现
+    if python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
+        --proxy-host "127.0.0.1" \
+        --proxy-port "$PROXY_PORT" \
+        --host-header "127.0.0.1:${PROXY_PORT}" \
+        --path "$ws_path" \
+        --timeout 15.0 \
+        --messages 0 \
+        --no-send \
+        --expect-text-contains "X-WS-Rule" \
+        --expect-text-count 1 \
+        >/dev/null 2>&1; then
         _log_pass "WebSocket replay: upstream handshake headers include rule header"
         ((passed++))
     else
@@ -612,7 +616,18 @@ test_websocket_replay_with_rules() {
         ((failed++))
     fi
 
-    if printf '%s' "$output" | grep -q '"type": "echo"' && printf '%s' "$output" | grep -q 'hello-websocket'; then
+    # 2) 发送消息：验证消息能通过 replay 转发并回显
+    if python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
+        --proxy-host "127.0.0.1" \
+        --proxy-port "$PROXY_PORT" \
+        --host-header "127.0.0.1:${PROXY_PORT}" \
+        --path "$ws_path" \
+        --timeout 15.0 \
+        --message "hello-websocket" \
+        --messages 1 \
+        --expect-text-contains "hello-websocket" \
+        --expect-text-count 1 \
+        >/dev/null 2>&1; then
         _log_pass "WebSocket replay: message proxied and echoed"
         ((passed++))
     else

@@ -6,13 +6,18 @@ const REQUEST_SCRIPT_TEMPLATE = `// ============================================
 // Bifrost Request Script Template
 // ============================================================
 // This script runs BEFORE the request is sent to the upstream server.
-// 
+//
+// Notes / limitations:
+// - Only modifications to request.method / request.headers / request.body take effect.
+// - url/host/path/protocol/clientIp/clientApp are snapshots (changing them has no effect).
+// - Runtime is QuickJS: synchronous execution; no async/await.
+//
 // Available objects:
 //   - request: The HTTP request (modifiable: method, headers, body)
 //   - ctx: Script context with metadata and configuration
 //   - log/console: Logging interface
-//   - file: Sandbox file API (relative path under scripts/_sandbox)
-//   - net: Network request API (returns JSON string)
+//   - file: Sandbox file API (check file.enabled; relative path under scripts/_sandbox)
+//   - net: Network request API (check net.enabled; returns JSON string)
 // ============================================================
 
 // --- Logging Examples ---
@@ -46,7 +51,17 @@ request.headers["X-Request-ID"] = ctx.requestId;
 
 // --- Modify Request Body ---
 // Example: Add timestamp to JSON body
-if (request.body && request.headers["Content-Type"]?.includes("json")) {
+// NOTE: Header keys may vary in casing; prefer a case-insensitive lookup.
+function getHeader(headers, name) {
+  var target = String(name || "").toLowerCase();
+  for (var k in headers) {
+    if (String(k).toLowerCase() === target) return headers[k];
+  }
+  return "";
+}
+
+var contentType = getHeader(request.headers, "content-type");
+if (request.body && String(contentType).toLowerCase().includes("json")) {
   try {
     var bodyData = JSON.parse(request.body);
     bodyData._timestamp = Date.now();
@@ -75,26 +90,43 @@ if (ctx.matchedRules.length > 0) {
 }
 
 // --- File API Examples ---
-// file.writeText("state/last-request.txt", request.url);
-// var lastUrl = file.readText("state/last-request.txt");
-// log.debug("Last URL:", lastUrl);
+// if (file.enabled) {
+//   file.writeText("state/last-request.txt", request.url);
+//   var lastUrl = file.readText("state/last-request.txt");
+//   log.debug("Last URL:", lastUrl);
+// }
 
 // --- Network API Examples ---
-// var res = JSON.parse(net.fetch("https://httpbin.org/get"));
-// log.info("Fetch status:", res.status);
+// if (net.enabled) {
+//   var res = JSON.parse(net.fetch("https://httpbin.org/get"));
+//   log.info("Fetch status:", res.status);
+//
+//   // With options (JSON string):
+//   // var res2 = JSON.parse(net.fetch("https://httpbin.org/post", JSON.stringify({
+//   //   method: "POST",
+//   //   headers: { "Content-Type": "application/json" },
+//   //   body: JSON.stringify({ hello: "world" }),
+//   //   timeoutMs: 3000,
+//   // })));
+// }
 `;
 
 const RESPONSE_SCRIPT_TEMPLATE = `// ============================================================
 // Bifrost Response Script Template
 // ============================================================
 // This script runs AFTER receiving the response from upstream.
-// 
+//
+// Notes / limitations:
+// - Only modifications to response.status / response.statusText / response.headers / response.body take effect.
+// - response.request is a snapshot of the original request (modifying it has no effect).
+// - Runtime is QuickJS: synchronous execution; no async/await.
+//
 // Available objects:
 //   - response: The HTTP response (modifiable: status, statusText, headers, body)
 //   - ctx: Script context with metadata and configuration
 //   - log/console: Logging interface
-//   - file: Sandbox file API (relative path under scripts/_sandbox)
-//   - net: Network request API (returns JSON string)
+//   - file: Sandbox file API (check file.enabled; relative path under scripts/_sandbox)
+//   - net: Network request API (check net.enabled; returns JSON string)
 // ============================================================
 
 // --- Logging Examples ---
@@ -123,8 +155,16 @@ response.headers["X-Processing-Time"] = String(Date.now());
 
 // --- Modify Response Body ---
 // Example: Transform JSON response
-var contentType = response.headers["Content-Type"] || "";
-if (contentType.includes("application/json") && response.body) {
+function getHeader(headers, name) {
+  var target = String(name || "").toLowerCase();
+  for (var k in headers) {
+    if (String(k).toLowerCase() === target) return headers[k];
+  }
+  return "";
+}
+
+var contentType = getHeader(response.headers, "content-type");
+if (String(contentType).toLowerCase().includes("application/json") && response.body) {
   try {
     var data = JSON.parse(response.body);
     
@@ -186,11 +226,15 @@ if (ctx.matchedRules.length > 0) {
 }
 
 // --- File API Examples ---
-// file.appendText("state/response.log", "status=" + response.status + "\n");
+// if (file.enabled) {
+//   file.appendText("state/response.log", "status=" + response.status + "\n");
+// }
 
 // --- Network API Examples ---
-// var ping = JSON.parse(net.fetch("https://httpbin.org/status/204"));
-// log.debug("Ping ok:", ping.ok);
+// if (net.enabled) {
+//   var ping = JSON.parse(net.fetch("https://httpbin.org/status/204"));
+//   log.debug("Ping ok:", ping.ok);
+// }
 `;
 
 const DECODE_SCRIPT_TEMPLATE = `// ============================================================
@@ -199,34 +243,43 @@ const DECODE_SCRIPT_TEMPLATE = `// =============================================
 // This script runs in decode mode.
 // ctx.phase indicates current stage: "request" | "response"
 //
+// Notes / limitations:
+// - request.body / response.body are UTF-8 previews (may be truncated).
+// - Use bodyHex + truncation flags for binary/large payloads.
+// - Runtime is QuickJS: synchronous execution; no async/await.
+//
 // Available objects:
-//   - request: request snapshot (when ctx.phase=="request", contains body/bodyHex)
-//   - response: response snapshot (only when ctx.phase=="response")
+//   - request: request snapshot (body/bodyHex/bodySize/bodyHexTruncated/bodyTextTruncated)
+//   - response: response snapshot when ctx.phase=="response"; otherwise null
 //   - ctx: Script context with metadata and configuration
 //   - log/console: Logging interface
-//   - file: Sandbox file API
-//   - net: Network request API (returns JSON string)
+//   - file: Sandbox file API (check file.enabled)
+//   - net: Network request API (check net.enabled; returns JSON string)
 //
-// Output:
-//   - set ctx.output = { code: "0", data: "...", msg: "" } on success
-//   - set ctx.output = { code: "1", data: "", msg: "reason" } on failure
+// Output (any of these works):
+//   - set ctx.output = { code: "0", data: "...", msg: "" }
+//   - set global output = { code: "0", data: "...", msg: "" }
+//   - make the last expression evaluate to { code, data, msg }
 // ============================================================
 
 log.info("decode phase:", ctx.phase);
 
-// Example: decode request/response body (text)
+// Example: passthrough text preview
 var text = "";
 if (ctx.phase === "request") {
   text = request.body || "";
+  if (request.bodyTextTruncated) {
+    log.warn("request.body is truncated; consider using request.bodyHex");
+  }
 } else {
-  text = response.body || "";
+  // response can be null in request phase
+  text = (response && response.body) ? response.body : "";
+  if (response && response.bodyTextTruncated) {
+    log.warn("response.body is truncated; consider using response.bodyHex");
+  }
 }
 
-ctx.output = {
-  code: "0",
-  data: text,
-  msg: "",
-};
+ctx.output = { code: "0", data: text, msg: "" };
 `;
 
 interface ScriptsState {
