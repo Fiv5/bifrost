@@ -29,6 +29,9 @@ use super::handler::{
     needs_request_body_processing, needs_response_override, parse_and_record_sse_events,
     ConnectionErrorInfo,
 };
+use super::ws_handshake::{
+    header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
+};
 use crate::dns::DnsResolver;
 use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{
@@ -2724,36 +2727,54 @@ async fn handle_intercepted_websocket(
             .unwrap());
     }
 
-    let mut response_buf = vec![0u8; 4096];
-    let n = match stream_read.read(&mut response_buf).await {
-        Ok(n) => n,
-        Err(e) => {
-            error!(
-                "[{}] Failed to read WebSocket handshake response: {}",
-                req_id, e
-            );
-            return Ok(Response::builder()
-                .status(502)
-                .body(full_body(b"Bad Gateway".to_vec()))
-                .unwrap());
-        }
-    };
+    let (upstream_resp, upstream_leftover) =
+        match read_http1_response_with_leftover(&mut stream_read).await {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to read WebSocket handshake response: {}",
+                    req_id, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
 
-    let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
-        error!("[{}] WebSocket handshake failed: {}", req_id, response_str);
+    if upstream_resp.status_code != 101 {
+        error!(
+            "[{}] WebSocket handshake failed: {} {}",
+            req_id, upstream_resp.status_code, upstream_resp.status_text
+        );
         return Ok(Response::builder()
             .status(502)
             .body(full_body(b"WebSocket handshake failed".to_vec()))
             .unwrap());
     }
 
-    let sec_accept = extract_sec_websocket_accept(&response_str);
-    let sec_protocol = extract_sec_websocket_protocol(&response_str);
+    let sec_accept = upstream_resp
+        .header("Sec-WebSocket-Accept")
+        .map(|v| v.to_string());
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
 
-    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
-        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+    let client_protocol = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    let client_extensions = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok());
+
+    let sec_protocol = negotiate_protocol(client_protocol, upstream_protocol);
+    let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(crate::protocol::parse_permessage_deflate)
         .unwrap_or(false);
+    let upstream_headers = upstream_resp.headers.clone();
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
@@ -2824,6 +2845,7 @@ async fn handle_intercepted_websocket(
                     &req_id_owned,
                     admin_state_clone.clone(),
                     compression_enabled,
+                    upstream_leftover,
                 )
                 .await
                 {
@@ -2861,6 +2883,22 @@ async fn handle_intercepted_websocket(
         response = response.header("Sec-WebSocket-Protocol", protocol);
     }
 
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+
+    for (name, value) in upstream_headers {
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
+        {
+            response = response.header(name, value);
+        }
+    }
+
     Ok(response.body(empty_body()).unwrap())
 }
 
@@ -2893,6 +2931,31 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
         path, target_host, ws_key, ws_version
     );
 
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("sec-websocket-protocol")
+            || n.eq_ignore_ascii_case("sec-websocket-extensions")
+            || n.eq_ignore_ascii_case("origin")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        if let Ok(v) = value.to_str() {
+            handshake.push_str(&format!("{}: {}\r\n", n, v));
+        }
+    }
+
     if let Some(protocol) = req
         .headers()
         .get("Sec-WebSocket-Protocol")
@@ -2918,36 +2981,6 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
     handshake
 }
 
-fn extract_sec_websocket_accept(response: &str) -> Option<String> {
-    for line in response.lines() {
-        if line.to_lowercase().starts_with("sec-websocket-accept:") {
-            return Some(
-                line.split(':')
-                    .skip(1)
-                    .collect::<String>()
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    None
-}
-
-fn extract_sec_websocket_protocol(response: &str) -> Option<String> {
-    for line in response.lines() {
-        if line.to_lowercase().starts_with("sec-websocket-protocol:") {
-            return Some(
-                line.split(':')
-                    .skip(1)
-                    .collect::<String>()
-                    .trim()
-                    .to_string(),
-            );
-        }
-    }
-    None
-}
-
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 
@@ -2968,6 +3001,7 @@ async fn websocket_bidirectional_generic_with_capture<S>(
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
     compression_enabled: bool,
+    upstream_leftover: bytes::BytesMut,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -3040,7 +3074,7 @@ where
 
     let record_id_owned2 = record_id.to_string();
     let server_to_client = async move {
-        let mut reader = WebSocketReader::new(target_read);
+        let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
 
         while let Some(result) = reader.next().await {

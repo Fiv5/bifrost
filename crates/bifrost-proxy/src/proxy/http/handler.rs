@@ -22,6 +22,9 @@ use url::Url;
 use crate::dns::DnsResolver;
 
 use super::tunnel::get_tls_client_config;
+use super::ws_handshake::{
+    header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
+};
 use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
@@ -2363,7 +2366,7 @@ async fn handle_http_websocket(
 ) -> Result<Response<BoxBody>> {
     use super::websocket::websocket_bidirectional_generic_with_capture;
     use crate::server::empty_body;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
     use tokio_rustls::rustls::pki_types::ServerName;
 
     let start_time = Instant::now();
@@ -2501,23 +2504,37 @@ async fn handle_http_websocket(
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to send WS handshake: {}", e)))?;
 
-    let mut response_buf = vec![0u8; 4096];
-    let n = target_stream.read(&mut response_buf).await.map_err(|e| {
-        BifrostError::Network(format!("Failed to read WS handshake response: {}", e))
-    })?;
-
-    let response_str = String::from_utf8_lossy(&response_buf[..n]);
-    if !response_str.contains("101") {
+    let (upstream_resp, upstream_leftover) =
+        read_http1_response_with_leftover(&mut target_stream).await?;
+    if upstream_resp.status_code != 101 {
         return Err(BifrostError::Network(format!(
-            "WebSocket handshake failed: {}",
-            response_str
+            "WebSocket handshake failed: {} {}",
+            upstream_resp.status_code, upstream_resp.status_text
         )));
     }
 
-    let (response_headers, sec_accept) = parse_websocket_response(&response_str);
+    let response_headers = upstream_resp.headers.clone();
+    let sec_accept = upstream_resp
+        .header("Sec-WebSocket-Accept")
+        .map(|v| v.to_string());
 
-    let compression_enabled = crate::protocol::extract_sec_websocket_extensions(&response_str)
-        .map(|ext| crate::protocol::parse_permessage_deflate(&ext))
+    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
+    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
+
+    let client_protocol = req
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok());
+    let client_extensions = req
+        .headers()
+        .get("Sec-WebSocket-Extensions")
+        .and_then(|v| v.to_str().ok());
+
+    let negotiated_protocol = negotiate_protocol(client_protocol, upstream_protocol);
+    let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
+    let compression_enabled = negotiated_extensions
+        .as_deref()
+        .map(crate::protocol::parse_permessage_deflate)
         .unwrap_or(false);
 
     let total_ms = start_time.elapsed().as_millis() as u64;
@@ -2575,6 +2592,7 @@ async fn handle_http_websocket(
                     &record_id_clone,
                     admin_state_clone.clone(),
                     compression_enabled,
+                    upstream_leftover,
                 )
                 .await
                 {
@@ -2606,10 +2624,21 @@ async fn handle_http_websocket(
         response = response.header("Sec-WebSocket-Accept", accept);
     }
 
+    if let Some(protocol) = negotiated_protocol {
+        response = response.header("Sec-WebSocket-Protocol", protocol);
+    }
+
+    if let Some(extensions) = negotiated_extensions {
+        response = response.header("Sec-WebSocket-Extensions", extensions);
+    }
+
     for (name, value) in response_headers {
-        if name.to_lowercase() != "upgrade"
-            && name.to_lowercase() != "connection"
-            && name.to_lowercase() != "sec-websocket-accept"
+        let lower = name.to_ascii_lowercase();
+        if lower != "upgrade"
+            && lower != "connection"
+            && lower != "sec-websocket-accept"
+            && lower != "sec-websocket-protocol"
+            && lower != "sec-websocket-extensions"
         {
             response = response.header(name, value);
         }
@@ -2657,6 +2686,30 @@ fn build_http_websocket_handshake(
         path, host_header, ws_key, ws_version
     );
 
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("sec-websocket-protocol")
+            || n.eq_ignore_ascii_case("sec-websocket-extensions")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        if let Ok(v) = value.to_str() {
+            handshake.push_str(&format!("{}: {}\r\n", n, v));
+        }
+    }
+
     if let Some(protocol) = req.headers().get("Sec-WebSocket-Protocol") {
         if let Ok(protocol_str) = protocol.to_str() {
             handshake.push_str(&format!("Sec-WebSocket-Protocol: {}\r\n", protocol_str));
@@ -2671,27 +2724,6 @@ fn build_http_websocket_handshake(
 
     handshake.push_str("\r\n");
     Ok(handshake)
-}
-
-fn parse_websocket_response(response_str: &str) -> (Vec<(String, String)>, Option<String>) {
-    let mut headers = Vec::new();
-    let mut sec_accept = None;
-
-    for line in response_str.lines().skip(1) {
-        if line.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_string();
-            let value = value.trim().to_string();
-            if name.to_lowercase() == "sec-websocket-accept" {
-                sec_accept = Some(value.clone());
-            }
-            headers.push((name, value));
-        }
-    }
-
-    (headers, sec_accept)
 }
 
 pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {

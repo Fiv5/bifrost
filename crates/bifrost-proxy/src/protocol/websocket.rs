@@ -42,6 +42,8 @@ impl Opcode {
 pub struct WebSocketFrame {
     pub fin: bool,
     pub rsv1: bool,
+    pub rsv2: bool,
+    pub rsv3: bool,
     pub opcode: Opcode,
     pub mask: Option<[u8; 4]>,
     pub payload: Bytes,
@@ -52,6 +54,8 @@ impl WebSocketFrame {
         Self {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref().as_bytes()),
@@ -62,6 +66,8 @@ impl WebSocketFrame {
         Self {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Binary,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -72,6 +78,8 @@ impl WebSocketFrame {
         Self {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Ping,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -82,6 +90,8 @@ impl WebSocketFrame {
         Self {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Pong,
             mask: None,
             payload: Bytes::copy_from_slice(data.as_ref()),
@@ -97,6 +107,8 @@ impl WebSocketFrame {
         Self {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Close,
             mask: None,
             payload: payload.freeze(),
@@ -118,6 +130,12 @@ impl WebSocketFrame {
         }
         if self.rsv1 {
             first_byte |= 0x40;
+        }
+        if self.rsv2 {
+            first_byte |= 0x20;
+        }
+        if self.rsv3 {
+            first_byte |= 0x10;
         }
         buf.put_u8(first_byte);
 
@@ -157,6 +175,8 @@ impl WebSocketFrame {
 
         let fin = (first_byte & 0x80) != 0;
         let rsv1 = (first_byte & 0x40) != 0;
+        let rsv2 = (first_byte & 0x20) != 0;
+        let rsv3 = (first_byte & 0x10) != 0;
         let opcode = Opcode::from_u8(first_byte & 0x0F)?;
         let masked = (second_byte & 0x80) != 0;
         let payload_len_indicator = second_byte & 0x7F;
@@ -212,6 +232,8 @@ impl WebSocketFrame {
         let frame = WebSocketFrame {
             fin,
             rsv1,
+            rsv2,
+            rsv3,
             opcode,
             mask,
             payload: Bytes::from(payload),
@@ -290,6 +312,9 @@ pin_project! {
         buffer: BytesMut,
         fragment_buffer: Vec<u8>,
         fragment_opcode: Option<Opcode>,
+        fragment_rsv1: bool,
+        fragment_rsv2: bool,
+        fragment_rsv3: bool,
         max_fragment_size: usize,
     }
 }
@@ -299,12 +324,28 @@ impl<R> WebSocketReader<R> {
         Self::with_max_fragment_size(inner, DEFAULT_MAX_FRAGMENT_BUFFER_SIZE)
     }
 
+    pub fn with_initial_buffer(inner: R, buffer: BytesMut) -> Self {
+        Self {
+            inner,
+            buffer,
+            fragment_buffer: Vec::new(),
+            fragment_opcode: None,
+            fragment_rsv1: false,
+            fragment_rsv2: false,
+            fragment_rsv3: false,
+            max_fragment_size: DEFAULT_MAX_FRAGMENT_BUFFER_SIZE,
+        }
+    }
+
     pub fn with_max_fragment_size(inner: R, max_fragment_size: usize) -> Self {
         Self {
             inner,
             buffer: BytesMut::with_capacity(8192),
             fragment_buffer: Vec::new(),
             fragment_opcode: None,
+            fragment_rsv1: false,
+            fragment_rsv2: false,
+            fragment_rsv3: false,
             max_fragment_size,
         }
     }
@@ -338,6 +379,9 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                         );
                         this.fragment_buffer.clear();
                         *this.fragment_opcode = None;
+                        *this.fragment_rsv1 = false;
+                        *this.fragment_rsv2 = false;
+                        *this.fragment_rsv3 = false;
                         continue;
                     }
                     this.fragment_buffer.extend_from_slice(&frame.payload);
@@ -345,11 +389,16 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                         let opcode = this.fragment_opcode.take().unwrap_or(Opcode::Text);
                         let complete_frame = WebSocketFrame {
                             fin: true,
-                            rsv1: false,
+                            rsv1: *this.fragment_rsv1,
+                            rsv2: *this.fragment_rsv2,
+                            rsv3: *this.fragment_rsv3,
                             opcode,
                             mask: None,
                             payload: Bytes::from(std::mem::take(this.fragment_buffer)),
                         };
+                        *this.fragment_rsv1 = false;
+                        *this.fragment_rsv2 = false;
+                        *this.fragment_rsv3 = false;
                         return Poll::Ready(Some(Ok(complete_frame)));
                     }
                 } else if !frame.fin {
@@ -360,9 +409,17 @@ impl<R: AsyncRead + Unpin> Stream for WebSocketReader<R> {
                             new_size,
                             *this.max_fragment_size
                         );
+                        this.fragment_buffer.clear();
+                        *this.fragment_opcode = None;
+                        *this.fragment_rsv1 = false;
+                        *this.fragment_rsv2 = false;
+                        *this.fragment_rsv3 = false;
                         continue;
                     }
                     *this.fragment_opcode = Some(frame.opcode);
+                    *this.fragment_rsv1 = frame.rsv1;
+                    *this.fragment_rsv2 = frame.rsv2;
+                    *this.fragment_rsv3 = frame.rsv3;
                     this.fragment_buffer.clear();
                     this.fragment_buffer.extend_from_slice(&frame.payload);
                 } else {
@@ -732,12 +789,33 @@ mod tests {
         let frame = WebSocketFrame {
             fin: true,
             rsv1: true,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::from("hello"),
         };
         let encoded = frame.encode();
         assert_eq!(encoded[0], 0xC1);
+    }
+
+    #[test]
+    fn test_frame_rsv2_rsv3_roundtrip() {
+        let frame = WebSocketFrame {
+            fin: true,
+            rsv1: false,
+            rsv2: true,
+            rsv3: true,
+            opcode: Opcode::Binary,
+            mask: None,
+            payload: Bytes::from_static(b"hi"),
+        };
+        let encoded = frame.encode();
+        let (decoded, consumed) = WebSocketFrame::parse(&encoded).unwrap();
+        assert_eq!(consumed, encoded.len());
+        assert!(decoded.rsv2);
+        assert!(decoded.rsv3);
+        assert_eq!(decoded.payload.as_ref(), b"hi");
     }
 
     #[test]
@@ -779,6 +857,8 @@ mod tests {
         let frame = WebSocketFrame {
             fin: true,
             rsv1: false,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::from("hello"),
@@ -801,6 +881,8 @@ mod tests {
         let frame = WebSocketFrame {
             fin: true,
             rsv1: true,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::from(compressed),
@@ -828,6 +910,8 @@ mod tests {
         let frame = WebSocketFrame {
             fin: true,
             rsv1: true,
+            rsv2: false,
+            rsv3: false,
             opcode: Opcode::Text,
             mask: None,
             payload: Bytes::from(compressed),
