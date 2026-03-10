@@ -6,8 +6,15 @@ use bifrost_script::{MatchedRuleInfo, RequestData, ResponseData, ScriptContext, 
 use bytes::Bytes;
 use tracing::warn;
 
+use crate::protocol::parse_permessage_deflate_config;
 use crate::server::ResolvedRules;
 use crate::utils::logging::RequestContext;
+
+#[derive(Debug, Clone, Default)]
+pub struct WsHandshakeMeta {
+    pub negotiated_protocol: Option<String>,
+    pub negotiated_extensions: Option<String>,
+}
 
 fn build_matched_rules_info(resolved_rules: &ResolvedRules) -> Vec<MatchedRuleInfo> {
     resolved_rules
@@ -60,6 +67,7 @@ pub async fn decode_ws_payload_for_storage(
     request_url: &str,
     request_method: &str,
     request_headers: &[(String, String)],
+    ws_meta: &WsHandshakeMeta,
     direction: FrameDirection,
     frame_type: FrameType,
     payload_bytes: &[u8],
@@ -104,6 +112,46 @@ pub async fn decode_ws_payload_for_storage(
         payload_bytes.len().to_string(),
     );
 
+    if let Some(ref proto) = ws_meta.negotiated_protocol {
+        values.insert("ws_subprotocol".to_string(), proto.clone());
+    }
+    if let Some(ref ext) = ws_meta.negotiated_extensions {
+        values.insert("ws_extensions".to_string(), ext.clone());
+        if let Some(cfg) = parse_permessage_deflate_config(ext) {
+            values.insert(
+                "ws_permessage_deflate".to_string(),
+                cfg.enabled().to_string(),
+            );
+            values.insert(
+                "ws_client_no_context_takeover".to_string(),
+                cfg.client_no_context_takeover.to_string(),
+            );
+            values.insert(
+                "ws_server_no_context_takeover".to_string(),
+                cfg.server_no_context_takeover.to_string(),
+            );
+            if let Some(bits) = cfg.client_max_window_bits {
+                values.insert("ws_client_max_window_bits".to_string(), bits.to_string());
+            }
+            if let Some(bits) = cfg.server_max_window_bits {
+                values.insert("ws_server_max_window_bits".to_string(), bits.to_string());
+            }
+        } else {
+            values.insert("ws_permessage_deflate".to_string(), "false".to_string());
+        }
+    }
+
+    if let Ok(parsed) = url::Url::parse(request_url) {
+        if let Some(h) = parsed.host_str() {
+            values.insert("ws_target_host".to_string(), h.to_string());
+        }
+        if let Some(p) = parsed.port_or_known_default() {
+            values.insert("ws_target_port".to_string(), p.to_string());
+        }
+        let tls = matches!(parsed.scheme(), "wss" | "https");
+        values.insert("ws_is_tls".to_string(), tls.to_string());
+    }
+
     let matched_rules = build_matched_rules_info(resolved_rules);
     let (host, path, protocol) = parse_url_parts(request_url);
 
@@ -119,10 +167,22 @@ pub async fn decode_ws_payload_for_storage(
         body: None,
     };
 
+    let mut response_headers = HashMap::new();
+    if let Some(ref proto) = ws_meta.negotiated_protocol {
+        response_headers.insert("Sec-WebSocket-Protocol".to_string(), proto.clone());
+    }
+    if let Some(ref ext) = ws_meta.negotiated_extensions {
+        response_headers.insert("Sec-WebSocket-Extensions".to_string(), ext.clone());
+    }
+
+    // 附加基础元信息，方便脚本侧判断握手类型。
+    response_headers.insert("Upgrade".to_string(), "websocket".to_string());
+    response_headers.insert("Connection".to_string(), "Upgrade".to_string());
+
     let response_data = ResponseData {
         status: 101,
         status_text: "Switching Protocols".to_string(),
-        headers: HashMap::new(),
+        headers: response_headers,
         body: None,
         request: request_data.clone(),
     };

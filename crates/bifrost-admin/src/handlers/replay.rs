@@ -19,9 +19,9 @@ use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info, warn};
 
 use super::replay_ws::{
-    compute_accept_key, generate_sec_websocket_key, header_values, negotiate_extensions,
-    negotiate_protocol, parse_permessage_deflate, read_http1_response_with_leftover, HttpResponse,
-    Opcode, WebSocketReader, WebSocketWriter,
+    compute_accept_key, decompress_permessage_deflate_payload, generate_sec_websocket_key,
+    header_values, negotiate_extensions, negotiate_protocol, parse_permessage_deflate,
+    read_http1_response_with_leftover, HttpResponse, Opcode, WebSocketReader, WebSocketWriter,
 };
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::push::SharedPushManager;
@@ -1845,6 +1845,11 @@ async fn websocket_bidirectional_generic_with_capture(
         let mut reader = WebSocketReader::new(client_read);
         let mut writer = WebSocketWriter::new(target_write, true);
 
+        // permessage-deflate 允许“压缩消息 + fragmentation”。RSV1 通常只在首帧置位，后续 Continuation 帧不再置位。
+        // 这里在同一条消息 FIN 结束时对整条消息解压，用于记录/展示；转发仍保持原始帧不变。
+        let mut pending_compressed: Option<(FrameType, BytesMut)> = None;
+        const MAX_COMPRESSED_MESSAGE_LEN: usize = 32 * 1024 * 1024;
+
         loop {
             let Some(frame) = reader
                 .next_frame()
@@ -1855,22 +1860,54 @@ async fn websocket_bidirectional_generic_with_capture(
             };
 
             let frame_type = opcode_to_frame_type(frame.opcode);
-            let can_decompress = compression_enabled
-                && frame.fin
-                && frame.rsv1
-                && matches!(frame.opcode, Opcode::Text | Opcode::Binary);
-            let raw_payload = if can_decompress {
-                Some(frame.payload.clone())
-            } else {
-                None
-            };
-            let payload_for_record = if can_decompress {
-                frame.decompress_payload()
-            } else {
-                frame.payload.clone()
-            };
 
-            let payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+            let mut raw_payload: Option<Bytes> = None;
+            let mut payload_for_record = frame.payload.clone();
+            let mut payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+
+            if compression_enabled {
+                match frame.opcode {
+                    Opcode::Text | Opcode::Binary => {
+                        // 首帧：如果 rsv1=1 且被分片（fin=0），开始累计压缩碎片
+                        if frame.rsv1 && !frame.fin {
+                            let mut buf = BytesMut::with_capacity(frame.payload.len().min(8192));
+                            buf.extend_from_slice(&frame.payload);
+                            pending_compressed = Some((frame_type, buf));
+                        } else if frame.rsv1 && frame.fin {
+                            // 未分片：直接解压
+                            raw_payload = Some(frame.payload.clone());
+                            payload_for_record =
+                                decompress_permessage_deflate_payload(&frame.payload);
+                        }
+                    }
+                    Opcode::Continuation => {
+                        if let Some((_, buf)) = pending_compressed.as_mut() {
+                            if buf.len().saturating_add(frame.payload.len())
+                                <= MAX_COMPRESSED_MESSAGE_LEN
+                            {
+                                buf.extend_from_slice(&frame.payload);
+                            } else {
+                                // 超出限制时放弃累计，避免内存压力
+                                pending_compressed = None;
+                            }
+
+                            if frame.fin {
+                                if let Some((start_type, buf)) = pending_compressed.take() {
+                                    raw_payload = Some(buf.freeze());
+                                    payload_for_record = decompress_permessage_deflate_payload(
+                                        raw_payload.as_ref().unwrap(),
+                                    );
+                                    // Continuation 帧在 UI 侧仍希望按原始消息类型展示
+                                    payload_is_text =
+                                        matches!(start_type, FrameType::Text | FrameType::Close);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             state_c2s.connection_monitor.record_frame(
                 &id_c2s,
                 FrameDirection::Send,
@@ -1915,6 +1952,9 @@ async fn websocket_bidirectional_generic_with_capture(
         let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
 
+        let mut pending_compressed: Option<(FrameType, BytesMut)> = None;
+        const MAX_COMPRESSED_MESSAGE_LEN: usize = 32 * 1024 * 1024;
+
         loop {
             let Some(frame) = reader
                 .next_frame()
@@ -1925,22 +1965,50 @@ async fn websocket_bidirectional_generic_with_capture(
             };
 
             let frame_type = opcode_to_frame_type(frame.opcode);
-            let can_decompress = compression_enabled
-                && frame.fin
-                && frame.rsv1
-                && matches!(frame.opcode, Opcode::Text | Opcode::Binary);
-            let raw_payload = if can_decompress {
-                Some(frame.payload.clone())
-            } else {
-                None
-            };
-            let payload_for_record = if can_decompress {
-                frame.decompress_payload()
-            } else {
-                frame.payload.clone()
-            };
 
-            let payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+            let mut raw_payload: Option<Bytes> = None;
+            let mut payload_for_record = frame.payload.clone();
+            let mut payload_is_text = matches!(frame_type, FrameType::Text | FrameType::Close);
+
+            if compression_enabled {
+                match frame.opcode {
+                    Opcode::Text | Opcode::Binary => {
+                        if frame.rsv1 && !frame.fin {
+                            let mut buf = BytesMut::with_capacity(frame.payload.len().min(8192));
+                            buf.extend_from_slice(&frame.payload);
+                            pending_compressed = Some((frame_type, buf));
+                        } else if frame.rsv1 && frame.fin {
+                            raw_payload = Some(frame.payload.clone());
+                            payload_for_record =
+                                decompress_permessage_deflate_payload(&frame.payload);
+                        }
+                    }
+                    Opcode::Continuation => {
+                        if let Some((_, buf)) = pending_compressed.as_mut() {
+                            if buf.len().saturating_add(frame.payload.len())
+                                <= MAX_COMPRESSED_MESSAGE_LEN
+                            {
+                                buf.extend_from_slice(&frame.payload);
+                            } else {
+                                pending_compressed = None;
+                            }
+
+                            if frame.fin {
+                                if let Some((start_type, buf)) = pending_compressed.take() {
+                                    raw_payload = Some(buf.freeze());
+                                    payload_for_record = decompress_permessage_deflate_payload(
+                                        raw_payload.as_ref().unwrap(),
+                                    );
+                                    payload_is_text =
+                                        matches!(start_type, FrameType::Text | FrameType::Close);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             state_s2c.connection_monitor.record_frame(
                 &id_s2c,
                 FrameDirection::Receive,
@@ -1981,14 +2049,26 @@ async fn websocket_bidirectional_generic_with_capture(
         Ok::<_, String>(())
     };
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        tokio::try_join!(client_to_server, server_to_client)
-    })
-    .await;
-    match result {
-        Ok(Ok(_)) => Ok(()),
+    // 不能对整条 WebSocket 双向转发做固定超时：长连接（>30s）会被必断。
+    // 这里用“任一方向结束即结束整体”的策略，并主动取消另一侧任务，避免半关闭导致的资源悬挂。
+    let mut c2s = tokio::spawn(client_to_server);
+    let mut s2c = tokio::spawn(server_to_client);
+
+    let joined = tokio::select! {
+        r = &mut c2s => {
+            s2c.abort();
+            r
+        }
+        r = &mut s2c => {
+            c2s.abort();
+            r
+        }
+    };
+
+    match joined {
+        Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(e),
-        Err(_) => Ok(()),
+        Err(e) => Err(format!("WebSocket task join error: {}", e)),
     }
 }
 

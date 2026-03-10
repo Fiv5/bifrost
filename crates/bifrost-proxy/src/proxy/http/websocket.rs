@@ -15,11 +15,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tracing::{debug, error, trace};
 
-use super::ws_decode::decode_ws_payload_for_storage;
+use super::ws_decode::{decode_ws_payload_for_storage, WsHandshakeMeta};
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
-use crate::protocol::{parse_permessage_deflate, Opcode, WebSocketReader, WebSocketWriter};
+use crate::protocol::{Opcode, WebSocketReader, WebSocketWriter};
 use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::resolve_client_process;
@@ -132,10 +132,14 @@ pub async fn handle_websocket_upgrade(
 
     let negotiated_protocol = negotiate_protocol(client_protocol, upstream_protocol);
     let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
-    let compression_enabled = negotiated_extensions
+    let compression_cfg = negotiated_extensions
         .as_deref()
-        .map(parse_permessage_deflate)
-        .unwrap_or(false);
+        .and_then(crate::protocol::parse_permessage_deflate_config);
+    let compression_enabled = compression_cfg.is_some();
+    let ws_meta = WsHandshakeMeta {
+        negotiated_protocol: negotiated_protocol.clone(),
+        negotiated_extensions: negotiated_extensions.clone(),
+    };
     let upstream_headers = upstream_resp.headers.clone();
 
     let total_ms = start_time.elapsed().as_millis() as u64;
@@ -202,6 +206,8 @@ pub async fn handle_websocket_upgrade(
     let ws_req_method = "GET".to_string();
     let ws_req_headers = req_headers.clone();
     let ws_decode_scripts = ws_rules.decode_scripts.clone();
+    let ws_compression_cfg = compression_cfg.clone();
+    let ws_meta_spawn = ws_meta.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -210,13 +216,14 @@ pub async fn handle_websocket_upgrade(
                     target_stream,
                     &record_id_clone,
                     admin_state.clone(),
-                    compression_enabled,
+                    ws_compression_cfg,
                     upstream_leftover,
                     ws_ctx,
                     ws_rules,
                     ws_req_url,
                     ws_req_method,
                     ws_req_headers,
+                    ws_meta_spawn,
                     ws_decode_scripts,
                 )
                 .await
@@ -401,13 +408,14 @@ async fn websocket_bidirectional_with_capture(
     target: TcpStream,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
-    compression_enabled: bool,
+    compression_cfg: Option<crate::protocol::PerMessageDeflateConfig>,
     upstream_leftover: bytes::BytesMut,
     ctx: RequestContext,
     resolved_rules: crate::server::ResolvedRules,
     request_url: String,
     request_method: String,
     request_headers: Vec<(String, String)>,
+    ws_meta: WsHandshakeMeta,
     decode_scripts: Vec<String>,
 ) -> Result<()> {
     let client = TokioIo::new(upgraded);
@@ -427,12 +435,24 @@ async fn websocket_bidirectional_with_capture(
     let method_s2c = request_method;
     let headers_c2s = request_headers.clone();
     let headers_s2c = request_headers;
+    let ws_meta_c2s = ws_meta.clone();
+    let ws_meta_s2c = ws_meta;
     let scripts_c2s = decode_scripts.clone();
     let scripts_s2c = decode_scripts;
+
+    let compression_cfg_c2s = compression_cfg.clone();
+    let compression_cfg_s2c = compression_cfg;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
         let mut writer = WebSocketWriter::new(target_write, true);
+        let mut inflater = compression_cfg_c2s
+            .as_ref()
+            .map(|_| crate::protocol::PerMessageDeflateInflater::new());
+        let takeover = compression_cfg_c2s
+            .as_ref()
+            .map(|cfg| !cfg.client_no_context_takeover)
+            .unwrap_or(false);
 
         while let Some(result) = reader.next().await {
             let frame = match result {
@@ -449,8 +469,21 @@ async fn websocket_bidirectional_with_capture(
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 let frame_type = opcode_to_frame_type(frame.opcode);
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
+                let payload_for_record = if frame.is_compressed() {
+                    if let Some(inflater) = inflater.as_mut() {
+                        if !takeover {
+                            inflater.reset();
+                        }
+                        match inflater.decompress_message(frame.payload.as_ref()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                trace!("[WS] decompress failed (c2s): {}", e);
+                                frame.payload.clone()
+                            }
+                        }
+                    } else {
+                        frame.payload.clone()
+                    }
                 } else {
                     frame.payload.clone()
                 };
@@ -467,6 +500,7 @@ async fn websocket_bidirectional_with_capture(
                         &url_c2s,
                         &method_c2s,
                         &headers_c2s,
+                        &ws_meta_c2s,
                         FrameDirection::Send,
                         frame_type,
                         payload_for_record.as_ref(),
@@ -525,6 +559,13 @@ async fn websocket_bidirectional_with_capture(
     let server_to_client = async move {
         let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
+        let mut inflater = compression_cfg_s2c
+            .as_ref()
+            .map(|_| crate::protocol::PerMessageDeflateInflater::new());
+        let takeover = compression_cfg_s2c
+            .as_ref()
+            .map(|cfg| !cfg.server_no_context_takeover)
+            .unwrap_or(false);
 
         while let Some(result) = reader.next().await {
             let frame = match result {
@@ -541,8 +582,21 @@ async fn websocket_bidirectional_with_capture(
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 let frame_type = opcode_to_frame_type(frame.opcode);
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
+                let payload_for_record = if frame.is_compressed() {
+                    if let Some(inflater) = inflater.as_mut() {
+                        if !takeover {
+                            inflater.reset();
+                        }
+                        match inflater.decompress_message(frame.payload.as_ref()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                trace!("[WS] decompress failed (s2c): {}", e);
+                                frame.payload.clone()
+                            }
+                        }
+                    } else {
+                        frame.payload.clone()
+                    }
                 } else {
                     frame.payload.clone()
                 };
@@ -559,6 +613,7 @@ async fn websocket_bidirectional_with_capture(
                         &url_s2c,
                         &method_s2c,
                         &headers_s2c,
+                        &ws_meta_s2c,
                         FrameDirection::Receive,
                         frame_type,
                         payload_for_record.as_ref(),
@@ -657,13 +712,14 @@ pub async fn websocket_bidirectional_generic_with_capture<S>(
     target: S,
     record_id: &str,
     admin_state: Option<Arc<AdminState>>,
-    compression_enabled: bool,
+    compression_cfg: Option<crate::protocol::PerMessageDeflateConfig>,
     upstream_leftover: bytes::BytesMut,
     ctx: RequestContext,
     resolved_rules: crate::server::ResolvedRules,
     request_url: String,
     request_method: String,
     request_headers: Vec<(String, String)>,
+    ws_meta: WsHandshakeMeta,
     decode_scripts: Vec<String>,
 ) -> Result<()>
 where
@@ -686,12 +742,24 @@ where
     let method_s2c = request_method;
     let headers_c2s = request_headers.clone();
     let headers_s2c = request_headers;
+    let ws_meta_c2s = ws_meta.clone();
+    let ws_meta_s2c = ws_meta;
     let scripts_c2s = decode_scripts.clone();
     let scripts_s2c = decode_scripts;
+
+    let compression_cfg_c2s = compression_cfg.clone();
+    let compression_cfg_s2c = compression_cfg;
 
     let client_to_server = async move {
         let mut reader = WebSocketReader::new(client_read);
         let mut writer = WebSocketWriter::new(target_write, true);
+        let mut inflater = compression_cfg_c2s
+            .as_ref()
+            .map(|_| crate::protocol::PerMessageDeflateInflater::new());
+        let takeover = compression_cfg_c2s
+            .as_ref()
+            .map(|cfg| !cfg.client_no_context_takeover)
+            .unwrap_or(false);
 
         while let Some(result) = reader.next().await {
             let frame = match result {
@@ -708,8 +776,21 @@ where
                     .add_bytes_sent_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 let frame_type = opcode_to_frame_type(frame.opcode);
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
+                let payload_for_record = if frame.is_compressed() {
+                    if let Some(inflater) = inflater.as_mut() {
+                        if !takeover {
+                            inflater.reset();
+                        }
+                        match inflater.decompress_message(frame.payload.as_ref()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                trace!("[WS] decompress failed (c2s): {}", e);
+                                frame.payload.clone()
+                            }
+                        }
+                    } else {
+                        frame.payload.clone()
+                    }
                 } else {
                     frame.payload.clone()
                 };
@@ -726,6 +807,7 @@ where
                         &url_c2s,
                         &method_c2s,
                         &headers_c2s,
+                        &ws_meta_c2s,
                         FrameDirection::Send,
                         frame_type,
                         payload_for_record.as_ref(),
@@ -784,6 +866,13 @@ where
     let server_to_client = async move {
         let mut reader = WebSocketReader::with_initial_buffer(target_read, upstream_leftover);
         let mut writer = WebSocketWriter::new(client_write, false);
+        let mut inflater = compression_cfg_s2c
+            .as_ref()
+            .map(|_| crate::protocol::PerMessageDeflateInflater::new());
+        let takeover = compression_cfg_s2c
+            .as_ref()
+            .map(|cfg| !cfg.server_no_context_takeover)
+            .unwrap_or(false);
 
         while let Some(result) = reader.next().await {
             let frame = match result {
@@ -800,8 +889,21 @@ where
                     .add_bytes_received_by_type(TrafficType::Ws, frame.payload.len() as u64);
 
                 let frame_type = opcode_to_frame_type(frame.opcode);
-                let payload_for_record = if compression_enabled && frame.is_compressed() {
-                    frame.decompress_payload()
+                let payload_for_record = if frame.is_compressed() {
+                    if let Some(inflater) = inflater.as_mut() {
+                        if !takeover {
+                            inflater.reset();
+                        }
+                        match inflater.decompress_message(frame.payload.as_ref()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                trace!("[WS] decompress failed (s2c): {}", e);
+                                frame.payload.clone()
+                            }
+                        }
+                    } else {
+                        frame.payload.clone()
+                    }
                 } else {
                     frame.payload.clone()
                 };
@@ -818,6 +920,7 @@ where
                         &url_s2c,
                         &method_s2c,
                         &headers_s2c,
+                        &ws_meta_s2c,
                         FrameDirection::Receive,
                         frame_type,
                         payload_for_record.as_ref(),

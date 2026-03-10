@@ -11,6 +11,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
+// 防御性限制：避免异常/恶意上游通过超大 frame 触发内存压力。
+// 该限制只作用于 replay 的帧解析与转发捕获，不影响正常 upstream WebSocket 客户端实现。
+const MAX_FRAME_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Opcode {
     Continuation = 0x0,
@@ -183,22 +187,95 @@ impl WebSocketFrame {
             None
         }
     }
+}
 
-    pub(super) fn decompress_payload(&self) -> Bytes {
-        if !self.rsv1 || self.payload.is_empty() {
-            return self.payload.clone();
+pub(super) fn decompress_permessage_deflate_payload(payload: &Bytes) -> Bytes {
+    if payload.is_empty() {
+        return payload.clone();
+    }
+
+    let mut data = payload.to_vec();
+    // permessage-deflate 需要追加 tail bytes 才能解码完整消息（RFC 7692）
+    data.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+
+    let mut decoder = DeflateDecoder::new(&data[..]);
+    let mut decompressed = Vec::new();
+    match decoder.read_to_end(&mut decompressed) {
+        Ok(_) => Bytes::from(decompressed),
+        Err(_) => payload.clone(),
+    }
+}
+
+fn validate_frame_header(buf: &[u8]) -> io::Result<()> {
+    if buf.len() < 2 {
+        return Ok(());
+    }
+
+    let first_byte = buf[0];
+    let second_byte = buf[1];
+
+    let fin = (first_byte & 0x80) != 0;
+    let opcode = Opcode::from_u8(first_byte & 0x0F)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid WebSocket opcode"))?;
+
+    let masked = (second_byte & 0x80) != 0;
+    let payload_len_indicator = second_byte & 0x7F;
+
+    let (payload_len, ext_len_bytes) = match payload_len_indicator {
+        0..=125 => (payload_len_indicator as usize, 0usize),
+        126 => {
+            if buf.len() < 4 {
+                return Ok(());
+            }
+            let len = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+            (len, 2)
         }
+        127 => {
+            if buf.len() < 10 {
+                return Ok(());
+            }
+            let mut len_bytes = [0u8; 8];
+            len_bytes.copy_from_slice(&buf[2..10]);
+            let len_u64 = u64::from_be_bytes(len_bytes);
+            // RFC 6455: the most significant bit MUST be 0
+            if (len_u64 & (1u64 << 63)) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid WebSocket payload length (MSB must be 0)",
+                ));
+            }
+            (len_u64 as usize, 8)
+        }
+        _ => unreachable!(),
+    };
 
-        let mut data = self.payload.to_vec();
-        data.extend_from_slice(&[0x00, 0x00, 0xff, 0xff]);
+    if payload_len > MAX_FRAME_PAYLOAD_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("WebSocket frame payload too large: {}", payload_len),
+        ));
+    }
 
-        let mut decoder = DeflateDecoder::new(&data[..]);
-        let mut decompressed = Vec::new();
-        match decoder.read_to_end(&mut decompressed) {
-            Ok(_) => Bytes::from(decompressed),
-            Err(_) => self.payload.clone(),
+    // Control frame 约束：必须 fin=1 且 payload<=125（RFC 6455）
+    if matches!(opcode, Opcode::Close | Opcode::Ping | Opcode::Pong) {
+        if !fin {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid control frame: FIN must be set",
+            ));
+        }
+        if payload_len > 125 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid control frame: payload must be <= 125 bytes",
+            ));
         }
     }
+
+    // 如果已知 header 长度且 buffer 已超过阈值，但 frame 仍未完整，下一轮会继续读取。
+    // 这里不强制要求 header 已完整（mask bytes 可能未到），只做上限/规范提前校验。
+    let _header_len = 2 + ext_len_bytes + if masked { 4 } else { 0 };
+    Ok(())
 }
 
 pub(super) struct WebSocketReader<R> {
@@ -226,6 +303,9 @@ impl<R: AsyncRead + Unpin> WebSocketReader<R> {
                 self.buffer.advance(consumed);
                 return Ok(Some(frame));
             }
+
+            // 在继续读取前先对 header 做防御性校验，避免 buffer 被异常大 frame 撑爆。
+            validate_frame_header(&self.buffer)?;
 
             let mut chunk = [0u8; 8192];
             let n = self.inner.read(&mut chunk).await?;

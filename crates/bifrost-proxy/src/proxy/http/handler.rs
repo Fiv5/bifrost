@@ -2532,10 +2532,14 @@ async fn handle_http_websocket(
 
     let negotiated_protocol = negotiate_protocol(client_protocol, upstream_protocol);
     let negotiated_extensions = negotiate_extensions(client_extensions, &upstream_extensions);
-    let compression_enabled = negotiated_extensions
+    let compression_cfg = negotiated_extensions
         .as_deref()
-        .map(crate::protocol::parse_permessage_deflate)
-        .unwrap_or(false);
+        .and_then(crate::protocol::parse_permessage_deflate_config);
+    let _compression_enabled = compression_cfg.is_some();
+    let ws_meta = super::ws_decode::WsHandshakeMeta {
+        negotiated_protocol: negotiated_protocol.clone(),
+        negotiated_extensions: negotiated_extensions.clone(),
+    };
 
     let total_ms = start_time.elapsed().as_millis() as u64;
     let record_id = ctx.id_str();
@@ -2590,6 +2594,8 @@ async fn handle_http_websocket(
     let ws_req_method = method.clone();
     let ws_req_headers = req_headers.clone();
     let ws_decode_scripts = ws_rules.decode_scripts.clone();
+    let ws_compression_cfg = compression_cfg.clone();
+    let ws_meta_spawn = ws_meta.clone();
     tokio::spawn(async move {
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
@@ -2598,13 +2604,14 @@ async fn handle_http_websocket(
                     target_stream,
                     &record_id_clone,
                     admin_state_clone.clone(),
-                    compression_enabled,
+                    ws_compression_cfg,
                     upstream_leftover,
                     ws_ctx,
                     ws_rules,
                     ws_req_url,
                     ws_req_method,
                     ws_req_headers,
+                    ws_meta_spawn,
                     ws_decode_scripts,
                 )
                 .await
