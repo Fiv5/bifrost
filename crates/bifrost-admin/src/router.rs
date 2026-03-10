@@ -116,7 +116,13 @@ impl AdminRouter {
             handle_search(req, state, path).await
         } else if path.starts_with("/api/scripts") {
             if let Some(script_manager) = &state.script_manager {
-                handle_scripts_request(req, script_manager.clone(), path).await
+                handle_scripts_request(
+                    req,
+                    script_manager.clone(),
+                    state.config_manager.clone(),
+                    path,
+                )
+                .await
             } else {
                 error_response(
                     StatusCode::SERVICE_UNAVAILABLE,

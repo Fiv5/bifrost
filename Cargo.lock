@@ -449,7 +449,9 @@ name = "bifrost-script"
 version = "0.0.14-beta"
 dependencies = [
  "bifrost-core",
+ "bifrost-storage",
  "chrono",
+ "reqwest",
  "rquickjs",
  "serde",
  "serde_json",
@@ -3440,6 +3442,7 @@ dependencies = [
  "cookie",
  "cookie_store",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2",

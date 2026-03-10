@@ -75,6 +75,7 @@ pub enum Protocol {
     RulesFile,
     ReqScript,
     ResScript,
+    Decode,
 
     // DNS 解析
     Dns,
@@ -128,6 +129,7 @@ pub const MULTI_MATCH_PROTOCOLS: &[Protocol] = &[
     Protocol::RulesFile,
     Protocol::ReqScript,
     Protocol::ResScript,
+    Protocol::Decode,
     Protocol::Delete,
 ];
 
@@ -214,6 +216,7 @@ impl Protocol {
             "rulesFile" => Some(Protocol::RulesFile),
             "reqScript" => Some(Protocol::ReqScript),
             "resScript" => Some(Protocol::ResScript),
+            "decode" => Some(Protocol::Decode),
             "reqDelay" => Some(Protocol::ReqDelay),
             "resDelay" => Some(Protocol::ResDelay),
             "headerReplace" => Some(Protocol::HeaderReplace),
@@ -285,6 +288,7 @@ impl Protocol {
             Protocol::RulesFile => "rulesFile",
             Protocol::ReqScript => "reqScript",
             Protocol::ResScript => "resScript",
+            Protocol::Decode => "decode",
             Protocol::ReqDelay => "reqDelay",
             Protocol::ResDelay => "resDelay",
             Protocol::HeaderReplace => "headerReplace",
@@ -395,7 +399,8 @@ impl Protocol {
             | Protocol::RawFile
             | Protocol::Delete
             | Protocol::HeaderReplace
-            | Protocol::UrlReplace => ProtocolCategory::Both,
+            | Protocol::UrlReplace
+            | Protocol::Decode => ProtocolCategory::Both,
         }
     }
 
@@ -434,7 +439,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 65] = [
+pub const ALL_PROTOCOLS: [Protocol; 66] = [
     Protocol::Host,
     Protocol::XHost,
     Protocol::Http,
@@ -462,6 +467,7 @@ pub const ALL_PROTOCOLS: [Protocol; 65] = [
     Protocol::RulesFile,
     Protocol::ReqScript,
     Protocol::ResScript,
+    Protocol::Decode,
     Protocol::ReqDelay,
     Protocol::ResDelay,
     Protocol::HeaderReplace,
@@ -508,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 65);
+        assert_eq!(ALL_PROTOCOLS.len(), 66);
     }
 
     #[test]
@@ -541,6 +547,7 @@ mod tests {
             "rulesFile",
             "reqScript",
             "resScript",
+            "decode",
             "reqDelay",
             "resDelay",
             "headerReplace",
@@ -586,7 +593,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 65);
+        assert_eq!(protocol_names.len(), 66);
     }
 
     #[test]
@@ -744,6 +751,11 @@ mod tests {
     }
 
     #[test]
+    fn test_protocol_category_both_decode() {
+        assert_eq!(Protocol::Decode.category(), ProtocolCategory::Both);
+    }
+
+    #[test]
     fn test_protocol_category_both() {
         assert_eq!(Protocol::Host.category(), ProtocolCategory::Both);
         assert_eq!(Protocol::Proxy.category(), ProtocolCategory::Both);
@@ -798,7 +810,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 65);
+        assert_eq!(all.len(), 66);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
@@ -808,6 +820,7 @@ mod tests {
         assert!(all.contains(&Protocol::Pac));
         assert!(all.contains(&Protocol::Passthrough));
         assert!(all.contains(&Protocol::ReqScript));
+        assert!(all.contains(&Protocol::Decode));
     }
 
     #[test]
@@ -817,6 +830,6 @@ mod tests {
 
     #[test]
     fn test_multi_match_protocols_count() {
-        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 33);
+        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 34);
     }
 }

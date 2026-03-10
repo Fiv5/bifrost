@@ -1,6 +1,6 @@
 import client from './client';
 
-export type ScriptType = 'request' | 'response';
+export type ScriptType = 'request' | 'response' | 'decode';
 
 export interface ScriptInfo {
   name: string;
@@ -17,6 +17,7 @@ export interface ScriptDetail extends ScriptInfo {
 export interface ScriptsListResponse {
   request: ScriptInfo[];
   response: ScriptInfo[];
+  decode: ScriptInfo[];
 }
 
 export interface SaveScriptRequest {

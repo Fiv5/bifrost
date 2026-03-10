@@ -14,6 +14,8 @@ import {
   Dropdown,
   theme,
   Tooltip,
+  Switch,
+  Form,
 } from "antd";
 import type { MenuProps, TreeDataNode } from "antd";
 import {
@@ -31,6 +33,7 @@ import {
   DownOutlined,
   ExportOutlined,
   MoreOutlined,
+  SettingOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -45,8 +48,107 @@ import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
 import { ImportBifrostButton } from "../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../hooks/useExportBifrost";
+import { getSandboxConfig, updateSandboxConfig } from "../../api/config";
 
 const { Text } = Typography;
+
+const BIFROST_TYPES_DECODE = `
+/**
+ * Bifrost Decode Script Types
+ *
+ * Decode scripts are executed BEFORE body is stored and pushed.
+ * - ctx.phase === "request"  : request body decode (response is null)
+ * - ctx.phase === "response" : response body decode (response.request carries request snapshot)
+ */
+
+interface BifrostDecodeRequest {
+  readonly url: string;
+  readonly host: string;
+  readonly path: string;
+  readonly protocol: string;
+  readonly clientIp: string;
+  readonly clientApp: string | null;
+  readonly method: string;
+  readonly headers: Record<string, string>;
+
+  /** UTF-8 preview (may be truncated) */
+  readonly body: string;
+  /** Hex preview (may be truncated) */
+  readonly bodyHex: string;
+  /** Original byte length */
+  readonly bodySize: number;
+  readonly bodyHexTruncated: boolean;
+  readonly bodyTextTruncated: boolean;
+}
+
+interface BifrostDecodeResponse {
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: Record<string, string>;
+  readonly body: string;
+  readonly bodyHex: string;
+  readonly bodySize: number;
+  readonly bodyHexTruncated: boolean;
+  readonly bodyTextTruncated: boolean;
+  readonly request: {
+    url: string;
+    method: string;
+    host: string;
+    path: string;
+    protocol: string;
+    clientIp: string;
+    clientApp: string | null;
+    headers: Record<string, string>;
+  };
+}
+
+interface BifrostDecodeOutput {
+  data: string;
+  code: string;
+  msg: string;
+}
+
+interface BifrostContext {
+  readonly requestId: string;
+  readonly scriptName: string;
+  readonly scriptType: "request" | "response" | "decode";
+  readonly phase?: "request" | "response";
+  readonly values: Record<string, string>;
+  readonly matchedRules: Array<{ pattern: string; protocol: string; value: string }>;
+}
+
+interface BifrostLog {
+  log(...args: any[]): void;
+  debug(...args: any[]): void;
+  info(...args: any[]): void;
+  warn(...args: any[]): void;
+  error(...args: any[]): void;
+}
+
+interface BifrostFile {
+  readonly enabled: boolean;
+  readText(path: string): string;
+  writeText(path: string, content: string): boolean;
+  appendText(path: string, content: string): boolean;
+  exists(path: string): boolean;
+  remove(path: string): boolean;
+  listDir(path?: string): string[];
+}
+
+interface BifrostNet {
+  readonly enabled: boolean;
+  fetch(url: string, optionsJson?: string): string;
+  request(url: string, optionsJson?: string): string;
+}
+
+declare const request: BifrostDecodeRequest;
+declare const response: BifrostDecodeResponse | null;
+declare const ctx: BifrostContext;
+declare const log: BifrostLog;
+declare const console: BifrostLog;
+declare const file: BifrostFile;
+declare const net: BifrostNet;
+`;
 
 const BIFROST_TYPES_REQUEST = `
 /**
@@ -85,8 +187,10 @@ interface BifrostContext {
   readonly requestId: string;
   /** Name of the current script */
   readonly scriptName: string;
-  /** Type of script: "request" or "response" */
-  readonly scriptType: "request" | "response";
+  /** Type of script: "request" | "response" | "decode" */
+  readonly scriptType: "request" | "response" | "decode";
+  /** Current phase for decode: "request" | "response" */
+  readonly phase?: "request" | "response";
   /** Custom key-value configuration from Bifrost settings */
   readonly values: Record<string, string>;
   /** List of rules that matched this request */
@@ -114,6 +218,30 @@ interface BifrostLog {
   error(...args: any[]): void;
 }
 
+/** Sandbox file API (path is relative to scripts/_sandbox) */
+interface BifrostFile {
+  /** Whether file APIs are enabled */
+  readonly enabled: boolean;
+  readText(path: string): string;
+  writeText(path: string, content: string): boolean;
+  appendText(path: string, content: string): boolean;
+  exists(path: string): boolean;
+  remove(path: string): boolean;
+  listDir(path?: string): string[];
+}
+
+/** Network request API (returns JSON string, use JSON.parse) */
+interface BifrostNet {
+  /** Whether net APIs are enabled */
+  readonly enabled: boolean;
+  /**
+   * net.fetch(url, optionsJson?) -> JSON string
+   * optionsJson example: {"method":"POST","headers":{"Content-Type":"application/json"},"body":"...","timeoutMs":3000}
+   */
+  fetch(url: string, optionsJson?: string): string;
+  request(url: string, optionsJson?: string): string;
+}
+
 /** The request object to inspect and modify */
 declare const request: BifrostRequest;
 /** Script execution context with metadata */
@@ -122,6 +250,10 @@ declare const ctx: BifrostContext;
 declare const log: BifrostLog;
 /** Console logging (alias for log) */
 declare const console: BifrostLog;
+/** File API */
+declare const file: BifrostFile;
+/** Network API */
+declare const net: BifrostNet;
 `;
 
 const BIFROST_TYPES_RESPONSE = `
@@ -164,8 +296,10 @@ interface BifrostContext {
   readonly requestId: string;
   /** Name of the current script */
   readonly scriptName: string;
-  /** Type of script: "request" or "response" */
-  readonly scriptType: "request" | "response";
+  /** Type of script: "request" | "response" | "decode" */
+  readonly scriptType: "request" | "response" | "decode";
+  /** Current phase for decode: "request" | "response" */
+  readonly phase?: "request" | "response";
   /** Custom key-value configuration from Bifrost settings */
   readonly values: Record<string, string>;
   /** List of rules that matched this request */
@@ -193,6 +327,24 @@ interface BifrostLog {
   error(...args: any[]): void;
 }
 
+/** Sandbox file API (path is relative to scripts/_sandbox) */
+interface BifrostFile {
+  readonly enabled: boolean;
+  readText(path: string): string;
+  writeText(path: string, content: string): boolean;
+  appendText(path: string, content: string): boolean;
+  exists(path: string): boolean;
+  remove(path: string): boolean;
+  listDir(path?: string): string[];
+}
+
+/** Network request API (returns JSON string, use JSON.parse) */
+interface BifrostNet {
+  readonly enabled: boolean;
+  fetch(url: string, optionsJson?: string): string;
+  request(url: string, optionsJson?: string): string;
+}
+
 /** The response object to inspect and modify */
 declare const response: BifrostResponse;
 /** Script execution context with metadata */
@@ -201,6 +353,10 @@ declare const ctx: BifrostContext;
 declare const log: BifrostLog;
 /** Console logging (alias for log) */
 declare const console: BifrostLog;
+/** File API */
+declare const file: BifrostFile;
+/** Network API */
+declare const net: BifrostNet;
 `;
 
 function LogLevel({ level }: { level: ScriptLogEntry["level"] }) {
@@ -270,6 +426,7 @@ function ScriptListPanel({
   selectedKeys,
   onImportSuccess,
   onExportAll,
+  onOpenSandboxSettings,
   hasScripts,
 }: {
   searchValue: string;
@@ -288,6 +445,7 @@ function ScriptListPanel({
   selectedKeys: string[];
   onImportSuccess: () => void;
   onExportAll: () => void;
+  onOpenSandboxSettings: () => void;
   hasScripts: boolean;
 }) {
   const { token } = theme.useToken();
@@ -323,6 +481,14 @@ function ScriptListPanel({
           Scripts
         </span>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <Tooltip title="Sandbox Settings">
+            <Button
+              type="text"
+              size="small"
+              icon={<SettingOutlined />}
+              onClick={onOpenSandboxSettings}
+            />
+          </Tooltip>
           <Button
             type="text"
             size="small"
@@ -339,6 +505,15 @@ function ScriptListPanel({
             style={{ color: token.colorSuccess }}
           >
             Res
+          </Button>
+          <Button
+            type="text"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => onNewScript("decode")}
+            style={{ color: "#722ed1" }}
+          >
+            Dec
           </Button>
           {hasScripts && (
             <Tooltip title="Export All">
@@ -566,7 +741,13 @@ api.example.com reqScript://add-auth-header
             {isNewScript ? "New Script" : selectedScript.name}
           </Text>
           <Tag
-            color={selectedType === "request" ? "blue" : "green"}
+            color={
+              selectedType === "request"
+                ? "blue"
+                : selectedType === "response"
+                  ? "green"
+                  : "purple"
+            }
             style={{ margin: 0 }}
           >
             {selectedType}
@@ -638,7 +819,9 @@ api.example.com reqScript://add-auth-header
             const typeDefinition =
               selectedType === "request"
                 ? BIFROST_TYPES_REQUEST
-                : BIFROST_TYPES_RESPONSE;
+                : selectedType === "response"
+                  ? BIFROST_TYPES_RESPONSE
+                  : BIFROST_TYPES_DECODE;
             monaco.languages.typescript.typescriptDefaults.addExtraLib(
               typeDefinition,
               "bifrost.d.ts",
@@ -877,6 +1060,7 @@ export default function ScriptsPage() {
   const {
     requestScripts,
     responseScripts,
+    decodeScripts,
     selectedScript,
     selectedType,
     loading,
@@ -906,6 +1090,19 @@ export default function ScriptsPage() {
   const [testResultExpanded, setTestResultExpanded] = useState(false);
   const urlParamRef = useRef(false);
 
+  const [sandboxModalOpen, setSandboxModalOpen] = useState(false);
+  const [sandboxLoading, setSandboxLoading] = useState(false);
+  const [sandboxSaving, setSandboxSaving] = useState(false);
+  const [sandboxEnabled, setSandboxEnabled] = useState(true);
+  const [sandboxDirsText, setSandboxDirsText] = useState("");
+  const [sandboxDirName, setSandboxDirName] = useState("_sandbox");
+  const [sandboxFileMaxBytes, setSandboxFileMaxBytes] = useState(1024 * 1024);
+  const [sandboxNetMaxReqBytes, setSandboxNetMaxReqBytes] = useState(256 * 1024);
+  const [sandboxNetMaxRespBytes, setSandboxNetMaxRespBytes] = useState(1024 * 1024);
+  const [sandboxNetTimeoutMs, setSandboxNetTimeoutMs] = useState(5000);
+  const [sandboxTimeoutMs, setSandboxTimeoutMs] = useState(10000);
+  const [sandboxMaxMemoryBytes, setSandboxMaxMemoryBytes] = useState(16 * 1024 * 1024);
+
   useEffect(() => {
     fetchScripts();
   }, [fetchScripts]);
@@ -920,7 +1117,7 @@ export default function ScriptsPage() {
   useEffect(() => {
     const typeParam = searchParams.get("type") as ScriptType | null;
     const nameParam = searchParams.get("name");
-    const scripts = [...requestScripts, ...responseScripts];
+    const scripts = [...requestScripts, ...responseScripts, ...decodeScripts];
 
     if (typeParam && nameParam && scripts.length > 0 && !urlParamRef.current) {
       const exists = scripts.some(
@@ -936,13 +1133,14 @@ export default function ScriptsPage() {
     searchParams,
     requestScripts,
     responseScripts,
+    decodeScripts,
     selectScript,
     setSearchParams,
   ]);
 
   const allScripts = useMemo(
-    () => [...requestScripts, ...responseScripts],
-    [requestScripts, responseScripts],
+    () => [...requestScripts, ...responseScripts, ...decodeScripts],
+    [requestScripts, responseScripts, decodeScripts],
   );
 
   const getAllFolderKeys = useCallback((scripts: ScriptInfo[]): string[] => {
@@ -999,7 +1197,11 @@ export default function ScriptsPage() {
       if (key.startsWith("folder:")) {
         return;
       }
-      if (key.startsWith("request/") || key.startsWith("response/")) {
+      if (
+        key.startsWith("request/") ||
+        key.startsWith("response/") ||
+        key.startsWith("decode/")
+      ) {
         const [type, ...nameParts] = key.split("/");
         const name = nameParts.join("/");
         selectScript(type as ScriptType, name);
@@ -1112,6 +1314,99 @@ export default function ScriptsPage() {
     fetchScripts();
   }, [fetchScripts]);
 
+  const openSandboxSettings = useCallback(async () => {
+    setSandboxModalOpen(true);
+    setSandboxLoading(true);
+    try {
+      const cfg = await getSandboxConfig();
+      setSandboxEnabled(cfg.net.enabled);
+      setSandboxDirName(cfg.file.sandbox_dir || "_sandbox");
+      setSandboxDirsText((cfg.file.allowed_dirs || []).join("\n"));
+      setSandboxFileMaxBytes(cfg.file.max_bytes);
+      setSandboxNetMaxReqBytes(cfg.net.max_request_bytes);
+      setSandboxNetMaxRespBytes(cfg.net.max_response_bytes);
+      setSandboxNetTimeoutMs(cfg.net.timeout_ms);
+      setSandboxTimeoutMs(cfg.limits.timeout_ms);
+      setSandboxMaxMemoryBytes(cfg.limits.max_memory_bytes);
+    } catch {
+      message.error("加载 Sandbox 配置失败");
+    } finally {
+      setSandboxLoading(false);
+    }
+  }, []);
+
+  const saveSandboxSettings = useCallback(async () => {
+    const dirName = sandboxDirName.trim();
+    if (!dirName) {
+      message.error("Sandbox 目录不能为空");
+      return;
+    }
+
+    const asPositiveInt = (v: number) => {
+      if (!Number.isFinite(v)) return null;
+      const n = Math.floor(v);
+      return n > 0 ? n : null;
+    };
+    const fileMax = asPositiveInt(sandboxFileMaxBytes);
+    const netReqMax = asPositiveInt(sandboxNetMaxReqBytes);
+    const netRespMax = asPositiveInt(sandboxNetMaxRespBytes);
+    const netTimeout = asPositiveInt(sandboxNetTimeoutMs);
+    const timeoutMs = asPositiveInt(sandboxTimeoutMs);
+    const memBytes = asPositiveInt(sandboxMaxMemoryBytes);
+    if (!fileMax || !netReqMax || !netRespMax || !netTimeout || !timeoutMs || !memBytes) {
+      message.error("数值配置必须为正整数");
+      return;
+    }
+
+    setSandboxSaving(true);
+    try {
+      const dirs = sandboxDirsText
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const invalid = dirs.find((d) => !d.startsWith("/"));
+      if (invalid) {
+        message.error(`allowed_dirs 必须是绝对路径：${invalid}`);
+        return;
+      }
+
+      await updateSandboxConfig({
+        file: {
+          sandbox_dir: dirName,
+          allowed_dirs: dirs,
+          max_bytes: fileMax,
+        },
+        net: {
+          enabled: sandboxEnabled,
+          timeout_ms: netTimeout,
+          max_request_bytes: netReqMax,
+          max_response_bytes: netRespMax,
+        },
+        limits: {
+          timeout_ms: timeoutMs,
+          max_memory_bytes: memBytes,
+        },
+      });
+      message.success("Sandbox 配置已保存");
+      setSandboxModalOpen(false);
+    } catch {
+      message.error("保存 Sandbox 配置失败（请检查目录是否为绝对路径）");
+    } finally {
+      setSandboxSaving(false);
+    }
+  }, [
+    sandboxDirsText,
+    sandboxDirName,
+    sandboxFileMaxBytes,
+    sandboxEnabled,
+    sandboxNetTimeoutMs,
+    sandboxNetMaxReqBytes,
+    sandboxNetMaxRespBytes,
+    sandboxTimeoutMs,
+    sandboxMaxMemoryBytes,
+  ]);
+
   const handleSearch = useCallback(
     (value: string) => {
       setSearchValue(value);
@@ -1163,7 +1458,13 @@ export default function ScriptsPage() {
             <Space size={4}>
               <HighlightText text={fileName} highlight={search} />
               <Tag
-                color={script.script_type === "request" ? "blue" : "green"}
+                color={
+                  script.script_type === "request"
+                    ? "blue"
+                    : script.script_type === "response"
+                      ? "green"
+                      : "purple"
+                }
                 style={{
                   fontSize: 10,
                   padding: "0 2px",
@@ -1171,7 +1472,11 @@ export default function ScriptsPage() {
                   marginLeft: 4,
                 }}
               >
-                {script.script_type === "request" ? "REQ" : "RES"}
+                {script.script_type === "request"
+                  ? "REQ"
+                  : script.script_type === "response"
+                    ? "RES"
+                    : "DEC"}
               </Tag>
             </Space>
           ),
@@ -1260,6 +1565,11 @@ export default function ScriptsPage() {
             label: "New Response Script",
             onClick: () => handleNewScript("response"),
           },
+          {
+            key: "new-decode",
+            label: "New Decode Script",
+            onClick: () => handleNewScript("decode"),
+          },
           { type: "divider" },
           {
             key: "export-folder",
@@ -1276,7 +1586,11 @@ export default function ScriptsPage() {
             onClick: () => handleDeleteFolder(folderPath),
           },
         ];
-      } else if (key.startsWith("request/") || key.startsWith("response/")) {
+      } else if (
+        key.startsWith("request/") ||
+        key.startsWith("response/") ||
+        key.startsWith("decode/")
+      ) {
         const [type, ...nameParts] = key.split("/");
         const scriptType = type as ScriptType;
         const scriptName = nameParts.join("/");
@@ -1380,6 +1694,7 @@ export default function ScriptsPage() {
       }
       onImportSuccess={handleImportSuccess}
       onExportAll={handleExportAll}
+      onOpenSandboxSettings={openSandboxSettings}
       hasScripts={allScripts.length > 0}
     />
   );
@@ -1455,6 +1770,76 @@ export default function ScriptsPage() {
           Use "/" to create folders. Only letters, numbers, hyphens, underscores
           and slashes are allowed.
         </Text>
+      </Modal>
+
+      <Modal
+        title="Sandbox 设置"
+        open={sandboxModalOpen}
+        onOk={saveSandboxSettings}
+        onCancel={() => setSandboxModalOpen(false)}
+        okText="保存"
+        confirmLoading={sandboxSaving}
+      >
+        <Spin spinning={sandboxLoading}>
+          <Form layout="vertical">
+            <Form.Item label="网络请求 (net.fetch) 开关">
+              <Switch checked={sandboxEnabled} onChange={setSandboxEnabled} />
+            </Form.Item>
+            <Form.Item label="Sandbox 目录 (scripts 下的相对目录名，或绝对路径)">
+              <Input value={sandboxDirName} onChange={(e) => setSandboxDirName(e.target.value)} />
+            </Form.Item>
+            <Form.Item label="允许访问的系统目录 (allowed_dirs，每行一个绝对路径)">
+              <Input.TextArea
+                value={sandboxDirsText}
+                onChange={(e) => setSandboxDirsText(e.target.value)}
+                autoSize={{ minRows: 4, maxRows: 10 }}
+                placeholder="/Users/xxx/data\n/var/log"
+              />
+            </Form.Item>
+            <Form.Item label="文件最大字节数 (file.max_bytes)">
+              <Input
+                type="number"
+                value={sandboxFileMaxBytes}
+                onChange={(e) => setSandboxFileMaxBytes(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="网络请求体最大字节数 (net.max_request_bytes)">
+              <Input
+                type="number"
+                value={sandboxNetMaxReqBytes}
+                onChange={(e) => setSandboxNetMaxReqBytes(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="网络响应体最大字节数 (net.max_response_bytes)">
+              <Input
+                type="number"
+                value={sandboxNetMaxRespBytes}
+                onChange={(e) => setSandboxNetMaxRespBytes(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="网络超时 (net.timeout_ms)">
+              <Input
+                type="number"
+                value={sandboxNetTimeoutMs}
+                onChange={(e) => setSandboxNetTimeoutMs(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="脚本超时 (limits.timeout_ms)">
+              <Input
+                type="number"
+                value={sandboxTimeoutMs}
+                onChange={(e) => setSandboxTimeoutMs(Number(e.target.value))}
+              />
+            </Form.Item>
+            <Form.Item label="脚本最大内存 (limits.max_memory_bytes)">
+              <Input
+                type="number"
+                value={sandboxMaxMemoryBytes}
+                onChange={(e) => setSandboxMaxMemoryBytes(Number(e.target.value))}
+              />
+            </Form.Item>
+          </Form>
+        </Spin>
       </Modal>
     </>
   );

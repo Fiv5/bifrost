@@ -267,6 +267,7 @@ d](./routing.md#tunnel) |
 |------|------|------|
 | `reqScript` | 请求阶段脚本规则 | [scripts.md](./scripts.md#reqscript) |
 | `resScript` | 响应阶段脚本规则 | [scripts.md](./scripts.md#resscript) |
+| `decode` | 请求/响应 body decode 脚本（落库前解码） | [scripts.md](./scripts.md#decode) |
 
 ### 13. WebSocket 规则
 WebSocket 请求转发和代理。

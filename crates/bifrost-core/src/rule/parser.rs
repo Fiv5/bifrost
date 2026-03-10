@@ -354,6 +354,7 @@ fn validate_filter_values(line: &str, line_num: usize, result: &mut ValidationRe
 fn extract_script_references(line: &str, line_num: usize, result: &mut ValidationResult) {
     let req_script_pattern = regex::Regex::new(r"reqScript://([^\s]+)").unwrap();
     let res_script_pattern = regex::Regex::new(r"resScript://([^\s]+)").unwrap();
+    let decode_script_pattern = regex::Regex::new(r"decode://([^\s]+)").unwrap();
 
     for cap in req_script_pattern.captures_iter(line) {
         let script_name = cap[1].to_string();
@@ -369,6 +370,15 @@ fn extract_script_references(line: &str, line_num: usize, result: &mut Validatio
         result.script_references.push(ScriptReference {
             name: script_name,
             script_type: "response".to_string(),
+            line: line_num,
+        });
+    }
+
+    for cap in decode_script_pattern.captures_iter(line) {
+        let script_name = cap[1].to_string();
+        result.script_references.push(ScriptReference {
+            name: script_name,
+            script_type: "decode".to_string(),
             line: line_num,
         });
     }

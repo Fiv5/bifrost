@@ -1006,7 +1006,17 @@ pub fn run_daemon(
                     host: Some(config.host.clone()),
                 };
                 write_runtime_info(&runtime_info).expect("Failed to write runtime info");
-                let result: bifrost_core::Result<()> = async {
+                // 先安装 shutdown 信号监听，避免初始化阶段收到 SIGTERM 导致直接退出、但无法记录优雅退出日志。
+                // 这也能让 `bifrost stop` 在 daemon 启动早期更可靠。
+                let result: bifrost_core::Result<()> = tokio::select! {
+                    _ = wait_for_shutdown_signal() => {
+                        // 注意：daemon 场景下 tracing 日志可能写入 rolling file（例如 bifrost.YYYY-MM-DD.log），
+                        // 这里同时写到 stdout，确保 stop/测试能在 bifrost.log 中观察到“优雅退出”。
+                        info!("Received shutdown signal");
+                        println!("Received shutdown signal");
+                        Ok(())
+                    }
+                    result = async {
                     let stored_config = config_manager.config().await;
                     let body_temp_dir = bifrost_dir.join("body_cache");
                     let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
@@ -1179,39 +1189,15 @@ pub fn run_daemon(
                         runtime_config_for_resolver,
                     );
 
-                    tokio::select! {
-                        result = server.run() => {
-                            if let Err(e) = result {
-                                eprintln!("Server error: {}", e);
-                            }
-                        },
-                        _ = tokio::signal::ctrl_c() => {
-                            info!("Received shutdown signal");
-                        },
-                        _ = async {
-                            #[cfg(unix)]
-                            {
-                                let Ok(mut sigterm) = tokio::signal::unix::signal(
-                                    tokio::signal::unix::SignalKind::terminate(),
-                                ) else {
-                                    std::future::pending::<()>().await;
-                                    return;
-                                };
-                                sigterm.recv().await;
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                std::future::pending::<()>().await;
-                            }
-                        } => {
-                            info!("Received shutdown signal (SIGTERM)");
-                        },
+                    if let Err(e) = server.run().await {
+                        eprintln!("Server error: {}", e);
                     }
 
                     rules_watcher_task.abort();
                     Ok(())
                 }
-                .await;
+                => result,
+                };
 
                 if let Err(e) = result {
                     eprintln!("Runtime error: {}", e);

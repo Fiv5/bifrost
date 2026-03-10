@@ -13,7 +13,9 @@ pub use rules::{RuleFile, RulesStorage};
 pub use state::{RuntimeState, StateManager};
 pub use unified_config::{
     AccessConfig as NewAccessConfig, AccessConfigUpdate, CollapsedSections, FilterPanelConfig,
-    PathsConfig, PinnedFilter, PinnedFilterType, ProxySettings, ServerConfig, SocksAuthConfig,
+    PathsConfig, PinnedFilter, PinnedFilterType, ProxySettings, SandboxConfig, SandboxConfigUpdate,
+    SandboxFileConfig, SandboxFileConfigUpdate, SandboxLimitsConfig, SandboxLimitsConfigUpdate,
+    SandboxNetConfig, SandboxNetConfigUpdate, ServerConfig, SocksAuthConfig,
     SystemProxyConfig as NewSystemProxyConfig, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate,
     TrafficConfig as NewTrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate,
     UnifiedConfig,

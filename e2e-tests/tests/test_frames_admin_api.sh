@@ -18,6 +18,7 @@ BIFROST_PID=""
 WS_SERVER_PID=""
 SSE_SERVER_PID=""
 BIFROST_DATA_DIR=""
+BIFROST_LOG_FILE=""
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -135,17 +136,30 @@ start_bifrost() {
     BIFROST_DATA_DIR=$(mktemp -d)
     export BIFROST_DATA_DIR
 
+    BIFROST_LOG_FILE=$(mktemp)
+
     local rust_dir
     rust_dir="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
     cd "$rust_dir" || return 1
 
-    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check > /dev/null 2>&1 &
+    SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+        cargo run --release --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl \
+        >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
 
-    local max_wait=30
+    local max_wait=90
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if [[ -n "$BIFROST_PID" ]] && ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+            log_fail "Bifrost exited early (PID: $BIFROST_PID)"
+            if [[ -n "$BIFROST_LOG_FILE" ]]; then
+                echo "Last log (tail -200):" >&2
+                tail -200 "$BIFROST_LOG_FILE" 2>/dev/null >&2 || true
+            fi
+            return 1
+        fi
+
         if curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/system" > /dev/null 2>&1; then
             log_info "Bifrost proxy started (PID: $BIFROST_PID)"
             return 0
@@ -155,6 +169,10 @@ start_bifrost() {
     done
 
     log_fail "Failed to start Bifrost proxy"
+    if [[ -n "$BIFROST_LOG_FILE" ]]; then
+        echo "Last log (tail -200):" >&2
+        tail -200 "$BIFROST_LOG_FILE" 2>/dev/null >&2 || true
+    fi
     return 1
 }
 
@@ -182,6 +200,10 @@ cleanup() {
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
         rm -rf "$BIFROST_DATA_DIR"
         log_info "Cleaned up data directory"
+    fi
+
+    if [[ -n "$BIFROST_LOG_FILE" && -f "$BIFROST_LOG_FILE" ]]; then
+        rm -f "$BIFROST_LOG_FILE" 2>/dev/null
     fi
 
     ws_cleanup_all 2>/dev/null

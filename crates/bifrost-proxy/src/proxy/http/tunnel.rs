@@ -12,7 +12,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Request, Response};
+use hyper::{Request, Response, Uri};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -58,6 +58,36 @@ type HttpsPooledClient = Client<
 
 static HTTPS_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
 static HTTPS_UNSAFE_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
+
+fn parse_host_rule(host_rule: &str) -> Option<(String, Option<u16>, Option<String>)> {
+    let mut s = host_rule.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // 兼容规则里携带 scheme（http/https/ws/wss/host/xhost/proxy/pac）以及可选路径、query。
+    // 目标：稳定提取 host / port / path_and_query。
+    for prefix in [
+        "http://", "https://", "ws://", "wss://", "host://", "xhost://", "proxy://", "pac://",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+
+    // `Uri` 解析需要 scheme；这里统一补一个 http scheme，仅用于解析 authority / path。
+    let uri: Uri = format!("http://{}", s).parse().ok()?;
+    let authority = uri.authority()?;
+    let host = authority.host().to_string();
+    let port = authority.port_u16();
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .filter(|pq| pq != "/");
+
+    Some((host, port, path_and_query))
+}
 
 fn get_https_pooled_client() -> &'static HttpsPooledClient {
     HTTPS_POOLED_CLIENT.get_or_init(|| {
@@ -275,18 +305,16 @@ pub async fn handle_connect(
     }
 
     let (target_host, target_port) = if let Some(ref host_rule) = resolved_rules.host {
-        let host_rule_clean = host_rule.trim_end_matches('/');
-        let parts: Vec<&str> = host_rule_clean.split(':').collect();
-        let h = parts[0].to_string();
-        let p = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(port)
-        } else {
-            match resolved_rules.host_protocol {
-                Some(Protocol::Http) | Some(Protocol::Ws) => 80,
-                Some(Protocol::Https) | Some(Protocol::Wss) => 443,
-                _ => port,
-            }
+        let (h, parsed_port) = match parse_host_rule(host_rule) {
+            Some((h, p, _path)) => (h, p),
+            None => (host_rule.trim_end_matches('/').to_string(), None),
         };
+
+        let p = parsed_port.unwrap_or(match resolved_rules.host_protocol {
+            Some(Protocol::Http) | Some(Protocol::Ws) => 80,
+            Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+            _ => port,
+        });
         debug!(
             "[{}] CONNECT tunnel target redirected: {}:{} -> {}:{} (protocol={:?})",
             ctx.id_str(),
@@ -949,54 +977,64 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let (actual_target_host, actual_target_port, actual_use_http) = if resolved_rules.ignored.host {
-        debug!(
-            "[{}] Passthrough rule applied: request will be forwarded to original target {}:{}",
-            req_id, original_host, original_port
-        );
-        (original_host.to_string(), original_port, false)
-    } else if let Some(ref host_rule) = resolved_rules.host {
-        let host_rule_clean = host_rule.trim_end_matches('/');
-        let parts: Vec<&str> = host_rule_clean.split(':').collect();
-        let h = parts[0].to_string();
-        let p = if parts.len() > 1 {
-            parts[1].parse().unwrap_or(original_port)
-        } else {
-            match resolved_rules.host_protocol {
+    let (actual_target_host, actual_target_port, actual_use_http, actual_target_path) =
+        if resolved_rules.ignored.host {
+            debug!(
+                "[{}] Passthrough rule applied: request will be forwarded to original target {}:{}",
+                req_id, original_host, original_port
+            );
+            (
+                original_host.to_string(),
+                original_port,
+                false,
+                path.to_string(),
+            )
+        } else if let Some(ref host_rule) = resolved_rules.host {
+            let (h, parsed_port, parsed_path) = match parse_host_rule(host_rule) {
+                Some((h, p, path_and_query)) => (h, p, path_and_query),
+                None => (host_rule.trim_end_matches('/').to_string(), None, None),
+            };
+
+            let p = parsed_port.unwrap_or(match resolved_rules.host_protocol {
                 Some(Protocol::Http) | Some(Protocol::Ws) => 80,
                 Some(Protocol::Https) | Some(Protocol::Wss) => 443,
                 _ => original_port,
-            }
-        };
-        let use_http_override = match resolved_rules.host_protocol {
-            Some(Protocol::Http) | Some(Protocol::Ws) => true,
-            Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
-            _ => false,
-        };
-        debug!(
+            });
+            let use_http_override = match resolved_rules.host_protocol {
+                Some(Protocol::Http) | Some(Protocol::Ws) => true,
+                Some(Protocol::Host) | Some(Protocol::XHost) => p != 443 && p != 8443,
+                _ => false,
+            };
+            let target_path = parsed_path.unwrap_or_else(|| path.to_string());
+            debug!(
                 "[{}] Host rule applied: original={}:{} -> target={}:{}, host_protocol={:?}, use_http={}",
                 req_id, original_host, original_port, h, p, resolved_rules.host_protocol, use_http_override
             );
-        (h, p, use_http_override)
-    } else {
-        (original_host.to_string(), original_port, false)
-    };
+            (h, p, use_http_override, target_path)
+        } else {
+            (
+                original_host.to_string(),
+                original_port,
+                false,
+                path.to_string(),
+            )
+        };
 
     let target_uri = if actual_use_http {
         if actual_target_port == 80 {
-            format!("http://{}{}", actual_target_host, path)
+            format!("http://{}{}", actual_target_host, actual_target_path)
         } else {
             format!(
                 "http://{}:{}{}",
-                actual_target_host, actual_target_port, path
+                actual_target_host, actual_target_port, actual_target_path
             )
         }
     } else if actual_target_port == 443 {
-        format!("https://{}{}", actual_target_host, path)
+        format!("https://{}{}", actual_target_host, actual_target_path)
     } else {
         format!(
             "https://{}:{}{}",
-            actual_target_host, actual_target_port, path
+            actual_target_host, actual_target_port, actual_target_path
         )
     };
 

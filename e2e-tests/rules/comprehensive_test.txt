@@ -24,7 +24,7 @@ test-ws.local ws://127.0.0.1:3020
 test-wss.local wss://127.0.0.1:3021
 
 # 1.7 proxy - 二级代理
-test-proxy.local proxy://proxy.local:8080
+test-proxy.local proxy://127.0.0.1:9999
 
 # 1.8 redirect - 302 重定向
 test-redirect.local redirect://https://example.com/new-path

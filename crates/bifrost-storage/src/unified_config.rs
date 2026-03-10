@@ -12,6 +12,7 @@ pub struct UnifiedConfig {
     pub proxy: ProxySettings,
     pub system_proxy: SystemProxyConfig,
     pub traffic: TrafficConfig,
+    pub sandbox: SandboxConfig,
     #[serde(skip)]
     pub paths: PathsConfig,
     pub ui: UiConfig,
@@ -26,6 +27,7 @@ impl UnifiedConfig {
             proxy: ProxySettings::default(),
             system_proxy: SystemProxyConfig::default(),
             traffic: TrafficConfig::default_for_data_dir(data_dir),
+            sandbox: SandboxConfig::default(),
             paths: PathsConfig::for_data_dir(data_dir),
             ui: UiConfig::default(),
         }
@@ -35,6 +37,99 @@ impl UnifiedConfig {
         self.paths = PathsConfig::for_data_dir(data_dir);
         self
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxConfig {
+    pub file: SandboxFileConfig,
+    pub net: SandboxNetConfig,
+    pub limits: SandboxLimitsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxFileConfig {
+    /// 脚本沙箱默认工作目录（相对 `~/.bifrost/scripts/`，或绝对路径）
+    pub sandbox_dir: String,
+    /// 允许脚本访问的系统目录（绝对路径）
+    pub allowed_dirs: Vec<String>,
+    /// 单次文件读写最大字节数
+    pub max_bytes: usize,
+}
+
+impl Default for SandboxFileConfig {
+    fn default() -> Self {
+        Self {
+            sandbox_dir: "_sandbox".to_string(),
+            allowed_dirs: Vec::new(),
+            max_bytes: 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxNetConfig {
+    pub enabled: bool,
+    pub timeout_ms: u64,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
+impl Default for SandboxNetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_ms: 5_000,
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SandboxLimitsConfig {
+    pub timeout_ms: u64,
+    pub max_memory_bytes: usize,
+}
+
+impl Default for SandboxLimitsConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 10_000,
+            max_memory_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxConfigUpdate {
+    pub file: Option<SandboxFileConfigUpdate>,
+    pub net: Option<SandboxNetConfigUpdate>,
+    pub limits: Option<SandboxLimitsConfigUpdate>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxFileConfigUpdate {
+    pub sandbox_dir: Option<String>,
+    pub allowed_dirs: Option<Vec<String>>,
+    pub max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxNetConfigUpdate {
+    pub enabled: Option<bool>,
+    pub timeout_ms: Option<u64>,
+    pub max_request_bytes: Option<usize>,
+    pub max_response_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SandboxLimitsConfigUpdate {
+    pub timeout_ms: Option<u64>,
+    pub max_memory_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

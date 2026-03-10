@@ -1,5 +1,6 @@
 use crate::handlers::{error_response, json_response, success_response, BoxBody};
 use bifrost_script::{ScriptDetail, ScriptEngine, ScriptEngineConfig, ScriptInfo, ScriptType};
+use bifrost_storage::{SharedConfigManager, UnifiedConfig};
 use http_body_util::BodyExt;
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,24 @@ impl ScriptManager {
         results
     }
 
+    pub async fn execute_request_scripts_with_config(
+        &self,
+        script_names: &[String],
+        request: &mut bifrost_script::RequestData,
+        ctx: &bifrost_script::ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> Vec<bifrost_script::ScriptExecutionResult> {
+        let mut results = Vec::new();
+        for script_name in script_names {
+            let result = self
+                .engine
+                .execute_request_script_with_config(script_name, request, ctx, cfg)
+                .await;
+            results.push(result);
+        }
+        results
+    }
+
     pub async fn execute_response_scripts(
         &self,
         script_names: &[String],
@@ -64,12 +83,109 @@ impl ScriptManager {
         }
         results
     }
+
+    pub async fn execute_response_scripts_with_config(
+        &self,
+        script_names: &[String],
+        response: &mut bifrost_script::ResponseData,
+        ctx: &bifrost_script::ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> Vec<bifrost_script::ScriptExecutionResult> {
+        let mut results = Vec::new();
+        for script_name in script_names {
+            let result = self
+                .engine
+                .execute_response_script_with_config(script_name, response, ctx, cfg)
+                .await;
+            results.push(result);
+        }
+        results
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_decode_scripts(
+        &self,
+        script_names: &[String],
+        phase: &str,
+        request: &bifrost_script::RequestData,
+        request_body_bytes: &[u8],
+        response: &bifrost_script::ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &bifrost_script::ScriptContext,
+    ) -> Vec<
+        std::result::Result<
+            (
+                bifrost_script::DecodeOutput,
+                Vec<bifrost_script::ScriptLogEntry>,
+            ),
+            bifrost_script::ScriptError,
+        >,
+    > {
+        let mut results = Vec::new();
+        for script_name in script_names {
+            let result = self
+                .engine
+                .execute_decode_script(
+                    script_name,
+                    phase,
+                    request,
+                    request_body_bytes,
+                    response,
+                    response_body_bytes,
+                    ctx,
+                )
+                .await;
+            results.push(result);
+        }
+        results
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_decode_scripts_with_config(
+        &self,
+        script_names: &[String],
+        phase: &str,
+        request: &bifrost_script::RequestData,
+        request_body_bytes: &[u8],
+        response: &bifrost_script::ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &bifrost_script::ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> Vec<
+        std::result::Result<
+            (
+                bifrost_script::DecodeOutput,
+                Vec<bifrost_script::ScriptLogEntry>,
+            ),
+            bifrost_script::ScriptError,
+        >,
+    > {
+        let mut results = Vec::new();
+        for script_name in script_names {
+            let result = self
+                .engine
+                .execute_decode_script_with_config(
+                    script_name,
+                    phase,
+                    request,
+                    request_body_bytes,
+                    response,
+                    response_body_bytes,
+                    ctx,
+                    cfg,
+                )
+                .await;
+            results.push(result);
+        }
+        results
+    }
 }
 
 #[derive(Serialize)]
 struct ScriptsListResponse {
     request: Vec<ScriptInfo>,
     response: Vec<ScriptInfo>,
+    decode: Vec<ScriptInfo>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +243,7 @@ fn default_status() -> u16 {
 pub async fn handle_scripts_request(
     req: Request<hyper::body::Incoming>,
     script_manager: Arc<RwLock<ScriptManager>>,
+    config_manager: Option<SharedConfigManager>,
     admin_path: &str,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
@@ -136,7 +253,7 @@ pub async fn handle_scripts_request(
         Method::GET => handle_get(path, script_manager).await,
         Method::PUT => handle_put(req, path, script_manager).await,
         Method::DELETE => handle_delete(path, script_manager).await,
-        Method::POST => handle_post(req, path, script_manager).await,
+        Method::POST => handle_post(req, path, script_manager, config_manager).await,
         _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
     }
 }
@@ -155,10 +272,16 @@ async fn handle_get(path: String, script_manager: Arc<RwLock<ScriptManager>>) ->
             .list_scripts(ScriptType::Response)
             .await
             .unwrap_or_default();
+        let decode_scripts = manager
+            .engine()
+            .list_scripts(ScriptType::Decode)
+            .await
+            .unwrap_or_default();
 
         return json_response(&ScriptsListResponse {
             request: request_scripts,
             response: response_scripts,
+            decode: decode_scripts,
         });
     }
 
@@ -178,6 +301,7 @@ async fn handle_get(path: String, script_manager: Arc<RwLock<ScriptManager>>) ->
     let script_type = match type_str {
         "request" => ScriptType::Request,
         "response" => ScriptType::Response,
+        "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
 
@@ -223,6 +347,7 @@ async fn handle_put(
     let script_type = match type_str {
         "request" => ScriptType::Request,
         "response" => ScriptType::Response,
+        "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
 
@@ -293,6 +418,7 @@ async fn handle_delete(
     let script_type = match type_str {
         "request" => ScriptType::Request,
         "response" => ScriptType::Response,
+        "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
 
@@ -313,6 +439,7 @@ async fn handle_post(
     req: Request<hyper::body::Incoming>,
     path: String,
     script_manager: Arc<RwLock<ScriptManager>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     if path != "/api/scripts/test" && path != "/api/scripts/test/" {
         return error_response(StatusCode::NOT_FOUND, "Not found");
@@ -338,7 +465,7 @@ async fn handle_post(
     let manager = script_manager.read().await;
 
     let mock_request = test_req.mock_request.unwrap_or_default();
-    let mock_response = test_req.mock_response.unwrap_or_default();
+    let mock_response_opt = test_req.mock_response;
 
     let request_data = bifrost_script::RequestData {
         url: mock_request.url.clone(),
@@ -358,12 +485,16 @@ async fn handle_post(
         body: mock_request.body,
     };
 
-    let response_data = bifrost_script::ResponseData {
-        status: mock_response.status,
-        status_text: "OK".to_string(),
-        headers: mock_response.headers,
-        body: mock_response.body,
-        request: request_data.clone(),
+    let response_data = if let Some(mock_response) = mock_response_opt {
+        Some(bifrost_script::ResponseData {
+            status: mock_response.status,
+            status_text: "OK".to_string(),
+            headers: mock_response.headers,
+            body: mock_response.body,
+            request: request_data.clone(),
+        })
+    } else {
+        None
     };
 
     let ctx = bifrost_script::ScriptContext {
@@ -374,16 +505,36 @@ async fn handle_post(
         matched_rules: vec![],
     };
 
-    let result = manager
-        .engine()
-        .test_script(
-            test_req.script_type,
-            &test_req.content,
-            Some(&request_data),
-            Some(&response_data),
-            &ctx,
-        )
-        .await;
+    let cfg = if let Some(cm) = config_manager.as_ref() {
+        Some(cm.config().await)
+    } else {
+        None
+    };
+
+    let result = if let Some(ref cfg) = cfg {
+        manager
+            .engine()
+            .test_script_with_config(
+                test_req.script_type,
+                &test_req.content,
+                Some(&request_data),
+                response_data.as_ref(),
+                &ctx,
+                cfg,
+            )
+            .await
+    } else {
+        manager
+            .engine()
+            .test_script(
+                test_req.script_type,
+                &test_req.content,
+                Some(&request_data),
+                response_data.as_ref(),
+                &ctx,
+            )
+            .await
+    };
 
     json_response(&result)
 }

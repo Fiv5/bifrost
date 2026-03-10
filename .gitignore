@@ -16,3 +16,4 @@ log/
 .cargo-target-*/
 .bifrost-*/
 design/
+target-e2e-*/

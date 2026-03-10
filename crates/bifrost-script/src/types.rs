@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub enum ScriptType {
     Request,
     Response,
+    Decode,
 }
 
 impl std::fmt::Display for ScriptType {
@@ -13,6 +14,7 @@ impl std::fmt::Display for ScriptType {
         match self {
             ScriptType::Request => write!(f, "request"),
             ScriptType::Response => write!(f, "response"),
+            ScriptType::Decode => write!(f, "decode"),
         }
     }
 }
@@ -59,6 +61,16 @@ pub struct ScriptExecutionResult {
     pub request_modifications: Option<TestRequestModifications>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_modifications: Option<TestResponseModifications>,
+}
+
+/// decode 脚本的标准输出结构：
+/// - `code == "0"` 表示成功，此时 `data` 作为解码后的文本
+/// - 失败时 `msg` 为错误信息（前端用于展示原因）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecodeOutput {
+    pub data: String,
+    pub code: String,
+    pub msg: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

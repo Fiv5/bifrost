@@ -1,308 +1,158 @@
 # 脚本规则
 
-本章介绍通过 JavaScript 脚本动态生成规则的功能，实现复杂的请求/响应处理逻辑。
+本章介绍通过 JavaScript 脚本对请求/响应进行处理的能力：
+
+- `reqScript://{script_name}`：请求阶段脚本（转发到上游前执行）
+- `resScript://{script_name}`：响应阶段脚本（收到上游响应后执行）
+- `decode://{script_name}`：body decode 脚本（请求/响应落库前执行，用于解码/脱敏/格式化）
+
+> 说明：脚本名称对应 `~/.bifrost/scripts/{type}/{script_name}.js`。
 
 ---
 
 ## reqScript
 
-在请求阶段通过 JavaScript 脚本动态生成规则。脚本可以访问请求上下文信息，并动态生成匹配规则。
-
 ### 语法
 
 ```
-pattern reqScript://{script_name}
-pattern reqScript:///path/to/script.js
-pattern reqScript://http://example.com/script.js
+pattern reqScript://my-script
 ```
 
 ### 可用全局变量
 
-| 变量/方法           | 描述                              |
-| ------------------- | --------------------------------- |
-| `url`               | 完整请求 URL                      |
-| `method`            | 请求方法 (GET/POST 等)            |
-| `ip` / `clientIp`   | 客户端 IP 地址                    |
-| `headers`           | 请求头对象                        |
-| `body`              | 请求内容 (最大 16KB)              |
-| `rules`             | 规则数组，通过 `push` 添加新规则  |
-| `values`            | 临时值存储对象                    |
-| `render(tpl, data)` | 微型模板渲染函数                  |
-| `getValue(key)`     | 获取 Values 中的值                |
-| `parseUrl`          | 同 Node.js 的 `url.parse`         |
-| `parseQuery`        | 同 Node.js 的 `querystring.parse` |
+| 变量 | 说明 |
+| --- | --- |
+| `request` | 请求对象（可修改 `method` / `headers` / `body`） |
+| `ctx` | 执行上下文（含 `requestId` / `values` / `matchedRules` 等） |
+| `log` / `console` | 日志（会在管理端脚本测试面板展示） |
+| `file` | 文件 API（受沙箱目录与白名单限制） |
+| `net` | 网络 API（可开关/限速/限超时） |
 
 ### 示例
 
-#### 基础用法
-
-```bash
-www.example.com/api reqScript://{api-router}
+```javascript
+// 给所有请求加 header，并记录到沙箱文件
+request.headers["X-Debug-Id"] = ctx.requestId;
+file.appendText("state/trace.log", ctx.requestId + "\n");
 ```
-
-块变量定义：
-
-````
-``` api-router
-if (method === 'GET') {
-    rules.push('* resType://json');
-    rules.push('* file://({"status":"ok"})');
-} else if (method === 'POST') {
-    rules.push('* statusCode://201');
-} else {
-    rules.push('* statusCode://405');
-}
-```
-````
-
-#### 基于请求头路由
-
-```bash
-www.example.com reqScript://{header-router}
-```
-
-````
-``` header-router
-var token = headers['authorization'];
-if (!token) {
-    rules.push('* statusCode://401');
-    rules.push('* resBody://({"error":"Unauthorized"})');
-} else if (token.indexOf('admin') >= 0) {
-    rules.push('* host://admin-server:8080');
-} else {
-    rules.push('* host://user-server:8080');
-}
-```
-````
-
-#### 基于 URL 参数处理
-
-```bash
-www.example.com reqScript://{param-handler}
-```
-
-````
-``` param-handler
-var query = parseQuery(parseUrl(url).query || '');
-var version = query.v || '1';
-
-if (version === '2') {
-    rules.push('* host://api-v2.example.com');
-} else {
-    rules.push('* host://api-v1.example.com');
-}
-```
-````
-
-### 测试用例
-
-| 测试场景  | 规则                                | 预期               |
-| --------- | ----------------------------------- | ------------------ |
-| GET 请求  | 脚本判断 `method === 'GET'`         | 执行 GET 分支规则  |
-| POST 请求 | 脚本判断 `method === 'POST'`        | 执行 POST 分支规则 |
-| 无 Token  | 脚本检查 `headers['authorization']` | 返回 401           |
-| 带 Token  | 脚本检查 `headers['authorization']` | 转发到对应服务器   |
 
 ---
 
 ## resScript
 
-在响应阶段通过 JavaScript 脚本动态生成规则。与 `reqScript` 的区别是执行时机在响应阶段，适合基于响应内容动态处理。
-
 ### 语法
 
 ```
-pattern resScript://{script_name}
-pattern resScript:///path/to/script.js
-pattern resScript://http://example.com/script.js
+pattern resScript://my-script
 ```
 
 ### 可用全局变量
 
-与 `reqScript` 相同，但执行时机不同。
-
-> ⚠️ **注意**：由于 `resScript` 在响应阶段执行，某些规则（如 `file`、`host` 等请求阶段规则）在此阶段生成可能不会生效。
+| 变量 | 说明 |
+| --- | --- |
+| `response` | 响应对象（可修改 `status` / `statusText` / `headers` / `body`） |
+| `ctx` | 执行上下文 |
+| `log` / `console` | 日志 |
+| `file` | 文件 API |
+| `net` | 网络 API |
 
 ### 示例
 
-#### 基于响应状态码处理
-
-```bash
-www.example.com resScript://{status-handler}
+```javascript
+// 给响应加调试头
+response.headers["X-Processed-By"] = "bifrost";
 ```
-
-````
-``` status-handler
-// 注意：resScript 适合用于响应阶段的规则
-// 如修改响应头、响应体等
-if (method === 'GET') {
-    rules.push('* resHeaders://(X-Processed:true)');
-}
-```
-````
-
-#### 添加响应标记
-
-```bash
-www.example.com resScript://{add-marker}
-```
-
-````
-``` add-marker
-rules.push('* resHeaders://(X-Proxy:whistle)');
-rules.push('* resHeaders://(X-Timestamp:' + Date.now() + ')');
-```
-````
-
-### 测试用例
-
-| 测试场景   | 规则                                    | 预期             |
-| ---------- | --------------------------------------- | ---------------- |
-| 添加响应头 | 脚本 `rules.push('* resHeaders://...')` | 响应包含新增头部 |
-| 修改响应体 | 脚本 `rules.push('* resAppend://...')`  | 响应体被追加内容 |
 
 ---
 
-## reqScript vs resScript 对比
+## decode
 
-| 特性       | reqScript            | resScript      |
-| ---------- | -------------------- | -------------- |
-| 执行时机   | 请求阶段             | 响应阶段       |
-| 可用规则   | 所有规则             | 仅响应阶段规则 |
-| 适用场景   | 路由、请求修改、Mock | 响应修改、日志 |
-| host/proxy | ✅ 生效              | ❌ 不生效      |
-| file/tpl   | ✅ 生效              | ❌ 不生效      |
-| resHeaders | ✅ 生效              | ✅ 生效        |
-| resBody    | ✅ 生效              | ✅ 生效        |
+decode 脚本用于在 **落库之前** 对请求/响应的 body 做解码、脱敏、压缩/解压后的二次处理等。
 
----
+### 语法
 
-## 脚本调试技巧
+```
+pattern decode://my-decode
+```
 
-### 1. 使用 console.log
+### 执行阶段
+
+- `ctx.phase === "request"`：解码请求体（此时 `response === null`）
+- `ctx.phase === "response"`：解码响应体（此时 `response.request` 带有请求快照）
+
+### 输出约定
+
+decode 脚本需要输出一个 JSON 对象：
 
 ```javascript
-console.log("URL:", url);
-console.log("Method:", method);
-console.log("Headers:", JSON.stringify(headers));
+// 推荐：直接 return
+return { code: "0", data: "decoded text", msg: "" };
+
+// 也支持：设置 ctx.output
+// ctx.output = { code: "0", data: "decoded text", msg: "" };
 ```
 
-### 2. 错误处理
+- `code === "0"`：成功，`data` 会作为新的 body 内容用于落库
+- 否则：`msg` 会作为新的 body 内容用于落库（便于排查失败原因）
+
+---
+
+## 沙箱与配置
+
+### file API
+
+- 读写路径默认相对 `sandbox.file.sandbox_dir`（通常为 `scripts/_sandbox/`）
+- 相对路径禁止 `..`，避免目录穿越
+- 绝对路径仅允许访问 `sandbox.file.allowed_dirs` 白名单中的目录
+- 单次读写大小受 `sandbox.file.max_bytes` 限制
+
+可用方法：
+
+- `file.readText(path)`
+- `file.writeText(path, content)`
+- `file.appendText(path, content)`
+- `file.exists(path)`
+- `file.remove(path)`
+- `file.listDir(path?)`
+
+### net API
+
+- `net.fetch(url, optionsJson?)` / `net.request(...)` 返回 JSON 字符串，建议 `JSON.parse(...)`
+- 仅允许 `http/https`
+- 请求/响应体大小与超时分别受 `sandbox.net.max_request_bytes` / `sandbox.net.max_response_bytes` / `sandbox.net.timeout_ms` 限制
+
+`optionsJson` 示例：
 
 ```javascript
-try {
-  var data = JSON.parse(body);
-  // 处理逻辑
-} catch (e) {
-  console.log("Parse error:", e.message);
-  rules.push("* statusCode://400");
-}
+var resp = JSON.parse(net.fetch("https://httpbin.org/get", JSON.stringify({
+  method: "GET",
+  timeoutMs: 3000,
+  headers: { "X-Debug": "1" },
+})));
+log.info("status:", resp.status);
 ```
 
-### 3. 条件组合
+### config.toml
 
-```javascript
-var isApi = url.indexOf("/api/") >= 0;
-var isGet = method === "GET";
-var hasToken = !!headers["authorization"];
+配置位于 `~/.bifrost/config.toml` 的 `sandbox` 字段下：
 
-if (isApi && isGet && hasToken) {
-  rules.push("* host://api-server");
-} else if (isApi && !hasToken) {
-  rules.push("* statusCode://401");
-}
+```toml
+[sandbox.file]
+sandbox_dir = "_sandbox"              # 相对 scripts/ 的目录名，或绝对路径
+allowed_dirs = ["/var/log"]           # 允许访问的系统目录（绝对路径）
+max_bytes = 1048576                    # 单次文件读写最大字节数
+
+[sandbox.net]
+enabled = true
+timeout_ms = 5000
+max_request_bytes = 262144
+max_response_bytes = 1048576
+
+[sandbox.limits]
+timeout_ms = 10000
+max_memory_bytes = 16777216
 ```
 
----
+### 管理端动态修改
 
-## 使用场景
-
-### 1. A/B 测试路由
-
-```bash
-www.example.com reqScript://{ab-test}
-```
-
-````
-``` ab-test
-var userId = headers['x-user-id'] || '';
-var hash = 0;
-for (var i = 0; i < userId.length; i++) {
-````
-
-    hash = ((hash << 5) - hash) + userId.charCodeAt(i);
-
-}
-if (Math.abs(hash) % 100 < 50) {
-rules.push('_ host://experiment-a.example.com');
-} else {
-rules.push('_ host://experiment-b.example.com');
-}
-
-```
-
-```
-
-### 2. 请求签名验证
-
-```bash
-www.example.com/api reqScript://{sign-verify}
-```
-
-````
-``` sign-verify
-var sign = headers['x-signature'];
-var timestamp = headers['x-timestamp'];
-var now = Date.now();
-
-if (!sign || !timestamp) {
-    rules.push('* statusCode://401');
-    rules.push('* resBody://({"error":"Missing signature"})');
-} else if (now - parseInt(timestamp) > 300000) {
-    rules.push('* statusCode://401');
-    rules.push('* resBody://({"error":"Request expired"})');
-}
-// 签名验证通过则不添加规则，正常转发
-```
-````
-
-### 3. 动态 Mock 数据
-
-```bash
-www.example.com/api/users reqScript://{dynamic-mock}
-```
-
-````
-``` dynamic-mock
-var query = parseQuery(parseUrl(url).query || '');
-var page = parseInt(query.page) || 1;
-var size = parseInt(query.size) || 10;
-
-values.mockData = JSON.stringify({
-    page: page,
-    size: size,
-    total: 100,
-    data: []
-});
-
-rules.push('* resType://json');
-rules.push('* resBody://{mockData}');
-```
-````
-
----
-
-## 注意事项
-
-1. **脚本大小**：脚本内容不宜过大，复杂逻辑建议使用插件开发
-2. **执行时间**：脚本应快速执行，避免阻塞请求
-3. **安全性**：脚本中不要包含敏感信息
-4. **调试**：使用 `console.log` 输出调试信息，可在 Whistle Network 面板查看
-5. **规则顺序**：通过 `rules.push` 添加的规则按顺序执行
-
----
-
-## 关联协议
-
-- [reqRules](./reqRules.md) - 请求阶段批量规则（不支持脚本）
-- [resRules](./resRules.md) - 响应阶段批量规则（不支持脚本）
+在管理端 **Scripts** 页面左侧目录树顶部点击齿轮按钮，可以在线修改 `sandbox` 配置，并持久化到 `config.toml`。

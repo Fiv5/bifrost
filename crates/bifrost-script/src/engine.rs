@@ -1,5 +1,5 @@
 use crate::error::{Result, ScriptError};
-use crate::sandbox::{Sandbox, SandboxConfig};
+use crate::sandbox::Sandbox;
 use crate::types::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
+
+use bifrost_storage::UnifiedConfig;
 
 pub struct ScriptEngineConfig {
     pub scripts_dir: PathBuf,
@@ -41,6 +43,75 @@ impl ScriptEngine {
         &self.config.scripts_dir
     }
 
+    fn default_sandbox_config(&self) -> crate::sandbox::SandboxConfig {
+        crate::sandbox::SandboxConfig {
+            timeout_ms: self.config.timeout_ms,
+            max_memory: self.config.max_memory,
+            file_root: Some(self.config.scripts_dir.join("_sandbox")),
+            file_allowed_dirs: Vec::new(),
+            allow_network: true,
+            ..Default::default()
+        }
+    }
+
+    fn sandbox_config_from_unified(&self, cfg: &UnifiedConfig) -> crate::sandbox::SandboxConfig {
+        let file_root = if cfg.sandbox.file.sandbox_dir.trim().is_empty() {
+            self.config.scripts_dir.join("_sandbox")
+        } else {
+            let p = PathBuf::from(cfg.sandbox.file.sandbox_dir.clone());
+            if p.is_absolute() {
+                p
+            } else {
+                self.config.scripts_dir.join(p)
+            }
+        };
+
+        let allowed_dirs = cfg
+            .sandbox
+            .file
+            .allowed_dirs
+            .iter()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+
+        crate::sandbox::SandboxConfig {
+            timeout_ms: cfg.sandbox.limits.timeout_ms,
+            max_memory: cfg.sandbox.limits.max_memory_bytes,
+            file_root: Some(file_root),
+            file_allowed_dirs: allowed_dirs,
+            allow_network: cfg.sandbox.net.enabled,
+            network_timeout_ms: cfg.sandbox.net.timeout_ms,
+            max_file_bytes: cfg.sandbox.file.max_bytes,
+            max_net_request_bytes: cfg.sandbox.net.max_request_bytes,
+            max_net_response_bytes: cfg.sandbox.net.max_response_bytes,
+        }
+    }
+
+    pub async fn execute_request_script_with_config(
+        &self,
+        script_name: &str,
+        request: &mut RequestData,
+        ctx: &ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> ScriptExecutionResult {
+        let sandbox = self.sandbox_config_from_unified(cfg);
+        self.execute_request_script_with_sandbox(script_name, request, ctx, sandbox)
+            .await
+    }
+
+    pub async fn execute_response_script_with_config(
+        &self,
+        script_name: &str,
+        response: &mut ResponseData,
+        ctx: &ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> ScriptExecutionResult {
+        let sandbox = self.sandbox_config_from_unified(cfg);
+        self.execute_response_script_with_sandbox(script_name, response, ctx, sandbox)
+            .await
+    }
+
     fn request_scripts_dir(&self) -> PathBuf {
         self.config.scripts_dir.join("request")
     }
@@ -49,9 +120,15 @@ impl ScriptEngine {
         self.config.scripts_dir.join("response")
     }
 
+    fn decode_scripts_dir(&self) -> PathBuf {
+        self.config.scripts_dir.join("decode")
+    }
+
     pub async fn init(&self) -> Result<()> {
         let request_dir = self.request_scripts_dir();
         let response_dir = self.response_scripts_dir();
+        let decode_dir = self.decode_scripts_dir();
+        let sandbox_dir = self.config.scripts_dir.join("_sandbox");
 
         if !request_dir.exists() {
             std::fs::create_dir_all(&request_dir)?;
@@ -63,6 +140,16 @@ impl ScriptEngine {
             info!("Created response scripts directory: {:?}", response_dir);
         }
 
+        if !decode_dir.exists() {
+            std::fs::create_dir_all(&decode_dir)?;
+            info!("Created decode scripts directory: {:?}", decode_dir);
+        }
+
+        if !sandbox_dir.exists() {
+            std::fs::create_dir_all(&sandbox_dir)?;
+            info!("Created sandbox directory: {:?}", sandbox_dir);
+        }
+
         Ok(())
     }
 
@@ -70,6 +157,7 @@ impl ScriptEngine {
         let dir = match script_type {
             ScriptType::Request => self.request_scripts_dir(),
             ScriptType::Response => self.response_scripts_dir(),
+            ScriptType::Decode => self.decode_scripts_dir(),
         };
         dir.join(format!("{}.js", name))
     }
@@ -151,6 +239,7 @@ impl ScriptEngine {
         let dir = match script_type {
             ScriptType::Request => self.request_scripts_dir(),
             ScriptType::Response => self.response_scripts_dir(),
+            ScriptType::Decode => self.decode_scripts_dir(),
         };
 
         if !dir.exists() {
@@ -221,6 +310,22 @@ impl ScriptEngine {
         request: &mut RequestData,
         ctx: &ScriptContext,
     ) -> ScriptExecutionResult {
+        self.execute_request_script_with_sandbox(
+            script_name,
+            request,
+            ctx,
+            self.default_sandbox_config(),
+        )
+        .await
+    }
+
+    pub async fn execute_request_script_with_sandbox(
+        &self,
+        script_name: &str,
+        request: &mut RequestData,
+        ctx: &ScriptContext,
+        sandbox_config: crate::sandbox::SandboxConfig,
+    ) -> ScriptExecutionResult {
         let start = Instant::now();
 
         let script = match self.load_script(ScriptType::Request, script_name).await {
@@ -239,8 +344,7 @@ impl ScriptEngine {
             }
         };
 
-        let timeout_ms = self.config.timeout_ms;
-        let max_memory = self.config.max_memory;
+        let timeout_ms = sandbox_config.timeout_ms;
         let request_clone = request.clone();
         let ctx_clone = ctx.clone();
         let script_name_owned = script_name.to_string();
@@ -252,11 +356,7 @@ impl ScriptEngine {
         );
 
         let result = tokio::task::spawn_blocking(move || {
-            let mut sandbox = Sandbox::new(SandboxConfig {
-                timeout_ms,
-                max_memory,
-            })?;
-
+            let mut sandbox = Sandbox::new(sandbox_config)?;
             sandbox.execute_request_script(&script, &request_clone, &ctx_clone)
         })
         .await;
@@ -346,6 +446,22 @@ impl ScriptEngine {
         response: &mut ResponseData,
         ctx: &ScriptContext,
     ) -> ScriptExecutionResult {
+        self.execute_response_script_with_sandbox(
+            script_name,
+            response,
+            ctx,
+            self.default_sandbox_config(),
+        )
+        .await
+    }
+
+    pub async fn execute_response_script_with_sandbox(
+        &self,
+        script_name: &str,
+        response: &mut ResponseData,
+        ctx: &ScriptContext,
+        sandbox_config: crate::sandbox::SandboxConfig,
+    ) -> ScriptExecutionResult {
         let start = Instant::now();
 
         let script = match self.load_script(ScriptType::Response, script_name).await {
@@ -364,8 +480,7 @@ impl ScriptEngine {
             }
         };
 
-        let timeout_ms = self.config.timeout_ms;
-        let max_memory = self.config.max_memory;
+        let timeout_ms = sandbox_config.timeout_ms;
         let response_clone = response.clone();
         let ctx_clone = ctx.clone();
         let script_name_owned = script_name.to_string();
@@ -377,11 +492,7 @@ impl ScriptEngine {
         );
 
         let result = tokio::task::spawn_blocking(move || {
-            let mut sandbox = Sandbox::new(SandboxConfig {
-                timeout_ms,
-                max_memory,
-            })?;
-
+            let mut sandbox = Sandbox::new(sandbox_config)?;
             sandbox.execute_response_script(&script, &response_clone, &ctx_clone)
         })
         .await;
@@ -468,6 +579,100 @@ impl ScriptEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_decode_script(
+        &self,
+        script_name: &str,
+        phase: &str,
+        request: &RequestData,
+        request_body_bytes: &[u8],
+        response: &ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &ScriptContext,
+    ) -> std::result::Result<(DecodeOutput, Vec<ScriptLogEntry>), ScriptError> {
+        self.execute_decode_script_with_sandbox(
+            script_name,
+            phase,
+            request,
+            request_body_bytes,
+            response,
+            response_body_bytes,
+            ctx,
+            self.default_sandbox_config(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_decode_script_with_config(
+        &self,
+        script_name: &str,
+        phase: &str,
+        request: &RequestData,
+        request_body_bytes: &[u8],
+        response: &ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> std::result::Result<(DecodeOutput, Vec<ScriptLogEntry>), ScriptError> {
+        let sandbox = self.sandbox_config_from_unified(cfg);
+        self.execute_decode_script_with_sandbox(
+            script_name,
+            phase,
+            request,
+            request_body_bytes,
+            response,
+            response_body_bytes,
+            ctx,
+            sandbox,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_decode_script_with_sandbox(
+        &self,
+        script_name: &str,
+        phase: &str,
+        request: &RequestData,
+        request_body_bytes: &[u8],
+        response: &ResponseData,
+        response_body_bytes: &[u8],
+        ctx: &ScriptContext,
+        sandbox_config: crate::sandbox::SandboxConfig,
+    ) -> std::result::Result<(DecodeOutput, Vec<ScriptLogEntry>), ScriptError> {
+        let script = self.load_script(ScriptType::Decode, script_name).await?;
+
+        let phase = phase.to_string();
+        let request_clone = request.clone();
+        let response_clone = response.clone();
+        let req_bytes = request_body_bytes.to_vec();
+        let res_bytes = response_body_bytes.to_vec();
+        let ctx_clone = ctx.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let mut sandbox = Sandbox::new(sandbox_config)?;
+            sandbox.execute_decode_script(
+                &script,
+                &phase,
+                &request_clone,
+                &req_bytes,
+                &response_clone,
+                &res_bytes,
+                &ctx_clone,
+            )
+        })
+        .await;
+
+        match result {
+            Ok(r) => r,
+            Err(e) => Err(ScriptError::ExecutionFailed(format!(
+                "Script execution thread panicked: {}",
+                e
+            ))),
+        }
+    }
+
     pub async fn test_script(
         &self,
         script_type: ScriptType,
@@ -476,22 +681,50 @@ impl ScriptEngine {
         response: Option<&ResponseData>,
         ctx: &ScriptContext,
     ) -> ScriptExecutionResult {
-        let start = Instant::now();
+        self.test_script_with_sandbox(
+            script_type,
+            content,
+            request,
+            response,
+            ctx,
+            self.default_sandbox_config(),
+        )
+        .await
+    }
 
-        let timeout_ms = self.config.timeout_ms;
-        let max_memory = self.config.max_memory;
-        let content_owned = content.to_string();
-        let ctx_clone = ctx.clone();
+    pub async fn test_script_with_config(
+        &self,
+        script_type: ScriptType,
+        content: &str,
+        request: Option<&RequestData>,
+        response: Option<&ResponseData>,
+        ctx: &ScriptContext,
+        cfg: &UnifiedConfig,
+    ) -> ScriptExecutionResult {
+        let sandbox = self.sandbox_config_from_unified(cfg);
+        self.test_script_with_sandbox(script_type, content, request, response, ctx, sandbox)
+            .await
+    }
+
+    pub async fn test_script_with_sandbox(
+        &self,
+        script_type: ScriptType,
+        content: &str,
+        request: Option<&RequestData>,
+        response: Option<&ResponseData>,
+        ctx: &ScriptContext,
+        sandbox_config: crate::sandbox::SandboxConfig,
+    ) -> ScriptExecutionResult {
+        let start = Instant::now();
 
         match script_type {
             ScriptType::Request => {
+                let content_owned = content.to_string();
+                let ctx_clone = ctx.clone();
                 let request_clone = request.cloned().unwrap_or_default();
 
                 let result = tokio::task::spawn_blocking(move || {
-                    let mut sandbox = Sandbox::new(SandboxConfig {
-                        timeout_ms,
-                        max_memory,
-                    })?;
+                    let mut sandbox = Sandbox::new(sandbox_config)?;
 
                     sandbox.execute_request_script(&content_owned, &request_clone, &ctx_clone)
                 })
@@ -545,13 +778,12 @@ impl ScriptEngine {
                 }
             }
             ScriptType::Response => {
+                let content_owned = content.to_string();
+                let ctx_clone = ctx.clone();
                 let response_clone = response.cloned().unwrap_or_default();
 
                 let result = tokio::task::spawn_blocking(move || {
-                    let mut sandbox = Sandbox::new(SandboxConfig {
-                        timeout_ms,
-                        max_memory,
-                    })?;
+                    let mut sandbox = Sandbox::new(sandbox_config)?;
 
                     sandbox.execute_response_script(&content_owned, &response_clone, &ctx_clone)
                 })
@@ -584,6 +816,69 @@ impl ScriptEngine {
                             response_modifications: response_mods,
                         }
                     }
+                    Ok(Err(e)) => ScriptExecutionResult {
+                        script_name: "test".to_string(),
+                        script_type,
+                        success: false,
+                        error: Some(e.to_string()),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        logs: vec![],
+                        request_modifications: None,
+                        response_modifications: None,
+                    },
+                    Err(e) => ScriptExecutionResult {
+                        script_name: "test".to_string(),
+                        script_type,
+                        success: false,
+                        error: Some(format!("Script execution thread panicked: {}", e)),
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        logs: vec![],
+                        request_modifications: None,
+                        response_modifications: None,
+                    },
+                }
+            }
+            ScriptType::Decode => {
+                // 说明：decode 脚本需要区分阶段；这里按优先级选择：有 response 就跑 response 阶段，否则跑 request 阶段。
+                let content_owned = content.to_string();
+                let ctx_clone = ctx.clone();
+                let request_clone = request.cloned().unwrap_or_default();
+                let response_clone = response.cloned().unwrap_or_default();
+
+                let phase = if response.is_some() {
+                    "response"
+                } else {
+                    "request"
+                };
+                let req_bytes = request_clone.body.clone().unwrap_or_default().into_bytes();
+                let res_bytes = response_clone.body.clone().unwrap_or_default().into_bytes();
+
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut sandbox = Sandbox::new(sandbox_config)?;
+
+                    sandbox.execute_decode_script(
+                        &content_owned,
+                        phase,
+                        &request_clone,
+                        &req_bytes,
+                        &response_clone,
+                        &res_bytes,
+                        &ctx_clone,
+                    )
+                })
+                .await;
+
+                match result {
+                    Ok(Ok((_decoded, logs))) => ScriptExecutionResult {
+                        script_name: "test".to_string(),
+                        script_type,
+                        success: true,
+                        error: None,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        logs,
+                        request_modifications: None,
+                        response_modifications: None,
+                    },
                     Ok(Err(e)) => ScriptExecutionResult {
                         script_name: "test".to_string(),
                         script_type,

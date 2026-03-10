@@ -6,6 +6,136 @@ ADMIN_PORT="${ADMIN_PORT:-9900}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="${ADMIN_BASE_URL:-http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}}"
 
+# ---------------------------------------------------------------------------
+# Test helper: ensure an admin-capable bifrost instance is running.
+#
+# Many Admin API test scripts only exercise endpoints and assume the server is
+# already started. To make each script self-contained (and to avoid flaky
+# timeouts due to `cargo run` debug builds), we provide a lightweight starter
+# that:
+# - prefers `target/release/bifrost` if present
+# - otherwise falls back to `cargo run --release --bin bifrost`
+# - writes logs to a temp file and prints tail on failure
+#
+# NOTE: Only cleans up the process/data-dir if it was started by this helper.
+# ---------------------------------------------------------------------------
+
+ADMIN_CLIENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADMIN_CLIENT_REPO_DIR="$(cd "$ADMIN_CLIENT_DIR/../.." && pwd)"
+
+ADMIN_CLIENT_STARTED_BIFROST=0
+ADMIN_CLIENT_BIFROST_PID=""
+ADMIN_CLIENT_BIFROST_DATA_DIR=""
+ADMIN_CLIENT_BIFROST_LOG_FILE=""
+
+admin_log_info() { echo "[INFO] $*"; }
+admin_log_fail() { echo "[FAIL] $*"; }
+
+admin_wait_for_admin_ready() {
+    local timeout="${1:-60}"
+    local waited=0
+
+    while [[ $waited -lt $timeout ]]; do
+        if curl -s "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1 || \
+           curl -s "${ADMIN_BASE_URL}/api/system/status" >/dev/null 2>&1; then
+            return 0
+        fi
+
+        if [[ -n "$ADMIN_CLIENT_BIFROST_PID" ]] && ! kill -0 "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null; then
+            return 2
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    return 1
+}
+
+admin_start_bifrost() {
+    admin_log_info "Starting Bifrost (admin) on ${ADMIN_HOST}:${ADMIN_PORT}..."
+
+    ADMIN_CLIENT_STARTED_BIFROST=1
+
+    if [[ -z "${BIFROST_DATA_DIR:-}" ]]; then
+        ADMIN_CLIENT_BIFROST_DATA_DIR="$(mktemp -d)"
+        export BIFROST_DATA_DIR="$ADMIN_CLIENT_BIFROST_DATA_DIR"
+    else
+        ADMIN_CLIENT_BIFROST_DATA_DIR="${BIFROST_DATA_DIR}"
+    fi
+
+    ADMIN_CLIENT_BIFROST_LOG_FILE="$(mktemp)"
+
+    local bifrost_bin="$ADMIN_CLIENT_REPO_DIR/target/release/bifrost"
+    if [[ -x "$bifrost_bin" ]]; then
+        SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+            "$bifrost_bin" -p "$ADMIN_PORT" start --skip-cert-check --unsafe-ssl \
+            >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
+    else
+        (cd "$ADMIN_CLIENT_REPO_DIR" && \
+            SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+            cargo run --release --bin bifrost -- -p "$ADMIN_PORT" start --skip-cert-check --unsafe-ssl \
+        ) >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
+    fi
+
+    ADMIN_CLIENT_BIFROST_PID=$!
+
+    local rc
+    admin_wait_for_admin_ready 90
+    rc=$?
+    if [[ $rc -eq 0 ]]; then
+        admin_log_info "Bifrost started (PID: $ADMIN_CLIENT_BIFROST_PID)"
+        return 0
+    fi
+
+    if [[ $rc -eq 2 ]]; then
+        admin_log_fail "Bifrost process exited early (PID: $ADMIN_CLIENT_BIFROST_PID)"
+    else
+        admin_log_fail "Timeout waiting for admin server at ${ADMIN_BASE_URL}"
+    fi
+
+    if [[ -n "$ADMIN_CLIENT_BIFROST_LOG_FILE" ]]; then
+        echo "Last log (tail -200):" >&2
+        tail -200 "$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>/dev/null >&2 || true
+    fi
+    return 1
+}
+
+admin_stop_bifrost() {
+    if [[ -n "$ADMIN_CLIENT_BIFROST_PID" ]] && kill -0 "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null; then
+        kill "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null || true
+        wait "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null || true
+    fi
+
+    if [[ -n "$ADMIN_CLIENT_BIFROST_LOG_FILE" && -f "$ADMIN_CLIENT_BIFROST_LOG_FILE" ]]; then
+        rm -f "$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>/dev/null || true
+    fi
+
+    if [[ -n "$ADMIN_CLIENT_BIFROST_DATA_DIR" && -d "$ADMIN_CLIENT_BIFROST_DATA_DIR" ]]; then
+        rm -rf "$ADMIN_CLIENT_BIFROST_DATA_DIR" 2>/dev/null || true
+    fi
+
+    ADMIN_CLIENT_BIFROST_PID=""
+    ADMIN_CLIENT_BIFROST_LOG_FILE=""
+    ADMIN_CLIENT_BIFROST_DATA_DIR=""
+    ADMIN_CLIENT_STARTED_BIFROST=0
+}
+
+admin_ensure_bifrost() {
+    # If admin is already reachable, do nothing.
+    if curl -s "${ADMIN_BASE_URL}/api/system/status" >/dev/null 2>&1 || \
+       curl -s "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1; then
+        return 0
+    fi
+    admin_start_bifrost
+}
+
+admin_cleanup_bifrost() {
+    if [[ "$ADMIN_CLIENT_STARTED_BIFROST" == "1" ]]; then
+        admin_stop_bifrost
+    fi
+}
+
 admin_get() {
     local path="$1"
     curl -s "${ADMIN_BASE_URL}${path}"

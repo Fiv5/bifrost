@@ -90,6 +90,44 @@ export interface PerformanceConfig {
   ws_payload_store_stats: WsPayloadStoreStats | null;
 }
 
+export interface SandboxFileConfig {
+  sandbox_dir: string;
+  allowed_dirs: string[];
+  max_bytes: number;
+}
+
+export interface SandboxNetConfig {
+  enabled: boolean;
+  timeout_ms: number;
+  max_request_bytes: number;
+  max_response_bytes: number;
+}
+
+export interface SandboxLimitsConfig {
+  timeout_ms: number;
+  max_memory_bytes: number;
+}
+
+export interface SandboxConfig {
+  file: SandboxFileConfig;
+  net: SandboxNetConfig;
+  limits: SandboxLimitsConfig;
+}
+
+export interface UpdateSandboxConfigRequest {
+  file?: Partial<SandboxFileConfig>;
+  net?: Partial<SandboxNetConfig>;
+  limits?: Partial<SandboxLimitsConfig>;
+}
+
+export async function getSandboxConfig(): Promise<SandboxConfig> {
+  return get<SandboxConfig>('/config/sandbox');
+}
+
+export async function updateSandboxConfig(config: UpdateSandboxConfigRequest): Promise<SandboxConfig> {
+  return put<SandboxConfig>('/config/sandbox', config);
+}
+
 export interface UpdateTrafficConfigRequest {
   max_records?: number;
   max_db_size_bytes?: number;

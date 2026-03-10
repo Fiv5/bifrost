@@ -12,11 +12,47 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct DynamicCertGenerator {
     ca: Arc<CertificateAuthority>,
+    // 预解析并缓存 CA Issuer，避免每次签发 leaf 都重复解析 CA 证书。
+    // 如果初始化失败，会自动回退到“每次签发时临时构建 Issuer”的旧逻辑。
+    ca_issuer: Option<Issuer<'static, KeyPair>>,
+    // 复用同一把 leaf key，避免每次域名生成都做一次昂贵的 keypair 生成。
+    // 如果初始化失败，会自动回退到“每次生成新 keypair”的旧逻辑。
+    leaf_keypair_pkcs8_der: Option<Vec<u8>>,
+    leaf_signing_key: Option<Arc<dyn rustls::sign::SigningKey>>,
 }
 
 impl DynamicCertGenerator {
     pub fn new(ca: Arc<CertificateAuthority>) -> Self {
-        Self { ca }
+        let ca_issuer = {
+            // rcgen 的 Issuer 需要可拥有的 SigningKey；这里通过序列化再反序列化的方式获得。
+            // 失败时回退到旧逻辑（每次签发 leaf 时临时构建 Issuer）。
+            let ca_key_der = ca.key_pair.serialize_der();
+            let ca_key_pair = KeyPair::try_from(ca_key_der.as_slice()).ok();
+            let ca_cert_der = ca.certificate.der();
+
+            ca_key_pair.and_then(|kp| Issuer::from_ca_cert_der(ca_cert_der, kp).ok())
+        };
+
+        let (leaf_keypair_pkcs8_der, leaf_signing_key) =
+            match KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256) {
+                Ok(key_pair) => {
+                    let pkcs8_der = key_pair.serialize_der();
+                    let key_der: PrivateKeyDer<'static> =
+                        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(pkcs8_der.clone()));
+                    match any_supported_type(&key_der) {
+                        Ok(signing_key) => (Some(pkcs8_der), Some(signing_key)),
+                        Err(_) => (None, None),
+                    }
+                }
+                Err(_) => (None, None),
+            };
+
+        Self {
+            ca,
+            ca_issuer,
+            leaf_keypair_pkcs8_der,
+            leaf_signing_key,
+        }
     }
 
     pub fn generate_for_domain(&self, domain: &str) -> Result<CertifiedKey> {
@@ -47,25 +83,45 @@ impl DynamicCertGenerator {
             ExtendedKeyUsagePurpose::ClientAuth,
         ];
 
-        let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
-            .map_err(|e| BifrostError::Tls(format!("Failed to generate key pair: {e}")))?;
+        let (key_pair, signing_key) = if let (Some(pkcs8_der), Some(signing_key)) =
+            (&self.leaf_keypair_pkcs8_der, &self.leaf_signing_key)
+        {
+            let key_pair = KeyPair::from_pkcs8_der_and_sign_algo(
+                &PrivatePkcs8KeyDer::from(pkcs8_der.as_slice()),
+                &PKCS_ECDSA_P256_SHA256,
+            )
+            .map_err(|e| BifrostError::Tls(format!("Failed to load reusable key pair: {e}")))?;
+            (key_pair, signing_key.clone())
+        } else {
+            let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+                .map_err(|e| BifrostError::Tls(format!("Failed to generate key pair: {e}")))?;
+            let key_der: PrivateKeyDer<'static> =
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+            let signing_key = any_supported_type(&key_der)
+                .map_err(|e| BifrostError::Tls(format!("Failed to create signing key: {e}")))?;
+            (key_pair, signing_key)
+        };
 
-        let ca_pem = self.ca.certificate.pem();
-        let issuer = Issuer::from_ca_cert_pem(&ca_pem, self.ca.key_pair())
-            .map_err(|e| BifrostError::Tls(format!("Failed to create issuer: {e}")))?;
-
-        let cert = params
-            .signed_by(&key_pair, &issuer)
-            .map_err(|e| BifrostError::Tls(format!("Failed to sign certificate: {e}")))?;
+        let cert = if let Some(ref issuer) = self.ca_issuer {
+            params
+                .signed_by(&key_pair, issuer)
+                .map_err(|e| BifrostError::Tls(format!("Failed to sign certificate: {e}")))?
+        } else {
+            // 回退路径：每次都用 DER 临时构建 Issuer（兼容旧行为）。
+            // 注意：rcgen 的 Issuer 需要可拥有的 SigningKey，因此这里同样通过序列化再反序列化获得。
+            let ca_key_der = self.ca.key_pair.serialize_der();
+            let ca_key_pair = KeyPair::try_from(ca_key_der.as_slice())
+                .map_err(|e| BifrostError::Tls(format!("Failed to load CA key pair: {e}")))?;
+            let ca_cert_der = self.ca.certificate.der();
+            let issuer = Issuer::from_ca_cert_der(ca_cert_der, ca_key_pair)
+                .map_err(|e| BifrostError::Tls(format!("Failed to create issuer: {e}")))?;
+            params
+                .signed_by(&key_pair, &issuer)
+                .map_err(|e| BifrostError::Tls(format!("Failed to sign certificate: {e}")))?
+        };
 
         let cert_der = CertificateDer::from(cert.der().to_vec());
         let ca_cert_der = self.ca.certificate_der()?;
-
-        let key_der: PrivateKeyDer<'static> =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
-
-        let signing_key = any_supported_type(&key_der)
-            .map_err(|e| BifrostError::Tls(format!("Failed to create signing key: {e}")))?;
 
         let cert_chain = vec![cert_der, ca_cert_der];
 
