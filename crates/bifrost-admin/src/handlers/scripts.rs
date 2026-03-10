@@ -9,6 +9,26 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+fn is_builtin_decode_script(name: &str) -> bool {
+    matches!(name, "utf8" | "default")
+}
+
+fn builtin_decode_script_description(name: &str) -> Option<String> {
+    match name {
+        "utf8" => Some("Built-in UTF-8 (lossy) decoder".to_string()),
+        "default" => Some("Built-in default decoder (alias of utf8)".to_string()),
+        _ => None,
+    }
+}
+
+fn builtin_decode_script_content(name: &str) -> Option<String> {
+    let desc = builtin_decode_script_description(name)?;
+    Some(format!(
+        "// ============================================================\n// {}\n// ============================================================\n// 说明：这是 Bifrost 内置 decode 解码器（由 Rust 实现），不会执行 JS。\n// 作用：将输入 bytes 以 UTF-8 lossy 方式转换为文本，用于落库展示与搜索。\n// 使用：在规则中写 decode://{}\n//\n// 如果你需要自定义解码/脱敏/格式化：请新建 decode 脚本文件。\n",
+        desc, name
+    ))
+}
+
 pub struct ScriptManager {
     engine: ScriptEngine,
 }
@@ -19,7 +39,7 @@ impl ScriptManager {
             engine: ScriptEngine::new(ScriptEngineConfig {
                 scripts_dir,
                 timeout_ms: 10000,
-                max_memory: 16 * 1024 * 1024,
+                max_memory: 32 * 1024 * 1024,
             }),
         }
     }
@@ -278,6 +298,22 @@ async fn handle_get(path: String, script_manager: Arc<RwLock<ScriptManager>>) ->
             .await
             .unwrap_or_default();
 
+        // 为了与规则层（decode://utf8 / decode://default）以及 WebSocket decode 行为保持一致，
+        // 在脚本列表中暴露内置 decode 解码器（只读）。
+        let mut decode_scripts = decode_scripts;
+        for name in ["utf8", "default"] {
+            if decode_scripts.iter().any(|s| s.name == name) {
+                continue;
+            }
+            decode_scripts.push(ScriptInfo {
+                name: name.to_string(),
+                script_type: ScriptType::Decode,
+                description: builtin_decode_script_description(name),
+                created_at: 0,
+                updated_at: 0,
+            });
+        }
+
         return json_response(&ScriptsListResponse {
             request: request_scripts,
             response: response_scripts,
@@ -304,6 +340,21 @@ async fn handle_get(path: String, script_manager: Arc<RwLock<ScriptManager>>) ->
         "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
+
+    // 内置 decode 脚本（只读）
+    if script_type == ScriptType::Decode && is_builtin_decode_script(name) {
+        let detail = ScriptDetail {
+            info: ScriptInfo {
+                name: name.to_string(),
+                script_type,
+                description: builtin_decode_script_description(name),
+                created_at: 0,
+                updated_at: 0,
+            },
+            content: builtin_decode_script_content(name).unwrap_or_default(),
+        };
+        return json_response(&detail);
+    }
 
     match manager.engine().load_script(script_type, name).await {
         Ok(content) => {
@@ -350,6 +401,13 @@ async fn handle_put(
         "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
+
+    if script_type == ScriptType::Decode && is_builtin_decode_script(name) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Built-in decode script is read-only",
+        );
+    }
 
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -421,6 +479,13 @@ async fn handle_delete(
         "decode" => ScriptType::Decode,
         _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
     };
+
+    if script_type == ScriptType::Decode && is_builtin_decode_script(name) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Built-in decode script is read-only",
+        );
+    }
 
     let manager = script_manager.read().await;
     match manager.engine().delete_script(script_type, name).await {

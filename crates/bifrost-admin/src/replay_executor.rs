@@ -1067,6 +1067,8 @@ impl ReplayExecutor {
             socket_status: None,
             request_body_ref,
             response_body_ref,
+            raw_request_body_ref: None,
+            raw_response_body_ref: None,
             actual_url: if has_changes {
                 Some(actual_url.clone())
             } else {
@@ -1086,6 +1088,8 @@ impl ReplayExecutor {
             error_message: None,
             req_script_results: None,
             res_script_results: None,
+            decode_req_script_results: None,
+            decode_res_script_results: None,
         };
 
         if let Some(ref traffic_db) = self.admin_state.traffic_db_store {

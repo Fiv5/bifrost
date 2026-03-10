@@ -29,7 +29,7 @@ use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResol
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
-use crate::transform::{decompress_body, get_content_encoding};
+use crate::transform::{decompress_body_with_limit, get_content_encoding};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -398,6 +398,41 @@ fn headers_to_hashmap(headers: &[(String, String)]) -> HashMap<String, String> {
     headers.iter().cloned().collect()
 }
 
+fn is_builtin_decoder(name: &str) -> bool {
+    matches!(name.trim(), "utf8" | "default")
+}
+
+fn builtin_decode_utf8(input: &[u8]) -> Vec<u8> {
+    String::from_utf8_lossy(input).to_string().into_bytes()
+}
+
+#[derive(Debug, Clone)]
+struct DecodeForStorageResult {
+    output: Bytes,
+    results: Vec<bifrost_script::ScriptExecutionResult>,
+}
+
+fn truncate_string(mut s: String, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s;
+    }
+    s.truncate(max_len);
+    s.push_str("…(truncated)");
+    s
+}
+
+fn limit_script_logs(
+    mut logs: Vec<bifrost_script::ScriptLogEntry>,
+    max_len: usize,
+) -> Vec<bifrost_script::ScriptLogEntry> {
+    if logs.len() <= max_len {
+        return logs;
+    }
+    let start = logs.len().saturating_sub(max_len);
+    logs.drain(0..start);
+    logs
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn apply_decode_scripts_for_storage(
     admin_state: &Option<Arc<AdminState>>,
@@ -409,19 +444,32 @@ async fn apply_decode_scripts_for_storage(
     response_data: &ResponseData,
     values: &HashMap<String, String>,
     body_bytes: Bytes,
-) -> Bytes {
+) -> DecodeForStorageResult {
     if script_names.is_empty() || body_bytes.is_empty() {
-        return body_bytes;
+        return DecodeForStorageResult {
+            output: body_bytes,
+            results: vec![],
+        };
     }
 
     let state = match admin_state {
         Some(s) => s,
-        None => return body_bytes,
+        None => {
+            return DecodeForStorageResult {
+                output: body_bytes,
+                results: vec![],
+            }
+        }
     };
 
     let manager = match &state.script_manager {
         Some(m) => m,
-        None => return body_bytes,
+        None => {
+            return DecodeForStorageResult {
+                output: body_bytes,
+                results: vec![],
+            }
+        }
     };
 
     let cfg = if let Some(cm) = state.config_manager.as_ref() {
@@ -431,25 +479,75 @@ async fn apply_decode_scripts_for_storage(
     };
 
     // 性能保护：decode 的输入过大时直接跳过（落库仍然保存原始内容）
-    const MAX_DECODE_INPUT_BYTES: usize = 2 * 1024 * 1024;
-    if body_bytes.len() > MAX_DECODE_INPUT_BYTES {
+    let max_decode_input_bytes = cfg
+        .as_ref()
+        .map(|c| c.sandbox.limits.max_decode_input_bytes)
+        .unwrap_or(2 * 1024 * 1024);
+    if body_bytes.len() > max_decode_input_bytes {
+        let body_len = body_bytes.len();
         warn!(
             "[{}] [DECODE] skip decode ({} bytes > {} limit)",
             ctx.id_str(),
-            body_bytes.len(),
-            MAX_DECODE_INPUT_BYTES
+            body_len,
+            max_decode_input_bytes
         );
-        return body_bytes;
+        return DecodeForStorageResult {
+            output: body_bytes,
+            results: vec![bifrost_script::ScriptExecutionResult {
+                script_name: "__bifrost_skip__".to_string(),
+                script_type: ScriptType::Decode,
+                success: false,
+                error: Some(format!(
+                    "decode 输入过大，已跳过（{} bytes > {} limit）",
+                    body_len, max_decode_input_bytes
+                )),
+                duration_ms: 0,
+                logs: vec![],
+                request_modifications: None,
+                response_modifications: None,
+                decode_output: None,
+            }],
+        };
     }
 
     let matched_rules = build_matched_rules_info(resolved_rules);
     let mut current = body_bytes.to_vec();
+    let mut results: Vec<bifrost_script::ScriptExecutionResult> = Vec::new();
 
     let mgr = manager.read().await;
     for script_name in script_names {
+        let script_name = script_name.trim();
+        if script_name.is_empty() {
+            continue;
+        }
+
+        // 内置解码器（与 WebSocket decode 行为保持一致）：decode://utf8 / decode://default
+        if is_builtin_decoder(script_name) {
+            let start = Instant::now();
+            current = builtin_decode_utf8(&current);
+            // 避免把大体积内容塞进 record，decode_output.data 做截断。
+            let data_preview = truncate_string(String::from_utf8_lossy(&current).to_string(), 4096);
+            results.push(bifrost_script::ScriptExecutionResult {
+                script_name: script_name.to_string(),
+                script_type: ScriptType::Decode,
+                success: true,
+                error: None,
+                duration_ms: start.elapsed().as_millis() as u64,
+                logs: vec![],
+                request_modifications: None,
+                response_modifications: None,
+                decode_output: Some(bifrost_script::DecodeOutput {
+                    code: "0".to_string(),
+                    data: data_preview,
+                    msg: "".to_string(),
+                }),
+            });
+            continue;
+        }
+
         let script_ctx = ScriptContext {
             request_id: ctx.id_str().to_string(),
-            script_name: script_name.clone(),
+            script_name: script_name.to_string(),
             script_type: ScriptType::Decode,
             values: values.clone(),
             matched_rules: matched_rules.clone(),
@@ -461,6 +559,7 @@ async fn apply_decode_scripts_for_storage(
             (&[][..], current.as_slice())
         };
 
+        let start = Instant::now();
         let result = if let Some(ref cfg) = cfg {
             mgr.engine()
                 .execute_decode_script_with_config(
@@ -489,22 +588,64 @@ async fn apply_decode_scripts_for_storage(
         };
 
         match result {
-            Ok((out, _logs)) => {
-                if out.code == "0" {
+            Ok((out, logs)) => {
+                let mut data_preview = out.data.clone();
+                let mut msg_preview = out.msg.clone();
+                data_preview = truncate_string(data_preview, 4096);
+                msg_preview = truncate_string(msg_preview, 4096);
+
+                let success = out.code == "0";
+                let err = if success {
+                    None
+                } else {
+                    Some(format!("decode 输出 code != 0: {}", msg_preview))
+                };
+
+                results.push(bifrost_script::ScriptExecutionResult {
+                    script_name: script_name.to_string(),
+                    script_type: ScriptType::Decode,
+                    success,
+                    error: err,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    logs: limit_script_logs(logs, 100),
+                    request_modifications: None,
+                    response_modifications: None,
+                    decode_output: Some(bifrost_script::DecodeOutput {
+                        code: out.code,
+                        data: data_preview,
+                        msg: msg_preview,
+                    }),
+                });
+
+                if success {
                     current = out.data.into_bytes();
                 } else {
-                    current = out.msg.into_bytes();
+                    // decode 失败：不覆盖当前内容（避免丢失可读数据）；终止链路。
                     break;
                 }
             }
             Err(e) => {
-                current = format!("decode 脚本执行失败: {}", e).into_bytes();
+                results.push(bifrost_script::ScriptExecutionResult {
+                    script_name: script_name.to_string(),
+                    script_type: ScriptType::Decode,
+                    success: false,
+                    error: Some(format!("decode 脚本执行失败: {}", e)),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    logs: vec![],
+                    request_modifications: None,
+                    response_modifications: None,
+                    decode_output: None,
+                });
+                // decode 失败：不覆盖当前内容；终止链路。
                 break;
             }
         }
     }
 
-    Bytes::from(current)
+    DecodeForStorageResult {
+        output: Bytes::from(current),
+        results,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -712,6 +853,17 @@ pub async fn handle_http_request(
     let start_time = std::time::Instant::now();
 
     let resolved_rules = rules.resolve(&url, &method);
+
+    // 解压输出上限：用于防御压缩炸弹。优先读取配置，否则使用默认 10MiB。
+    let max_decompress_output_bytes = if let Some(ref state) = admin_state {
+        if let Some(cm) = state.config_manager.as_ref() {
+            cm.config().await.sandbox.limits.max_decompress_output_bytes
+        } else {
+            10 * 1024 * 1024
+        }
+    } else {
+        10 * 1024 * 1024
+    };
 
     let has_rules = !resolved_rules.rules.is_empty()
         || resolved_rules.host.is_some()
@@ -1203,8 +1355,12 @@ pub async fn handle_http_request(
                         headers: headers_to_hashmap(&req_headers),
                         body: None,
                     };
-                    let decompressed_req_body =
-                        decompress_body(&final_body, req_content_encoding.as_deref());
+                    let decompressed_req_body = decompress_body_with_limit(
+                        &final_body,
+                        req_content_encoding.as_deref(),
+                        max_decompress_output_bytes,
+                    );
+                    let raw_req_body = decompressed_req_body.clone();
                     let decoded_req_body = apply_decode_scripts_for_storage(
                         &admin_state,
                         &resolved_rules.decode_scripts,
@@ -1221,7 +1377,17 @@ pub async fn handle_http_request(
                     )
                     .await;
                     let store = body_store.read();
-                    store.store(&ctx.id_str(), "req", decoded_req_body.as_ref())
+
+                    if !resolved_rules.decode_scripts.is_empty() {
+                        record.raw_request_body_ref =
+                            store.store(&ctx.id_str(), "req_raw", raw_req_body.as_ref());
+                        if !decoded_req_body.results.is_empty() {
+                            record.decode_req_script_results =
+                                Some(decoded_req_body.results.clone());
+                        }
+                    }
+
+                    store.store(&ctx.id_str(), "req", decoded_req_body.output.as_ref())
                 } else {
                     store_request_body(
                         &admin_state,
@@ -1277,7 +1443,17 @@ pub async fn handle_http_request(
                     )
                     .await;
                     let store = body_store.read();
-                    store.store(&ctx.id_str(), "res", decoded_res_body.as_ref())
+
+                    if !resolved_rules.decode_scripts.is_empty() {
+                        record.raw_response_body_ref =
+                            store.store(&ctx.id_str(), "res_raw", response_body.as_ref());
+                        if !decoded_res_body.results.is_empty() {
+                            record.decode_res_script_results =
+                                Some(decoded_res_body.results.clone());
+                        }
+                    }
+
+                    store.store(&ctx.id_str(), "res", decoded_res_body.output.as_ref())
                 } else {
                     store_response_body(&admin_state, &ctx.id_str(), &response_body)
                 };
@@ -1386,8 +1562,11 @@ pub async fn handle_http_request(
                         headers: headers_to_hashmap(&req_headers),
                         body: None,
                     };
-                    let decompressed_req_body =
-                        decompress_body(&final_body, req_content_encoding.as_deref());
+                    let decompressed_req_body = decompress_body_with_limit(
+                        &final_body,
+                        req_content_encoding.as_deref(),
+                        max_decompress_output_bytes,
+                    );
                     store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref())
                 } else {
                     store_request_body(
@@ -2195,8 +2374,12 @@ pub async fn handle_http_request(
                 body: None,
             };
 
-            let decompressed_req_body =
-                decompress_body(&final_body, req_content_encoding.as_deref());
+            let decompressed_req_body = decompress_body_with_limit(
+                &final_body,
+                req_content_encoding.as_deref(),
+                max_decompress_output_bytes,
+            );
+            let raw_req_body = decompressed_req_body.clone();
             let decoded_req_body = apply_decode_scripts_for_storage(
                 &admin_state,
                 &resolved_rules.decode_scripts,
@@ -2209,12 +2392,21 @@ pub async fn handle_http_request(
                     ..Default::default()
                 },
                 &values,
-                Bytes::from(decompressed_req_body.to_vec()),
+                decompressed_req_body,
             )
             .await;
+            let DecodeForStorageResult {
+                output: decoded_req_output,
+                results: decoded_req_results,
+                ..
+            } = decoded_req_body;
 
-            let decompressed_res_body =
-                decompress_body(&final_res_body, res_content_encoding.as_deref());
+            let decompressed_res_body = decompress_body_with_limit(
+                &final_res_body,
+                res_content_encoding.as_deref(),
+                max_decompress_output_bytes,
+            );
+            let raw_res_body = decompressed_res_body.clone();
             let response_data = ResponseData {
                 status: res_parts.status.as_u16(),
                 status_text: res_parts
@@ -2235,13 +2427,35 @@ pub async fn handle_http_request(
                 &response_data.request,
                 &response_data,
                 &values,
-                Bytes::from(decompressed_res_body.to_vec()),
+                decompressed_res_body,
             )
             .await;
+            let DecodeForStorageResult {
+                output: decoded_res_output,
+                results: decoded_res_results,
+                ..
+            } = decoded_res_body;
 
             let store = body_store.read();
-            record.request_body_ref = store.store(&ctx.id_str(), "req", decoded_req_body.as_ref());
-            record.response_body_ref = store.store(&ctx.id_str(), "res", decoded_res_body.as_ref());
+
+            if !resolved_rules.decode_scripts.is_empty() {
+                record.raw_request_body_ref =
+                    store.store(&ctx.id_str(), "req_raw", raw_req_body.as_ref());
+                record.raw_response_body_ref =
+                    store.store(&ctx.id_str(), "res_raw", raw_res_body.as_ref());
+
+                if !decoded_req_results.is_empty() {
+                    record.decode_req_script_results = Some(decoded_req_results.clone());
+                }
+                if !decoded_res_results.is_empty() {
+                    record.decode_res_script_results = Some(decoded_res_results.clone());
+                }
+            }
+
+            record.request_body_ref =
+                store.store(&ctx.id_str(), "req", decoded_req_output.as_ref());
+            record.response_body_ref =
+                store.store(&ctx.id_str(), "res", decoded_res_output.as_ref());
         }
 
         if !req_script_results.is_empty() {

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug)]
 pub enum InitError {
@@ -107,12 +107,16 @@ CREATE TABLE IF NOT EXISTS traffic_records (
     socket_status_blob BLOB,
     request_body_ref_blob BLOB,
     response_body_ref_blob BLOB,
+    raw_request_body_ref_blob BLOB,
+    raw_response_body_ref_blob BLOB,
     actual_url TEXT,
     actual_host TEXT,
     original_request_headers_blob BLOB,
     actual_response_headers_blob BLOB,
     req_script_results_blob BLOB,
     res_script_results_blob BLOB,
+    decode_req_script_results_blob BLOB,
+    decode_res_script_results_blob BLOB,
     error_message TEXT
 );
 
@@ -144,9 +148,12 @@ pub fn get_insert_sql() -> &'static str {
         timing_blob, request_headers_blob, response_headers_blob,
         matched_rules_blob, socket_status_blob,
         request_body_ref_blob, response_body_ref_blob,
+        raw_request_body_ref_blob, raw_response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
         actual_response_headers_blob, req_script_results_blob,
-        res_script_results_blob, error_message
+        res_script_results_blob,
+        decode_req_script_results_blob, decode_res_script_results_blob,
+        error_message
     ) VALUES (
         ?1, ?2, ?3, ?4, ?5, ?6, ?7,
         ?8, ?9, ?10, ?11,
@@ -156,9 +163,12 @@ pub fn get_insert_sql() -> &'static str {
         ?22, ?23, ?24,
         ?25, ?26,
         ?27, ?28,
-        ?29, ?30, ?31,
-        ?32, ?33, ?34,
-        ?35
+        ?29, ?30,
+        ?31, ?32, ?33,
+        ?34, ?35,
+        ?36,
+        ?37, ?38,
+        ?39
     )
     "#
 }
@@ -184,13 +194,17 @@ pub fn get_update_sql() -> &'static str {
         socket_status_blob = ?16,
         request_body_ref_blob = ?17,
         response_body_ref_blob = ?18,
-        actual_url = ?19,
-        actual_host = ?20,
-        original_request_headers_blob = ?21,
-        actual_response_headers_blob = ?22,
-        req_script_results_blob = ?23,
-        res_script_results_blob = ?24,
-        error_message = ?25
-    WHERE id = ?26
+        raw_request_body_ref_blob = ?19,
+        raw_response_body_ref_blob = ?20,
+        actual_url = ?21,
+        actual_host = ?22,
+        original_request_headers_blob = ?23,
+        actual_response_headers_blob = ?24,
+        req_script_results_blob = ?25,
+        res_script_results_blob = ?26,
+        decode_req_script_results_blob = ?27,
+        decode_res_script_results_blob = ?28,
+        error_message = ?29
+    WHERE id = ?30
     "#
 }

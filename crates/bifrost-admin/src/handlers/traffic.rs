@@ -135,12 +135,12 @@ pub async fn handle_traffic(
         let rest = rest.trim_end_matches('/');
         if let Some(id) = rest.strip_suffix("/request-body") {
             match method {
-                Method::GET => get_request_body(state, id).await,
+                Method::GET => get_request_body(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(id) = rest.strip_suffix("/response-body") {
             match method {
-                Method::GET => get_response_body(state, id).await,
+                Method::GET => get_response_body(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some((id, after)) = rest.split_once("/sse/stream") {
@@ -189,6 +189,21 @@ pub async fn handle_traffic(
     } else {
         error_response(StatusCode::NOT_FOUND, "Not Found")
     }
+}
+
+fn query_wants_raw(query: Option<&str>) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    for part in q.split('&') {
+        if let Some(v) = part.strip_prefix("raw=") {
+            if v == "1" || v.eq_ignore_ascii_case("true") {
+                return true;
+            }
+            return false;
+        }
+    }
+    false
 }
 
 async fn subscribe_sse_stream(
@@ -1267,7 +1282,11 @@ async fn clear_all_traffic(
     success_response("All traffic data cleared successfully")
 }
 
-async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn get_request_body(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
@@ -1282,7 +1301,17 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
 
     match record {
         Some(record) => {
-            if let Some(body_ref) = &record.request_body_ref {
+            let want_raw = query_wants_raw(query);
+            let body_ref = if want_raw {
+                record
+                    .raw_request_body_ref
+                    .as_ref()
+                    .or(record.request_body_ref.as_ref())
+            } else {
+                record.request_body_ref.as_ref()
+            };
+
+            if let Some(body_ref) = body_ref {
                 get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({
@@ -1298,7 +1327,11 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
     }
 }
 
-async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn get_response_body(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
@@ -1313,7 +1346,17 @@ async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBod
 
     match record {
         Some(record) => {
-            if let Some(body_ref) = &record.response_body_ref {
+            let want_raw = query_wants_raw(query);
+            let body_ref = if want_raw {
+                record
+                    .raw_response_body_ref
+                    .as_ref()
+                    .or(record.response_body_ref.as_ref())
+            } else {
+                record.response_body_ref.as_ref()
+            };
+
+            if let Some(body_ref) = body_ref {
                 get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({

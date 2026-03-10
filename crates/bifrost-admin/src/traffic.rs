@@ -115,6 +115,12 @@ pub struct TrafficRecord {
     pub request_body_ref: Option<BodyRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body_ref: Option<BodyRef>,
+    /// 原始（未 decode）请求体引用：用于 decode 失败回溯或对比。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_request_body_ref: Option<BodyRef>,
+    /// 原始（未 decode）响应体引用：用于 decode 失败回溯或对比。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_response_body_ref: Option<BodyRef>,
     pub client_ip: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_app: Option<String>,
@@ -161,6 +167,12 @@ pub struct TrafficRecord {
     pub req_script_results: Option<Vec<ScriptExecutionResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub res_script_results: Option<Vec<ScriptExecutionResult>>,
+    /// decode（落库前解码）脚本执行结果：请求阶段
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_req_script_results: Option<Vec<ScriptExecutionResult>>,
+    /// decode（落库前解码）脚本执行结果：响应阶段
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_res_script_results: Option<Vec<ScriptExecutionResult>>,
 }
 
 pub use bifrost_script::ScriptExecutionResult;
@@ -198,6 +210,8 @@ impl TrafficRecord {
             response_headers: None,
             request_body_ref: None,
             response_body_ref: None,
+            raw_request_body_ref: None,
+            raw_response_body_ref: None,
             client_ip: String::new(),
             client_app: None,
             client_pid: None,
@@ -223,6 +237,8 @@ impl TrafficRecord {
             error_message: None,
             req_script_results: None,
             res_script_results: None,
+            decode_req_script_results: None,
+            decode_res_script_results: None,
         }
     }
 

@@ -2467,10 +2467,18 @@ async fn handle_intercepted_request_with_protocol(
         };
 
         if let Some(ref body_store) = state.body_store {
-            let store = body_store.read();
+            let max_decompress_output_bytes = if let Some(cm) = state.config_manager.as_ref() {
+                cm.config().await.sandbox.limits.max_decompress_output_bytes
+            } else {
+                10 * 1024 * 1024
+            };
 
-            let decompressed_res_body =
-                crate::transform::decompress_body(&res_body_bytes, res_content_encoding.as_deref());
+            let store = body_store.read();
+            let decompressed_res_body = crate::transform::decompress_body_with_limit(
+                &res_body_bytes,
+                res_content_encoding.as_deref(),
+                max_decompress_output_bytes,
+            );
             record.response_body_ref = store.store(req_id, "res", decompressed_res_body.as_ref());
         }
 
@@ -2542,9 +2550,18 @@ async fn handle_intercepted_request_with_protocol(
 
     if let Some(ref state) = admin_state {
         if let Some(ref body_store) = state.body_store {
+            let max_decompress_output_bytes = if let Some(cm) = state.config_manager.as_ref() {
+                cm.config().await.sandbox.limits.max_decompress_output_bytes
+            } else {
+                10 * 1024 * 1024
+            };
+
             let store = body_store.read();
-            let decompressed_res =
-                crate::transform::decompress_body(&final_body, res_content_encoding.as_deref());
+            let decompressed_res = crate::transform::decompress_body_with_limit(
+                &final_body,
+                res_content_encoding.as_deref(),
+                max_decompress_output_bytes,
+            );
             if let Some(body_ref) = store.store(req_id, "res", decompressed_res.as_ref()) {
                 state.update_traffic_by_id(req_id, move |record| {
                     record.response_body_ref = Some(body_ref.clone());

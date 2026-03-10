@@ -222,6 +222,14 @@ impl TrafficDbStore {
             .response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let raw_req_body_blob = record
+            .raw_request_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
+        let raw_res_body_blob = record
+            .raw_response_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
         let orig_req_headers_blob = record
             .original_request_headers
             .as_ref()
@@ -230,14 +238,24 @@ impl TrafficDbStore {
             .actual_response_headers
             .as_ref()
             .and_then(|h| bincode::serialize(h).ok());
+        // 说明：脚本执行结果结构可能演进（字段增减）。
+        // bincode 对结构变化不具备兼容性，因此这里改为 JSON 存储，配合 schema version bump 直接重建 DB。
         let req_script_results_blob = record
             .req_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
         let res_script_results_blob = record
             .res_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_req_results_blob = record
+            .decode_req_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_res_results_blob = record
+            .decode_res_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
 
         let result = conn.execute(
             get_insert_sql(),
@@ -270,12 +288,16 @@ impl TrafficDbStore {
                 socket_blob,
                 req_body_blob,
                 res_body_blob,
+                raw_req_body_blob,
+                raw_res_body_blob,
                 &record.actual_url,
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
                 req_script_results_blob,
                 res_script_results_blob,
+                decode_req_results_blob,
+                decode_res_results_blob,
                 &record.error_message,
             ],
         );
@@ -381,6 +403,14 @@ impl TrafficDbStore {
             .response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let raw_req_body_blob = record
+            .raw_request_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
+        let raw_res_body_blob = record
+            .raw_response_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
         let orig_req_headers_blob = record
             .original_request_headers
             .as_ref()
@@ -392,11 +422,19 @@ impl TrafficDbStore {
         let req_script_results_blob = record
             .req_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
         let res_script_results_blob = record
             .res_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_req_results_blob = record
+            .decode_req_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_res_results_blob = record
+            .decode_res_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
 
         let result = conn.execute(
             get_update_sql(),
@@ -419,12 +457,16 @@ impl TrafficDbStore {
                 socket_blob,
                 req_body_blob,
                 res_body_blob,
+                raw_req_body_blob,
+                raw_res_body_blob,
                 &record.actual_url,
                 &record.actual_host,
                 orig_req_headers_blob,
                 actual_res_headers_blob,
                 req_script_results_blob,
                 res_script_results_blob,
+                decode_req_results_blob,
+                decode_res_results_blob,
                 &record.error_message,
                 &record.id,
             ],
@@ -817,10 +859,14 @@ impl TrafficDbStore {
         let socket_blob: Option<Vec<u8>> = row.get("socket_status_blob")?;
         let req_body_blob: Option<Vec<u8>> = row.get("request_body_ref_blob")?;
         let res_body_blob: Option<Vec<u8>> = row.get("response_body_ref_blob")?;
+        let raw_req_body_blob: Option<Vec<u8>> = row.get("raw_request_body_ref_blob")?;
+        let raw_res_body_blob: Option<Vec<u8>> = row.get("raw_response_body_ref_blob")?;
         let orig_req_headers_blob: Option<Vec<u8>> = row.get("original_request_headers_blob")?;
         let actual_res_headers_blob: Option<Vec<u8>> = row.get("actual_response_headers_blob")?;
         let req_script_results_blob: Option<Vec<u8>> = row.get("req_script_results_blob")?;
         let res_script_results_blob: Option<Vec<u8>> = row.get("res_script_results_blob")?;
+        let decode_req_results_blob: Option<Vec<u8>> = row.get("decode_req_script_results_blob")?;
+        let decode_res_results_blob: Option<Vec<u8>> = row.get("decode_res_script_results_blob")?;
 
         let flags: i32 = row.get("flags")?;
 
@@ -858,6 +904,8 @@ impl TrafficDbStore {
             socket_status: socket_blob.and_then(|b| bincode::deserialize(&b).ok()),
             request_body_ref: req_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
             response_body_ref: res_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            raw_request_body_ref: raw_req_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            raw_response_body_ref: raw_res_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
             actual_url: row.get("actual_url")?,
             actual_host: row.get("actual_host")?,
             original_request_headers: orig_req_headers_blob
@@ -865,8 +913,14 @@ impl TrafficDbStore {
             actual_response_headers: actual_res_headers_blob
                 .and_then(|b| bincode::deserialize(&b).ok()),
             error_message: row.get("error_message")?,
-            req_script_results: req_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            res_script_results: res_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            req_script_results: req_script_results_blob
+                .and_then(|b| serde_json::from_slice(&b).ok()),
+            res_script_results: res_script_results_blob
+                .and_then(|b| serde_json::from_slice(&b).ok()),
+            decode_req_script_results: decode_req_results_blob
+                .and_then(|b| serde_json::from_slice(&b).ok()),
+            decode_res_script_results: decode_res_results_blob
+                .and_then(|b| serde_json::from_slice(&b).ok()),
         })
     }
 

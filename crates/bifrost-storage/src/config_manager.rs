@@ -67,6 +67,14 @@ impl ConfigManager {
         self.config.read().await.clone()
     }
 
+    /// 在非 async 上下文中尝试读取配置（不会阻塞）。
+    ///
+    /// 典型用法：在同步代码路径（例如 body tee/drop）里获取少量配置项；
+    /// 如果当前锁被占用，则返回 `None`，调用方应使用安全默认值回退。
+    pub fn try_config(&self) -> Option<UnifiedConfig> {
+        self.config.try_read().ok().map(|g| g.clone())
+    }
+
     pub async fn update_config<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut UnifiedConfig),

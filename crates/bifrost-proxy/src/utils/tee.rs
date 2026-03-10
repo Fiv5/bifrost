@@ -11,7 +11,7 @@ use memchr::memchr;
 use tokio::time::Sleep;
 
 use crate::server::BoxBody;
-use crate::transform::decompress::decompress_body;
+use crate::transform::decompress::decompress_body_with_limit;
 
 fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
     let status = state.sse_hub.get_socket_status(record_id).map(|mut s| {
@@ -63,8 +63,17 @@ impl TeeBodyDropGuard {
             } else if !self.buffer.is_empty() {
                 if let Some(ref body_store) = state.body_store {
                     let store = body_store.read();
-                    let decompressed =
-                        decompress_body(&self.buffer, self.content_encoding.as_deref());
+                    let max_decompress_output_bytes = state
+                        .config_manager
+                        .as_ref()
+                        .and_then(|cm| cm.try_config())
+                        .map(|cfg| cfg.sandbox.limits.max_decompress_output_bytes)
+                        .unwrap_or(10 * 1024 * 1024);
+                    let decompressed = decompress_body_with_limit(
+                        &self.buffer,
+                        self.content_encoding.as_deref(),
+                        max_decompress_output_bytes,
+                    );
                     store.store(&self.record_id, "res", decompressed.as_ref())
                 } else {
                     None
@@ -614,7 +623,17 @@ pub fn store_request_body(
     if let Some(ref state) = admin_state {
         if let Some(ref body_store) = state.body_store {
             let store = body_store.read();
-            let decompressed = decompress_body(body_data, content_encoding);
+            let max_decompress_output_bytes = state
+                .config_manager
+                .as_ref()
+                .and_then(|cm| cm.try_config())
+                .map(|cfg| cfg.sandbox.limits.max_decompress_output_bytes)
+                .unwrap_or(10 * 1024 * 1024);
+            let decompressed = decompress_body_with_limit(
+                body_data,
+                content_encoding,
+                max_decompress_output_bytes,
+            );
             return store.store(record_id, "req", decompressed.as_ref());
         }
     }
