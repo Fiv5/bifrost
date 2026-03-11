@@ -7,57 +7,8 @@ use super::{error_response, json_response, method_not_allowed, success_response,
 use crate::body_store::BodyRef;
 use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::state::{AdminState, SharedAdminState};
-use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
+use crate::traffic::SocketStatus;
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
-
-fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
-    if !summary.is_sse
-        && !summary.is_websocket
-        && !summary.is_tunnel
-        && summary.socket_status.is_none()
-    {
-        return;
-    }
-
-    if summary.is_sse {
-        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
-            summary.frame_count = status.frame_count;
-            summary.socket_status = Some(status);
-        }
-    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-        summary.frame_count = status.frame_count;
-        summary.socket_status = Some(status);
-    } else if let Some(ref fs) = state.frame_store {
-        if let Some(metadata) = fs.get_metadata(&summary.id) {
-            summary.frame_count = metadata.frame_count as usize;
-            summary.socket_status = Some(SocketStatus {
-                is_open: !metadata.is_closed,
-                frame_count: metadata.frame_count as usize,
-                ..Default::default()
-            });
-        }
-    }
-
-    if summary.is_sse {
-        if let Some(ref socket_status) = summary.socket_status {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if total > 0 {
-                summary.response_size = summary.response_size.max(total as usize);
-            }
-
-            if !socket_status.is_open && summary.response_size > 0 {
-                let total = summary.response_size;
-                let status = socket_status.clone();
-                let frame_count = summary.frame_count;
-                state.update_traffic_by_id(&summary.id, move |record| {
-                    record.response_size = total;
-                    record.socket_status = Some(status.clone());
-                    record.frame_count = frame_count;
-                });
-            }
-        }
-    }
-}
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminState) {
     if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() && summary.ss.is_none()
@@ -217,8 +168,6 @@ async fn subscribe_sse_stream(
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -825,35 +774,10 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
         }
         json_response(&result)
     } else {
-        let filter = parse_traffic_filter(query);
-
-        let records = state
-            .traffic_store
-            .as_ref()
-            .map(|s| s.filter(&filter))
-            .unwrap_or_default();
-
-        let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
-
-        let total = records.len();
-        let paginated: Vec<_> = records
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|mut summary| {
-                enrich_frame_info(&mut summary, &state);
-                summary
-            })
-            .collect();
-
-        let response = serde_json::json!({
-            "total": total,
-            "offset": offset,
-            "limit": limit,
-            "records": paginated
-        });
-
-        json_response(&response)
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Traffic database not available",
+        )
     }
 }
 
@@ -922,54 +846,10 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
 
         json_response(&response)
     } else {
-        let filter = parse_traffic_filter(query);
-        let limit = params.limit.unwrap_or(100);
-
-        let Some(ref traffic_store) = state.traffic_store else {
-            let response = serde_json::json!({
-                "new_records": [],
-                "updated_records": [],
-                "has_more": false,
-                "server_total": 0
-            });
-            return json_response(&response);
-        };
-
-        let (new_records, has_more) =
-            traffic_store.get_after(params.after_id.as_deref(), &filter, limit);
-
-        let new_records: Vec<_> = new_records
-            .into_iter()
-            .map(|mut summary| {
-                enrich_frame_info(&mut summary, &state);
-                summary
-            })
-            .collect();
-
-        let updated_records = if !params.pending_ids.is_empty() {
-            let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
-            let summaries = traffic_store.get_by_ids(&ids);
-            summaries
-                .into_iter()
-                .map(|mut summary| {
-                    enrich_frame_info(&mut summary, &state);
-                    summary
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let server_total = traffic_store.total();
-
-        let response = serde_json::json!({
-            "new_records": new_records,
-            "updated_records": updated_records,
-            "has_more": has_more,
-            "server_total": server_total
-        });
-
-        json_response(&response)
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Traffic database not available",
+        )
     }
 }
 
@@ -979,6 +859,13 @@ struct UpdatesParams {
     after_seq: Option<u64>,
     pending_ids: Vec<String>,
     limit: Option<usize>,
+}
+
+fn decode_query_value(value: &str) -> String {
+    let value_with_spaces = value.replace('+', " ");
+    urlencoding::decode(&value_with_spaces)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn parse_updates_params(query: &str) -> UpdatesParams {
@@ -1001,7 +888,7 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
                         params.pending_ids = value
                             .split(',')
                             .take(MAX_SUBSCRIBED_IDS)
-                            .filter_map(|s| {
+                            .filter_map(|s: &str| {
                                 let id = s.to_string();
                                 if id.is_empty() || id.len() > MAX_ID_LEN {
                                     None
@@ -1072,8 +959,6 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -1194,12 +1079,6 @@ async fn clear_traffic_by_ids(
         let _delete_task = tokio::task::spawn_blocking(move || {
             db_store_clone.delete_by_ids(&ids_for_db);
         });
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        let traffic_store_clone = traffic_store.clone();
-        let ids_for_store = ids_to_delete.clone();
-        let _delete_task = tokio::task::spawn_blocking(move || {
-            traffic_store_clone.delete_by_ids(&ids_for_store);
-        });
     }
 
     if let Some(ref body_store) = state.body_store {
@@ -1252,11 +1131,6 @@ async fn clear_all_traffic(
         let _clear_task = tokio::task::spawn_blocking(move || {
             db_store_clone.clear_with_active_ids(&active_ids_for_db);
         });
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        let traffic_store_clone = traffic_store.clone();
-        let _clear_task = tokio::task::spawn_blocking(move || {
-            traffic_store_clone.clear();
-        });
     }
 
     if let Some(ref body_store) = state.body_store {
@@ -1302,8 +1176,6 @@ async fn get_request_body(
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -1347,8 +1219,6 @@ async fn get_response_body(
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -1421,43 +1291,4 @@ async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) ->
             }
         }
     }
-}
-
-fn decode_query_value(value: &str) -> String {
-    let value_with_spaces = value.replace('+', " ");
-    urlencoding::decode(&value_with_spaces)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn parse_traffic_filter(query: &str) -> TrafficFilter {
-    let mut filter = TrafficFilter::default();
-
-    for pair in query.split('&') {
-        if let Some((key, value)) = pair.split_once('=') {
-            let value = decode_query_value(value);
-            match key {
-                "method" => filter.method = Some(value.to_string()),
-                "status" => filter.status = value.parse().ok(),
-                "status_min" => filter.status_min = value.parse().ok(),
-                "status_max" => filter.status_max = value.parse().ok(),
-                "url" | "url_contains" => filter.url_contains = Some(value.to_string()),
-                "host" => filter.host = Some(value.to_string()),
-                "content_type" => filter.content_type = Some(value.to_string()),
-                "limit" => filter.limit = value.parse().ok(),
-                "offset" => filter.offset = value.parse().ok(),
-                "has_rule_hit" => filter.has_rule_hit = value.parse().ok(),
-                "protocol" => filter.protocol = Some(value.to_string()),
-                "request_content_type" => filter.request_content_type = Some(value.to_string()),
-                "domain" => filter.domain = Some(value.to_string()),
-                "path_contains" | "path" => filter.path_contains = Some(value.to_string()),
-                "header_contains" | "header" => filter.header_contains = Some(value.to_string()),
-                "client_ip" => filter.client_ip = Some(value.to_string()),
-                "client_app" => filter.client_app = Some(value.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    filter
 }

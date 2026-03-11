@@ -58,16 +58,9 @@ pub async fn handle_app_icon<B>(
 }
 
 fn get_app_path_from_traffic(state: &SharedAdminState, app_name: &str) -> Option<String> {
-    if let Some(ref traffic_store) = state.traffic_store {
-        let records = traffic_store.get_all();
-        for record in records.iter().rev() {
-            if let Some(ref client_app) = record.client_app {
-                if client_app == app_name {
-                    if let Some(ref path) = record.client_path {
-                        return Some(path.clone());
-                    }
-                }
-            }
+    if let Some(ref db_store) = state.traffic_db_store {
+        if let Some(path) = db_store.find_latest_client_path_by_app(app_name) {
+            return Some(path);
         }
     }
 

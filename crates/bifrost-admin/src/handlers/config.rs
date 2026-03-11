@@ -12,7 +12,6 @@ use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::frame_store::FrameStoreStats;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
-use crate::traffic_store::TrafficStoreStats;
 use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,7 +62,6 @@ pub struct TrafficConfig {
 pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
-    pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
     pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
@@ -524,7 +522,6 @@ async fn list_connections(state: SharedAdminState) -> Response<BoxBody> {
 
 async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
-    let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
     let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
     let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|ws| ws.stats());
 
@@ -562,7 +559,6 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let response = PerformanceConfigResponse {
         traffic: traffic_config,
         body_store_stats,
-        traffic_store_stats,
         frame_store_stats,
         ws_payload_store_stats,
     };
@@ -631,9 +627,6 @@ async fn update_performance_config(
     }
 
     if let Some(max_records) = request.max_records {
-        if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.set_max_records(max_records);
-        }
         if let Some(ref traffic_db_store) = state.traffic_db_store {
             traffic_db_store.set_max_records(max_records);
         }
@@ -663,16 +656,6 @@ async fn update_performance_config(
             retention_days: request.file_retention_days,
         };
         ws_payload_store.update_config(ws_payload_update);
-    }
-
-    if let Some(ref traffic_store) = state.traffic_store {
-        use crate::traffic_store::TrafficStoreConfigUpdate;
-        let retention_hours = request.file_retention_days.map(|d| d * 24);
-        let traffic_store_update = TrafficStoreConfigUpdate {
-            max_records: request.max_records,
-            retention_hours,
-        };
-        traffic_store.update_config(traffic_store_update);
     }
 
     if let Some(max_body_buffer_size) = request.max_body_buffer_size {
@@ -715,11 +698,14 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         }
     }
 
-    if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.clear();
-        let stats = traffic_store.stats();
-        traffic_removed = stats.total_records_processed as usize;
-        tracing::info!("Cleared traffic store records");
+    if let Some(ref traffic_db_store) = state.traffic_db_store {
+        // 仅保留活跃连接记录，避免清理导致进行中的连接记录缺失。
+        let active_connection_ids = state.connection_monitor.active_connection_ids();
+        let before = traffic_db_store.stats().record_count;
+        traffic_db_store.clear_with_active_ids(&active_connection_ids);
+        let after = traffic_db_store.stats().record_count;
+        traffic_removed = before.saturating_sub(after);
+        tracing::info!("Cleared traffic db records (active preserved)");
     }
 
     if let Some(ref frame_store) = state.frame_store {

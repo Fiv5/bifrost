@@ -160,7 +160,6 @@ pub struct UpdateTlsConfigRequest {
 pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
-    pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
     pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
@@ -186,15 +185,6 @@ pub struct BodyStoreStats {
     pub temp_dir: String,
     pub max_memory_size: usize,
     pub retention_days: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficStoreStats {
-    pub record_count: usize,
-    pub file_size: u64,
-    pub total_records_processed: u64,
-    pub last_sequence: u64,
-    pub oldest_record_timestamp: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

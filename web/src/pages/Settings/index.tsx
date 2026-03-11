@@ -558,21 +558,10 @@ export default function Settings() {
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchProxyAddressInfo();
-    fetchAppMetricsData();
-    fetchHostMetricsData();
-
-    const appMetricsInterval = setInterval(fetchAppMetricsData, 5000);
-    const hostMetricsInterval = setInterval(fetchHostMetricsData, 5000);
-    return () => {
-      clearInterval(appMetricsInterval);
-      clearInterval(hostMetricsInterval);
-    };
   }, [
     fetchTlsConfig,
     fetchCertInfo,
     fetchPerformanceConfig,
-    fetchAppMetricsData,
-    fetchHostMetricsData,
     fetchProxyAddressInfo,
   ]);
 

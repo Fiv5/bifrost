@@ -103,7 +103,6 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     );
 
     if perf.body_store_stats.is_some()
-        || perf.traffic_store_stats.is_some()
         || perf.frame_store_stats.is_some()
         || perf.ws_payload_store_stats.is_some()
     {
@@ -114,12 +113,6 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
                 "    Body Cache:         {} ({} files)",
                 format_size(stats.total_size as usize),
                 stats.file_count
-            );
-        }
-        if let Some(ref stats) = perf.traffic_store_stats {
-            println!(
-                "    Traffic Records:    {} records, {} processed",
-                stats.record_count, stats.total_records_processed
             );
         }
         if let Some(ref stats) = perf.frame_store_stats {

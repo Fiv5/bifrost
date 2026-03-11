@@ -19,7 +19,6 @@ mod static_files;
 pub mod status_printer;
 mod traffic;
 pub mod traffic_db;
-mod traffic_store;
 mod version_check;
 mod ws_payload_store;
 
@@ -59,9 +58,6 @@ pub use traffic::{
 pub use traffic_db::{
     start_db_cleanup_task, Direction, QueryParams, QueryResult, SharedTrafficDbStore,
     TrafficDbStats, TrafficDbStore, TrafficFlags, TrafficSummaryCompact,
-};
-pub use traffic_store::{
-    start_traffic_cleanup_task, SharedTrafficStore, TrafficStore, TrafficStoreStats,
 };
 pub use ws_payload_store::{
     start_ws_payload_cleanup_task, SharedWsPayloadStore, WsPayloadStore, WsPayloadStoreConfigUpdate,

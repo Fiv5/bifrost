@@ -39,8 +39,6 @@ async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
     let metrics = state.metrics_collector.get_current();
     let traffic_count = if let Some(ref db_store) = state.traffic_db_store {
         db_store.stats().record_count
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.total()
     } else {
         0
     };

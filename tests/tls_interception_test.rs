@@ -1,6 +1,6 @@
 mod common;
 
-use bifrost_admin::{AdminState, BodyRef, TrafficRecord, TrafficStore};
+use bifrost_admin::{AdminState, BodyRef, TrafficDbStore, TrafficRecord};
 use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
 use std::sync::Arc;
 
@@ -267,12 +267,13 @@ async fn test_traffic_record_binary_body_as_none() {
 }
 
 #[tokio::test]
-async fn test_admin_state_traffic_store_integration() {
-    let dir = temp_dir("admin-state-traffic-store");
+async fn test_admin_state_traffic_db_integration() {
+    let dir = temp_dir("admin-state-traffic-db");
     let traffic_dir = dir.join("traffic");
     std::fs::create_dir_all(&traffic_dir).unwrap();
-    let store = TrafficStore::new(traffic_dir, 1000, Some(24));
-    let admin_state = AdminState::new(8080).with_traffic_store(store);
+    let store =
+        TrafficDbStore::new(traffic_dir, 1000, 0, Some(24)).expect("create traffic db store");
+    let admin_state = AdminState::new(8080).with_traffic_db_store(store);
 
     let mut record1 = TrafficRecord::new(
         "admin-test-001".to_string(),
@@ -308,16 +309,16 @@ async fn test_admin_state_traffic_store_integration() {
     });
     admin_state.record_traffic(record2);
 
-    let traffic_store = admin_state.traffic_store.as_ref().unwrap();
-    assert_eq!(traffic_store.total(), 2);
+    let db_store = admin_state.traffic_db_store.as_ref().unwrap();
+    assert_eq!(db_store.stats().record_count, 2);
 
-    let record1_retrieved = traffic_store.get_by_id("admin-test-001").unwrap();
+    let record1_retrieved = db_store.get_by_id("admin-test-001").unwrap();
     assert_eq!(record1_retrieved.method, "GET");
     if let Some(BodyRef::Inline { data }) = &record1_retrieved.response_body_ref {
         assert!(data.contains("user1"));
     }
 
-    let record2_retrieved = traffic_store.get_by_id("admin-test-002").unwrap();
+    let record2_retrieved = db_store.get_by_id("admin-test-002").unwrap();
     assert_eq!(record2_retrieved.method, "POST");
     if let Some(BodyRef::Inline { data }) = &record2_retrieved.request_body_ref {
         assert!(data.contains("newuser"));

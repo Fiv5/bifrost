@@ -30,7 +30,9 @@ pub struct TrafficDbStore {
     retention_hours: AtomicU64,
     tx: broadcast::Sender<TrafficRecord>,
     current_sequence: AtomicU64,
-    recent_cache: RwLock<LruCache<String, TrafficRecord>>,
+    // 仅用于“活跃/未完成连接”的轻量缓存：支持 traffic 列表/推送所需字段。
+    // 详细信息（headers/body/script results 等）一律从 DB 按需读取，避免常驻内存膨胀。
+    recent_cache: RwLock<LruCache<String, TrafficSummaryCompact>>,
     write_count: AtomicU64,
     cleanup_notifier: RwLock<Option<CleanupNotifier>>,
 }
@@ -306,7 +308,10 @@ impl TrafficDbStore {
             tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
         } else if Self::should_keep_in_cache(&record) {
             let mut cache = self.recent_cache.write();
-            cache.put(record.id.clone(), record.clone());
+            cache.put(
+                record.id.clone(),
+                TrafficSummaryCompact::from_record(&record),
+            );
         }
 
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
@@ -319,37 +324,18 @@ impl TrafficDbStore {
     where
         F: FnOnce(&mut TrafficRecord),
     {
-        let mut updater = Some(updater);
-        {
-            let mut cache = self.recent_cache.write();
-            let updated = if let Some(record) = cache.get_mut(id) {
-                if let Some(updater) = updater.take() {
-                    updater(record);
-                }
-                Some(record.clone())
-            } else {
-                None
-            };
-            if let Some(updated) = updated {
-                if !Self::should_keep_in_cache(&updated) {
-                    cache.pop(id);
-                }
-                drop(cache);
-                self.persist_update(&updated);
-                let _ = self.tx.send(updated);
-                return true;
-            }
-        }
-
+        // 注意：recent_cache 只保存 summary，不保存完整 TrafficRecord。
+        // update 必须以 DB 为准，否则会出现“用精简结构覆盖写回导致字段丢失”的风险。
         if let Some(mut record) = self.get_by_id_from_db(id) {
-            if let Some(updater) = updater.take() {
-                updater(&mut record);
-            }
+            updater(&mut record);
             self.persist_update(&record);
             {
                 let mut cache = self.recent_cache.write();
                 if Self::should_keep_in_cache(&record) {
-                    cache.put(record.id.clone(), record.clone());
+                    cache.put(
+                        record.id.clone(),
+                        TrafficSummaryCompact::from_record(&record),
+                    );
                 } else {
                     cache.pop(&record.id);
                 }
@@ -752,12 +738,7 @@ impl TrafficDbStore {
     }
 
     pub fn get_by_id(&self, id: &str) -> Option<TrafficRecord> {
-        {
-            let mut cache = self.recent_cache.write();
-            if let Some(record) = cache.get(id) {
-                return Some(record.clone());
-            }
-        }
+        // 详情强制走 DB（避免把完整 record 常驻内存）
         self.get_by_id_from_db(id)
     }
 
@@ -975,10 +956,9 @@ impl TrafficDbStore {
         let mut cache = self.recent_cache.write();
         let preserved_ids: Vec<String> = cache
             .iter()
-            .filter(|(id, record)| {
+            .filter(|(id, summary)| {
                 active_ids_set.contains(id.as_str())
-                    || (record.is_websocket
-                        && record.socket_status.as_ref().is_some_and(|s| s.is_open))
+                    || (summary.is_websocket() && summary.ss.as_ref().is_some_and(|s| s.is_open))
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -1248,6 +1228,19 @@ impl TrafficDbStore {
 
     pub fn subscribe(&self) -> broadcast::Receiver<TrafficRecord> {
         self.tx.subscribe()
+    }
+
+    pub fn find_latest_client_path_by_app(&self, app_name: &str) -> Option<String> {
+        let conn = self.read_conn.lock();
+        conn.query_row(
+            "SELECT client_path FROM traffic_records WHERE client_app = ?1 AND client_path IS NOT NULL ORDER BY sequence DESC LIMIT 1",
+            [app_name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten()
     }
 
     pub fn set_max_records(&self, max: usize) {

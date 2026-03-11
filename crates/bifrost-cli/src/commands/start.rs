@@ -618,11 +618,8 @@ pub fn run_foreground(
             let (async_traffic_writer, async_traffic_rx) =
                 AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
             let async_traffic_writer = Arc::new(async_traffic_writer);
-            let _async_traffic_task = start_async_traffic_processor(
-                async_traffic_rx,
-                Some(traffic_db_store.clone()),
-                None,
-            );
+            let _async_traffic_task =
+                start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
 
             let frame_store = Arc::new(bifrost_admin::FrameStore::new(
                 bifrost_dir.clone(),
@@ -1053,8 +1050,7 @@ pub fn run_daemon(
                     let async_traffic_writer = Arc::new(async_traffic_writer);
                     let _async_traffic_task = start_async_traffic_processor(
                         async_traffic_rx,
-                        Some(traffic_db_store.clone()),
-                        None,
+                        traffic_db_store.clone(),
                     );
 
                     let frame_store = Arc::new(bifrost_admin::FrameStore::new(

@@ -315,41 +315,6 @@ impl PushManager {
         evicted_client_ids
     }
 
-    fn enrich_summary(&self, mut summary: TrafficSummary) -> TrafficSummary {
-        if summary.is_sse || summary.is_websocket || summary.is_tunnel {
-            if summary.is_sse {
-                if let Some(status) = self.state.sse_hub.get_socket_status(&summary.id) {
-                    summary.frame_count = status.frame_count;
-                    summary.socket_status = Some(status);
-                }
-            } else if let Some(status) = self
-                .state
-                .connection_monitor
-                .get_connection_status(&summary.id)
-            {
-                summary.frame_count = status.frame_count;
-                summary.socket_status = Some(status);
-            } else if let Some(ref fs) = self.state.frame_store {
-                if let Some(metadata) = fs.get_metadata(&summary.id) {
-                    summary.frame_count = metadata.frame_count as usize;
-                    summary.socket_status = Some(crate::traffic::SocketStatus {
-                        is_open: !metadata.is_closed,
-                        frame_count: metadata.frame_count as usize,
-                        ..Default::default()
-                    });
-                }
-            }
-
-            if summary.is_sse {
-                if let Some(ref socket_status) = summary.socket_status {
-                    let total = socket_status.send_bytes + socket_status.receive_bytes;
-                    summary.response_size = summary.response_size.max(total as usize);
-                }
-            }
-        }
-        summary
-    }
-
     fn enrich_compact_summary(&self, mut summary: TrafficSummaryCompact) -> TrafficSummaryCompact {
         if summary.is_sse() || summary.is_websocket() || summary.is_tunnel() {
             if summary.is_sse() {
@@ -386,11 +351,10 @@ impl PushManager {
     }
 
     pub async fn broadcast_traffic_updates(&self) {
-        if let Some(ref db_store) = self.state.traffic_db_store {
-            self.broadcast_traffic_delta(db_store).await;
+        let Some(ref db_store) = self.state.traffic_db_store else {
             return;
-        }
-        self.broadcast_traffic_updates_legacy().await;
+        };
+        self.broadcast_traffic_delta(db_store).await;
     }
 
     async fn broadcast_traffic_delta(&self, db_store: &crate::traffic_db::SharedTrafficDbStore) {
@@ -556,199 +520,17 @@ impl PushManager {
         }
     }
 
-    fn send_initial_traffic_legacy(
-        &self,
-        client: &Arc<PushClient>,
-        subscription: &ClientSubscription,
-    ) {
-        let Some(ref traffic_store) = self.state.traffic_store else {
-            return;
-        };
-
-        let (new_records, has_more) = traffic_store.get_after(
-            subscription.last_traffic_id.as_deref(),
-            &Default::default(),
-            500,
-        );
-
-        let new_records: Vec<_> = new_records
-            .into_iter()
-            .map(|s| self.enrich_summary(s))
-            .collect();
-
-        let updated_records = if !subscription.pending_ids.is_empty() {
-            let ids: Vec<&str> = subscription
-                .pending_ids
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
-            let summaries = traffic_store.get_by_ids(&ids);
-            summaries
-                .into_iter()
-                .map(|s| self.enrich_summary(s))
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let server_total = traffic_store.total();
-
-        if !new_records.is_empty() || !updated_records.is_empty() {
-            let last_id = new_records.last().map(|r| r.id.clone());
-
-            let mut new_pending_ids: HashSet<String> =
-                subscription.pending_ids.iter().cloned().collect();
-
-            for record in &updated_records {
-                let is_pending = record.status == 0
-                    || ((record.is_websocket || record.is_sse || record.is_tunnel)
-                        && record
-                            .socket_status
-                            .as_ref()
-                            .map(|s| s.is_open)
-                            .unwrap_or(false));
-                if !is_pending {
-                    new_pending_ids.remove(&record.id);
-                }
-            }
-
-            for record in &new_records {
-                let is_pending = record.status == 0
-                    || ((record.is_websocket || record.is_sse || record.is_tunnel)
-                        && record
-                            .socket_status
-                            .as_ref()
-                            .map(|s| s.is_open)
-                            .unwrap_or(false));
-                if is_pending {
-                    new_pending_ids.insert(record.id.clone());
-                }
-            }
-
-            let msg = PushMessage::TrafficUpdates(TrafficUpdatesData {
-                new_records,
-                updated_records,
-                has_more,
-                server_total,
-            });
-
-            if client.send(msg) {
-                let mut sub = client.subscription.write();
-                if let Some(id) = last_id {
-                    sub.last_traffic_id = Some(id);
-                }
-                sub.pending_ids = new_pending_ids.into_iter().collect();
-            }
-        }
-    }
-
-    async fn broadcast_traffic_updates_legacy(&self) {
-        let mut clients_to_remove = Vec::new();
-
-        for client_ref in self.clients.iter() {
-            let client = client_ref.value();
-            let subscription = client.get_subscription();
-
-            let Some(ref traffic_store) = self.state.traffic_store else {
-                continue;
-            };
-
-            let (new_records, has_more) = traffic_store.get_after(
-                subscription.last_traffic_id.as_deref(),
-                &Default::default(),
-                500,
-            );
-
-            let new_records: Vec<_> = new_records
-                .into_iter()
-                .map(|s| self.enrich_summary(s))
-                .collect();
-
-            let updated_records = if !subscription.pending_ids.is_empty() {
-                let ids: Vec<&str> = subscription
-                    .pending_ids
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect();
-                let summaries = traffic_store.get_by_ids(&ids);
-                summaries
-                    .into_iter()
-                    .map(|s| self.enrich_summary(s))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-            let server_total = traffic_store.total();
-
-            if !new_records.is_empty() || !updated_records.is_empty() {
-                let last_id = new_records.last().map(|r| r.id.clone());
-
-                let mut new_pending_ids: HashSet<String> =
-                    subscription.pending_ids.iter().cloned().collect();
-
-                for record in &updated_records {
-                    let is_pending = record.status == 0
-                        || ((record.is_websocket || record.is_sse || record.is_tunnel)
-                            && record
-                                .socket_status
-                                .as_ref()
-                                .map(|s| s.is_open)
-                                .unwrap_or(false));
-                    if !is_pending {
-                        new_pending_ids.remove(&record.id);
-                    }
-                }
-
-                for record in &new_records {
-                    let is_pending = record.status == 0
-                        || ((record.is_websocket || record.is_sse || record.is_tunnel)
-                            && record
-                                .socket_status
-                                .as_ref()
-                                .map(|s| s.is_open)
-                                .unwrap_or(false));
-                    if is_pending {
-                        new_pending_ids.insert(record.id.clone());
-                    }
-                }
-
-                let msg = PushMessage::TrafficUpdates(TrafficUpdatesData {
-                    new_records,
-                    updated_records,
-                    has_more,
-                    server_total,
-                });
-
-                if !client.send(msg) {
-                    clients_to_remove.push(client.id);
-                } else {
-                    let mut sub = client.subscription.write();
-                    if let Some(id) = last_id {
-                        sub.last_traffic_id = Some(id);
-                    }
-                    sub.pending_ids = new_pending_ids.into_iter().collect();
-                }
-            }
-        }
-
-        for client_id in clients_to_remove {
-            self.unregister_client(client_id);
-        }
-    }
-
     pub async fn broadcast_overview(&self) {
         let mut clients_to_remove = Vec::new();
 
         let system_info = crate::metrics::SystemInfo::new(self.state.start_time);
         let metrics = self.state.metrics_collector.get_current();
-        let traffic_count = if let Some(ref db_store) = self.state.traffic_db_store {
-            db_store.stats().record_count
-        } else if let Some(ref traffic_store) = self.state.traffic_store {
-            traffic_store.total()
-        } else {
-            0
-        };
+        let traffic_count = self
+            .state
+            .traffic_db_store
+            .as_ref()
+            .map(|db| db.stats().record_count)
+            .unwrap_or(0);
 
         let (rules_total, rules_enabled) = match self.state.rules_storage.load_all() {
             Ok(rules) => {
@@ -873,20 +655,17 @@ impl PushManager {
 
         if let Some(ref db_store) = self.state.traffic_db_store {
             self.send_initial_traffic_delta(client, db_store, &subscription);
-        } else {
-            self.send_initial_traffic_legacy(client, &subscription);
         }
 
         if subscription.need_overview {
             let system_info = crate::metrics::SystemInfo::new(self.state.start_time);
             let metrics = self.state.metrics_collector.get_current();
-            let traffic_count = if let Some(ref db_store) = self.state.traffic_db_store {
-                db_store.stats().record_count
-            } else if let Some(ref traffic_store) = self.state.traffic_store {
-                traffic_store.total()
-            } else {
-                0
-            };
+            let traffic_count = self
+                .state
+                .traffic_db_store
+                .as_ref()
+                .map(|db| db.stats().record_count)
+                .unwrap_or(0);
 
             let (rules_total, rules_enabled) = match self.state.rules_storage.load_all() {
                 Ok(rules) => {

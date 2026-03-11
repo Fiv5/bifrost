@@ -688,13 +688,8 @@ async fn handle_export_network(
     for id in &request.record_ids {
         let traffic = if let Some(ref db_store) = state.traffic_db_store {
             db_store.get_by_id(id)
-        } else if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.get_by_id(id)
         } else {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Traffic store not configured",
-            );
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "Traffic DB not configured");
         };
 
         if let Some(traffic) = traffic {

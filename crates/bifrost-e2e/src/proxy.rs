@@ -1,7 +1,7 @@
 use bifrost_admin::{
     start_async_traffic_processor, start_connection_cleanup_task, start_frame_cleanup_task,
-    start_traffic_cleanup_task, start_ws_payload_cleanup_task, AdminState, AsyncTrafficWriter,
-    BodyStore, ConnectionRegistry, RuntimeConfig, WsPayloadStore,
+    start_ws_payload_cleanup_task, AdminState, AsyncTrafficWriter, BodyStore, ConnectionRegistry,
+    RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
@@ -874,26 +874,24 @@ impl ProxyInstance {
         start_ws_payload_cleanup_task(ws_payload_store.clone());
 
         let traffic_dir = temp_dir.join("traffic");
-        let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
-            traffic_dir,
-            1000,
-            Some(24),
-        ));
-        start_traffic_cleanup_task(traffic_store.clone());
+        let traffic_db_store = Arc::new(
+            bifrost_admin::TrafficDbStore::new(traffic_dir, 1000, 0, Some(24))
+                .expect("failed to create traffic db store"),
+        );
 
         let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir, Some(24)));
         start_frame_cleanup_task(frame_store.clone());
 
         let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
         let _async_traffic_task =
-            start_async_traffic_processor(async_traffic_rx, None, Some(traffic_store.clone()));
+            start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
 
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
-            .with_traffic_store_shared(traffic_store)
+            .with_traffic_db_store_shared(traffic_db_store)
             .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store_shared(frame_store);
         start_connection_cleanup_task(admin_state.connection_monitor.clone());

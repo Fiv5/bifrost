@@ -4,7 +4,6 @@ import {
   FolderOutlined,
   DeleteOutlined,
   FileOutlined,
-  DatabaseOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
 import type { PerformanceConfig, TrafficConfig } from "../../../api/config";
@@ -262,7 +261,6 @@ export default function PerformanceTab({
               </Row>
 
               {(performanceConfig?.body_store_stats ||
-                performanceConfig?.traffic_store_stats ||
                 performanceConfig?.frame_store_stats ||
                 performanceConfig?.ws_payload_store_stats) && (
                 <>
@@ -324,27 +322,6 @@ export default function PerformanceTab({
                       <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
-                            Traffic Records
-                          </Text>
-                          <Space>
-                            <DatabaseOutlined />
-                            <Text>
-                              {performanceConfig.traffic_store_stats
-                                ?.record_count ?? 0}{" "}
-                              records
-                            </Text>
-                          </Space>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            {formatBytes(
-                              performanceConfig.traffic_store_stats?.file_size ??
-                                0,
-                            )}
-                          </Text>
-                        </Space>
-                      </Col>
-                      <Col xs={6}>
-                        <Space direction="vertical" size={0}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
                             WebSocket Frames
                           </Text>
                           <Space>
@@ -394,8 +371,6 @@ export default function PerformanceTab({
                             {formatBytes(
                               (performanceConfig.body_store_stats?.total_size ??
                                 0) +
-                                (performanceConfig.traffic_store_stats
-                                  ?.file_size ?? 0) +
                                 (performanceConfig.frame_store_stats
                                   ?.total_size ?? 0) +
                                 (performanceConfig.ws_payload_store_stats

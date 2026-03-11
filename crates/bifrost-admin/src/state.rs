@@ -19,7 +19,6 @@ use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
 use crate::sse::SseHub;
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
-use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
 use crate::ws_payload_store::{SharedWsPayloadStore, WsPayloadStore};
 use once_cell::sync::OnceCell;
@@ -71,7 +70,6 @@ impl RuntimeConfig {
 }
 
 pub struct AdminState {
-    pub traffic_store: Option<SharedTrafficStore>,
     pub traffic_db_store: Option<SharedTrafficDbStore>,
     pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
     pub metrics_collector: SharedMetricsCollector,
@@ -106,7 +104,6 @@ const DEFAULT_MAX_BODY_PROBE_SIZE: usize = 64 * 1024;
 impl AdminState {
     pub fn new(port: u16) -> Self {
         Self {
-            traffic_store: None,
             traffic_db_store: None,
             async_traffic_writer: None,
             metrics_collector: Arc::new(MetricsCollector::default()),
@@ -173,12 +170,7 @@ impl AdminState {
         } else if let Some(ref db_store) = self.traffic_db_store {
             db_store.record(record);
         } else {
-            if let Some(ref traffic_store) = self.traffic_store {
-                traffic_store.record(record.clone());
-                self.maybe_cleanup_total_disk_usage();
-                return;
-            }
-            tracing::error!("[ADMIN_STATE] No traffic store configured; drop record");
+            tracing::error!("[ADMIN_STATE] No traffic_db_store configured; drop record");
         }
         self.maybe_cleanup_total_disk_usage();
     }
@@ -193,11 +185,7 @@ impl AdminState {
         } else if let Some(ref db_store) = self.traffic_db_store {
             db_store.update_by_id(id, updater);
         } else {
-            if let Some(ref traffic_store) = self.traffic_store {
-                traffic_store.update_by_id(id, updater.clone());
-                return;
-            }
-            tracing::error!("[ADMIN_STATE] No traffic store configured; drop update");
+            tracing::error!("[ADMIN_STATE] No traffic_db_store configured; drop update");
         }
     }
 
@@ -341,16 +329,6 @@ impl AdminState {
 
     pub fn with_values_storage(mut self, storage: ValuesStorage) -> Self {
         self.values_storage = Some(Arc::new(ParkingRwLock::new(storage)));
-        self
-    }
-
-    pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
-        self.traffic_store = Some(Arc::new(store));
-        self
-    }
-
-    pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
-        self.traffic_store = Some(store);
         self
     }
 
