@@ -37,14 +37,17 @@ import { getProxyAddressInfo, type ProxyAddressInfo } from "../../api/proxy";
 import {
   getTlsConfig,
   updateTlsConfig,
+  getProxySettings,
   getPerformanceConfig,
   updatePerformanceConfig,
   clearBodyCache,
   type TlsConfig,
+  type ProxySettings,
   type PerformanceConfig,
   type TrafficConfig,
   type UpdateTrafficConfigRequest,
 } from "../../api/config";
+import { isConnectionIssueError } from "../../api/client";
 import {
   getCertInfo,
   getCertDownloadUrl,
@@ -60,6 +63,14 @@ import CertificateTab from "./tabs/CertificateTab";
 import MetricsTab from "./tabs/MetricsTab";
 import AccessControlTab from "./tabs/AccessControlTab";
 import PerformanceTab from "./tabs/PerformanceTab";
+import { updateDesktopProxyPort } from "../../desktop/tauri";
+import {
+  getDesktopPlatform,
+  isDesktopShell,
+  setDesktopProxyPort,
+} from "../../runtime";
+import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
+import pushService from "../../services/pushService";
 
 const { Text } = Typography;
 
@@ -124,27 +135,61 @@ export default function Settings() {
   const [proxyAddressInfo, setProxyAddressInfo] =
     useState<ProxyAddressInfo | null>(null);
   const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
+  const [proxySettings, setProxySettings] = useState<ProxySettings | null>(null);
+  const [desktopPortDraft, setDesktopPortDraft] = useState(9900);
+  const [desktopPortSaving, setDesktopPortSaving] = useState(false);
+  const beginDesktopCoreRestart = useDesktopCoreStore(
+    (state) => state.beginRestart,
+  );
+  const setDesktopCorePhase = useDesktopCoreStore((state) => state.setPhase);
+  const failDesktopCoreRestart = useDesktopCoreStore(
+    (state) => state.failRestart,
+  );
+  const hideDesktopCoreRestart = useDesktopCoreStore((state) => state.hide);
+  const desktopCoreVisible = useDesktopCoreStore((state) => state.visible);
+  const desktopCorePhase = useDesktopCoreStore((state) => state.phase);
+  const suppressRestartErrors =
+    isDesktopShell() &&
+    desktopCoreVisible &&
+    desktopCorePhase !== "idle" &&
+    desktopCorePhase !== "error";
 
   const fetchTlsConfig = useCallback(async () => {
     setTlsLoading(true);
     try {
       const config = await getTlsConfig();
       setTlsConfig(config);
-    } catch {
-      console.error("Failed to fetch TLS config");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch TLS config");
+      }
     } finally {
       setTlsLoading(false);
     }
-  }, []);
+  }, [suppressRestartErrors]);
+
+  const fetchProxySettings = useCallback(async () => {
+    try {
+      const settings = await getProxySettings();
+      setProxySettings(settings);
+      setDesktopPortDraft(settings.port);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch proxy settings");
+      }
+    }
+  }, [suppressRestartErrors]);
 
   const fetchCertInfo = useCallback(async () => {
     try {
       const info = await getCertInfo();
       setCertInfo(info);
-    } catch {
-      console.error("Failed to fetch cert info");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch cert info");
+      }
     }
-  }, []);
+  }, [suppressRestartErrors]);
 
   const fetchPerformanceConfig = useCallback(async () => {
     setPerfLoading(true);
@@ -152,36 +197,42 @@ export default function Settings() {
       const config = await getPerformanceConfig();
       setPerformanceConfig(config);
       setPerfDraft(config.traffic);
-    } catch {
-      console.error("Failed to fetch performance config");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch performance config");
+      }
     } finally {
       setPerfLoading(false);
     }
-  }, []);
+  }, [suppressRestartErrors]);
 
   const fetchAppMetricsData = useCallback(async () => {
     setAppMetricsLoading(true);
     try {
       const metrics = await getAppMetrics();
       setAppMetrics(metrics);
-    } catch {
-      console.error("Failed to fetch app metrics");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch app metrics");
+      }
     } finally {
       setAppMetricsLoading(false);
     }
-  }, []);
+  }, [suppressRestartErrors]);
 
   const fetchHostMetricsData = useCallback(async () => {
     setHostMetricsLoading(true);
     try {
       const metrics = await getHostMetrics();
       setHostMetrics(metrics);
-    } catch {
-      console.error("Failed to fetch host metrics");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch host metrics");
+      }
     } finally {
       setHostMetricsLoading(false);
     }
-  }, []);
+  }, [suppressRestartErrors]);
 
   const fetchProxyAddressInfo = useCallback(async () => {
     try {
@@ -190,10 +241,12 @@ export default function Settings() {
       if (info.addresses.length > 0 && !selectedProxyIp) {
         setSelectedProxyIp(info.addresses[0].ip);
       }
-    } catch {
-      console.error("Failed to fetch proxy address info");
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch proxy address info");
+      }
     }
-  }, [selectedProxyIp]);
+  }, [selectedProxyIp, suppressRestartErrors]);
 
   const handleSystemProxyToggle = async (enabled: boolean) => {
     const success = await toggleSystemProxy(enabled);
@@ -554,11 +607,13 @@ export default function Settings() {
   };
 
   useEffect(() => {
+    fetchProxySettings();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchProxyAddressInfo();
   }, [
+    fetchProxySettings,
     fetchTlsConfig,
     fetchCertInfo,
     fetchPerformanceConfig,
@@ -621,18 +676,81 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     message.success("Proxy config copied to clipboard");
   };
 
+  const handleDesktopProxyPortApply = useCallback(async () => {
+    if (!isDesktopShell()) {
+      return;
+    }
+
+    if (
+      !Number.isInteger(desktopPortDraft) ||
+      desktopPortDraft <= 0 ||
+      desktopPortDraft > 65535
+    ) {
+      message.error("Port must be between 1 and 65535");
+      return;
+    }
+
+    if (desktopPortDraft === proxySettings?.port) {
+      message.info("Proxy port is unchanged");
+      return;
+    }
+
+    setDesktopPortSaving(true);
+    try {
+      beginDesktopCoreRestart(desktopPortDraft);
+      setDesktopCorePhase("restarting", "Stopping the current proxy core and starting the new port.");
+      const runtime = await updateDesktopProxyPort(desktopPortDraft);
+      setDesktopProxyPort(runtime.proxyPort);
+      setDesktopCorePhase("reconnecting", "Refreshing proxy state and reconnecting live data streams.");
+      const subscription = pushService.getSubscription();
+      pushService.disconnect();
+      pushService.connect(subscription);
+      await Promise.all([
+        fetchProxySettings(),
+        fetchProxyAddressInfo(),
+        fetchOverview(),
+        useProxyStore.getState().fetchSystemProxy(),
+        useProxyStore.getState().fetchCliProxy(),
+      ]);
+      message.success(`Proxy core restarted on port ${runtime.proxyPort}`);
+      window.setTimeout(() => {
+        hideDesktopCoreRestart();
+      }, 600);
+    } catch (error) {
+      const text =
+        error instanceof Error ? error.message : "Failed to restart proxy core";
+      failDesktopCoreRestart(text);
+      message.error(text);
+      await fetchProxySettings();
+    } finally {
+      setDesktopPortSaving(false);
+    }
+  }, [
+    beginDesktopCoreRestart,
+    desktopPortDraft,
+    failDesktopCoreRestart,
+    fetchOverview,
+    fetchProxyAddressInfo,
+    fetchProxySettings,
+    hideDesktopCoreRestart,
+    proxySettings?.port,
+    setDesktopCorePhase,
+  ]);
+
   const appSuggestions = useMemo(
     () => appMetrics.map((m) => m.app_name).filter((n) => n !== "Unknown"),
     [appMetrics],
   );
 
-  if (loading && !overview) {
+  const shouldDeferToDesktopOverlay = !overview;
+
+  if (loading && !overview && !suppressRestartErrors) {
     return (
       <Spin size="large" style={{ display: "block", margin: "100px auto" }} />
     );
   }
 
-  if (error) {
+  if (error && !suppressRestartErrors && !shouldDeferToDesktopOverlay) {
     return (
       <Alert
         type="error"
@@ -695,8 +813,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
   const pendingCount = overview?.pending_authorizations || 0;
   const trafficDraft = perfDraft ?? performanceConfig?.traffic;
 
-  const maxRecordsMin = 3000;
-  const maxRecordsMax = 50000;
+  const maxRecordsMin = 1000;
+  const maxRecordsMax = 100000;
   const maxRecordsStep = 100;
   const maxRecordsMarks = buildSliderMarks(
     maxRecordsMin,
@@ -745,10 +863,18 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         </span>
       ),
       children: (
-        <ProxyTab
-          systemProxy={systemProxy}
-          cliProxy={cliProxy}
-          systemProxyLoading={systemProxyLoading}
+              <ProxyTab
+                desktopMode={isDesktopShell()}
+                desktopPlatform={getDesktopPlatform()}
+                proxySettings={proxySettings}
+                desktopPortDraft={desktopPortDraft}
+                desktopPortSaving={desktopPortSaving}
+                desktopProxyPort={proxySettings?.port ?? null}
+                setDesktopPortDraft={setDesktopPortDraft}
+                onApplyDesktopProxyPort={handleDesktopProxyPortApply}
+                systemProxy={systemProxy}
+                cliProxy={cliProxy}
+                systemProxyLoading={systemProxyLoading}
           onToggleSystemProxy={handleSystemProxyToggle}
           copyProxyConfig={copyProxyConfig}
           overview={overview}
@@ -876,7 +1002,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
   return (
     <div
       style={{
-        padding: 16,
+        padding: "0 16px 16px",
         height: "100%",
         minHeight: 0,
         display: "flex",

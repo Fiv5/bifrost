@@ -124,6 +124,16 @@ jobs:
             fi
           done
 
+          sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" desktop/src-tauri/Cargo.toml
+
+          VERSION="${VERSION}" node <<'EOF'
+          const fs = require('fs');
+          const path = 'desktop/src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.version = process.env.VERSION;
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          EOF
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
@@ -262,9 +272,99 @@ jobs:
             dist/${{ env.ASSET }}
             dist/${{ env.ASSET }}.sha256
 
+  build-desktop:
+    name: Build Desktop (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/pnpm-lock.yaml
+
+      - name: Install root dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+
+      - name: Sync desktop version metadata
+        env:
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          VERSION="${BIFROST_VERSION}" node <<'EOF'
+          const fs = require('fs');
+          const path = 'desktop/src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.version = process.env.VERSION;
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          EOF
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.target }}
+
+      - name: Build desktop bundle
+        env:
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
+        run: pnpm run desktop:build
+
+      - name: Package desktop artifact
+        shell: bash
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          TARGET="${{ matrix.target }}"
+          mkdir -p dist
+          DMG_PATH=$(find desktop/src-tauri/target/release/bundle -type f -name "*.dmg" | head -n 1)
+          if [[ -z "${DMG_PATH}" ]]; then
+            echo "Desktop DMG not found"
+            exit 1
+          fi
+          ASSET_NAME="bifrost-desktop-v${VERSION}-${TARGET}.dmg"
+          cp "${DMG_PATH}" "dist/${ASSET_NAME}"
+          echo "ASSET=${ASSET_NAME}" >> $GITHUB_ENV
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 "${{ env.ASSET }}" > "${{ env.ASSET }}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: |
+            dist/${{ env.ASSET }}
+            dist/${{ env.ASSET }}.sha256
+
   release:
     name: Create Release
-    needs: [prepare, build-cli]
+    needs: [prepare, build-cli, build-desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -363,8 +463,15 @@ jobs:
             brew install bifrost
             ```
 
+            ### Desktop App (macOS via Homebrew Cask)
+            ```bash
+            brew tap bifrost-proxy/bifrost
+            brew install --cask bifrost-desktop
+            ```
+
             ### Manual Download
 
+            CLI:
             | Platform | Architecture | Download |
             |----------|--------------|----------|
             | Linux | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz` |
@@ -375,6 +482,12 @@ jobs:
             | Windows | x64 | `bifrost-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.zip` |
             | Windows | ARM64 | `bifrost-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.zip` |
 
+            Desktop:
+            | Platform | Architecture | Download |
+            |----------|--------------|----------|
+            | macOS | Intel | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.dmg` |
+            | macOS | Apple Silicon | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.dmg` |
+
           files: |
             release/*
         env:
@@ -382,7 +495,7 @@ jobs:
 
   update-homebrew:
     name: Update Homebrew Formula
-    needs: [prepare, release]
+    needs: [prepare, release, build-desktop]
     runs-on: ubuntu-latest
     env:
       MAX_VERSIONED_FORMULAS: 5
@@ -401,9 +514,13 @@ jobs:
 
           INTEL_SHA=$(grep "x86_64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
           ARM_SHA=$(grep "aarch64-apple-darwin.tar.gz" checksums.txt | awk '{print $1}')
+          DESKTOP_INTEL_SHA=$(grep "bifrost-desktop-${TAG}-x86_64-apple-darwin.dmg" checksums.txt | awk '{print $1}')
+          DESKTOP_ARM_SHA=$(grep "bifrost-desktop-${TAG}-aarch64-apple-darwin.dmg" checksums.txt | awk '{print $1}')
 
           echo "INTEL_SHA=${INTEL_SHA}" >> $GITHUB_ENV
           echo "ARM_SHA=${ARM_SHA}" >> $GITHUB_ENV
+          echo "DESKTOP_INTEL_SHA=${DESKTOP_INTEL_SHA}" >> $GITHUB_ENV
+          echo "DESKTOP_ARM_SHA=${DESKTOP_ARM_SHA}" >> $GITHUB_ENV
 
       - name: Generate formula content
         id: formula
@@ -466,6 +583,22 @@ jobs:
 
           generate_formula "Bifrost" "${VERSION}" "${INTEL_SHA}" "${ARM_SHA}" > homebrew-bifrost/Formula/bifrost.rb
 
+          mkdir -p homebrew-bifrost/Casks
+          cat > homebrew-bifrost/Casks/bifrost-desktop.rb << CASK
+          cask "bifrost-desktop" do
+            arch arm: "aarch64-apple-darwin", intel: "x86_64-apple-darwin"
+            version "${VERSION}"
+            sha256 arm: "${DESKTOP_ARM_SHA}", intel: "${DESKTOP_INTEL_SHA}"
+
+            url "https://github.com/bifrost-proxy/bifrost/releases/download/v#{version}/bifrost-desktop-v#{version}-#{arch}.dmg"
+            name "Bifrost"
+            desc "Desktop client for the Bifrost proxy"
+            homepage "https://github.com/bifrost-proxy/bifrost"
+
+            app "Bifrost.app"
+          end
+          CASK
+
           if [[ "${IS_PRERELEASE}" != "true" ]]; then
             BASE_VERSION="${VERSION%%-*}"
             VERSIONED_CLASS_NAME="BifrostAT${BASE_VERSION//\./_}"
@@ -496,7 +629,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A Formula/
+          git add -A Formula/ Casks/
 
           if [[ "${IS_PRERELEASE}" == "true" ]]; then
             COMMIT_MSG="Update bifrost to v${VERSION} (pre-release)"

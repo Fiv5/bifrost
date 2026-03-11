@@ -23,6 +23,8 @@ import * as trafficApi from '../api/traffic';
 import { pushService } from '../services/pushService';
 import { apiFetch } from '../api/apiFetch';
 import { getClientId } from '../services/clientId';
+import { buildApiUrl, buildWsUrl } from '../runtime';
+import { isConnectionIssueError, notifyApiBusinessError } from '../api/client';
 
 import type { RequestType } from '../types';
 
@@ -171,6 +173,14 @@ function createEmptyRequest(requestType: RequestType = 'http'): ReplayRequest {
     created_at: now,
     updated_at: now,
   };
+}
+
+function handleReplayLoadError(error: unknown, fallback: string) {
+  if (isConnectionIssueError(error)) {
+    return;
+  }
+
+  notifyApiBusinessError(error, fallback);
 }
 
 export const useReplayStore = create<ReplayState>()(
@@ -507,7 +517,7 @@ export const useReplayStore = create<ReplayState>()(
             requestsTotal: response.total,
           });
         } catch (e) {
-          message.error(`Failed to load requests: ${e}`);
+          handleReplayLoadError(e, 'Failed to load requests');
         } finally {
           set({ loading: false });
         }
@@ -524,7 +534,7 @@ export const useReplayStore = create<ReplayState>()(
             historyTotal: response.total,
           });
         } catch (e) {
-          message.error(`Failed to load history: ${e}`);
+          handleReplayLoadError(e, 'Failed to load history');
         }
       },
 
@@ -537,7 +547,7 @@ export const useReplayStore = create<ReplayState>()(
             allHistoryTotal: response.total,
           });
         } catch (e) {
-          message.error(`Failed to load history: ${e}`);
+          handleReplayLoadError(e, 'Failed to load history');
         } finally {
           set({ loading: false });
         }
@@ -548,7 +558,7 @@ export const useReplayStore = create<ReplayState>()(
           const groups = await replayApi.listGroups();
           set({ groups });
         } catch (e) {
-          message.error(`Failed to load groups: ${e}`);
+          handleReplayLoadError(e, 'Failed to load groups');
         }
       },
 
@@ -705,7 +715,7 @@ export const useReplayStore = create<ReplayState>()(
             await loadRecentHistory(fullRequest.id);
           }
         } catch (e) {
-          message.error(`Failed to load request: ${e}`);
+          handleReplayLoadError(e, 'Failed to load request');
         } finally {
           set({ loading: false });
         }
@@ -729,7 +739,7 @@ export const useReplayStore = create<ReplayState>()(
             });
           }
         } catch (e) {
-          message.error(`Failed to load history detail: ${e}`);
+          handleReplayLoadError(e, 'Failed to load history detail');
         }
       },
 
@@ -768,7 +778,7 @@ export const useReplayStore = create<ReplayState>()(
             });
           }
         } catch (e) {
-          message.error(`Failed to load history detail: ${e}`);
+          handleReplayLoadError(e, 'Failed to load history detail');
         } finally {
           set({ historyDetailLoading: false });
         }
@@ -911,7 +921,7 @@ export const useReplayStore = create<ReplayState>()(
           wsUrl = `ws://${wsUrl}`;
         }
 
-        const proxyUrl = new URL('/_bifrost/api/replay/execute/ws', window.location.origin);
+        const proxyUrl = new URL(buildApiUrl('/replay/execute/ws'));
         proxyUrl.searchParams.set('url', wsUrl);
         proxyUrl.searchParams.set('x_client_id', getClientId());
         if (currentRequest.is_saved) {
@@ -920,7 +930,10 @@ export const useReplayStore = create<ReplayState>()(
         proxyUrl.searchParams.set('rule_config', JSON.stringify(ruleConfig));
 
         // 替换为 WebSocket 协议
-        const wsProxyUrl = proxyUrl.toString().replace('http://', 'ws://').replace('https://', 'wss://');
+        const wsProxyUrl = buildWsUrl(
+          '/api/replay/execute/ws',
+          proxyUrl.searchParams,
+        );
 
         const connectionId = `ws-${Date.now()}`;
         const connection: StreamingConnection = {

@@ -726,7 +726,8 @@ async fn query_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respo
 
     if let Some(ref db_store) = state.traffic_db_store {
         let db_store = db_store.clone();
-        let query_result = tokio::task::spawn_blocking(move || db_store.query(&params)).await;
+        let query_result =
+            tokio::task::spawn_blocking(move || db_store.query_with_exact_total(&params)).await;
 
         let mut result = match query_result {
             Ok(r) => r,
@@ -755,8 +756,16 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
 
     if let Some(ref db_store) = state.traffic_db_store {
         let params = parse_query_params_from_query_string(query);
+        let needs_exact_total = params.has_filters();
         let db_store = db_store.clone();
-        let query_result = tokio::task::spawn_blocking(move || db_store.query(&params)).await;
+        let query_result = tokio::task::spawn_blocking(move || {
+            if needs_exact_total {
+                db_store.query_with_exact_total(&params)
+            } else {
+                db_store.query(&params)
+            }
+        })
+        .await;
 
         let mut result = match query_result {
             Ok(r) => r,

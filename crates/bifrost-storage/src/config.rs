@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::DEFAULT_TRAFFIC_MAX_RECORDS;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct LegacyAccessConfig {
@@ -44,7 +46,7 @@ pub(crate) struct LegacyTrafficConfig {
 impl Default for LegacyTrafficConfig {
     fn default() -> Self {
         Self {
-            max_records: 5000,
+            max_records: DEFAULT_TRAFFIC_MAX_RECORDS,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
             temp_dir: crate::data_dir().join("traffic"),

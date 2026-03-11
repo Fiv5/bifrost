@@ -6,6 +6,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use bifrost_core::{BifrostError, Result};
+use bifrost_storage::{
+    DEFAULT_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS,
+};
 
 use crate::cli::ConfigCommands;
 use client::{
@@ -322,6 +325,12 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
             let max = value
                 .parse::<usize>()
                 .map_err(|e| BifrostError::Config(e.to_string()))?;
+            if !(MIN_TRAFFIC_MAX_RECORDS..=MAX_TRAFFIC_MAX_RECORDS).contains(&max) {
+                return Err(BifrostError::Config(format!(
+                    "traffic.max-records must be between {} and {}",
+                    MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS
+                )));
+            }
             let req = UpdatePerformanceConfigRequest {
                 max_records: Some(max),
                 ..Default::default()
@@ -604,7 +613,7 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
             .map_err(BifrostError::Config)?;
 
         let perf_req = UpdatePerformanceConfigRequest {
-            max_records: Some(5000),
+            max_records: Some(DEFAULT_TRAFFIC_MAX_RECORDS),
             max_db_size_bytes: Some(2 * 1024 * 1024 * 1024),
             max_body_memory_size: Some(512 * 1024),
             max_body_buffer_size: Some(10 * 1024 * 1024),
@@ -718,13 +727,16 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
         }
         ConfigKey::TrafficMaxRecords => {
             let req = UpdatePerformanceConfigRequest {
-                max_records: Some(5000),
+                max_records: Some(DEFAULT_TRAFFIC_MAX_RECORDS),
                 ..Default::default()
             };
             client
                 .update_performance_config(&req)
                 .map_err(BifrostError::Config)?;
-            println!("✓ traffic.max-records reset to 5000");
+            println!(
+                "✓ traffic.max-records reset to {}",
+                DEFAULT_TRAFFIC_MAX_RECORDS
+            );
         }
         ConfigKey::TrafficMaxDbSize => {
             let req = UpdatePerformanceConfigRequest {

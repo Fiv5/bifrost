@@ -6,6 +6,11 @@ import type {
   MetricsSnapshot,
 } from '../types';
 import { getClientId } from './clientId';
+import { buildWsUrl } from '../runtime';
+import {
+  isDesktopCoreTransitionActive,
+  useDesktopCoreStore,
+} from '../stores/useDesktopCoreStore';
 
 export interface TrafficUpdatesData {
   new_records: TrafficSummary[];
@@ -163,17 +168,27 @@ class PushService {
     this.createConnection();
   }
 
+  private handleConnectionIssue(detail = 'Bifrost core is starting. Reconnecting the interface...'): void {
+    useDesktopCoreStore.getState().showBooting(detail);
+  }
+
+  private shouldSuppressConnectionLogs(): boolean {
+    const state = useDesktopCoreStore.getState();
+    return isDesktopCoreTransitionActive() || !state.readyOnce;
+  }
+
   private createConnection(): void {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
     const params = this.buildQueryParams();
-    const url = `${protocol}//${host}/_bifrost/api/push${params ? `?${params}` : ''}`;
+    const url = buildWsUrl('/api/push', params ? new URLSearchParams(params) : undefined);
 
     try {
       this.ws = new WebSocket(url);
       this.setupEventHandlers();
     } catch (error) {
-      console.error('[PushService] Failed to create WebSocket:', error);
+      this.handleConnectionIssue();
+      if (!this.shouldSuppressConnectionLogs()) {
+        console.error('[PushService] Failed to create WebSocket:', error);
+      }
       this.scheduleReconnect();
     }
   }
@@ -220,10 +235,16 @@ class PushService {
     this.ws.onopen = () => {
       console.log('[PushService] Connected');
       this.reconnectAttempts = 0;
+      useDesktopCoreStore.getState().markReady();
     };
 
     this.ws.onclose = (event) => {
-      console.log('[PushService] Disconnected:', event.code, event.reason);
+      if (!this.isManualClose) {
+        this.handleConnectionIssue();
+      }
+      if (!this.shouldSuppressConnectionLogs()) {
+        console.log('[PushService] Disconnected:', event.code, event.reason);
+      }
       this.notifyConnectionHandlers(false);
       if (!this.isManualClose) {
         this.scheduleReconnect();
@@ -231,7 +252,10 @@ class PushService {
     };
 
     this.ws.onerror = (error) => {
-      console.error('[PushService] Error:', error);
+      this.handleConnectionIssue();
+      if (!this.shouldSuppressConnectionLogs()) {
+        console.error('[PushService] Error:', error);
+      }
     };
 
     this.ws.onmessage = (event) => {

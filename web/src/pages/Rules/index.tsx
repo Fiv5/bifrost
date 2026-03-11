@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
-import { message, theme } from 'antd';
+import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
 import RuleEditor from './RuleEditor';
 import { useRulesStore } from '../../stores/useRulesStore';
+import { notifyApiBusinessError } from '../../api/client';
 
 export default function Rules() {
   const { token } = theme.useToken();
@@ -25,7 +26,7 @@ export default function Rules() {
 
   useEffect(() => {
     if (error) {
-      message.error(error);
+      notifyApiBusinessError(new Error(error), error);
       clearError();
     }
   }, [error, clearError]);

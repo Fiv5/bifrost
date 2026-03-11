@@ -114,6 +114,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 │   ├── bifrost-e2e/        # E2E runner（Rust）
 │   └── bifrost-tests/      # 测试辅助 crate
 ├── web/                    # Web 管理端（Vite + React）
+├── desktop/                # Tauri 桌面客户端（内置 Web 资源 + 内嵌 bifrost CLI 后端）
 ├── docs/                   # 文档
 ├── e2e-tests/              # E2E 脚本与规则集（bash/python）
 └── tests/                  # Rust 集成测试
@@ -121,7 +122,9 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 ## 安装
 
-### 方式一：一键安装（推荐）
+### CLI 版本
+
+#### 方式一：一键安装（推荐）
 
 使用 curl 一键安装脚本，自动检测平台和架构：
 
@@ -139,16 +142,16 @@ curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-
 curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
 ```
 
-### 方式二：Homebrew（macOS）
+#### 方式二：Homebrew（macOS）
 
 ```bash
 brew tap bifrost-proxy/bifrost
 brew install bifrost
 ```
 
-### 方式三：从源码构建
+#### 方式三：从源码构建
 
-#### 环境要求
+环境要求：
 
 - Rust 1.70+
 - Cargo
@@ -169,7 +172,7 @@ cd web && pnpm install && pnpm build && cd ..
 cargo build --release
 ```
 
-### 方式四：手动下载
+#### 方式四：手动下载
 
 从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载预编译的二进制文件。
 
@@ -186,6 +189,41 @@ cargo build --release
 | Windows | ARM64         | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip`          |
 
 Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.ms/vc14/vc_redist.arm64.exe
+
+### 桌面版本
+
+桌面版本基于 Tauri 构建，安装包内已经内置 Web 资源，并会在应用内部启动打包进去的 `bifrost` CLI 后端，因此不需要再额外部署管理端静态页面。
+
+#### 方式一：Homebrew Cask（macOS）
+
+```bash
+brew tap bifrost-proxy/bifrost
+brew install --cask bifrost-desktop
+```
+
+#### 方式二：手动下载桌面安装包
+
+从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载桌面安装包。
+
+当前发布计划：
+
+| 平台  | 架构          | 文件 |
+| ----- | ------------- | ---- |
+| macOS | Intel         | `bifrost-desktop-vX.X.X-x86_64-apple-darwin.dmg` |
+| macOS | Apple Silicon | `bifrost-desktop-vX.X.X-aarch64-apple-darwin.dmg` |
+
+安装完成后直接启动 `Bifrost.app` 即可。
+
+#### 方式三：从源码构建桌面版
+
+```bash
+git clone https://github.com/bifrost-proxy/bifrost.git
+cd bifrost
+
+pnpm install
+cd web && pnpm install && cd ..
+pnpm run desktop:build
+```
 
 ## 快速开始
 

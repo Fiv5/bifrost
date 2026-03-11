@@ -1,7 +1,8 @@
 use bifrost_storage::{
     CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, SandboxConfigUpdate,
     SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, TlsConfigUpdate,
-    TrafficConfigUpdate, UiConfigUpdate,
+    TrafficConfigUpdate, UiConfigUpdate, DEFAULT_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS,
+    MIN_TRAFFIC_MAX_RECORDS,
 };
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -542,7 +543,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         }
     } else {
         TrafficConfig {
-            max_records: 5000,
+            max_records: DEFAULT_TRAFFIC_MAX_RECORDS,
             max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
@@ -592,6 +593,18 @@ async fn update_performance_config(
             return error_response(
                 StatusCode::BAD_REQUEST,
                 "file_retention_days cannot exceed 7 days",
+            );
+        }
+    }
+
+    if let Some(max_records) = request.max_records {
+        if !(MIN_TRAFFIC_MAX_RECORDS..=MAX_TRAFFIC_MAX_RECORDS).contains(&max_records) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "max_records must be between {} and {}",
+                    MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS
+                ),
             );
         }
     }

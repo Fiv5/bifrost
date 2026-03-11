@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { WhitelistStatus, AccessMode } from '../types';
 import * as api from '../api';
+import { isConnectionIssueError } from '../api/client';
 
 interface WhitelistState {
   status: WhitelistStatus | null;
@@ -27,7 +28,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       const status = await api.getWhitelistStatus();
       set({ status, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
@@ -38,7 +39,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -50,7 +51,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -62,7 +63,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -74,7 +75,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -86,7 +87,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -98,7 +99,7 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
       await get().fetchStatus();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },

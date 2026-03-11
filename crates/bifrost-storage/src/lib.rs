@@ -18,6 +18,6 @@ pub use unified_config::{
     SandboxNetConfig, SandboxNetConfigUpdate, ServerConfig, SocksAuthConfig,
     SystemProxyConfig as NewSystemProxyConfig, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate,
     TrafficConfig as NewTrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate,
-    UnifiedConfig,
+    UnifiedConfig, DEFAULT_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS,
 };
 pub use values::{ValueEntry, ValuesStorage};

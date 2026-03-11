@@ -12,7 +12,7 @@ use crate::unified_config::{
     TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
-use crate::LegacyBifrostConfig;
+use crate::{LegacyBifrostConfig, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
 
 pub type SharedConfigManager = Arc<ConfigManager>;
 
@@ -40,7 +40,12 @@ impl ConfigManager {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         Self::init_data_dir(&data_dir)?;
 
-        let config = Self::load_config_with_migration(&data_dir)?;
+        let mut config = Self::load_config_with_migration(&data_dir)?;
+        let original_max_records = config.traffic.max_records;
+        config.traffic.normalize();
+        if config.traffic.max_records != original_max_records {
+            Self::save_config_to_file(&data_dir.join("config.toml"), &config)?;
+        }
         let rules_dir = data_dir.join("rules");
         let values_dir = data_dir.join("values");
         let rules_storage = RulesStorage::with_dir(rules_dir)?;
@@ -169,6 +174,12 @@ impl ConfigManager {
         let mut config = self.config.write().await;
 
         if let Some(max_records) = update.max_records {
+            if !(MIN_TRAFFIC_MAX_RECORDS..=MAX_TRAFFIC_MAX_RECORDS).contains(&max_records) {
+                return Err(BifrostError::Config(format!(
+                    "traffic.max_records must be between {} and {}",
+                    MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS
+                )));
+            }
             config.traffic.max_records = max_records;
         }
         if let Some(max_db_size_bytes) = update.max_db_size_bytes {
@@ -491,7 +502,10 @@ impl ConfigManager {
                 auto_enable: false,
             },
             traffic: TrafficConfig {
-                max_records: legacy.traffic.max_records,
+                max_records: legacy
+                    .traffic
+                    .max_records
+                    .clamp(MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS),
                 max_db_size_bytes: 2 * 1024 * 1024 * 1024,
                 max_body_memory_size: legacy.traffic.max_body_memory_size,
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
@@ -658,5 +672,34 @@ mod tests {
 
         let event = receiver.try_recv().unwrap();
         assert!(matches!(event, ConfigChangeEvent::TlsConfigChanged(_)));
+    }
+
+    #[tokio::test]
+    async fn test_update_traffic_config_rejects_out_of_range_max_records() {
+        let (_temp_dir, manager) = setup();
+
+        let err = manager
+            .update_traffic_config(TrafficConfigUpdate {
+                max_records: Some(MIN_TRAFFIC_MAX_RECORDS - 1),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("traffic.max_records must be between 1000 and"));
+
+        let err = manager
+            .update_traffic_config(TrafficConfigUpdate {
+                max_records: Some(MAX_TRAFFIC_MAX_RECORDS + 1),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("traffic.max_records must be between 1000 and"));
     }
 }

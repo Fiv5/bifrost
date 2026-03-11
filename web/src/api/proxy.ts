@@ -1,4 +1,5 @@
 import { get, put } from "./client";
+import { buildPublicUrl } from "../runtime";
 
 export interface SystemProxyStatus {
   supported: boolean;
@@ -60,8 +61,7 @@ export async function getProxyAddressInfo(): Promise<ProxyAddressInfo> {
 }
 
 export function getProxyQRCodeUrl(ip?: string): string {
-  const host = window.location.host;
-  const baseUrl = `http://${host}/_bifrost/public/proxy/qrcode`;
+  const baseUrl = buildPublicUrl('/proxy/qrcode');
   if (ip) {
     return `${baseUrl}?ip=${encodeURIComponent(ip)}`;
   }

@@ -8,6 +8,7 @@ import {
   type CollapsedSections,
   type FilterPanelConfig,
 } from "../api/ui";
+import { isConnectionIssueError } from "../api/client";
 
 export type { FilterType, PinnedFilter };
 
@@ -86,7 +87,9 @@ export const useFilterPanelStore = create<FilterPanelState>()(
     set({ pinnedFilters: newFilters });
 
     updateUiConfig({ pinnedFilters: newFilters }).catch((err) => {
-      console.error("Failed to persist pinned filter:", err);
+      if (!isConnectionIssueError(err)) {
+        console.error("Failed to persist pinned filter:", err);
+      }
     });
   },
 
@@ -96,7 +99,9 @@ export const useFilterPanelStore = create<FilterPanelState>()(
     set({ pinnedFilters: newFilters });
 
     updateUiConfig({ pinnedFilters: newFilters }).catch((err) => {
-      console.error("Failed to persist pinned filter removal:", err);
+      if (!isConnectionIssueError(err)) {
+        console.error("Failed to persist pinned filter removal:", err);
+      }
     });
   },
 
@@ -178,7 +183,9 @@ export const useFilterPanelStore = create<FilterPanelState>()(
   setDetailPanelCollapsed: (collapsed) => {
     set({ detailPanelCollapsed: collapsed });
     updateUiConfig({ detailPanelCollapsed: collapsed }).catch((err) => {
-      console.error("Failed to save detail panel collapsed state:", err);
+      if (!isConnectionIssueError(err)) {
+        console.error("Failed to save detail panel collapsed state:", err);
+      }
     });
   },
 
@@ -200,7 +207,9 @@ export const useFilterPanelStore = create<FilterPanelState>()(
         initialized: true,
       });
     } catch (err) {
-      console.error("Failed to load UI config:", err);
+      if (!isConnectionIssueError(err)) {
+        console.error("Failed to load UI config:", err);
+      }
       set({ initialized: true });
     } finally {
       set({ loading: false });
@@ -218,7 +227,9 @@ export const useFilterPanelStore = create<FilterPanelState>()(
     try {
       await updateUiConfig({ filterPanel });
     } catch (err) {
-      console.error("Failed to save UI config:", err);
+      if (!isConnectionIssueError(err)) {
+        console.error("Failed to save UI config:", err);
+      }
     }
       },
     }),

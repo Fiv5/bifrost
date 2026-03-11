@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { RuleFile, RuleFileDetail } from '../types';
 import * as api from '../api';
+import { isConnectionIssueError } from '../api/client';
 
 interface RulesState {
   rules: RuleFile[];
@@ -42,7 +43,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       const rules = await api.getRules();
       set({ rules, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
@@ -52,7 +53,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
@@ -66,7 +67,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
@@ -79,7 +80,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       await get().selectRule(name);
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -94,7 +95,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -126,7 +127,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       set({ editingContent: newEditingContent });
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, saving: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, saving: false });
       return false;
     }
   },
@@ -157,7 +158,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -173,7 +174,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       await get().fetchRules();
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -200,7 +201,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },

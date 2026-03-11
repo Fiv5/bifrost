@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type { PendingAuth } from "../types";
 import * as api from "../api";
 import { getClientId } from "../services/clientId";
+import { buildApiUrl } from "../runtime";
+import { isConnectionIssueError } from "../api/client";
 
 interface PendingAuthEvent {
   event_type: "new" | "approved" | "rejected";
@@ -48,7 +50,9 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
       const list = await api.getPendingAuthorizations();
       set({ pendingList: list, pendingCount: list.length });
     } catch (e) {
-      console.error("Failed to fetch pending list:", e);
+      if (!isConnectionIssueError(e)) {
+        console.error("Failed to fetch pending list:", e);
+      }
     }
   },
 
@@ -58,7 +62,9 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
       await get().fetchPendingList();
       return true;
     } catch (e) {
-      console.error("Failed to approve pending:", e);
+      if (!isConnectionIssueError(e)) {
+        console.error("Failed to approve pending:", e);
+      }
       return false;
     }
   },
@@ -69,7 +75,9 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
       await get().fetchPendingList();
       return true;
     } catch (e) {
-      console.error("Failed to reject pending:", e);
+      if (!isConnectionIssueError(e)) {
+        console.error("Failed to reject pending:", e);
+      }
       return false;
     }
   },
@@ -80,7 +88,9 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
       set({ pendingList: [], pendingCount: 0 });
       return true;
     } catch (e) {
-      console.error("Failed to clear pending:", e);
+      if (!isConnectionIssueError(e)) {
+        console.error("Failed to clear pending:", e);
+      }
       return false;
     }
   },
@@ -91,8 +101,7 @@ export const usePendingAuthStore = create<PendingAuthState>((set, get) => ({
       return;
     }
 
-    const host = window.location.host;
-    const url = `http://${host}/_bifrost/api/whitelist/pending/stream?x_client_id=${encodeURIComponent(getClientId())}`;
+    const url = `${buildApiUrl('/whitelist/pending/stream')}?x_client_id=${encodeURIComponent(getClientId())}`;
 
     const es = new EventSource(url);
 

@@ -8,6 +8,7 @@ debug.md
 .trae/skills/e2e-verify/scripts/logs/
 .trae/skills/e2e-verify/logs/
 web/test-results/
+web/dist-desktop/
 .ui-backend.log
 .ui-backend.pid
 .ui-traffic.pid
@@ -19,3 +20,4 @@ design/
 target-e2e-*/
 .bifrost_test/
 e2e-tests/
+desktop/src-tauri/resources/bin/

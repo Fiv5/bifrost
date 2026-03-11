@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { getClientId } from '../services/clientId';
+import { buildApiUrl } from '../runtime';
 
-const API_BASE = '/_bifrost/api/bifrost-file';
+const API_BASE = buildApiUrl('/bifrost-file');
 
 export type BifrostFileType = 'rules' | 'network' | 'script' | 'values' | 'template';
 

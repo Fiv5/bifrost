@@ -1,4 +1,5 @@
 import { get } from './client';
+import { buildPublicUrl } from '../runtime';
 
 export interface CertInfo {
   available: boolean;
@@ -12,12 +13,11 @@ export async function getCertInfo(): Promise<CertInfo> {
 }
 
 export function getCertDownloadUrl(): string {
-  return '/_bifrost/public/cert';
+  return buildPublicUrl('/cert');
 }
 
 export function getCertQRCodeUrl(ip?: string): string {
-  const host = window.location.host;
-  const baseUrl = `http://${host}/_bifrost/public/cert/qrcode`;
+  const baseUrl = buildPublicUrl('/cert/qrcode');
   if (ip) {
     return `${baseUrl}?ip=${encodeURIComponent(ip)}`;
   }

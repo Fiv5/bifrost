@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { message, theme } from 'antd';
+import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import ValueList from './ValueList';
 import ValueEditor from './ValueEditor';
 import { useValuesStore } from '../../stores/useValuesStore';
+import { notifyApiBusinessError } from '../../api/client';
 
 export default function Values() {
   const { token } = theme.useToken();
@@ -40,7 +41,7 @@ export default function Values() {
 
   useEffect(() => {
     if (error) {
-      message.error(error);
+      notifyApiBusinessError(new Error(error), error);
       clearError();
     }
   }, [error, clearError]);

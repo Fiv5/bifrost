@@ -7,7 +7,11 @@ on:
       - "**.rs"
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - "desktop/**"
+      - "scripts/**"
       - "web/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
   pull_request:
     branches: [main]
@@ -15,7 +19,11 @@ on:
       - "**.rs"
       - "**/Cargo.toml"
       - "**/Cargo.lock"
+      - "desktop/**"
+      - "scripts/**"
       - "web/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
 
 env:
@@ -32,6 +40,7 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+      - run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all -- --check
 
   clippy:
     name: Clippy
@@ -134,3 +143,34 @@ jobs:
         env:
           SKIP_FRONTEND_BUILD: "1"
         run: cross build -p bifrost-cli --release --target ${{ matrix.target }}
+
+  desktop-check:
+    name: Desktop Check (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/pnpm-lock.yaml
+      - name: Install root dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-macos
+      - name: Build desktop frontend
+        run: pnpm --dir web run build:desktop
+      - name: Build bundled CLI backend
+        run: cargo build -p bifrost-cli --release
+      - name: Prepare desktop sidecar
+        run: node scripts/prepare-tauri-sidecar.mjs release
+      - name: Check desktop client
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml

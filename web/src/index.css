@@ -9,11 +9,17 @@ body {
     "Helvetica Neue", Arial, "Noto Sans", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
 }
 
 #root {
   min-height: 100vh;
+  height: 100vh;
   background-color: #ffffff;
+}
+
+button {
+  font: inherit;
 }
 
 [data-theme="dark"] body,

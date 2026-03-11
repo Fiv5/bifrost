@@ -29,6 +29,7 @@ import {
 } from "@ant-design/icons";
 import { useWhitelistStore } from "../../../stores/useWhitelistStore";
 import type { AccessMode } from "../../../types";
+import { notifyApiBusinessError } from "../../../api/client";
 
 const { Text } = Typography;
 
@@ -113,7 +114,7 @@ export default function AccessControlTab() {
 
   useEffect(() => {
     if (error) {
-      message.error(error);
+      notifyApiBusinessError(new Error(error), error);
       clearError();
     }
   }, [error, clearError]);
@@ -255,16 +256,6 @@ export default function AccessControlTab() {
           </Button>
         </Col>
       </Row>
-
-      {error && (
-        <Alert
-          type="error"
-          message={error}
-          closable
-          onClose={clearError}
-          style={{ marginBottom: 16 }}
-        />
-      )}
 
       <Row gutter={[16, 16]}>
         <Col xs={24}>
