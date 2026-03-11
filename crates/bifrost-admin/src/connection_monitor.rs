@@ -765,8 +765,10 @@ impl ConnectionMonitor {
     pub fn memory_stats(&self) -> ConnectionMonitorMemoryStats {
         let connections = self.connections.read();
 
-        let mut stats = ConnectionMonitorMemoryStats::default();
-        stats.connection_count = connections.len();
+        let mut stats = ConnectionMonitorMemoryStats {
+            connection_count: connections.len(),
+            ..Default::default()
+        };
 
         for (_id, store) in connections.iter() {
             if store.is_tunnel {

@@ -1929,9 +1929,10 @@ mod tests {
     #[test]
     fn test_cleanup_drops_to_low_watermark_instead_of_exact_limit() {
         let dir = create_test_dir();
-        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
 
-        for i in 0..101 {
+        for i in 0..=max_records {
             store.record(TrafficRecord::new(
                 format!("req-{}", i),
                 "GET".to_string(),
@@ -1939,7 +1940,8 @@ mod tests {
             ));
         }
 
-        assert_eq!(store.count(), 95);
+        let expected_count = max_records * CLEANUP_LOW_WATERMARK_PERCENT / 100;
+        assert_eq!(store.count(), expected_count);
 
         cleanup_test_dir(&dir);
     }

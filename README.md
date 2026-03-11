@@ -211,8 +211,12 @@ brew install --cask bifrost-desktop
 | ----- | ------------- | ---- |
 | macOS | Intel         | `bifrost-desktop-vX.X.X-x86_64-apple-darwin.dmg` |
 | macOS | Apple Silicon | `bifrost-desktop-vX.X.X-aarch64-apple-darwin.dmg` |
+| Windows | x64         | `bifrost-desktop-vX.X.X-x86_64-pc-windows-msvc.msi` |
 
-安装完成后直接启动 `Bifrost.app` 即可。
+安装完成后：
+
+- macOS 直接启动 `Bifrost.app`
+- Windows 使用 `.msi` 安装后从开始菜单启动 `Bifrost`
 
 #### 方式三：从源码构建桌面版
 
@@ -224,6 +228,11 @@ pnpm install
 cd web && pnpm install && cd ..
 pnpm run desktop:build
 ```
+
+说明：
+
+- macOS 产物位于 `desktop/src-tauri/target/release/bundle/dmg/`
+- Windows 产物位于 `desktop/src-tauri/target/release/bundle/msi/`
 
 ## 快速开始
 

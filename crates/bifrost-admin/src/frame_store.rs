@@ -565,9 +565,11 @@ impl FrameStore {
         let metadata_cache_len = self.metadata_cache.read().len();
         let pending = self.pending_frames.lock();
 
-        let mut out = FrameStoreMemoryStats::default();
-        out.metadata_cache_len = metadata_cache_len;
-        out.pending_connection_count = pending.frames.len();
+        let mut out = FrameStoreMemoryStats {
+            metadata_cache_len,
+            pending_connection_count: pending.frames.len(),
+            ..Default::default()
+        };
 
         for frames in pending.frames.values() {
             out.pending_frames_total = out.pending_frames_total.saturating_add(frames.len());

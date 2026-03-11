@@ -145,8 +145,16 @@ jobs:
         run: cross build -p bifrost-cli --release --target ${{ matrix.target }}
 
   desktop-check:
-    name: Desktop Check (macOS)
-    runs-on: macos-latest
+    name: Desktop Check (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+          - os: windows-latest
+            label: Windows
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -165,7 +173,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-macos
+          key: desktop-${{ matrix.label }}
       - name: Build desktop frontend
         run: pnpm --dir web run build:desktop
       - name: Build bundled CLI backend
