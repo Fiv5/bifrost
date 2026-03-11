@@ -63,6 +63,15 @@ pub struct FrameStore {
     pending_frames: Mutex<PendingFrames>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FrameStoreMemoryStats {
+    pub metadata_cache_len: usize,
+    pub pending_connection_count: usize,
+    pub pending_frames_total: usize,
+    pub pending_preview_bytes: usize,
+    pub pending_inline_ref_bytes: usize,
+}
+
 impl FrameStore {
     pub fn new(base_dir: PathBuf, retention_hours: Option<u64>) -> Self {
         let frames_dir = base_dir.join(FRAMES_SUBDIR);
@@ -550,6 +559,37 @@ impl FrameStore {
             frames_dir: frames_dir.to_string_lossy().to_string(),
             retention_hours: self.retention_hours,
         }
+    }
+
+    pub fn memory_stats(&self) -> FrameStoreMemoryStats {
+        let metadata_cache_len = self.metadata_cache.read().len();
+        let pending = self.pending_frames.lock();
+
+        let mut out = FrameStoreMemoryStats::default();
+        out.metadata_cache_len = metadata_cache_len;
+        out.pending_connection_count = pending.frames.len();
+
+        for frames in pending.frames.values() {
+            out.pending_frames_total = out.pending_frames_total.saturating_add(frames.len());
+            for f in frames.iter() {
+                if let Some(p) = &f.payload_preview {
+                    out.pending_preview_bytes = out.pending_preview_bytes.saturating_add(p.len());
+                }
+                if let Some(p) = &f.raw_payload_preview {
+                    out.pending_preview_bytes = out.pending_preview_bytes.saturating_add(p.len());
+                }
+                if let Some(crate::body_store::BodyRef::Inline { data }) = &f.payload_ref {
+                    out.pending_inline_ref_bytes =
+                        out.pending_inline_ref_bytes.saturating_add(data.len());
+                }
+                if let Some(crate::body_store::BodyRef::Inline { data }) = &f.raw_payload_ref {
+                    out.pending_inline_ref_bytes =
+                        out.pending_inline_ref_bytes.saturating_add(data.len());
+                }
+            }
+        }
+
+        out
     }
 
     pub fn sizes_by_id(&self) -> std::io::Result<std::collections::HashMap<String, u64>> {

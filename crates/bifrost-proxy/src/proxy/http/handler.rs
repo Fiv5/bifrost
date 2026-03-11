@@ -8,20 +8,17 @@ use bifrost_script::{RequestData, ResponseData};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper::client::conn::http1::Builder as Http1ClientBuilder;
 use hyper::header::HeaderValue;
 use hyper::http::response::Parts as ResponseParts;
 use hyper::{Request, Response, StatusCode, Uri};
-use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::dns::DnsResolver;
 
-use super::tunnel::get_tls_client_config;
+use super::tunnel::{sanitize_upstream_headers, send_pooled_request};
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
@@ -56,59 +53,6 @@ use self::decode::{
 };
 use self::scripts::{execute_request_scripts, execute_response_scripts, headers_to_hashmap};
 
-enum UpstreamSender {
-    Http1(hyper::client::conn::http1::SendRequest<BoxBody>),
-    Http2(hyper::client::conn::http2::SendRequest<BoxBody>),
-}
-
-impl UpstreamSender {
-    fn sanitize_headers_for_http2(headers: &mut hyper::HeaderMap) {
-        use hyper::header;
-
-        let extra_to_remove: Vec<header::HeaderName> = headers
-            .get(header::CONNECTION)
-            .and_then(|v| v.to_str().ok())
-            .map(|conn| {
-                conn.split(',')
-                    .map(|s| s.trim())
-                    .filter(|s| !s.is_empty())
-                    .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        headers.remove(header::CONNECTION);
-        for name in extra_to_remove {
-            headers.remove(name);
-        }
-        headers.remove("proxy-connection");
-        headers.remove("keep-alive");
-        headers.remove("transfer-encoding");
-        headers.remove("upgrade");
-        headers.remove("trailer");
-
-        if let Some(te) = headers.get(header::TE).and_then(|v| v.to_str().ok()) {
-            if !te.trim().eq_ignore_ascii_case("trailers") {
-                headers.remove(header::TE);
-            }
-        }
-    }
-
-    async fn send_request(
-        &mut self,
-        req: Request<BoxBody>,
-    ) -> std::result::Result<Response<Incoming>, hyper::Error> {
-        match self {
-            UpstreamSender::Http1(sender) => sender.send_request(req).await,
-            UpstreamSender::Http2(sender) => {
-                let (mut parts, body) = req.into_parts();
-                Self::sanitize_headers_for_http2(&mut parts.headers);
-                sender.send_request(Request::from_parts(parts, body)).await
-            }
-        }
-    }
-}
-
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 fn get_traffic_type_from_url(url: &str) -> TrafficType {
@@ -117,6 +61,25 @@ fn get_traffic_type_from_url(url: &str) -> TrafficType {
     } else {
         TrafficType::Http
     }
+}
+
+fn build_upstream_pool_partition(
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
+    use_tls: bool,
+    rules: &ResolvedRules,
+) -> String {
+    format!(
+        "orig={original_host}|target={}://{}:{}|host={:?}|proxy={:?}|proto={:?}|ignored_host={}",
+        if use_tls { "https" } else { "http" },
+        target_host,
+        target_port,
+        rules.host,
+        rules.proxy,
+        rules.host_protocol,
+        rules.ignored.host
+    )
 }
 
 pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
@@ -311,7 +274,7 @@ pub async fn handle_http_request(
     max_body_probe_size: usize,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
-    dns_resolver: Option<Arc<DnsResolver>>,
+    _dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
     if is_websocket_upgrade(&req) {
         return handle_http_websocket(req, rules, ctx, admin_state, unsafe_ssl).await;
@@ -711,252 +674,7 @@ pub async fn handle_http_request(
     };
     let outgoing_body = wrap_throttled_body(outgoing_body, resolved_rules.req_speed);
 
-    let dns_start = Instant::now();
-    let (connect_host, dns_ms, dns_error) = if !resolved_rules.dns_servers.is_empty() {
-        if let Some(ref resolver) = dns_resolver {
-            if verbose_logging {
-                info!(
-                    "[{}] [DNS] resolving {} with custom servers: {:?}",
-                    ctx.id_str(),
-                    host,
-                    resolved_rules.dns_servers
-                );
-            }
-            match resolver.resolve(&host, &resolved_rules.dns_servers).await {
-                Ok(Some(ip)) => {
-                    let elapsed = dns_start.elapsed().as_millis() as u64;
-                    if verbose_logging {
-                        info!(
-                            "[{}] [DNS] resolved {} -> {} ({}ms)",
-                            ctx.id_str(),
-                            host,
-                            ip,
-                            elapsed
-                        );
-                    }
-                    (ip.to_string(), Some(elapsed), None)
-                }
-                Ok(None) => {
-                    debug!(
-                        "[{}] [DNS] custom DNS returned None, using original host",
-                        ctx.id_str()
-                    );
-                    (host.clone(), None, None)
-                }
-                Err(e) => {
-                    debug!(
-                        "[{}] [DNS] custom DNS failed: {}, using original host",
-                        ctx.id_str(),
-                        e
-                    );
-                    (host.clone(), None, Some(e.to_string()))
-                }
-            }
-        } else {
-            (host.clone(), None, None)
-        }
-    } else {
-        (host.clone(), None, None)
-    };
-
-    let connect_start = Instant::now();
-    let stream = match TcpStream::connect(format!("{}:{}", connect_host, port)).await {
-        Ok(s) => s,
-        Err(e) => {
-            let (error_type, error_message) = if let Some(ref dns_err) = dns_error {
-                (
-                    "DNS_LOOKUP_FAILED",
-                    format!("DNS Lookup Failed: {}", dns_err),
-                )
-            } else {
-                ("TCP_CONNECTION_FAILED", format!("Connection Failed: {}", e))
-            };
-            let error_msg = if let Some(ref dns_err) = dns_error {
-                format!("DNS lookup failed for {}: {}", host, dns_err)
-            } else {
-                format!("Failed to connect to {}:{}: {}", connect_host, port, e)
-            };
-            error!("[{}] {}", ctx.id_str(), error_msg);
-
-            let error_info = ConnectionErrorInfo {
-                error_type,
-                error_message,
-                host: host.clone(),
-                request_url: url.clone(),
-            };
-
-            let total_ms = start_time.elapsed().as_millis() as u64;
-            if let Some(ref state) = admin_state {
-                let mut record = TrafficRecord::new(
-                    ctx.id_str().to_string(),
-                    method.clone(),
-                    record_url.clone(),
-                );
-                record.status = if needs_response_override(&resolved_rules) {
-                    resolved_rules
-                        .status_code
-                        .or(resolved_rules.replace_status)
-                        .unwrap_or(502)
-                } else {
-                    502
-                };
-                record.duration_ms = total_ms;
-                record.host = original_host.clone();
-                record.timing = Some(RequestTiming {
-                    dns_ms,
-                    connect_ms: Some(connect_start.elapsed().as_millis() as u64),
-                    tls_ms: None,
-                    send_ms: None,
-                    wait_ms: None,
-                    receive_ms: None,
-                    total_ms,
-                });
-                record.original_request_headers = Some(original_req_headers.clone());
-                record.has_rule_hit = has_rules;
-                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                record.error_message = Some(error_msg);
-                record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                    capture.take()
-                } else if let Some(ref body_store) = state.body_store {
-                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
-                    let request_data = RequestData {
-                        url: record_url.clone(),
-                        method: method.clone(),
-                        host: req_host,
-                        path: req_path,
-                        protocol: req_proto,
-                        client_ip: ctx.client_ip.clone(),
-                        client_app: ctx.client_app.clone(),
-                        headers: headers_to_hashmap(&req_headers),
-                        body: None,
-                    };
-                    let decompressed_req_body = decompress_body_with_limit(
-                        &final_body,
-                        req_content_encoding.as_deref(),
-                        max_decompress_output_bytes,
-                    );
-                    let raw_req_body = decompressed_req_body.clone();
-                    let decoded_req_body = apply_decode_scripts_for_storage(
-                        &admin_state,
-                        &resolved_rules.decode_scripts,
-                        "request",
-                        ctx,
-                        &resolved_rules,
-                        &request_data,
-                        &ResponseData {
-                            request: request_data.clone(),
-                            ..Default::default()
-                        },
-                        &values,
-                        decompressed_req_body,
-                    )
-                    .await;
-                    let store = body_store.read();
-
-                    if !resolved_rules.decode_scripts.is_empty() {
-                        record.raw_request_body_ref =
-                            store.store(&ctx.id_str(), "req_raw", raw_req_body.as_ref());
-                        if !decoded_req_body.results.is_empty() {
-                            record.decode_req_script_results =
-                                Some(decoded_req_body.results.clone());
-                        }
-                    }
-
-                    store.store(&ctx.id_str(), "req", decoded_req_body.output.as_ref())
-                } else {
-                    store_request_body(
-                        &admin_state,
-                        &ctx.id_str(),
-                        &final_body,
-                        req_content_encoding.as_deref(),
-                    )
-                };
-
-                let response_body = if needs_response_override(&resolved_rules) {
-                    if let Some(ref res_body) = resolved_rules.res_body {
-                        res_body.clone()
-                    } else {
-                        build_error_body(record.status, &error_info)
-                    }
-                } else {
-                    build_error_body(502, &error_info)
-                };
-                record.response_body_ref = if let Some(ref body_store) = state.body_store {
-                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
-                    let request_data = RequestData {
-                        url: record_url.clone(),
-                        method: method.clone(),
-                        host: req_host,
-                        path: req_path,
-                        protocol: req_proto,
-                        client_ip: ctx.client_ip.clone(),
-                        client_app: ctx.client_app.clone(),
-                        headers: headers_to_hashmap(&req_headers),
-                        body: None,
-                    };
-                    let response_data = ResponseData {
-                        status: record.status,
-                        status_text: StatusCode::from_u16(record.status)
-                            .ok()
-                            .and_then(|s| s.canonical_reason())
-                            .unwrap_or("ERROR")
-                            .to_string(),
-                        headers: HashMap::new(),
-                        body: None,
-                        request: request_data,
-                    };
-                    let decoded_res_body = apply_decode_scripts_for_storage(
-                        &admin_state,
-                        &resolved_rules.decode_scripts,
-                        "response",
-                        ctx,
-                        &resolved_rules,
-                        &response_data.request,
-                        &response_data,
-                        &values,
-                        response_body.clone(),
-                    )
-                    .await;
-                    let store = body_store.read();
-
-                    if !resolved_rules.decode_scripts.is_empty() {
-                        record.raw_response_body_ref =
-                            store.store(&ctx.id_str(), "res_raw", response_body.as_ref());
-                        if !decoded_res_body.results.is_empty() {
-                            record.decode_res_script_results =
-                                Some(decoded_res_body.results.clone());
-                        }
-                    }
-
-                    store.store(&ctx.id_str(), "res", decoded_res_body.output.as_ref())
-                } else {
-                    store_response_body(&admin_state, &ctx.id_str(), &response_body)
-                };
-                state.record_traffic(record);
-            }
-
-            if needs_response_override(&resolved_rules) {
-                if verbose_logging {
-                    info!(
-                        "[{}] [CONN_ERROR] {} failed, applying response override rules",
-                        ctx.id_str(),
-                        error_type
-                    );
-                }
-                return Ok(build_overridden_error_response(
-                    &resolved_rules,
-                    502,
-                    &error_info,
-                ));
-            }
-            return Ok(build_connection_error_response(502, &error_info));
-        }
-    };
-    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
-
-    if let Err(e) = stream.set_nodelay(true) {
-        debug!("Failed to set TCP_NODELAY on HTTP connection: {}", e);
-    }
+    let dns_ms = None;
 
     let use_tls = if resolved_rules.ignored.host {
         is_https
@@ -971,23 +689,9 @@ pub async fn handle_http_request(
 
     let build_conn_error_and_record =
         |error_type: &'static str, error_msg: String, err_tls_ms: Option<u64>| {
-            let (final_error_type, final_error_message) = if let Some(ref dns_err) = dns_error {
-                (
-                    "DNS_LOOKUP_FAILED",
-                    format!("DNS Lookup Failed: {}", dns_err),
-                )
-            } else {
-                (error_type, error_msg.clone())
-            };
-            let final_error_msg = if let Some(ref dns_err) = dns_error {
-                format!("DNS lookup failed for {}: {}", host, dns_err)
-            } else {
-                error_msg
-            };
-
             let error_info = ConnectionErrorInfo {
-                error_type: final_error_type,
-                error_message: final_error_message,
+                error_type,
+                error_message: error_msg.clone(),
                 host: host.clone(),
                 request_url: url.clone(),
             };
@@ -1010,7 +714,7 @@ pub async fn handle_http_request(
                 record.host = original_host.clone();
                 record.timing = Some(RequestTiming {
                     dns_ms,
-                    connect_ms: Some(tcp_connect_ms),
+                    connect_ms: None,
                     tls_ms: err_tls_ms,
                     send_ms: None,
                     wait_ms: None,
@@ -1020,7 +724,7 @@ pub async fn handle_http_request(
                 record.original_request_headers = Some(original_req_headers.clone());
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                record.error_message = Some(final_error_msg);
+                record.error_message = Some(error_msg.clone());
                 record.request_body_ref = if let Some(ref capture) = req_body_capture {
                     capture.take()
                 } else if let Some(ref body_store) = state.body_store {
@@ -1097,7 +801,7 @@ pub async fn handle_http_request(
                     info!(
                         "[{}] [CONN_ERROR] {}, applying response override rules",
                         ctx.id_str(),
-                        final_error_type
+                        error_type
                     );
                 }
                 build_overridden_error_response(&resolved_rules, 502, &error_info)
@@ -1106,232 +810,55 @@ pub async fn handle_http_request(
             }
         };
 
-    let (mut sender, tls_ms) = if use_tls {
-        let tls_start = Instant::now();
-        let tls_config = get_tls_client_config(unsafe_ssl);
-        let connector = TlsConnector::from(tls_config);
-
-        let server_name = match ServerName::try_from(host.clone()) {
-            Ok(name) => name,
-            Err(_) => {
-                let error_msg = format!("Invalid server name for TLS: {}", host);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                return Ok(build_conn_error_and_record(
-                    "TLS_SERVER_NAME_INVALID",
-                    error_msg,
-                    None,
-                ));
-            }
-        };
-
-        let tls_stream = match connector.connect(server_name, stream).await {
-            Ok(s) => s,
-            Err(e) => {
-                let error_msg = format!("TLS handshake failed: {}", e);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                let tls_ms = tls_start.elapsed().as_millis() as u64;
-                return Ok(build_conn_error_and_record(
-                    "TLS_HANDSHAKE_FAILED",
-                    error_msg,
-                    Some(tls_ms),
-                ));
-            }
-        };
-        let tls_elapsed = tls_start.elapsed().as_millis() as u64;
-
-        let negotiated_alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
-        let use_h2 = matches!(negotiated_alpn.as_deref(), Some(b"h2"));
-        if verbose_logging {
-            debug!(
-                "[{}] [UPSTREAM] negotiated ALPN={:?}, use_h2={}",
-                ctx.id_str(),
-                negotiated_alpn,
-                use_h2
-            );
-        }
-
-        let sender = if use_h2 {
-            let io = TokioIo::new(tls_stream);
-            let (sender, conn) =
-                match hyper::client::conn::http2::Builder::new(TokioExecutor::new())
-                    .handshake(io)
-                    .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        let error_msg = format!("HTTP/2 handshake failed: {}", e);
-                        error!("[{}] {}", ctx.id_str(), error_msg);
-                        return Ok(build_conn_error_and_record(
-                            "HTTP2_HANDSHAKE_FAILED",
-                            error_msg,
-                            Some(tls_elapsed),
-                        ));
-                    }
-                };
-
-            let req_id_for_conn = ctx.id_str();
-            let host_for_conn = host.clone();
-            let port_for_conn = port;
-            let method_for_conn = method.clone();
-            let url_for_conn = url.clone();
-            let client_ip_for_conn = ctx.client_ip.clone();
-            let client_app_for_conn = ctx.client_app.clone();
-            let client_pid_for_conn = ctx.client_pid;
-            let client_path_for_conn = ctx.client_path.clone();
-            tokio::spawn(async move {
-                if let Err(err) = conn.await {
-                    error!(
-                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                        req_id_for_conn,
-                        host_for_conn,
-                        port_for_conn,
-                        method_for_conn,
-                        url_for_conn,
-                        client_ip_for_conn,
-                        client_app_for_conn,
-                        client_pid_for_conn,
-                        client_path_for_conn,
-                        err
-                    );
-                }
-            });
-
-            UpstreamSender::Http2(sender)
-        } else {
-            let io = TokioIo::new(tls_stream);
-            let (sender, conn) = match Http1ClientBuilder::new()
-                .preserve_header_case(true)
-                .title_case_headers(true)
-                .handshake(io)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    let error_msg = format!("HTTP handshake failed: {}", e);
-                    error!("[{}] {}", ctx.id_str(), error_msg);
-                    return Ok(build_conn_error_and_record(
-                        "HTTP_HANDSHAKE_FAILED",
-                        error_msg,
-                        Some(tls_elapsed),
-                    ));
-                }
-            };
-
-            let req_id_for_conn = ctx.id_str();
-            let host_for_conn = host.clone();
-            let port_for_conn = port;
-            let method_for_conn = method.clone();
-            let url_for_conn = url.clone();
-            let client_ip_for_conn = ctx.client_ip.clone();
-            let client_app_for_conn = ctx.client_app.clone();
-            let client_pid_for_conn = ctx.client_pid;
-            let client_path_for_conn = ctx.client_path.clone();
-            tokio::spawn(async move {
-                if let Err(err) = conn.await {
-                    error!(
-                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                        req_id_for_conn,
-                        host_for_conn,
-                        port_for_conn,
-                        method_for_conn,
-                        url_for_conn,
-                        client_ip_for_conn,
-                        client_app_for_conn,
-                        client_pid_for_conn,
-                        client_path_for_conn,
-                        err
-                    );
-                }
-            });
-
-            UpstreamSender::Http1(sender)
-        };
-
-        (sender, Some(tls_elapsed))
-    } else {
-        let io = TokioIo::new(stream);
-        let (sender, conn) = match Http1ClientBuilder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
-            .handshake(io)
-            .await
-        {
-            Ok((s, c)) => (UpstreamSender::Http1(s), c),
-            Err(e) => {
-                let error_msg = format!("HTTP handshake failed: {}", e);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                return Ok(build_conn_error_and_record(
-                    "HTTP_HANDSHAKE_FAILED",
-                    error_msg,
-                    None,
-                ));
-            }
-        };
-
-        let req_id_for_conn = ctx.id_str();
-        let host_for_conn = host.clone();
-        let port_for_conn = port;
-        let method_for_conn = method.clone();
-        let url_for_conn = url.clone();
-        let client_ip_for_conn = ctx.client_ip.clone();
-        let client_app_for_conn = ctx.client_app.clone();
-        let client_pid_for_conn = ctx.client_pid;
-        let client_path_for_conn = ctx.client_path.clone();
-        tokio::spawn(async move {
-            if let Err(err) = conn.await {
-                error!(
-                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                    req_id_for_conn,
-                    host_for_conn,
-                    port_for_conn,
-                    method_for_conn,
-                    url_for_conn,
-                    client_ip_for_conn,
-                    client_app_for_conn,
-                    client_pid_for_conn,
-                    client_path_for_conn,
-                    err
-                );
-            }
-        });
-
-        (sender, None)
-    };
-
     let path = processed_uri
         .path_and_query()
         .map(|pq| pq.as_str())
         .unwrap_or("/");
 
-    let new_uri: Uri = path
-        .parse()
-        .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
+    let upstream_authority = if (use_tls && port == 443) || (!use_tls && port == 80) {
+        host.clone()
+    } else {
+        format!("{}:{}", host, port)
+    };
+    let upstream_uri: Uri = format!(
+        "{}://{}{}",
+        if use_tls { "https" } else { "http" },
+        upstream_authority,
+        path
+    )
+    .parse()
+    .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
 
-    parts.uri = new_uri;
-
-    if !parts.headers.contains_key(hyper::header::HOST) {
-        let host_value = if port == 80 {
-            host.clone()
-        } else {
-            format!("{}:{}", host, port)
-        };
-        parts
-            .headers
-            .insert(hyper::header::HOST, host_value.parse().unwrap());
-    }
+    parts.uri = upstream_uri;
+    sanitize_upstream_headers(&mut parts.headers);
+    parts.headers.remove(hyper::header::HOST);
 
     let outgoing_req = Request::from_parts(parts, outgoing_body);
+    let pool_partition =
+        build_upstream_pool_partition(&original_host, &host, port, use_tls, &resolved_rules);
 
     let send_start = Instant::now();
-    let res = match sender.send_request(outgoing_req).await {
+    let res = match send_pooled_request(
+        outgoing_req,
+        unsafe_ssl,
+        &resolved_rules.dns_servers,
+        &pool_partition,
+    )
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             let error_msg = format!("Request failed: {}", e);
             error!("[{}] {}", ctx.id_str(), error_msg);
+            let mut source = std::error::Error::source(&e);
+            while let Some(err) = source {
+                error!("[{}] Request failure source: {}", ctx.id_str(), err);
+                source = std::error::Error::source(err);
+            }
             return Ok(build_conn_error_and_record(
                 "REQUEST_FAILED",
                 error_msg,
-                tls_ms,
+                None,
             ));
         }
     };
@@ -1528,8 +1055,8 @@ pub async fn handle_http_request(
             record.duration_ms = total_ms;
             record.timing = Some(RequestTiming {
                 dns_ms,
-                connect_ms: Some(tcp_connect_ms),
-                tls_ms,
+                connect_ms: None,
+                tls_ms: None,
                 send_ms: None,
                 wait_ms: Some(wait_ms),
                 receive_ms: None,
@@ -1772,8 +1299,8 @@ pub async fn handle_http_request(
         record.duration_ms = total_ms;
         record.timing = Some(RequestTiming {
             dns_ms,
-            connect_ms: Some(tcp_connect_ms),
-            tls_ms,
+            connect_ms: None,
+            tls_ms: None,
             send_ms: None,
             wait_ms: Some(wait_ms),
             receive_ms: Some(receive_ms),
@@ -2616,5 +2143,24 @@ mod tests {
         assert_eq!(get_default_port(&Some(Protocol::Https), true), 443);
         assert_eq!(get_default_port(&Some(Protocol::Ws), false), 80);
         assert_eq!(get_default_port(&Some(Protocol::Wss), true), 443);
+    }
+
+    #[test]
+    fn test_upstream_pool_partition_separates_different_route_rules() {
+        let host_rules = ResolvedRules {
+            host: Some("127.0.0.1:3000".to_string()),
+            ..Default::default()
+        };
+        let proxy_rules = ResolvedRules {
+            proxy: Some("127.0.0.1:9999".to_string()),
+            ..Default::default()
+        };
+
+        let host_partition =
+            build_upstream_pool_partition("example.com", "127.0.0.1", 3000, false, &host_rules);
+        let proxy_partition =
+            build_upstream_pool_partition("example.com", "127.0.0.1", 9999, false, &proxy_rules);
+
+        assert_ne!(host_partition, proxy_partition);
     }
 }

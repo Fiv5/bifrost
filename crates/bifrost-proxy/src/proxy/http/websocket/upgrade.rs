@@ -14,7 +14,7 @@ use super::super::ws_handshake::{
 };
 use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process;
+use crate::utils::process_info::resolve_client_process_async;
 
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
@@ -129,7 +129,7 @@ pub async fn handle_websocket_upgrade(
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
-        let client_process = resolve_client_process(&peer_addr);
+        let client_process = resolve_client_process_async(&peer_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))

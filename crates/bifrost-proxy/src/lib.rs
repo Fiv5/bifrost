@@ -25,5 +25,7 @@ pub use transform::{apply_res_rules, format_set_cookie, parse_set_cookie, SetCoo
 pub use unified::*;
 pub use utils::logging::*;
 pub use utils::process_info::{
-    format_client_info, resolve_client_process, ClientProcess, ProcessResolver, PROCESS_RESOLVER,
+    format_client_info, resolve_client_process, resolve_client_process_async,
+    resolve_client_process_async_with_retry, resolve_client_process_cached, ClientProcess,
+    ProcessResolver, PROCESS_RESOLVER,
 };

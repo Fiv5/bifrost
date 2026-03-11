@@ -87,6 +87,17 @@ pub struct WsPayloadStore {
     state: Mutex<WsPayloadStoreState>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WsPayloadStoreMemoryStats {
+    pub writer_count: usize,
+    pub max_open_files: usize,
+    pub total_buffer_len: usize,
+    pub total_buffer_capacity: usize,
+    pub flush_bytes: usize,
+    pub flush_interval_ms: u64,
+    pub retention_days: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WsPayloadStoreConfigUpdate {
     pub flush_bytes: Option<usize>,
@@ -237,6 +248,27 @@ impl WsPayloadStore {
                 break;
             }
         }
+    }
+
+    pub fn memory_stats(&self) -> WsPayloadStoreMemoryStats {
+        let state = self.state.lock();
+        let mut out = WsPayloadStoreMemoryStats {
+            writer_count: state.writers.len(),
+            max_open_files: state.max_open_files,
+            total_buffer_len: 0,
+            total_buffer_capacity: 0,
+            flush_bytes: state.flush_bytes,
+            flush_interval_ms: state.flush_interval.as_millis() as u64,
+            retention_days: state.retention_days,
+        };
+
+        for (_id, writer) in state.writers.iter() {
+            out.total_buffer_len = out.total_buffer_len.saturating_add(writer.buffer.len());
+            out.total_buffer_capacity = out
+                .total_buffer_capacity
+                .saturating_add(writer.buffer.capacity());
+        }
+        out
     }
 
     pub fn cleanup_expired(&self) -> std::io::Result<usize> {

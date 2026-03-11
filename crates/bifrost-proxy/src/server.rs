@@ -26,11 +26,15 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::proxy::http::{handle_connect, handle_http_request};
+use crate::proxy::http::{
+    handle_connect, handle_http_request, requires_client_app_for_tls_decision,
+};
 use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process;
+use crate::utils::process_info::{
+    resolve_client_process_async, resolve_client_process_async_with_retry,
+};
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 #[derive(Debug, Clone)]
@@ -824,21 +828,47 @@ async fn handle_request(
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
     initial_generation: u64,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
-    let client_process = resolve_client_process(&peer_addr);
-    let (client_app, client_pid, client_path) = client_process
-        .as_ref()
-        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
-        .unwrap_or((None, None, None));
-    let need_async_resolve = client_process.is_none() && peer_addr.ip().is_loopback();
-
-    let ctx = RequestContext::new()
-        .with_client_process(client_app, client_pid, client_path)
-        .with_client_ip(peer_addr.ip().to_string());
-    let record_id_for_async = ctx.id_str();
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
     let verbose_logging = proxy_config.verbose_logging;
+    let is_local_client = peer_addr.ip().is_loopback();
+
+    let connect_tls_intercept_config = if method == Method::CONNECT {
+        Some(if let Some(ref state) = admin_state {
+            let runtime_config = state.runtime_config.read().await;
+            TlsInterceptConfig {
+                enable_tls_interception: runtime_config.enable_tls_interception,
+                intercept_exclude: runtime_config.intercept_exclude.clone(),
+                intercept_include: runtime_config.intercept_include.clone(),
+                app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+                app_intercept_include: runtime_config.app_intercept_include.clone(),
+                unsafe_ssl: runtime_config.unsafe_ssl,
+            }
+        } else {
+            TlsInterceptConfig::from_proxy_config(&proxy_config)
+        })
+    } else {
+        None
+    };
+
+    let client_process = if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
+        if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
+            resolve_client_process_async_with_retry(&peer_addr, 10, 20).await
+        } else {
+            resolve_client_process_async(&peer_addr).await
+        }
+    } else {
+        resolve_client_process_async(&peer_addr).await
+    };
+    let (client_app, client_pid, client_path) = client_process
+        .as_ref()
+        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+        .unwrap_or((None, None, None));
+
+    let ctx = RequestContext::new()
+        .with_client_process(client_app, client_pid, client_path)
+        .with_client_ip(peer_addr.ip().to_string());
 
     let client_info = client_process
         .as_ref()
@@ -928,34 +958,10 @@ async fn handle_request(
         state.metrics_collector.increment_requests();
     }
 
-    if need_async_resolve {
-        if let Some(ref state) = admin_state {
-            let state_clone = state.clone();
-            let record_id = record_id_for_async.clone();
-            crate::utils::process_info::spawn_async_process_resolver(
-                peer_addr,
-                record_id.clone(),
-                move |id, process| {
-                    state_clone.update_client_process(&id, process.name, process.pid, process.path);
-                },
-            );
-        }
-    }
-
     if method == Method::CONNECT {
-        let tls_intercept_config = if let Some(ref state) = admin_state {
-            let runtime_config = state.runtime_config.read().await;
-            TlsInterceptConfig {
-                enable_tls_interception: runtime_config.enable_tls_interception,
-                intercept_exclude: runtime_config.intercept_exclude.clone(),
-                intercept_include: runtime_config.intercept_include.clone(),
-                app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
-                app_intercept_include: runtime_config.app_intercept_include.clone(),
-                unsafe_ssl: runtime_config.unsafe_ssl,
-            }
-        } else {
-            TlsInterceptConfig::from_proxy_config(&proxy_config)
-        };
+        let tls_intercept_config = connect_tls_intercept_config
+            .clone()
+            .unwrap_or_else(|| TlsInterceptConfig::from_proxy_config(&proxy_config));
 
         match handle_connect(
             req,

@@ -37,6 +37,12 @@ pub struct TrafficDbStore {
     cleanup_notifier: RwLock<Option<CleanupNotifier>>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecentCacheStats {
+    pub len: usize,
+    pub cap: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct TrafficSearchFields {
     pub id: String,
@@ -139,6 +145,14 @@ impl TrafficDbStore {
 
     pub fn set_cleanup_notifier(&self, notifier: CleanupNotifier) {
         *self.cleanup_notifier.write() = Some(notifier);
+    }
+
+    pub fn recent_cache_stats(&self) -> RecentCacheStats {
+        let cache = self.recent_cache.read();
+        RecentCacheStats {
+            len: cache.len(),
+            cap: cache.cap().get(),
+        }
     }
 
     fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {

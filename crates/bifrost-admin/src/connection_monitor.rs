@@ -228,6 +228,16 @@ pub struct ConnectionMonitor {
     global_tx: broadcast::Sender<FrameEvent>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConnectionMonitorMemoryStats {
+    pub connection_count: usize,
+    pub tunnel_connection_count: usize,
+    pub total_frames_in_memory: usize,
+    pub total_preview_bytes: usize,
+    pub total_inline_ref_bytes: usize,
+    pub monitored_connection_count: usize,
+}
+
 impl ConnectionMonitor {
     pub fn new() -> Self {
         Self::with_config(DEFAULT_PREVIEW_LIMIT, DEFAULT_MAX_FRAMES_PER_CONNECTION)
@@ -750,6 +760,45 @@ impl ConnectionMonitor {
 
     pub fn connection_count(&self) -> usize {
         self.connections.read().len()
+    }
+
+    pub fn memory_stats(&self) -> ConnectionMonitorMemoryStats {
+        let connections = self.connections.read();
+
+        let mut stats = ConnectionMonitorMemoryStats::default();
+        stats.connection_count = connections.len();
+
+        for (_id, store) in connections.iter() {
+            if store.is_tunnel {
+                stats.tunnel_connection_count += 1;
+            }
+            if store.is_monitored {
+                stats.monitored_connection_count += 1;
+            }
+
+            stats.total_frames_in_memory = stats
+                .total_frames_in_memory
+                .saturating_add(store.frames.len());
+
+            for f in store.frames.iter() {
+                if let Some(p) = &f.payload_preview {
+                    stats.total_preview_bytes = stats.total_preview_bytes.saturating_add(p.len());
+                }
+                if let Some(p) = &f.raw_payload_preview {
+                    stats.total_preview_bytes = stats.total_preview_bytes.saturating_add(p.len());
+                }
+                if let Some(BodyRef::Inline { data }) = &f.payload_ref {
+                    stats.total_inline_ref_bytes =
+                        stats.total_inline_ref_bytes.saturating_add(data.len());
+                }
+                if let Some(BodyRef::Inline { data }) = &f.raw_payload_ref {
+                    stats.total_inline_ref_bytes =
+                        stats.total_inline_ref_bytes.saturating_add(data.len());
+                }
+            }
+        }
+
+        stats
     }
 
     pub fn active_connection_ids(&self) -> Vec<String> {

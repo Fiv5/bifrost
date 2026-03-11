@@ -18,3 +18,4 @@ log/
 design/
 target-e2e-*/
 .bifrost_test/
+e2e-tests/

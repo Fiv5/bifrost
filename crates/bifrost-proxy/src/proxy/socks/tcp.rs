@@ -22,12 +22,14 @@ use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 use crate::protocol::ProtocolDetector;
-use crate::proxy::http::should_intercept_tls;
+use crate::proxy::http::requires_client_app_for_tls_decision;
 use crate::server::{
     full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig, TlsInterceptConfig,
 };
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process;
+use crate::utils::process_info::{
+    resolve_client_process_async, resolve_client_process_async_with_retry,
+};
 use crate::utils::tee::store_request_body;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
@@ -933,14 +935,6 @@ impl SocksHandler {
             crate::server::ResolvedRules::default()
         };
 
-        let client_process = resolve_client_process(&self.peer_addr);
-        let client_app = client_process.as_ref().map(|p| p.name.as_str());
-
-        debug!(
-            "SOCKS5: Client process for {}:{} - app={:?}",
-            target_host, target_port, client_app
-        );
-
         let mut peek_buf = [0u8; 16];
         let peek_len = self.stream().peek(&mut peek_buf).await.unwrap_or(0);
 
@@ -973,9 +967,26 @@ impl SocksHandler {
                                 self.tls_intercept_config.clone()
                             };
                         if let Some(ref tls_intercept_config) = tls_intercept_config {
-                            let do_intercept = should_intercept_tls(
+                            let is_local_client = self.peer_addr.ip().is_loopback();
+                            let client_process = if is_local_client
+                                && requires_client_app_for_tls_decision(tls_intercept_config)
+                            {
+                                resolve_client_process_async_with_retry(&self.peer_addr, 10, 20)
+                                    .await
+                            } else {
+                                resolve_client_process_async(&self.peer_addr).await
+                            };
+                            let client_app = client_process.as_ref().map(|p| p.name.as_str());
+
+                            debug!(
+                                "SOCKS5: Client process for {}:{} - app={:?}",
+                                target_host, target_port, client_app
+                            );
+
+                            let do_intercept = crate::proxy::http::should_intercept_tls_for_client(
                                 target_host,
                                 client_app,
+                                is_local_client,
                                 tls_intercept_config,
                                 tls_config,
                                 &resolved_rules,
@@ -1045,7 +1056,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&peer_addr);
+        let client_process = resolve_client_process_async(&peer_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1268,7 +1279,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&self.peer_addr);
+        let client_process = resolve_client_process_async(&self.peer_addr).await;
         let client_app = client_process.as_ref().map(|p| p.name.clone());
 
         if let Some(ref state) = admin_state {
@@ -1441,7 +1452,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&peer_addr);
+        let client_process = resolve_client_process_async(&peer_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1732,7 +1743,7 @@ async fn handle_socks5_intercepted_request(
     let mut new_req = Request::from_parts(parts, body);
     *new_req.uri_mut() = new_uri;
 
-    let client_process = resolve_client_process(&peer_addr);
+    let client_process = resolve_client_process_async(&peer_addr).await;
     let (client_app, client_pid, client_path) = client_process
         .as_ref()
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))

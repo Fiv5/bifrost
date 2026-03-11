@@ -57,6 +57,10 @@ impl ProcessResolver {
         process
     }
 
+    pub fn resolve_cached(&self, peer_addr: &SocketAddr) -> Option<ClientProcess> {
+        self.get_from_cache(peer_addr.port()).flatten()
+    }
+
     pub fn resolve_with_retry(
         &self,
         peer_addr: &SocketAddr,
@@ -77,7 +81,39 @@ impl ProcessResolver {
             }
         }
 
+        self.update_cache(port, None);
         None
+    }
+
+    pub async fn resolve_async(
+        &self,
+        peer_addr: SocketAddr,
+        max_retries: u32,
+        delay_ms: u64,
+    ) -> Option<ClientProcess> {
+        if let Some(cached) = self.get_from_cache(peer_addr.port()) {
+            return cached;
+        }
+
+        if !peer_addr.ip().is_loopback() {
+            return None;
+        }
+
+        let port = peer_addr.port();
+        match tokio::task::spawn_blocking(move || {
+            lookup_process_with_retry(&peer_addr, max_retries, delay_ms)
+        })
+        .await
+        {
+            Ok(process) => {
+                self.update_cache(port, process.clone());
+                process
+            }
+            Err(err) => {
+                warn!(peer_addr = %peer_addr, error = %err, "Async process resolution task failed");
+                None
+            }
+        }
     }
 
     fn get_from_cache(&self, port: u16) -> Option<Option<ClientProcess>> {
@@ -113,60 +149,8 @@ impl ProcessResolver {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     fn lookup_process(&self, peer_addr: &SocketAddr) -> Option<ClientProcess> {
-        use netstat2::{
-            get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState,
-        };
-
-        let port = peer_addr.port();
-        let af_flags = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
-        let proto_flags = ProtocolFlags::TCP;
-
-        let sockets = match get_sockets_info(af_flags, proto_flags) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "Failed to get socket info");
-                return None;
-            }
-        };
-
-        for socket in sockets {
-            if let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info {
-                if tcp.local_port == port
-                    && matches!(
-                        tcp.state,
-                        TcpState::Established
-                            | TcpState::SynSent
-                            | TcpState::SynReceived
-                            | TcpState::FinWait1
-                            | TcpState::FinWait2
-                            | TcpState::CloseWait
-                            | TcpState::LastAck
-                    )
-                {
-                    if let Some(&pid) = socket.associated_pids.first() {
-                        let (name, path) = get_process_info(pid);
-                        debug!(
-                            port = port,
-                            pid = pid,
-                            name = %name,
-                            state = ?tcp.state,
-                            "Resolved client process"
-                        );
-                        return Some(ClientProcess { pid, name, path });
-                    }
-                }
-            }
-        }
-
-        trace!(port = port, "No process found for port");
-        None
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    fn lookup_process(&self, _peer_addr: &SocketAddr) -> Option<ClientProcess> {
-        None
+        lookup_process(peer_addr)
     }
 
     pub fn cleanup_expired(&self) {
@@ -325,8 +309,87 @@ lazy_static::lazy_static! {
     pub static ref PROCESS_RESOLVER: ProcessResolver = ProcessResolver::new();
 }
 
+fn lookup_process_with_retry(
+    peer_addr: &SocketAddr,
+    max_retries: u32,
+    delay_ms: u64,
+) -> Option<ClientProcess> {
+    for attempt in 0..=max_retries {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        }
+
+        let process = lookup_process(peer_addr);
+        if process.is_some() {
+            return process;
+        }
+    }
+
+    None
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn lookup_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
+    use netstat2::{
+        get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState,
+    };
+
+    let port = peer_addr.port();
+    let af_flags = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
+    let proto_flags = ProtocolFlags::TCP;
+
+    let sockets = match get_sockets_info(af_flags, proto_flags) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "Failed to get socket info");
+            return None;
+        }
+    };
+
+    for socket in sockets {
+        if let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info {
+            if tcp.local_port == port
+                && matches!(
+                    tcp.state,
+                    TcpState::Established
+                        | TcpState::SynSent
+                        | TcpState::SynReceived
+                        | TcpState::FinWait1
+                        | TcpState::FinWait2
+                        | TcpState::CloseWait
+                        | TcpState::LastAck
+                )
+            {
+                if let Some(&pid) = socket.associated_pids.first() {
+                    let (name, path) = get_process_info(pid);
+                    debug!(
+                        port = port,
+                        pid = pid,
+                        name = %name,
+                        state = ?tcp.state,
+                        "Resolved client process"
+                    );
+                    return Some(ClientProcess { pid, name, path });
+                }
+            }
+        }
+    }
+
+    trace!(port = port, "No process found for port");
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn lookup_process(_peer_addr: &SocketAddr) -> Option<ClientProcess> {
+    None
+}
+
 pub fn resolve_client_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
     PROCESS_RESOLVER.resolve(peer_addr)
+}
+
+pub fn resolve_client_process_cached(peer_addr: &SocketAddr) -> Option<ClientProcess> {
+    PROCESS_RESOLVER.resolve_cached(peer_addr)
 }
 
 pub fn resolve_client_process_with_retry(
@@ -335,6 +398,20 @@ pub fn resolve_client_process_with_retry(
     delay_ms: u64,
 ) -> Option<ClientProcess> {
     PROCESS_RESOLVER.resolve_with_retry(peer_addr, max_retries, delay_ms)
+}
+
+pub async fn resolve_client_process_async(peer_addr: &SocketAddr) -> Option<ClientProcess> {
+    PROCESS_RESOLVER.resolve_async(*peer_addr, 3, 10).await
+}
+
+pub async fn resolve_client_process_async_with_retry(
+    peer_addr: &SocketAddr,
+    max_retries: u32,
+    delay_ms: u64,
+) -> Option<ClientProcess> {
+    PROCESS_RESOLVER
+        .resolve_async(*peer_addr, max_retries, delay_ms)
+        .await
 }
 
 pub fn spawn_async_process_resolver<F>(peer_addr: SocketAddr, record_id: String, callback: F)
@@ -393,5 +470,41 @@ mod tests {
 
         let cached = resolver.get_from_cache(54321);
         assert!(cached.is_some());
+    }
+
+    #[test]
+    fn test_process_resolver_cached_lookup_miss() {
+        let resolver = ProcessResolver::new();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 54321);
+
+        let cached = resolver.resolve_cached(&addr);
+        assert!(cached.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_process_resolver_async_returns_cached_hit() {
+        let resolver = ProcessResolver::new();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 54321);
+        let process = ClientProcess {
+            pid: 1234,
+            name: "Chrome".to_string(),
+            path: Some("/Applications/Chrome.app".to_string()),
+        };
+
+        resolver.update_cache(addr.port(), Some(process.clone()));
+
+        let resolved = resolver.resolve_async(addr, 3, 10).await;
+        assert_eq!(resolved.as_ref().map(|p| p.name.as_str()), Some("Chrome"));
+        assert_eq!(resolved.as_ref().map(|p| p.pid), Some(1234));
+    }
+
+    #[test]
+    fn test_process_resolver_retry_caches_miss() {
+        let resolver = ProcessResolver::new();
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1);
+
+        let resolved = resolver.resolve_with_retry(&addr, 0, 0);
+        assert!(resolved.is_none());
+        assert!(matches!(resolver.get_from_cache(addr.port()), Some(None)));
     }
 }

@@ -6,12 +6,11 @@ use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
-use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
-use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -29,7 +28,6 @@ pub use self::bidirectional::{
     tunnel_bidirectional, tunnel_bidirectional_with_cancel, TunnelStats,
 };
 pub use self::cert::SingleCertResolver;
-use self::client::sanitize_headers_for_http2;
 use self::host_rule::parse_host_rule;
 use self::io::CombinedAsyncRw;
 
@@ -60,16 +58,40 @@ use crate::utils::tee::{
 };
 use crate::utils::throttle::wrap_throttled_body;
 
-type HttpsPooledClient = Client<
-    hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
-    http_body_util::Full<Bytes>,
->;
-pub fn get_https_client(unsafe_ssl: bool) -> &'static HttpsPooledClient {
-    client::get_https_client(unsafe_ssl)
-}
-
 pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config(unsafe_ssl)
+}
+
+pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
+    client::sanitize_upstream_headers(headers)
+}
+
+pub(super) async fn send_pooled_request(
+    request: Request<BoxBody>,
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> std::result::Result<Response<Incoming>, hyper_util::client::legacy::Error> {
+    client::send_pooled_request(request, unsafe_ssl, dns_servers, pool_partition).await
+}
+
+fn build_upstream_pool_partition(
+    original_host: &str,
+    target_host: &str,
+    target_port: u16,
+    use_http: bool,
+    rules: &ResolvedRules,
+) -> String {
+    format!(
+        "orig={original_host}|target={}://{}:{}|host={:?}|proxy={:?}|proto={:?}|ignored_host={}",
+        if use_http { "http" } else { "https" },
+        target_host,
+        target_port,
+        rules.host,
+        rules.proxy,
+        rules.host_protocol,
+        rules.ignored.host
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -106,9 +128,12 @@ pub async fn handle_connect(
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
-    let intercept = should_intercept_tls(
+    let intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
+        ctx.client_ip
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
         tls_intercept_config,
         &tls_config,
         &resolved_rules,
@@ -438,9 +463,10 @@ async fn handle_tls_interception(
         ));
     };
 
-    let server_config = ServerConfig::builder()
+    let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
@@ -611,11 +637,10 @@ async fn tls_intercept_tunnel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let conn = ServerBuilder::new()
+    let builder = AutoServerBuilder::new(TokioExecutor::new())
         .preserve_header_case(true)
-        .title_case_headers(true)
-        .serve_connection(client_io, service)
-        .with_upgrades();
+        .title_case_headers(true);
+    let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     if let Err(e) = conn.await {
         if verbose_logging {
@@ -698,11 +723,10 @@ async fn tls_intercept_tunnel_with_cancel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let conn = ServerBuilder::new()
+    let builder = AutoServerBuilder::new(TokioExecutor::new())
         .preserve_header_case(true)
-        .title_case_headers(true)
-        .serve_connection(client_io, service)
-        .with_upgrades();
+        .title_case_headers(true);
+    let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     tokio::pin!(conn);
 
@@ -1183,14 +1207,10 @@ async fn handle_intercepted_request_with_protocol(
         req_content_length.unwrap_or(0)
     };
 
-    // 上游请求：
-    // - HTTP/1.1：请求行必须使用 origin-form（`/path?query`），避免把 absolute-form（`https://host/path`）发给 CDN/源站导致 400。
-    // - HTTP/2：没有请求行，最终需要生成 `:scheme/:authority/:path`。这里先保留 origin-form，
-    //          之后若 ALPN 选择 h2，会在发送前补齐 scheme+authority 到 URI 里。
-    let upstream_uri: hyper::Uri = match path.parse() {
+    let upstream_uri: hyper::Uri = match target_uri.parse() {
         Ok(u) => u,
         Err(e) => {
-            error!("[{}] Failed to parse upstream path as URI: {}", req_id, e);
+            error!("[{}] Failed to parse upstream URI: {}", req_id, e);
             return Ok(Response::builder()
                 .status(502)
                 .body(full_body(b"Bad Gateway".to_vec()))
@@ -1312,7 +1332,7 @@ async fn handle_intercepted_request_with_protocol(
         None => full_body(Bytes::from(body_bytes.clone())),
     };
     let outgoing_body = wrap_throttled_body(outgoing_body, resolved_rules.req_speed);
-    let outgoing_req = match new_req.body(outgoing_body) {
+    let mut outgoing_req = match new_req.body(outgoing_body) {
         Ok(r) => r,
         Err(e) => {
             error!("[{}] Failed to build request: {}", req_id, e);
@@ -1322,6 +1342,8 @@ async fn handle_intercepted_request_with_protocol(
                 .unwrap());
         }
     };
+    sanitize_upstream_headers(outgoing_req.headers_mut());
+    outgoing_req.headers_mut().remove(hyper::header::HOST);
 
     let final_req_headers: Vec<(String, String)> = outgoing_req
         .headers()
@@ -1411,7 +1433,7 @@ async fn handle_intercepted_request_with_protocol(
         };
     let dns_ms = dns_start.elapsed().as_millis() as u64;
 
-    let connect_addr = match resolved_addrs.first() {
+    let _connect_addr = match resolved_addrs.first() {
         Some(addr) => *addr,
         None => {
             error!(
@@ -1481,93 +1503,6 @@ async fn handle_intercepted_request_with_protocol(
         }
     };
 
-    let connect_start = Instant::now();
-    debug!(
-        "[{}] Connecting to target: {}:{} (resolved to {})",
-        req_id, actual_target_host, actual_target_port, connect_addr
-    );
-    let stream = match TcpStream::connect(connect_addr).await {
-        Ok(s) => {
-            debug!(
-                "[{}] TCP connection established to {} in {}ms",
-                req_id,
-                connect_addr,
-                connect_start.elapsed().as_millis()
-            );
-            s
-        }
-        Err(e) => {
-            error!(
-                "[{}] Failed to connect to {}:{} ({}): {}",
-                req_id, actual_target_host, actual_target_port, connect_addr, e
-            );
-            let error_info = ConnectionErrorInfo {
-                error_type: "TCP_CONNECTION_FAILED",
-                error_message: format!("Connection Failed: {}", e),
-                host: actual_target_host.clone(),
-                request_url: original_uri.clone(),
-            };
-            let total_ms = start_time.elapsed().as_millis() as u64;
-            if let Some(ref state) = admin_state {
-                let mut record = TrafficRecord::new(
-                    req_id.to_string(),
-                    method_str.clone(),
-                    original_uri.clone(),
-                );
-                record.status = if needs_response_override(&resolved_rules) {
-                    resolved_rules
-                        .status_code
-                        .or(resolved_rules.replace_status)
-                        .unwrap_or(502)
-                } else {
-                    502
-                };
-                record.duration_ms = total_ms;
-                record.host = original_host.to_string();
-                record.timing = Some(RequestTiming {
-                    dns_ms: Some(dns_ms),
-                    connect_ms: Some(connect_start.elapsed().as_millis() as u64),
-                    tls_ms: None,
-                    send_ms: None,
-                    wait_ms: None,
-                    receive_ms: None,
-                    total_ms,
-                });
-                record.request_headers = Some(final_req_headers.clone());
-                record.original_request_headers = Some(original_req_headers.clone());
-                record.has_rule_hit = has_rules;
-                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                record.error_message = Some(format!("Connection Failed: {}", e));
-                record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                    capture.take()
-                } else {
-                    store_request_body(
-                        &admin_state,
-                        req_id,
-                        &body_bytes,
-                        req_content_encoding.as_deref(),
-                    )
-                };
-                state.record_traffic(record);
-            }
-            if needs_response_override(&resolved_rules) {
-                if verbose_logging {
-                    info!(
-                        "[{}] [CONN_ERROR] TCP connection failed, applying response override rules",
-                        req_id
-                    );
-                }
-                return Ok(build_overridden_error_response(
-                    &resolved_rules,
-                    502,
-                    &error_info,
-                ));
-            }
-            return Ok(build_connection_error_response(502, &error_info));
-        }
-    };
-    let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
-
     let build_conn_error_record_and_response =
         |error_type: &'static str, error_msg: String, tls_ms: Option<u64>| {
             let error_info = ConnectionErrorInfo {
@@ -1595,7 +1530,7 @@ async fn handle_intercepted_request_with_protocol(
                 record.host = original_host.to_string();
                 record.timing = Some(RequestTiming {
                     dns_ms: Some(dns_ms),
-                    connect_ms: Some(tcp_connect_ms),
+                    connect_ms: None,
                     tls_ms,
                     send_ms: None,
                     wait_ms: None,
@@ -1631,352 +1566,54 @@ async fn handle_intercepted_request_with_protocol(
                 build_connection_error_response(502, &error_info)
             }
         };
-
-    let (response, tls_ms, wait_ms) = if actual_use_http {
-        let io = TokioIo::new(stream);
-        let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
-            .preserve_header_case(true)
-            .title_case_headers(true)
-            .handshake(io)
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                    req_id,
-                    actual_target_host,
-                    actual_target_port,
-                    method_str,
-                    original_uri,
-                    &client_ip,
-                    &client_app,
-                    client_pid,
-                    &client_path,
-                    e
-                );
-                return Ok(build_conn_error_record_and_response(
-                    "HTTP_HANDSHAKE_FAILED",
-                    format!("HTTP Handshake Failed: {}", e),
-                    None,
-                ));
-            }
-        };
-
-        let req_id_for_conn = req_id.to_string();
-        let target_host_for_conn = actual_target_host.clone();
-        let target_port_for_conn = actual_target_port;
-        let method_for_conn = method_str.clone();
-        let uri_for_conn = original_uri.clone();
-        let client_ip_for_conn = client_ip.clone();
-        let client_app_for_conn = client_app.clone();
-        let client_pid_for_conn = client_pid;
-        let client_path_for_conn = client_path.clone();
-        tokio::spawn(async move {
-            if let Err(err) = conn.await {
-                error!(
-                    "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                    req_id_for_conn,
-                    target_host_for_conn,
-                    target_port_for_conn,
-                    method_for_conn,
-                    uri_for_conn,
-                    client_ip_for_conn,
-                    client_app_for_conn,
-                    client_pid_for_conn,
-                    client_path_for_conn,
-                    err
-                );
-            }
-        });
-
-        let outgoing_uri_for_log = outgoing_req.uri().clone();
-        let outgoing_host_for_log = outgoing_req
-            .headers()
-            .get(hyper::header::HOST)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let send_start = Instant::now();
-        let response = match sender.send_request(outgoing_req).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!(
-                    "[{}] Failed to send request: err={} err_dbg={:?} upstream_host={} upstream_uri={}",
-                    req_id,
-                    e,
-                    e,
-                    outgoing_host_for_log,
-                    outgoing_uri_for_log
-                );
-                if let Some(src) = std::error::Error::source(&e) {
-                    error!("[{}] Failed to send request: source={}", req_id, src);
-                }
-                return Ok(build_conn_error_record_and_response(
-                    "REQUEST_FAILED",
-                    format!("Request Failed: {}", e),
-                    None,
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        (response, None, wait_ms)
-    } else {
-        let tls_start = Instant::now();
-        let tls_config = get_tls_client_config(unsafe_ssl);
-        let connector = tokio_rustls::TlsConnector::from(tls_config);
-
-        let server_name =
-            match tokio_rustls::rustls::pki_types::ServerName::try_from(actual_target_host.clone())
-            {
-                Ok(name) => name,
-                Err(_) => {
-                    error!(
-                        "[{}] Invalid server name for TLS: {}",
-                        req_id, actual_target_host
-                    );
-                    return Ok(build_conn_error_record_and_response(
-                        "TLS_SERVER_NAME_INVALID",
-                        format!("Invalid TLS Server Name: {}", actual_target_host),
-                        None,
-                    ));
-                }
-            };
-
-        let tls_stream = match connector.connect(server_name, stream).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!(
-                    "[{}] TLS handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                    req_id,
-                    actual_target_host,
-                    actual_target_port,
-                    method_str,
-                    original_uri,
-                    &client_ip,
-                    &client_app,
-                    client_pid,
-                    &client_path,
-                    e
-                );
-                let tls_ms = tls_start.elapsed().as_millis() as u64;
-                return Ok(build_conn_error_record_and_response(
-                    "TLS_HANDSHAKE_FAILED",
-                    format!("TLS Handshake Failed: {}", e),
-                    Some(tls_ms),
-                ));
-            }
-        };
-        let tls_ms = tls_start.elapsed().as_millis() as u64;
-
-        let negotiated_alpn = tls_stream.get_ref().1.alpn_protocol().map(|p| p.to_vec());
-        let use_h2 = matches!(negotiated_alpn.as_deref(), Some(b"h2"));
-        if verbose_logging {
-            debug!(
-                "[{}] [UPSTREAM] negotiated ALPN={:?}, use_h2={}",
-                req_id, negotiated_alpn, use_h2
-            );
-        }
-
-        let mut outgoing_req = outgoing_req;
-        if use_h2 {
-            let (mut parts, body) = outgoing_req.into_parts();
-
-            // hyper 的 HTTP/2 client 会从 URI 推导 pseudo headers（尤其是 :scheme / :authority）。
-            // 对于我们在上游直连场景构造的 origin-form（仅 /path?query），这里需要补齐 scheme+authority。
-            let scheme = if actual_use_http { "http" } else { "https" };
-            let authority = host_header_value.as_str();
-            let abs_uri: hyper::Uri = match format!("{}://{}{}", scheme, authority, path).parse() {
-                Ok(u) => u,
-                Err(e) => {
-                    error!(
-                        "[{}] Failed to build upstream HTTP/2 URI from scheme/authority/path: {}",
-                        req_id, e
-                    );
-                    return Ok(build_conn_error_record_and_response(
-                        "URI_BUILD_FAILED",
-                        format!("Failed to build upstream URI: {}", e),
-                        Some(tls_ms),
-                    ));
-                }
-            };
-            parts.uri = abs_uri;
-
-            // 明确标记为 HTTP/2 请求，避免下游对版本/伪头推导出现歧义。
-            parts.version = hyper::Version::HTTP_2;
-
-            // HTTP/2 使用 :authority 代替 Host；部分严格实现会对携带 Host 的请求更敏感。
-            parts.headers.remove(hyper::header::HOST);
-
-            sanitize_headers_for_http2(&mut parts.headers);
-            outgoing_req = Request::from_parts(parts, body);
-        }
-
-        // HTTP/2 与 HTTP/1.1 需要不同的 handshake。这里根据 ALPN 选择，并在分支内 spawn 对应 conn，
-        // 避免把不同类型的 conn 暴露到同一个 if 表达式外。
-        if use_h2 {
-            let io = TokioIo::new(tls_stream);
-            let (mut sender, conn) = match hyper::client::conn::http2::Builder::new(
-                TokioExecutor::new(),
-            )
-            .handshake(io)
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(
-                        "[{}] HTTP/2 handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                        req_id,
-                        actual_target_host,
-                        actual_target_port,
-                        method_str,
-                        original_uri,
-                        &client_ip,
-                        &client_app,
-                        client_pid,
-                        &client_path,
-                        e
-                    );
-                    return Ok(build_conn_error_record_and_response(
-                        "HTTP2_HANDSHAKE_FAILED",
-                        format!("HTTP/2 Handshake Failed: {}", e),
-                        Some(tls_ms),
-                    ));
-                }
-            };
-
-            let req_id_for_conn = req_id.to_string();
-            let target_host_for_conn = actual_target_host.clone();
-            let target_port_for_conn = actual_target_port;
-            let method_for_conn = method_str.clone();
-            let uri_for_conn = original_uri.clone();
-            let client_ip_for_conn = client_ip.clone();
-            let client_app_for_conn = client_app.clone();
-            let client_pid_for_conn = client_pid;
-            let client_path_for_conn = client_path.clone();
-            tokio::spawn(async move {
-                if let Err(err) = conn.await {
-                    error!(
-                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                        req_id_for_conn,
-                        target_host_for_conn,
-                        target_port_for_conn,
-                        method_for_conn,
-                        uri_for_conn,
-                        client_ip_for_conn,
-                        client_app_for_conn,
-                        client_pid_for_conn,
-                        client_path_for_conn,
-                        err
-                    );
-                }
-            });
-
-            let outgoing_uri_for_log = outgoing_req.uri().clone();
-            let outgoing_host_for_log = outgoing_req
-                .headers()
-                .get(hyper::header::HOST)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let send_start = Instant::now();
-            let response = match sender.send_request(outgoing_req).await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(
-                        "[{}] Failed to send request: err={} err_dbg={:?} upstream_host={} upstream_uri={}",
-                        req_id,
-                        e,
-                        e,
-                        outgoing_host_for_log,
-                        outgoing_uri_for_log
-                    );
-                    if let Some(src) = std::error::Error::source(&e) {
-                        error!("[{}] Failed to send request: source={}", req_id, src);
-                    }
-                    return Ok(build_conn_error_record_and_response(
-                        "REQUEST_FAILED",
-                        format!("Request Failed: {}", e),
-                        Some(tls_ms),
-                    ));
-                }
-            };
-            let wait_ms = send_start.elapsed().as_millis() as u64;
-            (response, Some(tls_ms), wait_ms)
-        } else {
-            let io = TokioIo::new(tls_stream);
-            let (mut sender, conn) = match hyper::client::conn::http1::Builder::new()
-                .preserve_header_case(true)
-                .title_case_headers(true)
-                .handshake(io)
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    error!(
-                        "[{}] HTTP handshake failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
-                        req_id,
-                        actual_target_host,
-                        actual_target_port,
-                        method_str,
-                        original_uri,
-                        &client_ip,
-                        &client_app,
-                        client_pid,
-                        &client_path,
-                        e
-                    );
-                    return Ok(build_conn_error_record_and_response(
-                        "HTTP_HANDSHAKE_FAILED",
-                        format!("HTTP Handshake Failed: {}", e),
-                        Some(tls_ms),
-                    ));
-                }
-            };
-
-            let req_id_for_conn = req_id.to_string();
-            let target_host_for_conn = actual_target_host.clone();
-            let target_port_for_conn = actual_target_port;
-            let method_for_conn = method_str.clone();
-            let uri_for_conn = original_uri.clone();
-            let client_ip_for_conn = client_ip.clone();
-            let client_app_for_conn = client_app.clone();
-            let client_pid_for_conn = client_pid;
-            let client_path_for_conn = client_path.clone();
-            tokio::spawn(async move {
-                if let Err(err) = conn.await {
-                    error!(
-                        "[{}] Connection failed to {}:{} method={} url={} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={:?}",
-                        req_id_for_conn,
-                        target_host_for_conn,
-                        target_port_for_conn,
-                        method_for_conn,
-                        uri_for_conn,
-                        client_ip_for_conn,
-                        client_app_for_conn,
-                        client_pid_for_conn,
-                        client_path_for_conn,
-                        err
-                    );
-                }
-            });
-
-            let send_start = Instant::now();
-            let response = match sender.send_request(outgoing_req).await {
-                Ok(r) => r,
-                Err(e) => {
-                    error!("[{}] Failed to send request: {}", req_id, e);
-                    return Ok(build_conn_error_record_and_response(
-                        "REQUEST_FAILED",
-                        format!("Request Failed: {}", e),
-                        Some(tls_ms),
-                    ));
-                }
-            };
-            let wait_ms = send_start.elapsed().as_millis() as u64;
-            (response, Some(tls_ms), wait_ms)
+    let upstream_uri: hyper::Uri = match target_uri.parse() {
+        Ok(uri) => uri,
+        Err(e) => {
+            return Ok(build_conn_error_record_and_response(
+                "URI_BUILD_FAILED",
+                format!("Failed to build upstream URI: {}", e),
+                None,
+            ));
         }
     };
+    let (mut upstream_parts, upstream_body) = outgoing_req.into_parts();
+    upstream_parts.uri = upstream_uri;
+    upstream_parts.headers.remove(hyper::header::HOST);
+    sanitize_upstream_headers(&mut upstream_parts.headers);
+    let upstream_req = Request::from_parts(upstream_parts, upstream_body);
+
+    let pool_partition = build_upstream_pool_partition(
+        original_host,
+        &actual_target_host,
+        actual_target_port,
+        actual_use_http,
+        &resolved_rules,
+    );
+    let send_start = Instant::now();
+    let response = match send_pooled_request(
+        upstream_req,
+        unsafe_ssl,
+        &resolved_rules.dns_servers,
+        &pool_partition,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!("[{}] Failed to send request: {}", req_id, e);
+            let mut source = std::error::Error::source(&e);
+            while let Some(err) = source {
+                error!("[{}] Request failure source: {}", req_id, err);
+                source = std::error::Error::source(err);
+            }
+            return Ok(build_conn_error_record_and_response(
+                "REQUEST_FAILED",
+                format!("Request Failed: {}", e),
+                None,
+            ));
+        }
+    };
+    let (response, tls_ms, wait_ms) = (response, None, send_start.elapsed().as_millis() as u64);
 
     let (mut res_parts, res_body) = response.into_parts();
 
@@ -2188,7 +1825,7 @@ async fn handle_intercepted_request_with_protocol(
             record.host = original_host.to_string();
             record.timing = Some(RequestTiming {
                 dns_ms: Some(dns_ms),
-                connect_ms: Some(tcp_connect_ms),
+                connect_ms: None,
                 tls_ms,
                 send_ms: None,
                 wait_ms: Some(wait_ms),
@@ -2374,7 +2011,7 @@ async fn handle_intercepted_request_with_protocol(
         record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
             dns_ms: Some(dns_ms),
-            connect_ms: Some(tcp_connect_ms),
+            connect_ms: None,
             tls_ms,
             send_ms: None,
             wait_ms: Some(wait_ms),
@@ -3081,9 +2718,32 @@ fn is_app_included(client_app: Option<&str>, include_list: &[String]) -> bool {
     is_app_matched(client_app, include_list)
 }
 
+pub fn requires_client_app_for_tls_decision(tls_intercept_config: &TlsInterceptConfig) -> bool {
+    !tls_intercept_config.app_intercept_include.is_empty()
+        || !tls_intercept_config.app_intercept_exclude.is_empty()
+}
+
 pub fn should_intercept_tls(
     host: &str,
     client_app: Option<&str>,
+    tls_intercept_config: &TlsInterceptConfig,
+    tls_config: &TlsConfig,
+    resolved_rules: &ResolvedRules,
+) -> bool {
+    should_intercept_tls_for_client(
+        host,
+        client_app,
+        true,
+        tls_intercept_config,
+        tls_config,
+        resolved_rules,
+    )
+}
+
+pub fn should_intercept_tls_for_client(
+    host: &str,
+    client_app: Option<&str>,
+    is_local_client: bool,
     tls_intercept_config: &TlsInterceptConfig,
     tls_config: &TlsConfig,
     resolved_rules: &ResolvedRules,
@@ -3096,12 +2756,21 @@ pub fn should_intercept_tls(
         return rule_intercept;
     }
 
-    if is_app_included(client_app, &tls_intercept_config.app_intercept_include) {
-        return true;
+    if is_local_client
+        && requires_client_app_for_tls_decision(tls_intercept_config)
+        && !matches!(client_app, Some(app) if !app.is_empty())
+    {
+        return false;
     }
 
-    if is_app_excluded(client_app, &tls_intercept_config.app_intercept_exclude) {
-        return false;
+    if is_local_client {
+        if is_app_included(client_app, &tls_intercept_config.app_intercept_include) {
+            return true;
+        }
+
+        if is_app_excluded(client_app, &tls_intercept_config.app_intercept_exclude) {
+            return false;
+        }
     }
 
     if is_domain_included(host, &tls_intercept_config.intercept_include) {
@@ -3647,6 +3316,72 @@ mod tests {
         assert!(
             !result2,
             "Should NOT intercept traffic from non-included app when globally disabled"
+        );
+    }
+
+    #[test]
+    fn test_should_not_intercept_when_app_policy_configured_but_client_app_unknown() {
+        let mut tls_intercept_config =
+            make_tls_intercept_config(true, vec![], vec!["example.com".to_string()]);
+        tls_intercept_config.app_intercept_exclude = vec!["Postman".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls(
+            "example.com",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "Should default to passthrough when app policy is configured but client app is unknown"
+        );
+    }
+
+    #[test]
+    fn test_should_intercept_rule_override_even_when_client_app_unknown() {
+        let mut tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
+        tls_intercept_config.app_intercept_exclude = vec!["Postman".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules {
+            tls_intercept: Some(true),
+            ..Default::default()
+        };
+
+        let result = should_intercept_tls(
+            "example.com",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Rule override should still win when client app is unknown"
+        );
+    }
+
+    #[test]
+    fn test_should_ignore_app_policy_for_non_local_client() {
+        let mut tls_intercept_config =
+            make_tls_intercept_config(false, vec![], vec!["example.com".to_string()]);
+        tls_intercept_config.app_intercept_exclude = vec!["Postman".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls_for_client(
+            "example.com",
+            None,
+            false,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Non-local client traffic should skip app policy and follow domain/global rules"
         );
     }
 
