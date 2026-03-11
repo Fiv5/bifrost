@@ -25,6 +25,7 @@ interface PanelProps {
   onTabChange: (tab: string) => void;
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
+  tabBarExtra?: ReactNode;
   displayFormat?: DisplayFormat;
   onDisplayFormatChange?: (format: string) => void;
   contentType?: RecordContentType;
@@ -41,6 +42,7 @@ export const Panel = ({
   onTabChange,
   searchValue,
   onSearch,
+  tabBarExtra,
   displayFormat,
   onDisplayFormatChange,
   contentType,
@@ -104,41 +106,47 @@ export const Panel = ({
           ))}
         </Space>
 
-        <Space size="small">
-          {activeTab === 'Body' && displayFormat && onDisplayFormatChange && contentType && (
-            <BodyTypeMenu
-              value={displayFormat}
-              onChange={onDisplayFormatChange}
-              contentType={contentType}
-            />
-          )}
-          <FilterOutlined
-            onClick={handleToggleSearch}
-            style={{
-              cursor: 'pointer',
-              color: searchValue.show ? token.colorPrimary : token.colorTextSecondary,
-              fontSize: 14,
-            }}
-          />
-          {collapsed ? (
-            <DownOutlined
-              onClick={handleToggleCollapsed}
+        <Space size="middle" align="center">
+          {tabBarExtra}
+          <Space size="small" align="center">
+            {activeTab === 'Body' &&
+              displayFormat &&
+              onDisplayFormatChange &&
+              contentType && (
+                <BodyTypeMenu
+                  value={displayFormat}
+                  onChange={onDisplayFormatChange}
+                  contentType={contentType}
+                />
+              )}
+            <FilterOutlined
+              onClick={handleToggleSearch}
               style={{
                 cursor: 'pointer',
-                color: token.colorTextSecondary,
+                color: searchValue.show ? token.colorPrimary : token.colorTextSecondary,
                 fontSize: 14,
               }}
             />
-          ) : (
-            <UpOutlined
-              onClick={handleToggleCollapsed}
-              style={{
-                cursor: 'pointer',
-                color: token.colorTextSecondary,
-                fontSize: 14,
-              }}
-            />
-          )}
+            {collapsed ? (
+              <DownOutlined
+                onClick={handleToggleCollapsed}
+                style={{
+                  cursor: 'pointer',
+                  color: token.colorTextSecondary,
+                  fontSize: 14,
+                }}
+              />
+            ) : (
+              <UpOutlined
+                onClick={handleToggleCollapsed}
+                style={{
+                  cursor: 'pointer',
+                  color: token.colorTextSecondary,
+                  fontSize: 14,
+                }}
+              />
+            )}
+          </Space>
         </Space>
       </div>
 

@@ -26,7 +26,7 @@ import { getClientId } from '../services/clientId';
 
 import type { RequestType } from '../types';
 
-export type RequestPanelTab = 'params' | 'headers' | 'body' | 'history';
+export type RequestPanelTab = 'params' | 'headers' | 'cookies' | 'body' | 'history';
 export type ResponsePanelTab = 'Body' | 'Header' | 'Set-Cookie' | 'Matched Rules' | 'Messages';
 export type ResponseViewMode = 'pretty' | 'raw' | 'preview';
 export type ResponseContentType = 'json' | 'xml' | 'html' | 'javascript' | 'css' | 'text';
