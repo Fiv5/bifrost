@@ -15,7 +15,7 @@ use hyper_util::client::legacy::connect::dns::Name;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::Error as ClientError;
-use hyper_util::rt::TokioExecutor;
+use hyper_util::rt::{TokioExecutor, TokioTimer};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tower::Service;
 
@@ -174,10 +174,16 @@ fn build_https_client(unsafe_ssl: bool, dns_servers: &[String]) -> HttpsPooledCl
         .enable_all_versions()
         .wrap_connector(http_connector);
 
-    Client::builder(TokioExecutor::new())
-        .pool_idle_timeout(Duration::from_secs(60))
-        .pool_max_idle_per_host(32)
-        .build(https_connector)
+    let mut builder = Client::builder(TokioExecutor::new());
+    builder.timer(TokioTimer::new());
+    builder.pool_timer(TokioTimer::new());
+    builder.pool_idle_timeout(Duration::from_secs(90));
+    builder.pool_max_idle_per_host(32);
+    builder.http2_adaptive_window(true);
+    builder.http2_keep_alive_interval(Some(Duration::from_secs(15)));
+    builder.http2_keep_alive_timeout(Duration::from_secs(20));
+    builder.http2_keep_alive_while_idle(true);
+    builder.build(https_connector)
 }
 
 pub(super) fn get_https_client(

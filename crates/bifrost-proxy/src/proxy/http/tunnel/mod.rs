@@ -9,7 +9,7 @@ use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -92,6 +92,20 @@ fn build_upstream_pool_partition(
         rules.host_protocol,
         rules.ignored.host
     )
+}
+
+fn build_tls_intercept_server_builder() -> AutoServerBuilder<TokioExecutor> {
+    let mut builder = AutoServerBuilder::new(TokioExecutor::new())
+        .preserve_header_case(true)
+        .title_case_headers(true);
+    builder
+        .http2()
+        .adaptive_window(true)
+        .max_concurrent_streams(512)
+        .keep_alive_interval(Some(std::time::Duration::from_secs(15)))
+        .keep_alive_timeout(std::time::Duration::from_secs(20))
+        .timer(TokioTimer::new());
+    builder
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -637,9 +651,7 @@ async fn tls_intercept_tunnel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let builder = AutoServerBuilder::new(TokioExecutor::new())
-        .preserve_header_case(true)
-        .title_case_headers(true);
+    let builder = build_tls_intercept_server_builder();
     let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     if let Err(e) = conn.await {
@@ -723,9 +735,7 @@ async fn tls_intercept_tunnel_with_cancel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let builder = AutoServerBuilder::new(TokioExecutor::new())
-        .preserve_header_case(true)
-        .title_case_headers(true);
+    let builder = build_tls_intercept_server_builder();
     let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     tokio::pin!(conn);
@@ -1364,144 +1374,9 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let dns_start = Instant::now();
-    let resolved_addrs: Vec<std::net::SocketAddr> =
-        match tokio::net::lookup_host(format!("{}:{}", actual_target_host, actual_target_port))
-            .await
-        {
-            Ok(addrs) => addrs.collect(),
-            Err(e) => {
-                error!(
-                    "[{}] DNS resolution failed for {}: {}",
-                    req_id, actual_target_host, e
-                );
-                let error_info = ConnectionErrorInfo {
-                    error_type: "DNS_LOOKUP_FAILED",
-                    error_message: format!("DNS Lookup Failed: {}", e),
-                    host: actual_target_host.clone(),
-                    request_url: original_uri.clone(),
-                };
-                let total_ms = start_time.elapsed().as_millis() as u64;
-                if let Some(ref state) = admin_state {
-                    let mut record = TrafficRecord::new(
-                        req_id.to_string(),
-                        method_str.clone(),
-                        original_uri.clone(),
-                    );
-                    record.status = if needs_response_override(&resolved_rules) {
-                        resolved_rules
-                            .status_code
-                            .or(resolved_rules.replace_status)
-                            .unwrap_or(502)
-                    } else {
-                        502
-                    };
-                    record.duration_ms = total_ms;
-                    record.host = original_host.to_string();
-                    record.request_headers = Some(final_req_headers.clone());
-                    record.original_request_headers = Some(original_req_headers.clone());
-                    record.has_rule_hit = has_rules;
-                    record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                    record.error_message = Some(format!("DNS Lookup Failed: {}", e));
-                    record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                        capture.take()
-                    } else {
-                        store_request_body(
-                            &admin_state,
-                            req_id,
-                            &body_bytes,
-                            req_content_encoding.as_deref(),
-                        )
-                    };
-                    state.record_traffic(record);
-                }
-                if needs_response_override(&resolved_rules) {
-                    if verbose_logging {
-                        info!(
-                            "[{}] [CONN_ERROR] DNS lookup failed, applying response override rules",
-                            req_id
-                        );
-                    }
-                    return Ok(build_overridden_error_response(
-                        &resolved_rules,
-                        502,
-                        &error_info,
-                    ));
-                }
-                return Ok(build_connection_error_response(502, &error_info));
-            }
-        };
-    let dns_ms = dns_start.elapsed().as_millis() as u64;
-
-    let _connect_addr = match resolved_addrs.first() {
-        Some(addr) => *addr,
-        None => {
-            error!(
-                "[{}] No addresses resolved for {}",
-                req_id, actual_target_host
-            );
-            let error_info = ConnectionErrorInfo {
-                error_type: "DNS_NO_ADDRESSES",
-                error_message: format!(
-                    "DNS resolved but no addresses returned for {}",
-                    actual_target_host
-                ),
-                host: actual_target_host.clone(),
-                request_url: original_uri.clone(),
-            };
-            let total_ms = start_time.elapsed().as_millis() as u64;
-            if let Some(ref state) = admin_state {
-                let mut record = TrafficRecord::new(
-                    req_id.to_string(),
-                    method_str.clone(),
-                    original_uri.clone(),
-                );
-                record.status = if needs_response_override(&resolved_rules) {
-                    resolved_rules
-                        .status_code
-                        .or(resolved_rules.replace_status)
-                        .unwrap_or(502)
-                } else {
-                    502
-                };
-                record.duration_ms = total_ms;
-                record.host = original_host.to_string();
-                record.request_headers = Some(final_req_headers.clone());
-                record.original_request_headers = Some(original_req_headers.clone());
-                record.has_rule_hit = has_rules;
-                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-                record.error_message = Some(format!(
-                    "DNS resolved but no addresses for {}",
-                    actual_target_host
-                ));
-                record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                    capture.take()
-                } else {
-                    store_request_body(
-                        &admin_state,
-                        req_id,
-                        &body_bytes,
-                        req_content_encoding.as_deref(),
-                    )
-                };
-                state.record_traffic(record);
-            }
-            if needs_response_override(&resolved_rules) {
-                if verbose_logging {
-                    info!(
-                        "[{}] [CONN_ERROR] No DNS addresses, applying response override rules",
-                        req_id
-                    );
-                }
-                return Ok(build_overridden_error_response(
-                    &resolved_rules,
-                    502,
-                    &error_info,
-                ));
-            }
-            return Ok(build_connection_error_response(502, &error_info));
-        }
-    };
+    // Pooled upstream client already owns DNS resolution and connection reuse.
+    // Pre-resolving here only adds duplicate lookup cost and stretches H2 tail latency.
+    let dns_ms = None;
 
     let build_conn_error_record_and_response =
         |error_type: &'static str, error_msg: String, tls_ms: Option<u64>| {
@@ -1529,7 +1404,7 @@ async fn handle_intercepted_request_with_protocol(
                 record.duration_ms = total_ms;
                 record.host = original_host.to_string();
                 record.timing = Some(RequestTiming {
-                    dns_ms: Some(dns_ms),
+                    dns_ms,
                     connect_ms: None,
                     tls_ms,
                     send_ms: None,
@@ -1566,16 +1441,6 @@ async fn handle_intercepted_request_with_protocol(
                 build_connection_error_response(502, &error_info)
             }
         };
-    let upstream_uri: hyper::Uri = match target_uri.parse() {
-        Ok(uri) => uri,
-        Err(e) => {
-            return Ok(build_conn_error_record_and_response(
-                "URI_BUILD_FAILED",
-                format!("Failed to build upstream URI: {}", e),
-                None,
-            ));
-        }
-    };
     let (mut upstream_parts, upstream_body) = outgoing_req.into_parts();
     upstream_parts.uri = upstream_uri;
     upstream_parts.headers.remove(hyper::header::HOST);
@@ -1824,7 +1689,7 @@ async fn handle_intercepted_request_with_protocol(
             record.duration_ms = total_ms;
             record.host = original_host.to_string();
             record.timing = Some(RequestTiming {
-                dns_ms: Some(dns_ms),
+                dns_ms,
                 connect_ms: None,
                 tls_ms,
                 send_ms: None,
@@ -2010,7 +1875,7 @@ async fn handle_intercepted_request_with_protocol(
         record.duration_ms = total_ms;
         record.host = original_host.to_string();
         record.timing = Some(RequestTiming {
-            dns_ms: Some(dns_ms),
+            dns_ms,
             connect_ms: None,
             tls_ms,
             send_ms: None,
