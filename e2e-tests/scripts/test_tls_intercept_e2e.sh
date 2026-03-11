@@ -10,6 +10,12 @@ MOCK_HTTP_PORT=18080
 MOCK_HTTPS_PORT=18443
 ADMIN_PORT=$PROXY_PORT
 
+# External E2E (optional):
+#   ENABLE_EXTERNAL_TESTS=true ./e2e-tests/scripts/test_tls_intercept_e2e.sh
+ENABLE_EXTERNAL_TESTS=${ENABLE_EXTERNAL_TESTS:-false}
+EXTERNAL_TEST_URL=${EXTERNAL_TEST_URL:-"https://www.google.com/"}
+ONLY_TEST=${ONLY_TEST:-""}
+
 export BIFROST_DATA_DIR="$PROJECT_ROOT/.bifrost_test"
 mkdir -p "$BIFROST_DATA_DIR"
 
@@ -310,6 +316,51 @@ test_https_with_rule_passthrough() {
     fi
 }
 
+test_external_google_https() {
+    log_section "Test 4.5: External HTTPS (Google) via TLS Interception"
+
+    if [[ "$ENABLE_EXTERNAL_TESTS" != "true" ]]; then
+        log_info "Skipping external test (set ENABLE_EXTERNAL_TESTS=true). url=$EXTERNAL_TEST_URL"
+        return 0
+    fi
+
+    stop_proxy
+
+    # 这里需要启用全局拦截，才能覆盖真实浏览器场景（MITM + 上游 h2 协商）。
+    start_proxy "" "--intercept"
+
+    log_info "Sending external HTTPS request through proxy (http2 enabled): $EXTERNAL_TEST_URL"
+    local headers
+    headers=$(curl -sS -k --http2 -D - -o /dev/null -x "http://127.0.0.1:$PROXY_PORT" "$EXTERNAL_TEST_URL" 2>&1)
+
+    echo -e "Response headers:\n$headers"
+
+    # curl 通过 HTTP proxy 访问 HTTPS 时，可能会先输出 CONNECT 的 200，再输出最终的 HTTP 响应。
+    # 这里取最后一个 HTTP 状态行作为最终结果。
+    local status_line
+    status_line=$(echo "$headers" | grep -E '^HTTP/' | tail -n 1)
+
+    local status_code
+    status_code=$(echo "$status_line" | awk '{print $2}')
+
+    if [[ -z "$status_code" ]]; then
+        log_fail "External request failed: no HTTP status line"
+        log_info "Proxy log (last 60 lines):"
+        tail -60 /tmp/proxy_server.log || true
+        return 1
+    fi
+
+    if [[ "$status_code" == "502" ]] || echo "$headers" | grep -qi "X-Bifrost-Error"; then
+        log_fail "External request returned $status_code (unexpected)."
+        log_info "Proxy log (last 120 lines):"
+        tail -120 /tmp/proxy_server.log || true
+        return 1
+    fi
+
+    log_pass "External HTTPS request succeeded with status $status_code"
+    return 0
+}
+
 test_intercept_mode_blacklist() {
     log_section "Test 5: Blacklist Mode (default)"
     
@@ -410,11 +461,37 @@ main() {
     
     TESTS_PASSED=0
     TESTS_FAILED=0
+
+    if [[ -n "$ONLY_TEST" ]]; then
+        log_info "ONLY_TEST=$ONLY_TEST"
+        case "$ONLY_TEST" in
+            external_google)
+                if test_external_google_https; then
+                    ((TESTS_PASSED++))
+                else
+                    ((TESTS_FAILED++))
+                fi
+                ;;
+            *)
+                log_fail "Unknown ONLY_TEST: $ONLY_TEST"
+                exit 1
+                ;;
+        esac
+
+        echo -e "\n${YELLOW}=============================================="
+        echo "    Test Results: $TESTS_PASSED passed, $TESTS_FAILED failed"
+        echo -e "==============================================${NC}"
+        if [[ $TESTS_FAILED -gt 0 ]]; then
+            exit 1
+        fi
+        exit 0
+    fi
     
     if test_http_basic; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_https_passthrough; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_https_with_rule_intercept; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_https_with_rule_passthrough; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
+    if test_external_google_https; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_intercept_mode_blacklist; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_intercept_mode_whitelist; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
     if test_api_update_tls_config; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi

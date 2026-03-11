@@ -1061,61 +1061,84 @@ export const useTrafficStore = create<TrafficState>()(
       },
 
       clearTraffic: async (ids?: string[]) => {
-        set({ loading: true, error: null });
-        try {
-          await api.clearTraffic(ids);
+        set({ error: null });
 
-          if (ids && ids.length > 0) {
-            const idsToRemove = new Set(ids);
-            set((state) => {
-              const newRecordsMap = new Map(state.recordsMap);
-              const newPendingIds = new Set(state.pendingIds);
-              const currentDeleted = state.currentRecord && idsToRemove.has(state.currentRecord.id);
-              const selectedDeleted = state.selectedId && idsToRemove.has(state.selectedId);
+        if (ids && ids.length > 0) {
+          const idsToRemove = new Set(ids);
+          let removedCount = 0;
+          let nextPendingIds: string[] | null = null;
 
-              for (const id of idsToRemove) {
-                newRecordsMap.delete(id);
-                newPendingIds.delete(id);
+          set((state) => {
+            const newRecordsMap = new Map(state.recordsMap);
+            const newPendingIds = new Set(state.pendingIds);
+            const currentDeleted = state.currentRecord && idsToRemove.has(state.currentRecord.id);
+            const selectedDeleted = state.selectedId && idsToRemove.has(state.selectedId);
+
+            for (const id of idsToRemove) {
+              if (newRecordsMap.delete(id)) {
+                removedCount += 1;
               }
+              newPendingIds.delete(id);
+            }
 
-              const newRecords = Array.from(newRecordsMap.values());
-              return {
-                records: newRecords,
-                recordsMap: newRecordsMap,
-                pendingIds: newPendingIds,
-                currentRecord: currentDeleted ? null : state.currentRecord,
-                requestBody: currentDeleted ? null : state.requestBody,
-                responseBody: currentDeleted ? null : state.responseBody,
-                detailLoading: currentDeleted ? false : state.detailLoading,
-                detailError: currentDeleted ? 'Request was deleted' : state.detailError,
-                selectedId: selectedDeleted ? undefined : state.selectedId,
-                loading: false,
-                filterVersion: state.filterVersion + 1,
-              };
-            });
-          } else {
-            set({
-              records: [],
-              recordsMap: new Map(),
-              serverTotal: 0,
-              hasMore: false,
-              lastId: null,
-              pendingIds: new Set(),
-              currentRecord: null,
-              requestBody: null,
-              responseBody: null,
-              detailError: null,
-              loading: false,
-              filterVersion: 0,
-              initialized: false,
-              selectedId: undefined,
-            });
+            nextPendingIds = Array.from(newPendingIds);
+
+            const newRecords = removedCount > 0 ? Array.from(newRecordsMap.values()) : state.records;
+            const detailRemoved = currentDeleted || !!selectedDeleted;
+
+            return {
+              records: newRecords,
+              recordsMap: newRecordsMap,
+              pendingIds: newPendingIds,
+              serverTotal: Math.max(state.serverTotal - removedCount, 0),
+              currentRecord: detailRemoved ? null : state.currentRecord,
+              requestBody: detailRemoved ? null : state.requestBody,
+              responseBody: detailRemoved ? null : state.responseBody,
+              detailLoading: detailRemoved ? false : state.detailLoading,
+              detailError: detailRemoved ? 'Request was deleted' : state.detailError,
+              selectedId: selectedDeleted ? undefined : state.selectedId,
+              filterVersion: removedCount > 0 ? state.filterVersion + 1 : state.filterVersion,
+            };
+          });
+
+          if (nextPendingIds) {
+            pushService.updateSubscription({ pending_ids: nextPendingIds });
           }
+
+          api.clearTraffic(ids).catch((e) => {
+            const err = e as Error;
+            set({ error: err.message });
+          });
+
           return true;
-        } catch (e) {
-          set({ error: (e as Error).message, loading: false });
-          return false;
         }
+
+        set({
+          records: [],
+          recordsMap: new Map(),
+          serverTotal: 0,
+          serverSequence: 0,
+          hasMore: false,
+          lastId: null,
+          lastSequence: null,
+          pendingIds: new Set(),
+          currentRecord: null,
+          requestBody: null,
+          responseBody: null,
+          detailError: null,
+          filterVersion: 0,
+          initialized: false,
+          selectedId: undefined,
+        });
+
+        pushService.updateSubscription({ pending_ids: [] });
+
+        api.clearTraffic().catch((e) => {
+          const err = e as Error;
+          set({ error: err.message });
+        });
+
+        return true;
       },
 
       setToolbarFilters: (filters: ToolbarFilters) => {

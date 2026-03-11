@@ -17,3 +17,4 @@ log/
 .bifrost-*/
 design/
 target-e2e-*/
+.bifrost_test/

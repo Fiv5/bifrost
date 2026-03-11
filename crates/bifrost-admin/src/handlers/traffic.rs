@@ -1189,42 +1189,47 @@ async fn clear_traffic_by_ids(
     let count = ids_to_delete.len();
 
     if let Some(ref db_store) = state.traffic_db_store {
-        db_store.delete_by_ids(&ids_to_delete);
+        let db_store_clone = db_store.clone();
+        let ids_for_db = ids_to_delete.clone();
+        let _delete_task = tokio::task::spawn_blocking(move || {
+            db_store_clone.delete_by_ids(&ids_for_db);
+        });
     } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.delete_by_ids(&ids_to_delete);
+        let traffic_store_clone = traffic_store.clone();
+        let ids_for_store = ids_to_delete.clone();
+        let _delete_task = tokio::task::spawn_blocking(move || {
+            traffic_store_clone.delete_by_ids(&ids_for_store);
+        });
     }
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
         let ids_for_body = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = body_store_clone.write().delete_by_ids(&ids_for_body) {
                 tracing::warn!("Failed to delete bodies: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref frame_store) = state.frame_store {
         let frame_store_clone = frame_store.clone();
         let ids_for_frame = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = frame_store_clone.delete_by_ids(&ids_for_frame) {
                 tracing::warn!("Failed to delete frames: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref ws_payload_store) = state.ws_payload_store {
         let ws_payload_store_clone = ws_payload_store.clone();
         let ids_for_payload = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = ws_payload_store_clone.delete_by_ids(&ids_for_payload) {
                 tracing::warn!("Failed to delete ws payloads: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(pm) = push_manager {
@@ -1242,39 +1247,43 @@ async fn clear_all_traffic(
     let active_connection_ids = state.connection_monitor.active_connection_ids();
 
     if let Some(ref db_store) = state.traffic_db_store {
-        db_store.clear_with_active_ids(&active_connection_ids);
+        let db_store_clone = db_store.clone();
+        let active_ids_for_db = active_connection_ids.clone();
+        let _clear_task = tokio::task::spawn_blocking(move || {
+            db_store_clone.clear_with_active_ids(&active_ids_for_db);
+        });
     } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.clear();
+        let traffic_store_clone = traffic_store.clone();
+        let _clear_task = tokio::task::spawn_blocking(move || {
+            traffic_store_clone.clear();
+        });
     }
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = body_store_clone.write().clear() {
                 tracing::warn!("Failed to clear body store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref frame_store) = state.frame_store {
         let frame_store_clone = frame_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = frame_store_clone.clear() {
                 tracing::warn!("Failed to clear frame store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref ws_payload_store) = state.ws_payload_store {
         let ws_payload_store_clone = ws_payload_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = ws_payload_store_clone.clear() {
                 tracing::warn!("Failed to clear ws payload store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     state.connection_monitor.clear();

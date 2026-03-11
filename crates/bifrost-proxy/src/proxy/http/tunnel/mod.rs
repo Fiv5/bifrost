@@ -279,7 +279,11 @@ pub async fn handle_connect(
     let client_pid = ctx.client_pid;
     let client_path = ctx.client_path.clone();
 
+    // cancel_rx 用于在配置变更时优雅关闭 tunnel。
+    // 注意：若 admin_state 为空，必须保留 cancel_tx 的生命周期，否则 Sender 被提前 drop 会导致
+    // cancel_rx 立即完成，从而把连接误判为“配置变更”并立刻关闭。
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let mut cancel_tx_keepalive = Some(cancel_tx);
 
     if let Some(ref state) = admin_state {
         state
@@ -295,7 +299,9 @@ pub async fn handle_connect(
             port,
             false,
             client_app.clone(),
-            cancel_tx,
+            cancel_tx_keepalive
+                .take()
+                .expect("cancel_tx should be available when registering connection"),
         );
         state.connection_registry.register(conn_info);
 
@@ -321,6 +327,10 @@ pub async fn handle_connect(
 
     let host_for_unregister = host.clone();
     tokio::spawn(async move {
+        // keep cancel sender alive when admin_state is None
+        // （避免编译器因为未使用而提前 drop，导致 cancel_rx 立刻完成）
+        let cancel_tx_keepalive = cancel_tx_keepalive;
+
         match hyper::upgrade::on(req).await {
             Ok(upgraded) => {
                 let result = tunnel_bidirectional_with_cancel(
@@ -395,6 +405,10 @@ pub async fn handle_connect(
                 );
             }
         }
+
+        // 确保 keepalive 不会被编译器过早 drop（会导致 cancel_rx 立刻完成）。
+        std::hint::black_box(&cancel_tx_keepalive);
+        drop(cancel_tx_keepalive);
     });
 
     Ok(Response::builder().status(200).body(empty_body()).unwrap())
@@ -437,6 +451,7 @@ async fn handle_tls_interception(
     let client_path = ctx.client_path.clone();
 
     let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let mut cancel_tx_keepalive = Some(cancel_tx);
 
     if let Some(ref state) = admin_state {
         state
@@ -449,13 +464,16 @@ async fn handle_tls_interception(
             original_port,
             true,
             client_app.clone(),
-            cancel_tx,
+            cancel_tx_keepalive
+                .take()
+                .expect("cancel_tx should be available when registering TLS intercept connection"),
         );
         state.connection_registry.register(conn_info);
     }
 
     let host_for_log = original_host_owned.clone();
     tokio::spawn(async move {
+        let cancel_tx_keepalive = cancel_tx_keepalive;
         let upgraded = match hyper::upgrade::on(req).await {
             Ok(u) => u,
             Err(e) => {
@@ -489,6 +507,9 @@ async fn handle_tls_interception(
             client_path,
         )
         .await;
+
+        std::hint::black_box(&cancel_tx_keepalive);
+        drop(cancel_tx_keepalive);
 
         if let Some(ref state) = admin_state {
             state
@@ -1162,8 +1183,10 @@ async fn handle_intercepted_request_with_protocol(
         req_content_length.unwrap_or(0)
     };
 
-    // 直连上游时，请求行必须使用 origin-form（`/path?query`），
-    // 避免把 absolute-form（`https://host/path`）发给 CDN/源站导致 400。
+    // 上游请求：
+    // - HTTP/1.1：请求行必须使用 origin-form（`/path?query`），避免把 absolute-form（`https://host/path`）发给 CDN/源站导致 400。
+    // - HTTP/2：没有请求行，最终需要生成 `:scheme/:authority/:path`。这里先保留 origin-form，
+    //          之后若 ALPN 选择 h2，会在发送前补齐 scheme+authority 到 URI 里。
     let upstream_uri: hyper::Uri = match path.parse() {
         Ok(u) => u,
         Err(e) => {
@@ -1211,7 +1234,7 @@ async fn handle_intercepted_request_with_protocol(
     } else {
         format!("{}:{}", actual_target_host, actual_target_port)
     };
-    new_req = new_req.header(hyper::header::HOST, host_header_value);
+    new_req = new_req.header(hyper::header::HOST, &host_header_value);
     if streaming_body.is_none() {
         new_req = new_req.header(hyper::header::CONTENT_LENGTH, body_bytes.len());
     } else if let Some(content_length) = req_content_length {
@@ -1667,11 +1690,28 @@ async fn handle_intercepted_request_with_protocol(
             }
         });
 
+        let outgoing_uri_for_log = outgoing_req.uri().clone();
+        let outgoing_host_for_log = outgoing_req
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
         let send_start = Instant::now();
         let response = match sender.send_request(outgoing_req).await {
             Ok(r) => r,
             Err(e) => {
-                error!("[{}] Failed to send request: {}", req_id, e);
+                error!(
+                    "[{}] Failed to send request: err={} err_dbg={:?} upstream_host={} upstream_uri={}",
+                    req_id,
+                    e,
+                    e,
+                    outgoing_host_for_log,
+                    outgoing_uri_for_log
+                );
+                if let Some(src) = std::error::Error::source(&e) {
+                    error!("[{}] Failed to send request: source={}", req_id, src);
+                }
                 return Ok(build_conn_error_record_and_response(
                     "REQUEST_FAILED",
                     format!("Request Failed: {}", e),
@@ -1741,6 +1781,33 @@ async fn handle_intercepted_request_with_protocol(
         let mut outgoing_req = outgoing_req;
         if use_h2 {
             let (mut parts, body) = outgoing_req.into_parts();
+
+            // hyper 的 HTTP/2 client 会从 URI 推导 pseudo headers（尤其是 :scheme / :authority）。
+            // 对于我们在上游直连场景构造的 origin-form（仅 /path?query），这里需要补齐 scheme+authority。
+            let scheme = if actual_use_http { "http" } else { "https" };
+            let authority = host_header_value.as_str();
+            let abs_uri: hyper::Uri = match format!("{}://{}{}", scheme, authority, path).parse() {
+                Ok(u) => u,
+                Err(e) => {
+                    error!(
+                        "[{}] Failed to build upstream HTTP/2 URI from scheme/authority/path: {}",
+                        req_id, e
+                    );
+                    return Ok(build_conn_error_record_and_response(
+                        "URI_BUILD_FAILED",
+                        format!("Failed to build upstream URI: {}", e),
+                        Some(tls_ms),
+                    ));
+                }
+            };
+            parts.uri = abs_uri;
+
+            // 明确标记为 HTTP/2 请求，避免下游对版本/伪头推导出现歧义。
+            parts.version = hyper::Version::HTTP_2;
+
+            // HTTP/2 使用 :authority 代替 Host；部分严格实现会对携带 Host 的请求更敏感。
+            parts.headers.remove(hyper::header::HOST);
+
             sanitize_headers_for_http2(&mut parts.headers);
             outgoing_req = Request::from_parts(parts, body);
         }
@@ -1805,11 +1872,28 @@ async fn handle_intercepted_request_with_protocol(
                 }
             });
 
+            let outgoing_uri_for_log = outgoing_req.uri().clone();
+            let outgoing_host_for_log = outgoing_req
+                .headers()
+                .get(hyper::header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
             let send_start = Instant::now();
             let response = match sender.send_request(outgoing_req).await {
                 Ok(r) => r,
                 Err(e) => {
-                    error!("[{}] Failed to send request: {}", req_id, e);
+                    error!(
+                        "[{}] Failed to send request: err={} err_dbg={:?} upstream_host={} upstream_uri={}",
+                        req_id,
+                        e,
+                        e,
+                        outgoing_host_for_log,
+                        outgoing_uri_for_log
+                    );
+                    if let Some(src) = std::error::Error::source(&e) {
+                        error!("[{}] Failed to send request: source={}", req_id, src);
+                    }
                     return Ok(build_conn_error_record_and_response(
                         "REQUEST_FAILED",
                         format!("Request Failed: {}", e),

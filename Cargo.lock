@@ -492,6 +492,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "parking_lot",
+ "rcgen",
  "reqwest",
  "tokio",
  "tokio-rustls",

@@ -173,6 +173,38 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
   await server.close();
 });
 
+test("清空流量时前端立即清理", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/clear-${token}`;
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+  const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
+  await expect(row).toBeVisible();
+
+  let deleteSeen = false;
+  await page.route("**/_bifrost/api/traffic", async (route, req) => {
+    if (req.method() === "DELETE") {
+      deleteSeen = true;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    await route.continue();
+  });
+
+  await page.getByTestId("toolbar-clear-dropdown").click();
+  await page.getByRole("menuitem", { name: "Clear all" }).click();
+  await page.getByRole("button", { name: "Clear" }).click();
+
+  await expect(row).toHaveCount(0, { timeout: 500 });
+  expect(deleteSeen).toBeTruthy();
+
+  await server.close();
+});
+
 test("实时更新与页面刷新保持数据", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startMockServer();

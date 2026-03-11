@@ -3,7 +3,8 @@ mod common;
 use bifrost_core::Protocol;
 use bifrost_proxy::ProxyConfig;
 use bifrost_tls::{generate_root_ca, init_crypto_provider, CertCache, DynamicCertGenerator};
-use common::{add_test_rule, start_test_proxy, start_test_proxy_with_config};
+use common::MockH2TlsServer;
+use common::{add_test_rule, create_proxy_client, start_test_proxy, start_test_proxy_with_config};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -83,6 +84,51 @@ async fn test_https_tunnel_with_host_rule() {
         response_str.contains("200") || response_str.contains("502"),
         "CONNECT with host rule should respond, got: {}",
         response_str
+    );
+}
+
+#[tokio::test]
+async fn test_https_interception_upstream_h2_host_header_removed() {
+    // TLS interception 依赖 rustls/ring provider 初始化。
+    init_crypto_provider();
+    let _ = bifrost_core::init_logging("debug");
+
+    let upstream = MockH2TlsServer::start().await;
+
+    let config = ProxyConfig {
+        enable_tls_interception: true,
+        unsafe_ssl: true,
+        verbose_logging: true,
+        ..Default::default()
+    };
+    let proxy = start_test_proxy_with_config(config).await;
+
+    // 将被拦截的域名转发到本地 h2 TLS server。
+    add_test_rule(
+        &proxy,
+        "intercepted.example.com",
+        Protocol::Host,
+        &format!("127.0.0.1:{}", upstream.port),
+    );
+
+    let client = create_proxy_client(&proxy);
+    let resp = tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        client.get("https://intercepted.example.com/test").send(),
+    )
+    .await
+    .expect("request timeout")
+    .expect("request failed");
+
+    assert_eq!(resp.status(), 200);
+
+    let host_seen = upstream
+        .wait_host_header_seen()
+        .await
+        .expect("upstream did not receive request");
+    assert!(
+        !host_seen,
+        "upstream h2 request should not include Host header"
     );
 }
 
