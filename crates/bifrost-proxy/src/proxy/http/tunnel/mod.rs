@@ -1,9 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
-use bifrost_admin::{
-    AdminState, ConnectionInfo, FrameDirection, RequestTiming, TrafficRecord, TrafficType,
-};
+use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -11,17 +9,29 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1::Builder as ServerBuilder;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Request, Response, Uri};
+use hyper::{Request, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tokio_rustls::rustls::server::ResolvesServerCert;
-use tokio_rustls::rustls::sign::CertifiedKey;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
+use tokio_rustls::rustls::{ClientConfig, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
+
+mod bidirectional;
+mod cert;
+mod client;
+mod host_rule;
+mod io;
+
+pub use self::bidirectional::{
+    tunnel_bidirectional, tunnel_bidirectional_with_cancel, TunnelStats,
+};
+pub use self::cert::SingleCertResolver;
+use self::client::sanitize_headers_for_http2;
+use self::host_rule::parse_host_rule;
+use self::io::CombinedAsyncRw;
 
 use super::handler::{
     build_connection_error_response, build_overridden_error_response, needs_body_processing,
@@ -54,138 +64,12 @@ type HttpsPooledClient = Client<
     hyper_rustls::HttpsConnector<hyper_util::client::legacy::connect::HttpConnector>,
     http_body_util::Full<Bytes>,
 >;
-
-static HTTPS_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
-static HTTPS_UNSAFE_POOLED_CLIENT: OnceLock<HttpsPooledClient> = OnceLock::new();
-
-fn parse_host_rule(host_rule: &str) -> Option<(String, Option<u16>, Option<String>)> {
-    let mut s = host_rule.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    // 兼容规则里携带 scheme（http/https/ws/wss/host/xhost/proxy/pac）以及可选路径、query。
-    // 目标：稳定提取 host / port / path_and_query。
-    for prefix in [
-        "http://", "https://", "ws://", "wss://", "host://", "xhost://", "proxy://", "pac://",
-    ] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            s = rest;
-            break;
-        }
-    }
-
-    // `Uri` 解析需要 scheme；这里统一补一个 http scheme，仅用于解析 authority / path。
-    let uri: Uri = format!("http://{}", s).parse().ok()?;
-    let authority = uri.authority()?;
-    let host = authority.host().to_string();
-    let port = authority.port_u16();
-    let path_and_query = uri
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .filter(|pq| pq != "/");
-
-    Some((host, port, path_and_query))
-}
-
-fn get_https_pooled_client() -> &'static HttpsPooledClient {
-    HTTPS_POOLED_CLIENT.get_or_init(|| {
-        let config = ClientConfig::builder()
-            .with_root_certificates(build_root_cert_store())
-            .with_no_client_auth();
-
-        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(config)
-            .https_or_http()
-            .enable_all_versions()
-            .build();
-
-        Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(std::time::Duration::from_secs(60))
-            .pool_max_idle_per_host(32)
-            .build(https_connector)
-    })
-}
-
-fn get_https_unsafe_pooled_client() -> &'static HttpsPooledClient {
-    HTTPS_UNSAFE_POOLED_CLIENT.get_or_init(|| {
-        let config = ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
-            .with_no_client_auth();
-
-        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-            .with_tls_config(config)
-            .https_or_http()
-            .enable_all_versions()
-            .build();
-
-        Client::builder(TokioExecutor::new())
-            .pool_idle_timeout(std::time::Duration::from_secs(60))
-            .pool_max_idle_per_host(32)
-            .build(https_connector)
-    })
-}
-
 pub fn get_https_client(unsafe_ssl: bool) -> &'static HttpsPooledClient {
-    if unsafe_ssl {
-        get_https_unsafe_pooled_client()
-    } else {
-        get_https_pooled_client()
-    }
+    client::get_https_client(unsafe_ssl)
 }
 
 pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
-    // 允许 TLS 上游通过 ALPN 协商到 HTTP/2，从而避免被强制降级到 HTTP/1.1 造成大文件下载吞吐下降。
-    // 这里显式打开 h2 + http/1.1，后续会根据协商结果选择对应的 Hyper handshake。
-    let mut config = if unsafe_ssl {
-        ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerifier))
-            .with_no_client_auth()
-    } else {
-        ClientConfig::builder()
-            .with_root_certificates(build_root_cert_store())
-            .with_no_client_auth()
-    };
-
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Arc::new(config)
-}
-
-fn sanitize_headers_for_http2(headers: &mut hyper::HeaderMap) {
-    use hyper::header;
-
-    // RFC7540: HTTP/2 禁止 hop-by-hop headers。
-    // 同时移除 Connection 指定的额外 header。
-    let extra_to_remove: Vec<header::HeaderName> = headers
-        .get(header::CONNECTION)
-        .and_then(|v| v.to_str().ok())
-        .map(|conn| {
-            conn.split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    headers.remove(header::CONNECTION);
-    for name in extra_to_remove {
-        headers.remove(name);
-    }
-    headers.remove("proxy-connection");
-    headers.remove("keep-alive");
-    headers.remove("transfer-encoding");
-    headers.remove("upgrade");
-    headers.remove("trailer");
-
-    // TE 在 HTTP/2 仅允许 "trailers"。
-    if let Some(te) = headers.get(header::TE).and_then(|v| v.to_str().ok()) {
-        if !te.trim().eq_ignore_ascii_case("trailers") {
-            headers.remove(header::TE);
-        }
-    }
+    client::get_tls_client_config(unsafe_ssl)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3026,29 +2910,6 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
 
-pub struct SingleCertResolver(pub Arc<CertifiedKey>);
-
-impl std::fmt::Debug for SingleCertResolver {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SingleCertResolver")
-    }
-}
-
-impl ResolvesServerCert for SingleCertResolver {
-    fn resolve(
-        &self,
-        _client_hello: tokio_rustls::rustls::server::ClientHello<'_>,
-    ) -> Option<Arc<CertifiedKey>> {
-        Some(self.0.clone())
-    }
-}
-
-fn build_root_cert_store() -> RootCertStore {
-    let mut root_store = RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    root_store
-}
-
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
     let body = format!(
         r#"<!DOCTYPE html><html>
@@ -3064,308 +2925,6 @@ fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody
         .header(hyper::header::CONTENT_TYPE, "text/html; charset=utf-8")
         .body(full_body(body.into_bytes()))
         .unwrap()
-}
-
-#[derive(Debug)]
-struct NoVerifier;
-
-impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
-        _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> std::result::Result<
-        tokio_rustls::rustls::client::danger::ServerCertVerified,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> std::result::Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
-        vec![
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA256,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA384,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA512,
-            tokio_rustls::rustls::SignatureScheme::ED25519,
-        ]
-    }
-}
-
-struct CombinedAsyncRw<R, W> {
-    reader: R,
-    writer: W,
-}
-
-impl<R, W> CombinedAsyncRw<R, W> {
-    fn new(reader: R, writer: W) -> Self {
-        Self { reader, writer }
-    }
-}
-
-impl<R: AsyncRead + Unpin, W: Unpin> AsyncRead for CombinedAsyncRw<R, W> {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.reader).poll_read(cx, buf)
-    }
-}
-
-impl<R: Unpin, W: AsyncWrite + Unpin> AsyncWrite for CombinedAsyncRw<R, W> {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.writer).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.writer).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.writer).poll_shutdown(cx)
-    }
-}
-
-pub async fn tunnel_bidirectional(
-    upgraded: Upgraded,
-    target: TcpStream,
-    verbose_logging: bool,
-    req_id: &str,
-    admin_state: Option<&Arc<AdminState>>,
-) -> Result<()> {
-    let client = TokioIo::new(upgraded);
-    let (mut target_read, mut target_write) = target.into_split();
-
-    let (client_read, client_write) = tokio::io::split(client);
-    let mut client_read = client_read;
-    let mut client_write = client_write;
-
-    let admin_state_clone = admin_state.cloned();
-    let admin_state_clone2 = admin_state.cloned();
-
-    let client_to_target = async move {
-        let mut buf = [0u8; 16384];
-        loop {
-            let n = client_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            target_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state_clone {
-                state
-                    .metrics_collector
-                    .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
-            }
-        }
-        target_write.shutdown().await?;
-        Ok::<_, std::io::Error>(())
-    };
-
-    let target_to_client = async move {
-        let mut buf = [0u8; 16384];
-        loop {
-            let n = target_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            client_write.write_all(&buf[..n]).await?;
-
-            if let Some(ref state) = admin_state_clone2 {
-                state
-                    .metrics_collector
-                    .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
-            }
-        }
-        Ok::<_, std::io::Error>(())
-    };
-
-    let result = tokio::try_join!(client_to_target, target_to_client);
-
-    match result {
-        Ok(_) => {
-            if verbose_logging {
-                debug!("[{}] Tunnel closed normally", req_id);
-            } else {
-                debug!("Tunnel closed normally");
-            }
-            Ok(())
-        }
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::ConnectionReset
-                || e.kind() == std::io::ErrorKind::BrokenPipe
-            {
-                if verbose_logging {
-                    debug!("[{}] Tunnel closed: {}", req_id, e);
-                } else {
-                    debug!("Tunnel closed: {}", e);
-                }
-                Ok(())
-            } else {
-                Err(BifrostError::Network(format!("Tunnel error: {}", e)))
-            }
-        }
-    }
-}
-
-pub struct TunnelStats {
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
-    pub cancelled: bool,
-}
-
-pub async fn tunnel_bidirectional_with_cancel(
-    upgraded: Upgraded,
-    target: TcpStream,
-    verbose_logging: bool,
-    req_id: &str,
-    admin_state: Option<&Arc<AdminState>>,
-    cancel_rx: oneshot::Receiver<()>,
-) -> Result<TunnelStats> {
-    let client = TokioIo::new(upgraded);
-    let (mut target_read, mut target_write) = target.into_split();
-
-    let (client_read, client_write) = tokio::io::split(client);
-    let mut client_read = client_read;
-    let mut client_write = client_write;
-
-    let admin_state_clone = admin_state.cloned();
-    let admin_state_clone2 = admin_state.cloned();
-    let req_id_owned = req_id.to_string();
-    let req_id_owned2 = req_id.to_string();
-
-    let client_to_target = async move {
-        let mut buf = [0u8; 16384];
-        let mut total_sent: u64 = 0;
-        loop {
-            let n = client_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            target_write.write_all(&buf[..n]).await?;
-            total_sent += n as u64;
-
-            if let Some(ref state) = admin_state_clone {
-                state
-                    .metrics_collector
-                    .add_bytes_sent_by_type(TrafficType::Tunnel, n as u64);
-                // 对于隧道连接，只更新流量统计，不记录详细帧
-                state.connection_monitor.update_traffic(
-                    &req_id_owned,
-                    FrameDirection::Send,
-                    n as u64,
-                );
-            }
-        }
-        target_write.shutdown().await?;
-        Ok::<_, std::io::Error>(total_sent)
-    };
-
-    let target_to_client = async move {
-        let mut buf = [0u8; 16384];
-        let mut total_received: u64 = 0;
-        loop {
-            let n = target_read.read(&mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            client_write.write_all(&buf[..n]).await?;
-            total_received += n as u64;
-
-            if let Some(ref state) = admin_state_clone2 {
-                state
-                    .metrics_collector
-                    .add_bytes_received_by_type(TrafficType::Tunnel, n as u64);
-                // 对于隧道连接，只更新流量统计，不记录详细帧
-                state.connection_monitor.update_traffic(
-                    &req_id_owned2,
-                    FrameDirection::Receive,
-                    n as u64,
-                );
-            }
-        }
-        Ok::<_, std::io::Error>(total_received)
-    };
-
-    let bidirectional = async { tokio::try_join!(client_to_target, target_to_client) };
-
-    tokio::select! {
-        result = bidirectional => {
-            match result {
-                Ok((bytes_sent, bytes_received)) => {
-                    if verbose_logging {
-                        debug!("[{}] Tunnel closed normally", req_id);
-                    } else {
-                        debug!("Tunnel closed normally");
-                    }
-                    Ok(TunnelStats { bytes_sent, bytes_received, cancelled: false })
-                }
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::ConnectionReset
-                        || e.kind() == std::io::ErrorKind::BrokenPipe
-                    {
-                        if verbose_logging {
-                            debug!("[{}] Tunnel closed: {}", req_id, e);
-                        } else {
-                            debug!("Tunnel closed: {}", e);
-                        }
-                        Ok(TunnelStats { bytes_sent: 0, bytes_received: 0, cancelled: false })
-                    } else {
-                        Err(BifrostError::Network(format!("Tunnel error: {}", e)))
-                    }
-                }
-            }
-        }
-        _ = cancel_rx => {
-            if verbose_logging {
-                debug!("[{}] Tunnel cancelled by config change", req_id);
-            }
-            Ok(TunnelStats { bytes_sent: 0, bytes_received: 0, cancelled: true })
-        }
-    }
 }
 
 fn is_domain_matched(host: &str, patterns: &[String]) -> bool {
