@@ -85,7 +85,7 @@ impl Service<Name> for ProxyDnsResolver {
                         tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
                     Ok(addrs.into_iter())
                 }
-                Err(err) => Err(io::Error::new(io::ErrorKind::Other, err.to_string())),
+                Err(err) => Err(io::Error::other(err.to_string())),
             }
         })
     }
