@@ -143,6 +143,11 @@ fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {
     }
 
     let resource_dir = app.path().resource_dir()?;
+    let bundled_path = resource_dir.join("resources").join("bin").join(binary_name);
+    if bundled_path.exists() {
+        return Ok(bundled_path);
+    }
+
     Ok(resource_dir.join("bin").join(binary_name))
 }
 

@@ -51,7 +51,7 @@ export async function initializeDesktopRuntime(): Promise<void> {
 }
 
 export function getAdminPrefix(): string {
-  return isDesktopShell() ? '' : DEFAULT_ADMIN_PREFIX;
+  return DEFAULT_ADMIN_PREFIX;
 }
 
 export function getBackendOrigin(): string {
@@ -64,7 +64,11 @@ export function getBackendOrigin(): string {
 
 export function buildBackendUrl(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-  return `${getBackendOrigin()}${getAdminPrefix()}${normalizedPath}`;
+  const adminPrefix = getAdminPrefix();
+  const resolvedPath = normalizedPath.startsWith(adminPrefix)
+    ? normalizedPath
+    : `${adminPrefix}${normalizedPath}`;
+  return `${getBackendOrigin()}${resolvedPath}`;
 }
 
 export function buildApiUrl(path = ''): string {

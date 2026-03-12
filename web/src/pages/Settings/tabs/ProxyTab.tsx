@@ -692,9 +692,10 @@ export default function ProxyTab({
                   <Text>Enable System Proxy</Text>
                 </Col>
                 <Col>
-                  {systemProxy?.supported ? (
+                  {systemProxy ? (
+                    systemProxy.supported ? (
                     <Switch
-                      checked={systemProxy?.enabled}
+                      checked={systemProxy.enabled}
                       loading={systemProxyLoading}
                       onChange={onToggleSystemProxy}
                     />
@@ -702,6 +703,8 @@ export default function ProxyTab({
                     <Tooltip title="System proxy is not supported on this platform">
                       <Text type="secondary">Not Supported</Text>
                     </Tooltip>
+                  )) : (
+                    <Text type="secondary">Loading...</Text>
                   )}
                 </Col>
               </Row>

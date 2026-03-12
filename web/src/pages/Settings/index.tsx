@@ -115,6 +115,8 @@ export default function Settings() {
     systemProxy,
     cliProxy,
     loading: systemProxyLoading,
+    fetchSystemProxy,
+    fetchCliProxy,
     toggleSystemProxy,
   } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
@@ -279,7 +281,8 @@ export default function Settings() {
         enabled ? "System proxy enabled" : "System proxy disabled",
       );
     } else {
-      message.error("Failed to toggle system proxy");
+      const proxyError = useProxyStore.getState().error;
+      message.error(proxyError || "Failed to toggle system proxy");
     }
   };
 
@@ -633,6 +636,8 @@ export default function Settings() {
   useEffect(() => {
     fetchDesktopRuntime();
     fetchProxySettings();
+    fetchSystemProxy();
+    fetchCliProxy();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
@@ -640,6 +645,8 @@ export default function Settings() {
   }, [
     fetchDesktopRuntime,
     fetchProxySettings,
+    fetchSystemProxy,
+    fetchCliProxy,
     fetchTlsConfig,
     fetchCertInfo,
     fetchPerformanceConfig,

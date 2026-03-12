@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use super::{error_response, json_response, method_not_allowed, BoxBody};
+use super::{error_response, json_response, json_response_with_status, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
 use bifrost_core::ShellProxyManager;
 use bifrost_core::SystemProxyManager;
@@ -250,7 +250,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                         error: "user_cancelled",
                         message: "Authorization was cancelled by user.",
                     };
-                    json_response(&body)
+                    json_response_with_status(StatusCode::FORBIDDEN, &body)
                 } else if msg.contains("RequiresAdmin") {
                     #[derive(Serialize)]
                     struct AdminError {
@@ -261,7 +261,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                         error: "requires_admin",
                         message: "System proxy requires administrator privileges. Please run the CLI with sudo or grant permission.",
                     };
-                    json_response(&body)
+                    json_response_with_status(StatusCode::FORBIDDEN, &body)
                 } else {
                     error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,

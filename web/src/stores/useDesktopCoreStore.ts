@@ -38,22 +38,28 @@ export const useDesktopCoreStore = create<DesktopCoreState>((set) => ({
       readyOnce: false,
     }),
   showBooting: (detail) =>
-    set((state) => ({
-      visible: true,
-      phase: state.phase === "restarting" || state.phase === "reconnecting"
-        ? state.phase
-        : "booting",
-      targetPort: state.targetPort,
-      detail: detail ?? "Bifrost core is starting. Reconnecting the interface...",
-      readyOnce: state.readyOnce,
-    })),
+    set((state) => {
+      if (state.readyOnce && state.targetPort === null) {
+        return state;
+      }
+
+      return {
+        visible: true,
+        phase: state.phase === "restarting" || state.phase === "reconnecting"
+          ? state.phase
+          : "booting",
+        targetPort: state.targetPort,
+        detail: detail ?? "Bifrost core is starting. Reconnecting the interface...",
+        readyOnce: state.readyOnce,
+      };
+    }),
   markReady: () =>
     set((state) => ({
       readyOnce: true,
-      visible: state.phase === "booting" ? false : state.visible,
-      phase: state.phase === "booting" ? "idle" : state.phase,
-      targetPort: state.phase === "booting" ? null : state.targetPort,
-      detail: state.phase === "booting" ? "" : state.detail,
+      visible: state.targetPort === null && state.phase !== "error" ? false : state.visible,
+      phase: state.targetPort === null && state.phase !== "error" ? "idle" : state.phase,
+      targetPort: state.targetPort === null && state.phase !== "error" ? null : state.targetPort,
+      detail: state.targetPort === null && state.phase !== "error" ? "" : state.detail,
     })),
   setPhase: (phase, detail) =>
     set((state) => ({
@@ -73,7 +79,7 @@ export const useDesktopCoreStore = create<DesktopCoreState>((set) => ({
     })),
   resolveBooting: () =>
     set((state) =>
-      state.phase === "booting"
+      state.targetPort === null && state.phase !== "error"
         ? {
             visible: false,
             phase: "idle",

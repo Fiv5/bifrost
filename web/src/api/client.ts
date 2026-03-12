@@ -8,10 +8,7 @@ import {
   useDesktopCoreStore,
 } from '../stores/useDesktopCoreStore';
 
-const API_BASE = buildApiUrl();
-
 const client = axios.create({
-  baseURL: API_BASE,
   timeout: 30000,
   headers: {
     'Content-Type': 'application/json',
@@ -30,9 +27,10 @@ function extractErrorMessage(error: AxiosError): string {
   if (
     error.response?.data &&
     typeof error.response.data === 'object' &&
-    'error' in error.response.data
+    ('message' in error.response.data || 'error' in error.response.data)
   ) {
-    return String((error.response.data as { error?: string }).error || error.message);
+    const data = error.response.data as { message?: string; error?: string };
+    return String(data.message || data.error || error.message);
   }
 
   if (typeof error.response?.data === 'string' && error.response.data.trim()) {
@@ -56,28 +54,19 @@ export function getApiErrorPayload(error: unknown): ApiErrorPayload {
   }
 
   const status = error.response?.status;
-  const resolvedMessage = extractErrorMessage(error);
   const requestMethod = error.config?.method;
   const readyOnce = useDesktopCoreStore.getState().readyOnce;
-  const isGenericServerFailure =
-    !!status &&
-    status >= 500 &&
-    (!error.response?.data ||
-      resolvedMessage === error.message ||
-      resolvedMessage === `Request failed with status code ${status}`);
-
   const isConnectionIssue =
     !error.response ||
     error.code === 'ERR_NETWORK' ||
     error.code === 'ECONNABORTED' ||
-    (!readyOnce && !!status && status >= 500 && isReadRequest(requestMethod)) ||
-    isGenericServerFailure;
+    (!readyOnce && !!status && status >= 500 && isReadRequest(requestMethod));
 
   return {
     kind: isConnectionIssue ? 'connection' : 'business',
     message: isConnectionIssue
       ? 'Bifrost core is starting. Reconnecting the interface...'
-      : resolvedMessage,
+      : extractErrorMessage(error),
     status,
   };
 }
@@ -111,6 +100,7 @@ export function notifyApiBusinessError(
 }
 
 client.interceptors.request.use((config) => {
+  config.baseURL = buildApiUrl();
   config.headers = config.headers ?? {};
   config.headers['X-Client-Id'] = getClientId();
   return config;

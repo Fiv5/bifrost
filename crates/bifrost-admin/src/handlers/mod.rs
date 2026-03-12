@@ -35,9 +35,13 @@ pub fn empty_body() -> BoxBody {
 }
 
 pub fn json_response<T: Serialize>(data: &T) -> Response<BoxBody> {
+    json_response_with_status(StatusCode::OK, data)
+}
+
+pub fn json_response_with_status<T: Serialize>(status: StatusCode, data: &T) -> Response<BoxBody> {
     match serde_json::to_string(data) {
         Ok(json) => Response::builder()
-            .status(StatusCode::OK)
+            .status(status)
             .header("Content-Type", "application/json")
             .header("Access-Control-Allow-Origin", "*")
             .body(full_body(json))

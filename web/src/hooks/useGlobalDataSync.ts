@@ -117,7 +117,7 @@ export function useGlobalDataSync() {
     };
 
     const initializeGlobalData = async () => {
-      await Promise.all([
+      await Promise.allSettled([
         trafficStore.fetchInitialData(),
         rulesStore.fetchRules(),
         valuesStore.fetchValues(),

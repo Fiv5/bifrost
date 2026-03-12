@@ -42,8 +42,9 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     const currentState = get().systemProxy;
     set({ loading: true, error: null });
     try {
-      const result = await setSystemProxy({ enabled });
-      set({ systemProxy: result, loading: false });
+      await setSystemProxy({ enabled });
+      const status = await getSystemProxyStatus();
+      set({ systemProxy: status, loading: false, error: null });
       return true;
     } catch (e) {
       set({
