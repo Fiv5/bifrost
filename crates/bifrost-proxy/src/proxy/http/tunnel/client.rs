@@ -245,6 +245,24 @@ pub(super) fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     Arc::new(config)
 }
 
+pub(super) fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    ensure_crypto_provider();
+
+    let mut config = if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
+    } else {
+        ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth()
+    };
+
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Arc::new(config)
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     use hyper::header;
 

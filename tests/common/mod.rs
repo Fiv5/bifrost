@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 pub struct TestProxy {
     pub port: u16,
     pub host: String,
+    pub ca_cert_der: Option<Vec<u8>>,
     pub server: ProxyServer,
     rules: Arc<TestRulesResolver>,
 }
@@ -62,6 +63,14 @@ impl RulesResolver for TestRulesResolver {
                 match rule.protocol {
                     Protocol::Host => {
                         resolved.host = Some(rule.value.clone());
+                    }
+                    Protocol::Ws => {
+                        resolved.host = Some(rule.value.clone());
+                        resolved.host_protocol = Some(Protocol::Ws);
+                    }
+                    Protocol::Wss => {
+                        resolved.host = Some(rule.value.clone());
+                        resolved.host_protocol = Some(Protocol::Wss);
                     }
                     Protocol::ReqHeaders => {
                         if let Some((key, value)) = rule.value.split_once('=') {
@@ -196,7 +205,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     let serve_rules = Arc::clone(&rules);
     let serve_server = ProxyServer::new(config.clone())
         .with_rules(serve_rules as Arc<dyn RulesResolver>)
-        .with_tls_config(tls_config);
+        .with_tls_config(Arc::clone(&tls_config));
 
     tokio::spawn(async move {
         let _ = serve_server.serve(listener).await;
@@ -207,6 +216,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     TestProxy {
         port: config.port,
         host: config.host,
+        ca_cert_der: tls_config.ca_cert.clone(),
         server,
         rules,
     }
@@ -413,6 +423,7 @@ impl MockH2TlsServer {
 
                     let io = TokioIo::new(tls_stream);
                     let _ = http2::Builder::new(TokioExecutor::new())
+                        .max_header_list_size(256 * 1024)
                         .serve_connection(io, service)
                         .await;
                 });
@@ -488,6 +499,7 @@ mod tests {
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),
+            ca_cert_der: None,
             server,
             rules,
         };
@@ -503,6 +515,7 @@ mod tests {
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),
+            ca_cert_der: None,
             server,
             rules,
         };

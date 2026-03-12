@@ -10,7 +10,7 @@ use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
-use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
+use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator, SniResolver};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -665,6 +665,7 @@ impl ProxyInstance {
         rules: Vec<&str>,
         values: HashMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        init_crypto_provider();
         let parsed_rules: Vec<Rule> = rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())
@@ -728,6 +729,7 @@ impl ProxyInstance {
         port: u16,
         rules_text: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        init_crypto_provider();
         let parser = RuleParser::new();
         let (rules, inline_values) = parser
             .parse_rules_with_inline_values(rules_text)
@@ -835,12 +837,14 @@ impl ProxyInstance {
             .certificate_der()
             .map_err(|e| format!("Failed to get CA cert: {}", e))?;
         let ca_key = ca.private_key_der();
-        let cert_generator = Arc::new(DynamicCertGenerator::new(Arc::new(ca)));
+        let ca = Arc::new(ca);
+        let cert_generator = Arc::new(DynamicCertGenerator::new(ca.clone()));
+        let sni_resolver = Arc::new(SniResolver::new(ca));
         let tls_config = Arc::new(TlsConfig {
             ca_cert: Some(ca_cert.to_vec()),
             ca_key: Some(ca_key.secret_der().to_vec()),
             cert_generator: Some(cert_generator),
-            sni_resolver: None,
+            sni_resolver: Some(sni_resolver),
         });
 
         let runtime_config = RuntimeConfig {

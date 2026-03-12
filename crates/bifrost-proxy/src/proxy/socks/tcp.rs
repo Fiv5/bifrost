@@ -17,7 +17,6 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
@@ -34,7 +33,7 @@ use crate::utils::process_info::{
 use crate::utils::tee::store_request_body;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
-use super::super::http::{handle_http_request, SingleCertResolver};
+use super::super::http::handle_http_request;
 use super::udp::UdpRelay;
 
 use std::sync::LazyLock;
@@ -1240,20 +1239,8 @@ impl SocksHandler {
             Some(c) => Arc::clone(c),
             None => return Err(BifrostError::Tls("TLS config not available".to_string())),
         };
-
-        let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
-            sni_resolver.resolve(cert_host)?
-        } else if let Some(ref cert_generator) = tls_config.cert_generator {
-            Arc::new(cert_generator.generate_for_domain(cert_host)?)
-        } else {
-            return Err(BifrostError::Tls(
-                "TLS interception enabled but cert generator not configured".to_string(),
-            ));
-        };
-
-        let server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+        let no_alpn_protocols: Vec<Vec<u8>> = Vec::new();
+        let server_config = tls_config.resolve_server_config(cert_host, &no_alpn_protocols)?;
 
         let req_id = generate_socks5_request_id();
         let admin_state = self.admin_state.clone();
@@ -1263,7 +1250,7 @@ impl SocksHandler {
             req_id, target_host, target_port
         );
 
-        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let acceptor = TlsAcceptor::from(server_config);
 
         let client_stream = self
             .stream

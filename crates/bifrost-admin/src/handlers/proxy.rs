@@ -3,7 +3,9 @@ use std::net::IpAddr;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use super::{error_response, json_response, json_response_with_status, method_not_allowed, BoxBody};
+use super::{
+    error_response, json_response, json_response_with_status, method_not_allowed, BoxBody,
+};
 use crate::state::SharedAdminState;
 use bifrost_core::ShellProxyManager;
 use bifrost_core::SystemProxyManager;

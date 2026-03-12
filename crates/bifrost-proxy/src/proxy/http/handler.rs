@@ -1697,7 +1697,7 @@ async fn handle_http_websocket(
         _ => is_wss,
     };
     let mut target_stream: Box<dyn AsyncReadWrite + Unpin + Send> = if use_tls {
-        let tls_config = super::tunnel::get_tls_client_config(unsafe_ssl);
+        let tls_config = super::tunnel::get_tls_client_config_http1_only(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
         let server_name = ServerName::try_from(target_host.clone()).map_err(|_| {

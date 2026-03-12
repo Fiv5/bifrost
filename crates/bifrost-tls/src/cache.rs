@@ -1,6 +1,7 @@
 use lru::LruCache;
 use parking_lot::Mutex;
 use rustls::sign::CertifiedKey;
+use rustls::ServerConfig;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -59,11 +60,90 @@ impl Default for CertCache {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ServerConfigCacheKey {
+    domain: String,
+    alpn_protocols: Vec<Vec<u8>>,
+}
+
+impl ServerConfigCacheKey {
+    fn new(domain: &str, alpn_protocols: &[Vec<u8>]) -> Self {
+        Self {
+            domain: domain.to_string(),
+            alpn_protocols: alpn_protocols.to_vec(),
+        }
+    }
+}
+
+pub struct ServerConfigCache {
+    cache: Mutex<LruCache<ServerConfigCacheKey, Arc<ServerConfig>>>,
+}
+
+impl std::fmt::Debug for ServerConfigCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfigCache")
+            .field("len", &self.len())
+            .field("capacity", &self.capacity())
+            .finish()
+    }
+}
+
+impl ServerConfigCache {
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_CACHE_SIZE)
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        let cap =
+            NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::new(DEFAULT_CACHE_SIZE).unwrap());
+        Self {
+            cache: Mutex::new(LruCache::new(cap)),
+        }
+    }
+
+    pub fn get(&self, domain: &str, alpn_protocols: &[Vec<u8>]) -> Option<Arc<ServerConfig>> {
+        self.cache
+            .lock()
+            .get(&ServerConfigCacheKey::new(domain, alpn_protocols))
+            .cloned()
+    }
+
+    pub fn insert(&self, domain: &str, alpn_protocols: &[Vec<u8>], config: Arc<ServerConfig>) {
+        self.cache
+            .lock()
+            .put(ServerConfigCacheKey::new(domain, alpn_protocols), config);
+    }
+
+    pub fn clear(&self) {
+        self.cache.lock().clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.cache.lock().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.cache.lock().is_empty()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.cache.lock().cap().get()
+    }
+}
+
+impl Default for ServerConfigCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ca::generate_root_ca;
+    use crate::config::TlsConfig as BifrostTlsConfig;
     use crate::dynamic::DynamicCertGenerator;
+    use crate::init_crypto_provider;
 
     fn create_test_cert(domain: &str) -> Arc<CertifiedKey> {
         let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
@@ -73,6 +153,12 @@ mod tests {
                 .generate_for_domain(domain)
                 .expect("Failed to generate cert"),
         )
+    }
+
+    fn create_test_server_config(domain: &str) -> Arc<ServerConfig> {
+        init_crypto_provider();
+        let cert = create_test_cert(domain);
+        BifrostTlsConfig::build_server_config(cert.as_ref()).expect("Failed to build server config")
     }
 
     #[test]
@@ -143,5 +229,34 @@ mod tests {
         assert!(cache.get("example1.com").is_none());
         assert!(cache.get("example2.com").is_some());
         assert!(cache.get("example3.com").is_some());
+    }
+
+    #[test]
+    fn test_server_config_cache_insert_and_get() {
+        let cache = ServerConfigCache::new();
+        let alpn = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let config = create_test_server_config("example.com");
+
+        cache.insert("example.com", &alpn, config.clone());
+        let retrieved = cache.get("example.com", &alpn);
+
+        assert!(retrieved.is_some());
+        assert!(Arc::ptr_eq(
+            &config,
+            &retrieved.expect("cached config should exist")
+        ));
+    }
+
+    #[test]
+    fn test_server_config_cache_is_alpn_specific() {
+        let cache = ServerConfigCache::new();
+        let h2 = vec![b"h2".to_vec()];
+        let http1 = vec![b"http/1.1".to_vec()];
+        let config = create_test_server_config("example.com");
+
+        cache.insert("example.com", &h2, config);
+
+        assert!(cache.get("example.com", &h2).is_some());
+        assert!(cache.get("example.com", &http1).is_none());
     }
 }

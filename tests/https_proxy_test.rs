@@ -1,13 +1,172 @@
 mod common;
 
 use bifrost_core::Protocol;
+use bifrost_proxy::protocol::{
+    compute_accept_key, WebSocketFrame, WebSocketReader, WebSocketWriter,
+};
 use bifrost_proxy::ProxyConfig;
 use bifrost_tls::{generate_root_ca, init_crypto_provider, CertCache, DynamicCertGenerator};
+use bytes::Bytes;
 use common::MockH2TlsServer;
 use common::{add_test_rule, create_proxy_client, start_test_proxy, start_test_proxy_with_config};
+use futures_util::StreamExt;
+use http_body_util::Empty;
+use hyper::{Method, Request, Version};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use parking_lot::Mutex;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
+
+async fn start_websocket_echo_server(ready_tx: oneshot::Sender<u16>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    ready_tx.send(port).unwrap();
+
+    while let Ok((mut stream, _)) = listener.accept().await {
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+
+            let sec_key = String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .find(|line| line.to_lowercase().starts_with("sec-websocket-key:"))
+                .and_then(|line| line.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+
+            let accept_key = compute_accept_key(&sec_key);
+            let response = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Upgrade: websocket\r\n\
+                 Connection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                accept_key
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+
+            let (reader, writer) = stream.into_split();
+            let mut ws_reader = WebSocketReader::new(reader);
+            let mut ws_writer = WebSocketWriter::new(writer, false);
+
+            while let Some(result) = ws_reader.next().await {
+                match result {
+                    Ok(frame) if frame.opcode == bifrost_proxy::protocol::Opcode::Close => {
+                        let close_frame = WebSocketFrame::close(Some(1000), "");
+                        ws_writer.write_frame(close_frame).await.ok();
+                        break;
+                    }
+                    Ok(frame) => {
+                        let echo_frame = WebSocketFrame {
+                            fin: frame.fin,
+                            rsv1: frame.rsv1,
+                            rsv2: frame.rsv2,
+                            rsv3: frame.rsv3,
+                            opcode: frame.opcode,
+                            mask: None,
+                            payload: frame.payload,
+                        };
+                        ws_writer.write_frame(echo_frame).await.ok();
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+}
+
+async fn start_tls_websocket_echo_server(
+    ready_tx: oneshot::Sender<u16>,
+    negotiated_alpn: Arc<Mutex<Vec<Option<Vec<u8>>>>>,
+) {
+    use tokio_rustls::rustls;
+    use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio_rustls::TlsAcceptor;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    ready_tx.send(port).unwrap();
+
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let key_der = signing_key.serialize_der();
+    let certs = vec![cert.der().clone()];
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+    let mut server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .unwrap();
+    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    while let Ok((stream, _)) = listener.accept().await {
+        let acceptor = acceptor.clone();
+        let negotiated_alpn = Arc::clone(&negotiated_alpn);
+        tokio::spawn(async move {
+            let tls_stream = acceptor.accept(stream).await.unwrap();
+            negotiated_alpn
+                .lock()
+                .push(tls_stream.get_ref().1.alpn_protocol().map(|v| v.to_vec()));
+
+            if tls_stream.get_ref().1.alpn_protocol() != Some(b"http/1.1".as_slice()) {
+                return;
+            }
+
+            let mut stream = tls_stream;
+            let mut buf = vec![0u8; 4096];
+            let n = stream.read(&mut buf).await.unwrap();
+
+            let sec_key = String::from_utf8_lossy(&buf[..n])
+                .lines()
+                .find(|line| line.to_lowercase().starts_with("sec-websocket-key:"))
+                .and_then(|line| line.split(':').nth(1))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+
+            let accept_key = compute_accept_key(&sec_key);
+            let response = format!(
+                "HTTP/1.1 101 Switching Protocols\r\n\
+                 Upgrade: websocket\r\n\
+                 Connection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\n\r\n",
+                accept_key
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+
+            let (reader, writer) = tokio::io::split(stream);
+            let mut ws_reader = WebSocketReader::new(reader);
+            let mut ws_writer = WebSocketWriter::new(writer, false);
+
+            while let Some(result) = ws_reader.next().await {
+                match result {
+                    Ok(frame) if frame.opcode == bifrost_proxy::protocol::Opcode::Close => {
+                        let close_frame = WebSocketFrame::close(Some(1000), "");
+                        ws_writer.write_frame(close_frame).await.ok();
+                        break;
+                    }
+                    Ok(frame) => {
+                        let echo_frame = WebSocketFrame {
+                            fin: frame.fin,
+                            rsv1: frame.rsv1,
+                            rsv2: frame.rsv2,
+                            rsv3: frame.rsv3,
+                            opcode: frame.opcode,
+                            mask: None,
+                            payload: frame.payload,
+                        };
+                        ws_writer.write_frame(echo_frame).await.ok();
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+}
 
 #[tokio::test]
 async fn test_https_tunnel() {
@@ -130,6 +289,300 @@ async fn test_https_interception_upstream_h2_host_header_removed() {
         !host_seen,
         "upstream h2 request should not include Host header"
     );
+}
+
+#[tokio::test]
+async fn test_https_interception_accepts_h2_websocket_extended_connect() {
+    init_crypto_provider();
+
+    let config = ProxyConfig {
+        enable_tls_interception: true,
+        unsafe_ssl: true,
+        verbose_logging: true,
+        ..Default::default()
+    };
+    let proxy = start_test_proxy_with_config(config).await;
+
+    let (ready_tx, ready_rx) = oneshot::channel();
+    tokio::spawn(start_websocket_echo_server(ready_tx));
+    let ws_port = ready_rx.await.unwrap();
+
+    add_test_rule(
+        &proxy,
+        "intercepted.example.com",
+        Protocol::Ws,
+        &format!("127.0.0.1:{}", ws_port),
+    );
+
+    let mut tunnel = TcpStream::connect(proxy.addr()).await.unwrap();
+    let connect_request =
+        "CONNECT intercepted.example.com:443 HTTP/1.1\r\nHost: intercepted.example.com:443\r\n\r\n";
+    tunnel.write_all(connect_request.as_bytes()).await.unwrap();
+
+    let mut connect_response = vec![0u8; 1024];
+    let n = tunnel.read(&mut connect_response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&connect_response[..n]);
+    assert!(
+        response_str.contains("200"),
+        "CONNECT should succeed, got: {}",
+        response_str
+    );
+
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(
+            proxy
+                .ca_cert_der
+                .clone()
+                .expect("test proxy should expose CA cert"),
+        ))
+        .unwrap();
+
+    let mut client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
+    let tls_stream = connector.connect(server_name, tunnel).await.unwrap();
+    assert_eq!(
+        tls_stream.get_ref().1.alpn_protocol(),
+        Some(b"h2".as_slice())
+    );
+
+    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(TokioIo::new(tls_stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://intercepted.example.com/echo")
+        .version(Version::HTTP_2)
+        .header("Sec-WebSocket-Version", "13")
+        .extension(hyper::ext::Protocol::from_static("websocket"))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let upgraded = hyper::upgrade::on(response).await.unwrap();
+    let upgraded = TokioIo::new(upgraded);
+    let (reader, writer) = tokio::io::split(upgraded);
+    let mut ws_reader = WebSocketReader::new(reader);
+    let mut ws_writer = WebSocketWriter::new(writer, true);
+
+    ws_writer
+        .write_frame(WebSocketFrame::text("hello over h2"))
+        .await
+        .unwrap();
+
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), ws_reader.next())
+        .await
+        .expect("timed out waiting for websocket echo")
+        .expect("websocket stream should stay open")
+        .expect("websocket frame should decode");
+
+    assert_eq!(echoed.payload, Bytes::from_static(b"hello over h2"));
+
+    ws_writer
+        .write_frame(WebSocketFrame::close(Some(1000), "done"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_https_interception_wss_upstream_uses_http1_alpn_for_websocket_handshake() {
+    init_crypto_provider();
+
+    let config = ProxyConfig {
+        enable_tls_interception: true,
+        unsafe_ssl: true,
+        verbose_logging: true,
+        ..Default::default()
+    };
+    let proxy = start_test_proxy_with_config(config).await;
+
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let negotiated_alpn = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(start_tls_websocket_echo_server(
+        ready_tx,
+        Arc::clone(&negotiated_alpn),
+    ));
+    let ws_port = ready_rx.await.unwrap();
+
+    add_test_rule(
+        &proxy,
+        "intercepted.example.com",
+        Protocol::Wss,
+        &format!("127.0.0.1:{}", ws_port),
+    );
+
+    let mut tunnel = TcpStream::connect(proxy.addr()).await.unwrap();
+    let connect_request =
+        "CONNECT intercepted.example.com:443 HTTP/1.1\r\nHost: intercepted.example.com:443\r\n\r\n";
+    tunnel.write_all(connect_request.as_bytes()).await.unwrap();
+
+    let mut connect_response = vec![0u8; 1024];
+    let n = tunnel.read(&mut connect_response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&connect_response[..n]);
+    assert!(
+        response_str.contains("200"),
+        "CONNECT should succeed, got: {}",
+        response_str
+    );
+
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(
+            proxy
+                .ca_cert_der
+                .clone()
+                .expect("test proxy should expose CA cert"),
+        ))
+        .unwrap();
+
+    let mut client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
+    let tls_stream = connector.connect(server_name, tunnel).await.unwrap();
+    assert_eq!(
+        tls_stream.get_ref().1.alpn_protocol(),
+        Some(b"h2".as_slice())
+    );
+
+    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(TokioIo::new(tls_stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri("https://intercepted.example.com/echo")
+        .version(Version::HTTP_2)
+        .header("Sec-WebSocket-Version", "13")
+        .extension(hyper::ext::Protocol::from_static("websocket"))
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+
+    let upgraded = hyper::upgrade::on(response).await.unwrap();
+    let upgraded = TokioIo::new(upgraded);
+    let (reader, writer) = tokio::io::split(upgraded);
+    let mut ws_reader = WebSocketReader::new(reader);
+    let mut ws_writer = WebSocketWriter::new(writer, true);
+
+    ws_writer
+        .write_frame(WebSocketFrame::text("hello over upstream wss"))
+        .await
+        .unwrap();
+
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), ws_reader.next())
+        .await
+        .expect("timed out waiting for websocket echo")
+        .expect("websocket stream should stay open")
+        .expect("websocket frame should decode");
+
+    assert_eq!(
+        echoed.payload,
+        Bytes::from_static(b"hello over upstream wss")
+    );
+    assert_eq!(
+        negotiated_alpn.lock().last().cloned().flatten(),
+        Some(b"http/1.1".to_vec())
+    );
+}
+
+#[tokio::test]
+async fn test_https_interception_accepts_large_h2_request_headers() {
+    init_crypto_provider();
+
+    let upstream = MockH2TlsServer::start().await;
+    let config = ProxyConfig {
+        enable_tls_interception: true,
+        unsafe_ssl: true,
+        verbose_logging: true,
+        ..Default::default()
+    };
+    let proxy = start_test_proxy_with_config(config).await;
+
+    add_test_rule(
+        &proxy,
+        "intercepted.example.com",
+        Protocol::Host,
+        &format!("127.0.0.1:{}", upstream.port),
+    );
+
+    let mut tunnel = TcpStream::connect(proxy.addr()).await.unwrap();
+    let connect_request =
+        "CONNECT intercepted.example.com:443 HTTP/1.1\r\nHost: intercepted.example.com:443\r\n\r\n";
+    tunnel.write_all(connect_request.as_bytes()).await.unwrap();
+
+    let mut connect_response = vec![0u8; 1024];
+    let n = tunnel.read(&mut connect_response).await.unwrap();
+    let response_str = String::from_utf8_lossy(&connect_response[..n]);
+    assert!(
+        response_str.contains("200"),
+        "CONNECT should succeed, got: {}",
+        response_str
+    );
+
+    let mut root_store = RootCertStore::empty();
+    root_store
+        .add(CertificateDer::from(
+            proxy
+                .ca_cert_der
+                .clone()
+                .expect("test proxy should expose CA cert"),
+        ))
+        .unwrap();
+
+    let mut client_config = ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let connector = TlsConnector::from(Arc::new(client_config));
+    let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
+    let tls_stream = connector.connect(server_name, tunnel).await.unwrap();
+    assert_eq!(
+        tls_stream.get_ref().1.alpn_protocol(),
+        Some(b"h2".as_slice())
+    );
+
+    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(TokioIo::new(tls_stream))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    let large_cookie = format!("session={}", "x".repeat(24 * 1024));
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("https://intercepted.example.com/test")
+        .version(Version::HTTP_2)
+        .header(hyper::header::COOKIE, large_cookie)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+
+    let response = sender.send_request(request).await.unwrap();
+    assert_eq!(response.status(), 200);
 }
 
 #[tokio::test]

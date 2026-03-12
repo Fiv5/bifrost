@@ -63,6 +63,10 @@ pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config(unsafe_ssl)
 }
 
+pub fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    client::get_tls_client_config_http1_only(unsafe_ssl)
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     client::sanitize_upstream_headers(headers)
 }
@@ -102,6 +106,11 @@ fn build_tls_intercept_server_builder() -> AutoServerBuilder<TokioExecutor> {
     builder
         .http2()
         .adaptive_window(true)
+        .enable_connect_protocol()
+        // Browser-originated HTTP/2 requests can carry large cookie/header sets
+        // (for example chatgpt.com session cookies). Hyper's default 16KB limit
+        // is too small and surfaces as a proxy-generated 431 before our handler runs.
+        .max_header_list_size(256 * 1024)
         .max_concurrent_streams(512)
         .keep_alive_interval(Some(std::time::Duration::from_secs(15)))
         .keep_alive_timeout(std::time::Duration::from_secs(20))
@@ -469,21 +478,8 @@ async fn handle_tls_interception(
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
     ensure_crypto_provider();
-
-    let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
-        sni_resolver.resolve(original_host)?
-    } else if let Some(ref cert_generator) = tls_config.cert_generator {
-        Arc::new(cert_generator.generate_for_domain(original_host)?)
-    } else {
-        return Err(BifrostError::Tls(
-            "TLS interception enabled but cert generator not configured".to_string(),
-        ));
-    };
-
-    let mut server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
-    server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let server_config = tls_config.resolve_server_config(original_host, &alpn_protocols)?;
 
     let req_id = ctx.id_str();
     let verbose = verbose_logging;
@@ -586,7 +582,7 @@ async fn handle_tls_interception(
 #[allow(dead_code)]
 async fn tls_intercept_tunnel(
     upgraded: Upgraded,
-    server_config: ServerConfig,
+    server_config: Arc<ServerConfig>,
     original_host: &str,
     original_port: u16,
     rules: Arc<dyn RulesResolver>,
@@ -601,7 +597,7 @@ async fn tls_intercept_tunnel(
     client_pid: Option<u32>,
     client_path: Option<String>,
 ) -> Result<()> {
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let acceptor = TlsAcceptor::from(server_config);
     let client_tls = acceptor
         .accept(TokioIo::new(upgraded))
         .await
@@ -669,7 +665,7 @@ async fn tls_intercept_tunnel(
 #[allow(clippy::too_many_arguments)]
 async fn tls_intercept_tunnel_with_cancel(
     upgraded: Upgraded,
-    server_config: ServerConfig,
+    server_config: Arc<ServerConfig>,
     original_host: &str,
     original_port: u16,
     rules: Arc<dyn RulesResolver>,
@@ -685,7 +681,7 @@ async fn tls_intercept_tunnel_with_cancel(
     client_pid: Option<u32>,
     client_path: Option<String>,
 ) -> Result<bool> {
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    let acceptor = TlsAcceptor::from(server_config);
     let client_tls = acceptor
         .accept(TokioIo::new(upgraded))
         .await
@@ -764,6 +760,16 @@ async fn tls_intercept_tunnel_with_cancel(
 }
 
 fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
+    if req.version() == hyper::Version::HTTP_2
+        && req.method() == hyper::Method::CONNECT
+        && req
+            .extensions()
+            .get::<hyper::ext::Protocol>()
+            .is_some_and(|protocol| protocol.as_str().eq_ignore_ascii_case("websocket"))
+    {
+        return true;
+    }
+
     let connection = req
         .headers()
         .get(hyper::header::CONNECTION)
@@ -834,6 +840,7 @@ async fn handle_intercepted_request_with_protocol(
             admin_state,
             rules,
             verbose_logging,
+            unsafe_ssl,
             client_ip,
             client_app,
             client_pid,
@@ -2058,6 +2065,7 @@ async fn handle_intercepted_websocket(
     admin_state: Option<Arc<AdminState>>,
     rules: Arc<dyn RulesResolver>,
     verbose_logging: bool,
+    unsafe_ssl: bool,
     client_ip: String,
     client_app: Option<String>,
     client_pid: Option<u32>,
@@ -2067,9 +2075,15 @@ async fn handle_intercepted_websocket(
     use tokio_rustls::TlsConnector;
 
     let start_time = Instant::now();
+    let is_h2_websocket_connect = req.version() == hyper::Version::HTTP_2
+        && req.method() == hyper::Method::CONNECT
+        && req
+            .extensions()
+            .get::<hyper::ext::Protocol>()
+            .is_some_and(|protocol| protocol.as_str().eq_ignore_ascii_case("websocket"));
     let uri = req.uri().clone();
     let path = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    let method_str = req.method().to_string();
+    let method_str = "GET".to_string();
 
     if verbose_logging {
         info!("[{}] WebSocket upgrade request detected: {}", req_id, path);
@@ -2175,7 +2189,9 @@ async fn handle_intercepted_websocket(
     let stream: Box<dyn AsyncReadWrite + Send + Unpin> = if use_http {
         Box::new(target_stream)
     } else {
-        let tls_config = get_tls_client_config(false);
+        // Upstream WebSocket handshake below is HTTP/1.1 Upgrade. Restricting ALPN to
+        // HTTP/1.1 avoids negotiating h2 and then sending an incompatible HTTP/1.1 handshake.
+        let tls_config = get_tls_client_config_http1_only(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
         let server_name = match ServerName::try_from(target_host.to_string()) {
@@ -2201,7 +2217,7 @@ async fn handle_intercepted_websocket(
         }
     };
 
-    let handshake = build_websocket_handshake_request(&req, &target_host);
+    let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
 
     let (mut stream_read, mut stream_write) = tokio::io::split(stream);
 
@@ -2385,14 +2401,18 @@ async fn handle_intercepted_websocket(
         }
     });
 
-    let mut response = Response::builder()
-        .status(101)
-        .header(hyper::header::UPGRADE, "websocket")
-        .header(hyper::header::CONNECTION, "Upgrade");
-
-    if let Some(accept) = sec_accept {
-        response = response.header("Sec-WebSocket-Accept", accept);
-    }
+    let mut response = if is_h2_websocket_connect {
+        Response::builder().status(200)
+    } else {
+        let mut response = Response::builder()
+            .status(101)
+            .header(hyper::header::UPGRADE, "websocket")
+            .header(hyper::header::CONNECTION, "Upgrade");
+        if let Some(accept) = sec_accept {
+            response = response.header("Sec-WebSocket-Accept", accept);
+        }
+        response
+    };
 
     if let Some(protocol) = sec_protocol {
         response = response.header("Sec-WebSocket-Protocol", protocol);
@@ -2417,7 +2437,11 @@ async fn handle_intercepted_websocket(
     Ok(response.body(empty_body()).unwrap())
 }
 
-fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str) -> String {
+fn build_websocket_handshake_request(
+    req: &Request<Incoming>,
+    target_host: &str,
+    target_port: u16,
+) -> String {
     let path = req
         .uri()
         .path_and_query()
@@ -2428,7 +2452,19 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
         .headers()
         .get("Sec-WebSocket-Key")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(crate::protocol::generate_sec_websocket_key);
+
+    let authority_host = if target_host.contains(':') && !target_host.starts_with('[') {
+        format!("[{}]", target_host)
+    } else {
+        target_host.to_string()
+    };
+
+    let host_header = match target_port {
+        80 | 443 => authority_host,
+        _ => format!("{authority_host}:{target_port}"),
+    };
 
     let ws_version = req
         .headers()
@@ -2443,7 +2479,7 @@ fn build_websocket_handshake_request(req: &Request<Incoming>, target_host: &str)
          Connection: Upgrade\r\n\
          Sec-WebSocket-Key: {}\r\n\
          Sec-WebSocket-Version: {}\r\n",
-        path, target_host, ws_key, ws_version
+        path, host_header, ws_key, ws_version
     );
 
     for (name, value) in req.headers().iter() {

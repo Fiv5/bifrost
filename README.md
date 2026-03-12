@@ -165,7 +165,7 @@ git clone https://github.com/bifrost-proxy/bifrost.git
 cd bifrost
 
 # 使用安装脚本（推荐）
-# macOS: 安装 CLI，并同时构建/安装桌面应用到 ~/Applications/Bifrost.app
+# macOS: 安装 CLI，并同时构建/安装桌面应用到 /Applications/Bifrost.app
 # Linux: 安装 CLI（桌面应用暂不由该脚本安装）
 ./install.sh
 
@@ -199,14 +199,14 @@ Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.
 从源码安装时，macOS 可以直接执行 `./install.sh`，脚本会：
 
 - 安装 `bifrost` CLI 到 `~/.local/bin`
-- 构建桌面端并安装到 `~/Applications/Bifrost.app`
+- 构建 `Bifrost.app` 并直接安装到 `/Applications/Bifrost.app`
 
 如只想安装其中一部分，可使用：
 
 ```bash
 ./install.sh --cli-only
 ./install.sh --desktop-only
-./install.sh --app-dir /Applications
+./install.sh --app-dir ~/Applications
 ```
 
 #### 方式一：Homebrew Cask（macOS）
@@ -243,11 +243,15 @@ cd bifrost
 pnpm install
 cd web && pnpm install && cd ..
 pnpm run desktop:build
+
+# 仅构建 macOS .app（不生成 .dmg，适合 install.sh 的安装流程）
+pnpm run desktop:build:app
 ```
 
 说明：
 
-- macOS 产物位于 `desktop/src-tauri/target/release/bundle/dmg/`
+- `pnpm run desktop:build` 会生成完整安装包；macOS 产物位于 `desktop/src-tauri/target/release/bundle/dmg/`
+- `pnpm run desktop:build:app` 仅生成 macOS `.app`；产物位于 `desktop/src-tauri/target/release/bundle/macos/`
 - Windows 产物位于 `desktop/src-tauri/target/release/bundle/msi/`
 
 ### 卸载

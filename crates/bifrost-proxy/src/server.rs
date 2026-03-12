@@ -23,11 +23,12 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 use crate::proxy::http::{
-    handle_connect, handle_http_request, requires_client_app_for_tls_decision,
+    handle_connect, handle_http_request, requires_client_app_for_tls_decision, SingleCertResolver,
 };
 use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
@@ -422,6 +423,33 @@ pub struct TlsConfig {
     pub ca_key: Option<Vec<u8>>,
     pub cert_generator: Option<Arc<bifrost_tls::DynamicCertGenerator>>,
     pub sni_resolver: Option<Arc<bifrost_tls::SniResolver>>,
+}
+
+impl TlsConfig {
+    pub fn resolve_server_config(
+        &self,
+        server_name: &str,
+        alpn_protocols: &[Vec<u8>],
+    ) -> Result<Arc<RustlsServerConfig>> {
+        if let Some(ref sni_resolver) = self.sni_resolver {
+            return sni_resolver.resolve_server_config_with_alpn(server_name, alpn_protocols);
+        }
+
+        let certified_key = if let Some(ref cert_generator) = self.cert_generator {
+            Arc::new(cert_generator.generate_for_domain(server_name)?)
+        } else {
+            return Err(BifrostError::Tls(
+                "TLS interception enabled but cert generator not configured".to_string(),
+            ));
+        };
+
+        let mut server_config = RustlsServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+        server_config.alpn_protocols = alpn_protocols.to_vec();
+
+        Ok(Arc::new(server_config))
+    }
 }
 
 pub struct ProxyServer {
@@ -1143,6 +1171,7 @@ fn convert_admin_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator, SniResolver};
 
     #[test]
     fn test_proxy_config_default() {
@@ -1259,5 +1288,28 @@ mod tests {
         let config = TlsConfig::default();
         assert!(config.ca_cert.is_none());
         assert!(config.ca_key.is_none());
+    }
+
+    #[test]
+    fn test_tls_config_resolve_server_config_reuses_sni_cache() {
+        init_crypto_provider();
+        let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
+        let alpn = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let config = TlsConfig {
+            ca_cert: Some(vec![1, 2, 3]),
+            ca_key: Some(vec![4, 5, 6]),
+            cert_generator: Some(Arc::new(DynamicCertGenerator::new(ca.clone()))),
+            sni_resolver: Some(Arc::new(SniResolver::new(ca))),
+        };
+
+        let config1 = config
+            .resolve_server_config("example.com", &alpn)
+            .expect("Failed to resolve server config");
+        let config2 = config
+            .resolve_server_config("example.com", &alpn)
+            .expect("Failed to resolve cached server config");
+
+        assert!(Arc::ptr_eq(&config1, &config2));
+        assert_eq!(config1.alpn_protocols, alpn);
     }
 }

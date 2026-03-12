@@ -1,5 +1,5 @@
 use crate::ca::CertificateAuthority;
-use crate::cache::CertCache;
+use crate::cache::{CertCache, ServerConfigCache};
 use crate::dynamic::DynamicCertGenerator;
 use bifrost_core::error::Result;
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub struct SniResolver {
     cert_generator: DynamicCertGenerator,
     cert_cache: CertCache,
+    server_config_cache: ServerConfigCache,
 }
 
 impl SniResolver {
@@ -18,6 +19,7 @@ impl SniResolver {
         Self {
             cert_generator: DynamicCertGenerator::new(ca),
             cert_cache: CertCache::new(),
+            server_config_cache: ServerConfigCache::new(),
         }
     }
 
@@ -25,6 +27,7 @@ impl SniResolver {
         Self {
             cert_generator: DynamicCertGenerator::new(ca),
             cert_cache: CertCache::with_capacity(capacity),
+            server_config_cache: ServerConfigCache::with_capacity(capacity),
         }
     }
 
@@ -42,23 +45,45 @@ impl SniResolver {
     }
 
     pub fn resolve_server_config(&self, server_name: &str) -> Result<Arc<ServerConfig>> {
+        self.resolve_server_config_with_alpn(server_name, &[])
+    }
+
+    pub fn resolve_server_config_with_alpn(
+        &self,
+        server_name: &str,
+        alpn_protocols: &[Vec<u8>],
+    ) -> Result<Arc<ServerConfig>> {
+        if let Some(config) = self.server_config_cache.get(server_name, alpn_protocols) {
+            return Ok(config);
+        }
+
         let cert_key = self.resolve(server_name)?;
 
-        let config = ServerConfig::builder()
+        let mut config = ServerConfig::builder()
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(SingleCertResolver {
-                cert_key: (*cert_key).clone(),
+                cert_key: cert_key.clone(),
             }));
+        config.alpn_protocols = alpn_protocols.to_vec();
 
-        Ok(Arc::new(config))
+        let config = Arc::new(config);
+        self.server_config_cache
+            .insert(server_name, alpn_protocols, config.clone());
+
+        Ok(config)
     }
 
     pub fn clear_cache(&self) {
         self.cert_cache.clear();
+        self.server_config_cache.clear();
     }
 
     pub fn cache_len(&self) -> usize {
         self.cert_cache.len()
+    }
+
+    pub fn server_config_cache_len(&self) -> usize {
+        self.server_config_cache.len()
     }
 }
 
@@ -80,12 +105,12 @@ impl ResolvesServerCert for SniResolver {
 
 #[derive(Debug)]
 struct SingleCertResolver {
-    cert_key: CertifiedKey,
+    cert_key: Arc<CertifiedKey>,
 }
 
 impl ResolvesServerCert for SingleCertResolver {
     fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        Some(Arc::new(self.cert_key.clone()))
+        Some(self.cert_key.clone())
     }
 }
 
@@ -115,6 +140,7 @@ mod tests {
     fn test_sni_resolver_new() {
         let resolver = create_test_resolver();
         assert_eq!(resolver.cache_len(), 0);
+        assert_eq!(resolver.server_config_cache_len(), 0);
     }
 
     #[test]
@@ -164,6 +190,46 @@ mod tests {
             .expect("Failed to resolve config");
 
         assert!(config.alpn_protocols.is_empty());
+        assert_eq!(resolver.server_config_cache_len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_server_config_cached() {
+        setup_crypto_provider();
+        let resolver = create_test_resolver();
+
+        let config1 = resolver
+            .resolve_server_config("example.com")
+            .expect("Failed to resolve config");
+        let config2 = resolver
+            .resolve_server_config("example.com")
+            .expect("Failed to resolve cached config");
+
+        assert!(Arc::ptr_eq(&config1, &config2));
+        assert_eq!(resolver.server_config_cache_len(), 1);
+    }
+
+    #[test]
+    fn test_resolve_server_config_with_alpn() {
+        setup_crypto_provider();
+        let resolver = create_test_resolver();
+        let alpn = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let config1 = resolver
+            .resolve_server_config_with_alpn("example.com", &alpn)
+            .expect("Failed to resolve ALPN config");
+        let config2 = resolver
+            .resolve_server_config_with_alpn("example.com", &alpn)
+            .expect("Failed to resolve cached ALPN config");
+        let config3 = resolver
+            .resolve_server_config("example.com")
+            .expect("Failed to resolve empty ALPN config");
+
+        assert!(Arc::ptr_eq(&config1, &config2));
+        assert!(!Arc::ptr_eq(&config1, &config3));
+        assert_eq!(config1.alpn_protocols, alpn);
+        assert!(config3.alpn_protocols.is_empty());
+        assert_eq!(resolver.server_config_cache_len(), 2);
     }
 
     #[test]
@@ -171,10 +237,15 @@ mod tests {
         let resolver = create_test_resolver();
 
         resolver.resolve("example.com").expect("Resolve");
+        resolver
+            .resolve_server_config("example.com")
+            .expect("Resolve config");
         assert_eq!(resolver.cache_len(), 1);
+        assert_eq!(resolver.server_config_cache_len(), 1);
 
         resolver.clear_cache();
         assert_eq!(resolver.cache_len(), 0);
+        assert_eq!(resolver.server_config_cache_len(), 0);
     }
 
     #[test]

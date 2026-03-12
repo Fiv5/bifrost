@@ -37,7 +37,7 @@ detect_os() {
 
 OS="$(detect_os)"
 INSTALL_DIR="${BIFROST_INSTALL_DIR:-$HOME/.local/bin}"
-DEFAULT_APP_INSTALL_DIR="$HOME/Applications"
+DEFAULT_APP_INSTALL_DIR="/Applications"
 APP_INSTALL_DIR="${BIFROST_APP_INSTALL_DIR:-$DEFAULT_APP_INSTALL_DIR}"
 INSTALL_CLI=true
 INSTALL_DESKTOP=true
@@ -49,7 +49,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --dir <path>         Custom CLI installation directory (default: ~/.local/bin)"
-    echo "  --app-dir <path>     Custom desktop app installation directory (default: ~/Applications)"
+    echo "  --app-dir <path>     Custom desktop app installation directory (default: /Applications)"
     echo "  --cli-only           Install CLI only"
     echo "  --desktop-only       Install desktop app only"
     echo "  --no-desktop         Skip desktop app build and installation"
@@ -62,7 +62,7 @@ show_help() {
     echo "Examples:"
     echo "  $0"
     echo "  $0 --cli-only"
-    echo "  $0 --app-dir /Applications"
+    echo "  $0 --app-dir ~/Applications"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -242,8 +242,8 @@ install_desktop() {
 
     ensure_desktop_dist
 
-    print_step "Building desktop bundle for macOS..."
-    (cd "$SCRIPT_DIR" && pnpm run desktop:build)
+    print_step "Building desktop app bundle for macOS..."
+    (cd "$SCRIPT_DIR" && pnpm run desktop:build:app)
 
     desktop_bundle_path="$(find_desktop_bundle)" || {
         print_error "Desktop bundle not found after build"
@@ -251,6 +251,11 @@ install_desktop() {
     }
 
     print_step "Installing desktop app..."
+    if [[ ! -w "$APP_INSTALL_DIR" ]]; then
+        print_error "No write permission for $APP_INSTALL_DIR"
+        echo "  Try re-running with sudo, or pass --app-dir \$HOME/Applications"
+        exit 1
+    fi
     copy_app_bundle "$desktop_bundle_path" "$installed_app_path"
     clear_xattr "$installed_app_path"
     print_success "Desktop app installed: $installed_app_path"
