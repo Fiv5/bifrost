@@ -297,7 +297,8 @@ impl AdminState {
         if let Some(ref ws_payload_store) = self.ws_payload_store {
             let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
         }
-        traffic_db_store.compact_db(true);
+        // Disk-size fallback cleanup is still on the hot path; avoid full VACUUM here.
+        traffic_db_store.compact_db(false);
 
         tracing::info!(
             deleted = ids_to_delete.len(),

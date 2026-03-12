@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, SharedPushManager};
 use bifrost_core::{BifrostError, ClientAccessControl, Result};
 use bytes::Bytes;
@@ -72,6 +73,8 @@ impl Http3Server {
     }
 
     fn build_server_config(&self) -> Result<ServerConfig> {
+        ensure_crypto_provider();
+
         let certs = self.h3_config.cert_chain.clone();
         let key = self.h3_config.private_key.clone_key();
 

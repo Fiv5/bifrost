@@ -82,6 +82,13 @@ function AppShell() {
     document.documentElement.setAttribute("data-theme", resolvedTheme);
   }, [resolvedTheme]);
 
+  useEffect(() => {
+    document.documentElement.setAttribute(
+      "data-platform",
+      isDesktopShell() ? "desktop" : "web",
+    );
+  }, []);
+
   const overlayStyles =
     resolvedTheme === "dark"
       ? {

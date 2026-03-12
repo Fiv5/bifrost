@@ -1,3 +1,5 @@
+use std::sync::Once;
+
 pub mod dns;
 #[cfg(feature = "http3")]
 pub mod http3;
@@ -29,3 +31,9 @@ pub use utils::process_info::{
     resolve_client_process_async_with_retry, resolve_client_process_cached, ClientProcess,
     ProcessResolver, PROCESS_RESOLVER,
 };
+
+static CRYPTO_PROVIDER_INIT: Once = Once::new();
+
+pub(crate) fn ensure_crypto_provider() {
+    CRYPTO_PROVIDER_INIT.call_once(bifrost_tls::init_crypto_provider);
+}

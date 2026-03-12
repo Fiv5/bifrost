@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::dns::DnsResolver;
+use crate::ensure_crypto_provider;
 use crate::server::BoxBody;
 use hyper::body::Incoming;
 use hyper::Request;
@@ -150,6 +151,8 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
 }
 
 fn build_https_client(unsafe_ssl: bool, dns_servers: &[String]) -> HttpsPooledClient {
+    ensure_crypto_provider();
+
     let config = if unsafe_ssl {
         ClientConfig::builder()
             .dangerous()
@@ -223,6 +226,8 @@ pub(super) async fn send_pooled_request(
 }
 
 pub(super) fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    ensure_crypto_provider();
+
     // 允许 TLS 上游通过 ALPN 协商到 HTTP/2，从而避免被强制降级到 HTTP/1.1 造成大文件下载吞吐下降。
     // 这里显式打开 h2 + http/1.1，后续会根据协商结果选择对应的 Hyper handshake。
     let mut config = if unsafe_ssl {

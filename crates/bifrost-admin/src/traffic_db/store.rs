@@ -1961,6 +1961,25 @@ mod tests {
     }
 
     #[test]
+    fn test_schema_does_not_keep_flags_index() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 5_000, 0, None).unwrap();
+
+        let conn = store.read_conn.lock();
+        let has_idx_flags: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_flags')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(!has_idx_flags);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
     fn test_clear_preserves_active_connection_records() {
         let dir = create_test_dir();
         let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();

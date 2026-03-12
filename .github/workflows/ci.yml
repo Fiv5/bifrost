@@ -103,16 +103,16 @@ jobs:
           - os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
             cross: true
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             cross: false
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             cross: false
-          - os: windows-latest
+          - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             cross: false
     steps:
@@ -145,16 +145,20 @@ jobs:
         run: cross build -p bifrost-cli --release --target ${{ matrix.target }}
 
   desktop-check:
-    name: Desktop Check (${{ matrix.label }})
+    name: Desktop Check (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            label: macOS
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
           - os: windows-latest
-            label: Windows
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -171,14 +175,16 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: web
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: desktop-${{ matrix.label }}
+          key: desktop-${{ matrix.target }}
       - name: Build desktop frontend
         run: pnpm --dir web run build:desktop
       - name: Build bundled CLI backend
-        run: cargo build -p bifrost-cli --release
+        run: cargo build -p bifrost-cli --release --target ${{ matrix.target }}
       - name: Prepare desktop sidecar
-        run: node scripts/prepare-tauri-sidecar.mjs release
+        run: node scripts/prepare-tauri-sidecar.mjs release ${{ matrix.target }}
       - name: Check desktop client
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml --target ${{ matrix.target }}

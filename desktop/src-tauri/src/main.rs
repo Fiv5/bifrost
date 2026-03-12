@@ -5,7 +5,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{
+    image::Image,
+    window::{Effect, EffectState, EffectsBuilder},
+    AppHandle, Manager, State, WebviewWindow,
+};
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const DEFAULT_BACKEND_PORT: u16 = 9900;
@@ -48,10 +52,13 @@ fn main() {
             let main_window = app
                 .get_webview_window("main")
                 .ok_or_else(|| anyhow("missing main window".to_string()))?;
+            main_window.set_icon(load_app_icon()?)?;
             main_window.hide()?;
 
             #[cfg(target_os = "windows")]
             main_window.set_decorations(false)?;
+
+            apply_window_effects(&main_window)?;
 
             let binary_path = resolve_bifrost_binary(app.handle())?;
             let app_config_dir = app.path().app_config_dir()?;
@@ -91,6 +98,26 @@ fn main() {
                 stop_backend(app_handle);
             }
         });
+}
+
+fn load_app_icon() -> tauri::Result<Image<'static>> {
+    Image::from_bytes(include_bytes!("../../../assets/bifrost.png"))
+}
+
+fn apply_window_effects(window: &WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    window.set_effects(
+        EffectsBuilder::new()
+            .effects([Effect::UnderWindowBackground, Effect::Sidebar])
+            .state(EffectState::Active)
+            .radius(18.0)
+            .build(),
+    )?;
+
+    #[cfg(target_os = "windows")]
+    window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build())?;
+
+    Ok(())
 }
 
 fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {

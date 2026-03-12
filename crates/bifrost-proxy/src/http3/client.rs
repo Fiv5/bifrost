@@ -2,6 +2,7 @@ use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ensure_crypto_provider;
 use bifrost_core::{BifrostError, Result};
 use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
@@ -18,6 +19,8 @@ pub struct Http3Client {
 
 impl Http3Client {
     pub fn new() -> Result<Self> {
+        ensure_crypto_provider();
+
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 

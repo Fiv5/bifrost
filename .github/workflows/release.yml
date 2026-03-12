@@ -166,16 +166,16 @@ jobs:
             target: armv7-unknown-linux-gnueabihf
             archive: tar.gz
             cross: true
-          - os: macos-latest
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             archive: tar.gz
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
-          - os: windows-latest
+          - os: windows-11-arm
             target: aarch64-pc-windows-msvc
             archive: zip
     steps:
@@ -280,14 +280,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             bundle_ext: dmg
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             bundle_ext: dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bundle_ext: msi
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             bundle_ext: msi
     steps:
       - uses: actions/checkout@v4
@@ -327,16 +330,29 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           key: desktop-${{ matrix.target }}
 
+      - name: Build desktop frontend
+        run: pnpm --dir web run build:desktop
+
+      - name: Build bundled CLI backend
+        env:
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
+        run: cargo build -p bifrost-cli --release --target ${{ matrix.target }}
+
+      - name: Prepare desktop sidecar
+        run: node scripts/prepare-tauri-sidecar.mjs release ${{ matrix.target }}
+
       - name: Build desktop bundle
         env:
           BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
-        run: pnpm run desktop:build
+        run: pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json --target ${{ matrix.target }}
 
       - name: Package desktop artifact
         shell: bash
@@ -346,7 +362,7 @@ jobs:
           TARGET="${{ matrix.target }}"
           EXT="${{ matrix.bundle_ext }}"
           mkdir -p dist
-          BUNDLE_PATH=$(find desktop/src-tauri/target/release/bundle -type f -name "*.${EXT}" | head -n 1)
+          BUNDLE_PATH=$(find "desktop/src-tauri/target/${TARGET}/release/bundle" -type f -name "*.${EXT}" | head -n 1)
           if [[ -z "${BUNDLE_PATH}" ]]; then
             echo "Desktop bundle not found for extension ${EXT}"
             exit 1
@@ -363,7 +379,7 @@ jobs:
           $TARGET = "${{ matrix.target }}"
           $EXT = "${{ matrix.bundle_ext }}"
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $bundle = Get-ChildItem "desktop/src-tauri/target/release/bundle" -Recurse -Filter "*.$EXT" | Select-Object -First 1
+          $bundle = Get-ChildItem "desktop/src-tauri/target/$TARGET/release/bundle" -Recurse -Filter "*.$EXT" | Select-Object -First 1
           if (-not $bundle) {
             Write-Error "Desktop bundle not found for extension $EXT"
             exit 1
@@ -520,6 +536,7 @@ jobs:
             | macOS | Intel | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-x86_64-apple-darwin.dmg` |
             | macOS | Apple Silicon | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-aarch64-apple-darwin.dmg` |
             | Windows | x64 | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-x86_64-pc-windows-msvc.msi` |
+            | Windows | ARM64 | `bifrost-desktop-${{ needs.prepare.outputs.tag }}-aarch64-pc-windows-msvc.msi` |
 
           files: |
             release/*

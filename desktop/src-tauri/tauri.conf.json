@@ -16,6 +16,7 @@
         "minWidth": 1180,
         "minHeight": 760,
         "resizable": true,
+        "transparent": true,
         "visible": false,
         "decorations": true,
         "hiddenTitle": true,

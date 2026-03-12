@@ -115,10 +115,10 @@ CREATE INDEX IF NOT EXISTS idx_host ON traffic_records(host);
 CREATE INDEX IF NOT EXISTS idx_status ON traffic_records(status) WHERE status > 0;
 CREATE INDEX IF NOT EXISTS idx_method ON traffic_records(method);
 CREATE INDEX IF NOT EXISTS idx_client_app ON traffic_records(client_app) WHERE client_app IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_flags ON traffic_records(flags);
 CREATE INDEX IF NOT EXISTS idx_seq_desc ON traffic_records(sequence DESC);
 CREATE INDEX IF NOT EXISTS idx_host_seq ON traffic_records(host, sequence DESC);
 CREATE INDEX IF NOT EXISTS idx_status_seq ON traffic_records(status, sequence DESC);
+DROP INDEX IF EXISTS idx_flags;
 
 CREATE TABLE IF NOT EXISTS traffic_record_details (
     id TEXT PRIMARY KEY NOT NULL REFERENCES traffic_records(id) ON DELETE CASCADE,

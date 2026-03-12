@@ -18,6 +18,11 @@ body {
   background-color: #ffffff;
 }
 
+html[data-platform="desktop"] body,
+html[data-platform="desktop"] #root {
+  background: transparent;
+}
+
 button {
   font: inherit;
 }

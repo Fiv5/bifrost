@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 
@@ -1233,6 +1234,8 @@ impl SocksHandler {
         target_port: u16,
         cert_host: &str,
     ) -> Result<()> {
+        ensure_crypto_provider();
+
         let tls_config = match &self.tls_config {
             Some(c) => Arc::clone(c),
             None => return Err(BifrostError::Tls("TLS config not available".to_string())),

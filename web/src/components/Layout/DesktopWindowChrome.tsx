@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { theme } from "antd";
 import { getCurrentDesktopWindow } from "../../desktop/tauri";
 import { getDesktopPlatform, isDesktopShell } from "../../runtime";
+import { useThemeStore } from "../../stores/useThemeStore";
 
 export const DESKTOP_CHROME_HEIGHT = 46;
 
@@ -10,6 +11,7 @@ type CaptionButtonKey = "minimize" | "maximize" | "close";
 
 export default function DesktopWindowChrome() {
   const { token } = theme.useToken();
+  const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const [isMaximized, setIsMaximized] = useState(false);
   const [hoveredButton, setHoveredButton] = useState<CaptionButtonKey | null>(null);
   const [pressedButton, setPressedButton] = useState<CaptionButtonKey | null>(null);
@@ -21,6 +23,7 @@ export default function DesktopWindowChrome() {
   const platform = getDesktopPlatform();
   const isMac = platform === "macos";
   const isWindows = platform === "windows";
+  const isDark = resolvedTheme === "dark";
   const currentWindow = getCurrentDesktopWindow();
 
   useEffect(() => {
@@ -44,17 +47,56 @@ export default function DesktopWindowChrome() {
       zIndex: 30,
       pointerEvents: "none" as const,
       background: isMac
-        ? "linear-gradient(180deg, rgba(251,252,254,0.92) 0%, rgba(251,252,254,0.64) 62%, rgba(251,252,254,0) 100%)"
-        : token.colorBgContainer,
-      borderBottom: isWindows ? `1px solid ${token.colorBorderSecondary}` : "none",
-      backdropFilter: isMac ? "blur(18px) saturate(1.15)" : undefined,
+        ? isDark
+          ? "linear-gradient(180deg, rgba(16,22,33,0.82) 0%, rgba(16,22,33,0.42) 62%, rgba(16,22,33,0) 100%)"
+          : "linear-gradient(180deg, rgba(251,252,254,0.92) 0%, rgba(251,252,254,0.64) 62%, rgba(251,252,254,0) 100%)"
+        : isDark
+          ? "linear-gradient(180deg, rgba(12,18,27,0.52) 0%, rgba(12,18,27,0.42) 100%)"
+          : "linear-gradient(180deg, rgba(255,255,255,0.36) 0%, rgba(255,255,255,0.28) 100%)",
+      borderBottom: isWindows
+        ? isDark
+          ? "1px solid rgba(148, 163, 184, 0.14)"
+          : "1px solid rgba(255, 255, 255, 0.26)"
+        : "none",
+      backdropFilter: "blur(18px) saturate(1.15)",
+      boxShadow: isMac
+        ? isDark
+          ? "inset 0 1px 0 rgba(255,255,255,0.05)"
+          : "inset 0 1px 0 rgba(255,255,255,0.62)"
+        : isDark
+          ? "inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 28px rgba(0,0,0,0.12)"
+          : "inset 0 1px 0 rgba(255,255,255,0.72), 0 8px 24px rgba(148,163,184,0.08)",
     },
     macSidebarBlend: {
       position: "absolute" as const,
       inset: 0,
       width: 124,
       background:
-        "linear-gradient(90deg, rgba(247,249,252,0.88) 0%, rgba(247,249,252,0.62) 58%, rgba(247,249,252,0) 100%)",
+        isDark
+          ? "linear-gradient(90deg, rgba(16,22,33,0.72) 0%, rgba(16,22,33,0.46) 58%, rgba(16,22,33,0) 100%)"
+          : "linear-gradient(90deg, rgba(247,249,252,0.88) 0%, rgba(247,249,252,0.62) 58%, rgba(247,249,252,0) 100%)",
+      pointerEvents: "none" as const,
+    },
+    macTopHighlight: {
+      position: "absolute" as const,
+      top: 0,
+      left: 76,
+      right: 24,
+      height: 1,
+      background: isDark
+        ? "linear-gradient(90deg, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.04) 38%, rgba(255,255,255,0) 100%)"
+        : "linear-gradient(90deg, rgba(255,255,255,0.86) 0%, rgba(255,255,255,0.36) 42%, rgba(255,255,255,0) 100%)",
+      pointerEvents: "none" as const,
+    },
+    windowsTopGlow: {
+      position: "absolute" as const,
+      top: 0,
+      left: 0,
+      right: WINDOWS_BUTTON_WIDTH * 3,
+      height: 1,
+      background: isDark
+        ? "linear-gradient(90deg, rgba(255,255,255,0.10) 0%, rgba(125,211,252,0.06) 34%, rgba(255,255,255,0) 100%)"
+        : "linear-gradient(90deg, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0.38) 40%, rgba(255,255,255,0) 100%)",
       pointerEvents: "none" as const,
     },
     dragRegion: {
@@ -63,7 +105,7 @@ export default function DesktopWindowChrome() {
       alignItems: "center",
       paddingLeft: isMac ? 88 : 16,
       paddingRight: isWindows ? 8 : 24,
-      color: token.colorTextSecondary,
+      color: isDark ? "rgba(226, 232, 240, 0.78)" : token.colorTextSecondary,
       fontSize: 12,
       letterSpacing: isMac ? "0.02em" : "0.08em",
       textTransform: isMac ? "none" : ("uppercase" as const),
@@ -74,7 +116,7 @@ export default function DesktopWindowChrome() {
     macTitle: {
       fontSize: 12,
       fontWeight: 500,
-      color: "rgba(0,0,0,0.56)",
+      color: isDark ? "rgba(226, 232, 240, 0.72)" : "rgba(0,0,0,0.56)",
     },
     controls: {
       display: "flex",
@@ -181,6 +223,8 @@ export default function DesktopWindowChrome() {
   return (
     <div style={styles.shell}>
       {isMac ? <div style={styles.macSidebarBlend} /> : null}
+      {isMac ? <div style={styles.macTopHighlight} /> : null}
+      {isWindows ? <div style={styles.windowsTopGlow} /> : null}
       <div
         data-tauri-drag-region
         style={styles.dragRegion}

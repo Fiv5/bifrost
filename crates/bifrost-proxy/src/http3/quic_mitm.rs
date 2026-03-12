@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::ensure_crypto_provider;
 use bifrost_admin::AdminState;
 use bifrost_core::{BifrostError, Result};
 use quinn::{Endpoint, ServerConfig};
@@ -564,6 +565,8 @@ impl QuicMitmRelay {
     }
 
     fn build_quic_server_config(cert: &CertifiedKey) -> Result<ServerConfig> {
+        ensure_crypto_provider();
+
         let mut crypto = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_cert_resolver(Arc::new(SingleCertResolver(cert.clone())));

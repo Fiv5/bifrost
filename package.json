@@ -3,8 +3,8 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "cli:build": "cargo build -p bifrost-cli --release",
-    "desktop:build": "pnpm --dir web run build:desktop && cargo build -p bifrost-cli --release && node scripts/prepare-tauri-sidecar.mjs release && pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json",
-    "desktop:dev": "pnpm --dir web run build:desktop && cargo build -p bifrost-cli && node scripts/prepare-tauri-sidecar.mjs debug && pnpm exec tauri dev --config desktop/src-tauri/tauri.conf.json",
+    "desktop:build": "node scripts/ensure-root-dev-deps.mjs && pnpm --dir web run build:desktop && cargo build -p bifrost-cli --release && node scripts/prepare-tauri-sidecar.mjs release && pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json",
+    "desktop:dev": "node scripts/ensure-root-dev-deps.mjs && pnpm --dir web run build:desktop && cargo build -p bifrost-cli && node scripts/prepare-tauri-sidecar.mjs debug && pnpm exec tauri dev --config desktop/src-tauri/tauri.conf.json",
     "release:all": "pnpm run cli:build && pnpm run desktop:build"
   },
   "devDependencies": {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -467,6 +468,8 @@ async fn handle_tls_interception(
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
 ) -> Result<Response<BoxBody>> {
+    ensure_crypto_provider();
+
     let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
         sni_resolver.resolve(original_host)?
     } else if let Some(ref cert_generator) = tls_config.cert_generator {

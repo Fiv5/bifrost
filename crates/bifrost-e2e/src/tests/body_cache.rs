@@ -18,7 +18,7 @@ async fn get_latest_record(admin_state: &Arc<AdminState>) -> Result<TrafficRecor
         });
         let id = result
             .records
-            .get(0)
+            .first()
             .map(|r| r.id.clone())
             .ok_or_else(|| "No traffic records found".to_string())?;
         db_store
