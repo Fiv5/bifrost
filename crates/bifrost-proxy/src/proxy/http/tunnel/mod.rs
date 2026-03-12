@@ -4,12 +4,12 @@ use std::time::Instant;
 use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
-use bytes::Bytes;
-use http_body_util::BodyExt;
+use bytes::{Bytes, BytesMut};
+use http_body_util::{BodyExt, Empty};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Request, Response};
+use hyper::{Method, Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
 use tokio::io::AsyncWriteExt;
@@ -2186,12 +2186,59 @@ async fn handle_intercepted_websocket(
     };
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
 
-    let stream: Box<dyn AsyncReadWrite + Send + Unpin> = if use_http {
-        Box::new(target_stream)
+    let upstream_handshake = if use_http {
+        let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(target_stream);
+        let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
+        let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+
+        if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
+            error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
+
+        let (upstream_resp, upstream_leftover) =
+            match read_http1_response_with_leftover(&mut stream_read).await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(
+                        "[{}] Failed to read WebSocket handshake response: {}",
+                        req_id, e
+                    );
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
+            };
+
+        if upstream_resp.status_code != 101 {
+            error!(
+                "[{}] WebSocket handshake failed: {} {}",
+                req_id, upstream_resp.status_code, upstream_resp.status_text
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"WebSocket handshake failed".to_vec()))
+                .unwrap());
+        }
+
+        UpstreamWebSocketHandshake {
+            stream: Box::new(stream_read.unsplit(stream_write)),
+            leftover: upstream_leftover,
+            headers: upstream_resp.headers.clone(),
+            sec_accept: upstream_resp
+                .header("Sec-WebSocket-Accept")
+                .map(|v| v.to_string()),
+            protocol: upstream_resp
+                .header("Sec-WebSocket-Protocol")
+                .map(ToOwned::to_owned),
+            extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
+        }
     } else {
-        // Upstream WebSocket handshake below is HTTP/1.1 Upgrade. Restricting ALPN to
-        // HTTP/1.1 avoids negotiating h2 and then sending an incompatible HTTP/1.1 handshake.
-        let tls_config = get_tls_client_config_http1_only(unsafe_ssl);
+        let tls_config = get_tls_client_config(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
         let server_name = match ServerName::try_from(target_host.to_string()) {
@@ -2205,8 +2252,8 @@ async fn handle_intercepted_websocket(
             }
         };
 
-        match connector.connect(server_name, target_stream).await {
-            Ok(tls_stream) => Box::new(tls_stream),
+        let tls_stream = match connector.connect(server_name, target_stream).await {
+            Ok(tls_stream) => tls_stream,
             Err(e) => {
                 error!("[{}] TLS handshake failed: {}", req_id, e);
                 return Ok(Response::builder()
@@ -2214,52 +2261,91 @@ async fn handle_intercepted_websocket(
                     .body(full_body(b"Bad Gateway".to_vec()))
                     .unwrap());
             }
+        };
+
+        match tls_stream.get_ref().1.alpn_protocol() {
+            Some(b"h2") => match connect_upstream_websocket_h2(
+                &req,
+                &target_host,
+                target_port,
+                req_id,
+                tls_stream,
+            )
+            .await
+            {
+                Ok(handshake) => handshake,
+                Err(e) => {
+                    error!("[{}] {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"WebSocket handshake failed".to_vec()))
+                        .unwrap());
+                }
+            },
+            _ => {
+                let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(tls_stream);
+                let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
+                let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+
+                if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
+                    error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"Bad Gateway".to_vec()))
+                        .unwrap());
+                }
+
+                let (upstream_resp, upstream_leftover) =
+                    match read_http1_response_with_leftover(&mut stream_read).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            error!(
+                                "[{}] Failed to read WebSocket handshake response: {}",
+                                req_id, e
+                            );
+                            return Ok(Response::builder()
+                                .status(502)
+                                .body(full_body(b"Bad Gateway".to_vec()))
+                                .unwrap());
+                        }
+                    };
+
+                if upstream_resp.status_code != 101 {
+                    error!(
+                        "[{}] WebSocket handshake failed: {} {}",
+                        req_id, upstream_resp.status_code, upstream_resp.status_text
+                    );
+                    return Ok(Response::builder()
+                        .status(502)
+                        .body(full_body(b"WebSocket handshake failed".to_vec()))
+                        .unwrap());
+                }
+
+                UpstreamWebSocketHandshake {
+                    stream: Box::new(stream_read.unsplit(stream_write)),
+                    leftover: upstream_leftover,
+                    headers: upstream_resp.headers.clone(),
+                    sec_accept: upstream_resp
+                        .header("Sec-WebSocket-Accept")
+                        .map(|v| v.to_string()),
+                    protocol: upstream_resp
+                        .header("Sec-WebSocket-Protocol")
+                        .map(ToOwned::to_owned),
+                    extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
+                }
+            }
         }
     };
 
-    let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
-
-    let (mut stream_read, mut stream_write) = tokio::io::split(stream);
-
-    if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
-        error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
-        return Ok(Response::builder()
-            .status(502)
-            .body(full_body(b"Bad Gateway".to_vec()))
-            .unwrap());
-    }
-
-    let (upstream_resp, upstream_leftover) =
-        match read_http1_response_with_leftover(&mut stream_read).await {
-            Ok(v) => v,
-            Err(e) => {
-                error!(
-                    "[{}] Failed to read WebSocket handshake response: {}",
-                    req_id, e
-                );
-                return Ok(Response::builder()
-                    .status(502)
-                    .body(full_body(b"Bad Gateway".to_vec()))
-                    .unwrap());
-            }
-        };
-
-    if upstream_resp.status_code != 101 {
-        error!(
-            "[{}] WebSocket handshake failed: {} {}",
-            req_id, upstream_resp.status_code, upstream_resp.status_text
-        );
-        return Ok(Response::builder()
-            .status(502)
-            .body(full_body(b"WebSocket handshake failed".to_vec()))
-            .unwrap());
-    }
-
-    let sec_accept = upstream_resp
-        .header("Sec-WebSocket-Accept")
-        .map(|v| v.to_string());
-    let upstream_protocol = upstream_resp.header("Sec-WebSocket-Protocol");
-    let upstream_extensions = header_values(&upstream_resp, "Sec-WebSocket-Extensions");
+    let UpstreamWebSocketHandshake {
+        stream,
+        leftover: upstream_leftover,
+        headers: upstream_headers,
+        sec_accept: upstream_sec_accept,
+        protocol: upstream_protocol_owned,
+        extensions: upstream_extensions,
+    } = upstream_handshake;
+    let upstream_protocol = upstream_protocol_owned.as_deref();
 
     let client_protocol = req
         .headers()
@@ -2280,7 +2366,15 @@ async fn handle_intercepted_websocket(
         negotiated_protocol: sec_protocol.clone(),
         negotiated_extensions: negotiated_extensions.clone(),
     };
-    let upstream_headers = upstream_resp.headers.clone();
+    let sec_accept = if is_h2_websocket_connect {
+        upstream_sec_accept
+    } else {
+        req.headers()
+            .get("Sec-WebSocket-Key")
+            .and_then(|v| v.to_str().ok())
+            .map(crate::protocol::compute_accept_key)
+            .or(upstream_sec_accept)
+    };
 
     let total_ms = start_time.elapsed().as_millis() as u64;
 
@@ -2339,7 +2433,6 @@ async fn handle_intercepted_websocket(
         );
     }
 
-    let stream = stream_read.unsplit(stream_write);
     let req_id_owned = req_id.to_string();
     let admin_state_clone = admin_state.clone();
     let ws_rules = resolved_rules.clone();
@@ -2534,6 +2627,133 @@ fn build_websocket_handshake_request(
 
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite> AsyncReadWrite for T {}
+
+struct UpstreamWebSocketHandshake {
+    stream: Box<dyn AsyncReadWrite + Send + Unpin>,
+    leftover: BytesMut,
+    headers: Vec<(String, String)>,
+    sec_accept: Option<String>,
+    protocol: Option<String>,
+    extensions: Vec<String>,
+}
+
+async fn connect_upstream_websocket_h2<S>(
+    req: &Request<Incoming>,
+    target_host: &str,
+    target_port: u16,
+    req_id: &str,
+    stream: S,
+) -> std::result::Result<UpstreamWebSocketHandshake, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+        .handshake(TokioIo::new(stream))
+        .await
+        .map_err(|e| format!("Failed to establish upstream h2 connection: {e}"))?;
+
+    let req_id_owned = req_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            debug!(
+                "[{}] Upstream h2 websocket connection closed: {}",
+                req_id_owned, e
+            );
+        }
+    });
+
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let authority_host = if target_host.contains(':') && !target_host.starts_with('[') {
+        format!("[{}]", target_host)
+    } else {
+        target_host.to_string()
+    };
+    let authority = match target_port {
+        443 => authority_host,
+        _ => format!("{authority_host}:{target_port}"),
+    };
+    let upstream_uri = format!("https://{}{}", authority, path);
+
+    let mut builder = Request::builder()
+        .method(Method::CONNECT)
+        .uri(upstream_uri)
+        .version(hyper::Version::HTTP_2)
+        .extension(hyper::ext::Protocol::from_static("websocket"));
+
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str();
+        if n.eq_ignore_ascii_case("host")
+            || n.eq_ignore_ascii_case("upgrade")
+            || n.eq_ignore_ascii_case("connection")
+            || n.eq_ignore_ascii_case("sec-websocket-key")
+            || n.eq_ignore_ascii_case("sec-websocket-version")
+            || n.eq_ignore_ascii_case("content-length")
+            || n.eq_ignore_ascii_case("transfer-encoding")
+            || n.eq_ignore_ascii_case("proxy-connection")
+            || n.eq_ignore_ascii_case("keep-alive")
+            || n.eq_ignore_ascii_case("te")
+            || n.eq_ignore_ascii_case("trailer")
+        {
+            continue;
+        }
+
+        builder = builder.header(name, value);
+    }
+
+    let request = builder
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| format!("Failed to build upstream h2 websocket request: {e}"))?;
+
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|e| format!("Failed to send upstream h2 websocket request: {e}"))?;
+
+    if response.status() != hyper::StatusCode::OK {
+        return Err(format!(
+            "Upstream h2 websocket handshake failed: {}",
+            response.status()
+        ));
+    }
+
+    let protocol = response
+        .headers()
+        .get("Sec-WebSocket-Protocol")
+        .and_then(|v| v.to_str().ok())
+        .map(ToOwned::to_owned);
+    let extensions = response
+        .headers()
+        .get_all("Sec-WebSocket-Extensions")
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(ToOwned::to_owned))
+        .collect::<Vec<_>>();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_string(), v.to_string()))
+        })
+        .collect::<Vec<_>>();
+    let upgraded = hyper::upgrade::on(response)
+        .await
+        .map_err(|e| format!("Failed to upgrade upstream h2 websocket stream: {e}"))?;
+
+    Ok(UpstreamWebSocketHandshake {
+        stream: Box::new(TokioIo::new(upgraded)),
+        leftover: BytesMut::new(),
+        headers,
+        sec_accept: None,
+        protocol,
+        extensions,
+    })
+}
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
     let body = format!(
