@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::ensure_crypto_provider;
+#[cfg(feature = "http3")]
+use crate::http3::Http3Client;
+use crate::protocol::ProtocolDetector;
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Bytes, BytesMut};
@@ -97,6 +100,20 @@ fn build_upstream_pool_partition(
         rules.host_protocol,
         rules.ignored.host
     )
+}
+
+#[cfg(feature = "http3")]
+async fn try_send_http3_upstream(
+    host: &str,
+    port: u16,
+    req: Request<Bytes>,
+    unsafe_ssl: bool,
+    dns_resolver: &DnsResolver,
+    dns_servers: &[String],
+) -> Result<Response<Bytes>> {
+    let addr = Http3Client::resolve_target_addr(host, port, dns_resolver, dns_servers).await?;
+    let client = Http3Client::new_with_options(unsafe_ssl)?;
+    client.request_to_addr(host, addr, req).await
 }
 
 fn build_tls_intercept_server_builder() -> AutoServerBuilder<TokioExecutor> {
@@ -1067,6 +1084,7 @@ async fn handle_intercepted_request_with_protocol(
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
+    let has_transfer_encoding = parts.headers.contains_key(hyper::header::TRANSFER_ENCODING);
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
     let has_req_body_override = resolved_rules.req_body.is_some();
@@ -1210,6 +1228,8 @@ async fn handle_intercepted_request_with_protocol(
             }
         }
         new_body.to_vec()
+    } else if req_content_length.unwrap_or(0) == 0 && !has_transfer_encoding {
+        Vec::new()
     } else {
         if admin_state.is_some() {
             let (tee_body, capture) =
@@ -1347,6 +1367,7 @@ async fn handle_intercepted_request_with_protocol(
         new_req = new_req.header(hyper::header::COOKIE, cookie_str);
     }
 
+    let request_body_is_streaming = streaming_body.is_some();
     let outgoing_body = match streaming_body {
         Some(body) => body,
         None => full_body(Bytes::from(body_bytes.clone())),
@@ -1452,9 +1473,88 @@ async fn handle_intercepted_request_with_protocol(
             }
         };
     let (mut upstream_parts, upstream_body) = outgoing_req.into_parts();
-    upstream_parts.uri = upstream_uri;
+    upstream_parts.uri = upstream_uri.clone();
     upstream_parts.headers.remove(hyper::header::HOST);
     sanitize_upstream_headers(&mut upstream_parts.headers);
+
+    #[cfg(feature = "http3")]
+    let req_headers_for_h3: Vec<(String, String)> = upstream_parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    #[cfg(feature = "http3")]
+    let h3_dns_resolver = DnsResolver::new(verbose_logging);
+
+    #[cfg(feature = "http3")]
+    let should_try_http3_upstream = !actual_use_http
+        && resolved_rules.upstream_http3
+        && !request_body_is_streaming
+        && resolved_rules.proxy.is_none()
+        && !ProtocolDetector::is_websocket_upgrade(&req_headers_for_h3)
+        && !ProtocolDetector::is_sse_request(&req_headers_for_h3);
+
+    #[cfg(feature = "http3")]
+    let h3_attempt = if should_try_http3_upstream {
+        let upstream_authority = if (!actual_use_http && actual_target_port == 443)
+            || (actual_use_http && actual_target_port == 80)
+        {
+            actual_target_host.clone()
+        } else {
+            format!("{}:{}", actual_target_host, actual_target_port)
+        };
+        let mut builder = Request::builder()
+            .method(upstream_parts.method.clone())
+            .uri(upstream_uri.clone());
+        for (key, value) in upstream_parts.headers.iter() {
+            builder = builder.header(key, value);
+        }
+        builder = builder.header("host", upstream_authority);
+        match builder.body(Bytes::from(body_bytes.clone())) {
+            Ok(h3_req) => {
+                let start = Instant::now();
+                match try_send_http3_upstream(
+                    &actual_target_host,
+                    actual_target_port,
+                    h3_req,
+                    unsafe_ssl,
+                    &h3_dns_resolver,
+                    &resolved_rules.dns_servers,
+                )
+                .await
+                {
+                    Ok(resp) => {
+                        info!(
+                            "[{}] Upstream negotiated HTTP/3 for {}:{}",
+                            req_id, actual_target_host, actual_target_port
+                        );
+                        Some((resp, start.elapsed().as_millis() as u64))
+                    }
+                    Err(err) => {
+                        warn!(
+                            "[{}] Upstream HTTP/3 attempt failed for {}:{}: {}, falling back to HTTP/1.1/2",
+                            req_id,
+                            actual_target_host,
+                            actual_target_port,
+                            err
+                        );
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "[{}] Failed to build upstream HTTP/3 request for {}:{}: {}",
+                    req_id, actual_target_host, actual_target_port, err
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let upstream_req = Request::from_parts(upstream_parts, upstream_body);
 
     let pool_partition = build_upstream_pool_partition(
@@ -1464,33 +1564,72 @@ async fn handle_intercepted_request_with_protocol(
         actual_use_http,
         &resolved_rules,
     );
-    let send_start = Instant::now();
-    let response = match send_pooled_request(
-        upstream_req,
-        unsafe_ssl,
-        &resolved_rules.dns_servers,
-        &pool_partition,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            error!("[{}] Failed to send request: {}", req_id, e);
-            let mut source = std::error::Error::source(&e);
-            while let Some(err) = source {
-                error!("[{}] Request failure source: {}", req_id, err);
-                source = std::error::Error::source(err);
+    #[cfg(feature = "http3")]
+    let upstream_result = if let Some((response, wait_ms)) = h3_attempt {
+        let (parts, body) = response.into_parts();
+        (parts, None, None, wait_ms, Some(body))
+    } else {
+        let send_start = Instant::now();
+        let response = match send_pooled_request(
+            upstream_req,
+            unsafe_ssl,
+            &resolved_rules.dns_servers,
+            &pool_partition,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] Failed to send request: {}", req_id, e);
+                let mut source = std::error::Error::source(&e);
+                while let Some(err) = source {
+                    error!("[{}] Request failure source: {}", req_id, err);
+                    source = std::error::Error::source(err);
+                }
+                return Ok(build_conn_error_record_and_response(
+                    "REQUEST_FAILED",
+                    format!("Request Failed: {}", e),
+                    None,
+                ));
             }
-            return Ok(build_conn_error_record_and_response(
-                "REQUEST_FAILED",
-                format!("Request Failed: {}", e),
-                None,
-            ));
-        }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        let (parts, body) = response.into_parts();
+        (parts, Some(body), None, wait_ms, None)
     };
-    let (response, tls_ms, wait_ms) = (response, None, send_start.elapsed().as_millis() as u64);
 
-    let (mut res_parts, res_body) = response.into_parts();
+    #[cfg(not(feature = "http3"))]
+    let upstream_result = {
+        let send_start = Instant::now();
+        let response = match send_pooled_request(
+            upstream_req,
+            unsafe_ssl,
+            &resolved_rules.dns_servers,
+            &pool_partition,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("[{}] Failed to send request: {}", req_id, e);
+                let mut source = std::error::Error::source(&e);
+                while let Some(err) = source {
+                    error!("[{}] Request failure source: {}", req_id, err);
+                    source = std::error::Error::source(err);
+                }
+                return Ok(build_conn_error_record_and_response(
+                    "REQUEST_FAILED",
+                    format!("Request Failed: {}", e),
+                    None,
+                ));
+            }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        let (parts, body) = response.into_parts();
+        (parts, Some(body), None, wait_ms, None)
+    };
+
+    let (mut res_parts, res_body, tls_ms, wait_ms, h3_buffered_body) = upstream_result;
 
     let target_status = resolved_rules.replace_status.or(resolved_rules.status_code);
     if let Some(status_code) = target_status {
@@ -1569,13 +1708,20 @@ async fn handle_intercepted_request_with_protocol(
 
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
-    let mut res_body_incoming = Some(res_body);
+    let mut res_body_incoming = res_body;
     let mut res_body_stream: Option<BoxBody> = None;
     if !is_sse {
-        res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
+        if let Some(ref body) = h3_buffered_body {
+            res_body_stream = Some(full_body(body.clone()));
+        } else {
+            res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
+        }
     }
 
     let mut pre_read_res: Option<(Vec<u8>, u64)> = None;
+    if let Some(body) = h3_buffered_body.clone() {
+        pre_read_res = Some((body.to_vec(), 0));
+    }
     if needs_res_body_read && needs_processing && !is_sse {
         if let Some(len) = res_content_length {
             if len > max_body_buffer_size {

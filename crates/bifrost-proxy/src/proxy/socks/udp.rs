@@ -12,12 +12,9 @@ use tracing::{debug, error, info};
 
 use crate::dns::DnsResolver;
 use crate::protocol::QuicPacketDetector;
-use crate::server::{ProxyConfig, RulesResolver, TlsConfig};
+use crate::server::{ProxyConfig, RulesResolver};
 
 use super::tcp::{AddressType, SocksAddress};
-
-#[cfg(feature = "http3")]
-use crate::http3::QuicMitmRelay;
 
 const UDP_BUFFER_SIZE: usize = 65535;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -46,15 +43,10 @@ pub struct UdpRelay {
     sessions: Arc<RwLock<HashMap<SocketAddr, UdpSession>>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
     rules: Option<Arc<dyn RulesResolver>>,
-    tls_config: Option<Arc<TlsConfig>>,
     proxy_config: Option<ProxyConfig>,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
     access_control: Option<Arc<RwLock<ClientAccessControl>>>,
-    enable_quic_mitm: bool,
-    #[cfg(feature = "http3")]
-    #[allow(dead_code)]
-    quic_mitm_relay: Option<QuicMitmRelay>,
 }
 
 impl UdpRelay {
@@ -64,14 +56,10 @@ impl UdpRelay {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             shutdown_tx: None,
             rules: None,
-            tls_config: None,
             proxy_config: None,
             admin_state: None,
             dns_resolver: None,
             access_control: None,
-            enable_quic_mitm: false,
-            #[cfg(feature = "http3")]
-            quic_mitm_relay: None,
         }
     }
 
@@ -85,13 +73,6 @@ impl UdpRelay {
         self
     }
 
-    #[allow(dead_code)]
-    pub fn with_tls_config(mut self, tls_config: Arc<TlsConfig>) -> Self {
-        self.tls_config = Some(tls_config);
-        self
-    }
-
-    #[allow(dead_code)]
     pub fn with_proxy_config(mut self, proxy_config: ProxyConfig) -> Self {
         self.proxy_config = Some(proxy_config);
         self
@@ -106,12 +87,6 @@ impl UdpRelay {
     #[allow(dead_code)]
     pub fn with_dns_resolver(mut self, dns_resolver: Arc<DnsResolver>) -> Self {
         self.dns_resolver = Some(dns_resolver);
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_quic_mitm(mut self, enable: bool) -> Self {
-        self.enable_quic_mitm = enable;
         self
     }
 

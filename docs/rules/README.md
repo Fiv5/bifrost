@@ -32,6 +32,7 @@
 ### 1) 路由与转发
 
 - `host` / `xhost`
+- `http3` / `h3`
 - `proxy` / `xproxy`
 - `socks` / `xsocks`
 - `tunnel`

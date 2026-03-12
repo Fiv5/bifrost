@@ -36,6 +36,7 @@ Pattern 根据格式自动识别类型，优先级影响匹配顺序：
 
 ```txt
 www.example.com file:///static-files cache://3600 resCors://*
+chatgpt.com http3://
 ```
 
 ### 2. 位置调换
@@ -138,6 +139,21 @@ example.com resBody://{mockBody}
 1. **逐步验证**：从简单规则开始，逐步添加复杂条件
 2. **日志查看**：使用 Bifrost Network 界面的 Overview 面板查看规则匹配情况
 3. **临时禁用**：使用 `#` 注释或 `lineProps://disabled` 暂时禁用规则
+
+### 上游 HTTP/3 规则
+
+`http3://` 用于为命中的请求启用“代理到目标服务”的上游 HTTP/3 尝试，默认关闭。
+
+```txt
+chatgpt.com http3://
+api.example.com h3://
+```
+
+- `h3://` 是 `http3://` 的别名
+- 仅在代理自己能够读取 HTTP 请求时生效
+- 对普通绝对 URI 代理请求可直接生效
+- 对浏览器常见的 HTTPS `CONNECT` 流量，通常需要启用 TLS interception 后，代理才能在解密后的上游转发阶段尝试 H3
+- 纯 `CONNECT` 透传隧道不会把上游 TCP 连接自动切换成 QUIC/H3
 
 ## 扩展阅读
 

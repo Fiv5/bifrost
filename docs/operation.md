@@ -320,6 +320,7 @@ key1=value1&key2=value2&keyN=valueN
 | `js`                                                 | `jsAppend`   |
 | `css`                                                | `cssAppend`  |
 | `http-proxy`                                         | `proxy`      |
+| `h3`                                                 | `http3`      |
 | `pathReplace`                                        | `urlReplace` |
 | `ruleFile` / `ruleScript` / `reqScript` / `reqRules` | `rulesFile`  |
 | `resRules`                                           | `resScript`  |
@@ -344,7 +345,23 @@ key1=value1&key2=value2&keyN=valueN
 
 ### 路由类
 
-`host`、`xhost`、`http`、`https`、`ws`、`wss`、`proxy`、`redirect`、`file`、`tpl`、`rawfile`
+`host`、`xhost`、`http`、`https`、`http3`、`ws`、`wss`、`proxy`、`redirect`、`file`、`tpl`、`rawfile`
+
+### `http3`
+
+启用命中请求的上游 HTTP/3 尝试。该协议没有 value，写法如下：
+
+```txt
+chatgpt.com http3://
+api.example.com h3://
+```
+
+说明：
+
+- 默认不会主动尝试上游 H3，只有命中 `http3://` 或 `h3://` 规则才会启用
+- 该能力控制的是“代理到目标服务”的上游协议选择，不是开启下游 UDP/QUIC 监听
+- 仅对 HTTPS 上游请求生效
+- 如果目标不支持 H3 或协商失败，会回退到现有的 HTTP/1.1 或 HTTP/2 转发链路
 
 ### 内容注入类
 

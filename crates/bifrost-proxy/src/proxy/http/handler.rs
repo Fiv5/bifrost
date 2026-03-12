@@ -17,6 +17,9 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 use crate::dns::DnsResolver;
+#[cfg(feature = "http3")]
+use crate::http3::Http3Client;
+use crate::protocol::ProtocolDetector;
 
 use super::tunnel::{sanitize_upstream_headers, send_pooled_request};
 use super::ws_handshake::{
@@ -80,6 +83,20 @@ fn build_upstream_pool_partition(
         rules.host_protocol,
         rules.ignored.host
     )
+}
+
+#[cfg(feature = "http3")]
+async fn try_send_http3_upstream(
+    host: &str,
+    port: u16,
+    req: Request<Bytes>,
+    unsafe_ssl: bool,
+    dns_resolver: &DnsResolver,
+    dns_servers: &[String],
+) -> Result<Response<Bytes>> {
+    let addr = Http3Client::resolve_target_addr(host, port, dns_resolver, dns_servers).await?;
+    let client = Http3Client::new_with_options(unsafe_ssl)?;
+    client.request_to_addr(host, addr, req).await
 }
 
 pub fn needs_body_processing(rules: &ResolvedRules) -> bool {
@@ -274,7 +291,7 @@ pub async fn handle_http_request(
     max_body_probe_size: usize,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
-    _dns_resolver: Option<Arc<DnsResolver>>,
+    dns_resolver: Option<Arc<DnsResolver>>,
 ) -> Result<Response<BoxBody>> {
     if is_websocket_upgrade(&req) {
         return handle_http_websocket(req, rules, ctx, admin_state, unsafe_ssl).await;
@@ -406,6 +423,7 @@ pub async fn handle_http_request(
         .get(hyper::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
+    let has_transfer_encoding = parts.headers.contains_key(hyper::header::TRANSFER_ENCODING);
 
     let needs_req_processing = needs_request_body_processing(&resolved_rules);
     let has_req_body_override = resolved_rules.req_body.is_some();
@@ -583,6 +601,8 @@ pub async fn handle_http_request(
             }
         }
         (Bytes::new(), new_body.clone())
+    } else if content_length.unwrap_or(0) == 0 && !has_transfer_encoding {
+        (Bytes::new(), Bytes::new())
     } else {
         if admin_state.is_some() {
             let (tee_body, capture) =
@@ -668,6 +688,7 @@ pub async fn handle_http_request(
     } else {
         content_length.unwrap_or(0)
     };
+    let request_body_is_streaming = streaming_body.is_some();
     let outgoing_body = match streaming_body {
         Some(body) => body,
         None => full_body(final_body.clone()),
@@ -829,42 +850,163 @@ pub async fn handle_http_request(
     .parse()
     .map_err(|e| BifrostError::Network(format!("Invalid URI: {}", e)))?;
 
-    parts.uri = upstream_uri;
+    parts.uri = upstream_uri.clone();
     sanitize_upstream_headers(&mut parts.headers);
     parts.headers.remove(hyper::header::HOST);
+
+    #[cfg(feature = "http3")]
+    let req_headers_for_h3: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    #[cfg(feature = "http3")]
+    let should_try_http3_upstream = use_tls
+        && resolved_rules.upstream_http3
+        && !request_body_is_streaming
+        && dns_resolver.is_some()
+        && resolved_rules.proxy.is_none()
+        && !ProtocolDetector::is_websocket_upgrade(&req_headers_for_h3)
+        && !ProtocolDetector::is_sse_request(&req_headers_for_h3);
+
+    #[cfg(feature = "http3")]
+    let h3_attempt = if should_try_http3_upstream {
+        let mut builder = Request::builder()
+            .method(parts.method.clone())
+            .uri(upstream_uri.clone());
+        for (key, value) in parts.headers.iter() {
+            builder = builder.header(key, value);
+        }
+        builder = builder.header("host", upstream_authority.clone());
+        match builder.body(final_body.clone()) {
+            Ok(h3_req) => {
+                let start = Instant::now();
+                match try_send_http3_upstream(
+                    &host,
+                    port,
+                    h3_req,
+                    unsafe_ssl,
+                    dns_resolver.as_ref().unwrap().as_ref(),
+                    &resolved_rules.dns_servers,
+                )
+                .await
+                {
+                    Ok(resp) => {
+                        info!(
+                            "[{}] Upstream negotiated HTTP/3 for {}:{}",
+                            ctx.id_str(),
+                            host,
+                            port
+                        );
+                        Some((resp, start.elapsed().as_millis() as u64))
+                    }
+                    Err(err) => {
+                        warn!(
+                            "[{}] Upstream HTTP/3 attempt failed for {}:{}: {}, falling back to HTTP/1.1/2",
+                            ctx.id_str(),
+                            host,
+                            port,
+                            err
+                        );
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                warn!(
+                    "[{}] Failed to build upstream HTTP/3 request for {}:{}: {}",
+                    ctx.id_str(),
+                    host,
+                    port,
+                    err
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     let outgoing_req = Request::from_parts(parts, outgoing_body);
     let pool_partition =
         build_upstream_pool_partition(&original_host, &host, port, use_tls, &resolved_rules);
 
-    let send_start = Instant::now();
-    let res = match send_pooled_request(
-        outgoing_req,
-        unsafe_ssl,
-        &resolved_rules.dns_servers,
-        &pool_partition,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let error_msg = format!("Request failed: {}", e);
-            error!("[{}] {}", ctx.id_str(), error_msg);
-            let mut source = std::error::Error::source(&e);
-            while let Some(err) = source {
-                error!("[{}] Request failure source: {}", ctx.id_str(), err);
-                source = std::error::Error::source(err);
+    #[cfg(feature = "http3")]
+    let upstream_result = if let Some((res, wait_ms)) = h3_attempt {
+        let (parts, body) = res.into_parts();
+        (
+            parts,
+            None,
+            Some(full_body(body.clone())),
+            Some((body, 0)),
+            wait_ms,
+        )
+    } else {
+        let send_start = Instant::now();
+        let res = match send_pooled_request(
+            outgoing_req,
+            unsafe_ssl,
+            &resolved_rules.dns_servers,
+            &pool_partition,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("Request failed: {}", e);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                let mut source = std::error::Error::source(&e);
+                while let Some(err) = source {
+                    error!("[{}] Request failure source: {}", ctx.id_str(), err);
+                    source = std::error::Error::source(err);
+                }
+                return Ok(build_conn_error_and_record(
+                    "REQUEST_FAILED",
+                    error_msg,
+                    None,
+                ));
             }
-            return Ok(build_conn_error_and_record(
-                "REQUEST_FAILED",
-                error_msg,
-                None,
-            ));
-        }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        let (parts, body) = res.into_parts();
+        (parts, Some(body), None, None, wait_ms)
     };
-    let wait_ms = send_start.elapsed().as_millis() as u64;
 
-    let (mut res_parts, res_body) = res.into_parts();
+    #[cfg(not(feature = "http3"))]
+    let upstream_result = {
+        let send_start = Instant::now();
+        let res = match send_pooled_request(
+            outgoing_req,
+            unsafe_ssl,
+            &resolved_rules.dns_servers,
+            &pool_partition,
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let error_msg = format!("Request failed: {}", e);
+                error!("[{}] {}", ctx.id_str(), error_msg);
+                let mut source = std::error::Error::source(&e);
+                while let Some(err) = source {
+                    error!("[{}] Request failure source: {}", ctx.id_str(), err);
+                    source = std::error::Error::source(err);
+                }
+                return Ok(build_conn_error_and_record(
+                    "REQUEST_FAILED",
+                    error_msg,
+                    None,
+                ));
+            }
+        };
+        let wait_ms = send_start.elapsed().as_millis() as u64;
+        let (parts, body) = res.into_parts();
+        (parts, Some(body), None, None, wait_ms)
+    };
+
+    let (mut res_parts, mut res_body_incoming, mut res_body_stream, mut pre_read_res, wait_ms) =
+        upstream_result;
 
     let original_res_headers: Vec<(String, String)> = res_parts
         .headers
@@ -904,13 +1046,9 @@ pub async fn handle_http_request(
     let is_sse = is_sse_response(&res_parts);
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
-    let mut res_body_incoming = Some(res_body);
-    let mut res_body_stream: Option<BoxBody> = None;
-    if !is_sse {
+    if !is_sse && res_body_stream.is_none() {
         res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
     }
-
-    let mut pre_read_res: Option<(Bytes, u64)> = None;
     if needs_res_body_read && needs_processing && !is_sse {
         if let Some(len) = res_content_length {
             if len > max_body_buffer_size {

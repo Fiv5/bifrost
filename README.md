@@ -32,7 +32,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 | ------------- | -------- | --------------------------- |
 | HTTP/1.1      | ✅       | 完整支持                    |
 | HTTP/2        | ✅       | 帧级别处理，支持多路复用    |
-| HTTP/3 (QUIC) | ✅       | 基于 Quinn 实现 |
+| HTTP/3 (QUIC) | ✅       | 支持下游 H3 接入与按规则启用的上游 H3 转发尝试 |
 | HTTPS         | ✅       | TLS 1.2/1.3，支持 MITM 拦截 |
 | SOCKS5 TCP    | ✅       | 支持用户名/密码认证         |
 | SOCKS5 UDP    | ✅       | UDP ASSOCIATE 完整支持      |
@@ -525,7 +525,7 @@ RUST_LOG=bifrost_proxy=debug,info bifrost start
 
 - **规则解析** (`rule/`) - 解析和管理代理规则
 - **匹配器** (`matcher/`) - URL 模式匹配（域名、IP、正则、通配符）
-- **协议定义** (`protocol.rs`) - 71 种协议操作类型
+- **协议定义** (`protocol.rs`) - 67 种协议操作类型
 
 ```rust
 use bifrost_core::{parse_rules, DomainMatcher, Protocol};
@@ -703,6 +703,7 @@ api.service.com dns://8.8.8.8,8.8.4.4
 
 example.com tlsIntercept://
 example.com tlsPassthrough://
+example.com http3://
 
 # 脚本修改
 
@@ -710,11 +711,11 @@ example.com reqScript://modify-request
 example.com resScript://inject-data
 ```
 
-### 支持的协议（71 种）
+### 支持的协议（67 种）
 
 | 分类     | 协议                                                                                                                                                                                                                     |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 路由     | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                             |
+| 路由     | `host`, `xhost`, `http`, `https`, `http3`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                    |
 | DNS      | `dns`                                                                                                                                                                                                                    |
 | 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                                                |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params`                     |

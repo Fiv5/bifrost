@@ -334,6 +334,9 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             Protocol::Proxy => {
                 result.proxy = Some(value.to_string());
             }
+            Protocol::Http3 => {
+                result.upstream_http3 = true;
+            }
             Protocol::Pac => {
                 if let Some(target) = parse_pac_proxy_target(value) {
                     result.host = Some(target);
@@ -610,3 +613,42 @@ fn parse_header_replace_value(value: &str) -> Option<Vec<bifrost_proxy::HeaderRe
 }
 
 pub type SharedDynamicRulesResolver = Arc<DynamicRulesResolver>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_http3_rule_enables_upstream_http3_flag() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com http3://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert!(resolved.upstream_http3);
+    }
+
+    #[test]
+    fn test_h3_alias_enables_upstream_http3_flag() {
+        let parser = bifrost_core::RuleParser::new();
+        let rules = parser.parse_rules("example.com h3://").unwrap();
+        let resolver = CoreRulesResolver::new(rules);
+
+        let resolved = resolve_rules_impl(
+            &resolver,
+            "https://example.com/api",
+            "GET",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert!(resolved.upstream_http3);
+    }
+}

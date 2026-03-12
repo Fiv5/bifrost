@@ -283,6 +283,7 @@ pub struct ResolvedRules {
     pub host: Option<String>,
     pub host_protocol: Option<Protocol>,
     pub proxy: Option<String>,
+    pub upstream_http3: bool,
     pub req_headers: Vec<(String, String)>,
     pub res_headers: Vec<(String, String)>,
     pub req_body: Option<Bytes>,

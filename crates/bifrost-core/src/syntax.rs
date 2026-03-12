@@ -76,6 +76,7 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
         Protocol::Ws => "WebSocket forwarding",
         Protocol::Wss => "Secure WebSocket forwarding",
         Protocol::Proxy => "HTTP proxy forwarding",
+        Protocol::Http3 => "Enable upstream HTTP/3 attempt for matched requests",
         Protocol::Pac => "PAC script routing",
         Protocol::Redirect => "URL redirect (301/302)",
         Protocol::File => "Return file content as response",
@@ -172,6 +173,7 @@ fn get_protocol_value_type(protocol: Protocol) -> &'static str {
         Protocol::Delete
         | Protocol::ReqCors
         | Protocol::ResCors
+        | Protocol::Http3
         | Protocol::TlsIntercept
         | Protocol::TlsPassthrough
         | Protocol::Passthrough => "empty",
@@ -199,6 +201,7 @@ fn get_protocol_example(protocol: Protocol) -> &'static str {
         Protocol::Ws => "ws://localhost:8080/socket",
         Protocol::Wss => "wss://api.example.com/socket",
         Protocol::Proxy => "proxy://127.0.0.1:8888",
+        Protocol::Http3 => "http3://",
         Protocol::Pac => "pac://http://127.0.0.1:8000/proxy.pac",
         Protocol::Redirect => "redirect://https://new-site.com/",
         Protocol::File => "file:///path/to/response.json",

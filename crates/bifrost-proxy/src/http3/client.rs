@@ -1,13 +1,19 @@
-use std::net::ToSocketAddrs;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::dns::DnsResolver;
 use crate::ensure_crypto_provider;
 use bifrost_core::{BifrostError, Result};
 use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
 use hyper::{Request, Response};
 use quinn::{ClientConfig, Endpoint};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio_rustls::rustls::{DigitallySignedStruct, RootCertStore, SignatureScheme};
 use tracing::{debug, info, warn};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -19,14 +25,25 @@ pub struct Http3Client {
 
 impl Http3Client {
     pub fn new() -> Result<Self> {
+        Self::new_with_options(false)
+    }
+
+    pub fn new_with_options(unsafe_ssl: bool) -> Result<Self> {
         ensure_crypto_provider();
 
-        let mut roots = rustls::RootCertStore::empty();
+        let mut roots = RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-        let mut crypto = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let mut crypto = if unsafe_ssl {
+            tokio_rustls::rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerifier))
+                .with_no_client_auth()
+        } else {
+            tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth()
+        };
 
         crypto.alpn_protocols = vec![b"h3".to_vec()];
 
@@ -65,6 +82,15 @@ impl Http3Client {
             .next()
             .ok_or_else(|| BifrostError::Network(format!("No addresses found for {}", host)))?;
 
+        self.request_to_addr(host, addr, req).await
+    }
+
+    pub async fn request_to_addr(
+        &self,
+        host: &str,
+        addr: SocketAddr,
+        req: Request<Bytes>,
+    ) -> Result<Response<Bytes>> {
         info!("[HTTP/3 Client] Connecting to {} ({}) via QUIC", host, addr);
 
         let connection = tokio::time::timeout(CONNECT_TIMEOUT, async {
@@ -90,10 +116,8 @@ impl Http3Client {
 
         info!("[HTTP/3 Client] HTTP/3 connection ready to {}", host);
 
-        let response: Response<Bytes> = tokio::select! {
-            result = Self::send_request(send_request, req.clone()) => result?,
-            result = async { driver.wait_idle().await; Err::<Response<Bytes>, BifrostError>(BifrostError::Network("Connection closed".to_string())) } => result?,
-        };
+        let response = Self::send_request(send_request, req.clone()).await?;
+        driver.wait_idle().await;
 
         info!(
             "[HTTP/3 Client] Response from {}: {} {}",
@@ -103,6 +127,29 @@ impl Http3Client {
         );
 
         Ok(response)
+    }
+
+    pub async fn resolve_target_addr(
+        host: &str,
+        port: u16,
+        dns_resolver: &DnsResolver,
+        dns_servers: &[String],
+    ) -> Result<SocketAddr> {
+        if let Some(ip) = dns_resolver.resolve(host, dns_servers).await? {
+            return Ok(SocketAddr::new(ip, port));
+        }
+
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return Ok(SocketAddr::new(ip, port));
+        }
+
+        format!("{}:{}", host, port)
+            .to_socket_addrs()
+            .map_err(|e| {
+                BifrostError::Network(format!("DNS resolution failed for {}: {}", host, e))
+            })?
+            .next()
+            .ok_or_else(|| BifrostError::Network(format!("No addresses found for {}", host)))
     }
 
     async fn send_request(
@@ -220,6 +267,55 @@ impl Http3Client {
 impl Default for Http3Client {
     fn default() -> Self {
         Self::new().expect("Failed to create HTTP/3 client")
+    }
+}
+
+#[derive(Debug)]
+struct NoVerifier;
+
+impl ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+        ]
     }
 }
 
