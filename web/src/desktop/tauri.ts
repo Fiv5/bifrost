@@ -1,4 +1,5 @@
 export interface DesktopRuntimeInfo {
+  expectedProxyPort: number;
   proxyPort: number;
   platform: string;
 }

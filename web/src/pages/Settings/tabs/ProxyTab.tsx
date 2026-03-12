@@ -472,6 +472,7 @@ export interface ProxyTabProps {
   desktopMode: boolean;
   desktopPlatform: string;
   proxySettings: ProxySettings | null;
+  desktopExpectedProxyPort: number | null;
   desktopProxyPort: number | null;
   desktopPortDraft: number;
   desktopPortSaving: boolean;
@@ -514,6 +515,7 @@ export default function ProxyTab({
   desktopMode,
   desktopPlatform,
   proxySettings,
+  desktopExpectedProxyPort,
   desktopProxyPort,
   desktopPortDraft,
   desktopPortSaving,
@@ -617,12 +619,17 @@ export default function ProxyTab({
                         value={desktopPortDraft}
                         onChange={(value) =>
                           setDesktopPortDraft(
-                            Number(value ?? proxySettings?.port ?? 9900),
+                            Number(
+                              value ??
+                                desktopExpectedProxyPort ??
+                                proxySettings?.port ??
+                                9900,
+                            ),
                           )
                         }
                         status={
-                          desktopProxyPort !== null &&
-                          desktopPortDraft !== desktopProxyPort
+                          desktopExpectedProxyPort !== null &&
+                          desktopPortDraft !== desktopExpectedProxyPort
                             ? "warning"
                             : undefined
                         }
@@ -634,8 +641,8 @@ export default function ProxyTab({
                       type="primary"
                       loading={desktopPortSaving}
                       disabled={
-                        desktopProxyPort !== null &&
-                        desktopPortDraft === desktopProxyPort
+                        desktopExpectedProxyPort !== null &&
+                        desktopPortDraft === desktopExpectedProxyPort
                       }
                       onClick={onApplyDesktopProxyPort}
                     >
@@ -644,13 +651,25 @@ export default function ProxyTab({
                   </Col>
                 </Row>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Platform: {desktopPlatform} · Current port:{" "}
-                  {desktopProxyPort ?? proxySettings?.port ?? 9900}
+                  Platform: {desktopPlatform} · Expected port:{" "}
+                  {desktopExpectedProxyPort ?? proxySettings?.port ?? 9900} · Actual
+                  port: {desktopProxyPort ?? proxySettings?.port ?? 9900}
                 </Text>
-                {desktopProxyPort !== null && desktopPortDraft !== desktopProxyPort ? (
+                {desktopExpectedProxyPort !== null &&
+                desktopPortDraft !== desktopExpectedProxyPort ? (
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    Pending change: {desktopProxyPort} → {desktopPortDraft}
+                    Pending change: {desktopExpectedProxyPort} → {desktopPortDraft}
                   </Text>
+                ) : null}
+                {desktopExpectedProxyPort !== null &&
+                desktopProxyPort !== null &&
+                desktopExpectedProxyPort !== desktopProxyPort ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`Expected ${desktopExpectedProxyPort}, running on ${desktopProxyPort}`}
+                    description="The preferred startup port was unavailable, so the embedded core automatically moved to the next available port."
+                  />
                 ) : null}
               </Space>
             </Card>

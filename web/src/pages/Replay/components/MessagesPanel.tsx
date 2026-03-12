@@ -208,6 +208,12 @@ export default function MessagesPanel() {
   const matchInfo = searchState.total > 0 
     ? `${searchState.currentIndex >= 0 ? searchState.currentIndex + 1 : 0}/${searchState.total}`
     : null;
+  const currentHighlightIndex =
+    searchState.currentIndex >= 0
+      ? searchMode === "filter"
+        ? searchState.currentIndex
+        : searchState.matchedIndices[searchState.currentIndex] ?? -1
+      : -1;
 
   return (
     <div style={styles.container}>
@@ -326,7 +332,7 @@ export default function MessagesPanel() {
           getItemKey={getItemKey}
           renderItem={renderItem}
           highlightedIndices={searchMode === 'highlight' ? highlightedIndices : []}
-          currentHighlightIndex={searchState.currentIndex >= 0 ? searchState.matchedIndices[searchState.currentIndex] : -1}
+          currentHighlightIndex={currentHighlightIndex}
           estimateSize={120}
           overscan={3}
           followTail={followTail}

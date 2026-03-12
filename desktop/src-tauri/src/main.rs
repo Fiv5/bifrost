@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -13,6 +14,7 @@ use tauri::{
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const DEFAULT_BACKEND_PORT: u16 = 9900;
+const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopConfig {
@@ -30,6 +32,7 @@ impl Default for DesktopConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopRuntimeInfo {
+    expected_proxy_port: u16,
     proxy_port: u16,
     platform: &'static str,
 }
@@ -38,6 +41,7 @@ struct BackendState {
     binary_path: PathBuf,
     data_dir: PathBuf,
     config_path: PathBuf,
+    expected_port: Mutex<u16>,
     port: Mutex<u16>,
     child: Mutex<Option<Child>>,
 }
@@ -71,14 +75,15 @@ fn main() {
 
             let config_path = app_config_dir.join("desktop-config.json");
             let config = load_desktop_config(&config_path)?;
-            let child = start_backend(&binary_path, &app_data_dir, config.proxy_port)?;
-            wait_for_backend(config.proxy_port, Duration::from_secs(20))?;
+            let (child, port) =
+                ensure_backend_running(&binary_path, &app_data_dir, config.proxy_port)?;
 
             app.manage(BackendState {
                 binary_path,
                 data_dir: app_data_dir,
                 config_path,
-                port: Mutex::new(config.proxy_port),
+                expected_port: Mutex::new(config.proxy_port),
+                port: Mutex::new(port),
                 child: Mutex::new(Some(child)),
             });
 
@@ -160,6 +165,40 @@ fn start_backend(binary_path: &Path, data_dir: &Path, port: u16) -> tauri::Resul
         .map_err(|error| anyhow(format!("failed to start backend: {error}")))
 }
 
+fn ensure_backend_running(
+    binary_path: &Path,
+    data_dir: &Path,
+    preferred_port: u16,
+) -> tauri::Result<(Child, u16)> {
+    cleanup_existing_backend(binary_path, data_dir);
+
+    for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
+        let port = preferred_port.saturating_add(offset);
+        if port == 0 {
+            continue;
+        }
+        if !is_port_available(port) {
+            continue;
+        }
+
+        let child = start_backend(binary_path, data_dir, port)?;
+        match wait_for_backend(port, Duration::from_secs(20)) {
+            Ok(()) => return Ok((child, port)),
+            Err(error) => {
+                let _ = stop_backend_with_binary(binary_path, data_dir);
+                let _ = terminate_child(child);
+                if offset == MAX_PORT_INCREMENT_ATTEMPTS {
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    Err(anyhow(format!(
+        "failed to find an available backend port starting from {preferred_port}"
+    )))
+}
+
 fn wait_for_backend(port: u16, timeout: Duration) -> tauri::Result<()> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -178,6 +217,46 @@ fn is_backend_ready(port: u16) -> bool {
     std::net::TcpStream::connect((BACKEND_HOST, port)).is_ok()
 }
 
+fn is_port_available(port: u16) -> bool {
+    TcpListener::bind((BACKEND_HOST, port)).is_ok()
+}
+
+fn has_runtime_marker(data_dir: &Path) -> bool {
+    data_dir.join("bifrost.pid").exists() || data_dir.join("runtime.json").exists()
+}
+
+fn cleanup_existing_backend(binary_path: &Path, data_dir: &Path) {
+    if has_runtime_marker(data_dir) {
+        let _ = stop_backend_with_binary(binary_path, data_dir);
+    }
+}
+
+fn stop_backend_with_binary(binary_path: &Path, data_dir: &Path) -> tauri::Result<()> {
+    let status = Command::new(binary_path)
+        .arg("stop")
+        .env("BIFROST_DATA_DIR", data_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| anyhow(format!("failed to stop backend: {error}")))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow(format!(
+            "backend stop command exited with status {status}"
+        )))
+    }
+}
+
+fn terminate_child(mut child: Child) -> tauri::Result<()> {
+    let _ = child.kill();
+    child
+        .wait()
+        .map_err(|error| anyhow(format!("failed to wait for backend child: {error}")))?;
+    Ok(())
+}
+
 fn stop_backend(app: &AppHandle) {
     let Some(state) = app.try_state::<BackendState>() else {
         return;
@@ -194,12 +273,7 @@ fn stop_backend_process(state: &BackendState) {
         return;
     }
 
-    let _ = Command::new(&state.binary_path)
-        .arg("stop")
-        .env("BIFROST_DATA_DIR", &state.data_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    let _ = stop_backend_with_binary(&state.binary_path, &state.data_dir);
 
     if let Some(mut child) = child_guard.take() {
         let _ = child.kill();
@@ -229,12 +303,17 @@ fn save_desktop_config(config_path: &Path, config: &DesktopConfig) -> tauri::Res
 
 #[tauri::command]
 fn get_desktop_runtime(state: State<'_, BackendState>) -> Result<DesktopRuntimeInfo, String> {
+    let expected_port = *state
+        .expected_port
+        .lock()
+        .map_err(|_| "failed to read desktop expected proxy port".to_string())?;
     let port = *state
         .port
         .lock()
         .map_err(|_| "failed to read desktop proxy port".to_string())?;
 
     Ok(DesktopRuntimeInfo {
+        expected_proxy_port: expected_port,
         proxy_port: port,
         platform: std::env::consts::OS,
     })
@@ -250,25 +329,28 @@ fn update_desktop_proxy_port(
     }
 
     {
-        let current_port = state
-            .port
+        let current_expected_port = state
+            .expected_port
             .lock()
-            .map_err(|_| "failed to access current desktop port".to_string())?;
-        if *current_port == port {
+            .map_err(|_| "failed to access current desktop expected port".to_string())?;
+        if *current_expected_port == port {
+            let current_port = *state
+                .port
+                .lock()
+                .map_err(|_| "failed to access current desktop port".to_string())?;
             return Ok(DesktopRuntimeInfo {
-                proxy_port: port,
+                expected_proxy_port: port,
+                proxy_port: current_port,
                 platform: std::env::consts::OS,
             });
         }
     }
 
     stop_backend_process(&state);
+    let (child, actual_port) = ensure_backend_running(&state.binary_path, &state.data_dir, port)
+        .map_err(|error| error.to_string())?;
     save_desktop_config(&state.config_path, &DesktopConfig { proxy_port: port })
         .map_err(|error| error.to_string())?;
-
-    let child = start_backend(&state.binary_path, &state.data_dir, port)
-        .map_err(|error| error.to_string())?;
-    wait_for_backend(port, Duration::from_secs(20)).map_err(|error| error.to_string())?;
 
     {
         let mut child_guard = state
@@ -278,15 +360,23 @@ fn update_desktop_proxy_port(
         *child_guard = Some(child);
     }
     {
+        let mut expected_port = state
+            .expected_port
+            .lock()
+            .map_err(|_| "failed to update desktop expected proxy port".to_string())?;
+        *expected_port = port;
+    }
+    {
         let mut current_port = state
             .port
             .lock()
             .map_err(|_| "failed to update desktop proxy port".to_string())?;
-        *current_port = port;
+        *current_port = actual_port;
     }
 
     Ok(DesktopRuntimeInfo {
-        proxy_port: port,
+        expected_proxy_port: port,
+        proxy_port: actual_port,
         platform: std::env::consts::OS,
     })
 }

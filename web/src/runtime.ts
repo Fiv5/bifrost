@@ -5,6 +5,7 @@ type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'web';
 
 const desktopRuntime = {
   initialized: false,
+  expectedProxyPort: DEFAULT_BACKEND_PORT,
   proxyPort: DEFAULT_BACKEND_PORT,
   platform: 'web' as DesktopPlatform,
 };
@@ -21,6 +22,10 @@ export function setDesktopProxyPort(port: number): void {
   desktopRuntime.proxyPort = port;
 }
 
+export function getExpectedDesktopProxyPort(): number {
+  return desktopRuntime.expectedProxyPort;
+}
+
 export async function initializeDesktopRuntime(): Promise<void> {
   if (!isDesktopShell() || desktopRuntime.initialized) {
     desktopRuntime.initialized = true;
@@ -30,6 +35,7 @@ export async function initializeDesktopRuntime(): Promise<void> {
   try {
     const { getDesktopRuntime } = await import('./desktop/tauri');
     const runtime = await getDesktopRuntime();
+    desktopRuntime.expectedProxyPort = runtime.expectedProxyPort;
     desktopRuntime.proxyPort = runtime.proxyPort;
     desktopRuntime.platform =
       runtime.platform === 'darwin'

@@ -44,7 +44,7 @@ export default function DesktopWindowChrome() {
       display: "flex",
       alignItems: "stretch",
       justifyContent: "space-between",
-      zIndex: 30,
+      zIndex: 1200,
       pointerEvents: "none" as const,
       background: isMac
         ? isDark

@@ -14,6 +14,7 @@ import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
 import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
+import { DESKTOP_CHROME_HEIGHT } from "./components/Layout/DesktopWindowChrome";
 import {
   getAdminPrefix,
   initializeDesktopRuntime,
@@ -93,7 +94,7 @@ function AppShell() {
     resolvedTheme === "dark"
       ? {
           mask: {
-            background: "rgba(4, 8, 14, 0.64)",
+            background: "rgba(4, 8, 14, 0.52)",
             backdropFilter: "blur(20px) saturate(1.08)",
           },
           container: {
@@ -112,7 +113,7 @@ function AppShell() {
         }
       : {
           mask: {
-            background: "rgba(242, 246, 252, 0.38)",
+            background: "rgba(242, 246, 252, 0.26)",
             backdropFilter: "blur(18px) saturate(1.1)",
           },
           container: {
@@ -160,6 +161,14 @@ function AppShell() {
         onOk={hideDesktopCore}
         onCancel={hideDesktopCore}
         footer={desktopCorePhase === "error" ? undefined : null}
+        centered
+        width={Math.min(720, Math.max(560, Math.floor(window.innerWidth * 0.42)))}
+        zIndex={1000}
+        style={
+          isDesktopShell()
+            ? { paddingTop: DESKTOP_CHROME_HEIGHT + 18 }
+            : undefined
+        }
         styles={overlayStyles}
       >
         <Typography.Paragraph>

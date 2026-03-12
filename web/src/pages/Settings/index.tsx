@@ -66,6 +66,7 @@ import PerformanceTab from "./tabs/PerformanceTab";
 import { updateDesktopProxyPort } from "../../desktop/tauri";
 import {
   getDesktopPlatform,
+  getExpectedDesktopProxyPort,
   isDesktopShell,
   setDesktopProxyPort,
 } from "../../runtime";
@@ -136,6 +137,12 @@ export default function Settings() {
     useState<ProxyAddressInfo | null>(null);
   const [selectedProxyIp, setSelectedProxyIp] = useState<string>("");
   const [proxySettings, setProxySettings] = useState<ProxySettings | null>(null);
+  const [desktopExpectedProxyPort, setDesktopExpectedProxyPort] = useState<number | null>(
+    isDesktopShell() ? getExpectedDesktopProxyPort() : null,
+  );
+  const [desktopActualProxyPort, setDesktopActualProxyPort] = useState<number | null>(
+    null,
+  );
   const [desktopPortDraft, setDesktopPortDraft] = useState(9900);
   const [desktopPortSaving, setDesktopPortSaving] = useState(false);
   const beginDesktopCoreRestart = useDesktopCoreStore(
@@ -172,10 +179,27 @@ export default function Settings() {
     try {
       const settings = await getProxySettings();
       setProxySettings(settings);
-      setDesktopPortDraft(settings.port);
     } catch (error) {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy settings");
+      }
+    }
+  }, [suppressRestartErrors]);
+
+  const fetchDesktopRuntime = useCallback(async () => {
+    if (!isDesktopShell()) {
+      return;
+    }
+    try {
+      const { getDesktopRuntime } = await import("../../desktop/tauri");
+      const runtime = await getDesktopRuntime();
+      setDesktopExpectedProxyPort(runtime.expectedProxyPort);
+      setDesktopActualProxyPort(runtime.proxyPort);
+      setDesktopPortDraft(runtime.expectedProxyPort);
+      setDesktopProxyPort(runtime.proxyPort);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch desktop runtime");
       }
     }
   }, [suppressRestartErrors]);
@@ -607,12 +631,14 @@ export default function Settings() {
   };
 
   useEffect(() => {
+    fetchDesktopRuntime();
     fetchProxySettings();
     fetchTlsConfig();
     fetchCertInfo();
     fetchPerformanceConfig();
     fetchProxyAddressInfo();
   }, [
+    fetchDesktopRuntime,
     fetchProxySettings,
     fetchTlsConfig,
     fetchCertInfo,
@@ -690,7 +716,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       return;
     }
 
-    if (desktopPortDraft === proxySettings?.port) {
+    if (desktopPortDraft === desktopExpectedProxyPort) {
       message.info("Proxy port is unchanged");
       return;
     }
@@ -701,6 +727,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       setDesktopCorePhase("restarting", "Stopping the current proxy core and starting the new port.");
       const runtime = await updateDesktopProxyPort(desktopPortDraft);
       setDesktopProxyPort(runtime.proxyPort);
+      setDesktopExpectedProxyPort(runtime.expectedProxyPort);
+      setDesktopActualProxyPort(runtime.proxyPort);
+      setDesktopPortDraft(runtime.expectedProxyPort);
       setDesktopCorePhase("reconnecting", "Refreshing proxy state and reconnecting live data streams.");
       const subscription = pushService.getSubscription();
       pushService.disconnect();
@@ -712,7 +741,11 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         useProxyStore.getState().fetchSystemProxy(),
         useProxyStore.getState().fetchCliProxy(),
       ]);
-      message.success(`Proxy core restarted on port ${runtime.proxyPort}`);
+      message.success(
+        runtime.expectedProxyPort === runtime.proxyPort
+          ? `Proxy core restarted on port ${runtime.proxyPort}`
+          : `Preferred port ${runtime.expectedProxyPort} was busy, switched to ${runtime.proxyPort}`,
+      );
       window.setTimeout(() => {
         hideDesktopCoreRestart();
       }, 600);
@@ -721,19 +754,20 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         error instanceof Error ? error.message : "Failed to restart proxy core";
       failDesktopCoreRestart(text);
       message.error(text);
-      await fetchProxySettings();
+      await Promise.all([fetchProxySettings(), fetchDesktopRuntime()]);
     } finally {
       setDesktopPortSaving(false);
     }
   }, [
     beginDesktopCoreRestart,
+    desktopExpectedProxyPort,
     desktopPortDraft,
     failDesktopCoreRestart,
+    fetchDesktopRuntime,
     fetchOverview,
     fetchProxyAddressInfo,
     fetchProxySettings,
     hideDesktopCoreRestart,
-    proxySettings?.port,
     setDesktopCorePhase,
   ]);
 
@@ -869,7 +903,8 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
                 proxySettings={proxySettings}
                 desktopPortDraft={desktopPortDraft}
                 desktopPortSaving={desktopPortSaving}
-                desktopProxyPort={proxySettings?.port ?? null}
+                desktopExpectedProxyPort={desktopExpectedProxyPort}
+                desktopProxyPort={desktopActualProxyPort}
                 setDesktopPortDraft={setDesktopPortDraft}
                 onApplyDesktopProxyPort={handleDesktopProxyPortApply}
                 systemProxy={systemProxy}
