@@ -9,6 +9,7 @@ import {
   Divider,
   Image,
   Input,
+  InputNumber,
   Row,
   Space,
   Switch,
@@ -31,7 +32,7 @@ import {
 import type { SystemOverview } from "../../../types";
 import { getProxyQRCodeUrl } from "../../../api/proxy";
 import type { CliProxyStatus, ProxyAddressInfo, SystemProxyStatus } from "../../../api/proxy";
-import type { TlsConfig } from "../../../api/config";
+import type { ProxySettings, TlsConfig } from "../../../api/config";
 
 const { Text } = Typography;
 
@@ -468,6 +469,15 @@ const formatUptime = (secs: number): string => {
 };
 
 export interface ProxyTabProps {
+  desktopMode: boolean;
+  desktopPlatform: string;
+  proxySettings: ProxySettings | null;
+  desktopExpectedProxyPort: number | null;
+  desktopProxyPort: number | null;
+  desktopPortDraft: number;
+  desktopPortSaving: boolean;
+  setDesktopPortDraft: (value: number) => void;
+  onApplyDesktopProxyPort: () => void;
   systemProxy: SystemProxyStatus | null;
   cliProxy: CliProxyStatus | null;
   systemProxyLoading: boolean;
@@ -502,6 +512,15 @@ export interface ProxyTabProps {
 }
 
 export default function ProxyTab({
+  desktopMode,
+  desktopPlatform,
+  proxySettings,
+  desktopExpectedProxyPort,
+  desktopProxyPort,
+  desktopPortDraft,
+  desktopPortSaving,
+  setDesktopPortDraft,
+  onApplyDesktopProxyPort,
   systemProxy,
   cliProxy,
   systemProxyLoading,
@@ -566,6 +585,97 @@ export default function ProxyTab({
   return (
     <div>
       <Row gutter={[16, 16]}>
+        {desktopMode ? (
+          <Col xs={24}>
+            <Card
+              title={
+                <Space>
+                  <ApiOutlined />
+                  <span>Desktop Proxy Core</span>
+                </Space>
+              }
+              size="small"
+            >
+              <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Changing the port rebinds the embedded bifrost core listener"
+                  description={
+                    desktopPlatform === "macos"
+                      ? "The bundled UI stays in place while the local proxy listener switches ports and reconnects."
+                      : "The desktop shell updates the local proxy listener in place and then restores the live desktop connection."
+                  }
+                />
+                <Row gutter={16} align="middle">
+                  <Col flex="220px">
+                    <Space direction="vertical" style={{ width: "100%" }} size={4}>
+                      <Text>Proxy Port</Text>
+                      <InputNumber
+                        min={1}
+                        max={65535}
+                        precision={0}
+                        style={{ width: "100%" }}
+                        value={desktopPortDraft}
+                        onChange={(value) =>
+                          setDesktopPortDraft(
+                            Number(
+                              value ??
+                                desktopExpectedProxyPort ??
+                                proxySettings?.port ??
+                                9900,
+                            ),
+                          )
+                        }
+                        status={
+                          desktopExpectedProxyPort !== null &&
+                          desktopPortDraft !== desktopExpectedProxyPort
+                            ? "warning"
+                            : undefined
+                        }
+                      />
+                    </Space>
+                  </Col>
+                  <Col flex="none">
+                    <Button
+                      type="primary"
+                      loading={desktopPortSaving}
+                      disabled={
+                        desktopExpectedProxyPort !== null &&
+                        desktopPortDraft === desktopExpectedProxyPort
+                      }
+                      onClick={onApplyDesktopProxyPort}
+                    >
+                      Apply & Restart
+                    </Button>
+                  </Col>
+                </Row>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  Platform: {desktopPlatform} · Expected port:{" "}
+                  {desktopExpectedProxyPort ?? proxySettings?.port ?? 9900} · Actual
+                  port: {desktopProxyPort ?? proxySettings?.port ?? 9900}
+                </Text>
+                {desktopExpectedProxyPort !== null &&
+                desktopPortDraft !== desktopExpectedProxyPort ? (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Pending change: {desktopExpectedProxyPort} → {desktopPortDraft}
+                  </Text>
+                ) : null}
+                {desktopExpectedProxyPort !== null &&
+                desktopProxyPort !== null &&
+                desktopExpectedProxyPort !== desktopProxyPort ? (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={`Expected ${desktopExpectedProxyPort}, running on ${desktopProxyPort}`}
+                    description="The preferred startup port was unavailable, so the embedded core automatically moved to the next available port."
+                  />
+                ) : null}
+              </Space>
+            </Card>
+          </Col>
+        ) : null}
+
         <Col xs={24}>
           <Card
             title={
@@ -582,9 +692,10 @@ export default function ProxyTab({
                   <Text>Enable System Proxy</Text>
                 </Col>
                 <Col>
-                  {systemProxy?.supported ? (
+                  {systemProxy ? (
+                    systemProxy.supported ? (
                     <Switch
-                      checked={systemProxy?.enabled}
+                      checked={systemProxy.enabled}
                       loading={systemProxyLoading}
                       onChange={onToggleSystemProxy}
                     />
@@ -592,6 +703,8 @@ export default function ProxyTab({
                     <Tooltip title="System proxy is not supported on this platform">
                       <Text type="secondary">Not Supported</Text>
                     </Tooltip>
+                  )) : (
+                    <Text type="secondary">Loading...</Text>
                   )}
                 </Col>
               </Row>

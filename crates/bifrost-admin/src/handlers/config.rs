@@ -1,7 +1,8 @@
 use bifrost_storage::{
     CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, SandboxConfigUpdate,
-    SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, TlsConfigUpdate,
-    TrafficConfigUpdate, UiConfigUpdate,
+    SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, ServerConfigUpdate,
+    TlsConfigUpdate, TrafficConfigUpdate, UiConfigUpdate, DEFAULT_TRAFFIC_MAX_RECORDS,
+    MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS,
 };
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -10,9 +11,9 @@ use std::path::Path;
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::frame_store::FrameStoreStats;
+use crate::port_rebind::PortRebindResponse;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
-use crate::traffic_store::TrafficStoreStats;
 use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,9 +29,33 @@ pub struct TlsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySettingsResponse {
+    pub server: ServerConfig,
     pub tls: TlsConfig,
     pub port: u16,
     pub host: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateServerConfigRequest {
+    pub port: Option<u16>,
+    pub timeout_secs: Option<u64>,
+    pub http1_max_header_size: Option<usize>,
+    pub http2_max_header_list_size: Option<usize>,
+    pub websocket_handshake_max_header_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateServerPortResponse {
+    pub expected_port: u16,
+    pub actual_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -63,7 +88,6 @@ pub struct TrafficConfig {
 pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
-    pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
     pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
@@ -98,6 +122,11 @@ pub async fn handle_config(
         "/api/config/tls" | "/api/config/tls/" => match method {
             Method::GET => get_tls_config(state).await,
             Method::PUT => update_tls_config(req, state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/server" | "/api/config/server/" => match method {
+            Method::GET => get_server_config(state).await,
+            Method::PUT => update_server_config(req, state).await,
             _ => method_not_allowed(),
         },
         "/api/config/performance" | "/api/config/performance/" => match method {
@@ -335,8 +364,25 @@ async fn update_sandbox_config(
 
 async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
     let runtime_config = state.runtime_config.read().await;
+    let server_config = if let Some(ref config_manager) = state.config_manager {
+        let config = config_manager.config().await;
+        ServerConfig {
+            timeout_secs: config.server.timeout_secs,
+            http1_max_header_size: config.server.http1_max_header_size,
+            http2_max_header_list_size: config.server.http2_max_header_list_size,
+            websocket_handshake_max_header_size: config.server.websocket_handshake_max_header_size,
+        }
+    } else {
+        ServerConfig {
+            timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
+        }
+    };
 
     let response = ProxySettingsResponse {
+        server: server_config,
         tls: TlsConfig {
             enable_tls_interception: runtime_config.enable_tls_interception,
             intercept_exclude: runtime_config.intercept_exclude.clone(),
@@ -346,11 +392,147 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
             unsafe_ssl: runtime_config.unsafe_ssl,
             disconnect_on_config_change: runtime_config.disconnect_on_config_change,
         },
-        port: state.port,
+        port: state.port(),
         host: "127.0.0.1".to_string(),
     };
 
     json_response(&response)
+}
+
+async fn get_server_config(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let config = config_manager.config().await;
+    json_response(&ServerConfig {
+        timeout_secs: config.server.timeout_secs,
+        http1_max_header_size: config.server.http1_max_header_size,
+        http2_max_header_list_size: config.server.http2_max_header_list_size,
+        websocket_handshake_max_header_size: config.server.websocket_handshake_max_header_size,
+    })
+}
+
+async fn update_server_config(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: UpdateServerConfigRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    if let Some(port) = request.port {
+        if port == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "port must be between 1 and 65535");
+        }
+
+        let Some(ref manager) = state.port_rebind_manager else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Port rebind is not available in the current runtime",
+            );
+        };
+
+        match manager.rebind_port(port).await {
+            Ok(PortRebindResponse {
+                expected_port,
+                actual_port,
+            }) => {
+                return json_response(&UpdateServerPortResponse {
+                    expected_port,
+                    actual_port,
+                });
+            }
+            Err(error) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to rebind port: {}", error),
+                );
+            }
+        }
+    }
+
+    if let Some(timeout_secs) = request.timeout_secs {
+        if timeout_secs == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "timeout_secs must be > 0");
+        }
+    }
+    if let Some(v) = request.http1_max_header_size {
+        if v == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "http1_max_header_size must be > 0");
+        }
+    }
+    if let Some(v) = request.http2_max_header_list_size {
+        if v == 0 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "http2_max_header_list_size must be > 0",
+            );
+        }
+        if v > u32::MAX as usize {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "http2_max_header_list_size must be <= 4294967295",
+            );
+        }
+    }
+    if let Some(v) = request.websocket_handshake_max_header_size {
+        if v == 0 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "websocket_handshake_max_header_size must be > 0",
+            );
+        }
+    }
+
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let update = ServerConfigUpdate {
+        timeout_secs: request.timeout_secs,
+        http1_max_header_size: request.http1_max_header_size,
+        http2_max_header_list_size: request.http2_max_header_list_size,
+        websocket_handshake_max_header_size: request.websocket_handshake_max_header_size,
+    };
+
+    match config_manager.update_server_config(update).await {
+        Ok(config) => {
+            tracing::info!("Server config updated and persisted");
+            json_response(&ServerConfig {
+                timeout_secs: config.timeout_secs,
+                http1_max_header_size: config.http1_max_header_size,
+                http2_max_header_list_size: config.http2_max_header_list_size,
+                websocket_handshake_max_header_size: config.websocket_handshake_max_header_size,
+            })
+        }
+        Err(e) => {
+            tracing::error!("Failed to persist server config: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to save config: {}", e),
+            )
+        }
+    }
 }
 
 async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {
@@ -524,7 +706,6 @@ async fn list_connections(state: SharedAdminState) -> Response<BoxBody> {
 
 async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
-    let traffic_store_stats = state.traffic_store.as_ref().map(|ts| ts.stats());
     let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
     let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|ws| ws.stats());
 
@@ -545,7 +726,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         }
     } else {
         TrafficConfig {
-            max_records: 5000,
+            max_records: DEFAULT_TRAFFIC_MAX_RECORDS,
             max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
@@ -562,7 +743,6 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let response = PerformanceConfigResponse {
         traffic: traffic_config,
         body_store_stats,
-        traffic_store_stats,
         frame_store_stats,
         ws_payload_store_stats,
     };
@@ -600,6 +780,18 @@ async fn update_performance_config(
         }
     }
 
+    if let Some(max_records) = request.max_records {
+        if !(MIN_TRAFFIC_MAX_RECORDS..=MAX_TRAFFIC_MAX_RECORDS).contains(&max_records) {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "max_records must be between {} and {}",
+                    MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS
+                ),
+            );
+        }
+    }
+
     if let Some(ref config_manager) = state.config_manager {
         let update = TrafficConfigUpdate {
             max_records: request.max_records,
@@ -631,9 +823,6 @@ async fn update_performance_config(
     }
 
     if let Some(max_records) = request.max_records {
-        if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.set_max_records(max_records);
-        }
         if let Some(ref traffic_db_store) = state.traffic_db_store {
             traffic_db_store.set_max_records(max_records);
         }
@@ -663,16 +852,6 @@ async fn update_performance_config(
             retention_days: request.file_retention_days,
         };
         ws_payload_store.update_config(ws_payload_update);
-    }
-
-    if let Some(ref traffic_store) = state.traffic_store {
-        use crate::traffic_store::TrafficStoreConfigUpdate;
-        let retention_hours = request.file_retention_days.map(|d| d * 24);
-        let traffic_store_update = TrafficStoreConfigUpdate {
-            max_records: request.max_records,
-            retention_hours,
-        };
-        traffic_store.update_config(traffic_store_update);
     }
 
     if let Some(max_body_buffer_size) = request.max_body_buffer_size {
@@ -715,11 +894,14 @@ async fn clear_body_cache(state: SharedAdminState) -> Response<BoxBody> {
         }
     }
 
-    if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.clear();
-        let stats = traffic_store.stats();
-        traffic_removed = stats.total_records_processed as usize;
-        tracing::info!("Cleared traffic store records");
+    if let Some(ref traffic_db_store) = state.traffic_db_store {
+        // 仅保留活跃连接记录，避免清理导致进行中的连接记录缺失。
+        let active_connection_ids = state.connection_monitor.active_connection_ids();
+        let before = traffic_db_store.stats().record_count;
+        traffic_db_store.clear_with_active_ids(&active_connection_ids);
+        let after = traffic_db_store.stats().record_count;
+        traffic_removed = before.saturating_sub(after);
+        tracing::info!("Cleared traffic db records (active preserved)");
     }
 
     if let Some(ref frame_store) = state.frame_store {

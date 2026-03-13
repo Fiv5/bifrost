@@ -14,6 +14,7 @@ import {
   Select,
   Space,
   Switch,
+  Segmented,
   Dropdown,
   Modal,
   message,
@@ -42,6 +43,7 @@ import {
 } from "../../../stores/useReplayStore";
 import { useRulesStore } from "../../../stores/useRulesStore";
 import CodeEditor from "./CodeEditor";
+import { parseCurl } from "../../../utils/curl";
 import {
   DEFAULT_TIMEOUT_MS,
   type ReplayKeyValueItem,
@@ -73,249 +75,6 @@ const METHOD_COLORS: Record<string, string> = {
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
-
-interface ParsedCurl {
-  method: string;
-  url: string;
-  headers: ReplayKeyValueItem[];
-  body?: {
-    type: BodyType;
-    raw_type?: RawType;
-    content?: string;
-    form_data?: ReplayKeyValueItem[];
-  };
-}
-
-function tokenizeCommand(input: string): string[] {
-  const normalized = input.trim().replace(/\\\r?\n/g, " ");
-  const tokens: string[] = [];
-  let i = 0;
-  let current = "";
-  let quote: "'" | '"' | null = null;
-
-  const pushCurrent = () => {
-    if (current !== "") {
-      tokens.push(current);
-      current = "";
-    }
-  };
-
-  while (i < normalized.length) {
-    const ch = normalized[i];
-
-    if (quote === null) {
-      if (/\s/.test(ch)) {
-        pushCurrent();
-        i += 1;
-        continue;
-      }
-
-      if (ch === "'" || ch === '"') {
-        quote = ch;
-        i += 1;
-        continue;
-      }
-
-      if (ch === "\\") {
-        if (i + 1 < normalized.length) {
-          current += normalized[i + 1];
-          i += 2;
-          continue;
-        }
-        i += 1;
-        continue;
-      }
-
-      current += ch;
-      i += 1;
-      continue;
-    }
-
-    if (quote === "'") {
-      if (ch === "'") {
-        quote = null;
-        i += 1;
-        continue;
-      }
-      current += ch;
-      i += 1;
-      continue;
-    }
-
-    if (ch === '"') {
-      quote = null;
-      i += 1;
-      continue;
-    }
-
-    if (ch === "\\") {
-      if (i + 1 < normalized.length) {
-        current += normalized[i + 1];
-        i += 2;
-        continue;
-      }
-      i += 1;
-      continue;
-    }
-
-    current += ch;
-    i += 1;
-  }
-
-  pushCurrent();
-  return tokens;
-}
-
-function parseCurl(curlCommand: string): ParsedCurl | null {
-  const tokens = tokenizeCommand(curlCommand);
-  if (tokens.length === 0 || tokens[0].toLowerCase() !== "curl") {
-    return null;
-  }
-
-  let method = "GET";
-  let url = "";
-  const headers: ReplayKeyValueItem[] = [];
-  const bodyParts: string[] = [];
-  let contentType = "";
-
-  const positional: string[] = [];
-  const optionsWithValue = new Set([
-    "-X",
-    "--request",
-    "--url",
-    "-H",
-    "--header",
-    "-d",
-    "--data",
-    "--data-raw",
-    "--data-binary",
-    "--data-urlencode",
-    "--json",
-    "-e",
-    "--referer",
-    "-u",
-    "--user",
-    "-b",
-    "--cookie",
-    "-x",
-    "--proxy",
-  ]);
-
-  for (let i = 1; i < tokens.length; i += 1) {
-    const token = tokens[i];
-
-    if (token === "--") {
-      positional.push(...tokens.slice(i + 1));
-      break;
-    }
-
-    if (token === "-X" || token === "--request") {
-      const value = tokens[i + 1];
-      if (value) {
-        method = value.toUpperCase();
-        i += 1;
-      }
-      continue;
-    }
-
-    if (token === "--url") {
-      const value = tokens[i + 1];
-      if (value) {
-        url = value;
-        i += 1;
-      }
-      continue;
-    }
-
-    if (token === "-e" || token === "--referer") {
-      if (tokens[i + 1]) {
-        i += 1;
-      }
-      continue;
-    }
-
-    if (token === "-H" || token === "--header") {
-      const headerValue = tokens[i + 1];
-      if (headerValue) {
-        const colonIndex = headerValue.indexOf(":");
-        if (colonIndex !== -1) {
-          const key = headerValue.substring(0, colonIndex).trim();
-          const value = headerValue.substring(colonIndex + 1).trim();
-          headers.push({ id: generateId(), key, value, enabled: true });
-          if (key.toLowerCase() === "content-type") {
-            contentType = value.toLowerCase();
-          }
-        }
-        i += 1;
-      }
-      continue;
-    }
-
-    if (
-      token === "-d" ||
-      token === "--data" ||
-      token === "--data-raw" ||
-      token === "--data-binary" ||
-      token === "--data-urlencode" ||
-      token === "--json"
-    ) {
-      const value = tokens[i + 1];
-      if (value !== undefined) {
-        bodyParts.push(value);
-        i += 1;
-      }
-      if (method === "GET") {
-        method = "POST";
-      }
-      continue;
-    }
-
-    if (token.startsWith("-")) {
-      if (optionsWithValue.has(token) && tokens[i + 1]) {
-        i += 1;
-      }
-      continue;
-    }
-
-    positional.push(token);
-  }
-
-  if (!url) {
-    const urlCandidates = positional.filter((t) => /^(https?|wss?):\/\//i.test(t));
-    if (urlCandidates.length > 0) {
-      url = urlCandidates[urlCandidates.length - 1];
-    } else if (positional.length > 0) {
-      url = positional[positional.length - 1];
-    }
-  }
-
-  if (!url) {
-    return null;
-  }
-
-  const result: ParsedCurl = {
-    method,
-    url,
-    headers,
-  };
-
-  if (bodyParts.length > 0) {
-    let rawType: RawType = "text";
-    if (contentType.includes("json")) {
-      rawType = "json";
-    } else if (contentType.includes("xml")) {
-      rawType = "xml";
-    }
-
-    result.body = {
-      type: "raw",
-      raw_type: rawType,
-      content: bodyParts.join("&"),
-    };
-  }
-
-  return result;
 }
 
 const VALID_URL_PROTOCOLS = ["http://", "https://", "ws://", "wss://"];
@@ -721,6 +480,16 @@ export default function RequestPanel() {
   const enabledParamsCount = queryParams.filter(
     (p) => p.enabled && p.key,
   ).length;
+  const cookieCount = useMemo(() => {
+    const cookieHeader = (currentRequest?.headers || []).find(
+      (h) => h.key.trim().toLowerCase() === "cookie" && h.enabled,
+    );
+    if (!cookieHeader?.value) return 0;
+    return cookieHeader.value
+      .split(/;|\n/)
+      .map((p) => p.trim())
+      .filter(Boolean).length;
+  }, [currentRequest?.headers]);
 
   const styles: Record<string, CSSProperties> = {
     container: {
@@ -767,6 +536,16 @@ export default function RequestPanel() {
           onChange={handleHeadersChange}
           keyPlaceholder="Header"
           valuePlaceholder="Value"
+        />
+      ),
+    },
+    {
+      key: "cookies",
+      label: `Cookies${cookieCount > 0 ? ` (${cookieCount})` : ""}`,
+      children: (
+        <CookieEditor
+          headers={currentRequest?.headers || []}
+          onChange={handleHeadersChange}
         />
       ),
     },
@@ -1138,6 +917,294 @@ function KeyValueEditor({
       >
         Add
       </Button>
+    </div>
+  );
+}
+
+interface CookieEditorProps {
+  headers: ReplayKeyValueItem[];
+  onChange: (headers: ReplayKeyValueItem[]) => void;
+}
+
+interface CookieEditorItem extends ReplayKeyValueItem {
+  tableKey: string;
+}
+
+function parseCookieValue(cookie: string): ReplayKeyValueItem[] {
+  const parts = cookie
+    .split(/;|\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return [{ id: generateId(), key: "", value: "", enabled: true }];
+  }
+
+  return parts.map((part) => {
+    const eqIndex = part.indexOf("=");
+    if (eqIndex === -1) {
+      return { id: generateId(), key: part.trim(), value: "", enabled: true };
+    }
+    return {
+      id: generateId(),
+      key: part.slice(0, eqIndex).trim(),
+      value: part.slice(eqIndex + 1).trim(),
+      enabled: true,
+    };
+  });
+}
+
+function stringifyCookieItems(items: ReplayKeyValueItem[]): string {
+  return items
+    .filter((i) => i.enabled && i.key.trim())
+    .map((i) => `${i.key.trim()}=${i.value ?? ""}`)
+    .join("; ");
+}
+
+function CookieEditor({ headers, onChange }: CookieEditorProps) {
+  const { token } = theme.useToken();
+  const cookieHeaderIndex = useMemo(() => {
+    return headers.findIndex((h) => h.key.trim().toLowerCase() === "cookie");
+  }, [headers]);
+
+  const cookieHeader = cookieHeaderIndex >= 0 ? headers[cookieHeaderIndex] : null;
+  const cookieValue = cookieHeader?.value || "";
+  const cookieHeaderEnabled = cookieHeader?.enabled ?? true;
+  const lastValueRef = useRef(cookieValue);
+  const [mode, setMode] = useState<"table" | "raw">("table");
+  const [items, setItems] = useState<ReplayKeyValueItem[]>(() =>
+    parseCookieValue(cookieValue),
+  );
+
+  useEffect(() => {
+    if (cookieValue === lastValueRef.current) return;
+    lastValueRef.current = cookieValue;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Local cookie table state must mirror the upstream header value without altering edit behavior.
+    setItems(parseCookieValue(cookieValue));
+  }, [cookieValue]);
+
+  const updateHeaders = useCallback(
+    (nextValue: string, nextEnabled?: boolean) => {
+      lastValueRef.current = nextValue;
+      const enabled = nextEnabled ?? cookieHeaderEnabled;
+
+      if (cookieHeaderIndex >= 0) {
+        onChange(
+          headers.map((h, i) => {
+            if (i !== cookieHeaderIndex) return h;
+            return {
+              ...h,
+              key: h.key.trim() ? h.key : "Cookie",
+              value: nextValue,
+              enabled,
+            };
+          }),
+        );
+        return;
+      }
+
+      onChange([
+        ...headers,
+        { id: generateId(), key: "Cookie", value: nextValue, enabled },
+      ]);
+    },
+    [cookieHeaderEnabled, cookieHeaderIndex, headers, onChange],
+  );
+
+  const handleHeaderEnabledChange = useCallback(
+    (enabled: boolean) => {
+      updateHeaders(stringifyCookieItems(items), enabled);
+    },
+    [items, updateHeaders],
+  );
+
+  const handleAdd = useCallback(() => {
+    setItems((prev) => {
+      const next = [...prev, { id: generateId(), key: "", value: "", enabled: true }];
+      updateHeaders(stringifyCookieItems(next));
+      return next;
+    });
+  }, [updateHeaders]);
+
+  const handleRemove = useCallback(
+    (id: string) => {
+      setItems((prev) => {
+        const filtered = prev.filter((i) => i.id !== id);
+        const next =
+          filtered.length === 0
+            ? [{ id: generateId(), key: "", value: "", enabled: true }]
+            : filtered;
+        updateHeaders(stringifyCookieItems(next));
+        return next;
+      });
+    },
+    [updateHeaders],
+  );
+
+  const handleChange = useCallback(
+    (id: string, field: "key" | "value" | "enabled", value: string | boolean) => {
+      setItems((prev) => {
+        const next = prev.map((i) => (i.id === id ? { ...i, [field]: value } : i));
+        updateHeaders(stringifyCookieItems(next));
+        return next;
+      });
+    },
+    [updateHeaders],
+  );
+
+  const rawValue = useMemo(() => stringifyCookieItems(items), [items]);
+
+  const dataSource: CookieEditorItem[] = useMemo(() => {
+    return items.map((item, index) => ({
+      ...item,
+      tableKey: item.id || String(index),
+    }));
+  }, [items]);
+
+  const columns: ColumnsType<CookieEditorItem> = [
+    {
+      title: "",
+      dataIndex: "enabled",
+      key: "enabled",
+      width: 50,
+      render: (enabled: boolean, record: CookieEditorItem) => (
+        <Switch
+          size="small"
+          checked={enabled}
+          onChange={(checked) => handleChange(record.id, "enabled", checked)}
+        />
+      ),
+    },
+    {
+      title: "Name",
+      dataIndex: "key",
+      key: "key",
+      render: (_: string, record: CookieEditorItem) => (
+        <Input
+          size="small"
+          placeholder="Cookie name"
+          value={record.key}
+          onChange={(e) => handleChange(record.id, "key", e.target.value)}
+          variant="borderless"
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        />
+      ),
+    },
+    {
+      title: "Value",
+      dataIndex: "value",
+      key: "value",
+      render: (_: string, record: CookieEditorItem) => (
+        <Input
+          size="small"
+          placeholder="Cookie value"
+          value={record.value}
+          onChange={(e) => handleChange(record.id, "value", e.target.value)}
+          variant="borderless"
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        />
+      ),
+    },
+    {
+      title: "",
+      key: "actions",
+      width: 50,
+      render: (_: unknown, record: CookieEditorItem) => (
+        <Button
+          type="text"
+          size="small"
+          icon={<DeleteOutlined />}
+          onClick={() => handleRemove(record.id)}
+          style={{ color: token.colorTextSecondary }}
+        />
+      ),
+    },
+  ];
+
+  return (
+    <div style={{ padding: 8, height: "100%", overflow: "auto", minHeight: 0 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
+        <Space size="small" align="center">
+          <Switch
+            size="small"
+            checked={cookieHeaderEnabled}
+            onChange={handleHeaderEnabledChange}
+          />
+          <span style={{ fontSize: 12, color: token.colorTextSecondary }}>
+            Send cookies
+          </span>
+        </Space>
+        <Segmented
+          size="small"
+          value={mode}
+          onChange={(v) => setMode(v as "table" | "raw")}
+          options={[
+            { label: "Table", value: "table" },
+            { label: "Raw", value: "raw" },
+          ]}
+        />
+      </div>
+
+      {mode === "raw" ? (
+        <Input.TextArea
+          value={rawValue}
+          autoSize={{ minRows: 6, maxRows: 16 }}
+          onChange={(e) => {
+            const nextRaw = e.target.value;
+            const nextItems = parseCookieValue(nextRaw);
+            setItems(nextItems);
+            updateHeaders(stringifyCookieItems(nextItems));
+          }}
+          placeholder="name=value; name2=value2"
+          style={{
+            fontFamily: "monospace",
+            fontSize: 12,
+            backgroundColor: token.colorBgLayout,
+          }}
+        />
+      ) : (
+        <>
+          <ConfigProvider
+            theme={{
+              components: {
+                Table: {
+                  cellPaddingBlockSM: 4,
+                  cellPaddingInlineSM: 8,
+                },
+              },
+            }}
+          >
+            <Table
+              dataSource={dataSource}
+              columns={columns}
+              rowKey="tableKey"
+              pagination={false}
+              size="small"
+              style={{
+                backgroundColor: token.colorBgLayout,
+                borderRadius: 4,
+              }}
+            />
+          </ConfigProvider>
+          <Button
+            type="text"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={handleAdd}
+            style={{ marginTop: 8, color: token.colorTextSecondary, fontSize: 12 }}
+          >
+            Add Cookie
+          </Button>
+        </>
+      )}
     </div>
   );
 }

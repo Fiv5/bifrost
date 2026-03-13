@@ -151,6 +151,7 @@ export default function Toolbar({
             type="text"
             size="small"
             icon={<DeleteOutlined />}
+            data-testid="toolbar-clear-dropdown"
             style={{ display: "flex", alignItems: "center", gap: 2 }}
           >
             <DownOutlined style={{ fontSize: 10 }} />

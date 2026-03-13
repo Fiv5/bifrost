@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { CliProxyStatus, SystemProxyStatus } from "../api/proxy";
 import { getCliProxyStatus, getSystemProxyStatus, setSystemProxy } from "../api/proxy";
+import { isConnectionIssueError } from "../api/client";
 
 interface ProxyState {
   systemProxy: SystemProxyStatus | null;
@@ -24,7 +25,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
       const status = await getSystemProxyStatus();
       set({ systemProxy: status, error: null });
     } catch (e) {
-      set({ error: (e as Error).message });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message });
     }
   },
 
@@ -33,7 +34,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
       const status = await getCliProxyStatus();
       set({ cliProxy: status, error: null });
     } catch (e) {
-      set({ error: (e as Error).message });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message });
     }
   },
 
@@ -41,12 +42,13 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     const currentState = get().systemProxy;
     set({ loading: true, error: null });
     try {
-      const result = await setSystemProxy({ enabled });
-      set({ systemProxy: result, loading: false });
+      await setSystemProxy({ enabled });
+      const status = await getSystemProxyStatus();
+      set({ systemProxy: status, loading: false, error: null });
       return true;
     } catch (e) {
       set({
-        error: (e as Error).message,
+        error: isConnectionIssueError(e) ? null : (e as Error).message,
         loading: false,
         systemProxy: currentState,
       });

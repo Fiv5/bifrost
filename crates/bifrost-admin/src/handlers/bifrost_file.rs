@@ -331,6 +331,8 @@ fn network_record_to_traffic_record(record: &NetworkRecord) -> TrafficRecord {
         response_headers: record.response_headers.clone(),
         request_body_ref: None,
         response_body_ref: None,
+        raw_request_body_ref: None,
+        raw_response_body_ref: None,
         client_ip: "imported".to_string(),
         client_app: Some("Bifrost Import".to_string()),
         client_pid: None,
@@ -356,6 +358,8 @@ fn network_record_to_traffic_record(record: &NetworkRecord) -> TrafficRecord {
         error_message: None,
         req_script_results: None,
         res_script_results: None,
+        decode_req_script_results: None,
+        decode_res_script_results: None,
     }
 }
 
@@ -684,13 +688,8 @@ async fn handle_export_network(
     for id in &request.record_ids {
         let traffic = if let Some(ref db_store) = state.traffic_db_store {
             db_store.get_by_id(id)
-        } else if let Some(ref traffic_store) = state.traffic_store {
-            traffic_store.get_by_id(id)
         } else {
-            return error_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Traffic store not configured",
-            );
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "Traffic DB not configured");
         };
 
         if let Some(traffic) = traffic {

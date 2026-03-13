@@ -29,28 +29,39 @@ const backendPort = (() => {
 const backendHttpTarget = `http://127.0.0.1:${backendPort}`;
 const backendWsTarget = `ws://127.0.0.1:${backendPort}`;
 
-export default defineConfig({
-  plugins: [react()],
-  optimizeDeps: {
-    include: ['monaco-editor'],
-  },
-  base: '/_bifrost/',
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-  },
-  server: {
-    port: webPort,
-    proxy: {
-      '/_bifrost/api': {
-        target: backendHttpTarget,
-        changeOrigin: true,
-        ws: true,
-      },
-      '/_bifrost/ws': {
-        target: backendWsTarget,
-        ws: true,
+export default defineConfig(({ mode }) => {
+  const isDesktop = mode === 'desktop';
+
+  return {
+    plugins: [react()],
+    optimizeDeps: {
+      include: ['monaco-editor'],
+    },
+    base: isDesktop ? './' : '/_bifrost/',
+    build: {
+      outDir: isDesktop ? 'dist-desktop' : 'dist',
+      emptyOutDir: true,
+    },
+    define: {
+      __BIFROST_DESKTOP__: JSON.stringify(isDesktop),
+    },
+    server: {
+      port: webPort,
+      proxy: {
+        '/_bifrost/api': {
+          target: backendHttpTarget,
+          changeOrigin: true,
+          ws: true,
+        },
+        '/_bifrost/public': {
+          target: backendHttpTarget,
+          changeOrigin: true,
+        },
+        '/_bifrost/ws': {
+          target: backendWsTarget,
+          ws: true,
+        },
       },
     },
-  },
+  };
 });

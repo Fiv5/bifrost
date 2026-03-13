@@ -279,7 +279,8 @@ export default function Traffic() {
           enabled ? "System proxy enabled" : "System proxy disabled",
         );
       } else {
-        message.error("Failed to toggle system proxy");
+        const proxyError = useProxyStore.getState().error;
+        message.error(proxyError || "Failed to toggle system proxy");
       }
     },
     [toggleSystemProxy],

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Result};
 
@@ -16,22 +17,23 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
 use crate::protocol::ProtocolDetector;
-use crate::proxy::http::should_intercept_tls;
+use crate::proxy::http::requires_client_app_for_tls_decision;
 use crate::server::{
     full_body, BoxBody, NoOpRulesResolver, RulesResolver, TlsConfig, TlsInterceptConfig,
 };
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process;
+use crate::utils::process_info::{
+    resolve_client_process_async, resolve_client_process_async_with_retry,
+};
 use crate::utils::tee::store_request_body;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
-use super::super::http::{handle_http_request, SingleCertResolver};
+use super::super::http::handle_http_request;
 use super::udp::UdpRelay;
 
 use std::sync::LazyLock;
@@ -933,14 +935,6 @@ impl SocksHandler {
             crate::server::ResolvedRules::default()
         };
 
-        let client_process = resolve_client_process(&self.peer_addr);
-        let client_app = client_process.as_ref().map(|p| p.name.as_str());
-
-        debug!(
-            "SOCKS5: Client process for {}:{} - app={:?}",
-            target_host, target_port, client_app
-        );
-
         let mut peek_buf = [0u8; 16];
         let peek_len = self.stream().peek(&mut peek_buf).await.unwrap_or(0);
 
@@ -973,9 +967,26 @@ impl SocksHandler {
                                 self.tls_intercept_config.clone()
                             };
                         if let Some(ref tls_intercept_config) = tls_intercept_config {
-                            let do_intercept = should_intercept_tls(
+                            let is_local_client = self.peer_addr.ip().is_loopback();
+                            let client_process = if is_local_client
+                                && requires_client_app_for_tls_decision(tls_intercept_config)
+                            {
+                                resolve_client_process_async_with_retry(&self.peer_addr, 10, 20)
+                                    .await
+                            } else {
+                                resolve_client_process_async(&self.peer_addr).await
+                            };
+                            let client_app = client_process.as_ref().map(|p| p.name.as_str());
+
+                            debug!(
+                                "SOCKS5: Client process for {}:{} - app={:?}",
+                                target_host, target_port, client_app
+                            );
+
+                            let do_intercept = crate::proxy::http::should_intercept_tls_for_client(
                                 target_host,
                                 client_app,
+                                is_local_client,
                                 tls_intercept_config,
                                 tls_config,
                                 &resolved_rules,
@@ -1045,7 +1056,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&peer_addr);
+        let client_process = resolve_client_process_async(&peer_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1222,24 +1233,14 @@ impl SocksHandler {
         target_port: u16,
         cert_host: &str,
     ) -> Result<()> {
+        ensure_crypto_provider();
+
         let tls_config = match &self.tls_config {
             Some(c) => Arc::clone(c),
             None => return Err(BifrostError::Tls("TLS config not available".to_string())),
         };
-
-        let certified_key = if let Some(ref sni_resolver) = tls_config.sni_resolver {
-            sni_resolver.resolve(cert_host)?
-        } else if let Some(ref cert_generator) = tls_config.cert_generator {
-            Arc::new(cert_generator.generate_for_domain(cert_host)?)
-        } else {
-            return Err(BifrostError::Tls(
-                "TLS interception enabled but cert generator not configured".to_string(),
-            ));
-        };
-
-        let server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+        let no_alpn_protocols: Vec<Vec<u8>> = Vec::new();
+        let server_config = tls_config.resolve_server_config(cert_host, &no_alpn_protocols)?;
 
         let req_id = generate_socks5_request_id();
         let admin_state = self.admin_state.clone();
@@ -1249,7 +1250,7 @@ impl SocksHandler {
             req_id, target_host, target_port
         );
 
-        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let acceptor = TlsAcceptor::from(server_config);
 
         let client_stream = self
             .stream
@@ -1268,7 +1269,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&self.peer_addr);
+        let client_process = resolve_client_process_async(&self.peer_addr).await;
         let client_app = client_process.as_ref().map(|p| p.name.clone());
 
         if let Some(ref state) = admin_state {
@@ -1312,6 +1313,15 @@ impl SocksHandler {
             .as_ref()
             .map(|s| s.get_max_body_probe_size())
             .unwrap_or(64 * 1024);
+        let http1_max_header_size = if let Some(ref state) = admin_state {
+            if let Some(ref config_manager) = state.config_manager {
+                config_manager.config().await.server.http1_max_header_size
+            } else {
+                64 * 1024
+            }
+        } else {
+            64 * 1024
+        };
 
         let service = service_fn(move |req: Request<Incoming>| {
             let target_host = target_host.clone();
@@ -1340,11 +1350,13 @@ impl SocksHandler {
 
         let client_io = TokioIo::new(client_tls);
 
-        let conn = ServerBuilder::new()
+        let mut builder = ServerBuilder::new();
+        builder
             .preserve_header_case(true)
             .title_case_headers(true)
-            .serve_connection(client_io, service)
-            .with_upgrades();
+            .max_buf_size(http1_max_header_size);
+
+        let conn = builder.serve_connection(client_io, service).with_upgrades();
 
         let mut conn = std::pin::pin!(conn);
 
@@ -1441,7 +1453,7 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process(&peer_addr);
+        let client_process = resolve_client_process_async(&peer_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1732,7 +1744,7 @@ async fn handle_socks5_intercepted_request(
     let mut new_req = Request::from_parts(parts, body);
     *new_req.uri_mut() = new_uri;
 
-    let client_process = resolve_client_process(&peer_addr);
+    let client_process = resolve_client_process_async(&peer_addr).await;
     let (client_app, client_pid, client_path) = client_process
         .as_ref()
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))

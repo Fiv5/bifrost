@@ -32,7 +32,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 | ------------- | -------- | --------------------------- |
 | HTTP/1.1      | ✅       | 完整支持                    |
 | HTTP/2        | ✅       | 帧级别处理，支持多路复用    |
-| HTTP/3 (QUIC) | ✅       | 基于 Quinn 实现 |
+| HTTP/3 (QUIC) | ✅       | 支持下游 H3 接入与按规则启用的上游 H3 转发尝试 |
 | HTTPS         | ✅       | TLS 1.2/1.3，支持 MITM 拦截 |
 | SOCKS5 TCP    | ✅       | 支持用户名/密码认证         |
 | SOCKS5 UDP    | ✅       | UDP ASSOCIATE 完整支持      |
@@ -114,6 +114,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 │   ├── bifrost-e2e/        # E2E runner（Rust）
 │   └── bifrost-tests/      # 测试辅助 crate
 ├── web/                    # Web 管理端（Vite + React）
+├── desktop/                # Tauri 桌面客户端（内置 Web 资源 + 内嵌 bifrost CLI 后端）
 ├── docs/                   # 文档
 ├── e2e-tests/              # E2E 脚本与规则集（bash/python）
 └── tests/                  # Rust 集成测试
@@ -121,7 +122,9 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 ## 安装
 
-### 方式一：一键安装（推荐）
+### CLI 版本
+
+#### 方式一：一键安装（推荐）
 
 使用 curl 一键安装脚本，自动检测平台和架构：
 
@@ -139,16 +142,16 @@ curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-
 curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
 ```
 
-### 方式二：Homebrew（macOS）
+#### 方式二：Homebrew（macOS）
 
 ```bash
 brew tap bifrost-proxy/bifrost
 brew install bifrost
 ```
 
-### 方式三：从源码构建
+#### 方式三：从源码构建
 
-#### 环境要求
+环境要求：
 
 - Rust 1.70+
 - Cargo
@@ -162,6 +165,8 @@ git clone https://github.com/bifrost-proxy/bifrost.git
 cd bifrost
 
 # 使用安装脚本（推荐）
+# macOS: 安装 CLI，并同时构建/安装桌面应用到 /Applications/Bifrost.app
+# Linux: 安装 CLI（桌面应用暂不由该脚本安装）
 ./install.sh
 
 # 或手动构建
@@ -169,7 +174,7 @@ cd web && pnpm install && pnpm build && cd ..
 cargo build --release
 ```
 
-### 方式四：手动下载
+#### 方式四：手动下载
 
 从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载预编译的二进制文件。
 
@@ -186,6 +191,81 @@ cargo build --release
 | Windows | ARM64         | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip`          |
 
 Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.ms/vc14/vc_redist.arm64.exe
+
+### 桌面版本
+
+桌面版本基于 Tauri 构建，安装包内已经内置 Web 资源，并会在应用内部启动打包进去的 `bifrost` CLI 后端，因此不需要再额外部署管理端静态页面。
+
+从源码安装时，macOS 可以直接执行 `./install.sh`，脚本会：
+
+- 安装 `bifrost` CLI 到 `~/.local/bin`
+- 构建 `Bifrost.app` 并直接安装到 `/Applications/Bifrost.app`
+
+如只想安装其中一部分，可使用：
+
+```bash
+./install.sh --cli-only
+./install.sh --desktop-only
+./install.sh --app-dir ~/Applications
+```
+
+#### 方式一：Homebrew Cask（macOS）
+
+```bash
+brew tap bifrost-proxy/bifrost
+brew install --cask bifrost-desktop
+```
+
+#### 方式二：手动下载桌面安装包
+
+从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载桌面安装包。
+
+当前发布计划：
+
+| 平台  | 架构          | 文件 |
+| ----- | ------------- | ---- |
+| macOS | Intel         | `bifrost-desktop-vX.X.X-x86_64-apple-darwin.dmg` |
+| macOS | Apple Silicon | `bifrost-desktop-vX.X.X-aarch64-apple-darwin.dmg` |
+| Windows | x64         | `bifrost-desktop-vX.X.X-x86_64-pc-windows-msvc.msi` |
+| Windows | ARM64       | `bifrost-desktop-vX.X.X-aarch64-pc-windows-msvc.msi` |
+
+安装完成后：
+
+- macOS 直接启动 `Bifrost.app`
+- Windows 使用 `.msi` 安装后从开始菜单启动 `Bifrost`
+- 桌面端首次启动会在拉起内嵌 `bifrost` core 之后异步检查 CA 证书；macOS 会通过系统管理员授权弹窗将证书安装到 `System.keychain`，Windows 会优先安装到 `CurrentUser\Root`，必要时再弹出 UAC 安装并信任 `Bifrost CA`
+- 安装版桌面端默认也使用 `~/.bifrost` 作为 `config / certs / logs / runtime / desktop-config.json` 目录
+- 如需把桌面端内嵌 core 的 `config / certs / logs / runtime` 写入自定义目录，可在启动桌面应用前设置 `BIFROST_DATA_DIR`
+
+#### 方式三：从源码构建桌面版
+
+```bash
+git clone https://github.com/bifrost-proxy/bifrost.git
+cd bifrost
+
+pnpm install
+cd web && pnpm install && cd ..
+pnpm run desktop:build
+
+# 仅构建 macOS .app（不生成 .dmg，适合 install.sh 的安装流程）
+pnpm run desktop:build:app
+```
+
+说明：
+
+- `pnpm run desktop:build` 会生成完整安装包；macOS 产物位于 `desktop/src-tauri/target/release/bundle/dmg/`
+- `pnpm run desktop:build:app` 仅生成 macOS `.app`；产物位于 `desktop/src-tauri/target/release/bundle/macos/`
+- Windows 产物位于 `desktop/src-tauri/target/release/bundle/msi/`
+
+### 卸载
+
+```bash
+# 卸载 CLI 和桌面应用
+./uninstall.sh
+
+# 连同 CLI/桌面端数据一起清理
+./uninstall.sh --purge
+```
 
 ## 快速开始
 
@@ -448,7 +528,7 @@ RUST_LOG=bifrost_proxy=debug,info bifrost start
 
 - **规则解析** (`rule/`) - 解析和管理代理规则
 - **匹配器** (`matcher/`) - URL 模式匹配（域名、IP、正则、通配符）
-- **协议定义** (`protocol.rs`) - 71 种协议操作类型
+- **协议定义** (`protocol.rs`) - 67 种协议操作类型
 
 ```rust
 use bifrost_core::{parse_rules, DomainMatcher, Protocol};
@@ -626,6 +706,7 @@ api.service.com dns://8.8.8.8,8.8.4.4
 
 example.com tlsIntercept://
 example.com tlsPassthrough://
+example.com http3://
 
 # 脚本修改
 
@@ -633,11 +714,11 @@ example.com reqScript://modify-request
 example.com resScript://inject-data
 ```
 
-### 支持的协议（71 种）
+### 支持的协议（67 种）
 
 | 分类     | 协议                                                                                                                                                                                                                     |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 路由     | `host`, `xhost`, `http`, `https`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                             |
+| 路由     | `host`, `xhost`, `http`, `https`, `http3`, `ws`, `wss`, `proxy`, `redirect`, `file`, `tpl`, `rawfile`                                                                                                                    |
 | DNS      | `dns`                                                                                                                                                                                                                    |
 | 控制     | `tlsIntercept`, `tlsPassthrough`, `passthrough`, `delete`                                                                                                                                                                |
 | 请求修改 | `reqHeaders`, `reqBody`, `reqPrepend`, `reqAppend`, `reqCookies`, `reqCors`, `reqDelay`, `reqSpeed`, `reqType`, `reqCharset`, `reqReplace`, `method`, `auth`, `ua`, `referer`, `urlParams`, `params`                     |

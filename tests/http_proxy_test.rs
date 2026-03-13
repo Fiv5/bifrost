@@ -279,6 +279,9 @@ fn test_proxy_config_default() {
     assert!(!config.enable_tls_interception);
     assert!(config.intercept_exclude.is_empty());
     assert!(config.intercept_include.is_empty());
+    assert_eq!(config.http1_max_header_size, 64 * 1024);
+    assert_eq!(config.http2_max_header_list_size, 256 * 1024);
+    assert_eq!(config.websocket_handshake_max_header_size, 64 * 1024);
 }
 
 #[test]
@@ -292,6 +295,9 @@ fn test_proxy_config_custom() {
         app_intercept_exclude: vec![],
         app_intercept_include: vec![],
         timeout_secs: 60,
+        http1_max_header_size: 128 * 1024,
+        http2_max_header_list_size: 512 * 1024,
+        websocket_handshake_max_header_size: 96 * 1024,
         socks5_port: Some(1080),
         socks5_auth_required: false,
         socks5_username: None,
@@ -308,4 +314,7 @@ fn test_proxy_config_custom() {
     assert_eq!(config.port, 9000);
     assert!(config.enable_tls_interception);
     assert_eq!(config.socks5_port, Some(1080));
+    assert_eq!(config.http1_max_header_size, 128 * 1024);
+    assert_eq!(config.http2_max_header_list_size, 512 * 1024);
+    assert_eq!(config.websocket_handshake_max_header_size, 96 * 1024);
 }

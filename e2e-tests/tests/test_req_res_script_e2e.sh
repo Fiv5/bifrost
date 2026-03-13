@@ -79,7 +79,9 @@ write_scripts() {
     cat > "$TEST_DATA_DIR/scripts/request/req_script.js" <<'EOF'
 request.headers["X-ReqScript"] = "enabled";
 request.headers["X-ReqScript-Protocol"] = request.protocol;
-if (request.method === "POST") {
+
+// 默认用固定 body，保证基础用例稳定；skip-decode 用例使用 /echo-skip 保留原始大 body。
+if (request.method === "POST" && request.path.indexOf("/echo-skip") < 0) {
   request.body = "body-from-reqscript";
 }
 EOF
@@ -180,6 +182,30 @@ get_response_body_text() {
     admin_get "/api/traffic/${id}/response-body" | jq -r '.data // ""'
 }
 
+get_response_body_text_raw() {
+    local id="$1"
+    admin_get "/api/traffic/${id}/response-body?raw=1" | jq -r '.data // ""'
+}
+
+update_sandbox_limits() {
+    local max_decode_input_bytes="$1"
+    local max_decompress_output_bytes="$2"
+    local payload
+    payload=$(cat <<EOF
+{"limits":{"max_decode_input_bytes":${max_decode_input_bytes},"max_decompress_output_bytes":${max_decompress_output_bytes}}}
+EOF
+)
+    local resp
+    resp=$(admin_put "/api/config/sandbox" "$payload")
+
+    local got_decode
+    local got_decompress
+    got_decode=$(echo "$resp" | jq -r '.limits.max_decode_input_bytes // 0')
+    got_decompress=$(echo "$resp" | jq -r '.limits.max_decompress_output_bytes // 0')
+    assert_equals "${max_decode_input_bytes}" "$got_decode" "sandbox.max_decode_input_bytes 应更新成功"
+    assert_equals "${max_decompress_output_bytes}" "$got_decompress" "sandbox.max_decompress_output_bytes 应更新成功"
+}
+
 test_decode_script_bodies() {
     local id
     id=$(wait_for_traffic_id "/echo" 15)
@@ -218,6 +244,55 @@ test_req_script() {
     assert_header_value "X-ResScript" "enabled" "$HTTP_HEADERS" "resScript should add response header"
 }
 
+test_max_decode_input_bytes_skip() {
+    # 把 decode 输入上限调小，确保会触发跳过
+    update_sandbox_limits 32 $((10 * 1024 * 1024))
+
+    local marker="SKIP_DECODE_MARK"
+    local url="http://script-test.local/echo-skip?case=skip_decode"
+    http_post_large_body "$url" 256 "$marker"
+    assert_status_2xx "$HTTP_STATUS" "skip-decode 请求应成功"
+
+    local id
+    id=$(wait_for_traffic_id "/echo-skip" 15)
+    assert_not_empty "$id" "应记录 skip-decode 的 traffic"
+
+    local req_body
+    req_body=$(get_request_body_text "$id")
+    assert_body_contains "$marker" "$req_body" "decode 跳过时应仍保存原始请求体"
+    assert_body_not_contains "decoded-req::" "$req_body" "decode 输入过大时应跳过 decode"
+
+    local detail
+    detail=$(admin_get "/api/traffic/${id}")
+    local script_name
+    script_name=$(echo "$detail" | jq -r '.decode_req_script_results[0].script_name // ""')
+    assert_equals "__bifrost_skip__" "$script_name" "应记录 decode 跳过原因"
+}
+
+test_max_decompress_output_bytes_fallback() {
+    # 把解压输出上限调小（1KiB），同时把 decode 输入上限恢复为默认值，避免误跳过 decode
+    update_sandbox_limits $((2 * 1024 * 1024)) 1024
+
+    local marker="DECOMP_LIMIT_MARK"
+    local url="http://script-test.local/large-response?case=decompress_limit&size=4096&marker=${marker}&encoding=gzip"
+    http_get "$url"
+    assert_status_2xx "$HTTP_STATUS" "decompress-limit 请求应成功"
+
+    local id
+    id=$(wait_for_traffic_id "/large-response" 15)
+    assert_not_empty "$id" "应记录 decompress-limit 的 traffic"
+
+    local res_body
+    res_body=$(get_response_body_text "$id")
+    assert_body_contains "decoded-res::" "$res_body" "decode 应仍然执行（即使解压回退）"
+    assert_body_contains "::req-path::/large-response" "$res_body" "decode response phase 应携带请求快照"
+    assert_body_not_contains "$marker" "$res_body" "解压输出超限时应回退到压缩数据（decode 看不到明文 marker）"
+
+    local raw_res_body
+    raw_res_body=$(get_response_body_text_raw "$id")
+    assert_body_not_contains "$marker" "$raw_res_body" "raw=1 下也应是压缩数据（无明文 marker）"
+}
+
 test_res_script_body() {
     local url="http://script-test.local/res-body"
     http_get "$url"
@@ -229,9 +304,12 @@ main() {
     start_mock_servers
     write_scripts
     start_proxy
+    clear_traffic >/dev/null 2>&1 || true
     test_req_script
     test_res_script_body
     test_decode_script_bodies
+    test_max_decode_input_bytes_skip
+    test_max_decompress_output_bytes_fallback
 
     echo "========================================"
     echo "Total:  $TOTAL_ASSERTIONS"

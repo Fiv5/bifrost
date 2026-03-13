@@ -164,12 +164,6 @@ struct BodyStoreStats {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct TrafficStoreStats {
-    record_count: usize,
-    file_size: u64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
 struct FrameStoreStats {
     connection_count: usize,
     total_size: u64,
@@ -179,7 +173,6 @@ struct FrameStoreStats {
 struct PerformanceConfigResponse {
     traffic: TrafficConfig,
     body_store_stats: Option<BodyStoreStats>,
-    traffic_store_stats: Option<TrafficStoreStats>,
     frame_store_stats: Option<FrameStoreStats>,
 }
 
@@ -242,6 +235,10 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        self.refresh_with_options(false);
+    }
+
+    fn refresh_with_options(&mut self, force_all: bool) {
         self.pid = read_pid();
         self.is_running = self.pid.map(is_process_running).unwrap_or(false);
 
@@ -254,6 +251,7 @@ impl App {
             self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
 
         let port = self.port;
+        let fetch_agg_metrics = force_all && self.selected_tab == 2;
         let (
             metrics,
             rules,
@@ -264,7 +262,12 @@ impl App {
             app_metrics,
             host_metrics,
             cli_proxy,
-        ) = fetch_all_data(port, need_slow_refresh, self.refresh_count == 0);
+        ) = fetch_all_data(
+            port,
+            need_slow_refresh,
+            self.refresh_count == 0 || force_all,
+            fetch_agg_metrics,
+        );
 
         if let Some(m) = metrics {
             self.qps_history.remove(0);
@@ -315,6 +318,9 @@ impl App {
 
     fn next_tab(&mut self) {
         self.selected_tab = (self.selected_tab + 1) % 3;
+        // 首次切换到 tab 时立即刷新一次，避免等待下一次 tick/slow refresh。
+        // 注意：apps/hosts 属于 DB 聚合，仅在 Traffic Details(tab=2) 时触发。
+        self.refresh_with_options(true);
     }
 
     fn prev_tab(&mut self) {
@@ -323,6 +329,9 @@ impl App {
         } else {
             self.selected_tab - 1
         };
+        // 首次切换到 tab 时立即刷新一次，避免等待下一次 tick/slow refresh。
+        // 注意：apps/hosts 属于 DB 聚合，仅在 Traffic Details(tab=2) 时触发。
+        self.refresh_with_options(true);
     }
 }
 
@@ -340,7 +349,12 @@ type FetchAllDataResult = (
     Option<CliProxyStatus>,
 );
 
-fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchAllDataResult {
+fn fetch_all_data(
+    port: u16,
+    need_slow_refresh: bool,
+    force_all: bool,
+    fetch_agg_metrics: bool,
+) -> FetchAllDataResult {
     let (tx, rx) = mpsc::channel();
 
     let tx_metrics = tx.clone();
@@ -374,15 +388,18 @@ fn fetch_all_data(port: u16, need_slow_refresh: bool, force_all: bool) -> FetchA
             let _ = tx_performance.send(("performance", fetch_performance_config(port)));
         });
 
-        let tx_apps = tx.clone();
-        thread::spawn(move || {
-            let _ = tx_apps.send(("apps", fetch_app_metrics(port)));
-        });
+        // apps/hosts 属于 DB 聚合计算：仅在用户主动触发时请求，避免后台定时拉取导致 CPU 开销过高。
+        if fetch_agg_metrics {
+            let tx_apps = tx.clone();
+            thread::spawn(move || {
+                let _ = tx_apps.send(("apps", fetch_app_metrics(port)));
+            });
 
-        let tx_hosts = tx.clone();
-        thread::spawn(move || {
-            let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
-        });
+            let tx_hosts = tx.clone();
+            thread::spawn(move || {
+                let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
+            });
+        }
 
         let tx_cli_proxy = tx.clone();
         thread::spawn(move || {
@@ -594,7 +611,7 @@ pub fn run_status_tui() -> bifrost_core::Result<()> {
                         KeyCode::Char('q') | KeyCode::Esc => break,
                         KeyCode::Tab | KeyCode::Right => app.next_tab(),
                         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
-                        KeyCode::Char('r') => app.refresh(),
+                        KeyCode::Char('r') => app.refresh_with_options(true),
                         _ => {}
                     }
                 }
@@ -953,13 +970,6 @@ fn config_lines(app: &App) -> Vec<Line<'_>> {
                 "  Body Store: {} files, {}",
                 stats.file_count,
                 format_bytes(stats.total_size)
-            )));
-        }
-        if let Some(stats) = &perf.traffic_store_stats {
-            lines.push(Line::from(format!(
-                "  Traffic Store: {} records, {}",
-                stats.record_count,
-                format_bytes(stats.file_size)
             )));
         }
         if let Some(stats) = &perf.frame_store_stats {

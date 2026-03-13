@@ -2,13 +2,38 @@ use crate::curl::CurlCommand;
 use crate::mock::EnhancedMockServer;
 use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
+use bifrost_admin::{AdminState, QueryParams, TrafficRecord};
+use std::sync::Arc;
 use std::time::Duration;
+
+async fn get_latest_record(admin_state: &Arc<AdminState>) -> Result<TrafficRecord, String> {
+    let Some(db_store) = admin_state.traffic_db_store.clone() else {
+        return Err("Traffic DB not configured".to_string());
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let result = db_store.query(&QueryParams {
+            limit: Some(1),
+            ..Default::default()
+        });
+        let id = result
+            .records
+            .first()
+            .map(|r| r.id.clone())
+            .ok_or_else(|| "No traffic records found".to_string())?;
+        db_store
+            .get_by_id(&id)
+            .ok_or_else(|| "Failed to get traffic record detail".to_string())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking failed: {}", e))?
+}
 
 pub fn get_all_tests() -> Vec<TestCase> {
     vec![
         TestCase::standalone(
             "body_cache_request_body_small",
-            "请求体缓存 - 小请求体内联存储",
+            "请求体缓存 - 小请求体存储",
             "body_cache",
             test_request_body_small,
         ),
@@ -58,35 +83,24 @@ async fn test_request_body_small() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state
-        .traffic_store
-        .as_ref()
-        .map(|s| s.get_all())
-        .unwrap_or_default();
-    if records.is_empty() {
-        return Err("No traffic records found".to_string());
-    }
-
-    let record_id = &records[0].id;
-    let record = admin_state
-        .traffic_store
-        .as_ref()
-        .and_then(|s| s.get_by_id(record_id))
-        .ok_or("Failed to get traffic record detail")?;
+    let record = get_latest_record(&admin_state).await?;
 
     let body_ref = record
         .request_body_ref
         .ok_or("request_body_ref is None - body was not stored")?;
 
-    if let bifrost_admin::BodyRef::Inline { data } = body_ref {
-        if !data.contains("small-request-body") {
-            return Err(format!(
-                "Expected 'small-request-body' in body, got: {}",
-                data
-            ));
-        }
-    } else {
-        return Err("Expected Inline body ref for small request".to_string());
+    let Some(body_store) = admin_state.body_store.as_ref() else {
+        return Err("Body store not configured".to_string());
+    };
+    let data = body_store
+        .read()
+        .load(&body_ref)
+        .ok_or("Failed to load request body")?;
+    if !data.contains("small-request-body") {
+        return Err(format!(
+            "Expected 'small-request-body' in body, got: {}",
+            data
+        ));
     }
 
     Ok(())
@@ -134,32 +148,21 @@ async fn test_request_body_with_rule() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state
-        .traffic_store
-        .as_ref()
-        .map(|s| s.get_all())
-        .unwrap_or_default();
-    if records.is_empty() {
-        return Err("No traffic records found".to_string());
-    }
-
-    let record_id = &records[0].id;
-    let record = admin_state
-        .traffic_store
-        .as_ref()
-        .and_then(|s| s.get_by_id(record_id))
-        .ok_or("Failed to get traffic record detail")?;
+    let record = get_latest_record(&admin_state).await?;
 
     let body_ref = record
         .request_body_ref
         .ok_or("request_body_ref is None - body was not stored")?;
 
-    if let bifrost_admin::BodyRef::Inline { data } = body_ref {
-        if !data.contains("original-content") {
-            return Err(format!("Expected original body in store, got: {}", data));
-        }
-    } else {
-        return Err("Expected Inline body ref".to_string());
+    let Some(body_store) = admin_state.body_store.as_ref() else {
+        return Err("Body store not configured".to_string());
+    };
+    let data = body_store
+        .read()
+        .load(&body_ref)
+        .ok_or("Failed to load request body")?;
+    if !data.contains("original-content") {
+        return Err(format!("Expected original body in store, got: {}", data));
     }
 
     Ok(())
@@ -206,35 +209,24 @@ async fn test_request_body_post() -> Result<(), String> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let records = admin_state
-        .traffic_store
-        .as_ref()
-        .map(|s| s.get_all())
-        .unwrap_or_default();
-    if records.is_empty() {
-        return Err("No traffic records found".to_string());
-    }
-
-    let record_id = &records[0].id;
-    let record = admin_state
-        .traffic_store
-        .as_ref()
-        .and_then(|s| s.get_by_id(record_id))
-        .ok_or("Failed to get traffic record detail")?;
+    let record = get_latest_record(&admin_state).await?;
 
     let body_ref = record
         .request_body_ref
         .ok_or("request_body_ref is None - body was not stored")?;
 
-    if let bifrost_admin::BodyRef::Inline { data } = body_ref {
-        if data != json_body {
-            return Err(format!(
-                "Expected '{}' in stored body, got: '{}'",
-                json_body, data
-            ));
-        }
-    } else {
-        return Err("Expected Inline body ref for small request".to_string());
+    let Some(body_store) = admin_state.body_store.as_ref() else {
+        return Err("Body store not configured".to_string());
+    };
+    let data = body_store
+        .read()
+        .load(&body_ref)
+        .ok_or("Failed to load request body")?;
+    if data != json_body {
+        return Err(format!(
+            "Expected '{}' in stored body, got: '{}'",
+            json_body, data
+        ));
     }
 
     Ok(())

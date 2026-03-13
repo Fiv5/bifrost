@@ -5,7 +5,6 @@ use tracing::{debug, error, info, warn};
 
 use crate::traffic::TrafficRecord;
 use crate::traffic_db::SharedTrafficDbStore;
-use crate::traffic_store::SharedTrafficStore;
 
 pub type TrafficUpdater = Arc<dyn Fn(&mut TrafficRecord) + Send + Sync>;
 
@@ -86,8 +85,7 @@ pub type SharedAsyncTrafficWriter = Arc<AsyncTrafficWriter>;
 
 pub fn start_async_traffic_processor(
     mut rx: mpsc::Receiver<TrafficCommand>,
-    traffic_db_store: Option<SharedTrafficDbStore>,
-    traffic_store: Option<SharedTrafficStore>,
+    traffic_db_store: SharedTrafficDbStore,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("Async traffic processor started");
@@ -123,12 +121,7 @@ pub fn start_async_traffic_processor(
                     if !batch.is_empty() {
                         let batch_size = batch.len();
                         for record in batch.drain(..) {
-                            if let Some(ref store) = traffic_store {
-                                store.record(*record.clone());
-                            }
-                            if let Some(ref db_store) = traffic_db_store {
-                                db_store.record(*record);
-                            }
+                            traffic_db_store.record(*record);
                         }
                         debug!("Processed {} traffic records", batch_size);
                     }
@@ -136,12 +129,7 @@ pub fn start_async_traffic_processor(
                     if !updates.is_empty() {
                         let update_count = updates.len();
                         for (id, updater) in updates.drain(..) {
-                            if let Some(ref store) = traffic_store {
-                                store.update_by_id(&id, |r| updater(r));
-                            }
-                            if let Some(ref db_store) = traffic_db_store {
-                                db_store.update_by_id(&id, |r| updater(r));
-                            }
+                            traffic_db_store.update_by_id(&id, |r| updater(r));
                         }
                         debug!("Processed {} traffic updates", update_count);
                     }
@@ -181,7 +169,7 @@ mod tests {
                 .expect("failed to create traffic db store"),
         );
 
-        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
+        let handle = start_async_traffic_processor(rx, db_store.clone());
 
         let record = TrafficRecord::new(
             "test-1".to_string(),
@@ -209,7 +197,7 @@ mod tests {
                 .expect("failed to create traffic db store"),
         );
 
-        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
+        let handle = start_async_traffic_processor(rx, db_store.clone());
 
         let record = TrafficRecord::new(
             "test-update".to_string(),
@@ -246,7 +234,7 @@ mod tests {
                 .expect("failed to create traffic db store"),
         );
 
-        let handle = start_async_traffic_processor(rx, Some(db_store.clone()), None);
+        let handle = start_async_traffic_processor(rx, db_store.clone());
 
         for i in 0..100 {
             let record = TrafficRecord::new(

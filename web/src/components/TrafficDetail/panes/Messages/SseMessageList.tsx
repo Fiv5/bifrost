@@ -199,6 +199,7 @@ export const SseMessageList = ({
     setCurrentMatch(nextIndex);
     rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
     onMatchNavigate?.(nextIndex + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMatch, matchedIndices, rowVirtualizer]);
 
   const goToNext = useCallback(() => {
@@ -208,6 +209,7 @@ export const SseMessageList = ({
     setCurrentMatch(nextIndex);
     rowVirtualizer.scrollToIndex(matchedIndices[nextIndex], { align: 'center' });
     onMatchNavigate?.(nextIndex + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentMatch, matchedIndices, rowVirtualizer]);
 
   const matchInfo = matchedIndices.length > 0

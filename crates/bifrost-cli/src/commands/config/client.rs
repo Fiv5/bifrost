@@ -15,6 +15,17 @@ impl ConfigApiClient {
         self.get("/config/tls")
     }
 
+    pub fn get_server_config(&self) -> Result<ServerConfigResponse, String> {
+        self.get("/config/server")
+    }
+
+    pub fn update_server_config(
+        &self,
+        req: &UpdateServerConfigRequest,
+    ) -> Result<ServerConfigResponse, String> {
+        self.put("/config/server", req)
+    }
+
     pub fn update_tls_config(
         &self,
         req: &UpdateTlsConfigRequest,
@@ -138,6 +149,26 @@ pub struct TlsConfigResponse {
     pub disconnect_on_config_change: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfigResponse {
+    pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct UpdateServerConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http1_max_header_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http2_max_header_list_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_handshake_max_header_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct UpdateTlsConfigRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,7 +191,6 @@ pub struct UpdateTlsConfigRequest {
 pub struct PerformanceConfigResponse {
     pub traffic: TrafficConfig,
     pub body_store_stats: Option<BodyStoreStats>,
-    pub traffic_store_stats: Option<TrafficStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
     pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
 }
@@ -186,15 +216,6 @@ pub struct BodyStoreStats {
     pub temp_dir: String,
     pub max_memory_size: usize,
     pub retention_days: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrafficStoreStats {
-    pub record_count: usize,
-    pub file_size: u64,
-    pub total_records_processed: u64,
-    pub last_sequence: u64,
-    pub oldest_record_timestamp: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

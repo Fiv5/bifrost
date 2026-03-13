@@ -33,6 +33,7 @@ import type {
 import { apiFetch } from "../../../../api/apiFetch";
 import { getResponseBody } from "../../../../api/traffic";
 import { getClientId } from "../../../../services/clientId";
+import { buildApiUrl } from "../../../../runtime";
 import { SseMessageList } from "./SseMessageList";
 import {
   FullscreenMessageViewer,
@@ -512,6 +513,7 @@ export const Messages = ({
         setLoading(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [recordId],
   );
 
@@ -565,13 +567,14 @@ export const Messages = ({
     };
   }, []);
 
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!isWebSocket || !isConnectionOpen) {
       return;
     }
 
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/frames/stream?x_client_id=${encodeURIComponent(getClientId())}`,
+      `${buildApiUrl(`/traffic/${recordId}/frames/stream`)}?x_client_id=${encodeURIComponent(getClientId())}`,
     );
     eventSourceRef.current = eventSource;
 
@@ -598,13 +601,14 @@ export const Messages = ({
       }).catch(() => {});
     };
   }, [isConnectionOpen, isWebSocket, recordId]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     if (isWebSocket || !isConnectionOpen || sseForceClosed) {
       return;
     }
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
+      `${buildApiUrl(`/traffic/${recordId}/sse/stream`)}?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
     sseClosedByUsRef.current = false;

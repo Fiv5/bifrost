@@ -61,6 +61,10 @@ function parseArgs(argv) {
       case "--list":
         args.options.list = true;
         break;
+      case "-a":
+      case "--actions":
+        args.options.actions = true;
+        break;
       case "--verbose":
         args.options.verbose = true;
         break;
@@ -116,6 +120,7 @@ Commands:
 Options:
   -i, --interactive      Enter interactive mode after launch
   -l, --list             List scenarios (with scenario command)
+  -a, --actions          Show steps for the selected scenario
   -s, --session <name>   Session name for save/load
   -b, --branch <name>    Branch name for session
   -t, --timeout <ms>     Default timeout (default: 30000)
@@ -125,20 +130,23 @@ Options:
   -v, --version          Show version
 
 Examples:
-  # Launch browser and navigate to localhost
-  node browser-test.js launch http://localhost:8000
+  # Launch browser and navigate to the Bifrost UI
+  node browser-test.js launch http://localhost:3000/_bifrost/
 
   # Launch in interactive mode
-  node browser-test.js launch http://localhost:8000 -i
+  node browser-test.js launch http://localhost:3000/_bifrost/ -i
 
   # Run a scenario
-  node browser-test.js scenario app-create
+  node browser-test.js scenario stream-sse
 
   # List all scenarios
   node browser-test.js scenario --list
 
+  # Show scenario steps
+  node browser-test.js scenario traffic-delete --actions
+
   # Run test script
-  node browser-test.js run test-script.txt http://localhost:8000
+  node browser-test.js run test-script.txt http://localhost:3000/_bifrost/
 
   # List tools
   node browser-test.js tools input
@@ -155,13 +163,14 @@ Usage:
 
 Options:
   -l, --list             List all available scenarios
+  -a, --actions          Show steps for the selected scenario
   -b, --branch <name>    Branch name for session
   --verbose              Verbose output
 
 Examples:
   node browser-test.js scenario --list
-  node browser-test.js scenario app-create
-  node browser-test.js scenario app-create -b feature/my-branch
+  node browser-test.js scenario stream-sse
+  node browser-test.js scenario traffic-delete --actions
 `);
 }
 
@@ -207,31 +216,17 @@ function showScenarioActions(scenarioName) {
     console.log(`\nScenario: ${scenarioName}`);
     console.log("-".repeat(60));
     console.log(`Description: ${content.description || "N/A"}`);
-    console.log(`URL: ${content.url || "N/A"}`);
+    console.log(`Base URL: ${content.config?.baseUrl || "N/A"}`);
 
-    if (content.actions?.length) {
-      console.log(`\nActions (${content.actions.length}):`);
-      content.actions.forEach((action, i) => {
-        const params = { ...action };
-        delete params.tool;
+    if (content.steps?.length) {
+      console.log(`\nSteps (${content.steps.length}):`);
+      content.steps.forEach((step, i) => {
+        const params = { ...step };
+        delete params.action;
         console.log(
-          `  ${i + 1}. ${action.tool} ${JSON.stringify(params)}`.substring(
+          `  ${i + 1}. ${step.action} ${JSON.stringify(params)}`.substring(
             0,
-            80,
-          ),
-        );
-      });
-    }
-
-    if (content.assertions?.length) {
-      console.log(`\nAssertions (${content.assertions.length}):`);
-      content.assertions.forEach((assertion, i) => {
-        const params = { ...assertion };
-        delete params.tool;
-        console.log(
-          `  ${i + 1}. ${assertion.tool} ${JSON.stringify(params)}`.substring(
-            0,
-            80,
+            120,
           ),
         );
       });

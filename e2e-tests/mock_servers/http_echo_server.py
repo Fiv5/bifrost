@@ -18,6 +18,8 @@ import json
 import socketserver
 import sys
 import urllib.parse
+import gzip
+import io
 from datetime import datetime
 
 
@@ -167,14 +169,15 @@ body {{ color: #333; }}
         return None
 
     def _handle_large_response(self):
-        """处理大响应体请求 /large-response?size=BYTES&marker=MARKER"""
+        """处理大响应体请求 /large-response?size=BYTES&marker=MARKER&encoding=gzip"""
         parsed_path = urllib.parse.urlparse(self.path)
         query_params = urllib.parse.parse_qs(parsed_path.query)
         
         size = int(query_params.get('size', ['1024'])[0])
         marker = query_params.get('marker', ['MARKER'])[0]
+        encoding = query_params.get('encoding', [''])[0].lower()
         
-        print(f"  -> Generating large response: size={size}, marker={marker}")
+        print(f"  -> Generating large response: size={size}, marker={marker}, encoding={encoding or 'none'}")
         
         marker_len = len(marker)
         if size < marker_len * 2:
@@ -183,17 +186,28 @@ body {{ color: #333; }}
         padding_size = size - marker_len * 2
         body = marker + ('X' * padding_size) + marker
         
+        resp_bytes = body.encode('utf-8')
+        extra_headers = {}
+        if encoding == 'gzip':
+            buf = io.BytesIO()
+            with gzip.GzipFile(fileobj=buf, mode='wb') as f:
+                f.write(resp_bytes)
+            resp_bytes = buf.getvalue()
+            extra_headers['Content-Encoding'] = 'gzip'
+
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain; charset=utf-8')
-        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Content-Length', str(len(resp_bytes)))
         self.send_header('X-Echo-Server', 'bifrost-test')
         self.send_header('X-Response-Size', str(size))
         self.send_header('X-Response-Marker', marker)
         self.send_header('Connection', 'keep-alive')
+        for k, v in extra_headers.items():
+            self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body.encode('utf-8'))
+        self.wfile.write(resp_bytes)
         
-        print(f"  -> Sent large response: {len(body)} bytes")
+        print(f"  -> Sent large response: raw={size} bytes, wire={len(resp_bytes)} bytes")
 
     def do_GET(self):
         """处理 GET 请求"""

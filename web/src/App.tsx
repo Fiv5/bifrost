@@ -1,8 +1,9 @@
-import { useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { ConfigProvider, Modal, theme, Typography } from "antd";
+import { useEffect, useState, type CSSProperties } from "react";
+import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ConfigProvider, Modal, Steps, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
+import { beginStartupSplashExit } from "./components/StartupSplash/controller";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";
@@ -13,11 +14,55 @@ import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
 import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
+import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
+import {
+  getAdminPrefix,
+  initializeDesktopRuntime,
+  isDesktopShell,
+} from "./runtime";
 
 export default function App() {
+  const desktopShell = isDesktopShell();
+  const [desktopReady, setDesktopReady] = useState(!desktopShell);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    initializeDesktopRuntime().finally(() => {
+      if (!cancelled) {
+        setDesktopReady(true);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!desktopShell || !desktopReady) {
+      return;
+    }
+
+    beginStartupSplashExit();
+  }, [desktopReady, desktopShell]);
+
+  if (!desktopReady) {
+    return null;
+  }
+
+  return <AppShell />;
+}
+
+function AppShell() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const forceRefreshVisible = useForceRefreshStore((s) => s.visible);
   const forceRefreshReason = useForceRefreshStore((s) => s.reason);
+  const desktopCoreVisible = useDesktopCoreStore((state) => state.visible);
+  const desktopCorePhase = useDesktopCoreStore((state) => state.phase);
+  const desktopCoreTargetPort = useDesktopCoreStore((state) => state.targetPort);
+  const desktopCoreDetail = useDesktopCoreStore((state) => state.detail);
+  const hideDesktopCore = useDesktopCoreStore((state) => state.hide);
 
   useGlobalDataSync();
   useEditorCompletion();
@@ -28,8 +73,60 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    message.config({ maxCount: 1, top: 24 });
+  }, []);
+
+  useEffect(() => {
     document.documentElement.setAttribute("data-theme", resolvedTheme);
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute(
+      "data-platform",
+      isDesktopShell() ? "desktop" : "web",
+    );
+  }, []);
+
+  const overlayStyles =
+    resolvedTheme === "dark"
+      ? {
+          mask: {
+            background: "rgba(4, 8, 14, 0.52)",
+            backdropFilter: "blur(20px) saturate(1.08)",
+          },
+          container: {
+            background: "rgba(14, 19, 31, 0.76)",
+            backdropFilter: "blur(24px) saturate(1.06)",
+            border: "1px solid rgba(148, 163, 184, 0.14)",
+            boxShadow: "0 30px 96px rgba(0, 0, 0, 0.5)",
+          },
+          header: {
+            background: "transparent",
+            borderBottom: "1px solid rgba(148, 163, 184, 0.08)",
+          },
+          body: {
+            paddingTop: 8,
+          },
+        }
+      : {
+          mask: {
+            background: "rgba(242, 246, 252, 0.26)",
+            backdropFilter: "blur(18px) saturate(1.1)",
+          },
+          container: {
+            background: "rgba(255, 255, 255, 0.74)",
+            backdropFilter: "blur(22px) saturate(1.12)",
+            border: "1px solid rgba(255, 255, 255, 0.28)",
+            boxShadow: "0 24px 80px rgba(15, 23, 42, 0.12)",
+          },
+          header: {
+            background: "transparent",
+            borderBottom: "none",
+          },
+          body: {
+            paddingTop: 4,
+          },
+        };
 
   return (
     <ConfigProvider
@@ -44,6 +141,77 @@ export default function App() {
         },
       }}
     >
+      <Modal
+        open={desktopCoreVisible}
+        title={
+          desktopCorePhase === "error"
+            ? "Bifrost Core Error"
+            : desktopCorePhase === "booting"
+              ? "Connecting to Bifrost Core"
+              : "Switching Bifrost Port"
+        }
+        closable={desktopCorePhase === "error"}
+        maskClosable={desktopCorePhase === "error"}
+        keyboard={desktopCorePhase === "error"}
+        okText={desktopCorePhase === "error" ? "Close" : undefined}
+        cancelButtonProps={{ style: { display: "none" } }}
+        onOk={hideDesktopCore}
+        onCancel={hideDesktopCore}
+        footer={desktopCorePhase === "error" ? undefined : null}
+        centered
+        width={Math.min(720, Math.max(560, Math.floor(window.innerWidth * 0.42)))}
+        zIndex={1000}
+        styles={overlayStyles}
+      >
+        <Typography.Paragraph>
+          {desktopCorePhase === "booting"
+            ? "The interface is waiting for the Bifrost core to become available."
+            : desktopCoreTargetPort
+              ? `Bifrost is switching the local core to port ${desktopCoreTargetPort}.`
+              : "Bifrost is updating the local core listener and reconnecting the interface."}
+        </Typography.Paragraph>
+        <Steps
+          size="small"
+          style={
+            resolvedTheme === "dark"
+              ? ({
+                  ["--ant-color-text" as string]: "rgba(241, 245, 249, 0.92)",
+                  ["--ant-color-text-description" as string]:
+                    "rgba(148, 163, 184, 0.92)",
+                  ["--ant-color-primary" as string]: "#7dd3fc",
+                  ["--ant-color-split" as string]:
+                    "rgba(148, 163, 184, 0.16)",
+                } as CSSProperties)
+              : undefined
+          }
+          current={
+            desktopCorePhase === "booting"
+              ? 0
+              : desktopCorePhase === "saving"
+              ? 0
+              : desktopCorePhase === "restarting"
+                ? 1
+                : desktopCorePhase === "reconnecting"
+                  ? 2
+                  : 1
+          }
+          status={desktopCorePhase === "error" ? "error" : "process"}
+          items={[
+            {
+              title:
+                desktopCorePhase === "booting" ? "Wait for Core" : "Save Config",
+            },
+            { title: "Rebind Port" },
+            { title: "Reconnect UI" },
+          ]}
+        />
+        <Typography.Paragraph
+          type={desktopCorePhase === "error" ? "danger" : "secondary"}
+          style={{ marginTop: 16, marginBottom: 0 }}
+        >
+          {desktopCoreDetail}
+        </Typography.Paragraph>
+      </Modal>
       <Modal
         open={forceRefreshVisible}
         title="页面已被断开"
@@ -68,21 +236,39 @@ export default function App() {
           请刷新页面后继续使用。
         </Typography.Paragraph>
       </Modal>
-      <BrowserRouter basename="/_bifrost">
-        <BifrostFileDropZone>
-          <Routes>
-            <Route path="/" element={<AppLayout />}>
-              <Route index element={<Navigate to="/traffic" replace />} />
-              <Route path="traffic" element={<Traffic />} />
-              <Route path="replay" element={<Replay />} />
-              <Route path="rules" element={<Rules />} />
-              <Route path="values" element={<Values />} />
-              <Route path="scripts" element={<Scripts />} />
-              <Route path="settings" element={<Settings />} />
-            </Route>
-          </Routes>
-        </BifrostFileDropZone>
-      </BrowserRouter>
+      {isDesktopShell() ? (
+        <HashRouter>
+          <BifrostFileDropZone>
+            <Routes>
+              <Route path="/" element={<AppLayout />}>
+                <Route index element={<Navigate to="/traffic" replace />} />
+                <Route path="traffic" element={<Traffic />} />
+                <Route path="replay" element={<Replay />} />
+                <Route path="rules" element={<Rules />} />
+                <Route path="values" element={<Values />} />
+                <Route path="scripts" element={<Scripts />} />
+                <Route path="settings" element={<Settings />} />
+              </Route>
+            </Routes>
+          </BifrostFileDropZone>
+        </HashRouter>
+      ) : (
+        <BrowserRouter basename={getAdminPrefix()}>
+          <BifrostFileDropZone>
+            <Routes>
+              <Route path="/" element={<AppLayout />}>
+                <Route index element={<Navigate to="/traffic" replace />} />
+                <Route path="traffic" element={<Traffic />} />
+                <Route path="replay" element={<Replay />} />
+                <Route path="rules" element={<Rules />} />
+                <Route path="values" element={<Values />} />
+                <Route path="scripts" element={<Scripts />} />
+                <Route path="settings" element={<Settings />} />
+              </Route>
+            </Routes>
+          </BifrostFileDropZone>
+        </BrowserRouter>
+      )}
     </ConfigProvider>
   );
 }

@@ -3,6 +3,10 @@ use std::path::{Path, PathBuf};
 use bifrost_core::AccessMode;
 use serde::{Deserialize, Serialize};
 
+pub const MIN_TRAFFIC_MAX_RECORDS: usize = 1_000;
+pub const DEFAULT_TRAFFIC_MAX_RECORDS: usize = 5_000;
+pub const MAX_TRAFFIC_MAX_RECORDS: usize = 100_000;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnifiedConfig {
@@ -145,6 +149,17 @@ pub struct SandboxLimitsConfigUpdate {
 pub struct ServerConfig {
     pub socks5_auth: Option<SocksAuthConfig>,
     pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerConfigUpdate {
+    pub timeout_secs: Option<u64>,
+    pub http1_max_header_size: Option<usize>,
+    pub http2_max_header_list_size: Option<usize>,
+    pub websocket_handshake_max_header_size: Option<usize>,
 }
 
 impl Default for ServerConfig {
@@ -152,6 +167,9 @@ impl Default for ServerConfig {
         Self {
             socks5_auth: None,
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
         }
     }
 }
@@ -259,7 +277,7 @@ pub struct TrafficConfig {
 impl Default for TrafficConfig {
     fn default() -> Self {
         Self {
-            max_records: 5000,
+            max_records: DEFAULT_TRAFFIC_MAX_RECORDS,
             max_db_size_bytes: 2 * 1024 * 1024 * 1024,
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
@@ -278,6 +296,14 @@ impl TrafficConfig {
     pub fn default_for_data_dir(_data_dir: &Path) -> Self {
         Self::default()
     }
+
+    pub fn normalize(&mut self) {
+        self.max_records = normalize_max_records(self.max_records);
+    }
+}
+
+pub fn normalize_max_records(value: usize) -> usize {
+    value.clamp(MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS)
 }
 
 #[derive(Debug, Clone, Default)]

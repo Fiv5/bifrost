@@ -55,8 +55,6 @@ async fn get_traffic_record(state: Arc<AdminState>, id: &str) -> Option<TrafficR
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     }
@@ -449,8 +447,6 @@ pub async fn get_frame_detail(
                     .await
                     .ok()
                     .flatten()
-            } else if let Some(ref traffic_store) = state.traffic_store {
-                traffic_store.get_by_id(connection_id)
             } else {
                 None
             };

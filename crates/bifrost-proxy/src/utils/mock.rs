@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+use crate::ensure_crypto_provider;
 use crate::server::{full_body, BoxBody, ResolvedRules};
 use crate::utils::logging::RequestContext;
 use crate::utils::url::build_redirect_uri;
@@ -28,6 +29,8 @@ fn get_http_client() -> &'static HttpClient {
 
 fn get_https_client() -> &'static HttpsClient {
     HTTPS_CLIENT.get_or_init(|| {
+        ensure_crypto_provider();
+
         let mut root_store = rustls::RootCertStore::empty();
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 

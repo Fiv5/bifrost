@@ -8,11 +8,12 @@ use tracing::info;
 use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
-    AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, SystemProxyConfigUpdate, TlsConfig,
-    TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
+    AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, ServerConfig, ServerConfigUpdate,
+    SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate,
+    UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
-use crate::LegacyBifrostConfig;
+use crate::{LegacyBifrostConfig, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
 
 pub type SharedConfigManager = Arc<ConfigManager>;
 
@@ -40,7 +41,12 @@ impl ConfigManager {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         Self::init_data_dir(&data_dir)?;
 
-        let config = Self::load_config_with_migration(&data_dir)?;
+        let mut config = Self::load_config_with_migration(&data_dir)?;
+        let original_max_records = config.traffic.max_records;
+        config.traffic.normalize();
+        if config.traffic.max_records != original_max_records {
+            Self::save_config_to_file(&data_dir.join("config.toml"), &config)?;
+        }
         let rules_dir = data_dir.join("rules");
         let values_dir = data_dir.join("values");
         let rules_storage = RulesStorage::with_dir(rules_dir)?;
@@ -65,6 +71,14 @@ impl ConfigManager {
 
     pub async fn config(&self) -> UnifiedConfig {
         self.config.read().await.clone()
+    }
+
+    /// 在非 async 上下文中尝试读取配置（不会阻塞）。
+    ///
+    /// 典型用法：在同步代码路径（例如 body tee/drop）里获取少量配置项；
+    /// 如果当前锁被占用，则返回 `None`，调用方应使用安全默认值回退。
+    pub fn try_config(&self) -> Option<UnifiedConfig> {
+        self.config.try_read().ok().map(|g| g.clone())
     }
 
     pub async fn update_config<F>(&self, f: F) -> Result<()>
@@ -154,6 +168,29 @@ impl ConfigManager {
         Ok(())
     }
 
+    pub async fn update_server_config(&self, update: ServerConfigUpdate) -> Result<ServerConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(timeout_secs) = update.timeout_secs {
+            config.server.timeout_secs = timeout_secs;
+        }
+        if let Some(http1_max_header_size) = update.http1_max_header_size {
+            config.server.http1_max_header_size = http1_max_header_size;
+        }
+        if let Some(http2_max_header_list_size) = update.http2_max_header_list_size {
+            config.server.http2_max_header_list_size = http2_max_header_list_size;
+        }
+        if let Some(websocket_handshake_max_header_size) =
+            update.websocket_handshake_max_header_size
+        {
+            config.server.websocket_handshake_max_header_size = websocket_handshake_max_header_size;
+        }
+
+        self.save_config(&config)?;
+
+        Ok(config.server.clone())
+    }
+
     pub async fn update_traffic_config(
         &self,
         update: TrafficConfigUpdate,
@@ -161,6 +198,12 @@ impl ConfigManager {
         let mut config = self.config.write().await;
 
         if let Some(max_records) = update.max_records {
+            if !(MIN_TRAFFIC_MAX_RECORDS..=MAX_TRAFFIC_MAX_RECORDS).contains(&max_records) {
+                return Err(BifrostError::Config(format!(
+                    "traffic.max_records must be between {} and {}",
+                    MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS
+                )));
+            }
             config.traffic.max_records = max_records;
         }
         if let Some(max_db_size_bytes) = update.max_db_size_bytes {
@@ -457,6 +500,9 @@ impl ConfigManager {
             server: ServerConfig {
                 socks5_auth: None,
                 timeout_secs: 30,
+                http1_max_header_size: 64 * 1024,
+                http2_max_header_list_size: 256 * 1024,
+                websocket_handshake_max_header_size: 64 * 1024,
             },
             tls: TlsConfig {
                 enable_interception: legacy.enable_tls_interception,
@@ -483,7 +529,10 @@ impl ConfigManager {
                 auto_enable: false,
             },
             traffic: TrafficConfig {
-                max_records: legacy.traffic.max_records,
+                max_records: legacy
+                    .traffic
+                    .max_records
+                    .clamp(MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS),
                 max_db_size_bytes: 2 * 1024 * 1024 * 1024,
                 max_body_memory_size: legacy.traffic.max_body_memory_size,
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
@@ -650,5 +699,34 @@ mod tests {
 
         let event = receiver.try_recv().unwrap();
         assert!(matches!(event, ConfigChangeEvent::TlsConfigChanged(_)));
+    }
+
+    #[tokio::test]
+    async fn test_update_traffic_config_rejects_out_of_range_max_records() {
+        let (_temp_dir, manager) = setup();
+
+        let err = manager
+            .update_traffic_config(TrafficConfigUpdate {
+                max_records: Some(MIN_TRAFFIC_MAX_RECORDS - 1),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("traffic.max_records must be between 1000 and"));
+
+        let err = manager
+            .update_traffic_config(TrafficConfigUpdate {
+                max_records: Some(MAX_TRAFFIC_MAX_RECORDS + 1),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("traffic.max_records must be between 1000 and"));
     }
 }

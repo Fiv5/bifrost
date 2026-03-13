@@ -11,6 +11,7 @@ pub enum Protocol {
     Ws,
     Wss,
     Proxy,
+    Http3,
     Pac,
     Redirect,
     File,
@@ -143,6 +144,7 @@ pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
     map.insert("pathReplace", "urlReplace");
     map.insert("download", "attachment");
     map.insert("http-proxy", "proxy");
+    map.insert("h3", "http3");
     map.insert("status", "statusCode");
     map.insert("hosts", "host");
     map.insert("html", "htmlAppend");
@@ -196,6 +198,7 @@ impl Protocol {
             "ws" => Some(Protocol::Ws),
             "wss" => Some(Protocol::Wss),
             "proxy" => Some(Protocol::Proxy),
+            "http3" => Some(Protocol::Http3),
             "pac" => Some(Protocol::Pac),
             "redirect" => Some(Protocol::Redirect),
             "file" => Some(Protocol::File),
@@ -268,6 +271,7 @@ impl Protocol {
             Protocol::Ws => "ws",
             Protocol::Wss => "wss",
             Protocol::Proxy => "proxy",
+            Protocol::Http3 => "http3",
             Protocol::Pac => "pac",
             Protocol::Redirect => "redirect",
             Protocol::File => "file",
@@ -383,7 +387,8 @@ impl Protocol {
             | Protocol::Params
             | Protocol::RulesFile
             | Protocol::ReqScript
-            | Protocol::Dns => ProtocolCategory::Request,
+            | Protocol::Dns
+            | Protocol::Http3 => ProtocolCategory::Request,
 
             Protocol::Host
             | Protocol::XHost
@@ -439,7 +444,7 @@ impl std::fmt::Display for Protocol {
     }
 }
 
-pub const ALL_PROTOCOLS: [Protocol; 66] = [
+pub const ALL_PROTOCOLS: [Protocol; 67] = [
     Protocol::Host,
     Protocol::XHost,
     Protocol::Http,
@@ -447,6 +452,7 @@ pub const ALL_PROTOCOLS: [Protocol; 66] = [
     Protocol::Ws,
     Protocol::Wss,
     Protocol::Proxy,
+    Protocol::Http3,
     Protocol::Pac,
     Protocol::Redirect,
     Protocol::File,
@@ -514,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_protocol_count() {
-        assert_eq!(ALL_PROTOCOLS.len(), 66);
+        assert_eq!(ALL_PROTOCOLS.len(), 67);
     }
 
     #[test]
@@ -527,6 +533,7 @@ mod tests {
             "ws",
             "wss",
             "proxy",
+            "http3",
             "pac",
             "redirect",
             "file",
@@ -593,7 +600,7 @@ mod tests {
             assert!(result.is_some(), "Failed to parse protocol: {}", name);
         }
 
-        assert_eq!(protocol_names.len(), 66);
+        assert_eq!(protocol_names.len(), 67);
     }
 
     #[test]
@@ -615,6 +622,7 @@ mod tests {
         assert_eq!(Protocol::resolve_alias("pathReplace"), "urlReplace");
         assert_eq!(Protocol::resolve_alias("download"), "attachment");
         assert_eq!(Protocol::resolve_alias("http-proxy"), "proxy");
+        assert_eq!(Protocol::resolve_alias("h3"), "http3");
         assert_eq!(Protocol::resolve_alias("status"), "statusCode");
         assert_eq!(Protocol::resolve_alias("hosts"), "host");
         assert_eq!(Protocol::resolve_alias("xhost"), "xhost");
@@ -641,6 +649,9 @@ mod tests {
 
         let resolved = Protocol::resolve_alias("js");
         assert_eq!(Protocol::parse(resolved), Some(Protocol::JsAppend));
+
+        let resolved = Protocol::resolve_alias("h3");
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::Http3));
     }
 
     #[test]
@@ -715,6 +726,7 @@ mod tests {
         assert_eq!(Protocol::Params.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::RulesFile.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::ReqScript.category(), ProtocolCategory::Request);
+        assert_eq!(Protocol::Http3.category(), ProtocolCategory::Request);
     }
 
     #[test]
@@ -781,12 +793,14 @@ mod tests {
         assert!(Protocol::Ua.is_req_protocol());
         assert!(Protocol::Host.is_req_protocol());
         assert!(Protocol::Proxy.is_req_protocol());
+        assert!(Protocol::Http3.is_req_protocol());
     }
 
     #[test]
     fn test_protocol_display() {
         assert_eq!(format!("{}", Protocol::Host), "host");
         assert_eq!(format!("{}", Protocol::Proxy), "proxy");
+        assert_eq!(format!("{}", Protocol::Http3), "http3");
         assert_eq!(format!("{}", Protocol::ReqHeaders), "reqHeaders");
         assert_eq!(format!("{}", Protocol::ResHeaders), "resHeaders");
     }
@@ -810,13 +824,14 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 66);
+        assert_eq!(all.len(), 67);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
         assert!(all.contains(&Protocol::Ws));
         assert!(all.contains(&Protocol::Wss));
         assert!(all.contains(&Protocol::Proxy));
+        assert!(all.contains(&Protocol::Http3));
         assert!(all.contains(&Protocol::Pac));
         assert!(all.contains(&Protocol::Passthrough));
         assert!(all.contains(&Protocol::ReqScript));
@@ -825,7 +840,7 @@ mod tests {
 
     #[test]
     fn test_protocol_aliases_count() {
-        assert_eq!(PROTOCOL_ALIASES.len(), 14);
+        assert_eq!(PROTOCOL_ALIASES.len(), 15);
     }
 
     #[test]

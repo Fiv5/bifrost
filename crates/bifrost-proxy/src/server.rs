@@ -23,14 +23,19 @@ use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tracing::{debug, error, info, warn};
 
 use crate::dns::DnsResolver;
-use crate::proxy::http::{handle_connect, handle_http_request};
+use crate::proxy::http::{
+    handle_connect, handle_http_request, requires_client_app_for_tls_decision, SingleCertResolver,
+};
 use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process;
+use crate::utils::process_info::{
+    resolve_client_process_async, resolve_client_process_async_with_retry,
+};
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,9 @@ pub struct ProxyConfig {
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
     pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
     pub socks5_port: Option<u16>,
     pub socks5_auth_required: bool,
     pub socks5_username: Option<String>,
@@ -100,6 +108,9 @@ impl Default for ProxyConfig {
                 "*Vivaldi*".to_string(),
             ],
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
             socks5_port: None,
             socks5_auth_required: false,
             socks5_username: None,
@@ -278,6 +289,7 @@ pub struct ResolvedRules {
     pub host: Option<String>,
     pub host_protocol: Option<Protocol>,
     pub proxy: Option<String>,
+    pub upstream_http3: bool,
     pub req_headers: Vec<(String, String)>,
     pub res_headers: Vec<(String, String)>,
     pub req_body: Option<Bytes>,
@@ -420,6 +432,33 @@ pub struct TlsConfig {
     pub sni_resolver: Option<Arc<bifrost_tls::SniResolver>>,
 }
 
+impl TlsConfig {
+    pub fn resolve_server_config(
+        &self,
+        server_name: &str,
+        alpn_protocols: &[Vec<u8>],
+    ) -> Result<Arc<RustlsServerConfig>> {
+        if let Some(ref sni_resolver) = self.sni_resolver {
+            return sni_resolver.resolve_server_config_with_alpn(server_name, alpn_protocols);
+        }
+
+        let certified_key = if let Some(ref cert_generator) = self.cert_generator {
+            Arc::new(cert_generator.generate_for_domain(server_name)?)
+        } else {
+            return Err(BifrostError::Tls(
+                "TLS interception enabled but cert generator not configured".to_string(),
+            ));
+        };
+
+        let mut server_config = RustlsServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(SingleCertResolver(certified_key)));
+        server_config.alpn_protocols = alpn_protocols.to_vec();
+
+        Ok(Arc::new(server_config))
+    }
+}
+
 pub struct ProxyServer {
     config: ProxyConfig,
     rules: Arc<dyn RulesResolver>,
@@ -467,9 +506,19 @@ impl ProxyServer {
         self
     }
 
+    pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
+        self.access_control = access_control;
+        self
+    }
+
     pub fn with_admin_state(mut self, admin_state: AdminState) -> Self {
         let admin_state = admin_state.with_access_control(Arc::clone(&self.access_control));
         self.admin_state = Some(Arc::new(admin_state));
+        self
+    }
+
+    pub fn with_admin_state_shared(mut self, admin_state: Arc<AdminState>) -> Self {
+        self.admin_state = Some(admin_state);
         self
     }
 
@@ -506,6 +555,13 @@ impl ProxyServer {
             .map_err(|e| BifrostError::Config(format!("Invalid address: {}", e)))?;
 
         let listener = self.bind(addr).await?;
+        self.run_with_listener(listener).await
+    }
+
+    pub async fn run_with_listener(&self, listener: TcpListener) -> Result<()> {
+        let addr = listener
+            .local_addr()
+            .map_err(|e| BifrostError::Network(format!("Failed to get listener address: {}", e)))?;
 
         if self.config.enable_socks {
             let udp_addr = SocketAddr::new(addr.ip(), addr.port());
@@ -771,6 +827,15 @@ async fn handle_http_connection(
     initial_generation: u64,
 ) {
     let io = TokioIo::new(stream);
+    let http1_max_header_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager.config().await.server.http1_max_header_size
+        } else {
+            proxy_config.http1_max_header_size
+        }
+    } else {
+        proxy_config.http1_max_header_size
+    };
 
     let service = service_fn(move |req: Request<Incoming>| {
         let rules = Arc::clone(&rules);
@@ -799,13 +864,13 @@ async fn handle_http_connection(
         }
     });
 
-    if let Err(err) = http1::Builder::new()
+    let mut builder = http1::Builder::new();
+    builder
         .preserve_header_case(true)
         .title_case_headers(true)
-        .serve_connection(io, service)
-        .with_upgrades()
-        .await
-    {
+        .max_buf_size(http1_max_header_size);
+
+    if let Err(err) = builder.serve_connection(io, service).with_upgrades().await {
         error!("Error serving connection from {}: {:?}", peer_addr, err);
     }
 }
@@ -824,21 +889,47 @@ async fn handle_request(
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
     initial_generation: u64,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
-    let client_process = resolve_client_process(&peer_addr);
-    let (client_app, client_pid, client_path) = client_process
-        .as_ref()
-        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
-        .unwrap_or((None, None, None));
-    let need_async_resolve = client_process.is_none() && peer_addr.ip().is_loopback();
-
-    let ctx = RequestContext::new()
-        .with_client_process(client_app, client_pid, client_path)
-        .with_client_ip(peer_addr.ip().to_string());
-    let record_id_for_async = ctx.id_str();
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
     let verbose_logging = proxy_config.verbose_logging;
+    let is_local_client = peer_addr.ip().is_loopback();
+
+    let connect_tls_intercept_config = if method == Method::CONNECT {
+        Some(if let Some(ref state) = admin_state {
+            let runtime_config = state.runtime_config.read().await;
+            TlsInterceptConfig {
+                enable_tls_interception: runtime_config.enable_tls_interception,
+                intercept_exclude: runtime_config.intercept_exclude.clone(),
+                intercept_include: runtime_config.intercept_include.clone(),
+                app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
+                app_intercept_include: runtime_config.app_intercept_include.clone(),
+                unsafe_ssl: runtime_config.unsafe_ssl,
+            }
+        } else {
+            TlsInterceptConfig::from_proxy_config(&proxy_config)
+        })
+    } else {
+        None
+    };
+
+    let client_process = if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
+        if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
+            resolve_client_process_async_with_retry(&peer_addr, 10, 20).await
+        } else {
+            resolve_client_process_async(&peer_addr).await
+        }
+    } else {
+        resolve_client_process_async(&peer_addr).await
+    };
+    let (client_app, client_pid, client_path) = client_process
+        .as_ref()
+        .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
+        .unwrap_or((None, None, None));
+
+    let ctx = RequestContext::new()
+        .with_client_process(client_app, client_pid, client_path)
+        .with_client_ip(peer_addr.ip().to_string());
 
     let client_info = client_process
         .as_ref()
@@ -928,34 +1019,10 @@ async fn handle_request(
         state.metrics_collector.increment_requests();
     }
 
-    if need_async_resolve {
-        if let Some(ref state) = admin_state {
-            let state_clone = state.clone();
-            let record_id = record_id_for_async.clone();
-            crate::utils::process_info::spawn_async_process_resolver(
-                peer_addr,
-                record_id.clone(),
-                move |id, process| {
-                    state_clone.update_client_process(&id, process.name, process.pid, process.path);
-                },
-            );
-        }
-    }
-
     if method == Method::CONNECT {
-        let tls_intercept_config = if let Some(ref state) = admin_state {
-            let runtime_config = state.runtime_config.read().await;
-            TlsInterceptConfig {
-                enable_tls_interception: runtime_config.enable_tls_interception,
-                intercept_exclude: runtime_config.intercept_exclude.clone(),
-                intercept_include: runtime_config.intercept_include.clone(),
-                app_intercept_exclude: runtime_config.app_intercept_exclude.clone(),
-                app_intercept_include: runtime_config.app_intercept_include.clone(),
-                unsafe_ssl: runtime_config.unsafe_ssl,
-            }
-        } else {
-            TlsInterceptConfig::from_proxy_config(&proxy_config)
-        };
+        let tls_intercept_config = connect_tls_intercept_config
+            .clone()
+            .unwrap_or_else(|| TlsInterceptConfig::from_proxy_config(&proxy_config));
 
         match handle_connect(
             req,
@@ -1137,6 +1204,7 @@ fn convert_admin_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator, SniResolver};
 
     #[test]
     fn test_proxy_config_default() {
@@ -1195,6 +1263,9 @@ mod tests {
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
             timeout_secs: 60,
+            http1_max_header_size: 128 * 1024,
+            http2_max_header_list_size: 512 * 1024,
+            websocket_handshake_max_header_size: 96 * 1024,
             socks5_port: Some(1080),
             socks5_auth_required: true,
             socks5_username: Some("user".to_string()),
@@ -1214,6 +1285,12 @@ mod tests {
         assert!(server.config().enable_tls_interception);
         assert_eq!(server.config().socks5_port, Some(1080));
         assert!(server.config().socks5_auth_required);
+        assert_eq!(server.config().http1_max_header_size, 128 * 1024);
+        assert_eq!(server.config().http2_max_header_list_size, 512 * 1024);
+        assert_eq!(
+            server.config().websocket_handshake_max_header_size,
+            96 * 1024
+        );
         assert!(server.config().verbose_logging);
         assert_eq!(server.config().access_mode, AccessMode::Whitelist);
         assert!(server.config().allow_lan);
@@ -1253,5 +1330,28 @@ mod tests {
         let config = TlsConfig::default();
         assert!(config.ca_cert.is_none());
         assert!(config.ca_key.is_none());
+    }
+
+    #[test]
+    fn test_tls_config_resolve_server_config_reuses_sni_cache() {
+        init_crypto_provider();
+        let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
+        let alpn = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let config = TlsConfig {
+            ca_cert: Some(vec![1, 2, 3]),
+            ca_key: Some(vec![4, 5, 6]),
+            cert_generator: Some(Arc::new(DynamicCertGenerator::new(ca.clone()))),
+            sni_resolver: Some(Arc::new(SniResolver::new(ca))),
+        };
+
+        let config1 = config
+            .resolve_server_config("example.com", &alpn)
+            .expect("Failed to resolve server config");
+        let config2 = config
+            .resolve_server_config("example.com", &alpn)
+            .expect("Failed to resolve cached server config");
+
+        assert!(Arc::ptr_eq(&config1, &config2));
+        assert_eq!(config1.alpn_protocols, alpn);
     }
 }

@@ -428,20 +428,10 @@ export default function ResponsePanel() {
       height: "100%",
       overflow: "hidden",
     },
-    header: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: "8px 12px",
-      borderBottom: `1px solid ${token.colorBorderSecondary}`,
-      backgroundColor: token.colorBgLayout,
-      flexShrink: 0,
-    },
     statusBar: {
       display: "flex",
       alignItems: "center",
-      gap: 16,
-      minHeight: 22,
+      gap: 12,
     },
     statusItem: {
       display: "flex",
@@ -467,38 +457,32 @@ export default function ResponsePanel() {
     },
   };
 
+  const tabBarExtra =
+    !isEmpty && !error && status > 0 ? (
+      <div style={styles.statusBar}>
+        <div style={styles.statusItem}>
+          <span style={styles.statusLabel}>Status:</span>
+          <Tag color={statusColor} style={{ margin: 0, fontSize: 12 }}>
+            {status} {getStatusText(status)}
+          </Tag>
+        </div>
+        <div style={styles.statusItem}>
+          <span style={styles.statusLabel}>Time:</span>
+          <span style={styles.statusValue}>
+            {duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(2)} s`}
+          </span>
+        </div>
+        {responseBody && (
+          <div style={styles.statusItem}>
+            <span style={styles.statusLabel}>Size:</span>
+            <span style={styles.statusValue}>{formatSize(responseBody.length)}</span>
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
     <div style={styles.container}>
-      <div style={styles.header}>
-        <div style={styles.statusBar}>
-          {!isEmpty && !error && status > 0 && (
-            <>
-              <div style={styles.statusItem}>
-                <span style={styles.statusLabel}>Status:</span>
-                <Tag color={statusColor} style={{ margin: 0, fontSize: 12 }}>
-                  {status} {getStatusText(status)}
-                </Tag>
-              </div>
-              <div style={styles.statusItem}>
-                <span style={styles.statusLabel}>Time:</span>
-                <span style={styles.statusValue}>
-                  {duration < 1000
-                    ? `${duration} ms`
-                    : `${(duration / 1000).toFixed(2)} s`}
-                </span>
-              </div>
-              {responseBody && (
-                <div style={styles.statusItem}>
-                  <span style={styles.statusLabel}>Size:</span>
-                  <span style={styles.statusValue}>
-                    {formatSize(responseBody.length)}
-                  </span>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
       <div style={styles.content}>
         <Panel
           name="Response"
@@ -507,6 +491,7 @@ export default function ResponsePanel() {
           onTabChange={setActiveTab}
           searchValue={searchState}
           onSearch={setSearchState}
+          tabBarExtra={tabBarExtra}
           displayFormat={displayFormat}
           onDisplayFormatChange={setDisplayFormat}
           contentType={responseContentType}

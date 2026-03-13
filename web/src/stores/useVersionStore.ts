@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkVersion as checkVersionApi } from "../api/version";
 import type { VersionCheckResponse } from "../types";
+import { isConnectionIssueError } from "../api/client";
 
 const SEEN_VERSIONS_STORAGE_KEY = "bifrost-seen-versions";
 const CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -67,7 +68,9 @@ export const useVersionStore = create<VersionState>()(
             loading: false,
           });
         } catch (error) {
-          console.error("Failed to check version:", error);
+          if (!isConnectionIssueError(error)) {
+            console.error("Failed to check version:", error);
+          }
           set({ loading: false });
         }
       },

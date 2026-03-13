@@ -1,8 +1,9 @@
+use ::time::{Duration, OffsetDateTime};
 use bifrost_core::error::{BifrostError, Result};
 use chrono::{DateTime, Utc};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::fs;
@@ -11,7 +12,8 @@ use x509_parser::prelude::*;
 use x509_parser::public_key::PublicKey;
 
 pub struct CertificateAuthority {
-    pub certificate: Certificate,
+    certificate_der: CertificateDer<'static>,
+    certificate_pem: String,
     pub key_pair: KeyPair,
 }
 
@@ -24,15 +26,24 @@ impl std::fmt::Debug for CertificateAuthority {
 }
 
 impl CertificateAuthority {
-    pub fn new(certificate: Certificate, key_pair: KeyPair) -> Self {
+    pub fn new(
+        certificate_der: CertificateDer<'static>,
+        certificate_pem: String,
+        key_pair: KeyPair,
+    ) -> Self {
         Self {
-            certificate,
+            certificate_der,
+            certificate_pem,
             key_pair,
         }
     }
 
     pub fn certificate_der(&self) -> Result<CertificateDer<'static>> {
-        Ok(CertificateDer::from(self.certificate.der().to_vec()))
+        Ok(self.certificate_der.clone())
+    }
+
+    pub fn certificate_pem(&self) -> &str {
+        &self.certificate_pem
     }
 
     pub fn private_key_der(&self) -> PrivateKeyDer<'static> {
@@ -62,6 +73,8 @@ pub fn generate_root_ca() -> Result<CertificateAuthority> {
         ExtendedKeyUsagePurpose::ServerAuth,
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
+    params.not_before = OffsetDateTime::now_utc() - Duration::days(1);
+    params.not_after = OffsetDateTime::now_utc() + Duration::days(3650);
 
     let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
         .map_err(|e| BifrostError::Tls(format!("Failed to generate key pair: {e}")))?;
@@ -70,7 +83,11 @@ pub fn generate_root_ca() -> Result<CertificateAuthority> {
         .self_signed(&key_pair)
         .map_err(|e| BifrostError::Tls(format!("Failed to generate root certificate: {e}")))?;
 
-    Ok(CertificateAuthority::new(cert, key_pair))
+    Ok(CertificateAuthority::new(
+        CertificateDer::from(cert.der().to_vec()),
+        cert.pem(),
+        key_pair,
+    ))
 }
 
 pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuthority> {
@@ -84,51 +101,15 @@ pub fn load_root_ca(cert_path: &Path, key_path: &Path) -> Result<CertificateAuth
         .map_err(|e| BifrostError::Tls(format!("Failed to parse CA certificate PEM: {e}")))?
         .1;
 
-    let parsed_cert = pem
+    let _parsed_cert = pem
         .parse_x509()
         .map_err(|e| BifrostError::Tls(format!("Failed to parse X.509 certificate: {e}")))?;
 
-    let mut params = CertificateParams::default();
-
-    for rdn in parsed_cert.subject().iter() {
-        for attr in rdn.iter() {
-            let oid_str = attr.attr_type().to_id_string();
-            if let Ok(value) = attr.as_str() {
-                match oid_str.as_str() {
-                    "2.5.4.3" => params.distinguished_name.push(DnType::CommonName, value),
-                    "2.5.4.10" => params
-                        .distinguished_name
-                        .push(DnType::OrganizationName, value),
-                    "2.5.4.11" => params
-                        .distinguished_name
-                        .push(DnType::OrganizationalUnitName, value),
-                    "2.5.4.6" => params.distinguished_name.push(DnType::CountryName, value),
-                    "2.5.4.8" => params
-                        .distinguished_name
-                        .push(DnType::StateOrProvinceName, value),
-                    "2.5.4.7" => params.distinguished_name.push(DnType::LocalityName, value),
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    params.extended_key_usages = vec![
-        ExtendedKeyUsagePurpose::ServerAuth,
-        ExtendedKeyUsagePurpose::ClientAuth,
-    ];
-
-    let cert = params
-        .self_signed(&key_pair)
-        .map_err(|e| BifrostError::Tls(format!("Failed to reconstruct CA certificate: {e}")))?;
-
-    Ok(CertificateAuthority::new(cert, key_pair))
+    Ok(CertificateAuthority::new(
+        CertificateDer::from(pem.contents),
+        cert_pem,
+        key_pair,
+    ))
 }
 
 pub fn validate_ca_files(cert_path: &Path, key_path: &Path) -> Result<()> {
@@ -205,7 +186,7 @@ pub fn ensure_valid_ca(cert_path: &Path, key_path: &Path) -> Result<bool> {
 }
 
 pub fn save_root_ca(cert_path: &Path, key_path: &Path, ca: &CertificateAuthority) -> Result<()> {
-    let cert_pem = ca.certificate.pem();
+    let cert_pem = ca.certificate_pem();
     let key_pem = ca.key_pair.serialize_pem();
 
     if let Some(parent) = cert_path.parent() {
@@ -428,7 +409,7 @@ mod tests {
     #[test]
     fn test_generate_root_ca() {
         let ca = generate_root_ca().expect("Failed to generate root CA");
-        let cert_pem = ca.certificate.pem();
+        let cert_pem = ca.certificate_pem();
         assert!(cert_pem.contains("BEGIN CERTIFICATE"));
         assert!(cert_pem.contains("END CERTIFICATE"));
     }
@@ -453,5 +434,44 @@ mod tests {
         let ca = generate_root_ca().expect("Failed to generate root CA");
         let der = ca.certificate_der().expect("Failed to get DER");
         assert!(!der.is_empty());
+    }
+
+    #[test]
+    fn test_generate_root_ca_has_reasonable_validity_period() {
+        let ca = generate_root_ca().expect("Failed to generate root CA");
+        let cert_der = ca.certificate_der().expect("Failed to get CA DER");
+        let cert = parse_x509_certificate(cert_der.as_ref())
+            .expect("Failed to parse CA DER")
+            .1;
+        let not_before = cert.validity().not_before.timestamp();
+        let not_after = cert.validity().not_after.timestamp();
+        let validity_days = (not_after - not_before) / 86_400;
+
+        assert!(
+            validity_days >= 3000,
+            "root CA validity should be long-lived"
+        );
+        assert!(
+            validity_days <= 3700,
+            "root CA validity should stay bounded"
+        );
+    }
+
+    #[test]
+    fn test_load_root_ca_preserves_original_certificate() {
+        let dir = tempdir().expect("Failed to create temp dir");
+        let cert_path = dir.path().join("ca.crt");
+        let key_path = dir.path().join("ca.key");
+
+        let ca = generate_root_ca().expect("Failed to generate root CA");
+        let original_der = ca.certificate_der().expect("Failed to get original DER");
+        save_root_ca(&cert_path, &key_path, &ca).expect("Failed to save root CA");
+
+        let loaded_ca = load_root_ca(&cert_path, &key_path).expect("Failed to load root CA");
+        let loaded_der = loaded_ca
+            .certificate_der()
+            .expect("Failed to get loaded certificate DER");
+
+        assert_eq!(original_der.as_ref(), loaded_der.as_ref());
     }
 }

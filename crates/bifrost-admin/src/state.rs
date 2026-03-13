@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
@@ -15,11 +15,11 @@ use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
+use crate::port_rebind::SharedPortRebindManager;
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
 use crate::sse::SseHub;
 use crate::traffic_db::{SharedTrafficDbStore, TrafficDbStore};
-use crate::traffic_store::{SharedTrafficStore, TrafficStore};
 use crate::version_check::{SharedVersionChecker, VersionChecker};
 use crate::ws_payload_store::{SharedWsPayloadStore, WsPayloadStore};
 use once_cell::sync::OnceCell;
@@ -71,7 +71,6 @@ impl RuntimeConfig {
 }
 
 pub struct AdminState {
-    pub traffic_store: Option<SharedTrafficStore>,
     pub traffic_db_store: Option<SharedTrafficDbStore>,
     pub async_traffic_writer: Option<SharedAsyncTrafficWriter>,
     pub metrics_collector: SharedMetricsCollector,
@@ -82,7 +81,7 @@ pub struct AdminState {
     pub frame_store: Option<SharedFrameStore>,
     pub ws_payload_store: Option<SharedWsPayloadStore>,
     pub start_time: u64,
-    pub port: u16,
+    port: AtomicU16,
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub connection_monitor: SharedConnectionMonitor,
@@ -98,6 +97,7 @@ pub struct AdminState {
     pub replay_db_store: Option<SharedReplayDbStore>,
     pub replay_executor: OnceCell<SharedReplayExecutor>,
     pub total_size_cleanup_counter: AtomicUsize,
+    pub port_rebind_manager: Option<SharedPortRebindManager>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -106,7 +106,6 @@ const DEFAULT_MAX_BODY_PROBE_SIZE: usize = 64 * 1024;
 impl AdminState {
     pub fn new(port: u16) -> Self {
         Self {
-            traffic_store: None,
             traffic_db_store: None,
             async_traffic_writer: None,
             metrics_collector: Arc::new(MetricsCollector::default()),
@@ -117,7 +116,7 @@ impl AdminState {
             frame_store: None,
             ws_payload_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
-            port,
+            port: AtomicU16::new(port),
             ca_cert_path: None,
             system_proxy_manager: None,
             connection_monitor: Arc::new(ConnectionMonitor::new()),
@@ -133,6 +132,18 @@ impl AdminState {
             replay_db_store: None,
             replay_executor: OnceCell::new(),
             total_size_cleanup_counter: AtomicUsize::new(0),
+            port_rebind_manager: None,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port.load(Ordering::Relaxed)
+    }
+
+    pub fn set_port(&self, port: u16) {
+        let old = self.port.swap(port, Ordering::SeqCst);
+        if old != port {
+            tracing::info!("AdminState port updated: {} -> {}", old, port);
         }
     }
 
@@ -173,12 +184,7 @@ impl AdminState {
         } else if let Some(ref db_store) = self.traffic_db_store {
             db_store.record(record);
         } else {
-            if let Some(ref traffic_store) = self.traffic_store {
-                traffic_store.record(record.clone());
-                self.maybe_cleanup_total_disk_usage();
-                return;
-            }
-            tracing::error!("[ADMIN_STATE] No traffic store configured; drop record");
+            tracing::error!("[ADMIN_STATE] No traffic_db_store configured; drop record");
         }
         self.maybe_cleanup_total_disk_usage();
     }
@@ -193,11 +199,7 @@ impl AdminState {
         } else if let Some(ref db_store) = self.traffic_db_store {
             db_store.update_by_id(id, updater);
         } else {
-            if let Some(ref traffic_store) = self.traffic_store {
-                traffic_store.update_by_id(id, updater.clone());
-                return;
-            }
-            tracing::error!("[ADMIN_STATE] No traffic store configured; drop update");
+            tracing::error!("[ADMIN_STATE] No traffic_db_store configured; drop update");
         }
     }
 
@@ -309,7 +311,8 @@ impl AdminState {
         if let Some(ref ws_payload_store) = self.ws_payload_store {
             let _ = ws_payload_store.delete_by_ids(&ids_to_delete);
         }
-        traffic_db_store.compact_db(true);
+        // Disk-size fallback cleanup is still on the hot path; avoid full VACUUM here.
+        traffic_db_store.compact_db(false);
 
         tracing::info!(
             deleted = ids_to_delete.len(),
@@ -341,16 +344,6 @@ impl AdminState {
 
     pub fn with_values_storage(mut self, storage: ValuesStorage) -> Self {
         self.values_storage = Some(Arc::new(ParkingRwLock::new(storage)));
-        self
-    }
-
-    pub fn with_traffic_store(mut self, store: TrafficStore) -> Self {
-        self.traffic_store = Some(Arc::new(store));
-        self
-    }
-
-    pub fn with_traffic_store_shared(mut self, store: SharedTrafficStore) -> Self {
-        self.traffic_store = Some(store);
         self
     }
 
@@ -486,6 +479,11 @@ impl AdminState {
 
     pub fn with_replay_db_store_shared_opt(mut self, store: Option<SharedReplayDbStore>) -> Self {
         self.replay_db_store = store;
+        self
+    }
+
+    pub fn with_port_rebind_manager_shared(mut self, manager: SharedPortRebindManager) -> Self {
+        self.port_rebind_manager = Some(manager);
         self
     }
 

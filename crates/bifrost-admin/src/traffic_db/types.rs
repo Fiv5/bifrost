@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::traffic::{SocketStatus, TrafficRecord};
+use crate::traffic::{MatchedRule, SocketStatus, TrafficRecord};
 
 #[allow(non_snake_case)]
 pub mod TrafficFlags {
@@ -87,19 +87,7 @@ impl TrafficSummaryCompact {
             None
         };
 
-        let (rc, rp) = match &record.matched_rules {
-            Some(rules) => {
-                let count = rules.len();
-                let protocols: Vec<String> = rules
-                    .iter()
-                    .map(|r| r.protocol.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                (count, protocols)
-            }
-            None => (0, vec![]),
-        };
+        let (rc, rp) = summarize_matched_rules(record.matched_rules.as_deref());
 
         Self {
             id: record.id.clone(),
@@ -150,6 +138,52 @@ impl TrafficSummaryCompact {
 
     pub fn is_replay(&self) -> bool {
         self.flags & TrafficFlags::IS_REPLAY != 0
+    }
+}
+
+pub fn build_socket_status_summary(
+    is_open: bool,
+    send_count: u64,
+    receive_count: u64,
+    send_bytes: u64,
+    receive_bytes: u64,
+    frame_count: usize,
+) -> Option<SocketStatus> {
+    if !is_open
+        && send_count == 0
+        && receive_count == 0
+        && send_bytes == 0
+        && receive_bytes == 0
+        && frame_count == 0
+    {
+        return None;
+    }
+
+    Some(SocketStatus {
+        is_open,
+        send_count,
+        receive_count,
+        send_bytes,
+        receive_bytes,
+        frame_count,
+        close_code: None,
+        close_reason: None,
+    })
+}
+
+pub fn summarize_matched_rules(rules: Option<&[MatchedRule]>) -> (usize, Vec<String>) {
+    match rules {
+        Some(rules) => {
+            let count = rules.len();
+            let protocols: Vec<String> = rules
+                .iter()
+                .map(|r| r.protocol.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            (count, protocols)
+        }
+        None => (0, vec![]),
     }
 }
 

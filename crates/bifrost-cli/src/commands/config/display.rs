@@ -1,7 +1,10 @@
-use super::client::{PerformanceConfigResponse, TlsConfigResponse, WhitelistResponse};
+use super::client::{
+    PerformanceConfigResponse, ServerConfigResponse, TlsConfigResponse, WhitelistResponse,
+};
 use super::keys::{format_size, ConfigKey};
 
 pub fn print_full_config(
+    server: &ServerConfigResponse,
     tls: &TlsConfigResponse,
     perf: &PerformanceConfigResponse,
     whitelist: &WhitelistResponse,
@@ -9,6 +12,8 @@ pub fn print_full_config(
     println!("Bifrost Configuration");
     println!("=====================\n");
 
+    print_server_config(server);
+    println!();
     print_tls_config(tls);
     println!();
     print_traffic_config(perf);
@@ -62,6 +67,23 @@ pub fn print_tls_config(tls: &TlsConfigResponse) {
     }
 }
 
+pub fn print_server_config(server: &ServerConfigResponse) {
+    println!("Server Configuration");
+    println!("  Timeout:              {} s", server.timeout_secs);
+    println!(
+        "  HTTP/1 Header Limit:  {}",
+        format_size(server.http1_max_header_size)
+    );
+    println!(
+        "  HTTP/2 Header Limit:  {}",
+        format_size(server.http2_max_header_list_size)
+    );
+    println!(
+        "  WS Handshake Limit:   {}",
+        format_size(server.websocket_handshake_max_header_size)
+    );
+}
+
 pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     println!("Traffic Configuration");
     println!("  Max Records:          {}", perf.traffic.max_records);
@@ -103,7 +125,6 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
     );
 
     if perf.body_store_stats.is_some()
-        || perf.traffic_store_stats.is_some()
         || perf.frame_store_stats.is_some()
         || perf.ws_payload_store_stats.is_some()
     {
@@ -114,12 +135,6 @@ pub fn print_traffic_config(perf: &PerformanceConfigResponse) {
                 "    Body Cache:         {} ({} files)",
                 format_size(stats.total_size as usize),
                 stats.file_count
-            );
-        }
-        if let Some(ref stats) = perf.traffic_store_stats {
-            println!(
-                "    Traffic Records:    {} records, {} processed",
-                stats.record_count, stats.total_records_processed
             );
         }
         if let Some(ref stats) = perf.frame_store_stats {

@@ -21,30 +21,37 @@ pub fn get_all_tests() -> Vec<TestCase> {
 }
 
 fn get_traffic_as_json(admin_state: &bifrost_admin::AdminState) -> Value {
-    let records = admin_state
-        .traffic_store
-        .as_ref()
-        .map(|s| s.get_all())
-        .unwrap_or_default();
-    let records_json: Vec<Value> = records
+    let Some(db_store) = admin_state.traffic_db_store.as_ref() else {
+        return serde_json::json!({
+            "total": 0,
+            "offset": 0,
+            "limit": 100,
+            "records": []
+        });
+    };
+
+    let result = db_store.query(&bifrost_admin::QueryParams {
+        limit: Some(100),
+        ..Default::default()
+    });
+    let records_json: Vec<Value> = result
+        .records
         .into_iter()
         .map(|r| {
-            let is_tunnel = r.protocol == "tunnel";
             serde_json::json!({
                 "id": r.id,
-                "method": r.method,
-                "url": r.url,
-                "protocol": r.protocol,
-                "status": r.status,
-                "host": r.host,
-                "path": r.path,
-                "duration_ms": r.duration_ms,
-                "request_size": r.request_size,
-                "response_size": r.response_size,
-                "is_websocket": r.is_websocket,
-                "is_sse": r.is_sse,
-                "is_tunnel": is_tunnel,
-                "content_type": r.content_type,
+                "method": r.m,
+                "protocol": r.proto,
+                "status": r.s,
+                "host": r.h,
+                "path": r.p,
+                "duration_ms": r.dur,
+                "request_size": r.req_sz,
+                "response_size": r.res_sz,
+                "is_websocket": r.is_websocket(),
+                "is_sse": r.is_sse(),
+                "is_tunnel": r.is_tunnel(),
+                "content_type": r.ct,
             })
         })
         .collect();

@@ -9,7 +9,7 @@ pub use ca::{
     ensure_valid_ca, generate_root_ca, load_root_ca, parse_cert_info, save_root_ca,
     validate_ca_files, CertInfo, CertificateAuthority,
 };
-pub use cache::CertCache;
+pub use cache::{CertCache, ServerConfigCache};
 pub use config::TlsConfig;
 pub use dynamic::DynamicCertGenerator;
 pub use install::{get_platform_name, CertInstaller, CertStatus, CertSystemInfo};

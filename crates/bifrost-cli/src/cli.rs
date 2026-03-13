@@ -22,7 +22,7 @@ Running 'bifrost' without a subcommand is equivalent to 'bifrost start'."
 SUPPORTED PROTOCOLS:
   HTTP/1.1          Full support
   HTTP/2            Frame-level processing, multiplexing
-  HTTP/3 (QUIC)     Based on Quinn, supports 0-RTT
+  HTTP/3 (QUIC)     Upstream HTTP/3 attempts can be enabled per rule
   HTTPS             TLS 1.2/1.3, MITM interception
   SOCKS5 TCP        Username/password authentication
   SOCKS5 UDP        Full UDP ASSOCIATE support
@@ -72,7 +72,7 @@ start [OPTIONS]                   Start the proxy server (default)
   --app-intercept-include <APPS>      Force intercept apps (highest priority)
   --unsafe-ssl                        Skip upstream TLS verification (dangerous)
   --no-disconnect-on-config-change    Disable auto-disconnect when TLS config changes
-  --rules <RULE>                      Proxy rule (can be repeated)
+  --rules <RULE>                      Proxy rule, e.g. host:// or http3:// (can be repeated)
   --rules-file <PATH>                 Path to rules file
   --system-proxy                      Enable system proxy
   --proxy-bypass <LIST>               System proxy bypass list
@@ -99,6 +99,7 @@ rule <ACTION>                     Manage rules
   delete <name>                     Delete a rule
 
 ca <ACTION>                       Manage CA certificates
+  install                           Install and trust CA certificate
   info                              Show CA certificate info
   export [-o path]                  Export CA certificate
   generate [-f]                     Generate CA certificate
@@ -209,6 +210,8 @@ Common operations (examples):
   example.com resHeaders://X-Debug=1              Inject response headers
   example.com statusCode://404                    Override status code
   example.com file://({\"ec\":0,\"data\":null})   Mock response body
+  chatgpt.com http3://                            Enable upstream HTTP/3 attempts
+  api.example.com h3://                           Alias of http3://
 
 Filters and rule props:
   includeFilter://m:GET           Only apply to GET
@@ -218,6 +221,7 @@ Filters and rule props:
 
 How to apply rules:
   bifrost start --rules \"example.com host://127.0.0.1:3000\"
+  bifrost start --rules \"chatgpt.com http3://\"
   bifrost start --rules-file ./rules.txt
   bifrost rule add demo -c \"example.com reqHeaders://X-Bifrost=1\"
 
@@ -343,7 +347,7 @@ pub enum Commands {
         no_disconnect_on_config_change: bool,
         #[arg(
             long,
-            help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000'). Can be specified multiple times."
+            help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000' or 'chatgpt.com http3://'). Can be specified multiple times."
         )]
         rules: Vec<String>,
         #[arg(long, help = "Path to rules file (one rule per line)")]
@@ -595,6 +599,8 @@ pub enum RuleCommands {
 
 #[derive(Subcommand, Clone)]
 pub enum CaCommands {
+    #[command(about = "Install and trust CA certificate")]
+    Install,
     #[command(about = "Generate CA certificate")]
     Generate {
         #[arg(short, long, help = "Force regenerate")]

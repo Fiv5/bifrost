@@ -4,7 +4,6 @@ import {
   FolderOutlined,
   DeleteOutlined,
   FileOutlined,
-  DatabaseOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
 import type { PerformanceConfig, TrafficConfig } from "../../../api/config";
@@ -78,8 +77,9 @@ export default function PerformanceTab({
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>Max Records</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      Keep only the newest records in memory; older ones are
-                      evicted and the database prunes the oldest entries.
+                      Traffic retention is controlled by your configured record
+                      limit. Older entries are pruned first, and the allowed
+                      upper bound is 100,000.
                     </Text>
                     <Slider
                       min={maxRecordsMin}
@@ -112,8 +112,7 @@ export default function PerformanceTab({
                     <Text>Max DB Size</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       Caps traffic.db + body_cache + frames + ws_payload on
-                      disk; when exceeded, the oldest data is deleted and the
-                      database is vacuumed.
+                      disk; when exceeded, the oldest data is deleted first.
                     </Text>
                     <Slider
                       min={256 * 1024 * 1024}
@@ -262,7 +261,6 @@ export default function PerformanceTab({
               </Row>
 
               {(performanceConfig?.body_store_stats ||
-                performanceConfig?.traffic_store_stats ||
                 performanceConfig?.frame_store_stats ||
                 performanceConfig?.ws_payload_store_stats) && (
                 <>
@@ -324,27 +322,6 @@ export default function PerformanceTab({
                       <Col xs={6}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
-                            Traffic Records
-                          </Text>
-                          <Space>
-                            <DatabaseOutlined />
-                            <Text>
-                              {performanceConfig.traffic_store_stats
-                                ?.record_count ?? 0}{" "}
-                              records
-                            </Text>
-                          </Space>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            {formatBytes(
-                              performanceConfig.traffic_store_stats?.file_size ??
-                                0,
-                            )}
-                          </Text>
-                        </Space>
-                      </Col>
-                      <Col xs={6}>
-                        <Space direction="vertical" size={0}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
                             WebSocket Frames
                           </Text>
                           <Space>
@@ -394,8 +371,6 @@ export default function PerformanceTab({
                             {formatBytes(
                               (performanceConfig.body_store_stats?.total_size ??
                                 0) +
-                                (performanceConfig.traffic_store_stats
-                                  ?.file_size ?? 0) +
                                 (performanceConfig.frame_store_stats
                                   ?.total_size ?? 0) +
                                 (performanceConfig.ws_payload_store_stats

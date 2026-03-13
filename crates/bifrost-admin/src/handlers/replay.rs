@@ -648,6 +648,8 @@ fn record_traffic_for_unified(
         socket_status: None,
         request_body_ref,
         response_body_ref,
+        raw_request_body_ref: None,
+        raw_response_body_ref: None,
         actual_url: None,
         actual_host: None,
         original_request_headers: None,
@@ -655,6 +657,8 @@ fn record_traffic_for_unified(
         error_message: None,
         req_script_results: None,
         res_script_results: None,
+        decode_req_script_results: None,
+        decode_res_script_results: None,
     };
 
     if let Some(ref traffic_db) = state.traffic_db_store {
@@ -2429,6 +2433,8 @@ fn record_traffic_for_stream(
         socket_status: None,
         request_body_ref,
         response_body_ref: None,
+        raw_request_body_ref: None,
+        raw_response_body_ref: None,
         actual_url: None,
         actual_host: None,
         original_request_headers: None,
@@ -2436,6 +2442,8 @@ fn record_traffic_for_stream(
         error_message: None,
         req_script_results: None,
         res_script_results: None,
+        decode_req_script_results: None,
+        decode_res_script_results: None,
     };
 
     if let Some(ref traffic_db) = state.traffic_db_store {

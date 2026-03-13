@@ -73,9 +73,9 @@ Options:
   -h, --help           显示帮助
 
 Examples:
-  node api-test.js --api /api/v1/health
-  node api-test.js --api /api/v1/apps -v
-  node api-test.js --api /api/v1/app -m POST -d '{"name":"test"}'
+  node api-test.js --api /_bifrost/api/system/overview
+  node api-test.js --api /_bifrost/api/rules -v
+  node api-test.js --api /_bifrost/api/rules -m POST -d '{"name":"test","content":"example.com http://127.0.0.1:8080"}'
 `);
 }
 

@@ -107,6 +107,21 @@ test_cert_info_api() {
         return 1
     fi
 
+    if ! assert_json_has_field "$response" "status" "Response should have status field"; then
+        log_debug "Response: $response"
+        return 1
+    fi
+
+    if ! assert_json_has_field "$response" "installed" "Response should have installed field"; then
+        log_debug "Response: $response"
+        return 1
+    fi
+
+    if ! assert_json_has_field "$response" "trusted" "Response should have trusted field"; then
+        log_debug "Response: $response"
+        return 1
+    fi
+
     return 0
 }
 
@@ -116,11 +131,53 @@ test_cert_info_structure() {
 
     local available
     available=$(echo "$response" | jq -r '.available')
+    local status
+    status=$(echo "$response" | jq -r '.status')
+    local installed
+    installed=$(echo "$response" | jq -r '.installed')
+    local trusted
+    trusted=$(echo "$response" | jq -r '.trusted')
 
     if [[ "$available" != "true" && "$available" != "false" ]]; then
         log_fail "Invalid available value: $available"
         return 1
     fi
+
+    case "$status" in
+        not_installed|installed_not_trusted|installed_and_trusted|unknown) ;;
+        *)
+            log_fail "Invalid status value: $status"
+            return 1
+            ;;
+    esac
+
+    if [[ "$installed" != "true" && "$installed" != "false" ]]; then
+        log_fail "Invalid installed value: $installed"
+        return 1
+    fi
+
+    if [[ "$trusted" != "true" && "$trusted" != "false" ]]; then
+        log_fail "Invalid trusted value: $trusted"
+        return 1
+    fi
+
+    case "$status" in
+        not_installed)
+            assert_equals "false" "$installed" "not_installed should report installed=false" || return 1
+            assert_equals "false" "$trusted" "not_installed should report trusted=false" || return 1
+            ;;
+        installed_not_trusted)
+            assert_equals "true" "$installed" "installed_not_trusted should report installed=true" || return 1
+            assert_equals "false" "$trusted" "installed_not_trusted should report trusted=false" || return 1
+            ;;
+        installed_and_trusted)
+            assert_equals "true" "$installed" "installed_and_trusted should report installed=true" || return 1
+            assert_equals "true" "$trusted" "installed_and_trusted should report trusted=true" || return 1
+            ;;
+        unknown)
+            assert_equals "false" "$trusted" "unknown should never claim trusted=true" || return 1
+            ;;
+    esac
 
     if [[ "$available" == "true" ]]; then
         if ! assert_json_has_field "$response" "local_ips" "Response should have local_ips when available"; then
@@ -194,6 +251,38 @@ test_cert_download_format() {
     fi
 
     return 0
+}
+
+test_cert_download_absolute_form() {
+    local response
+    response=$(download_cert_absolute_form)
+
+    if [[ $? -ne 0 ]]; then
+        log_fail "Failed to call cert download API with absolute-form request target"
+        return 1
+    fi
+
+    if [[ -z "$response" ]]; then
+        log_debug "Absolute-form cert download returned empty response"
+        return 0
+    fi
+
+    if [[ "$response" == *"-----BEGIN CERTIFICATE-----"* ]]; then
+        if ! assert_contains "$response" "-----END CERTIFICATE-----" "Absolute-form cert should have END marker"; then
+            return 1
+        fi
+        return 0
+    fi
+
+    local error
+    error=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    if [[ -n "$error" ]]; then
+        log_fail "Absolute-form cert download should not return API error: $error"
+        return 1
+    fi
+
+    log_fail "Absolute-form cert download returned unexpected response"
+    return 1
 }
 
 test_cert_qrcode_api() {
@@ -305,6 +394,7 @@ main() {
     run_test "Cert Info Structure" test_cert_info_structure
     run_test "Cert Download API" test_cert_download_api
     run_test "Cert Download Format" test_cert_download_format
+    run_test "Cert Download Absolute Form" test_cert_download_absolute_form
     run_test "Cert QR Code API" test_cert_qrcode_api
     run_test "Cert QR Code Format" test_cert_qrcode_format
     run_test "Cert Info URLs Format" test_cert_info_urls_format

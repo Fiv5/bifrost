@@ -24,6 +24,19 @@ export default function CertificateTab({
   getCertDownloadUrl,
   getCertQRCodeUrl,
 }: CertificateTabProps) {
+  const certStatus = certInfo?.status ?? "unknown";
+  const certStatusLabel = certInfo?.status_label ?? "Check failed";
+  const certStatusColor =
+    certStatus === "installed_and_trusted"
+      ? "green"
+      : certStatus === "installed_not_trusted"
+        ? "orange"
+        : certStatus === "not_installed"
+          ? "red"
+          : "default";
+  const certStatusIcon =
+    certStatus === "installed_and_trusted" ? <CheckOutlined /> : <CloseOutlined />;
+
   return (
     <Row gutter={[16, 16]}>
       <Col xs={24}>
@@ -42,19 +55,18 @@ export default function CertificateTab({
                 <Text>Certificate Status</Text>
               </Col>
               <Col>
-                {certInfo?.available ? (
-                  <Tag color="green" icon={<CheckOutlined />}>
-                    Available
-                  </Tag>
-                ) : (
-                  <Tag color="red" icon={<CloseOutlined />}>
-                    Not Found
-                  </Tag>
-                )}
+                <Tag color={certStatusColor} icon={certStatusIcon}>
+                  {certStatusLabel}
+                </Tag>
               </Col>
             </Row>
 
             <Divider style={{ margin: "8px 0" }} />
+
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {certInfo?.status_message ??
+                "Unable to verify whether the CA certificate is installed and trusted."}
+            </Text>
 
             <Button
               type="primary"
@@ -68,8 +80,9 @@ export default function CertificateTab({
             </Button>
 
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Install this certificate as a trusted root CA on your device to
-              enable HTTPS inspection.
+              {certInfo?.available
+                ? "Download the CA certificate file and install it as a trusted root CA on your device to enable HTTPS inspection."
+                : "The CA certificate file is not available yet, so it cannot be downloaded or trusted on this device."}
             </Text>
           </Space>
         </Card>

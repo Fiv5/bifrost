@@ -2,6 +2,11 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigKey {
+    ServerTimeoutSecs,
+    ServerHttp1MaxHeaderSize,
+    ServerHttp2MaxHeaderListSize,
+    ServerWebSocketHandshakeMaxHeaderSize,
+
     TlsEnabled,
     TlsUnsafeSsl,
     TlsDisconnectOnChange,
@@ -39,6 +44,9 @@ impl ConfigKey {
             Self::TrafficMaxBodySize
                 | Self::TrafficMaxBufferSize
                 | Self::TrafficMaxDbSize
+                | Self::ServerHttp1MaxHeaderSize
+                | Self::ServerHttp2MaxHeaderListSize
+                | Self::ServerWebSocketHandshakeMaxHeaderSize
                 | Self::TrafficSseStreamFlushBytes
                 | Self::TrafficWsPayloadFlushBytes
         )
@@ -47,6 +55,10 @@ impl ConfigKey {
     pub fn all_keys() -> Vec<&'static str> {
         vec![
             "tls.enabled",
+            "server.timeout-secs",
+            "server.http1-max-header-size",
+            "server.http2-max-header-list-size",
+            "server.websocket-handshake-max-header-size",
             "tls.unsafe-ssl",
             "tls.disconnect-on-change",
             "tls.exclude",
@@ -74,6 +86,12 @@ impl FromStr for ConfigKey {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().replace('_', "-").as_str() {
+            "server.timeout-secs" => Ok(Self::ServerTimeoutSecs),
+            "server.http1-max-header-size" => Ok(Self::ServerHttp1MaxHeaderSize),
+            "server.http2-max-header-list-size" => Ok(Self::ServerHttp2MaxHeaderListSize),
+            "server.websocket-handshake-max-header-size" => {
+                Ok(Self::ServerWebSocketHandshakeMaxHeaderSize)
+            }
             "tls.enabled" => Ok(Self::TlsEnabled),
             "tls.unsafe-ssl" => Ok(Self::TlsUnsafeSsl),
             "tls.disconnect-on-change" => Ok(Self::TlsDisconnectOnChange),
@@ -109,6 +127,12 @@ impl FromStr for ConfigKey {
 impl std::fmt::Display for ConfigKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            Self::ServerTimeoutSecs => "server.timeout-secs",
+            Self::ServerHttp1MaxHeaderSize => "server.http1-max-header-size",
+            Self::ServerHttp2MaxHeaderListSize => "server.http2-max-header-list-size",
+            Self::ServerWebSocketHandshakeMaxHeaderSize => {
+                "server.websocket-handshake-max-header-size"
+            }
             Self::TlsEnabled => "tls.enabled",
             Self::TlsUnsafeSsl => "tls.unsafe-ssl",
             Self::TlsDisconnectOnChange => "tls.disconnect-on-change",

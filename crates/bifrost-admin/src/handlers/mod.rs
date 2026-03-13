@@ -23,6 +23,8 @@ use hyper::{Response, StatusCode};
 use serde::Serialize;
 
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
+pub const ADMIN_CORS_ALLOW_HEADERS: &str = "Content-Type, Authorization, X-Client-Id";
+pub const PUBLIC_CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
 
 pub fn full_body(body: impl Into<Bytes>) -> BoxBody {
     http_body_util::Full::new(body.into())
@@ -35,9 +37,13 @@ pub fn empty_body() -> BoxBody {
 }
 
 pub fn json_response<T: Serialize>(data: &T) -> Response<BoxBody> {
+    json_response_with_status(StatusCode::OK, data)
+}
+
+pub fn json_response_with_status<T: Serialize>(status: StatusCode, data: &T) -> Response<BoxBody> {
     match serde_json::to_string(data) {
         Ok(json) => Response::builder()
-            .status(StatusCode::OK)
+            .status(status)
             .header("Content-Type", "application/json")
             .header("Access-Control-Allow-Origin", "*")
             .body(full_body(json))
@@ -92,11 +98,69 @@ pub fn cors_preflight() -> Response<BoxBody> {
             "Access-Control-Allow-Methods",
             "GET, POST, PUT, DELETE, OPTIONS",
         )
-        .header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Authorization",
-        )
+        .header("Access-Control-Allow-Headers", ADMIN_CORS_ALLOW_HEADERS)
         .header("Access-Control-Max-Age", "86400")
         .body(empty_body())
         .unwrap()
+}
+
+pub fn public_response_builder(status: StatusCode) -> hyper::http::response::Builder {
+    Response::builder()
+        .status(status)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", PUBLIC_CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", ADMIN_CORS_ALLOW_HEADERS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        cors_preflight, public_response_builder, ADMIN_CORS_ALLOW_HEADERS,
+        PUBLIC_CORS_ALLOW_METHODS,
+    };
+    use hyper::StatusCode;
+
+    #[test]
+    fn cors_preflight_allows_desktop_client_header() {
+        let response = cors_preflight();
+        let headers = response.headers();
+        let allow_headers = headers
+            .get("Access-Control-Allow-Headers")
+            .and_then(|value| value.to_str().ok());
+
+        assert_eq!(allow_headers, Some(ADMIN_CORS_ALLOW_HEADERS));
+        assert!(
+            allow_headers
+                .map(|value| value.contains("X-Client-Id"))
+                .unwrap_or(false),
+            "desktop requests require X-Client-Id to pass CORS preflight"
+        );
+    }
+
+    #[test]
+    fn public_response_builder_includes_cors_headers() {
+        let response = public_response_builder(StatusCode::OK)
+            .body(super::empty_body())
+            .unwrap();
+        let headers = response.headers();
+
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Methods")
+                .and_then(|value| value.to_str().ok()),
+            Some(PUBLIC_CORS_ALLOW_METHODS)
+        );
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Headers")
+                .and_then(|value| value.to_str().ok()),
+            Some(ADMIN_CORS_ALLOW_HEADERS)
+        );
+    }
 }

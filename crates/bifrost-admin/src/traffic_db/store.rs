@@ -2,37 +2,90 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use bifrost_storage::{MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
 use lru::LruCache;
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::broadcast;
 
 use super::query::{Direction, QueryParams, QueryResult};
-use super::schema::{get_insert_sql, get_update_sql, init_database, InitError};
-use super::types::{encode_flags, TrafficDbStats, TrafficSummaryCompact};
+use super::schema::{
+    get_insert_detail_sql, get_insert_sql, get_update_detail_sql, get_update_sql, init_database,
+    InitError,
+};
+use super::types::{
+    build_socket_status_summary, encode_flags, summarize_matched_rules, TrafficDbStats,
+    TrafficSummaryCompact,
+};
 use crate::body_store::BodyRef;
-use crate::traffic::{SocketStatus, TrafficRecord};
+use crate::traffic::TrafficRecord;
 
 const DEFAULT_CACHE_SIZE: usize = 500;
 const CLEANUP_CHECK_INTERVAL: u64 = 100;
+const CLEANUP_LOW_WATERMARK_PERCENT: usize = 95;
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 pub type SharedTrafficDbStore = Arc<TrafficDbStore>;
 type CleanupNotifier = Arc<dyn Fn(&[String]) + Send + Sync>;
+
+type SerializedBlob = Option<Vec<u8>>;
+
+struct SerializedDetailFields {
+    timing_blob: SerializedBlob,
+    req_headers_blob: SerializedBlob,
+    res_headers_blob: SerializedBlob,
+    rules_blob: SerializedBlob,
+    socket_status_blob: SerializedBlob,
+    req_body_blob: SerializedBlob,
+    res_body_blob: SerializedBlob,
+    raw_req_body_blob: SerializedBlob,
+    raw_res_body_blob: SerializedBlob,
+    orig_req_headers_blob: SerializedBlob,
+    actual_res_headers_blob: SerializedBlob,
+    req_script_results_blob: SerializedBlob,
+    res_script_results_blob: SerializedBlob,
+    decode_req_results_blob: SerializedBlob,
+    decode_res_results_blob: SerializedBlob,
+}
+
+#[derive(Clone)]
+struct CachedValue<T> {
+    value: T,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum QueryTotalMode {
+    None,
+    Estimated,
+    Exact,
+}
 
 pub struct TrafficDbStore {
     db_path: PathBuf,
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
+    record_count: AtomicUsize,
     max_records: AtomicUsize,
     max_db_size_bytes: AtomicU64,
     retention_hours: AtomicU64,
     tx: broadcast::Sender<TrafficRecord>,
     current_sequence: AtomicU64,
-    recent_cache: RwLock<LruCache<String, TrafficRecord>>,
+    // 仅用于“活跃/未完成连接”的轻量缓存：支持 traffic 列表/推送所需字段。
+    // 详细信息（headers/body/script results 等）一律从 DB 按需读取，避免常驻内存膨胀。
+    recent_cache: RwLock<LruCache<String, TrafficSummaryCompact>>,
     write_count: AtomicU64,
     cleanup_notifier: RwLock<Option<CleanupNotifier>>,
+    host_metrics_cache: Mutex<Option<CachedValue<Vec<HostMetricsAggregate>>>>,
+    app_metrics_cache: Mutex<Option<CachedValue<Vec<AppMetricsAggregate>>>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RecentCacheStats {
+    pub len: usize,
+    pub cap: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +135,7 @@ impl TrafficDbStore {
         max_db_size_bytes: u64,
         retention_hours: Option<u64>,
     ) -> Result<Self, rusqlite::Error> {
+        let max_records = max_records.clamp(MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS);
         if !db_dir.exists() {
             fs::create_dir_all(&db_dir).ok();
         }
@@ -106,10 +160,11 @@ impl TrafficDbStore {
 
         let read_conn = Connection::open(&db_path)?;
         read_conn.execute_batch(
-            "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
+            "PRAGMA query_only = true; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728; PRAGMA foreign_keys = ON;",
         )?;
 
         let current_seq = Self::get_max_sequence(&write_conn).unwrap_or(0);
+        let record_count = Self::get_record_count(&write_conn).unwrap_or(0);
 
         let (tx, _) = broadcast::channel(1024);
 
@@ -124,6 +179,7 @@ impl TrafficDbStore {
             db_path,
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
+            record_count: AtomicUsize::new(record_count),
             max_records: AtomicUsize::new(max_records),
             max_db_size_bytes: AtomicU64::new(max_db_size_bytes),
             retention_hours: AtomicU64::new(retention_hours.unwrap_or(168)),
@@ -132,6 +188,8 @@ impl TrafficDbStore {
             recent_cache: RwLock::new(LruCache::new(cache_size)),
             write_count: AtomicU64::new(0),
             cleanup_notifier: RwLock::new(None),
+            host_metrics_cache: Mutex::new(None),
+            app_metrics_cache: Mutex::new(None),
         })
     }
 
@@ -139,10 +197,40 @@ impl TrafficDbStore {
         *self.cleanup_notifier.write() = Some(notifier);
     }
 
-    fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {
-        let conn = Connection::open(db_path)?;
+    pub fn recent_cache_stats(&self) -> RecentCacheStats {
+        let cache = self.recent_cache.read();
+        RecentCacheStats {
+            len: cache.len(),
+            cap: cache.cap().get(),
+        }
+    }
 
-        match init_database(&conn) {
+    fn invalidate_metrics_cache(&self) {
+        *self.host_metrics_cache.lock() = None;
+        *self.app_metrics_cache.lock() = None;
+    }
+
+    fn increase_record_count(&self, count: usize) {
+        if count > 0 {
+            self.record_count.fetch_add(count, Ordering::Relaxed);
+        }
+    }
+
+    fn decrease_record_count(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let _ = self
+            .record_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(count))
+            });
+    }
+
+    fn open_or_reset_database(db_path: &PathBuf) -> Result<Connection, rusqlite::Error> {
+        let mut conn = Connection::open(db_path)?;
+
+        match init_database(&mut conn) {
             Ok(()) => Ok(conn),
             Err(InitError::VersionMismatch { current, expected }) => {
                 tracing::warn!(
@@ -164,8 +252,8 @@ impl TrafficDbStore {
                     fs::remove_file(&shm_path).ok();
                 }
 
-                let new_conn = Connection::open(db_path)?;
-                init_database(&new_conn).map_err(|e| match e {
+                let mut new_conn = Connection::open(db_path)?;
+                init_database(&mut new_conn).map_err(|e| match e {
                     InitError::Sqlite(e) => e,
                     InitError::VersionMismatch { .. } => rusqlite::Error::QueryReturnedNoRows,
                 })?;
@@ -185,15 +273,15 @@ impl TrafficDbStore {
         .map(|v| v as u64)
     }
 
-    pub fn record(&self, mut record: TrafficRecord) {
-        let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
-        record.sequence = seq;
+    fn get_record_count(conn: &Connection) -> Option<usize> {
+        conn.query_row("SELECT COUNT(*) FROM traffic_records", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .ok()
+        .map(|v| v as usize)
+    }
 
-        let _ = self.tx.send(record.clone());
-
-        let conn = self.write_conn.lock();
-        let flags = encode_flags(&record);
-
+    fn serialize_detail_fields(record: &TrafficRecord) -> SerializedDetailFields {
         let timing_blob = record
             .timing
             .as_ref()
@@ -210,7 +298,7 @@ impl TrafficDbStore {
             .matched_rules
             .as_ref()
             .and_then(|r| bincode::serialize(r).ok());
-        let socket_blob = record
+        let socket_status_blob = record
             .socket_status
             .as_ref()
             .and_then(|s| bincode::serialize(s).ok());
@@ -220,6 +308,14 @@ impl TrafficDbStore {
             .and_then(|b| bincode::serialize(b).ok());
         let res_body_blob = record
             .response_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
+        let raw_req_body_blob = record
+            .raw_request_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
+        let raw_res_body_blob = record
+            .raw_response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
         let orig_req_headers_blob = record
@@ -233,58 +329,152 @@ impl TrafficDbStore {
         let req_script_results_blob = record
             .req_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
         let res_script_results_blob = record
             .res_script_results
             .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_req_results_blob = record
+            .decode_req_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
+        let decode_res_results_blob = record
+            .decode_res_script_results
+            .as_ref()
+            .and_then(|r| serde_json::to_vec(r).ok());
 
-        let result = conn.execute(
-            get_insert_sql(),
-            params![
-                seq as i64,
-                &record.id,
-                record.timestamp as i64,
-                &record.host,
-                &record.method,
-                record.status as i32,
-                &record.protocol,
-                &record.url,
-                &record.path,
-                &record.content_type,
-                &record.request_content_type,
-                record.request_size as i64,
-                record.response_size as i64,
-                record.duration_ms as i64,
-                &record.client_ip,
-                &record.client_app,
-                record.client_pid.map(|p| p as i32),
-                &record.client_path,
-                flags as i32,
-                record.frame_count as i64,
-                record.last_frame_id as i64,
-                timing_blob,
-                req_headers_blob,
-                res_headers_blob,
-                rules_blob,
-                socket_blob,
-                req_body_blob,
-                res_body_blob,
-                &record.actual_url,
-                &record.actual_host,
-                orig_req_headers_blob,
-                actual_res_headers_blob,
-                req_script_results_blob,
-                res_script_results_blob,
-                &record.error_message,
-            ],
-        );
+        SerializedDetailFields {
+            timing_blob,
+            req_headers_blob,
+            res_headers_blob,
+            rules_blob,
+            socket_status_blob,
+            req_body_blob,
+            res_body_blob,
+            raw_req_body_blob,
+            raw_res_body_blob,
+            orig_req_headers_blob,
+            actual_res_headers_blob,
+            req_script_results_blob,
+            res_script_results_blob,
+            decode_req_results_blob,
+            decode_res_results_blob,
+        }
+    }
+
+    pub fn record(&self, mut record: TrafficRecord) {
+        let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
+        record.sequence = seq;
+
+        let _ = self.tx.send(record.clone());
+
+        let mut conn = self.write_conn.lock();
+        let flags = encode_flags(&record);
+        let socket_is_open = record.socket_status.as_ref().is_some_and(|s| s.is_open);
+        let socket_send_count = record.socket_status.as_ref().map_or(0, |s| s.send_count);
+        let socket_receive_count = record.socket_status.as_ref().map_or(0, |s| s.receive_count);
+        let socket_send_bytes = record.socket_status.as_ref().map_or(0, |s| s.send_bytes);
+        let socket_receive_bytes = record.socket_status.as_ref().map_or(0, |s| s.receive_bytes);
+        let socket_frame_count = record
+            .socket_status
+            .as_ref()
+            .map_or(record.frame_count, |s| s.frame_count);
+        let (rule_count, rule_protocols) = summarize_matched_rules(record.matched_rules.as_deref());
+        let rule_protocols_json = serde_json::to_string(&rule_protocols).ok();
+        let SerializedDetailFields {
+            timing_blob,
+            req_headers_blob,
+            res_headers_blob,
+            rules_blob,
+            socket_status_blob,
+            req_body_blob,
+            res_body_blob,
+            raw_req_body_blob,
+            raw_res_body_blob,
+            orig_req_headers_blob,
+            actual_res_headers_blob,
+            req_script_results_blob,
+            res_script_results_blob,
+            decode_req_results_blob,
+            decode_res_results_blob,
+        } = Self::serialize_detail_fields(&record);
+
+        let result = (|| -> rusqlite::Result<()> {
+            let tx = conn.transaction()?;
+            tx.execute(
+                get_insert_sql(),
+                params![
+                    seq as i64,
+                    &record.id,
+                    record.timestamp as i64,
+                    &record.host,
+                    &record.method,
+                    record.status as i32,
+                    &record.protocol,
+                    &record.url,
+                    &record.path,
+                    &record.content_type,
+                    &record.request_content_type,
+                    record.request_size as i64,
+                    record.response_size as i64,
+                    record.duration_ms as i64,
+                    &record.client_ip,
+                    &record.client_app,
+                    record.client_pid.map(|p| p as i32),
+                    &record.client_path,
+                    flags as i32,
+                    record.frame_count as i64,
+                    record.last_frame_id as i64,
+                    socket_is_open,
+                    socket_send_count as i64,
+                    socket_receive_count as i64,
+                    socket_send_bytes as i64,
+                    socket_receive_bytes as i64,
+                    socket_frame_count as i64,
+                    rule_count as i64,
+                    rule_protocols_json,
+                ],
+            )?;
+            tx.execute(
+                get_insert_detail_sql(),
+                params![
+                    &record.id,
+                    timing_blob,
+                    req_headers_blob,
+                    res_headers_blob,
+                    rules_blob,
+                    req_body_blob,
+                    res_body_blob,
+                    raw_req_body_blob,
+                    raw_res_body_blob,
+                    &record.actual_url,
+                    &record.actual_host,
+                    orig_req_headers_blob,
+                    actual_res_headers_blob,
+                    socket_status_blob,
+                    req_script_results_blob,
+                    res_script_results_blob,
+                    decode_req_results_blob,
+                    decode_res_results_blob,
+                    &record.error_message,
+                ],
+            )?;
+            tx.commit()
+        })();
 
         if let Err(e) = result {
             tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to insert record");
         } else if Self::should_keep_in_cache(&record) {
+            self.increase_record_count(1);
+            self.invalidate_metrics_cache();
             let mut cache = self.recent_cache.write();
-            cache.put(record.id.clone(), record.clone());
+            cache.put(
+                record.id.clone(),
+                TrafficSummaryCompact::from_record(&record),
+            );
+        } else {
+            self.increase_record_count(1);
+            self.invalidate_metrics_cache();
         }
 
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
@@ -297,37 +487,18 @@ impl TrafficDbStore {
     where
         F: FnOnce(&mut TrafficRecord),
     {
-        let mut updater = Some(updater);
-        {
-            let mut cache = self.recent_cache.write();
-            let updated = if let Some(record) = cache.get_mut(id) {
-                if let Some(updater) = updater.take() {
-                    updater(record);
-                }
-                Some(record.clone())
-            } else {
-                None
-            };
-            if let Some(updated) = updated {
-                if !Self::should_keep_in_cache(&updated) {
-                    cache.pop(id);
-                }
-                drop(cache);
-                self.persist_update(&updated);
-                let _ = self.tx.send(updated);
-                return true;
-            }
-        }
-
+        // 注意：recent_cache 只保存 summary，不保存完整 TrafficRecord。
+        // update 必须以 DB 为准，否则会出现“用精简结构覆盖写回导致字段丢失”的风险。
         if let Some(mut record) = self.get_by_id_from_db(id) {
-            if let Some(updater) = updater.take() {
-                updater(&mut record);
-            }
+            updater(&mut record);
             self.persist_update(&record);
             {
                 let mut cache = self.recent_cache.write();
                 if Self::should_keep_in_cache(&record) {
-                    cache.put(record.id.clone(), record.clone());
+                    cache.put(
+                        record.id.clone(),
+                        TrafficSummaryCompact::from_record(&record),
+                    );
                 } else {
                     cache.pop(&record.id);
                 }
@@ -350,101 +521,113 @@ impl TrafficDbStore {
     }
 
     fn persist_update(&self, record: &TrafficRecord) {
-        let conn = self.write_conn.lock();
+        let mut conn = self.write_conn.lock();
         let flags = encode_flags(record);
-
-        let timing_blob = record
-            .timing
-            .as_ref()
-            .and_then(|t| bincode::serialize(t).ok());
-        let req_headers_blob = record
-            .request_headers
-            .as_ref()
-            .and_then(|h| bincode::serialize(h).ok());
-        let res_headers_blob = record
-            .response_headers
-            .as_ref()
-            .and_then(|h| bincode::serialize(h).ok());
-        let rules_blob = record
-            .matched_rules
-            .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
-        let socket_blob = record
+        let socket_is_open = record.socket_status.as_ref().is_some_and(|s| s.is_open);
+        let socket_send_count = record.socket_status.as_ref().map_or(0, |s| s.send_count);
+        let socket_receive_count = record.socket_status.as_ref().map_or(0, |s| s.receive_count);
+        let socket_send_bytes = record.socket_status.as_ref().map_or(0, |s| s.send_bytes);
+        let socket_receive_bytes = record.socket_status.as_ref().map_or(0, |s| s.receive_bytes);
+        let socket_frame_count = record
             .socket_status
             .as_ref()
-            .and_then(|s| bincode::serialize(s).ok());
-        let req_body_blob = record
-            .request_body_ref
-            .as_ref()
-            .and_then(|b| bincode::serialize(b).ok());
-        let res_body_blob = record
-            .response_body_ref
-            .as_ref()
-            .and_then(|b| bincode::serialize(b).ok());
-        let orig_req_headers_blob = record
-            .original_request_headers
-            .as_ref()
-            .and_then(|h| bincode::serialize(h).ok());
-        let actual_res_headers_blob = record
-            .actual_response_headers
-            .as_ref()
-            .and_then(|h| bincode::serialize(h).ok());
-        let req_script_results_blob = record
-            .req_script_results
-            .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
-        let res_script_results_blob = record
-            .res_script_results
-            .as_ref()
-            .and_then(|r| bincode::serialize(r).ok());
+            .map_or(record.frame_count, |s| s.frame_count);
+        let (rule_count, rule_protocols) = summarize_matched_rules(record.matched_rules.as_deref());
+        let rule_protocols_json = serde_json::to_string(&rule_protocols).ok();
+        let SerializedDetailFields {
+            timing_blob,
+            req_headers_blob,
+            res_headers_blob,
+            rules_blob,
+            socket_status_blob,
+            req_body_blob,
+            res_body_blob,
+            raw_req_body_blob,
+            raw_res_body_blob,
+            orig_req_headers_blob,
+            actual_res_headers_blob,
+            req_script_results_blob,
+            res_script_results_blob,
+            decode_req_results_blob,
+            decode_res_results_blob,
+        } = Self::serialize_detail_fields(record);
 
-        let result = conn.execute(
-            get_update_sql(),
-            params![
-                record.status as i32,
-                &record.content_type,
-                record.request_size as i64,
-                record.response_size as i64,
-                record.duration_ms as i64,
-                &record.client_app,
-                record.client_pid.map(|p| p as i32),
-                &record.client_path,
-                flags as i32,
-                record.frame_count as i64,
-                record.last_frame_id as i64,
-                timing_blob,
-                req_headers_blob,
-                res_headers_blob,
-                rules_blob,
-                socket_blob,
-                req_body_blob,
-                res_body_blob,
-                &record.actual_url,
-                &record.actual_host,
-                orig_req_headers_blob,
-                actual_res_headers_blob,
-                req_script_results_blob,
-                res_script_results_blob,
-                &record.error_message,
-                &record.id,
-            ],
-        );
+        let result = (|| -> rusqlite::Result<()> {
+            let tx = conn.transaction()?;
+            tx.execute(
+                get_update_sql(),
+                params![
+                    record.status as i32,
+                    &record.content_type,
+                    &record.request_content_type,
+                    record.request_size as i64,
+                    record.response_size as i64,
+                    record.duration_ms as i64,
+                    &record.client_app,
+                    record.client_pid.map(|p| p as i32),
+                    &record.client_path,
+                    flags as i32,
+                    record.frame_count as i64,
+                    record.last_frame_id as i64,
+                    socket_is_open,
+                    socket_send_count as i64,
+                    socket_receive_count as i64,
+                    socket_send_bytes as i64,
+                    socket_receive_bytes as i64,
+                    socket_frame_count as i64,
+                    rule_count as i64,
+                    rule_protocols_json,
+                    &record.id,
+                ],
+            )?;
+            tx.execute(
+                get_update_detail_sql(),
+                params![
+                    &record.id,
+                    timing_blob,
+                    req_headers_blob,
+                    res_headers_blob,
+                    rules_blob,
+                    req_body_blob,
+                    res_body_blob,
+                    raw_req_body_blob,
+                    raw_res_body_blob,
+                    &record.actual_url,
+                    &record.actual_host,
+                    orig_req_headers_blob,
+                    actual_res_headers_blob,
+                    socket_status_blob,
+                    req_script_results_blob,
+                    res_script_results_blob,
+                    decode_req_results_blob,
+                    decode_res_results_blob,
+                    &record.error_message,
+                ],
+            )?;
+            tx.commit()
+        })();
 
         if let Err(e) = result {
             tracing::error!(error = %e, id = %record.id, "[TRAFFIC_DB] Failed to update record");
+        } else {
+            self.invalidate_metrics_cache();
         }
     }
 
     pub fn query(&self, params: &QueryParams) -> QueryResult {
-        self.query_internal(params, true)
+        self.query_internal(params, QueryTotalMode::Estimated)
+    }
+
+    pub fn query_with_exact_total(&self, params: &QueryParams) -> QueryResult {
+        self.query_internal(params, QueryTotalMode::Exact)
     }
 
     /// 用于搜索等高频迭代场景的查询：不会计算 total（COUNT(*)），避免重复全表扫描。
     pub fn query_for_search(&self, params: &QueryParams) -> QueryResult {
-        self.query_internal(params, false)
+        self.query_internal(params, QueryTotalMode::None)
     }
 
-    fn query_internal(&self, params: &QueryParams, include_total: bool) -> QueryResult {
+    fn query_internal(&self, params: &QueryParams, total_mode: QueryTotalMode) -> QueryResult {
         let conn = self.read_conn.lock();
         let (sql, values) = params.build_select_sql();
         let param_refs: Vec<&dyn rusqlite::ToSql> =
@@ -459,7 +642,7 @@ impl TrafficDbStore {
                     next_cursor: None,
                     prev_cursor: None,
                     has_more: false,
-                    total: 0,
+                    total: self.record_count.load(Ordering::Relaxed),
                     server_sequence: self.current_sequence.load(Ordering::Relaxed),
                 };
             }
@@ -467,21 +650,19 @@ impl TrafficDbStore {
 
         let records: Vec<TrafficSummaryCompact> = stmt
             .query_map(param_refs.as_slice(), |row| {
-                let socket_blob: Option<Vec<u8>> = row.get(18)?;
-                let socket_status: Option<SocketStatus> =
-                    socket_blob.and_then(|b| bincode::deserialize(&b).ok());
-
-                let rules_blob: Option<Vec<u8>> = row.get(19)?;
-                let matched_rules: Vec<crate::traffic::MatchedRule> = rules_blob
-                    .and_then(|b| bincode::deserialize(&b).ok())
+                let socket_status = build_socket_status_summary(
+                    row.get::<_, bool>(18)?,
+                    row.get::<_, i64>(19)? as u64,
+                    row.get::<_, i64>(20)? as u64,
+                    row.get::<_, i64>(21)? as u64,
+                    row.get::<_, i64>(22)? as u64,
+                    row.get::<_, i64>(23)? as usize,
+                );
+                let rc = row.get::<_, i64>(24)? as usize;
+                let rp = row
+                    .get::<_, Option<String>>(25)?
+                    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
                     .unwrap_or_default();
-                let rc = matched_rules.len();
-                let rp: Vec<String> = matched_rules
-                    .iter()
-                    .map(|r| r.protocol.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
 
                 Ok(TrafficSummaryCompact {
                     seq: row.get::<_, i64>(0)? as u64,
@@ -493,7 +674,7 @@ impl TrafficDbStore {
                     proto: row.get(6)?,
                     p: row.get(8)?,
                     ct: row.get(9)?,
-                    req_ct: row.get(20)?,
+                    req_ct: row.get(26)?,
                     req_sz: row.get::<_, i64>(10)? as usize,
                     res_sz: row.get::<_, i64>(11)? as usize,
                     dur: row.get::<_, i64>(12)? as u64,
@@ -537,10 +718,16 @@ impl TrafficDbStore {
             }
         };
 
-        let total = if include_total {
-            self.count_with_conn(&conn, params)
-        } else {
-            0
+        let total = match total_mode {
+            QueryTotalMode::None => 0,
+            QueryTotalMode::Estimated => self.record_count.load(Ordering::Relaxed),
+            QueryTotalMode::Exact => {
+                if params.has_filters() {
+                    self.count_with_conn(&conn, params)
+                } else {
+                    self.record_count.load(Ordering::Relaxed)
+                }
+            }
         };
 
         QueryResult {
@@ -570,21 +757,21 @@ impl TrafficDbStore {
         }
 
         // 至少要取 id。
-        let mut columns: Vec<&str> = vec!["id"];
+        let mut columns: Vec<&str> = vec!["tr.id"];
         if need_url {
-            columns.push("url");
+            columns.push("tr.url");
         }
         if need_request_headers {
-            columns.push("request_headers_blob");
+            columns.push("td.request_headers_blob");
         }
         if need_response_headers {
-            columns.push("response_headers_blob");
+            columns.push("td.response_headers_blob");
         }
         if need_request_body_ref {
-            columns.push("request_body_ref_blob");
+            columns.push("td.request_body_ref_blob");
         }
         if need_response_body_ref {
-            columns.push("response_body_ref_blob");
+            columns.push("td.response_body_ref_blob");
         }
 
         // 全部不需要也就不查。
@@ -609,7 +796,9 @@ impl TrafficDbStore {
 
         let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
         let sql = format!(
-            "SELECT {} FROM traffic_records WHERE id IN ({})",
+            "SELECT {} FROM traffic_records tr \
+             LEFT JOIN traffic_record_details td ON td.id = tr.id \
+             WHERE tr.id IN ({})",
             columns.join(","),
             placeholders.join(",")
         );
@@ -710,24 +899,29 @@ impl TrafficDbStore {
     }
 
     pub fn get_by_id(&self, id: &str) -> Option<TrafficRecord> {
-        {
-            let mut cache = self.recent_cache.write();
-            if let Some(record) = cache.get(id) {
-                return Some(record.clone());
-            }
-        }
+        // 详情强制走 DB（避免把完整 record 常驻内存）
         self.get_by_id_from_db(id)
     }
 
     fn get_by_id_from_db(&self, id: &str) -> Option<TrafficRecord> {
         let conn = self.read_conn.lock();
+        let mut record = conn
+            .query_row(
+                "SELECT sequence, id, timestamp, host, method, status, protocol, url, path, \
+                 content_type, request_content_type, request_size, response_size, duration_ms, \
+                 client_ip, client_app, client_pid, client_path, flags, frame_count, \
+                 last_frame_id, socket_is_open, socket_send_count, socket_receive_count, \
+                 socket_send_bytes, socket_receive_bytes, socket_frame_count \
+                 FROM traffic_records WHERE id = ?",
+                [id],
+                Self::row_to_record_core,
+            )
+            .optional()
+            .ok()
+            .flatten()?;
 
-        conn.query_row("SELECT * FROM traffic_records WHERE id = ?", [id], |row| {
-            Self::row_to_record(row)
-        })
-        .optional()
-        .ok()
-        .flatten()
+        Self::load_record_details(&conn, id, &mut record);
+        Some(record)
     }
 
     pub fn get_by_ids(&self, ids: &[&str]) -> Vec<TrafficSummaryCompact> {
@@ -739,8 +933,10 @@ impl TrafficDbStore {
         let sql = format!(
             "SELECT sequence, id, timestamp, host, method, status, protocol, \
              url, path, content_type, request_size, response_size, duration_ms, \
-             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob, \
-             matched_rules_blob \
+             client_ip, client_app, client_pid, flags, frame_count, \
+             socket_is_open, socket_send_count, socket_receive_count, \
+             socket_send_bytes, socket_receive_bytes, socket_frame_count, \
+             rule_count, rule_protocols, request_content_type \
              FROM traffic_records WHERE id IN ({}) ORDER BY sequence DESC",
             placeholders.join(",")
         );
@@ -755,21 +951,19 @@ impl TrafficDbStore {
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
 
         stmt.query_map(params.as_slice(), |row| {
-            let socket_blob: Option<Vec<u8>> = row.get(18)?;
-            let socket_status: Option<SocketStatus> =
-                socket_blob.and_then(|b| bincode::deserialize(&b).ok());
-
-            let rules_blob: Option<Vec<u8>> = row.get(19)?;
-            let matched_rules: Vec<crate::traffic::MatchedRule> = rules_blob
-                .and_then(|b| bincode::deserialize(&b).ok())
+            let socket_status = build_socket_status_summary(
+                row.get::<_, bool>(18)?,
+                row.get::<_, i64>(19)? as u64,
+                row.get::<_, i64>(20)? as u64,
+                row.get::<_, i64>(21)? as u64,
+                row.get::<_, i64>(22)? as u64,
+                row.get::<_, i64>(23)? as usize,
+            );
+            let rc = row.get::<_, i64>(24)? as usize;
+            let rp = row
+                .get::<_, Option<String>>(25)?
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
                 .unwrap_or_default();
-            let rc = matched_rules.len();
-            let rp: Vec<String> = matched_rules
-                .iter()
-                .map(|r| r.protocol.clone())
-                .collect::<std::collections::HashSet<_>>()
-                .into_iter()
-                .collect();
 
             Ok(TrafficSummaryCompact {
                 seq: row.get::<_, i64>(0)? as u64,
@@ -781,7 +975,7 @@ impl TrafficDbStore {
                 proto: row.get(6)?,
                 p: row.get(8)?,
                 ct: row.get(9)?,
-                req_ct: row.get(20)?,
+                req_ct: row.get(26)?,
                 req_sz: row.get::<_, i64>(10)? as usize,
                 res_sz: row.get::<_, i64>(11)? as usize,
                 dur: row.get::<_, i64>(12)? as u64,
@@ -809,19 +1003,7 @@ impl TrafficDbStore {
         .unwrap_or_default()
     }
 
-    fn row_to_record(row: &rusqlite::Row) -> rusqlite::Result<TrafficRecord> {
-        let timing_blob: Option<Vec<u8>> = row.get("timing_blob")?;
-        let req_headers_blob: Option<Vec<u8>> = row.get("request_headers_blob")?;
-        let res_headers_blob: Option<Vec<u8>> = row.get("response_headers_blob")?;
-        let rules_blob: Option<Vec<u8>> = row.get("matched_rules_blob")?;
-        let socket_blob: Option<Vec<u8>> = row.get("socket_status_blob")?;
-        let req_body_blob: Option<Vec<u8>> = row.get("request_body_ref_blob")?;
-        let res_body_blob: Option<Vec<u8>> = row.get("response_body_ref_blob")?;
-        let orig_req_headers_blob: Option<Vec<u8>> = row.get("original_request_headers_blob")?;
-        let actual_res_headers_blob: Option<Vec<u8>> = row.get("actual_response_headers_blob")?;
-        let req_script_results_blob: Option<Vec<u8>> = row.get("req_script_results_blob")?;
-        let res_script_results_blob: Option<Vec<u8>> = row.get("res_script_results_blob")?;
-
+    fn row_to_record_core(row: &rusqlite::Row) -> rusqlite::Result<TrafficRecord> {
         let flags: i32 = row.get("flags")?;
 
         Ok(TrafficRecord {
@@ -851,23 +1033,98 @@ impl TrafficDbStore {
             is_replay: flags & 32 != 0,
             frame_count: row.get::<_, i64>("frame_count")? as usize,
             last_frame_id: row.get::<_, i64>("last_frame_id")? as u64,
-            timing: timing_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            request_headers: req_headers_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            response_headers: res_headers_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            matched_rules: rules_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            socket_status: socket_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            request_body_ref: req_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            response_body_ref: res_body_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            actual_url: row.get("actual_url")?,
-            actual_host: row.get("actual_host")?,
-            original_request_headers: orig_req_headers_blob
-                .and_then(|b| bincode::deserialize(&b).ok()),
-            actual_response_headers: actual_res_headers_blob
-                .and_then(|b| bincode::deserialize(&b).ok()),
-            error_message: row.get("error_message")?,
-            req_script_results: req_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
-            res_script_results: res_script_results_blob.and_then(|b| bincode::deserialize(&b).ok()),
+            timing: None,
+            request_headers: None,
+            response_headers: None,
+            matched_rules: None,
+            socket_status: build_socket_status_summary(
+                row.get::<_, bool>("socket_is_open")?,
+                row.get::<_, i64>("socket_send_count")? as u64,
+                row.get::<_, i64>("socket_receive_count")? as u64,
+                row.get::<_, i64>("socket_send_bytes")? as u64,
+                row.get::<_, i64>("socket_receive_bytes")? as u64,
+                row.get::<_, i64>("socket_frame_count")? as usize,
+            ),
+            request_body_ref: None,
+            response_body_ref: None,
+            raw_request_body_ref: None,
+            raw_response_body_ref: None,
+            actual_url: None,
+            actual_host: None,
+            original_request_headers: None,
+            actual_response_headers: None,
+            error_message: None,
+            req_script_results: None,
+            res_script_results: None,
+            decode_req_script_results: None,
+            decode_res_script_results: None,
         })
+    }
+
+    fn load_record_details(conn: &Connection, id: &str, record: &mut TrafficRecord) {
+        let _ = conn
+            .query_row(
+                "SELECT timing_blob, request_headers_blob, response_headers_blob, \
+                 matched_rules_blob, request_body_ref_blob, response_body_ref_blob, \
+                 raw_request_body_ref_blob, raw_response_body_ref_blob, actual_url, actual_host, \
+                 original_request_headers_blob, actual_response_headers_blob, \
+                 socket_status_blob, req_script_results_blob, res_script_results_blob, \
+                 decode_req_script_results_blob, decode_res_script_results_blob, error_message \
+                 FROM traffic_record_details WHERE id = ?",
+                [id],
+                |row| {
+                    let timing_blob: Option<Vec<u8>> = row.get(0)?;
+                    let req_headers_blob: Option<Vec<u8>> = row.get(1)?;
+                    let res_headers_blob: Option<Vec<u8>> = row.get(2)?;
+                    let rules_blob: Option<Vec<u8>> = row.get(3)?;
+                    let req_body_blob: Option<Vec<u8>> = row.get(4)?;
+                    let res_body_blob: Option<Vec<u8>> = row.get(5)?;
+                    let raw_req_body_blob: Option<Vec<u8>> = row.get(6)?;
+                    let raw_res_body_blob: Option<Vec<u8>> = row.get(7)?;
+                    let orig_req_headers_blob: Option<Vec<u8>> = row.get(10)?;
+                    let actual_res_headers_blob: Option<Vec<u8>> = row.get(11)?;
+                    let socket_status_blob: Option<Vec<u8>> = row.get(12)?;
+                    let req_script_results_blob: Option<Vec<u8>> = row.get(13)?;
+                    let res_script_results_blob: Option<Vec<u8>> = row.get(14)?;
+                    let decode_req_results_blob: Option<Vec<u8>> = row.get(15)?;
+                    let decode_res_results_blob: Option<Vec<u8>> = row.get(16)?;
+
+                    record.timing = timing_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.request_headers =
+                        req_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.response_headers =
+                        res_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.matched_rules = rules_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.request_body_ref =
+                        req_body_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.response_body_ref =
+                        res_body_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.raw_request_body_ref =
+                        raw_req_body_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.raw_response_body_ref =
+                        raw_res_body_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.actual_url = row.get(8)?;
+                    record.actual_host = row.get(9)?;
+                    record.original_request_headers =
+                        orig_req_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.actual_response_headers =
+                        actual_res_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.socket_status = socket_status_blob
+                        .and_then(|b| bincode::deserialize(&b).ok())
+                        .or_else(|| record.socket_status.clone());
+                    record.req_script_results =
+                        req_script_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
+                    record.res_script_results =
+                        res_script_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
+                    record.decode_req_script_results =
+                        decode_req_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
+                    record.decode_res_script_results =
+                        decode_res_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
+                    record.error_message = row.get(17)?;
+                    Ok(())
+                },
+            )
+            .optional();
     }
 
     pub fn clear(&self) {
@@ -897,6 +1154,9 @@ impl TrafficDbStore {
         if active_connection_ids.is_empty() {
             if let Err(e) = conn.execute("DELETE FROM traffic_records", []) {
                 tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear traffic records");
+            } else {
+                self.record_count.store(0, Ordering::Relaxed);
+                self.invalidate_metrics_cache();
             }
         } else {
             let placeholders: String = active_connection_ids
@@ -915,16 +1175,19 @@ impl TrafficDbStore {
                 rusqlite::params_from_iter(active_connection_ids.iter()),
             ) {
                 tracing::error!(error = %e, "[TRAFFIC_DB] Failed to clear traffic records");
+            } else {
+                self.record_count
+                    .store(active_connection_ids.len(), Ordering::Relaxed);
+                self.invalidate_metrics_cache();
             }
         }
 
         let mut cache = self.recent_cache.write();
         let preserved_ids: Vec<String> = cache
             .iter()
-            .filter(|(id, record)| {
+            .filter(|(id, summary)| {
                 active_ids_set.contains(id.as_str())
-                    || (record.is_websocket
-                        && record.socket_status.as_ref().is_some_and(|s| s.is_open))
+                    || (summary.is_websocket() && summary.ss.as_ref().is_some_and(|s| s.is_open))
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -981,6 +1244,8 @@ impl TrafficDbStore {
 
         match conn.execute(&sql, rusqlite::params_from_iter(ids.iter())) {
             Ok(count) => {
+                self.decrease_record_count(count);
+                self.invalidate_metrics_cache();
                 tracing::info!(count = count, "[TRAFFIC_DB] Deleted traffic records by ids");
             }
             Err(e) => {
@@ -991,22 +1256,29 @@ impl TrafficDbStore {
         self.remove_from_cache(ids);
     }
 
+    fn cleanup_low_watermark(max: usize) -> usize {
+        let low = max.saturating_mul(CLEANUP_LOW_WATERMARK_PERCENT) / 100;
+        low.max(1).min(max)
+    }
+
     fn maybe_cleanup(&self, conn: &Connection) {
         let max = self.max_records.load(Ordering::Relaxed);
+        let count = self.record_count.load(Ordering::Relaxed);
 
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM traffic_records", [], |row| row.get(0))
-            .unwrap_or(0);
-
-        if count as usize > max {
-            let excess = count as usize - max;
-            let deleted = self.delete_oldest_by_limit(conn, excess);
+        if count > max {
+            let target = Self::cleanup_low_watermark(max);
+            let delete_count = count.saturating_sub(target);
+            let deleted = self.delete_oldest_by_limit(conn, delete_count);
             if deleted > 0 {
+                self.decrease_record_count(deleted);
+                self.invalidate_metrics_cache();
                 tracing::debug!(
                     deleted = deleted,
                     max = max,
+                    target = target,
                     "[TRAFFIC_DB] Cleaned up old records"
                 );
+                Self::compact_with_conn(conn, false);
             }
         }
 
@@ -1027,6 +1299,8 @@ impl TrafficDbStore {
                 }
                 let deleted = self.delete_oldest_by_limit(conn, to_remove as usize);
                 if deleted > 0 {
+                    self.decrease_record_count(deleted);
+                    self.invalidate_metrics_cache();
                     tracing::info!(
                         deleted = deleted,
                         db_size = db_size,
@@ -1034,7 +1308,7 @@ impl TrafficDbStore {
                         target_size = target_size,
                         "[TRAFFIC_DB] Cleaned up records due to DB size limit"
                     );
-                    Self::compact_with_conn(conn, true);
+                    Self::compact_with_conn(conn, false);
                 }
             }
         }
@@ -1049,6 +1323,8 @@ impl TrafficDbStore {
         let conn = self.write_conn.lock();
         let deleted = self.delete_expired_by_cutoff(&conn, cutoff);
         if deleted > 0 {
+            self.decrease_record_count(deleted);
+            self.invalidate_metrics_cache();
             tracing::info!(
                 deleted = deleted,
                 retention_hours = retention_hours,
@@ -1059,12 +1335,7 @@ impl TrafficDbStore {
     }
 
     pub fn count(&self) -> usize {
-        let conn = self.read_conn.lock();
-        conn.query_row("SELECT COUNT(*) FROM traffic_records", [], |row| {
-            row.get::<_, i64>(0)
-        })
-        .map(|v| v as usize)
-        .unwrap_or(0)
+        self.record_count.load(Ordering::Relaxed)
     }
 
     pub fn stats(&self) -> TrafficDbStats {
@@ -1101,6 +1372,12 @@ impl TrafficDbStore {
     }
 
     pub fn aggregate_host_metrics(&self) -> Vec<HostMetricsAggregate> {
+        if let Some(cached) = self.host_metrics_cache.lock().clone() {
+            if cached.expires_at > Instant::now() {
+                return cached.value;
+            }
+        }
+
         let conn = self.read_conn.lock();
         let sql = "SELECT COALESCE(NULLIF(host, ''), 'Unknown') AS host, \
                    COUNT(*) AS requests, \
@@ -1125,26 +1402,39 @@ impl TrafficDbStore {
             }
         };
 
-        stmt.query_map([], |row| {
-            Ok(HostMetricsAggregate {
-                host: row.get(0)?,
-                requests: row.get::<_, i64>(1)? as u64,
-                bytes_sent: row.get::<_, i64>(2)? as u64,
-                bytes_received: row.get::<_, i64>(3)? as u64,
-                http_requests: row.get::<_, i64>(4)? as u64,
-                https_requests: row.get::<_, i64>(5)? as u64,
-                tunnel_requests: row.get::<_, i64>(6)? as u64,
-                ws_requests: row.get::<_, i64>(7)? as u64,
-                wss_requests: row.get::<_, i64>(8)? as u64,
-                h3_requests: row.get::<_, i64>(9)? as u64,
-                socks5_requests: row.get::<_, i64>(10)? as u64,
+        let out: Vec<HostMetricsAggregate> = stmt
+            .query_map([], |row| {
+                Ok(HostMetricsAggregate {
+                    host: row.get(0)?,
+                    requests: row.get::<_, i64>(1)? as u64,
+                    bytes_sent: row.get::<_, i64>(2)? as u64,
+                    bytes_received: row.get::<_, i64>(3)? as u64,
+                    http_requests: row.get::<_, i64>(4)? as u64,
+                    https_requests: row.get::<_, i64>(5)? as u64,
+                    tunnel_requests: row.get::<_, i64>(6)? as u64,
+                    ws_requests: row.get::<_, i64>(7)? as u64,
+                    wss_requests: row.get::<_, i64>(8)? as u64,
+                    h3_requests: row.get::<_, i64>(9)? as u64,
+                    socks5_requests: row.get::<_, i64>(10)? as u64,
+                })
             })
-        })
-        .map(|r| r.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+            .map(|r| r.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        *self.host_metrics_cache.lock() = Some(CachedValue {
+            value: out.clone(),
+            expires_at: Instant::now() + METRICS_CACHE_TTL,
+        });
+        out
     }
 
     pub fn aggregate_app_metrics(&self) -> Vec<AppMetricsAggregate> {
+        if let Some(cached) = self.app_metrics_cache.lock().clone() {
+            if cached.expires_at > Instant::now() {
+                return cached.value;
+            }
+        }
+
         let conn = self.read_conn.lock();
         let sql = "SELECT COALESCE(NULLIF(client_app, ''), 'Unknown') AS app_name, \
                    COUNT(*) AS requests, \
@@ -1169,23 +1459,30 @@ impl TrafficDbStore {
             }
         };
 
-        stmt.query_map([], |row| {
-            Ok(AppMetricsAggregate {
-                app_name: row.get(0)?,
-                requests: row.get::<_, i64>(1)? as u64,
-                bytes_sent: row.get::<_, i64>(2)? as u64,
-                bytes_received: row.get::<_, i64>(3)? as u64,
-                http_requests: row.get::<_, i64>(4)? as u64,
-                https_requests: row.get::<_, i64>(5)? as u64,
-                tunnel_requests: row.get::<_, i64>(6)? as u64,
-                ws_requests: row.get::<_, i64>(7)? as u64,
-                wss_requests: row.get::<_, i64>(8)? as u64,
-                h3_requests: row.get::<_, i64>(9)? as u64,
-                socks5_requests: row.get::<_, i64>(10)? as u64,
+        let out: Vec<AppMetricsAggregate> = stmt
+            .query_map([], |row| {
+                Ok(AppMetricsAggregate {
+                    app_name: row.get(0)?,
+                    requests: row.get::<_, i64>(1)? as u64,
+                    bytes_sent: row.get::<_, i64>(2)? as u64,
+                    bytes_received: row.get::<_, i64>(3)? as u64,
+                    http_requests: row.get::<_, i64>(4)? as u64,
+                    https_requests: row.get::<_, i64>(5)? as u64,
+                    tunnel_requests: row.get::<_, i64>(6)? as u64,
+                    ws_requests: row.get::<_, i64>(7)? as u64,
+                    wss_requests: row.get::<_, i64>(8)? as u64,
+                    h3_requests: row.get::<_, i64>(9)? as u64,
+                    socks5_requests: row.get::<_, i64>(10)? as u64,
+                })
             })
-        })
-        .map(|r| r.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+            .map(|r| r.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default();
+
+        *self.app_metrics_cache.lock() = Some(CachedValue {
+            value: out.clone(),
+            expires_at: Instant::now() + METRICS_CACHE_TTL,
+        });
+        out
     }
 
     pub fn current_sequence(&self) -> u64 {
@@ -1196,10 +1493,28 @@ impl TrafficDbStore {
         self.tx.subscribe()
     }
 
+    pub fn find_latest_client_path_by_app(&self, app_name: &str) -> Option<String> {
+        let conn = self.read_conn.lock();
+        conn.query_row(
+            "SELECT client_path FROM traffic_records WHERE client_app = ?1 AND client_path IS NOT NULL ORDER BY sequence DESC LIMIT 1",
+            [app_name],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten()
+    }
+
     pub fn set_max_records(&self, max: usize) {
-        let old = self.max_records.swap(max, Ordering::SeqCst);
-        if old != max {
-            tracing::info!(old = old, new = max, "[TRAFFIC_DB] Max records updated");
+        let normalized = max.clamp(MIN_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS);
+        let old = self.max_records.swap(normalized, Ordering::SeqCst);
+        if old != normalized {
+            tracing::info!(
+                old = old,
+                new = normalized,
+                "[TRAFFIC_DB] Max records updated"
+            );
             let conn = self.write_conn.lock();
             self.maybe_cleanup(&conn);
         }
@@ -1261,6 +1576,9 @@ impl TrafficDbStore {
             if let Ok(count) = conn.execute(&sql, rusqlite::params_from_iter(chunk.iter())) {
                 deleted += count;
             }
+        }
+        if deleted > 0 {
+            self.invalidate_metrics_cache();
         }
         self.remove_from_cache(ids);
         deleted
@@ -1360,7 +1678,7 @@ fn format_timestamp_ms(timestamp_ms: u64) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
+pub fn start_db_cleanup_task(store: SharedTrafficDbStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         loop {
@@ -1370,7 +1688,7 @@ pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
                 store.compact_db(false);
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -1487,6 +1805,109 @@ mod tests {
     }
 
     #[test]
+    fn test_get_by_id_loads_detail_fields_from_split_table() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        let mut record = TrafficRecord::new(
+            "detail-1".to_string(),
+            "POST".to_string(),
+            "https://a.com/p1".to_string(),
+        );
+        record.actual_url = Some("https://upstream.example.com/p1".to_string());
+        record.actual_host = Some("upstream.example.com".to_string());
+        record.request_headers = Some(vec![(
+            "Content-Type".to_string(),
+            "application/json".to_string(),
+        )]);
+        record.response_headers = Some(vec![("X-Trace".to_string(), "trace-1".to_string())]);
+        record.request_body_ref = Some(BodyRef::Inline {
+            data: "{\"hello\":1}".to_string(),
+        });
+        record.response_body_ref = Some(BodyRef::Inline {
+            data: "{\"ok\":true}".to_string(),
+        });
+        record.socket_status = Some(crate::traffic::SocketStatus {
+            is_open: false,
+            send_count: 3,
+            receive_count: 5,
+            send_bytes: 120,
+            receive_bytes: 240,
+            frame_count: 8,
+            close_code: Some(1000),
+            close_reason: Some("Normal closure".to_string()),
+        });
+        record.error_message = Some("upstream timeout".to_string());
+        store.record(record);
+
+        let loaded = store.get_by_id("detail-1").expect("record should exist");
+        assert_eq!(loaded.actual_host.as_deref(), Some("upstream.example.com"));
+        assert!(loaded.request_headers.as_ref().is_some_and(|h| h
+            .iter()
+            .any(|(k, v)| k == "Content-Type" && v == "application/json")));
+        assert!(matches!(
+            loaded.request_body_ref,
+            Some(BodyRef::Inline { .. })
+        ));
+        assert_eq!(loaded.error_message.as_deref(), Some("upstream timeout"));
+        assert_eq!(
+            loaded.socket_status.as_ref().and_then(|s| s.close_code),
+            Some(1000)
+        );
+        assert_eq!(
+            loaded
+                .socket_status
+                .as_ref()
+                .and_then(|s| s.close_reason.as_deref()),
+            Some("Normal closure")
+        );
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_get_by_ids_keeps_request_content_type_and_rule_summary() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        let mut record = TrafficRecord::new(
+            "summary-1".to_string(),
+            "POST".to_string(),
+            "https://a.com/p1".to_string(),
+        );
+        record.request_content_type = Some("application/json".to_string());
+        record.has_rule_hit = true;
+        record.matched_rules = Some(vec![
+            crate::traffic::MatchedRule {
+                pattern: "/p1".to_string(),
+                protocol: "reqHeaders".to_string(),
+                value: "X-Test: 1".to_string(),
+                rule_name: Some("rule-1".to_string()),
+                raw: None,
+                line: Some(1),
+            },
+            crate::traffic::MatchedRule {
+                pattern: "/p1".to_string(),
+                protocol: "resBody".to_string(),
+                value: "ok".to_string(),
+                rule_name: Some("rule-2".to_string()),
+                raw: None,
+                line: Some(2),
+            },
+        ]);
+        store.record(record);
+
+        let rows = store.get_by_ids(&["summary-1"]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].req_ct.as_deref(), Some("application/json"));
+        assert_eq!(rows[0].rc, 2);
+        assert!(rows[0].rp.iter().any(|p| p == "reqHeaders"));
+        assert!(rows[0].rp.iter().any(|p| p == "resBody"));
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
     fn test_clear_removes_pending_records_when_no_active_connections() {
         let dir = create_test_dir();
         let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
@@ -1501,6 +1922,59 @@ mod tests {
 
         store.clear_with_active_ids(&[]);
         assert_eq!(store.count(), 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_cleanup_drops_to_low_watermark_instead_of_exact_limit() {
+        let dir = create_test_dir();
+        let max_records = MIN_TRAFFIC_MAX_RECORDS;
+        let store = TrafficDbStore::new(dir.clone(), max_records, 0, None).unwrap();
+
+        for i in 0..=max_records {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        let expected_count = max_records * CLEANUP_LOW_WATERMARK_PERCENT / 100;
+        assert_eq!(store.count(), expected_count);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_set_max_records_clamps_to_supported_range() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 10, 0, None).unwrap();
+
+        store.set_max_records(10);
+        assert_eq!(store.stats().max_records, MIN_TRAFFIC_MAX_RECORDS);
+
+        store.set_max_records(MAX_TRAFFIC_MAX_RECORDS + 1);
+        assert_eq!(store.stats().max_records, MAX_TRAFFIC_MAX_RECORDS);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_schema_does_not_keep_flags_index() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 5_000, 0, None).unwrap();
+
+        let conn = store.read_conn.lock();
+        let has_idx_flags: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_flags')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(!has_idx_flags);
 
         cleanup_test_dir(&dir);
     }

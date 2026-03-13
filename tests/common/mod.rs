@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 pub struct TestProxy {
     pub port: u16,
     pub host: String,
+    pub ca_cert_der: Option<Vec<u8>>,
     pub server: ProxyServer,
     rules: Arc<TestRulesResolver>,
 }
@@ -62,6 +63,14 @@ impl RulesResolver for TestRulesResolver {
                 match rule.protocol {
                     Protocol::Host => {
                         resolved.host = Some(rule.value.clone());
+                    }
+                    Protocol::Ws => {
+                        resolved.host = Some(rule.value.clone());
+                        resolved.host_protocol = Some(Protocol::Ws);
+                    }
+                    Protocol::Wss => {
+                        resolved.host = Some(rule.value.clone());
+                        resolved.host_protocol = Some(Protocol::Wss);
                     }
                     Protocol::ReqHeaders => {
                         if let Some((key, value)) = rule.value.split_once('=') {
@@ -159,12 +168,44 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     config.host = "127.0.0.1".to_string();
 
     let rules = Arc::new(TestRulesResolver::new());
-    let server =
-        ProxyServer::new(config.clone()).with_rules(Arc::clone(&rules) as Arc<dyn RulesResolver>);
+    // 为 TLS interception 测试准备 CA/证书生成器。
+    let tls_config = if config.enable_tls_interception {
+        bifrost_tls::init_crypto_provider();
+
+        let ca = Arc::new(bifrost_tls::generate_root_ca().expect("Failed to generate test CA"));
+        let cert_generator = Arc::new(bifrost_tls::DynamicCertGenerator::new(Arc::clone(&ca)));
+        let sni_resolver = Arc::new(bifrost_tls::SniResolver::new(Arc::clone(&ca)));
+
+        let ca_cert_der = ca
+            .certificate_der()
+            .expect("Failed to get CA cert DER")
+            .as_ref()
+            .to_vec();
+        let ca_key_der = match ca.private_key_der() {
+            bifrost_tls::rustls::pki_types::PrivateKeyDer::Pkcs8(k) => {
+                k.secret_pkcs8_der().to_vec()
+            }
+            _ => vec![],
+        };
+
+        Arc::new(bifrost_proxy::TlsConfig {
+            ca_cert: Some(ca_cert_der),
+            ca_key: Some(ca_key_der),
+            cert_generator: Some(cert_generator),
+            sni_resolver: Some(sni_resolver),
+        })
+    } else {
+        Arc::new(bifrost_proxy::TlsConfig::default())
+    };
+
+    let server = ProxyServer::new(config.clone())
+        .with_rules(Arc::clone(&rules) as Arc<dyn RulesResolver>)
+        .with_tls_config(Arc::clone(&tls_config));
 
     let serve_rules = Arc::clone(&rules);
-    let serve_server =
-        ProxyServer::new(config.clone()).with_rules(serve_rules as Arc<dyn RulesResolver>);
+    let serve_server = ProxyServer::new(config.clone())
+        .with_rules(serve_rules as Arc<dyn RulesResolver>)
+        .with_tls_config(Arc::clone(&tls_config));
 
     tokio::spawn(async move {
         let _ = serve_server.serve(listener).await;
@@ -175,6 +216,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
     TestProxy {
         port: config.port,
         host: config.host,
+        ca_cert_der: tls_config.ca_cert.clone(),
         server,
         rules,
     }
@@ -305,6 +347,112 @@ pub struct MockHttpsServer {
 }
 
 #[allow(dead_code)]
+pub struct MockH2TlsServer {
+    pub port: u16,
+    pub addr: SocketAddr,
+    host_header_seen: Arc<parking_lot::Mutex<Option<bool>>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+#[allow(dead_code)]
+impl MockH2TlsServer {
+    pub async fn start() -> Self {
+        use http_body_util::Full;
+        use hyper::server::conn::http2;
+        use hyper::service::service_fn;
+        use hyper::{Request, Response, StatusCode};
+        use hyper_util::rt::{TokioExecutor, TokioIo};
+        use tokio_rustls::rustls;
+        use tokio_rustls::rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio_rustls::TlsAcceptor;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Self-signed cert is enough because tests run proxy with unsafe_ssl=true.
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let key_der = signing_key.serialize_der();
+
+        let certs = vec![cert.der().clone()];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        let mut server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap();
+        server_config.alpn_protocols = vec![b"h2".to_vec()];
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let host_header_seen: Arc<parking_lot::Mutex<Option<bool>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let notify = Arc::new(tokio::sync::Notify::new());
+
+        let host_header_seen_for_task = Arc::clone(&host_header_seen);
+        let notify_for_task = Arc::clone(&notify);
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                let acceptor = acceptor.clone();
+                let host_header_seen = Arc::clone(&host_header_seen_for_task);
+                let notify = Arc::clone(&notify_for_task);
+
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(stream).await {
+                        Ok(s) => s,
+                        Err(_) => return,
+                    };
+
+                    let service = service_fn(move |req: Request<hyper::body::Incoming>| {
+                        let host_header_seen = Arc::clone(&host_header_seen);
+                        let notify = Arc::clone(&notify);
+                        async move {
+                            let has_host = req.headers().get(hyper::header::HOST).is_some();
+                            *host_header_seen.lock() = Some(has_host);
+                            notify.notify_waiters();
+
+                            let mut resp = Response::new(Full::new(Bytes::from_static(b"ok")));
+                            *resp.status_mut() = StatusCode::OK;
+                            Ok::<_, hyper::Error>(resp)
+                        }
+                    });
+
+                    let io = TokioIo::new(tls_stream);
+                    let _ = http2::Builder::new(TokioExecutor::new())
+                        .max_header_list_size(256 * 1024)
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        Self {
+            port: addr.port(),
+            addr,
+            host_header_seen,
+            notify,
+        }
+    }
+
+    pub async fn wait_host_header_seen(&self) -> Option<bool> {
+        // If the request already arrived, return immediately.
+        if self.host_header_seen.lock().is_some() {
+            return *self.host_header_seen.lock();
+        }
+        let _ = tokio::time::timeout(tokio::time::Duration::from_secs(5), self.notify.notified())
+            .await
+            .ok();
+        *self.host_header_seen.lock()
+    }
+}
+
+#[allow(dead_code)]
 impl MockHttpsServer {
     pub async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -351,6 +499,7 @@ mod tests {
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),
+            ca_cert_der: None,
             server,
             rules,
         };
@@ -366,6 +515,7 @@ mod tests {
         let proxy = TestProxy {
             port: 8080,
             host: "127.0.0.1".to_string(),
+            ca_cert_der: None,
             server,
             rules,
         };

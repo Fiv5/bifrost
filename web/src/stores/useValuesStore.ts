@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { ValueItem } from '../api/values';
 import * as api from '../api';
+import { isConnectionIssueError } from '../api/client';
 
 interface ValuesState {
   values: ValueItem[];
@@ -40,7 +41,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       const response = await api.getValues();
       set({ values: response.values, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
@@ -63,7 +64,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       get().selectValue(name);
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -78,7 +79,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -102,7 +103,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       get().selectValue(selectedValueName);
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, saving: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, saving: false });
       return false;
     }
   },
@@ -133,7 +134,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },
@@ -171,7 +172,7 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       }
       return true;
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
       return false;
     }
   },

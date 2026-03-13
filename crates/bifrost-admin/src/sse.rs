@@ -126,6 +126,18 @@ impl SseHub {
             close_reason: None,
         })
     }
+
+    pub fn connection_count(&self) -> usize {
+        self.connections.read().len()
+    }
+
+    pub fn open_connection_count(&self) -> usize {
+        self.connections
+            .read()
+            .values()
+            .filter(|s| s.is_open)
+            .count()
+    }
 }
 
 impl Default for SseHub {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { MetricsSnapshot, SystemOverview } from '../types';
 import * as api from '../api';
+import { isConnectionIssueError } from '../api/client';
 import pushService, {
   type OverviewData,
   type MetricsData,
@@ -47,7 +48,7 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       const metrics = await api.getMetrics();
       set({ current: metrics });
     } catch (e) {
-      set({ error: (e as Error).message });
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message });
     }
   },
 
@@ -57,7 +58,10 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       const history = await api.getMetricsHistory(limit);
       set({ history, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({
+        error: isConnectionIssueError(e) ? null : (e as Error).message,
+        loading: false,
+      });
     }
   },
 
@@ -67,7 +71,10 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       const overview = await api.getSystemOverview();
       set({ overview, current: overview.metrics, loading: false });
     } catch (e) {
-      set({ error: (e as Error).message, loading: false });
+      set({
+        error: isConnectionIssueError(e) ? null : (e as Error).message,
+        loading: false,
+      });
     }
   },
 

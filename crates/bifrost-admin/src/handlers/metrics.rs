@@ -5,50 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::state::SharedAdminState;
-use crate::traffic::SocketStatus;
 use crate::traffic_db::{AppMetricsAggregate, HostMetricsAggregate};
-
-#[derive(Debug, Clone)]
-struct MetricTraffic {
-    id: String,
-    host: String,
-    protocol: String,
-    request_size: u64,
-    response_size: u64,
-    is_websocket: bool,
-    is_sse: bool,
-    is_tunnel: bool,
-    socket_status: Option<SocketStatus>,
-    client_app: Option<String>,
-}
-
-impl From<crate::traffic::TrafficSummary> for MetricTraffic {
-    fn from(value: crate::traffic::TrafficSummary) -> Self {
-        Self {
-            id: value.id,
-            host: value.host,
-            protocol: value.protocol,
-            request_size: value.request_size as u64,
-            response_size: value.response_size as u64,
-            is_websocket: value.is_websocket,
-            is_sse: value.is_sse,
-            is_tunnel: value.is_tunnel,
-            socket_status: value.socket_status,
-            client_app: value.client_app,
-        }
-    }
-}
-
-async fn load_metric_traffic(state: SharedAdminState) -> Vec<MetricTraffic> {
-    if let Some(ref traffic_store) = state.traffic_store {
-        return traffic_store
-            .get_all()
-            .into_iter()
-            .map(MetricTraffic::from)
-            .collect();
-    }
-    Vec::new()
-}
 
 pub async fn handle_metrics(
     req: Request<Incoming>,
@@ -148,55 +105,7 @@ async fn get_app_metrics(state: SharedAdminState) -> Response<BoxBody> {
             );
         }
     } else {
-        let records = load_metric_traffic(state.clone()).await;
-
-        for mut record in records {
-            if (record.is_websocket || record.is_sse || record.is_tunnel)
-                && record.socket_status.is_none()
-            {
-                if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
-                    record.socket_status = Some(status);
-                }
-            }
-
-            let app_name = record
-                .client_app
-                .clone()
-                .unwrap_or_else(|| "Unknown".to_string());
-
-            let entry = app_stats
-                .entry(app_name.clone())
-                .or_insert_with(|| AppMetrics {
-                    app_name,
-                    ..Default::default()
-                });
-
-            entry.requests += 1;
-
-            if record.is_websocket || record.is_sse || record.is_tunnel {
-                if let Some(ref socket_status) = record.socket_status {
-                    entry.bytes_sent += socket_status.send_bytes;
-                    entry.bytes_received += socket_status.receive_bytes;
-                } else {
-                    entry.bytes_sent += record.request_size;
-                    entry.bytes_received += record.response_size;
-                }
-            } else {
-                entry.bytes_sent += record.request_size;
-                entry.bytes_received += record.response_size;
-            }
-
-            match record.protocol.as_str() {
-                "http" => entry.http_requests += 1,
-                "https" => entry.https_requests += 1,
-                "tunnel" => entry.tunnel_requests += 1,
-                "ws" => entry.ws_requests += 1,
-                "wss" => entry.wss_requests += 1,
-                "h3" => entry.h3_requests += 1,
-                "socks5" => entry.socks5_requests += 1,
-                _ => {}
-            }
-        }
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "Traffic DB not available");
     }
 
     for (_, _, _, _, client_app) in state.connection_registry.list_connections_full() {
@@ -273,56 +182,7 @@ async fn get_host_metrics(state: SharedAdminState) -> Response<BoxBody> {
             );
         }
     } else {
-        let records = load_metric_traffic(state.clone()).await;
-
-        for mut record in records {
-            if (record.is_websocket || record.is_sse || record.is_tunnel)
-                && record.socket_status.is_none()
-            {
-                if let Some(status) = state.connection_monitor.get_connection_status(&record.id) {
-                    record.socket_status = Some(status);
-                }
-            }
-
-            let host = if record.host.is_empty() {
-                "Unknown".to_string()
-            } else {
-                record.host.clone()
-            };
-
-            let entry = host_stats
-                .entry(host.clone())
-                .or_insert_with(|| HostMetrics {
-                    host,
-                    ..Default::default()
-                });
-
-            entry.requests += 1;
-
-            if record.is_websocket || record.is_sse || record.is_tunnel {
-                if let Some(ref socket_status) = record.socket_status {
-                    entry.bytes_sent += socket_status.send_bytes;
-                    entry.bytes_received += socket_status.receive_bytes;
-                } else {
-                    entry.bytes_sent += record.request_size;
-                    entry.bytes_received += record.response_size;
-                }
-            } else {
-                entry.bytes_sent += record.request_size;
-                entry.bytes_received += record.response_size;
-            }
-
-            match record.protocol.as_str() {
-                "http" => entry.http_requests += 1,
-                "https" => entry.https_requests += 1,
-                "tunnel" => entry.tunnel_requests += 1,
-                "ws" => entry.ws_requests += 1,
-                "wss" => entry.wss_requests += 1,
-                "h3" => entry.h3_requests += 1,
-                "socks5" => entry.socks5_requests += 1,
-                _ => {}
-            }
-        }
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "Traffic DB not available");
     }
 
     for (_, host, _, _, _) in state.connection_registry.list_connections_full() {
@@ -367,7 +227,6 @@ mod tests {
     use crate::state::AdminState;
     use crate::traffic::TrafficRecord;
     use crate::traffic_db::TrafficDbStore;
-    use crate::traffic_store::TrafficStore;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("bifrost-{}-{}", name, uuid::Uuid::new_v4()));
@@ -434,35 +293,5 @@ mod tests {
         assert_eq!(m.https_requests, 1);
 
         std::fs::remove_dir_all(&db_dir).ok();
-    }
-
-    #[tokio::test]
-    async fn host_metrics_include_traffic_store_records() {
-        let dir = temp_dir("metrics-traffic-store-hosts");
-        let traffic_dir = dir.join("traffic");
-        std::fs::create_dir_all(&traffic_dir).unwrap();
-        let store = TrafficStore::new(traffic_dir, 5000, Some(24));
-        let state = Arc::new(AdminState::new(0).with_traffic_store(store));
-
-        let mut record = TrafficRecord::new(
-            "req-3".to_string(),
-            "GET".to_string(),
-            "http://example.net/c".to_string(),
-        );
-        record.status = 200;
-        record.request_size = 3;
-        record.response_size = 5;
-        state.record_traffic(record);
-
-        let resp = super::get_host_metrics(state).await;
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let metrics: Vec<HostMetrics> = serde_json::from_slice(&body).unwrap();
-
-        let m = metrics.iter().find(|m| m.host == "example.net").unwrap();
-        assert_eq!(m.requests, 1);
-        assert_eq!(m.bytes_sent, 3);
-        assert_eq!(m.bytes_received, 5);
-        assert_eq!(m.http_requests, 1);
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

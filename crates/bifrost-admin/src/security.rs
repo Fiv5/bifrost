@@ -26,14 +26,6 @@ impl AdminSecurityConfig {
 }
 
 pub fn is_cert_public_request<T>(req: &Request<T>) -> bool {
-    if req.uri().scheme().is_some() {
-        tracing::debug!(
-            "Cert public request rejected: URI contains scheme (proxy request): {}",
-            req.uri()
-        );
-        return false;
-    }
-
     let path = req.uri().path();
     if !path.starts_with(CERT_PUBLIC_PATH_PREFIX) {
         return false;
@@ -137,6 +129,16 @@ mod tests {
         );
 
         assert!(!is_valid_admin_request(&req, peer_addr, &config));
+    }
+
+    #[test]
+    fn test_accept_public_cert_request_with_absolute_uri() {
+        let req = create_request(
+            "http://127.0.0.1:9900/_bifrost/public/cert",
+            Some("127.0.0.1:9900"),
+        );
+
+        assert!(is_cert_public_request(&req));
     }
 
     #[test]

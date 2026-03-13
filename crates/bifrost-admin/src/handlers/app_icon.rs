@@ -50,6 +50,7 @@ pub async fn handle_app_icon<B>(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/png")
                 .header(header::CACHE_CONTROL, "public, max-age=86400")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .body(BoxBody::new(body))
                 .unwrap()
         }
@@ -58,16 +59,9 @@ pub async fn handle_app_icon<B>(
 }
 
 fn get_app_path_from_traffic(state: &SharedAdminState, app_name: &str) -> Option<String> {
-    if let Some(ref traffic_store) = state.traffic_store {
-        let records = traffic_store.get_all();
-        for record in records.iter().rev() {
-            if let Some(ref client_app) = record.client_app {
-                if client_app == app_name {
-                    if let Some(ref path) = record.client_path {
-                        return Some(path.clone());
-                    }
-                }
-            }
+    if let Some(ref db_store) = state.traffic_db_store {
+        if let Some(path) = db_store.find_latest_client_path_by_app(app_name) {
+            return Some(path);
         }
     }
 
@@ -191,4 +185,43 @@ fn get_app_search_dirs() -> Vec<std::path::PathBuf> {
     }
 
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hyper::{header, Method, Request, StatusCode};
+
+    use super::handle_app_icon;
+    use crate::{create_app_icon_cache, state::AdminState};
+
+    #[tokio::test]
+    async fn app_icon_success_response_allows_cors() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cache = create_app_icon_cache(temp_dir.path());
+        std::fs::write(
+            temp_dir.path().join("app_info/Test_App.png"),
+            b"fake-png-bytes",
+        )
+        .expect("write cached icon");
+
+        let state = Arc::new(AdminState::new(0).with_app_icon_cache(cache));
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/app-icon/Test%20App")
+            .body(())
+            .expect("request");
+
+        let response = handle_app_icon(request, state, "/api/app-icon/Test%20App").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+    }
 }

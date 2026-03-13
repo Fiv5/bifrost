@@ -1,7 +1,7 @@
 use bifrost_admin::{
     start_async_traffic_processor, start_connection_cleanup_task, start_frame_cleanup_task,
-    start_traffic_cleanup_task, start_ws_payload_cleanup_task, AdminState, AsyncTrafficWriter,
-    BodyStore, ConnectionRegistry, RuntimeConfig, WsPayloadStore,
+    start_ws_payload_cleanup_task, AdminState, AsyncTrafficWriter, BodyStore, ConnectionRegistry,
+    RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::{
     parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
@@ -10,7 +10,7 @@ use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
     RulesResolver as ProxyRulesResolverTrait, TlsConfig,
 };
-use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator};
+use bifrost_tls::{generate_root_ca, init_crypto_provider, DynamicCertGenerator, SniResolver};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -665,6 +665,7 @@ impl ProxyInstance {
         rules: Vec<&str>,
         values: HashMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        init_crypto_provider();
         let parsed_rules: Vec<Rule> = rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())
@@ -687,6 +688,9 @@ impl ProxyInstance {
             app_intercept_exclude: Vec::new(),
             app_intercept_include: Vec::new(),
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
             socks5_port: None,
             socks5_auth_required: false,
             socks5_username: None,
@@ -728,6 +732,7 @@ impl ProxyInstance {
         port: u16,
         rules_text: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        init_crypto_provider();
         let parser = RuleParser::new();
         let (rules, inline_values) = parser
             .parse_rules_with_inline_values(rules_text)
@@ -749,6 +754,9 @@ impl ProxyInstance {
             app_intercept_exclude: Vec::new(),
             app_intercept_include: Vec::new(),
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
             socks5_port: None,
             socks5_auth_required: false,
             socks5_username: None,
@@ -815,6 +823,9 @@ impl ProxyInstance {
             app_intercept_exclude: Vec::new(),
             app_intercept_include: Vec::new(),
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
             socks5_port: None,
             socks5_auth_required: false,
             socks5_username: None,
@@ -835,12 +846,14 @@ impl ProxyInstance {
             .certificate_der()
             .map_err(|e| format!("Failed to get CA cert: {}", e))?;
         let ca_key = ca.private_key_der();
-        let cert_generator = Arc::new(DynamicCertGenerator::new(Arc::new(ca)));
+        let ca = Arc::new(ca);
+        let cert_generator = Arc::new(DynamicCertGenerator::new(ca.clone()));
+        let sni_resolver = Arc::new(SniResolver::new(ca));
         let tls_config = Arc::new(TlsConfig {
             ca_cert: Some(ca_cert.to_vec()),
             ca_key: Some(ca_key.secret_der().to_vec()),
             cert_generator: Some(cert_generator),
-            sni_resolver: None,
+            sni_resolver: Some(sni_resolver),
         });
 
         let runtime_config = RuntimeConfig {
@@ -871,32 +884,32 @@ impl ProxyInstance {
             128,
             7,
         ));
-        start_ws_payload_cleanup_task(ws_payload_store.clone());
+        std::mem::drop(start_ws_payload_cleanup_task(ws_payload_store.clone()));
 
         let traffic_dir = temp_dir.join("traffic");
-        let traffic_store = Arc::new(bifrost_admin::TrafficStore::new(
-            traffic_dir,
-            1000,
-            Some(24),
-        ));
-        start_traffic_cleanup_task(traffic_store.clone());
+        let traffic_db_store = Arc::new(
+            bifrost_admin::TrafficDbStore::new(traffic_dir, 1000, 0, Some(24))
+                .expect("failed to create traffic db store"),
+        );
 
         let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir, Some(24)));
-        start_frame_cleanup_task(frame_store.clone());
+        std::mem::drop(start_frame_cleanup_task(frame_store.clone()));
 
         let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
         let _async_traffic_task =
-            start_async_traffic_processor(async_traffic_rx, None, Some(traffic_store.clone()));
+            start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
 
         let admin_state = AdminState::new(port)
             .with_runtime_config(runtime_config)
             .with_connection_registry(connection_registry)
             .with_body_store(body_store)
             .with_ws_payload_store(ws_payload_store)
-            .with_traffic_store_shared(traffic_store)
+            .with_traffic_db_store_shared(traffic_db_store)
             .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store_shared(frame_store);
-        start_connection_cleanup_task(admin_state.connection_monitor.clone());
+        std::mem::drop(start_connection_cleanup_task(
+            admin_state.connection_monitor.clone(),
+        ));
 
         let server = ProxyServer::new(config)
             .with_rules(resolver)

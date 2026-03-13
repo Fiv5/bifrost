@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bifrost_proxy::{ProxyConfig, TlsConfig};
@@ -19,6 +19,14 @@ pub fn handle_ca_command(action: CaCommands) -> bifrost_core::Result<()> {
     let ca_cert_path = cert_dir.join("ca.crt");
 
     match action {
+        CaCommands::Install => {
+            ensure_ca_exists(&ca_cert_path, &ca_key_path)?;
+
+            let installer = CertInstaller::new(&ca_cert_path);
+            installer.install_and_trust()?;
+            println!("CA certificate installed and trusted successfully.");
+            println!("Certificate: {}", ca_cert_path.display());
+        }
         CaCommands::Generate { force } => {
             if ca_cert_path.exists() && !force {
                 println!("CA certificate already exists.");
@@ -236,16 +244,7 @@ pub fn check_and_install_certificate() -> bifrost_core::Result<()> {
     let ca_key_path = cert_dir.join("ca.key");
     let ca_cert_path = cert_dir.join("ca.crt");
 
-    let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)?;
-    if !ca_valid {
-        println!("Valid CA certificate not found. Generating...");
-        std::fs::create_dir_all(&cert_dir)?;
-        let ca = generate_root_ca()?;
-        save_root_ca(&ca_cert_path, &ca_key_path, &ca)?;
-        println!("✓ CA certificate generated.");
-        println!("  Certificate: {}", ca_cert_path.display());
-        println!();
-    }
+    ensure_ca_exists(&ca_cert_path, &ca_key_path)?;
 
     let installer = CertInstaller::new(&ca_cert_path);
     let status = installer.check_status()?;
@@ -268,15 +267,34 @@ pub fn check_and_install_certificate() -> bifrost_core::Result<()> {
     }
 }
 
+fn ensure_ca_exists(ca_cert_path: &Path, ca_key_path: &Path) -> bifrost_core::Result<()> {
+    let ca_valid = ensure_valid_ca(ca_cert_path, ca_key_path)?;
+    if !ca_valid {
+        println!("Valid CA certificate not found. Generating...");
+        if let Some(parent) = ca_cert_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let ca = generate_root_ca()?;
+        save_root_ca(ca_cert_path, ca_key_path, &ca)?;
+        println!("✓ CA certificate generated.");
+        println!("  Certificate: {}", ca_cert_path.display());
+        println!();
+    }
+
+    Ok(())
+}
+
 fn prompt_install_certificate(installer: &CertInstaller) -> bifrost_core::Result<()> {
     println!("HTTPS interception requires the CA certificate to be trusted by the system.");
     println!("Without it, browsers will show security warnings for HTTPS sites.");
     println!();
     println!("Platform: {}", get_platform_name());
+    #[cfg(target_os = "macos")]
+    println!("macOS will install the certificate into the System keychain.");
     println!();
 
     let options = vec![
-        "Yes, install and trust (requires sudo/admin)",
+        "Yes, install and trust",
         "No, skip (HTTPS interception may not work properly)",
         "Show manual installation instructions",
     ];
@@ -321,9 +339,13 @@ fn prompt_trust_certificate(installer: &CertInstaller) -> bifrost_core::Result<(
     println!("The CA certificate is installed but not trusted by the system.");
     println!("HTTPS interception may not work properly without trust.");
     println!();
+    #[cfg(target_os = "macos")]
+    println!("macOS will install the certificate into the System keychain.");
+    #[cfg(target_os = "macos")]
+    println!();
 
     let proceed = Confirm::new()
-        .with_prompt("Would you like to trust the CA certificate now? (requires sudo/admin)")
+        .with_prompt("Would you like to trust the CA certificate now?")
         .default(true)
         .interact();
 

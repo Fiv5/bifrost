@@ -39,6 +39,25 @@ pub struct QueryParams {
 }
 
 impl QueryParams {
+    pub fn has_filters(&self) -> bool {
+        self.method.is_some()
+            || self.status.is_some()
+            || self.status_min.is_some()
+            || self.status_max.is_some()
+            || self.protocol.is_some()
+            || self.has_rule_hit.is_some()
+            || self.is_websocket.is_some()
+            || self.is_sse.is_some()
+            || self.is_h3.is_some()
+            || self.is_tunnel.is_some()
+            || self.host_contains.is_some()
+            || self.url_contains.is_some()
+            || self.path_contains.is_some()
+            || self.client_app.is_some()
+            || self.client_ip.is_some()
+            || self.content_type.is_some()
+    }
+
     pub fn build_where_clause(&self) -> (String, Vec<QueryValue>) {
         let mut conditions = Vec::new();
         let mut params: Vec<QueryValue> = Vec::new();
@@ -156,8 +175,10 @@ impl QueryParams {
         let sql = format!(
             "SELECT sequence, id, timestamp, host, method, status, protocol, \
              url, path, content_type, request_size, response_size, duration_ms, \
-             client_ip, client_app, client_pid, flags, frame_count, socket_status_blob, \
-             matched_rules_blob, request_content_type \
+             client_ip, client_app, client_pid, flags, frame_count, \
+             socket_is_open, socket_send_count, socket_receive_count, \
+             socket_send_bytes, socket_receive_bytes, socket_frame_count, \
+             rule_count, rule_protocols, request_content_type \
              FROM traffic_records{} {} LIMIT {}",
             where_clause, order, limit
         );

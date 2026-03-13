@@ -7,57 +7,8 @@ use super::{error_response, json_response, method_not_allowed, success_response,
 use crate::body_store::BodyRef;
 use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::state::{AdminState, SharedAdminState};
-use crate::traffic::{SocketStatus, TrafficFilter, TrafficSummary};
+use crate::traffic::SocketStatus;
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
-
-fn enrich_frame_info(summary: &mut TrafficSummary, state: &AdminState) {
-    if !summary.is_sse
-        && !summary.is_websocket
-        && !summary.is_tunnel
-        && summary.socket_status.is_none()
-    {
-        return;
-    }
-
-    if summary.is_sse {
-        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
-            summary.frame_count = status.frame_count;
-            summary.socket_status = Some(status);
-        }
-    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-        summary.frame_count = status.frame_count;
-        summary.socket_status = Some(status);
-    } else if let Some(ref fs) = state.frame_store {
-        if let Some(metadata) = fs.get_metadata(&summary.id) {
-            summary.frame_count = metadata.frame_count as usize;
-            summary.socket_status = Some(SocketStatus {
-                is_open: !metadata.is_closed,
-                frame_count: metadata.frame_count as usize,
-                ..Default::default()
-            });
-        }
-    }
-
-    if summary.is_sse {
-        if let Some(ref socket_status) = summary.socket_status {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if total > 0 {
-                summary.response_size = summary.response_size.max(total as usize);
-            }
-
-            if !socket_status.is_open && summary.response_size > 0 {
-                let total = summary.response_size;
-                let status = socket_status.clone();
-                let frame_count = summary.frame_count;
-                state.update_traffic_by_id(&summary.id, move |record| {
-                    record.response_size = total;
-                    record.socket_status = Some(status.clone());
-                    record.frame_count = frame_count;
-                });
-            }
-        }
-    }
-}
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminState) {
     if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() && summary.ss.is_none()
@@ -135,12 +86,12 @@ pub async fn handle_traffic(
         let rest = rest.trim_end_matches('/');
         if let Some(id) = rest.strip_suffix("/request-body") {
             match method {
-                Method::GET => get_request_body(state, id).await,
+                Method::GET => get_request_body(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(id) = rest.strip_suffix("/response-body") {
             match method {
-                Method::GET => get_response_body(state, id).await,
+                Method::GET => get_response_body(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some((id, after)) = rest.split_once("/sse/stream") {
@@ -191,6 +142,21 @@ pub async fn handle_traffic(
     }
 }
 
+fn query_wants_raw(query: Option<&str>) -> bool {
+    let Some(q) = query else {
+        return false;
+    };
+    for part in q.split('&') {
+        if let Some(v) = part.strip_prefix("raw=") {
+            if v == "1" || v.eq_ignore_ascii_case("true") {
+                return true;
+            }
+            return false;
+        }
+    }
+    false
+}
+
 async fn subscribe_sse_stream(
     state: SharedAdminState,
     id: &str,
@@ -202,8 +168,6 @@ async fn subscribe_sse_stream(
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -762,7 +726,8 @@ async fn query_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respo
 
     if let Some(ref db_store) = state.traffic_db_store {
         let db_store = db_store.clone();
-        let query_result = tokio::task::spawn_blocking(move || db_store.query(&params)).await;
+        let query_result =
+            tokio::task::spawn_blocking(move || db_store.query_with_exact_total(&params)).await;
 
         let mut result = match query_result {
             Ok(r) => r,
@@ -791,8 +756,16 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
 
     if let Some(ref db_store) = state.traffic_db_store {
         let params = parse_query_params_from_query_string(query);
+        let needs_exact_total = params.has_filters();
         let db_store = db_store.clone();
-        let query_result = tokio::task::spawn_blocking(move || db_store.query(&params)).await;
+        let query_result = tokio::task::spawn_blocking(move || {
+            if needs_exact_total {
+                db_store.query_with_exact_total(&params)
+            } else {
+                db_store.query(&params)
+            }
+        })
+        .await;
 
         let mut result = match query_result {
             Ok(r) => r,
@@ -810,35 +783,10 @@ async fn list_traffic(req: Request<Incoming>, state: SharedAdminState) -> Respon
         }
         json_response(&result)
     } else {
-        let filter = parse_traffic_filter(query);
-
-        let records = state
-            .traffic_store
-            .as_ref()
-            .map(|s| s.filter(&filter))
-            .unwrap_or_default();
-
-        let (offset, limit) = (filter.offset.unwrap_or(0), filter.limit.unwrap_or(100));
-
-        let total = records.len();
-        let paginated: Vec<_> = records
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .map(|mut summary| {
-                enrich_frame_info(&mut summary, &state);
-                summary
-            })
-            .collect();
-
-        let response = serde_json::json!({
-            "total": total,
-            "offset": offset,
-            "limit": limit,
-            "records": paginated
-        });
-
-        json_response(&response)
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Traffic database not available",
+        )
     }
 }
 
@@ -907,54 +855,10 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
 
         json_response(&response)
     } else {
-        let filter = parse_traffic_filter(query);
-        let limit = params.limit.unwrap_or(100);
-
-        let Some(ref traffic_store) = state.traffic_store else {
-            let response = serde_json::json!({
-                "new_records": [],
-                "updated_records": [],
-                "has_more": false,
-                "server_total": 0
-            });
-            return json_response(&response);
-        };
-
-        let (new_records, has_more) =
-            traffic_store.get_after(params.after_id.as_deref(), &filter, limit);
-
-        let new_records: Vec<_> = new_records
-            .into_iter()
-            .map(|mut summary| {
-                enrich_frame_info(&mut summary, &state);
-                summary
-            })
-            .collect();
-
-        let updated_records = if !params.pending_ids.is_empty() {
-            let ids: Vec<&str> = params.pending_ids.iter().map(|s| s.as_str()).collect();
-            let summaries = traffic_store.get_by_ids(&ids);
-            summaries
-                .into_iter()
-                .map(|mut summary| {
-                    enrich_frame_info(&mut summary, &state);
-                    summary
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        let server_total = traffic_store.total();
-
-        let response = serde_json::json!({
-            "new_records": new_records,
-            "updated_records": updated_records,
-            "has_more": has_more,
-            "server_total": server_total
-        });
-
-        json_response(&response)
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Traffic database not available",
+        )
     }
 }
 
@@ -964,6 +868,13 @@ struct UpdatesParams {
     after_seq: Option<u64>,
     pending_ids: Vec<String>,
     limit: Option<usize>,
+}
+
+fn decode_query_value(value: &str) -> String {
+    let value_with_spaces = value.replace('+', " ");
+    urlencoding::decode(&value_with_spaces)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn parse_updates_params(query: &str) -> UpdatesParams {
@@ -986,7 +897,7 @@ fn parse_updates_params(query: &str) -> UpdatesParams {
                         params.pending_ids = value
                             .split(',')
                             .take(MAX_SUBSCRIBED_IDS)
-                            .filter_map(|s| {
+                            .filter_map(|s: &str| {
                                 let id = s.to_string();
                                 if id.is_empty() || id.len() > MAX_ID_LEN {
                                     None
@@ -1057,8 +968,6 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
@@ -1174,42 +1083,41 @@ async fn clear_traffic_by_ids(
     let count = ids_to_delete.len();
 
     if let Some(ref db_store) = state.traffic_db_store {
-        db_store.delete_by_ids(&ids_to_delete);
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.delete_by_ids(&ids_to_delete);
+        let db_store_clone = db_store.clone();
+        let ids_for_db = ids_to_delete.clone();
+        let _delete_task = tokio::task::spawn_blocking(move || {
+            db_store_clone.delete_by_ids(&ids_for_db);
+        });
     }
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
         let ids_for_body = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = body_store_clone.write().delete_by_ids(&ids_for_body) {
                 tracing::warn!("Failed to delete bodies: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref frame_store) = state.frame_store {
         let frame_store_clone = frame_store.clone();
         let ids_for_frame = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = frame_store_clone.delete_by_ids(&ids_for_frame) {
                 tracing::warn!("Failed to delete frames: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref ws_payload_store) = state.ws_payload_store {
         let ws_payload_store_clone = ws_payload_store.clone();
         let ids_for_payload = ids_to_delete.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _delete_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = ws_payload_store_clone.delete_by_ids(&ids_for_payload) {
                 tracing::warn!("Failed to delete ws payloads: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(pm) = push_manager {
@@ -1227,39 +1135,38 @@ async fn clear_all_traffic(
     let active_connection_ids = state.connection_monitor.active_connection_ids();
 
     if let Some(ref db_store) = state.traffic_db_store {
-        db_store.clear_with_active_ids(&active_connection_ids);
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.clear();
+        let db_store_clone = db_store.clone();
+        let active_ids_for_db = active_connection_ids.clone();
+        let _clear_task = tokio::task::spawn_blocking(move || {
+            db_store_clone.clear_with_active_ids(&active_ids_for_db);
+        });
     }
 
     if let Some(ref body_store) = state.body_store {
         let body_store_clone = body_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = body_store_clone.write().clear() {
                 tracing::warn!("Failed to clear body store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref frame_store) = state.frame_store {
         let frame_store_clone = frame_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = frame_store_clone.clear() {
                 tracing::warn!("Failed to clear frame store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     if let Some(ref ws_payload_store) = state.ws_payload_store {
         let ws_payload_store_clone = ws_payload_store.clone();
-        let _ = tokio::task::spawn_blocking(move || {
+        let _clear_task = tokio::task::spawn_blocking(move || {
             if let Err(e) = ws_payload_store_clone.clear() {
                 tracing::warn!("Failed to clear ws payload store: {}", e);
             }
-        })
-        .await;
+        });
     }
 
     state.connection_monitor.clear();
@@ -1267,22 +1174,34 @@ async fn clear_all_traffic(
     success_response("All traffic data cleared successfully")
 }
 
-async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn get_request_body(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
 
     match record {
         Some(record) => {
-            if let Some(body_ref) = &record.request_body_ref {
+            let want_raw = query_wants_raw(query);
+            let body_ref = if want_raw {
+                record
+                    .raw_request_body_ref
+                    .as_ref()
+                    .or(record.request_body_ref.as_ref())
+            } else {
+                record.request_body_ref.as_ref()
+            };
+
+            if let Some(body_ref) = body_ref {
                 get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({
@@ -1298,22 +1217,34 @@ async fn get_request_body(state: SharedAdminState, id: &str) -> Response<BoxBody
     }
 }
 
-async fn get_response_body(state: SharedAdminState, id: &str) -> Response<BoxBody> {
+async fn get_response_body(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
     let record = if let Some(ref db_store) = state.traffic_db_store {
         let db_clone = db_store.clone();
         let id_owned = id.to_string();
         tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
             .await
             .unwrap_or_default()
-    } else if let Some(ref traffic_store) = state.traffic_store {
-        traffic_store.get_by_id(id)
     } else {
         None
     };
 
     match record {
         Some(record) => {
-            if let Some(body_ref) = &record.response_body_ref {
+            let want_raw = query_wants_raw(query);
+            let body_ref = if want_raw {
+                record
+                    .raw_response_body_ref
+                    .as_ref()
+                    .or(record.response_body_ref.as_ref())
+            } else {
+                record.response_body_ref.as_ref()
+            };
+
+            if let Some(body_ref) = body_ref {
                 get_body_content_async(&state, body_ref).await
             } else {
                 json_response(&serde_json::json!({
@@ -1369,43 +1300,4 @@ async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) ->
             }
         }
     }
-}
-
-fn decode_query_value(value: &str) -> String {
-    let value_with_spaces = value.replace('+', " ");
-    urlencoding::decode(&value_with_spaces)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn parse_traffic_filter(query: &str) -> TrafficFilter {
-    let mut filter = TrafficFilter::default();
-
-    for pair in query.split('&') {
-        if let Some((key, value)) = pair.split_once('=') {
-            let value = decode_query_value(value);
-            match key {
-                "method" => filter.method = Some(value.to_string()),
-                "status" => filter.status = value.parse().ok(),
-                "status_min" => filter.status_min = value.parse().ok(),
-                "status_max" => filter.status_max = value.parse().ok(),
-                "url" | "url_contains" => filter.url_contains = Some(value.to_string()),
-                "host" => filter.host = Some(value.to_string()),
-                "content_type" => filter.content_type = Some(value.to_string()),
-                "limit" => filter.limit = value.parse().ok(),
-                "offset" => filter.offset = value.parse().ok(),
-                "has_rule_hit" => filter.has_rule_hit = value.parse().ok(),
-                "protocol" => filter.protocol = Some(value.to_string()),
-                "request_content_type" => filter.request_content_type = Some(value.to_string()),
-                "domain" => filter.domain = Some(value.to_string()),
-                "path_contains" | "path" => filter.path_contains = Some(value.to_string()),
-                "header_contains" | "header" => filter.header_contains = Some(value.to_string()),
-                "client_ip" => filter.client_ip = Some(value.to_string()),
-                "client_app" => filter.client_app = Some(value.to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    filter
 }

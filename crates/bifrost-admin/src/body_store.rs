@@ -45,6 +45,9 @@ pub struct BodyStore {
     stream_flush_interval: Duration,
 }
 
+// 兜底：当文件写入失败时，最多只保留这么多字节的 inline 预览，避免把完整 body 复制到内存里。
+const INLINE_FALLBACK_PREVIEW_BYTES: usize = 8 * 1024;
+
 pub struct BodyStreamWriter {
     path: PathBuf,
     file: fs::File,
@@ -175,11 +178,8 @@ impl BodyStore {
             return None;
         }
 
-        if data.len() <= self.max_memory_size {
-            let text = String::from_utf8_lossy(data).to_string();
-            return Some(BodyRef::Inline { data: text });
-        }
-
+        // 关键策略：默认不把 body 以 Inline 形式常驻在 TrafficRecord 里。
+        // 即使 body 很小，也优先落盘，避免在内存中形成一份 UTF-8/losy 的拷贝导致内存膨胀。
         let filename = format!("{}_{}", id, kind);
         let path = self.temp_dir.join(&filename);
 
@@ -192,12 +192,14 @@ impl BodyStore {
                     })
                 } else {
                     let _ = fs::remove_file(&path);
-                    let text = String::from_utf8_lossy(data).to_string();
+                    let preview = &data[..data.len().min(INLINE_FALLBACK_PREVIEW_BYTES)];
+                    let text = String::from_utf8_lossy(preview).to_string();
                     Some(BodyRef::Inline { data: text })
                 }
             }
             Err(_) => {
-                let text = String::from_utf8_lossy(data).to_string();
+                let preview = &data[..data.len().min(INLINE_FALLBACK_PREVIEW_BYTES)];
+                let text = String::from_utf8_lossy(preview).to_string();
                 Some(BodyRef::Inline { data: text })
             }
         }
@@ -220,12 +222,14 @@ impl BodyStore {
                     })
                 } else {
                     let _ = fs::remove_file(&path);
-                    let text = String::from_utf8_lossy(data).to_string();
+                    let preview = &data[..data.len().min(INLINE_FALLBACK_PREVIEW_BYTES)];
+                    let text = String::from_utf8_lossy(preview).to_string();
                     Some(BodyRef::Inline { data: text })
                 }
             }
             Err(_) => {
-                let text = String::from_utf8_lossy(data).to_string();
+                let preview = &data[..data.len().min(INLINE_FALLBACK_PREVIEW_BYTES)];
+                let text = String::from_utf8_lossy(preview).to_string();
                 Some(BodyRef::Inline { data: text })
             }
         }
@@ -415,7 +419,7 @@ impl BodyStore {
 
 pub type SharedBodyStore = Arc<RwLock<BodyStore>>;
 
-pub fn start_body_cleanup_task(store: SharedBodyStore) {
+pub fn start_body_cleanup_task(store: SharedBodyStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -430,7 +434,7 @@ pub fn start_body_cleanup_task(store: SharedBodyStore) {
                 }
             }
         }
-    });
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -477,7 +481,8 @@ mod tests {
         let data = b"Hello, World!";
         let body_ref = store.store("test1", "req", data).unwrap();
 
-        assert!(matches!(body_ref, BodyRef::Inline { .. }));
+        // 新策略：即使 body 很小也优先落盘，避免 Inline 导致 TrafficRecord 常驻内存变大。
+        assert!(matches!(body_ref, BodyRef::File { .. }));
         assert_eq!(store.load(&body_ref).unwrap(), "Hello, World!");
 
         cleanup_test_dir(&dir);

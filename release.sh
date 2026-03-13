@@ -129,6 +129,23 @@ update_version_files() {
             fi
         fi
     done
+
+    if [[ -f "desktop/src-tauri/Cargo.toml" ]]; then
+        sed -i.bak "s/^version = \".*\"/version = \"${version}\"/" "desktop/src-tauri/Cargo.toml"
+        rm -f "desktop/src-tauri/Cargo.toml.bak"
+        print_success "Updated: desktop/src-tauri/Cargo.toml"
+    fi
+
+    if [[ -f "desktop/src-tauri/tauri.conf.json" ]]; then
+        VERSION="${version}" node <<'EOF'
+const fs = require('fs');
+const path = 'desktop/src-tauri/tauri.conf.json';
+const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+config.version = process.env.VERSION;
+fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+EOF
+        print_success "Updated: desktop/src-tauri/tauri.conf.json"
+    fi
     
     print_step "Updating install scripts..."
     
