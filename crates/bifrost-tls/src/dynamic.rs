@@ -8,6 +8,7 @@ use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::sign::CertifiedKey;
 use std::sync::Arc;
+use time::{Duration, OffsetDateTime};
 
 #[derive(Debug)]
 pub struct DynamicCertGenerator {
@@ -28,9 +29,11 @@ impl DynamicCertGenerator {
             // 失败时回退到旧逻辑（每次签发 leaf 时临时构建 Issuer）。
             let ca_key_der = ca.key_pair.serialize_der();
             let ca_key_pair = KeyPair::try_from(ca_key_der.as_slice()).ok();
-            let ca_cert_der = ca.certificate.der();
+            let ca_cert_der = ca.certificate_der().ok();
 
-            ca_key_pair.and_then(|kp| Issuer::from_ca_cert_der(ca_cert_der, kp).ok())
+            ca_key_pair.and_then(|kp| {
+                ca_cert_der.and_then(|cert_der| Issuer::from_ca_cert_der(&cert_der, kp).ok())
+            })
         };
 
         let (leaf_keypair_pkcs8_der, leaf_signing_key) =
@@ -82,6 +85,8 @@ impl DynamicCertGenerator {
             ExtendedKeyUsagePurpose::ServerAuth,
             ExtendedKeyUsagePurpose::ClientAuth,
         ];
+        params.not_before = OffsetDateTime::now_utc() - Duration::days(1);
+        params.not_after = OffsetDateTime::now_utc() + Duration::days(90);
 
         let (key_pair, signing_key) = if let (Some(pkcs8_der), Some(signing_key)) =
             (&self.leaf_keypair_pkcs8_der, &self.leaf_signing_key)
@@ -112,8 +117,8 @@ impl DynamicCertGenerator {
             let ca_key_der = self.ca.key_pair.serialize_der();
             let ca_key_pair = KeyPair::try_from(ca_key_der.as_slice())
                 .map_err(|e| BifrostError::Tls(format!("Failed to load CA key pair: {e}")))?;
-            let ca_cert_der = self.ca.certificate.der();
-            let issuer = Issuer::from_ca_cert_der(ca_cert_der, ca_key_pair)
+            let ca_cert_der = self.ca.certificate_der()?;
+            let issuer = Issuer::from_ca_cert_der(&ca_cert_der, ca_key_pair)
                 .map_err(|e| BifrostError::Tls(format!("Failed to create issuer: {e}")))?;
             params
                 .signed_by(&key_pair, &issuer)
@@ -134,6 +139,7 @@ mod tests {
     use super::*;
     use crate::ca::generate_root_ca;
     use crate::init_crypto_provider;
+    use x509_parser::parse_x509_certificate;
 
     #[test]
     fn test_generate_for_domain() {
@@ -181,5 +187,31 @@ mod tests {
             .generate_for_domain("api.sub.example.com")
             .expect("Failed to generate subdomain certificate");
         assert_eq!(cert_key.cert.len(), 2);
+    }
+
+    #[test]
+    fn test_generate_for_domain_has_browser_safe_validity_period() {
+        init_crypto_provider();
+        let ca = Arc::new(generate_root_ca().expect("Failed to generate CA"));
+        let generator = DynamicCertGenerator::new(ca);
+
+        let cert_key = generator
+            .generate_for_domain("example.com")
+            .expect("Failed to generate certificate");
+        let cert = parse_x509_certificate(cert_key.cert[0].as_ref())
+            .expect("Failed to parse leaf certificate")
+            .1;
+        let validity_days = (cert.validity().not_after.timestamp()
+            - cert.validity().not_before.timestamp())
+            / 86_400;
+
+        assert!(
+            validity_days >= 80,
+            "leaf validity should cover normal proxy uptime"
+        );
+        assert!(
+            validity_days <= 100,
+            "leaf validity should stay browser-safe"
+        );
     }
 }

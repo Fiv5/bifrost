@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 
+use bifrost_tls::{CertInstaller, CertStatus};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use qrcode::render::svg;
 use qrcode::QrCode;
@@ -14,9 +15,22 @@ use crate::state::SharedAdminState;
 #[derive(Serialize)]
 struct CertInfo {
     available: bool,
+    status: String,
+    status_label: String,
+    installed: bool,
+    trusted: bool,
+    status_message: String,
     local_ips: Vec<String>,
     download_urls: Vec<String>,
     qrcode_urls: Vec<String>,
+}
+
+struct CertStateView {
+    status: &'static str,
+    status_label: &'static str,
+    installed: bool,
+    trusted: bool,
+    status_message: String,
 }
 
 pub async fn handle_cert(
@@ -134,6 +148,7 @@ async fn get_cert_info(_req: Request<Incoming>, state: SharedAdminState) -> Resp
         .as_ref()
         .map(|p| p.exists())
         .unwrap_or(false);
+    let cert_state = resolve_cert_state(state.ca_cert_path.as_deref());
 
     let local_ips = get_local_ips();
     let port = state.port();
@@ -150,12 +165,72 @@ async fn get_cert_info(_req: Request<Incoming>, state: SharedAdminState) -> Resp
 
     let info = CertInfo {
         available,
+        status: cert_state.status.to_string(),
+        status_label: cert_state.status_label.to_string(),
+        installed: cert_state.installed,
+        trusted: cert_state.trusted,
+        status_message: cert_state.status_message,
         local_ips,
         download_urls,
         qrcode_urls,
     };
 
     json_response(&info)
+}
+
+fn resolve_cert_state(cert_path: Option<&std::path::Path>) -> CertStateView {
+    let Some(cert_path) = cert_path.filter(|path| path.exists()) else {
+        return CertStateView {
+            status: "not_installed",
+            status_label: "Not installed",
+            installed: false,
+            trusted: false,
+            status_message: "CA certificate file is missing, so system trust is not configured."
+                .to_string(),
+        };
+    };
+
+    let installer = CertInstaller::new(cert_path);
+    match installer.check_status() {
+        Ok(status) => cert_state_from_status(status),
+        Err(error) => CertStateView {
+            status: "unknown",
+            status_label: "Check failed",
+            installed: false,
+            trusted: false,
+            status_message: format!(
+                "Unable to verify whether the CA certificate is trusted: {error}"
+            ),
+        },
+    }
+}
+
+fn cert_state_from_status(status: CertStatus) -> CertStateView {
+    match status {
+        CertStatus::NotInstalled => CertStateView {
+            status: "not_installed",
+            status_label: "Not installed",
+            installed: status.is_installed(),
+            trusted: status.is_trusted(),
+            status_message: "CA certificate is not installed in the system trust store."
+                .to_string(),
+        },
+        CertStatus::InstalledNotTrusted => CertStateView {
+            status: "installed_not_trusted",
+            status_label: "Installed, not trusted",
+            installed: status.is_installed(),
+            trusted: status.is_trusted(),
+            status_message: "CA certificate is installed, but the system does not trust it yet."
+                .to_string(),
+        },
+        CertStatus::InstalledAndTrusted => CertStateView {
+            status: "installed_and_trusted",
+            status_label: "Installed and trusted",
+            installed: status.is_installed(),
+            trusted: status.is_trusted(),
+            status_message: "CA certificate is installed and trusted by the system.".to_string(),
+        },
+    }
 }
 
 fn get_local_ips() -> Vec<String> {
@@ -259,4 +334,27 @@ async fn get_proxy_qrcode(req: Request<Incoming>, state: SharedAdminState) -> Re
         .header("Content-Type", "image/svg+xml")
         .body(full_body(svg_string))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cert_state_from_status, CertStatus};
+
+    #[test]
+    fn maps_installed_not_trusted_status_without_false_trust() {
+        let state = cert_state_from_status(CertStatus::InstalledNotTrusted);
+
+        assert_eq!(state.status, "installed_not_trusted");
+        assert!(state.installed);
+        assert!(!state.trusted);
+    }
+
+    #[test]
+    fn maps_installed_and_trusted_status() {
+        let state = cert_state_from_status(CertStatus::InstalledAndTrusted);
+
+        assert_eq!(state.status, "installed_and_trusted");
+        assert!(state.installed);
+        assert!(state.trusted);
+    }
 }

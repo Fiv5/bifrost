@@ -233,7 +233,7 @@ brew install --cask bifrost-desktop
 
 - macOS 直接启动 `Bifrost.app`
 - Windows 使用 `.msi` 安装后从开始菜单启动 `Bifrost`
-- 桌面端首次启动会在拉起内嵌 `bifrost` core 之前检查 CA 证书；macOS 会优先写入当前用户的 login keychain，必要时再回退到需要管理员权限的 System keychain，Windows 可能弹出系统授权框以安装并信任 `Bifrost CA`
+- 桌面端首次启动会在拉起内嵌 `bifrost` core 之前检查 CA 证书；macOS 会通过系统管理员授权弹窗将证书安装到 `System.keychain`，Windows 可能弹出系统授权框以安装并信任 `Bifrost CA`
 - 安装版桌面端默认也使用 `~/.bifrost` 作为 `config / certs / logs / runtime / desktop-config.json` 目录
 - 如需把桌面端内嵌 core 的 `config / certs / logs / runtime` 写入自定义目录，可在启动桌面应用前设置 `BIFROST_DATA_DIR`
 

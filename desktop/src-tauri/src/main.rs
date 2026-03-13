@@ -285,11 +285,11 @@ fn prepare_desktop_certificates(data_dir: &Path) -> Result<CertStatus, String> {
 
     append_desktop_bootstrap_log(
         data_dir,
-        format!("desktop CA status is {status}; attempting install/trust"),
+        format!("desktop CA status is {status}; attempting GUI install/trust"),
     );
     installer
-        .install_and_trust()
-        .map_err(|error| format!("failed to install/trust desktop CA: {error}"))?;
+        .install_and_trust_gui()
+        .map_err(|error| format!("failed to install/trust desktop CA via GUI flow: {error}"))?;
 
     installer
         .check_status()
@@ -390,7 +390,6 @@ fn bootstrap_desktop_backend(app: &AppHandle) {
         &state.data_dir,
         "desktop backend bootstrap started asynchronously",
     );
-    ensure_desktop_cert_ready(&state.data_dir);
 
     let preferred_port = match state.expected_port.lock() {
         Ok(port) => *port,
@@ -422,12 +421,27 @@ fn bootstrap_desktop_backend(app: &AppHandle) {
                 &state.data_dir,
                 format!("desktop backend bootstrap finished; active_port={port}"),
             );
+            schedule_desktop_cert_ready(&state.data_dir);
         }
         Err(error) => {
             record_startup_error(&state, error.to_string());
             request_desktop_shutdown(app);
         }
     }
+}
+
+fn schedule_desktop_cert_ready(data_dir: &Path) {
+    let data_dir = data_dir.to_path_buf();
+    std::thread::spawn(move || {
+        // Wait briefly so the window and embedded core can settle before any
+        // macOS trust prompt interrupts the startup flow.
+        std::thread::sleep(Duration::from_secs(2));
+        append_desktop_bootstrap_log(
+            &data_dir,
+            "starting deferred desktop certificate preflight after startup",
+        );
+        ensure_desktop_cert_ready(&data_dir);
+    });
 }
 
 fn record_startup_error(state: &BackendState, error: String) {

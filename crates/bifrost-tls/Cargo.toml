@@ -16,6 +16,7 @@ parking_lot.workspace = true
 webpki-roots.workspace = true
 x509-parser = "0.18"
 chrono.workspace = true
+time.workspace = true
 sha2 = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
@@ -26,6 +27,9 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 
 [dev-dependencies]
 tempfile = "3.10"

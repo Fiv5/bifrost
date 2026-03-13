@@ -99,6 +99,7 @@ rule <ACTION>                     Manage rules
   delete <name>                     Delete a rule
 
 ca <ACTION>                       Manage CA certificates
+  install                           Install and trust CA certificate
   info                              Show CA certificate info
   export [-o path]                  Export CA certificate
   generate [-f]                     Generate CA certificate
@@ -598,6 +599,8 @@ pub enum RuleCommands {
 
 #[derive(Subcommand, Clone)]
 pub enum CaCommands {
+    #[command(about = "Install and trust CA certificate")]
+    Install,
     #[command(about = "Generate CA certificate")]
     Generate {
         #[arg(short, long, help = "Force regenerate")]

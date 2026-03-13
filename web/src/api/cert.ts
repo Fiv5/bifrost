@@ -3,6 +3,11 @@ import { buildPublicUrl } from '../runtime';
 
 export interface CertInfo {
   available: boolean;
+  status: "not_installed" | "installed_not_trusted" | "installed_and_trusted" | "unknown";
+  status_label: string;
+  installed: boolean;
+  trusted: boolean;
+  status_message: string;
   local_ips: string[];
   download_urls: string[];
   qrcode_urls: string[];

@@ -2,6 +2,11 @@ use bifrost_core::error::{BifrostError, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+use security_framework::authorization::{
+    Authorization, AuthorizationItemSetBuilder, Flags as AuthorizationFlags,
+};
+
 #[cfg(target_os = "windows")]
 use std::ffi::OsStr;
 #[cfg(target_os = "windows")]
@@ -71,6 +76,16 @@ impl std::fmt::Display for CertStatus {
             CertStatus::InstalledNotTrusted => write!(f, "Installed but not trusted"),
             CertStatus::InstalledAndTrusted => write!(f, "Installed and trusted"),
         }
+    }
+}
+
+impl CertStatus {
+    pub fn is_installed(self) -> bool {
+        !matches!(self, Self::NotInstalled)
+    }
+
+    pub fn is_trusted(self) -> bool {
+        matches!(self, Self::InstalledAndTrusted)
     }
 }
 
@@ -144,6 +159,19 @@ impl CertInstaller {
         ));
     }
 
+    pub fn install_and_trust_gui(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return self.install_macos_gui();
+
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        return self.install_and_trust();
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        return Err(BifrostError::Config(
+            "Unsupported operating system".to_string(),
+        ));
+    }
+
     pub fn get_install_instructions(&self) -> String {
         #[cfg(target_os = "macos")]
         return format!(
@@ -179,47 +207,21 @@ impl CertInstaller {
 
     #[cfg(target_os = "macos")]
     fn check_status_macos(&self) -> Result<CertStatus> {
-        let output = Command::new("security")
-            .args([
-                "find-certificate",
-                "-c",
-                &self.cert_name,
-                "-a",
-                "-Z",
-                "/Library/Keychains/System.keychain",
-            ])
-            .output();
+        let current_fingerprint = self.current_cert_fingerprint_macos()?;
+        let system_match = keychain_contains_fingerprint_macos(
+            "/Library/Keychains/System.keychain",
+            &self.cert_name,
+            &current_fingerprint,
+        )?;
 
-        match output {
-            Ok(out) => {
-                if out.status.success() && !out.stdout.is_empty() {
-                    if self.check_trust_macos()? {
-                        Ok(CertStatus::InstalledAndTrusted)
-                    } else {
-                        Ok(CertStatus::InstalledNotTrusted)
-                    }
-                } else {
-                    let user_keychain_output = Command::new("security")
-                        .args(["find-certificate", "-c", &self.cert_name, "-a", "-Z"])
-                        .output();
-
-                    match user_keychain_output {
-                        Ok(user_out) => {
-                            if user_out.status.success() && !user_out.stdout.is_empty() {
-                                if self.check_trust_macos()? {
-                                    Ok(CertStatus::InstalledAndTrusted)
-                                } else {
-                                    Ok(CertStatus::InstalledNotTrusted)
-                                }
-                            } else {
-                                Ok(CertStatus::NotInstalled)
-                            }
-                        }
-                        Err(_) => Ok(CertStatus::NotInstalled),
-                    }
-                }
+        if system_match {
+            if self.check_trust_macos()? {
+                Ok(CertStatus::InstalledAndTrusted)
+            } else {
+                Ok(CertStatus::InstalledNotTrusted)
             }
-            Err(_) => Ok(CertStatus::NotInstalled),
+        } else {
+            Ok(CertStatus::NotInstalled)
         }
     }
 
@@ -230,7 +232,13 @@ impl CertInstaller {
         }
 
         let output = Command::new("security")
-            .args(["verify-cert", "-c", self.cert_path.to_str().unwrap_or("")])
+            .args([
+                "verify-cert",
+                "-c",
+                self.cert_path.to_str().unwrap_or(""),
+                "-p",
+                "ssl",
+            ])
             .output();
 
         match output {
@@ -241,67 +249,68 @@ impl CertInstaller {
 
     #[cfg(target_os = "macos")]
     fn get_detailed_status_macos(&self) -> Result<CertSystemInfo> {
-        let output = Command::new("security")
-            .args([
-                "find-certificate",
-                "-c",
-                &self.cert_name,
-                "-a",
-                "-Z",
-                "/Library/Keychains/System.keychain",
-            ])
-            .output();
+        let current_fingerprint = self.current_cert_fingerprint_macos()?;
+        let system_keychain = "/Library/Keychains/System.keychain";
+        let system_fingerprints =
+            list_macos_keychain_fingerprints(system_keychain, &self.cert_name)?;
+        let system_match = system_fingerprints.contains(&current_fingerprint);
+        let trusted = self.check_trust_macos()?;
 
-        match output {
-            Ok(out) => {
-                if out.status.success() && !out.stdout.is_empty() {
-                    let trusted = self.check_trust_macos()?;
-                    return Ok(CertSystemInfo {
-                        status: if trusted {
-                            CertStatus::InstalledAndTrusted
-                        } else {
-                            CertStatus::InstalledNotTrusted
-                        },
-                        keychain_location: Some("System Keychain".to_string()),
-                        system_cert_path: Some(PathBuf::from("/Library/Keychains/System.keychain")),
-                        fingerprint_match: Some(true),
-                    });
-                }
-
-                let user_output = Command::new("security")
-                    .args(["find-certificate", "-c", &self.cert_name, "-a", "-Z"])
-                    .output();
-
-                if let Ok(user_out) = user_output {
-                    if user_out.status.success() && !user_out.stdout.is_empty() {
-                        let trusted = self.check_trust_macos()?;
-                        return Ok(CertSystemInfo {
-                            status: if trusted {
-                                CertStatus::InstalledAndTrusted
-                            } else {
-                                CertStatus::InstalledNotTrusted
-                            },
-                            keychain_location: Some("Login Keychain".to_string()),
-                            system_cert_path: None,
-                            fingerprint_match: Some(true),
-                        });
-                    }
-                }
-
-                Ok(CertSystemInfo {
-                    status: CertStatus::NotInstalled,
-                    keychain_location: None,
-                    system_cert_path: None,
-                    fingerprint_match: None,
-                })
-            }
-            Err(_) => Ok(CertSystemInfo {
-                status: CertStatus::NotInstalled,
-                keychain_location: None,
-                system_cert_path: None,
-                fingerprint_match: None,
-            }),
+        if system_match {
+            return Ok(CertSystemInfo {
+                status: if trusted {
+                    CertStatus::InstalledAndTrusted
+                } else {
+                    CertStatus::InstalledNotTrusted
+                },
+                keychain_location: Some("System Keychain".to_string()),
+                system_cert_path: Some(PathBuf::from(system_keychain)),
+                fingerprint_match: Some(true),
+            });
         }
+
+        if !system_fingerprints.is_empty() {
+            return Ok(CertSystemInfo {
+                status: CertStatus::NotInstalled,
+                keychain_location: Some("System Keychain".to_string()),
+                system_cert_path: Some(PathBuf::from(system_keychain)),
+                fingerprint_match: Some(false),
+            });
+        }
+
+        Ok(CertSystemInfo {
+            status: CertStatus::NotInstalled,
+            keychain_location: None,
+            system_cert_path: None,
+            fingerprint_match: None,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn current_cert_fingerprint_macos(&self) -> Result<String> {
+        let output = Command::new("openssl")
+            .args([
+                "x509",
+                "-in",
+                self.cert_path.to_str().unwrap_or(""),
+                "-noout",
+                "-fingerprint",
+                "-sha256",
+            ])
+            .output()
+            .map_err(|e| BifrostError::Tls(format!("Failed to execute openssl: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(BifrostError::Tls(format!(
+                "openssl fingerprint failed: {}",
+                stderr.trim()
+            )));
+        }
+
+        parse_openssl_sha256_fingerprint(&String::from_utf8_lossy(&output.stdout)).ok_or_else(
+            || BifrostError::Tls("Failed to parse current certificate fingerprint".to_string()),
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -313,23 +322,27 @@ impl CertInstaller {
             )));
         }
 
-        println!("Installing CA certificate to login keychain...");
-        match install_macos_cert_to_login_keychain(&self.cert_path) {
-            Ok(()) => {
-                println!("✓ CA certificate installed and trusted successfully.");
-                return Ok(());
-            }
-            Err(error) => {
-                println!(
-                    "Login keychain install did not succeed, falling back to System keychain: {}",
-                    error
-                );
-            }
+        println!("Installing CA certificate to System keychain...");
+        println!("This requires administrator privileges.");
+        purge_macos_named_certificates(&self.cert_name, &resolve_macos_login_keychain()?, false)?;
+        install_macos_cert_to_system_keychain(&self.cert_path)?;
+        println!("✓ CA certificate installed and trusted successfully.");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn install_macos_gui(&self) -> Result<()> {
+        if !self.cert_path.exists() {
+            return Err(BifrostError::NotFound(format!(
+                "Certificate file not found: {}",
+                self.cert_path.display()
+            )));
         }
 
         println!("Installing CA certificate to System keychain...");
-        println!("This requires administrator privileges.");
-        install_macos_cert_to_system_keychain(&self.cert_path)?;
+        println!("macOS will prompt for administrator authorization.");
+        purge_macos_named_certificates(&self.cert_name, &resolve_macos_login_keychain()?, false)?;
+        run_macos_security_add_trusted_cert_gui(&self.cert_path)?;
         println!("✓ CA certificate installed and trusted successfully.");
         Ok(())
     }
@@ -548,12 +561,6 @@ impl CertInstaller {
 }
 
 #[cfg(target_os = "macos")]
-fn install_macos_cert_to_login_keychain(cert_path: &Path) -> Result<()> {
-    let keychain = resolve_macos_login_keychain()?;
-    run_macos_security_add_trusted_cert(cert_path, &keychain, false)
-}
-
-#[cfg(target_os = "macos")]
 fn install_macos_cert_to_system_keychain(cert_path: &Path) -> Result<()> {
     run_macos_security_add_trusted_cert(
         cert_path,
@@ -636,6 +643,168 @@ fn run_macos_security_add_trusted_cert(
     )))
 }
 
+#[cfg(target_os = "macos")]
+fn run_macos_security_add_trusted_cert_gui(cert_path: &Path) -> Result<()> {
+    let cert_path = cert_path.to_str().ok_or_else(|| {
+        BifrostError::Tls(format!(
+            "Certificate path is not valid UTF-8: {}",
+            cert_path.display()
+        ))
+    })?;
+    run_macos_security_with_authorization(&[
+        "add-trusted-cert",
+        "-d",
+        "-r",
+        "trustRoot",
+        "-k",
+        "/Library/Keychains/System.keychain",
+        cert_path,
+    ])
+}
+
+#[cfg(target_os = "macos")]
+fn list_macos_keychain_fingerprints(keychain: &str, cert_name: &str) -> Result<Vec<String>> {
+    let output = Command::new("security")
+        .args(["find-certificate", "-c", cert_name, "-a", "-Z", keychain])
+        .output()
+        .map_err(|e| {
+            BifrostError::Tls(format!(
+                "Failed to execute security find-certificate: {}",
+                e
+            ))
+        })?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_security_sha256_fingerprint)
+        .collect())
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_contains_fingerprint_macos(
+    keychain: &str,
+    cert_name: &str,
+    fingerprint: &str,
+) -> Result<bool> {
+    Ok(list_macos_keychain_fingerprints(keychain, cert_name)?
+        .iter()
+        .any(|candidate| candidate == fingerprint))
+}
+
+#[cfg(target_os = "macos")]
+fn purge_macos_named_certificates(cert_name: &str, keychain: &Path, use_sudo: bool) -> Result<()> {
+    let keychain = keychain.to_str().ok_or_else(|| {
+        BifrostError::Tls(format!(
+            "Keychain path is not valid UTF-8: {}",
+            keychain.display()
+        ))
+    })?;
+
+    let mut command = if use_sudo {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("security");
+        cmd
+    } else {
+        Command::new("security")
+    };
+
+    let output = command
+        .args(["delete-certificate", "-c", cert_name, keychain])
+        .output()
+        .map_err(|e| {
+            BifrostError::Tls(format!(
+                "Failed to execute security delete-certificate: {}",
+                e
+            ))
+        })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_macos_delete_certificate_not_found(&stderr) {
+        return Ok(());
+    }
+
+    Err(BifrostError::Tls(format!(
+        "security delete-certificate failed for {}: {}",
+        keychain,
+        stderr.trim()
+    )))
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn run_macos_security_with_authorization(args: &[&str]) -> Result<()> {
+    let rights = AuthorizationItemSetBuilder::new()
+        .add_right("system.privilege.admin")
+        .map_err(|error| BifrostError::Tls(format!("Failed to build auth rights: {error}")))?
+        .build();
+    let auth = Authorization::new(
+        Some(rights),
+        None,
+        AuthorizationFlags::INTERACTION_ALLOWED
+            | AuthorizationFlags::EXTEND_RIGHTS
+            | AuthorizationFlags::PREAUTHORIZE,
+    )
+    .map_err(|error| {
+        map_macos_authorization_error("Failed to request macOS authorization", &error.to_string())
+    })?;
+
+    auth.execute_with_privileges(
+        "/usr/bin/security",
+        args.iter().copied(),
+        AuthorizationFlags::DEFAULTS,
+    )
+    .map_err(|error| {
+        map_macos_authorization_error("security authorization command failed", &error.to_string())
+    })
+}
+
+fn is_macos_delete_certificate_not_found(message: &str) -> bool {
+    message.contains("could not find item")
+        || message.contains("The specified item could not be found")
+        || message.contains("Unable to delete certificate matching")
+}
+
+#[cfg(target_os = "macos")]
+fn map_macos_authorization_error(context: &str, message: &str) -> BifrostError {
+    if is_macos_user_cancelled(message) {
+        return BifrostError::Tls(format!("UserCancelled: {message}"));
+    }
+
+    BifrostError::Tls(format!("{context}: {message}"))
+}
+
+#[cfg(target_os = "macos")]
+fn is_macos_user_cancelled(message: &str) -> bool {
+    let lowercase = message.to_ascii_lowercase();
+    lowercase.contains("user canceled")
+        || lowercase.contains("user cancelled")
+        || lowercase.contains("canceled by the user")
+        || lowercase.contains("cancelled by the user")
+        || lowercase.contains("errauthorizationcanceled")
+}
+
+fn parse_security_sha256_fingerprint(line: &str) -> Option<String> {
+    line.strip_prefix("SHA-256 hash:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn parse_openssl_sha256_fingerprint(output: &str) -> Option<String> {
+    output
+        .trim()
+        .strip_prefix("SHA256 Fingerprint=")
+        .map(|value| value.replace(':', ""))
+}
+
 pub fn get_platform_name() -> &'static str {
     #[cfg(target_os = "macos")]
     return "macOS";
@@ -669,6 +838,18 @@ mod tests {
     }
 
     #[test]
+    fn test_cert_status_helpers() {
+        assert!(!CertStatus::NotInstalled.is_installed());
+        assert!(!CertStatus::NotInstalled.is_trusted());
+
+        assert!(CertStatus::InstalledNotTrusted.is_installed());
+        assert!(!CertStatus::InstalledNotTrusted.is_trusted());
+
+        assert!(CertStatus::InstalledAndTrusted.is_installed());
+        assert!(CertStatus::InstalledAndTrusted.is_trusted());
+    }
+
+    #[test]
     fn test_cert_installer_new() {
         let dir = tempdir().expect("Failed to create temp dir");
         let cert_path = dir.path().join("test.crt");
@@ -696,5 +877,39 @@ mod tests {
         assert_eq!(name, "Linux");
         #[cfg(target_os = "windows")]
         assert_eq!(name, "Windows");
+    }
+
+    #[test]
+    fn test_is_macos_delete_certificate_not_found() {
+        assert!(is_macos_delete_certificate_not_found(
+            "Unable to delete certificate matching \"Bifrost CA\""
+        ));
+        assert!(is_macos_delete_certificate_not_found(
+            "The specified item could not be found in the keychain."
+        ));
+        assert!(!is_macos_delete_certificate_not_found("some other failure"));
+    }
+
+    #[test]
+    fn test_is_macos_user_cancelled() {
+        assert!(is_macos_user_cancelled("User canceled."));
+        assert!(is_macos_user_cancelled("errAuthorizationCanceled"));
+        assert!(!is_macos_user_cancelled("authorization denied"));
+    }
+
+    #[test]
+    fn test_parse_security_sha256_fingerprint() {
+        assert_eq!(
+            parse_security_sha256_fingerprint("SHA-256 hash: ABCDEF1234"),
+            Some("ABCDEF1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_openssl_sha256_fingerprint() {
+        assert_eq!(
+            parse_openssl_sha256_fingerprint("SHA256 Fingerprint=AA:BB:CC:DD:EE:FF\n"),
+            Some("AABBCCDDEEFF".to_string())
+        );
     }
 }
