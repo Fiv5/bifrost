@@ -15,6 +15,7 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 ## ✨ 特性
 ![network.png](assets/network.png)
+<img width="1500" height="783" alt="image" src="https://github.com/user-attachments/assets/44062a96-47f3-481b-a2b6-e1bda9b3fda9" />
 ![scripts.png](assets/scripts.png)
 ![rules.png](assets/rules.png)
 ![replay.png](assets/replay.png)
