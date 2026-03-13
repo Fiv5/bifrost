@@ -1313,6 +1313,15 @@ impl SocksHandler {
             .as_ref()
             .map(|s| s.get_max_body_probe_size())
             .unwrap_or(64 * 1024);
+        let http1_max_header_size = if let Some(ref state) = admin_state {
+            if let Some(ref config_manager) = state.config_manager {
+                config_manager.config().await.server.http1_max_header_size
+            } else {
+                64 * 1024
+            }
+        } else {
+            64 * 1024
+        };
 
         let service = service_fn(move |req: Request<Incoming>| {
             let target_host = target_host.clone();
@@ -1341,11 +1350,13 @@ impl SocksHandler {
 
         let client_io = TokioIo::new(client_tls);
 
-        let conn = ServerBuilder::new()
+        let mut builder = ServerBuilder::new();
+        builder
             .preserve_header_case(true)
             .title_case_headers(true)
-            .serve_connection(client_io, service)
-            .with_upgrades();
+            .max_buf_size(http1_max_header_size);
+
+        let conn = builder.serve_connection(client_io, service).with_upgrades();
 
         let mut conn = std::pin::pin!(conn);
 

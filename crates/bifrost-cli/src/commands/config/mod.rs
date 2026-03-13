@@ -12,8 +12,9 @@ use bifrost_storage::{
 
 use crate::cli::ConfigCommands;
 use client::{
-    ConfigApiClient, PerformanceConfigResponse, TlsConfigResponse, UpdatePerformanceConfigRequest,
-    UpdateTlsConfigRequest, WhitelistResponse,
+    ConfigApiClient, PerformanceConfigResponse, ServerConfigResponse, TlsConfigResponse,
+    UpdatePerformanceConfigRequest, UpdateServerConfigRequest, UpdateTlsConfigRequest,
+    WhitelistResponse,
 };
 use keys::{format_size, parse_bool, parse_list, parse_size, ConfigKey};
 
@@ -41,6 +42,7 @@ pub fn handle_config_command(action: Option<ConfigCommands>, host: &str, port: u
 }
 
 fn show_all_config(client: &ConfigApiClient, json: bool) -> Result<()> {
+    let server = client.get_server_config().map_err(BifrostError::Config)?;
     let tls = client.get_tls_config().map_err(BifrostError::Config)?;
     let perf = client
         .get_performance_config()
@@ -49,6 +51,7 @@ fn show_all_config(client: &ConfigApiClient, json: bool) -> Result<()> {
 
     if json {
         let combined = serde_json::json!({
+            "server": server,
             "tls": tls,
             "traffic": perf.traffic,
             "access": {
@@ -62,13 +65,25 @@ fn show_all_config(client: &ConfigApiClient, json: bool) -> Result<()> {
                 .map_err(|e| BifrostError::Config(e.to_string()))?
         );
     } else {
-        display::print_full_config(&tls, &perf, &whitelist);
+        display::print_full_config(&server, &tls, &perf, &whitelist);
     }
     Ok(())
 }
 
 fn show_section_config(client: &ConfigApiClient, section: &str, json: bool) -> Result<()> {
     match section.to_lowercase().as_str() {
+        "server" => {
+            let server = client.get_server_config().map_err(BifrostError::Config)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server)
+                        .map_err(|e| BifrostError::Config(e.to_string()))?
+                );
+            } else {
+                display::print_server_config(&server);
+            }
+        }
         "tls" => {
             let tls = client.get_tls_config().map_err(BifrostError::Config)?;
             if json {
@@ -115,7 +130,7 @@ fn show_section_config(client: &ConfigApiClient, section: &str, json: bool) -> R
         }
         _ => {
             return Err(BifrostError::Config(format!(
-                "Unknown section: '{}'. Available sections: tls, traffic, access",
+                "Unknown section: '{}'. Available sections: server, tls, traffic, access",
                 section
             )));
         }
@@ -127,6 +142,22 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
     let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
 
     let value = match config_key {
+        ConfigKey::ServerTimeoutSecs => {
+            let server = client.get_server_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Number(server.timeout_secs.into())
+        }
+        ConfigKey::ServerHttp1MaxHeaderSize => {
+            let server = client.get_server_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Number(server.http1_max_header_size.into())
+        }
+        ConfigKey::ServerHttp2MaxHeaderListSize => {
+            let server = client.get_server_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Number(server.http2_max_header_list_size.into())
+        }
+        ConfigKey::ServerWebSocketHandshakeMaxHeaderSize => {
+            let server = client.get_server_config().map_err(BifrostError::Config)?;
+            serde_json::Value::Number(server.websocket_handshake_max_header_size.into())
+        }
         ConfigKey::TlsEnabled => {
             let tls = client.get_tls_config().map_err(BifrostError::Config)?;
             serde_json::Value::Bool(tls.enable_tls_interception)
@@ -241,6 +272,61 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
     let config_key: ConfigKey = key.parse().map_err(BifrostError::Config)?;
 
     match config_key {
+        ConfigKey::ServerTimeoutSecs => {
+            let timeout_secs = value
+                .parse::<u64>()
+                .map_err(|e| BifrostError::Config(e.to_string()))?;
+            let req = UpdateServerConfigRequest {
+                timeout_secs: Some(timeout_secs),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ server.timeout-secs set to {}", timeout_secs);
+        }
+        ConfigKey::ServerHttp1MaxHeaderSize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdateServerConfigRequest {
+                http1_max_header_size: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!(
+                "✓ server.http1-max-header-size set to {}",
+                format_size(size)
+            );
+        }
+        ConfigKey::ServerHttp2MaxHeaderListSize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdateServerConfigRequest {
+                http2_max_header_list_size: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!(
+                "✓ server.http2-max-header-list-size set to {}",
+                format_size(size)
+            );
+        }
+        ConfigKey::ServerWebSocketHandshakeMaxHeaderSize => {
+            let size = parse_size(value).map_err(BifrostError::Config)?;
+            let req = UpdateServerConfigRequest {
+                websocket_handshake_max_header_size: Some(size),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!(
+                "✓ server.websocket-handshake-max-header-size set to {}",
+                format_size(size)
+            );
+        }
         ConfigKey::TlsEnabled => {
             let enabled = parse_bool(value).map_err(BifrostError::Config)?;
             let req = UpdateTlsConfigRequest {
@@ -600,7 +686,7 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
         }
 
         let tls_req = UpdateTlsConfigRequest {
-            enable_tls_interception: Some(true),
+            enable_tls_interception: Some(false),
             intercept_exclude: Some(vec![]),
             intercept_include: Some(vec![]),
             app_intercept_exclude: Some(vec![]),
@@ -610,6 +696,16 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
         };
         client
             .update_tls_config(&tls_req)
+            .map_err(BifrostError::Config)?;
+
+        let server_req = UpdateServerConfigRequest {
+            timeout_secs: Some(30),
+            http1_max_header_size: Some(64 * 1024),
+            http2_max_header_list_size: Some(256 * 1024),
+            websocket_handshake_max_header_size: Some(64 * 1024),
+        };
+        client
+            .update_server_config(&server_req)
             .map_err(BifrostError::Config)?;
 
         let perf_req = UpdatePerformanceConfigRequest {
@@ -655,9 +751,49 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
     }
 
     match config_key {
+        ConfigKey::ServerTimeoutSecs => {
+            let req = UpdateServerConfigRequest {
+                timeout_secs: Some(30),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ server.timeout-secs reset to 30");
+        }
+        ConfigKey::ServerHttp1MaxHeaderSize => {
+            let req = UpdateServerConfigRequest {
+                http1_max_header_size: Some(64 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ server.http1-max-header-size reset to 64 KB");
+        }
+        ConfigKey::ServerHttp2MaxHeaderListSize => {
+            let req = UpdateServerConfigRequest {
+                http2_max_header_list_size: Some(256 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ server.http2-max-header-list-size reset to 256 KB");
+        }
+        ConfigKey::ServerWebSocketHandshakeMaxHeaderSize => {
+            let req = UpdateServerConfigRequest {
+                websocket_handshake_max_header_size: Some(64 * 1024),
+                ..Default::default()
+            };
+            client
+                .update_server_config(&req)
+                .map_err(BifrostError::Config)?;
+            println!("✓ server.websocket-handshake-max-header-size reset to 64 KB");
+        }
         ConfigKey::TlsEnabled => {
             let req = UpdateTlsConfigRequest {
-                enable_tls_interception: Some(true),
+                enable_tls_interception: Some(false),
                 ..Default::default()
             };
             client
@@ -872,6 +1008,7 @@ fn disconnect_domain(client: &ConfigApiClient, domain: &str) -> Result<()> {
 }
 
 fn export_config(client: &ConfigApiClient, output: Option<PathBuf>, format: &str) -> Result<()> {
+    let server = client.get_server_config().map_err(BifrostError::Config)?;
     let tls = client.get_tls_config().map_err(BifrostError::Config)?;
     let perf = client
         .get_performance_config()
@@ -879,8 +1016,8 @@ fn export_config(client: &ConfigApiClient, output: Option<PathBuf>, format: &str
     let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
 
     let content = match format.to_lowercase().as_str() {
-        "json" => export_as_json(&tls, &perf, &whitelist)?,
-        "toml" => export_as_toml(&tls, &perf, &whitelist),
+        "json" => export_as_json(&server, &tls, &perf, &whitelist)?,
+        "toml" => export_as_toml(&server, &tls, &perf, &whitelist),
         _ => {
             return Err(BifrostError::Config(format!(
                 "Unsupported format: '{}'. Use 'json' or 'toml'",
@@ -900,11 +1037,18 @@ fn export_config(client: &ConfigApiClient, output: Option<PathBuf>, format: &str
 }
 
 fn export_as_json(
+    server: &ServerConfigResponse,
     tls: &TlsConfigResponse,
     perf: &PerformanceConfigResponse,
     whitelist: &WhitelistResponse,
 ) -> Result<String> {
     let combined = serde_json::json!({
+        "server": {
+            "timeout_secs": server.timeout_secs,
+            "http1_max_header_size": server.http1_max_header_size,
+            "http2_max_header_list_size": server.http2_max_header_list_size,
+            "websocket_handshake_max_header_size": server.websocket_handshake_max_header_size,
+        },
         "tls": {
             "enabled": tls.enable_tls_interception,
             "unsafe_ssl": tls.unsafe_ssl,
@@ -930,11 +1074,28 @@ fn export_as_json(
 }
 
 fn export_as_toml(
+    server: &ServerConfigResponse,
     tls: &TlsConfigResponse,
     perf: &PerformanceConfigResponse,
     whitelist: &WhitelistResponse,
 ) -> String {
     let mut output = String::new();
+
+    output.push_str("[server]\n");
+    output.push_str(&format!("timeout_secs = {}\n", server.timeout_secs));
+    output.push_str(&format!(
+        "http1_max_header_size = {}\n",
+        server.http1_max_header_size
+    ));
+    output.push_str(&format!(
+        "http2_max_header_list_size = {}\n",
+        server.http2_max_header_list_size
+    ));
+    output.push_str(&format!(
+        "websocket_handshake_max_header_size = {}\n",
+        server.websocket_handshake_max_header_size
+    ));
+    output.push('\n');
 
     output.push_str("[tls]\n");
     output.push_str(&format!(

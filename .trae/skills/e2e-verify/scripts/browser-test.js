@@ -55,6 +55,7 @@ const {
 const { ScenarioExecutor } = require("./lib/scenario-executor");
 const { tools, getToolByName, listTools, getToolsByCategory } = require("./lib/tools");
 const { VerifyLogger } = require("./lib/logger");
+const { DEFAULT_UI_URL } = require("./lib/config");
 
 const logger = new VerifyLogger("BrowserTest");
 
@@ -143,6 +144,11 @@ async function cmdScenario(args) {
   }
 
   const scenarioName = positionalArgs[0];
+  if (options.actions) {
+    showScenarioActions(scenarioName);
+    return;
+  }
+
   const { loadScenario } = require("./lib/scenario-executor");
   const { NetworkCollector } = require("./lib/network-collector");
   const { SCENARIOS_DIR } = require("./lib/config");
@@ -167,7 +173,7 @@ async function cmdScenario(args) {
   networkCollector.attach(page);
   networkCollector.start();
 
-  const baseUrl = scenario.config?.baseUrl || "http://localhost:8000";
+  const baseUrl = scenario.config?.baseUrl || DEFAULT_UI_URL;
   logger.info(`Navigating to: ${baseUrl}`);
   await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: options.timeout });
   await new Promise((r) => setTimeout(r, 2000));
@@ -207,7 +213,7 @@ async function cmdRun(args) {
   }
 
   const scriptFile = positionalArgs[0];
-  const targetUrl = url || positionalArgs[1] || "http://localhost:8000";
+  const targetUrl = url || positionalArgs[1] || DEFAULT_UI_URL;
 
   if (!fs.existsSync(scriptFile)) {
     logger.error(`Script file not found: ${scriptFile}`);
@@ -243,7 +249,7 @@ async function cmdRun(args) {
 
 async function cmdWatch(args) {
   const { url, options } = args;
-  const targetUrl = url || "http://localhost:8000";
+  const targetUrl = url || DEFAULT_UI_URL;
 
   const browser = await launchBrowser({ headless: false });
   const page = await browser.newPage();

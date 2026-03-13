@@ -87,7 +87,7 @@ fn test_all_protocols() {
 
     assert_eq!(
         protocol_names.len(),
-        66,
+        67,
         "Test should cover all 67 protocols"
     );
 }

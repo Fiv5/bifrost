@@ -6,16 +6,18 @@ use crate::protocol::HttpResponse;
 
 pub async fn read_http1_response_with_leftover<R: AsyncRead + Unpin>(
     reader: &mut R,
+    max_header_size: usize,
 ) -> Result<(HttpResponse, BytesMut)> {
     let mut buf = BytesMut::with_capacity(8192);
     let mut chunk = [0u8; 4096];
-    let max = 64 * 1024;
 
     loop {
-        if buf.len() > max {
-            return Err(BifrostError::Network(
-                "HTTP response headers too large".to_string(),
-            ));
+        if buf.len() > max_header_size {
+            return Err(BifrostError::Network(format!(
+                "HTTP response headers too large ({} > {} bytes)",
+                buf.len(),
+                max_header_size
+            )));
         }
 
         if let Some((resp, consumed)) = HttpResponse::parse(&buf) {

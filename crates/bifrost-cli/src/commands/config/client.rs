@@ -15,6 +15,17 @@ impl ConfigApiClient {
         self.get("/config/tls")
     }
 
+    pub fn get_server_config(&self) -> Result<ServerConfigResponse, String> {
+        self.get("/config/server")
+    }
+
+    pub fn update_server_config(
+        &self,
+        req: &UpdateServerConfigRequest,
+    ) -> Result<ServerConfigResponse, String> {
+        self.put("/config/server", req)
+    }
+
     pub fn update_tls_config(
         &self,
         req: &UpdateTlsConfigRequest,
@@ -136,6 +147,26 @@ pub struct TlsConfigResponse {
     pub app_intercept_include: Vec<String>,
     pub unsafe_ssl: bool,
     pub disconnect_on_config_change: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfigResponse {
+    pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct UpdateServerConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http1_max_header_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http2_max_header_list_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket_handshake_max_header_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

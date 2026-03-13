@@ -8,8 +8,9 @@ use tracing::info;
 use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
-    AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, SystemProxyConfigUpdate, TlsConfig,
-    TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
+    AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, ServerConfig, ServerConfigUpdate,
+    SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate,
+    UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
 use crate::{LegacyBifrostConfig, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
@@ -165,6 +166,29 @@ impl ConfigManager {
             .send(ConfigChangeEvent::SystemProxyConfigChanged);
 
         Ok(())
+    }
+
+    pub async fn update_server_config(&self, update: ServerConfigUpdate) -> Result<ServerConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(timeout_secs) = update.timeout_secs {
+            config.server.timeout_secs = timeout_secs;
+        }
+        if let Some(http1_max_header_size) = update.http1_max_header_size {
+            config.server.http1_max_header_size = http1_max_header_size;
+        }
+        if let Some(http2_max_header_list_size) = update.http2_max_header_list_size {
+            config.server.http2_max_header_list_size = http2_max_header_list_size;
+        }
+        if let Some(websocket_handshake_max_header_size) =
+            update.websocket_handshake_max_header_size
+        {
+            config.server.websocket_handshake_max_header_size = websocket_handshake_max_header_size;
+        }
+
+        self.save_config(&config)?;
+
+        Ok(config.server.clone())
     }
 
     pub async fn update_traffic_config(
@@ -476,6 +500,9 @@ impl ConfigManager {
             server: ServerConfig {
                 socks5_auth: None,
                 timeout_secs: 30,
+                http1_max_header_size: 64 * 1024,
+                http2_max_header_list_size: 256 * 1024,
+                websocket_handshake_max_header_size: 64 * 1024,
             },
             tls: TlsConfig {
                 enable_interception: legacy.enable_tls_interception,

@@ -514,6 +514,15 @@ get_tls_config() {
     admin_get "/api/config/tls"
 }
 
+get_server_config() {
+    admin_get "/api/config/server"
+}
+
+update_server_config() {
+    local data="$1"
+    admin_put "/api/config/server" "$data"
+}
+
 update_tls_config() {
     local data="$1"
     admin_put "/api/config/tls" "$data"

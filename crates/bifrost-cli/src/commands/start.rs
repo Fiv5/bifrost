@@ -202,6 +202,12 @@ pub fn run_start(
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
         max_body_probe_size: stored_config.traffic.max_body_probe_size,
+        timeout_secs: stored_config.server.timeout_secs,
+        http1_max_header_size: stored_config.server.http1_max_header_size,
+        http2_max_header_list_size: stored_config.server.http2_max_header_list_size,
+        websocket_handshake_max_header_size: stored_config
+            .server
+            .websocket_handshake_max_header_size,
         enable_socks: true,
         ..Default::default()
     };

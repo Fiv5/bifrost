@@ -71,6 +71,9 @@ pub struct ProxyConfig {
     pub app_intercept_exclude: Vec<String>,
     pub app_intercept_include: Vec<String>,
     pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
     pub socks5_port: Option<u16>,
     pub socks5_auth_required: bool,
     pub socks5_username: Option<String>,
@@ -105,6 +108,9 @@ impl Default for ProxyConfig {
                 "*Vivaldi*".to_string(),
             ],
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
             socks5_port: None,
             socks5_auth_required: false,
             socks5_username: None,
@@ -804,6 +810,15 @@ async fn handle_http_connection(
     initial_generation: u64,
 ) {
     let io = TokioIo::new(stream);
+    let http1_max_header_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager.config().await.server.http1_max_header_size
+        } else {
+            proxy_config.http1_max_header_size
+        }
+    } else {
+        proxy_config.http1_max_header_size
+    };
 
     let service = service_fn(move |req: Request<Incoming>| {
         let rules = Arc::clone(&rules);
@@ -832,13 +847,13 @@ async fn handle_http_connection(
         }
     });
 
-    if let Err(err) = http1::Builder::new()
+    let mut builder = http1::Builder::new();
+    builder
         .preserve_header_case(true)
         .title_case_headers(true)
-        .serve_connection(io, service)
-        .with_upgrades()
-        .await
-    {
+        .max_buf_size(http1_max_header_size);
+
+    if let Err(err) = builder.serve_connection(io, service).with_upgrades().await {
         error!("Error serving connection from {}: {:?}", peer_addr, err);
     }
 }
@@ -1231,6 +1246,9 @@ mod tests {
             app_intercept_exclude: vec![],
             app_intercept_include: vec![],
             timeout_secs: 60,
+            http1_max_header_size: 128 * 1024,
+            http2_max_header_list_size: 512 * 1024,
+            websocket_handshake_max_header_size: 96 * 1024,
             socks5_port: Some(1080),
             socks5_auth_required: true,
             socks5_username: Some("user".to_string()),
@@ -1250,6 +1268,12 @@ mod tests {
         assert!(server.config().enable_tls_interception);
         assert_eq!(server.config().socks5_port, Some(1080));
         assert!(server.config().socks5_auth_required);
+        assert_eq!(server.config().http1_max_header_size, 128 * 1024);
+        assert_eq!(server.config().http2_max_header_list_size, 512 * 1024);
+        assert_eq!(
+            server.config().websocket_handshake_max_header_size,
+            96 * 1024
+        );
         assert!(server.config().verbose_logging);
         assert_eq!(server.config().access_mode, AccessMode::Whitelist);
         assert!(server.config().allow_lan);

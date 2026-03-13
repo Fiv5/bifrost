@@ -1,8 +1,8 @@
 use bifrost_storage::{
     CollapsedSections, FilterPanelConfig, PinnedFilter, PinnedFilterType, SandboxConfigUpdate,
-    SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, TlsConfigUpdate,
-    TrafficConfigUpdate, UiConfigUpdate, DEFAULT_TRAFFIC_MAX_RECORDS, MAX_TRAFFIC_MAX_RECORDS,
-    MIN_TRAFFIC_MAX_RECORDS,
+    SandboxFileConfigUpdate, SandboxLimitsConfigUpdate, SandboxNetConfigUpdate, ServerConfigUpdate,
+    TlsConfigUpdate, TrafficConfigUpdate, UiConfigUpdate, DEFAULT_TRAFFIC_MAX_RECORDS,
+    MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS,
 };
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -28,9 +28,26 @@ pub struct TlsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxySettingsResponse {
+    pub server: ServerConfig,
     pub tls: TlsConfig,
     pub port: u16,
     pub host: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateServerConfigRequest {
+    pub timeout_secs: Option<u64>,
+    pub http1_max_header_size: Option<usize>,
+    pub http2_max_header_list_size: Option<usize>,
+    pub websocket_handshake_max_header_size: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -97,6 +114,11 @@ pub async fn handle_config(
         "/api/config/tls" | "/api/config/tls/" => match method {
             Method::GET => get_tls_config(state).await,
             Method::PUT => update_tls_config(req, state).await,
+            _ => method_not_allowed(),
+        },
+        "/api/config/server" | "/api/config/server/" => match method {
+            Method::GET => get_server_config(state).await,
+            Method::PUT => update_server_config(req, state).await,
             _ => method_not_allowed(),
         },
         "/api/config/performance" | "/api/config/performance/" => match method {
@@ -334,8 +356,25 @@ async fn update_sandbox_config(
 
 async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
     let runtime_config = state.runtime_config.read().await;
+    let server_config = if let Some(ref config_manager) = state.config_manager {
+        let config = config_manager.config().await;
+        ServerConfig {
+            timeout_secs: config.server.timeout_secs,
+            http1_max_header_size: config.server.http1_max_header_size,
+            http2_max_header_list_size: config.server.http2_max_header_list_size,
+            websocket_handshake_max_header_size: config.server.websocket_handshake_max_header_size,
+        }
+    } else {
+        ServerConfig {
+            timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
+        }
+    };
 
     let response = ProxySettingsResponse {
+        server: server_config,
         tls: TlsConfig {
             enable_tls_interception: runtime_config.enable_tls_interception,
             intercept_exclude: runtime_config.intercept_exclude.clone(),
@@ -350,6 +389,111 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
     };
 
     json_response(&response)
+}
+
+async fn get_server_config(state: SharedAdminState) -> Response<BoxBody> {
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let config = config_manager.config().await;
+    json_response(&ServerConfig {
+        timeout_secs: config.server.timeout_secs,
+        http1_max_header_size: config.server.http1_max_header_size,
+        http2_max_header_list_size: config.server.http2_max_header_list_size,
+        websocket_handshake_max_header_size: config.server.websocket_handshake_max_header_size,
+    })
+}
+
+async fn update_server_config(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: UpdateServerConfigRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    if let Some(timeout_secs) = request.timeout_secs {
+        if timeout_secs == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "timeout_secs must be > 0");
+        }
+    }
+    if let Some(v) = request.http1_max_header_size {
+        if v == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "http1_max_header_size must be > 0");
+        }
+    }
+    if let Some(v) = request.http2_max_header_list_size {
+        if v == 0 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "http2_max_header_list_size must be > 0",
+            );
+        }
+        if v > u32::MAX as usize {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "http2_max_header_list_size must be <= 4294967295",
+            );
+        }
+    }
+    if let Some(v) = request.websocket_handshake_max_header_size {
+        if v == 0 {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "websocket_handshake_max_header_size must be > 0",
+            );
+        }
+    }
+
+    let Some(ref config_manager) = state.config_manager else {
+        return error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Config manager not available",
+        );
+    };
+
+    let update = ServerConfigUpdate {
+        timeout_secs: request.timeout_secs,
+        http1_max_header_size: request.http1_max_header_size,
+        http2_max_header_list_size: request.http2_max_header_list_size,
+        websocket_handshake_max_header_size: request.websocket_handshake_max_header_size,
+    };
+
+    match config_manager.update_server_config(update).await {
+        Ok(config) => {
+            tracing::info!("Server config updated and persisted");
+            json_response(&ServerConfig {
+                timeout_secs: config.timeout_secs,
+                http1_max_header_size: config.http1_max_header_size,
+                http2_max_header_list_size: config.http2_max_header_list_size,
+                websocket_handshake_max_header_size: config.websocket_handshake_max_header_size,
+            })
+        }
+        Err(e) => {
+            tracing::error!("Failed to persist server config: {}", e);
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to save config: {}", e),
+            )
+        }
+    }
 }
 
 async fn get_tls_config(state: SharedAdminState) -> Response<BoxBody> {

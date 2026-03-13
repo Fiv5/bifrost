@@ -1858,8 +1858,23 @@ async fn handle_http_websocket(
         .await
         .map_err(|e| BifrostError::Network(format!("Failed to send WS handshake: {}", e)))?;
 
+    let websocket_handshake_max_header_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager
+                .config()
+                .await
+                .server
+                .websocket_handshake_max_header_size
+        } else {
+            64 * 1024
+        }
+    } else {
+        64 * 1024
+    };
+
     let (upstream_resp, upstream_leftover) =
-        read_http1_response_with_leftover(&mut target_stream).await?;
+        read_http1_response_with_leftover(&mut target_stream, websocket_handshake_max_header_size)
+            .await?;
     if upstream_resp.status_code != 101 {
         return Err(BifrostError::Network(format!(
             "WebSocket handshake failed: {} {}",

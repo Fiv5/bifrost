@@ -1,7 +1,10 @@
-use super::client::{PerformanceConfigResponse, TlsConfigResponse, WhitelistResponse};
+use super::client::{
+    PerformanceConfigResponse, ServerConfigResponse, TlsConfigResponse, WhitelistResponse,
+};
 use super::keys::{format_size, ConfigKey};
 
 pub fn print_full_config(
+    server: &ServerConfigResponse,
     tls: &TlsConfigResponse,
     perf: &PerformanceConfigResponse,
     whitelist: &WhitelistResponse,
@@ -9,6 +12,8 @@ pub fn print_full_config(
     println!("Bifrost Configuration");
     println!("=====================\n");
 
+    print_server_config(server);
+    println!();
     print_tls_config(tls);
     println!();
     print_traffic_config(perf);
@@ -60,6 +65,23 @@ pub fn print_tls_config(tls: &TlsConfigResponse) {
             println!("    - {}", app);
         }
     }
+}
+
+pub fn print_server_config(server: &ServerConfigResponse) {
+    println!("Server Configuration");
+    println!("  Timeout:              {} s", server.timeout_secs);
+    println!(
+        "  HTTP/1 Header Limit:  {}",
+        format_size(server.http1_max_header_size)
+    );
+    println!(
+        "  HTTP/2 Header Limit:  {}",
+        format_size(server.http2_max_header_list_size)
+    );
+    println!(
+        "  WS Handshake Limit:   {}",
+        format_size(server.websocket_handshake_max_header_size)
+    );
 }
 
 pub fn print_traffic_config(perf: &PerformanceConfigResponse) {

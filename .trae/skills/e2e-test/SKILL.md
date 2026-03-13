@@ -5,7 +5,7 @@ description: "创建和执行 Bifrost 代理的端到端测试；在添加新功
 
 # E2E 测试创建与执行
 
-该技能用于创建和执行 Bifrost 代理的端到端测试，确保代理功能正确。
+该技能用于创建和执行 Bifrost 的端到端测试，优先覆盖本次变更涉及的能力。
 
 ## 何时调用
 
@@ -18,13 +18,16 @@ description: "创建和执行 Bifrost 代理的端到端测试；在添加新功
 
 在执行任务前，**必须先阅读** E2E 测试框架的详细文档：
 
-- [e2e-tests README](rust/e2e-tests/readme.md) - 测试架构、目录结构、断言库、现有用例等
-- [测试覆盖率](rust/e2e-tests/rules/COVERAGE.md) - 当前测试覆盖情况
+- [e2e-tests README](e2e-tests/readme.md) - 测试架构、目录结构、断言库、现有用例
+- [测试覆盖率](e2e-tests/rules/COVERAGE.md) - 当前覆盖范围与缺口
+- [项目规则](../../rules/project_rules.md) - 仓库级开发与验证要求
 
 ## 使用说明
 
-- 启动代理服务时，建议显式设置临时数据目录（例如 `BIFROST_DATA_DIR=./.bifrost-e2e`），避免覆盖本机已有数据(必须使用"./.bifrost-e2e"作为前缀), 默认情况使用"./.bifrost-e2e-test"
+- 启动代理服务时，必须显式设置临时数据目录，避免覆盖本机已有数据；目录前缀统一使用 `./.bifrost-e2e`
+- 若需要手动启动服务，优先使用仓库规则中的方式，例如 `BIFROST_DATA_DIR=./.bifrost-e2e-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl`
 - 不同场景的步骤已拆分为独立文档；按需打开对应文件执行即可
+- 测试结束后清理临时目录和残留进程
 
 ## 场景文档
 

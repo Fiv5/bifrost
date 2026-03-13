@@ -149,6 +149,17 @@ pub struct SandboxLimitsConfigUpdate {
 pub struct ServerConfig {
     pub socks5_auth: Option<SocksAuthConfig>,
     pub timeout_secs: u64,
+    pub http1_max_header_size: usize,
+    pub http2_max_header_list_size: usize,
+    pub websocket_handshake_max_header_size: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerConfigUpdate {
+    pub timeout_secs: Option<u64>,
+    pub http1_max_header_size: Option<usize>,
+    pub http2_max_header_list_size: Option<usize>,
+    pub websocket_handshake_max_header_size: Option<usize>,
 }
 
 impl Default for ServerConfig {
@@ -156,6 +167,9 @@ impl Default for ServerConfig {
         Self {
             socks5_auth: None,
             timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
         }
     }
 }

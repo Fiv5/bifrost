@@ -116,7 +116,10 @@ async fn try_send_http3_upstream(
     client.request_to_addr(host, addr, req).await
 }
 
-fn build_tls_intercept_server_builder() -> AutoServerBuilder<TokioExecutor> {
+fn build_tls_intercept_server_builder(
+    http2_max_header_list_size: usize,
+) -> AutoServerBuilder<TokioExecutor> {
+    let http2_max_header_list_size = u32::try_from(http2_max_header_list_size).unwrap_or(u32::MAX);
     let mut builder = AutoServerBuilder::new(TokioExecutor::new())
         .preserve_header_case(true)
         .title_case_headers(true);
@@ -127,7 +130,7 @@ fn build_tls_intercept_server_builder() -> AutoServerBuilder<TokioExecutor> {
         // Browser-originated HTTP/2 requests can carry large cookie/header sets
         // (for example chatgpt.com session cookies). Hyper's default 16KB limit
         // is too small and surfaces as a proxy-generated 431 before our handler runs.
-        .max_header_list_size(256 * 1024)
+        .max_header_list_size(http2_max_header_list_size)
         .max_concurrent_streams(512)
         .keep_alive_interval(Some(std::time::Duration::from_secs(15)))
         .keep_alive_timeout(std::time::Duration::from_secs(20))
@@ -667,7 +670,20 @@ async fn tls_intercept_tunnel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let builder = build_tls_intercept_server_builder();
+    let http2_max_header_list_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager
+                .config()
+                .await
+                .server
+                .http2_max_header_list_size
+        } else {
+            256 * 1024
+        }
+    } else {
+        256 * 1024
+    };
+    let builder = build_tls_intercept_server_builder(http2_max_header_list_size);
     let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     if let Err(e) = conn.await {
@@ -751,7 +767,20 @@ async fn tls_intercept_tunnel_with_cancel(
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
-    let builder = build_tls_intercept_server_builder();
+    let http2_max_header_list_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager
+                .config()
+                .await
+                .server
+                .http2_max_header_list_size
+        } else {
+            256 * 1024
+        }
+    } else {
+        256 * 1024
+    };
+    let builder = build_tls_intercept_server_builder(http2_max_header_list_size);
     let conn = builder.serve_connection_with_upgrades(client_io, service);
 
     tokio::pin!(conn);
@@ -2331,6 +2360,19 @@ async fn handle_intercepted_websocket(
         }
     };
     let tcp_connect_ms = connect_start.elapsed().as_millis() as u64;
+    let websocket_handshake_max_header_size = if let Some(ref state) = admin_state {
+        if let Some(ref config_manager) = state.config_manager {
+            config_manager
+                .config()
+                .await
+                .server
+                .websocket_handshake_max_header_size
+        } else {
+            64 * 1024
+        }
+    } else {
+        64 * 1024
+    };
 
     let upstream_handshake = if use_http {
         let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(target_stream);
@@ -2345,20 +2387,24 @@ async fn handle_intercepted_websocket(
                 .unwrap());
         }
 
-        let (upstream_resp, upstream_leftover) =
-            match read_http1_response_with_leftover(&mut stream_read).await {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(
-                        "[{}] Failed to read WebSocket handshake response: {}",
-                        req_id, e
-                    );
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"Bad Gateway".to_vec()))
-                        .unwrap());
-                }
-            };
+        let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
+            &mut stream_read,
+            websocket_handshake_max_header_size,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to read WebSocket handshake response: {}",
+                    req_id, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
+            }
+        };
 
         if upstream_resp.status_code != 101 {
             error!(
@@ -2441,20 +2487,24 @@ async fn handle_intercepted_websocket(
                         .unwrap());
                 }
 
-                let (upstream_resp, upstream_leftover) =
-                    match read_http1_response_with_leftover(&mut stream_read).await {
-                        Ok(v) => v,
-                        Err(e) => {
-                            error!(
-                                "[{}] Failed to read WebSocket handshake response: {}",
-                                req_id, e
-                            );
-                            return Ok(Response::builder()
-                                .status(502)
-                                .body(full_body(b"Bad Gateway".to_vec()))
-                                .unwrap());
-                        }
-                    };
+                let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
+                    &mut stream_read,
+                    websocket_handshake_max_header_size,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(
+                            "[{}] Failed to read WebSocket handshake response: {}",
+                            req_id, e
+                        );
+                        return Ok(Response::builder()
+                            .status(502)
+                            .body(full_body(b"Bad Gateway".to_vec()))
+                            .unwrap());
+                    }
+                };
 
                 if upstream_resp.status_code != 101 {
                     error!(
