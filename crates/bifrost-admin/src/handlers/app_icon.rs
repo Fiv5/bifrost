@@ -50,6 +50,7 @@ pub async fn handle_app_icon<B>(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "image/png")
                 .header(header::CACHE_CONTROL, "public, max-age=86400")
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
                 .body(BoxBody::new(body))
                 .unwrap()
         }

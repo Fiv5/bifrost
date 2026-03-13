@@ -23,6 +23,7 @@ use hyper::{Response, StatusCode};
 use serde::Serialize;
 
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
+pub const ADMIN_CORS_ALLOW_HEADERS: &str = "Content-Type, Authorization, X-Client-Id";
 
 pub fn full_body(body: impl Into<Bytes>) -> BoxBody {
     http_body_util::Full::new(body.into())
@@ -96,11 +97,30 @@ pub fn cors_preflight() -> Response<BoxBody> {
             "Access-Control-Allow-Methods",
             "GET, POST, PUT, DELETE, OPTIONS",
         )
-        .header(
-            "Access-Control-Allow-Headers",
-            "Content-Type, Authorization",
-        )
+        .header("Access-Control-Allow-Headers", ADMIN_CORS_ALLOW_HEADERS)
         .header("Access-Control-Max-Age", "86400")
         .body(empty_body())
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cors_preflight, ADMIN_CORS_ALLOW_HEADERS};
+
+    #[test]
+    fn cors_preflight_allows_desktop_client_header() {
+        let response = cors_preflight();
+        let headers = response.headers();
+
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Headers")
+                .and_then(|value| value.to_str().ok()),
+            Some(ADMIN_CORS_ALLOW_HEADERS)
+        );
+        assert!(
+            ADMIN_CORS_ALLOW_HEADERS.contains("X-Client-Id"),
+            "desktop requests require X-Client-Id to pass CORS preflight"
+        );
+    }
 }
