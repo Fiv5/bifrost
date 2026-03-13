@@ -970,7 +970,6 @@ function CookieEditor({ headers, onChange }: CookieEditorProps) {
   const cookieHeader = cookieHeaderIndex >= 0 ? headers[cookieHeaderIndex] : null;
   const cookieValue = cookieHeader?.value || "";
   const cookieHeaderEnabled = cookieHeader?.enabled ?? true;
-
   const lastValueRef = useRef(cookieValue);
   const [mode, setMode] = useState<"table" | "raw">("table");
   const [items, setItems] = useState<ReplayKeyValueItem[]>(() =>
@@ -980,6 +979,7 @@ function CookieEditor({ headers, onChange }: CookieEditorProps) {
   useEffect(() => {
     if (cookieValue === lastValueRef.current) return;
     lastValueRef.current = cookieValue;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Local cookie table state must mirror the upstream header value without altering edit behavior.
     setItems(parseCookieValue(cookieValue));
   }, [cookieValue]);
 

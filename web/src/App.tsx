@@ -3,7 +3,7 @@ import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router
 import { ConfigProvider, Modal, Steps, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
-import { beginStartupSplashExit } from "./components/StartupSplash";
+import { beginStartupSplashExit } from "./components/StartupSplash/controller";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";

@@ -335,15 +335,20 @@ function isCurlCommandToken(token: string): boolean {
 }
 
 function base64EncodeUtf8(input: string): string {
-  const anyGlobal = globalThis as any;
-  if (typeof anyGlobal.Buffer !== 'undefined') {
-    return anyGlobal.Buffer.from(input, 'utf8').toString('base64');
+  const globalWithBase64 = globalThis as typeof globalThis & {
+    Buffer?: {
+      from: (value: string, encoding: string) => { toString: (encoding: string) => string };
+    };
+    btoa?: (value: string) => string;
+  };
+  if (typeof globalWithBase64.Buffer !== 'undefined') {
+    return globalWithBase64.Buffer.from(input, 'utf8').toString('base64');
   }
-  if (typeof anyGlobal.btoa !== 'undefined') {
+  if (typeof globalWithBase64.btoa !== 'undefined') {
     const bytes = encodeURIComponent(input).replace(/%([0-9A-F]{2})/g, (_, p1) =>
       String.fromCharCode(parseInt(p1, 16)),
     );
-    return anyGlobal.btoa(bytes);
+    return globalWithBase64.btoa(bytes);
   }
   return input;
 }

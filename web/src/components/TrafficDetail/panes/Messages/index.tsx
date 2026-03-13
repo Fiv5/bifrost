@@ -512,6 +512,7 @@ export const Messages = ({
         setLoading(false);
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [recordId],
   );
 
@@ -565,6 +566,7 @@ export const Messages = ({
     };
   }, []);
 
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     if (!isWebSocket || !isConnectionOpen) {
       return;
@@ -598,6 +600,7 @@ export const Messages = ({
       }).catch(() => {});
     };
   }, [isConnectionOpen, isWebSocket, recordId]);
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
     if (isWebSocket || !isConnectionOpen || sseForceClosed) {

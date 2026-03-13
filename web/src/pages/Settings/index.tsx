@@ -682,8 +682,9 @@ export default function Settings() {
   }, [overview?.pending_authorizations]);
 
   useEffect(() => {
+    const timers = perfUpdateTimers.current;
     return () => {
-      Object.values(perfUpdateTimers.current).forEach((timer) => {
+      Object.values(timers).forEach((timer) => {
         window.clearTimeout(timer);
       });
     };

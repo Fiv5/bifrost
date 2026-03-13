@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-
-const STARTUP_SPLASH_EXIT_MS = 900;
-const STARTUP_SPLASH_EVENT = "bifrost:startup-splash-exit";
+import {
+  STARTUP_SPLASH_EVENT,
+  STARTUP_SPLASH_EXIT_MS,
+} from "./controller";
 
 interface StartupSplashProps {
   phase?: "visible" | "exiting";
@@ -68,8 +69,4 @@ export function StartupSplashHost() {
   }
 
   return <StartupSplash phase={phase} />;
-}
-
-export function beginStartupSplashExit() {
-  window.dispatchEvent(new Event(STARTUP_SPLASH_EVENT));
 }
