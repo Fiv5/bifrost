@@ -4,6 +4,7 @@ import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
 import RuleEditor from './RuleEditor';
 import { useRulesStore } from '../../stores/useRulesStore';
+import { useValuesStore } from '../../stores/useValuesStore';
 import { notifyApiBusinessError } from '../../api/client';
 
 export default function Rules() {
@@ -13,8 +14,24 @@ export default function Rules() {
   const rules = useRulesStore((state) => state.rules);
   const selectedRuleName = useRulesStore((state) => state.selectedRuleName);
   const selectRule = useRulesStore((state) => state.selectRule);
+  const fetchRules = useRulesStore((state) => state.fetchRules);
+  const values = useValuesStore((state) => state.values);
+  const fetchValues = useValuesStore((state) => state.fetchValues);
 
   const initRef = useRef(false);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+
+    if (rules.length === 0) {
+      void fetchRules();
+    }
+    if (values.length === 0) {
+      void fetchValues();
+    }
+  }, [fetchRules, fetchValues, rules.length, values.length]);
 
   useEffect(() => {
     if (initRef.current) return;

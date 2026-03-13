@@ -1,0 +1,76 @@
+{
+  "name": "Rules/Values 手动刷新验证",
+  "description": "Rules 和 Values 页面不再后台轮询，点击刷新按钮后才请求最新数据",
+  "config": {
+    "baseUrl": "http://127.0.0.1:3000/_bifrost",
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 验证 Rules 页面静置不再自动请求 ====" },
+    { "action": "goto", "url": "/rules" },
+    {
+      "action": "assert",
+      "condition": "document.body && document.body.innerText.includes('Rules')",
+      "message": "Rules 页面已打开"
+    },
+    {
+      "action": "evaluate",
+      "code": "(() => { if (!window.__manualRefreshProbeInstalled) { window.__manualRefreshProbeInstalled = true; window.__manualRefreshRequests = []; const pushRequest = (method, url) => { if (typeof url !== 'string') return; if (url.includes('/_bifrost/api/rules') || url.includes('/_bifrost/api/values')) { window.__manualRefreshRequests.push({ method, url, time: Date.now() }); } }; const originalFetch = window.fetch.bind(window); window.fetch = (...args) => { const input = args[0]; const init = args[1]; const url = typeof input === 'string' ? input : input?.url; pushRequest(init?.method || 'GET', url); return originalFetch(...args); }; const originalOpen = XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open = function(method, url, ...rest) { this.__manualRefreshMethod = method; this.__manualRefreshUrl = url; return originalOpen.call(this, method, url, ...rest); }; const originalSend = XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.send = function(...args) { pushRequest(this.__manualRefreshMethod || 'GET', this.__manualRefreshUrl); return originalSend.apply(this, args); }; } window.__manualRefreshRequests = []; return true; })()"
+    },
+    { "action": "wait", "ms": 2500 },
+    {
+      "action": "evaluate",
+      "code": "(() => { performance.clearResourceTimings(); window.__manualRefreshRequests = []; return true; })()"
+    },
+    { "action": "wait", "ms": 11000 },
+    {
+      "action": "assert",
+      "condition": "performance.getEntriesByType('resource').filter((item) => item.name.includes('/_bifrost/api/rules') || item.name.includes('/_bifrost/api/values')).length === 0",
+      "message": "Rules 页面静置 11 秒未触发自动请求"
+    },
+    { "action": "log", "message": "==== 步骤 2: 验证 Rules 页面点击刷新后才请求 ====" },
+    {
+      "action": "evaluate",
+      "code": "(() => { const button = Array.from(document.querySelectorAll('button')).find((item) => item.querySelector('.anticon-reload')); if (!button) { return false; } button.click(); return true; })()"
+    },
+    { "action": "wait", "ms": 1200 },
+    {
+      "action": "assert",
+      "condition": "performance.getEntriesByType('resource').some((item) => item.name.includes('/_bifrost/api/rules'))",
+      "message": "Rules 页面刷新按钮会请求规则数据"
+    },
+    { "action": "log", "message": "==== 步骤 3: 验证 Values 页面静置不再自动请求 ====" },
+    { "action": "goto", "url": "/values" },
+    {
+      "action": "assert",
+      "condition": "document.body && document.body.innerText.includes('Values')",
+      "message": "Values 页面已打开"
+    },
+    {
+      "action": "evaluate",
+      "code": "(() => { if (!window.__manualRefreshProbeInstalled) { window.__manualRefreshProbeInstalled = true; window.__manualRefreshRequests = []; const pushRequest = (method, url) => { if (typeof url !== 'string') return; if (url.includes('/_bifrost/api/rules') || url.includes('/_bifrost/api/values')) { window.__manualRefreshRequests.push({ method, url, time: Date.now() }); } }; const originalFetch = window.fetch.bind(window); window.fetch = (...args) => { const input = args[0]; const init = args[1]; const url = typeof input === 'string' ? input : input?.url; pushRequest(init?.method || 'GET', url); return originalFetch(...args); }; const originalOpen = XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open = function(method, url, ...rest) { this.__manualRefreshMethod = method; this.__manualRefreshUrl = url; return originalOpen.call(this, method, url, ...rest); }; const originalSend = XMLHttpRequest.prototype.send; XMLHttpRequest.prototype.send = function(...args) { pushRequest(this.__manualRefreshMethod || 'GET', this.__manualRefreshUrl); return originalSend.apply(this, args); }; } window.__manualRefreshRequests = []; return true; })()"
+    },
+    { "action": "wait", "ms": 2500 },
+    {
+      "action": "evaluate",
+      "code": "(() => { performance.clearResourceTimings(); window.__manualRefreshRequests = []; return true; })()"
+    },
+    { "action": "wait", "ms": 11000 },
+    {
+      "action": "assert",
+      "condition": "performance.getEntriesByType('resource').filter((item) => item.name.includes('/_bifrost/api/values')).length === 0",
+      "message": "Values 页面静置 11 秒未触发自动请求"
+    },
+    { "action": "log", "message": "==== 步骤 4: 验证 Values 页面点击刷新后才请求 ====" },
+    {
+      "action": "evaluate",
+      "code": "(() => { const button = Array.from(document.querySelectorAll('button')).find((item) => item.querySelector('.anticon-reload')); if (!button) { return false; } button.click(); return true; })()"
+    },
+    { "action": "wait", "ms": 1200 },
+    {
+      "action": "assert",
+      "condition": "performance.getEntriesByType('resource').some((item) => item.name.includes('/_bifrost/api/values'))",
+      "message": "Values 页面刷新按钮会请求值数据"
+    }
+  ]
+}
