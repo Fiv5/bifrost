@@ -74,6 +74,17 @@
         background: rgba(255, 255, 255, 0.2);
       }
 
+      #startup-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        pointer-events: none;
+      }
+
+      #startup-splash:empty {
+        display: none;
+      }
+
       #root {
         min-height: 100vh;
         position: relative;
@@ -90,6 +101,7 @@
         box-sizing: border-box;
         overflow: hidden;
         isolation: isolate;
+        pointer-events: auto;
         transition:
           opacity 0.72s ease,
           visibility 0.72s ease;
