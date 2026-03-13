@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{
     image::Image,
+    webview::PageLoadEvent,
     window::{Effect, EffectState, EffectsBuilder},
     AppHandle, Manager, State, WebviewWindow,
 };
@@ -72,6 +73,29 @@ fn main() {
             get_desktop_runtime,
             update_desktop_proxy_port
         ])
+        .on_page_load(|webview, payload| {
+            if webview.label() != "main" || payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+
+            let window = webview.window();
+            if window.is_visible().unwrap_or(false) {
+                return;
+            }
+
+            if let Some(state) = webview.try_state::<BackendState>() {
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    format!(
+                        "desktop webview finished loading; showing window on {}",
+                        payload.url()
+                    ),
+                );
+            }
+
+            let _ = window.show();
+            let _ = window.set_focus();
+        })
         .setup(|app| {
             let main_window = app
                 .get_webview_window("main")
@@ -115,9 +139,6 @@ fn main() {
                 startup_ready: AtomicBool::new(false),
                 startup_error: Mutex::new(None),
             });
-
-            main_window.show()?;
-            main_window.set_focus()?;
 
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
