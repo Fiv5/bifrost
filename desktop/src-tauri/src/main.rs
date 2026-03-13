@@ -1,3 +1,4 @@
+use bifrost_tls::{ensure_valid_ca, generate_root_ca, save_root_ca, CertInstaller, CertStatus};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
@@ -77,8 +78,12 @@ fn main() {
             apply_window_effects(&main_window)?;
 
             let binary_path = resolve_bifrost_binary(app.handle())?;
-            let app_config_dir = app.path().app_config_dir()?;
-            let app_data_dir = app.path().app_local_data_dir()?;
+            let app_data_dir = resolve_desktop_data_dir()?;
+            let config_path = resolve_desktop_config_path(&app_data_dir);
+            let app_config_dir = config_path
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| anyhow("missing desktop config dir".to_string()))?;
 
             fs::create_dir_all(&app_config_dir)
                 .map_err(|error| anyhow(format!("failed to create config dir: {error}")))?;
@@ -93,8 +98,8 @@ fn main() {
                     app_config_dir.display()
                 ),
             );
+            ensure_desktop_cert_ready(&app_data_dir);
 
-            let config_path = app_config_dir.join("desktop-config.json");
             let config = load_desktop_config(&config_path)?;
             let (child, port) =
                 ensure_backend_running(&binary_path, &app_data_dir, config.proxy_port)?;
@@ -184,6 +189,104 @@ fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {
     }
 
     Ok(resource_dir.join("bin").join(binary_name))
+}
+
+fn resolve_desktop_data_dir() -> tauri::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("BIFROST_DATA_DIR") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Ok(path);
+        }
+    }
+
+    Ok(default_bifrost_data_dir())
+}
+
+fn resolve_desktop_config_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("desktop-config.json")
+}
+
+fn default_bifrost_data_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".bifrost"))
+        .unwrap_or_else(|| PathBuf::from(".bifrost"))
+}
+
+fn ensure_desktop_cert_ready(data_dir: &Path) {
+    match prepare_desktop_certificates(data_dir) {
+        Ok(CertStatus::InstalledAndTrusted) => append_desktop_bootstrap_log(
+            data_dir,
+            "desktop certificate preflight complete; CA already installed and trusted",
+        ),
+        Ok(CertStatus::InstalledNotTrusted) => append_desktop_bootstrap_log(
+            data_dir,
+            "desktop certificate preflight complete; CA trust was repaired",
+        ),
+        Ok(CertStatus::NotInstalled) => append_desktop_bootstrap_log(
+            data_dir,
+            "desktop certificate preflight complete; CA was installed and trusted",
+        ),
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("UserCancelled") {
+                append_desktop_bootstrap_log(
+                    data_dir,
+                    "desktop certificate preflight cancelled by user; continuing startup without trusted CA",
+                );
+            } else {
+                append_desktop_bootstrap_log(
+                    data_dir,
+                    format!(
+                        "desktop certificate preflight failed; continuing startup without trusted CA: {error}"
+                    ),
+                );
+            }
+        }
+    }
+}
+
+fn prepare_desktop_certificates(data_dir: &Path) -> Result<CertStatus, String> {
+    let cert_dir = data_dir.join("certs");
+    let ca_cert_path = cert_dir.join("ca.crt");
+    let ca_key_path = cert_dir.join("ca.key");
+
+    fs::create_dir_all(&cert_dir).map_err(|error| format!("failed to create cert dir: {error}"))?;
+
+    let ca_valid = ensure_valid_ca(&ca_cert_path, &ca_key_path)
+        .map_err(|error| format!("failed to validate CA certificate: {error}"))?;
+    if !ca_valid {
+        let ca = generate_root_ca().map_err(|error| format!("failed to generate CA: {error}"))?;
+        save_root_ca(&ca_cert_path, &ca_key_path, &ca)
+            .map_err(|error| format!("failed to save CA files: {error}"))?;
+        append_desktop_bootstrap_log(
+            data_dir,
+            format!(
+                "generated desktop CA certificate at {}",
+                ca_cert_path.display()
+            ),
+        );
+    }
+
+    let installer = CertInstaller::new(&ca_cert_path);
+    let status = installer
+        .check_status()
+        .map_err(|error| format!("failed to check CA trust status: {error}"))?;
+
+    if status == CertStatus::InstalledAndTrusted {
+        return Ok(status);
+    }
+
+    append_desktop_bootstrap_log(
+        data_dir,
+        format!("desktop CA status is {status}; attempting install/trust"),
+    );
+    installer
+        .install_and_trust()
+        .map_err(|error| format!("failed to install/trust desktop CA: {error}"))?;
+
+    installer
+        .check_status()
+        .map_err(|error| format!("failed to re-check CA trust status: {error}"))
 }
 
 fn start_backend(binary_path: &Path, data_dir: &Path, port: u16) -> tauri::Result<Child> {
@@ -565,14 +668,15 @@ fn open_sidecar_log_file(data_dir: &Path, file_name: &str) -> tauri::Result<fs::
         .map_err(|error| anyhow(format!("failed to open {file_name}: {error}")))
 }
 
-fn rebind_backend_port(current_port: u16, expected_port: u16) -> tauri::Result<DesktopPortUpdateResponse> {
+fn rebind_backend_port(
+    current_port: u16,
+    expected_port: u16,
+) -> tauri::Result<DesktopPortUpdateResponse> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| anyhow(format!("failed to build backend rebind client: {error}")))?;
-    let url = format!(
-        "http://{BACKEND_HOST}:{current_port}/_bifrost/api/config/server"
-    );
+    let url = format!("http://{BACKEND_HOST}:{current_port}/_bifrost/api/config/server");
     let response = client
         .put(url)
         .json(&serde_json::json!({ "port": expected_port }))
@@ -590,5 +694,24 @@ fn rebind_backend_port(current_port: u16, expected_port: u16) -> tauri::Result<D
 
     response
         .json::<DesktopPortUpdateResponse>()
-        .map_err(|error| anyhow(format!("failed to decode backend port rebind response: {error}")))
+        .map_err(|error| {
+            anyhow(format!(
+                "failed to decode backend port rebind response: {error}"
+            ))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_desktop_config_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn desktop_config_uses_shared_data_dir() {
+        let target = resolve_desktop_config_path(&PathBuf::from("/tmp/shared-bifrost"));
+        assert_eq!(
+            target,
+            PathBuf::from("/tmp/shared-bifrost/desktop-config.json")
+        );
+    }
 }

@@ -313,39 +313,25 @@ impl CertInstaller {
             )));
         }
 
+        println!("Installing CA certificate to login keychain...");
+        match install_macos_cert_to_login_keychain(&self.cert_path) {
+            Ok(()) => {
+                println!("✓ CA certificate installed and trusted successfully.");
+                return Ok(());
+            }
+            Err(error) => {
+                println!(
+                    "Login keychain install did not succeed, falling back to System keychain: {}",
+                    error
+                );
+            }
+        }
+
         println!("Installing CA certificate to System keychain...");
         println!("This requires administrator privileges.");
-
-        let output = Command::new("sudo")
-            .args([
-                "security",
-                "add-trusted-cert",
-                "-d",
-                "-r",
-                "trustRoot",
-                "-k",
-                "/Library/Keychains/System.keychain",
-                self.cert_path.to_str().unwrap_or(""),
-            ])
-            .status();
-
-        match output {
-            Ok(status) => {
-                if status.success() {
-                    println!("✓ CA certificate installed and trusted successfully.");
-                    Ok(())
-                } else {
-                    Err(BifrostError::Tls(
-                        "Failed to install CA certificate. You may need to install it manually."
-                            .to_string(),
-                    ))
-                }
-            }
-            Err(e) => Err(BifrostError::Tls(format!(
-                "Failed to execute security command: {}",
-                e
-            ))),
-        }
+        install_macos_cert_to_system_keychain(&self.cert_path)?;
+        println!("✓ CA certificate installed and trusted successfully.");
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -559,6 +545,95 @@ impl CertInstaller {
             ))),
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_cert_to_login_keychain(cert_path: &Path) -> Result<()> {
+    let keychain = resolve_macos_login_keychain()?;
+    run_macos_security_add_trusted_cert(cert_path, &keychain, false)
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_cert_to_system_keychain(cert_path: &Path) -> Result<()> {
+    run_macos_security_add_trusted_cert(
+        cert_path,
+        Path::new("/Library/Keychains/System.keychain"),
+        true,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_login_keychain() -> Result<PathBuf> {
+    if let Ok(output) = Command::new("security")
+        .args(["default-keychain", "-d", "user"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let trimmed = stdout.trim().trim_matches('"');
+            if !trimmed.is_empty() {
+                return Ok(PathBuf::from(trimmed));
+            }
+        }
+    }
+
+    let home = std::env::var("HOME").map_err(|e| {
+        BifrostError::Tls(format!("Failed to resolve HOME for login keychain: {}", e))
+    })?;
+    Ok(PathBuf::from(home).join("Library/Keychains/login.keychain-db"))
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos_security_add_trusted_cert(
+    cert_path: &Path,
+    keychain: &Path,
+    use_sudo: bool,
+) -> Result<()> {
+    let cert_path = cert_path.to_str().ok_or_else(|| {
+        BifrostError::Tls(format!(
+            "Certificate path is not valid UTF-8: {}",
+            cert_path.display()
+        ))
+    })?;
+    let keychain = keychain.to_str().ok_or_else(|| {
+        BifrostError::Tls(format!(
+            "Keychain path is not valid UTF-8: {}",
+            keychain.display()
+        ))
+    })?;
+
+    let mut command = if use_sudo {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("security");
+        cmd
+    } else {
+        Command::new("security")
+    };
+    let output = command
+        .args([
+            "add-trusted-cert",
+            "-d",
+            "-r",
+            "trustRoot",
+            "-k",
+            keychain,
+            cert_path,
+        ])
+        .output()
+        .map_err(|e| BifrostError::Tls(format!("Failed to execute security command: {}", e)))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Err(BifrostError::Tls(format!(
+        "security add-trusted-cert failed for {}: {} {}",
+        keychain,
+        stdout.trim(),
+        stderr.trim()
+    )))
 }
 
 pub fn get_platform_name() -> &'static str {

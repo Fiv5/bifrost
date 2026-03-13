@@ -273,10 +273,12 @@ fn prompt_install_certificate(installer: &CertInstaller) -> bifrost_core::Result
     println!("Without it, browsers will show security warnings for HTTPS sites.");
     println!();
     println!("Platform: {}", get_platform_name());
+    #[cfg(target_os = "macos")]
+    println!("macOS will try the current user's login keychain first, then fall back to the System keychain if needed.");
     println!();
 
     let options = vec![
-        "Yes, install and trust (requires sudo/admin)",
+        "Yes, install and trust",
         "No, skip (HTTPS interception may not work properly)",
         "Show manual installation instructions",
     ];
@@ -321,9 +323,13 @@ fn prompt_trust_certificate(installer: &CertInstaller) -> bifrost_core::Result<(
     println!("The CA certificate is installed but not trusted by the system.");
     println!("HTTPS interception may not work properly without trust.");
     println!();
+    #[cfg(target_os = "macos")]
+    println!("macOS will try the current user's login keychain first, then fall back to the System keychain if needed.");
+    #[cfg(target_os = "macos")]
+    println!();
 
     let proceed = Confirm::new()
-        .with_prompt("Would you like to trust the CA certificate now? (requires sudo/admin)")
+        .with_prompt("Would you like to trust the CA certificate now?")
         .default(true)
         .interact();
 
