@@ -33,6 +33,7 @@ import type {
 import { apiFetch } from "../../../../api/apiFetch";
 import { getResponseBody } from "../../../../api/traffic";
 import { getClientId } from "../../../../services/clientId";
+import { buildApiUrl } from "../../../../runtime";
 import { SseMessageList } from "./SseMessageList";
 import {
   FullscreenMessageViewer,
@@ -573,7 +574,7 @@ export const Messages = ({
     }
 
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/frames/stream?x_client_id=${encodeURIComponent(getClientId())}`,
+      `${buildApiUrl(`/traffic/${recordId}/frames/stream`)}?x_client_id=${encodeURIComponent(getClientId())}`,
     );
     eventSourceRef.current = eventSource;
 
@@ -607,7 +608,7 @@ export const Messages = ({
       return;
     }
     const eventSource = new EventSource(
-      `/_bifrost/api/traffic/${recordId}/sse/stream?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
+      `${buildApiUrl(`/traffic/${recordId}/sse/stream`)}?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
     sseClosedByUsRef.current = false;
