@@ -209,7 +209,9 @@ Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.
 ./install.sh --app-dir ~/Applications
 ```
 
-#### 方式一：Homebrew Cask（macOS）
+#### 方式一：Homebrew Cask（macOS）- 由于尚未签名，下载的包启动会提示损坏（后续购买签名证书后可用）
+> 替代方式是，下载仓库自行构建使用./install.sh 编译并安装
+> 使用 CLI 版本
 
 ```bash
 brew tap bifrost-proxy/bifrost
