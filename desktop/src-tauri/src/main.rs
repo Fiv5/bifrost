@@ -15,16 +15,15 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime};
 
+#[cfg(target_os = "macos")]
+use tauri::window::EffectState;
+use tauri::window::{Window, WindowBuilder};
 use tauri::{
     image::Image,
     webview::{Color, WebviewBuilder},
     window::{Effect, EffectsBuilder},
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
-    WebviewUrl,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl,
 };
-use tauri::window::{Window, WindowBuilder};
-#[cfg(target_os = "macos")]
-use tauri::window::EffectState;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const DEFAULT_BACKEND_PORT: u16 = 9900;
@@ -269,7 +268,9 @@ fn create_host_window(app: &AppHandle) -> tauri::Result<Window> {
         return Ok(window);
     }
 
-    let mut builder = WindowBuilder::new(app, HOST_WINDOW_LABEL).title("Bifrost").center();
+    let mut builder = WindowBuilder::new(app, HOST_WINDOW_LABEL)
+        .title("Bifrost")
+        .center();
 
     if supports_native_launcher() {
         builder = builder
@@ -548,7 +549,6 @@ fn launch_backend_on_available_port(
     data_dir: &Path,
     preferred_port: u16,
 ) -> tauri::Result<(Child, u16)> {
-
     for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
         let port = preferred_port.saturating_add(offset);
         if port == 0 {
@@ -1118,7 +1118,8 @@ fn update_desktop_proxy_port(
     {
         BackendPortTransition::Rebound(runtime) => runtime,
         BackendPortTransition::RestartRequired => {
-            restart_backend_on_port(&state, current_port, port).map_err(|error| error.to_string())?
+            restart_backend_on_port(&state, current_port, port)
+                .map_err(|error| error.to_string())?
         }
     };
     save_desktop_config(&state.config_path, &DesktopConfig { proxy_port: port })
@@ -1283,9 +1284,11 @@ fn request_backend_port_transition(
         )));
     }
 
-    let response_body = response
-        .text()
-        .map_err(|error| anyhow(format!("failed to read backend port rebind response: {error}")))?;
+    let response_body = response.text().map_err(|error| {
+        anyhow(format!(
+            "failed to read backend port rebind response: {error}"
+        ))
+    })?;
 
     if let Some(runtime) = parse_port_update_response(&response_body) {
         return Ok(BackendPortTransition::Rebound(runtime));
@@ -1347,7 +1350,9 @@ fn is_server_config_response(response_body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_server_config_response, parse_port_update_response, resolve_desktop_config_path};
+    use super::{
+        is_server_config_response, parse_port_update_response, resolve_desktop_config_path,
+    };
     use std::path::PathBuf;
 
     #[test]

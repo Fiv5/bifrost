@@ -14,8 +14,9 @@ mod imp {
     use tauri::window::Window;
 
     pub fn install(window: &Window) -> tauri::Result<Option<usize>> {
-        let mtm = MainThreadMarker::new()
-            .ok_or_else(|| crate::anyhow("native launcher must be installed on the main thread".to_string()))?;
+        let mtm = MainThreadMarker::new().ok_or_else(|| {
+            crate::anyhow("native launcher must be installed on the main thread".to_string())
+        })?;
         let content_view = content_view(window)?;
         let bounds = content_view.bounds();
         let overlay = NSView::initWithFrame(NSView::alloc(mtm), bounds);
@@ -138,7 +139,9 @@ mod imp {
     fn content_view(window: &Window) -> tauri::Result<&NSView> {
         let ns_view = window.ns_view()?;
         let Some(content_view) = (unsafe { (ns_view as *mut NSView).as_ref() }) else {
-            return Err(crate::anyhow("failed to access macOS content view".to_string()));
+            return Err(crate::anyhow(
+                "failed to access macOS content view".to_string(),
+            ));
         };
         Ok(content_view)
     }
@@ -152,7 +155,11 @@ mod imp {
         Ok(None)
     }
 
-    pub fn set_overlay_alpha(_window: &Window, _overlay_ptr: usize, _alpha: f64) -> tauri::Result<()> {
+    pub fn set_overlay_alpha(
+        _window: &Window,
+        _overlay_ptr: usize,
+        _alpha: f64,
+    ) -> tauri::Result<()> {
         Ok(())
     }
 
