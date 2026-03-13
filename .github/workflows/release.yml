@@ -317,6 +317,12 @@ jobs:
           BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
         run: node scripts/sync-tauri-version.mjs
 
+      - name: Rewrite desktop version metadata for Windows MSI
+        if: runner.os == 'Windows' && matrix.bundle_ext == 'msi'
+        env:
+          BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/sync-tauri-version.mjs --msi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -465,7 +471,7 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec cp {} release/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.dmg" -o -name "*.msi" -o -name "*.sha256" \) -exec cp {} release/ \;
 
       - name: Create combined checksums
         run: |
