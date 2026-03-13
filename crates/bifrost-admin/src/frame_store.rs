@@ -6,12 +6,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::connection_monitor::WebSocketFrameRecord;
 
 const DEFAULT_RETENTION_HOURS: u64 = 24;
 const FRAMES_SUBDIR: &str = "frames";
+const TRAFFIC_DB_SUBDIR: &str = "traffic";
+const FRAME_METADATA_TABLE: &str = "frame_connection_metadata";
 const BATCH_FLUSH_INTERVAL_MS: u64 = 500;
 const BATCH_SIZE_THRESHOLD: usize = 50;
 
@@ -59,6 +62,8 @@ impl Default for PendingFrames {
 pub struct FrameStore {
     base_dir: PathBuf,
     retention_hours: u64,
+    write_conn: Mutex<Connection>,
+    read_conn: Mutex<Connection>,
     metadata_cache: RwLock<HashMap<String, FrameStoreMetadata>>,
     pending_frames: Mutex<PendingFrames>,
 }
@@ -79,15 +84,23 @@ impl FrameStore {
             let _ = fs::create_dir_all(&frames_dir);
         }
 
-        let store = Self {
+        let traffic_dir = base_dir.join(TRAFFIC_DB_SUBDIR);
+        if !traffic_dir.exists() {
+            let _ = fs::create_dir_all(&traffic_dir);
+        }
+
+        let db_path = traffic_dir.join("traffic.db");
+        let write_conn = Self::open_metadata_connection(&db_path, false);
+        let read_conn = Self::open_metadata_connection(&db_path, true);
+
+        Self {
             base_dir,
             retention_hours: retention_hours.unwrap_or(DEFAULT_RETENTION_HOURS),
+            write_conn: Mutex::new(write_conn),
+            read_conn: Mutex::new(read_conn),
             metadata_cache: RwLock::new(HashMap::new()),
             pending_frames: Mutex::new(PendingFrames::default()),
-        };
-
-        store.load_metadata_cache();
-        store
+        }
     }
 
     fn frames_dir(&self) -> PathBuf {
@@ -99,57 +112,193 @@ impl FrameStore {
         self.frames_dir().join(format!("{}.jsonl", safe_id))
     }
 
-    fn metadata_file_path(&self, connection_id: &str) -> PathBuf {
-        let safe_id = connection_id.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
-        self.frames_dir().join(format!("{}.meta.json", safe_id))
-    }
+    fn open_metadata_connection(db_path: &PathBuf, query_only: bool) -> Connection {
+        let conn = Connection::open(db_path).unwrap_or_else(|error| {
+            tracing::warn!(
+                error = %error,
+                db_path = %db_path.display(),
+                "[FRAME_STORE] Failed to open frame metadata DB, falling back to in-memory SQLite"
+            );
+            Connection::open_in_memory()
+                .expect("in-memory SQLite should be available for frame metadata")
+        });
 
-    fn load_metadata_cache(&self) {
-        let frames_dir = self.frames_dir();
-        if !frames_dir.exists() {
-            return;
+        if let Err(error) = Self::init_metadata_database(&conn, query_only) {
+            tracing::warn!(
+                error = %error,
+                db_path = %db_path.display(),
+                "[FRAME_STORE] Failed to initialize frame metadata table"
+            );
         }
 
-        let retention_duration = Duration::from_secs(self.retention_hours * 60 * 60);
-        let now = SystemTime::now()
+        conn
+    }
+
+    fn init_metadata_database(conn: &Connection, query_only: bool) -> rusqlite::Result<()> {
+        if !query_only {
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = 5000; PRAGMA mmap_size = 134217728;",
+            )?;
+
+            conn.execute_batch(&format!(
+                "
+                CREATE TABLE IF NOT EXISTS {FRAME_METADATA_TABLE} (
+                    connection_id TEXT PRIMARY KEY NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    frame_count INTEGER NOT NULL DEFAULT 0,
+                    last_frame_id INTEGER NOT NULL DEFAULT 0,
+                    is_closed INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_frame_metadata_updated
+                    ON {FRAME_METADATA_TABLE}(updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_frame_metadata_closed_updated
+                    ON {FRAME_METADATA_TABLE}(is_closed, updated_at DESC);
+                "
+            ))?;
+        } else {
+            conn.execute_batch(
+                "PRAGMA query_only = true; PRAGMA cache_size = 2000; PRAGMA mmap_size = 67108864;",
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64;
-        let cutoff_timestamp = now.saturating_sub(retention_duration.as_millis() as u64);
-
-        let mut cache = self.metadata_cache.write();
-        if let Ok(entries) = fs::read_dir(&frames_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json")
-                    && path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy().ends_with(".meta.json"))
-                {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(metadata) = serde_json::from_str::<FrameStoreMetadata>(&content) {
-                            if metadata.updated_at >= cutoff_timestamp {
-                                cache.insert(metadata.connection_id.clone(), metadata);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        tracing::debug!(
-            "[FRAME_STORE] Loaded {} metadata entries from cache",
-            cache.len()
-        );
+            .as_millis() as u64
     }
 
-    fn save_metadata(&self, metadata: &FrameStoreMetadata) {
-        let path = self.metadata_file_path(&metadata.connection_id);
-        if let Ok(content) = serde_json::to_string_pretty(metadata) {
-            let _ = fs::write(&path, content);
+    fn load_metadata_from_db(&self, connection_id: &str) -> Option<FrameStoreMetadata> {
+        let conn = self.read_conn.lock();
+        conn.query_row(
+            &format!(
+                "SELECT connection_id, created_at, updated_at, frame_count, last_frame_id, is_closed
+                 FROM {FRAME_METADATA_TABLE}
+                 WHERE connection_id = ?1"
+            ),
+            params![connection_id],
+            |row| {
+                Ok(FrameStoreMetadata {
+                    connection_id: row.get(0)?,
+                    created_at: row.get::<_, i64>(1)? as u64,
+                    updated_at: row.get::<_, i64>(2)? as u64,
+                    frame_count: row.get::<_, i64>(3)? as u64,
+                    last_frame_id: row.get::<_, i64>(4)? as u64,
+                    is_closed: row.get::<_, i64>(5)? != 0,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    fn upsert_metadata(&self, metadata: &FrameStoreMetadata) {
+        {
+            let conn = self.write_conn.lock();
+            if let Err(error) = conn.execute(
+                &format!(
+                    "INSERT INTO {FRAME_METADATA_TABLE} (
+                        connection_id, created_at, updated_at, frame_count, last_frame_id, is_closed
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    ON CONFLICT(connection_id) DO UPDATE SET
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at,
+                        frame_count = excluded.frame_count,
+                        last_frame_id = excluded.last_frame_id,
+                        is_closed = excluded.is_closed"
+                ),
+                params![
+                    metadata.connection_id,
+                    metadata.created_at as i64,
+                    metadata.updated_at as i64,
+                    metadata.frame_count as i64,
+                    metadata.last_frame_id as i64,
+                    if metadata.is_closed { 1 } else { 0 },
+                ],
+            ) {
+                tracing::warn!(
+                    error = %error,
+                    connection_id = %metadata.connection_id,
+                    "[FRAME_STORE] Failed to persist frame metadata"
+                );
+            }
         }
+
         self.metadata_cache
             .write()
             .insert(metadata.connection_id.clone(), metadata.clone());
+    }
+
+    fn delete_metadata_rows(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+
+        let conn = self.write_conn.lock();
+        let sql = format!("DELETE FROM {FRAME_METADATA_TABLE} WHERE connection_id = ?1");
+        for id in ids {
+            if let Err(error) = conn.execute(&sql, params![id]) {
+                tracing::warn!(
+                    error = %error,
+                    connection_id = %id,
+                    "[FRAME_STORE] Failed to delete frame metadata row"
+                );
+            }
+        }
+    }
+
+    fn load_all_connection_ids_from_db(&self) -> Vec<String> {
+        let conn = self.read_conn.lock();
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT connection_id FROM {FRAME_METADATA_TABLE} ORDER BY updated_at DESC"
+        )) {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                tracing::warn!(error = %error, "[FRAME_STORE] Failed to query frame metadata IDs");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map([], |row| row.get::<_, String>(0)) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(error = %error, "[FRAME_STORE] Failed to iterate frame metadata IDs");
+                return Vec::new();
+            }
+        };
+        rows.filter_map(Result::ok).collect()
+    }
+
+    fn load_expired_connection_ids_from_db(&self, cutoff_timestamp: u64) -> Vec<String> {
+        let conn = self.read_conn.lock();
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT connection_id FROM {FRAME_METADATA_TABLE}
+             WHERE is_closed = 1 AND updated_at < ?1"
+        )) {
+            Ok(stmt) => stmt,
+            Err(error) => {
+                tracing::warn!(error = %error, "[FRAME_STORE] Failed to query expired frame metadata");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map(params![cutoff_timestamp as i64], |row| {
+            row.get::<_, String>(0)
+        }) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(error = %error, "[FRAME_STORE] Failed to iterate expired frame metadata");
+                return Vec::new();
+            }
+        };
+        rows.filter_map(Result::ok).collect()
+    }
+
+    fn save_metadata(&self, metadata: &FrameStoreMetadata) {
+        self.upsert_metadata(metadata);
     }
 
     pub fn append_frame(
@@ -247,10 +396,7 @@ impl FrameStore {
 
             metadata.frame_count += frame_count;
             metadata.last_frame_id = last_frame_id;
-            metadata.updated_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            metadata.updated_at = Self::now_ms();
 
             let m = metadata.clone();
             drop(cache);
@@ -365,10 +511,19 @@ impl FrameStore {
     }
 
     pub fn get_metadata(&self, connection_id: &str) -> Option<FrameStoreMetadata> {
-        self.metadata_cache.read().get(connection_id).cloned()
+        if let Some(metadata) = self.metadata_cache.read().get(connection_id).cloned() {
+            return Some(metadata);
+        }
+
+        let metadata = self.load_metadata_from_db(connection_id)?;
+        self.metadata_cache
+            .write()
+            .insert(connection_id.to_string(), metadata.clone());
+        Some(metadata)
     }
 
     pub fn mark_connection_closed(&self, connection_id: &str) {
+        let existing_metadata = self.get_metadata(connection_id);
         {
             let mut pending = self.pending_frames.lock();
             if let Some(frames) = pending.frames.remove(connection_id) {
@@ -384,26 +539,28 @@ impl FrameStore {
                         let _ = writer.flush();
 
                         let mut cache = self.metadata_cache.write();
-                        if let Some(metadata) = cache.get_mut(connection_id) {
-                            metadata.frame_count += frames.len() as u64;
-                            if let Some(last_frame) = frames.last() {
-                                metadata.last_frame_id = last_frame.frame_id;
-                            }
+                        let metadata =
+                            cache.entry(connection_id.to_string()).or_insert_with(|| {
+                                existing_metadata
+                                    .clone()
+                                    .unwrap_or_else(|| FrameStoreMetadata::new(connection_id))
+                            });
+                        metadata.frame_count += frames.len() as u64;
+                        if let Some(last_frame) = frames.last() {
+                            metadata.last_frame_id = last_frame.frame_id;
                         }
+                        metadata.updated_at = Self::now_ms();
                     }
                 }
             }
         }
 
         let mut cache = self.metadata_cache.write();
-        let metadata = cache
-            .entry(connection_id.to_string())
-            .or_insert_with(|| FrameStoreMetadata::new(connection_id));
+        let metadata = cache.entry(connection_id.to_string()).or_insert_with(|| {
+            existing_metadata.unwrap_or_else(|| FrameStoreMetadata::new(connection_id))
+        });
         metadata.is_closed = true;
-        metadata.updated_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        metadata.updated_at = Self::now_ms();
         let m = metadata.clone();
         drop(cache);
         self.save_metadata(&m);
@@ -414,10 +571,7 @@ impl FrameStore {
     }
 
     pub fn get_last_frame_id(&self, connection_id: &str) -> Option<u64> {
-        self.metadata_cache
-            .read()
-            .get(connection_id)
-            .map(|m| m.last_frame_id)
+        self.get_metadata(connection_id).map(|m| m.last_frame_id)
     }
 
     pub fn cleanup_expired(&self) -> std::io::Result<usize> {
@@ -427,21 +581,9 @@ impl FrameStore {
         }
 
         let retention_duration = Duration::from_secs(self.retention_hours * 60 * 60);
-        let now = SystemTime::now();
         let mut removed_count = 0;
-
-        let mut to_remove = Vec::new();
-        {
-            let cache = self.metadata_cache.read();
-            for (connection_id, metadata) in cache.iter() {
-                let updated_at = UNIX_EPOCH + Duration::from_millis(metadata.updated_at);
-                if let Ok(age) = now.duration_since(updated_at) {
-                    if age > retention_duration && metadata.is_closed {
-                        to_remove.push(connection_id.clone());
-                    }
-                }
-            }
-        }
+        let cutoff_timestamp = Self::now_ms().saturating_sub(retention_duration.as_millis() as u64);
+        let to_remove = self.load_expired_connection_ids_from_db(cutoff_timestamp);
 
         for connection_id in to_remove {
             if self.remove_connection(&connection_id).is_ok() {
@@ -458,21 +600,18 @@ impl FrameStore {
 
     pub fn remove_connection(&self, connection_id: &str) -> std::io::Result<()> {
         let frame_path = self.connection_file_path(connection_id);
-        let meta_path = self.metadata_file_path(connection_id);
 
         if frame_path.exists() {
             fs::remove_file(&frame_path)?;
         }
-        if meta_path.exists() {
-            fs::remove_file(&meta_path)?;
-        }
 
         self.metadata_cache.write().remove(connection_id);
+        self.delete_metadata_rows(&[connection_id.to_string()]);
         Ok(())
     }
 
     pub fn list_connections(&self) -> Vec<String> {
-        self.metadata_cache.read().keys().cloned().collect()
+        self.load_all_connection_ids_from_db()
     }
 
     pub fn clear(&self) -> std::io::Result<usize> {
@@ -491,6 +630,12 @@ impl FrameStore {
         }
 
         self.metadata_cache.write().clear();
+        {
+            let conn = self.write_conn.lock();
+            if let Err(error) = conn.execute(&format!("DELETE FROM {FRAME_METADATA_TABLE}"), []) {
+                tracing::warn!(error = %error, "[FRAME_STORE] Failed to clear frame metadata table");
+            }
+        }
 
         tracing::info!("[FRAME_STORE] Cleared {} frame files", removed_count);
 
@@ -521,10 +666,13 @@ impl FrameStore {
             }
         }
 
-        let mut metadata_cache = self.metadata_cache.write();
-        for id in ids {
-            metadata_cache.remove(id);
+        {
+            let mut metadata_cache = self.metadata_cache.write();
+            for id in ids {
+                metadata_cache.remove(id);
+            }
         }
+        self.delete_metadata_rows(ids);
 
         tracing::debug!(
             count = removed_count,
@@ -606,9 +754,7 @@ impl FrameStore {
             if path.is_file() {
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                 if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                    let id = file_name
-                        .strip_suffix(".jsonl")
-                        .or_else(|| file_name.strip_suffix(".meta.json"));
+                    let id = file_name.strip_suffix(".jsonl");
                     if let Some(base_id) = id {
                         *sizes.entry(base_id.to_string()).or_insert(0) += size;
                     }
@@ -635,7 +781,7 @@ pub struct FrameStoreStats {
 
 pub type SharedFrameStore = Arc<FrameStore>;
 
-pub fn start_frame_cleanup_task(store: SharedFrameStore) {
+pub fn start_frame_cleanup_task(store: SharedFrameStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -650,7 +796,7 @@ pub fn start_frame_cleanup_task(store: SharedFrameStore) {
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
@@ -770,6 +916,30 @@ mod tests {
 
         let metadata = store.get_metadata("conn-1").unwrap();
         assert!(metadata.is_closed);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_metadata_persists_in_sqlite() {
+        let dir = create_test_dir();
+        {
+            let store = FrameStore::new(dir.clone(), Some(24));
+            let frame = create_test_frame(7, "Persist");
+            store.append_frame("conn-persist", &frame).unwrap();
+            store.mark_connection_closed("conn-persist");
+        }
+
+        let reopened = FrameStore::new(dir.clone(), Some(24));
+        let metadata = reopened.get_metadata("conn-persist").unwrap();
+        assert_eq!(metadata.connection_id, "conn-persist");
+        assert_eq!(metadata.frame_count, 1);
+        assert_eq!(metadata.last_frame_id, 7);
+        assert!(metadata.is_closed);
+        assert_eq!(
+            reopened.list_connections(),
+            vec!["conn-persist".to_string()]
+        );
 
         cleanup_test_dir(&dir);
     }

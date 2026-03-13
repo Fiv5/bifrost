@@ -394,7 +394,7 @@ impl WsPayloadStore {
 
 pub type SharedWsPayloadStore = std::sync::Arc<WsPayloadStore>;
 
-pub fn start_ws_payload_cleanup_task(store: SharedWsPayloadStore) {
+pub fn start_ws_payload_cleanup_task(store: SharedWsPayloadStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -409,7 +409,7 @@ pub fn start_ws_payload_cleanup_task(store: SharedWsPayloadStore) {
                 }
             }
         }
-    });
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

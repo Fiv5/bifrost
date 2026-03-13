@@ -14,7 +14,6 @@ import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
 import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
-import { DESKTOP_CHROME_HEIGHT } from "./components/Layout/DesktopWindowChrome";
 import {
   getAdminPrefix,
   initializeDesktopRuntime,
@@ -151,7 +150,7 @@ function AppShell() {
             ? "Bifrost Core Error"
             : desktopCorePhase === "booting"
               ? "Connecting to Bifrost Core"
-            : "Restarting Bifrost Core"
+              : "Switching Bifrost Port"
         }
         closable={desktopCorePhase === "error"}
         maskClosable={desktopCorePhase === "error"}
@@ -164,11 +163,6 @@ function AppShell() {
         centered
         width={Math.min(720, Math.max(560, Math.floor(window.innerWidth * 0.42)))}
         zIndex={1000}
-        style={
-          isDesktopShell()
-            ? { paddingTop: DESKTOP_CHROME_HEIGHT + 18 }
-            : undefined
-        }
         styles={overlayStyles}
       >
         <Typography.Paragraph>
@@ -176,7 +170,7 @@ function AppShell() {
             ? "The interface is waiting for the Bifrost core to become available."
             : desktopCoreTargetPort
               ? `Bifrost is switching the local core to port ${desktopCoreTargetPort}.`
-              : "Bifrost is restarting the local core service."}
+              : "Bifrost is updating the local core listener and reconnecting the interface."}
         </Typography.Paragraph>
         <Steps
           size="small"
@@ -209,7 +203,7 @@ function AppShell() {
               title:
                 desktopCorePhase === "booting" ? "Wait for Core" : "Save Config",
             },
-            { title: "Restart Core" },
+            { title: "Rebind Port" },
             { title: "Reconnect UI" },
           ]}
         />

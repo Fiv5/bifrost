@@ -15,7 +15,7 @@ use commands::{
     check_and_print_update_notice, handle_ca_command, handle_config_command, handle_rule_command,
     handle_system_proxy_command, handle_upgrade, handle_value_command, handle_whitelist_command,
     run_search, run_start, run_status, run_status_tui, run_stop, run_traffic_get, run_traffic_list,
-    OutputFormat, SearchOptions, TrafficGetOptions, TrafficListOptions,
+    spawn_update_check_notice, OutputFormat, SearchOptions, TrafficGetOptions, TrafficListOptions,
 };
 use process::read_runtime_port;
 
@@ -64,7 +64,11 @@ fn main() {
         }
     };
 
-    check_and_print_update_notice();
+    match &cli.command {
+        Some(Commands::Start { daemon: false, .. }) => spawn_update_check_notice(),
+        Some(Commands::Start { daemon: true, .. }) => {}
+        _ => check_and_print_update_notice(),
+    }
 
     let result = match cli.command {
         Some(Commands::Start {

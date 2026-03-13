@@ -78,3 +78,4 @@ image = { version = "0.25", default-features = false, features = [
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile.workspace = true

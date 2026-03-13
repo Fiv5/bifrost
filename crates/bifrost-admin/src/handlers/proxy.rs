@@ -103,7 +103,7 @@ async fn get_cli_proxy_status(state: SharedAdminState) -> Response<BoxBody> {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
-        proxy_url: format!("http://127.0.0.1:{}", state.port),
+        proxy_url: format!("http://127.0.0.1:{}", state.port()),
     };
     json_response(&resp)
 }
@@ -172,7 +172,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
         let host = "127.0.0.1";
 
         let result = if request.enabled {
-            manager.enable(host, state.port, Some(&bypass))
+            manager.enable(host, state.port(), Some(&bypass))
         } else {
             manager.force_disable()
         };
@@ -186,7 +186,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                     #[cfg(target_os = "macos")]
                     {
                         if request.enabled {
-                            manager.enable_with_gui_auth(host, state.port, Some(&bypass))
+                            manager.enable_with_gui_auth(host, state.port(), Some(&bypass))
                         } else {
                             manager.disable_with_gui_auth()
                         }
@@ -231,7 +231,7 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                     } else {
                         String::new()
                     },
-                    port: if request.enabled { state.port } else { 0 },
+                    port: if request.enabled { state.port() } else { 0 },
                     bypass: if request.enabled {
                         bypass
                     } else {
@@ -309,7 +309,7 @@ fn get_platform_name() -> String {
 
 async fn get_proxy_address_info(state: SharedAdminState) -> Response<BoxBody> {
     let local_ips = get_local_ips();
-    let port = state.port;
+    let port = state.port();
 
     let addresses: Vec<ProxyAddress> = local_ips
         .iter()

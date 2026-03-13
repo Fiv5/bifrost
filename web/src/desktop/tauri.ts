@@ -4,31 +4,54 @@ export interface DesktopRuntimeInfo {
   platform: string;
 }
 
+type TauriInvoke = <T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+) => Promise<T>;
+
+type TauriWindowHandle = {
+  startDragging(): Promise<void>;
+  toggleMaximize(): Promise<void>;
+  minimize(): Promise<void>;
+  close(): Promise<void>;
+  isMaximized(): Promise<boolean>;
+};
+
 declare global {
   interface Window {
     __TAURI__?: {
       core?: {
-        invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+        invoke: TauriInvoke;
       };
       webviewWindow?: {
-        getCurrentWebviewWindow(): {
-          startDragging(): Promise<void>;
-          toggleMaximize(): Promise<void>;
-          minimize(): Promise<void>;
-          close(): Promise<void>;
-          isMaximized(): Promise<boolean>;
-        };
+        getCurrentWebviewWindow(): TauriWindowHandle;
       };
     };
   }
+}
+
+let cachedInvoke: TauriInvoke | null = null;
+let cachedWindowHandle: TauriWindowHandle | null = null;
+
+function getCurrentInvoke(): TauriInvoke | null {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (invoke) {
+    cachedInvoke = invoke;
+    return invoke;
+  }
+
+  return cachedInvoke;
 }
 
 export async function invokeDesktop<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  const invoke = window.__TAURI__?.core?.invoke;
+  const invoke = getCurrentInvoke();
   if (!invoke) {
+    console.error(
+      "[desktop-runtime] Tauri invoke bridge is unavailable. Check tauri.conf.json app.withGlobalTauri and desktop runtime injection.",
+    );
     throw new Error("Tauri API is not available");
   }
   return invoke<T>(command, args);
@@ -47,5 +70,11 @@ export async function updateDesktopProxyPort(
 }
 
 export function getCurrentDesktopWindow() {
-  return window.__TAURI__?.webviewWindow?.getCurrentWebviewWindow();
+  const currentWindow = window.__TAURI__?.webviewWindow?.getCurrentWebviewWindow();
+  if (currentWindow) {
+    cachedWindowHandle = currentWindow;
+    return currentWindow;
+  }
+
+  return cachedWindowHandle;
 }

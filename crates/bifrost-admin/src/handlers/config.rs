@@ -11,6 +11,7 @@ use std::path::Path;
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::frame_store::FrameStoreStats;
+use crate::port_rebind::PortRebindResponse;
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
@@ -44,10 +45,17 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateServerConfigRequest {
+    pub port: Option<u16>,
     pub timeout_secs: Option<u64>,
     pub http1_max_header_size: Option<usize>,
     pub http2_max_header_list_size: Option<usize>,
     pub websocket_handshake_max_header_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateServerPortResponse {
+    pub expected_port: u16,
+    pub actual_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -384,7 +392,7 @@ async fn get_proxy_settings(state: SharedAdminState) -> Response<BoxBody> {
             unsafe_ssl: runtime_config.unsafe_ssl,
             disconnect_on_config_change: runtime_config.disconnect_on_config_change,
         },
-        port: state.port,
+        port: state.port(),
         host: "127.0.0.1".to_string(),
     };
 
@@ -428,6 +436,37 @@ async fn update_server_config(
         Ok(r) => r,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
     };
+
+    if let Some(port) = request.port {
+        if port == 0 {
+            return error_response(StatusCode::BAD_REQUEST, "port must be between 1 and 65535");
+        }
+
+        let Some(ref manager) = state.port_rebind_manager else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Port rebind is not available in the current runtime",
+            );
+        };
+
+        match manager.rebind_port(port).await {
+            Ok(PortRebindResponse {
+                expected_port,
+                actual_port,
+            }) => {
+                return json_response(&UpdateServerPortResponse {
+                    expected_port,
+                    actual_port,
+                });
+            }
+            Err(error) => {
+                return error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("Failed to rebind port: {}", error),
+                );
+            }
+        }
+    }
 
     if let Some(timeout_secs) = request.timeout_secs {
         if timeout_secs == 0 {

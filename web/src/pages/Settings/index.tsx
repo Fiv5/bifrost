@@ -69,6 +69,7 @@ import {
   getExpectedDesktopProxyPort,
   isDesktopShell,
   setDesktopProxyPort,
+  waitForDesktopBackendReady,
 } from "../../runtime";
 import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
 import pushService from "../../services/pushService";
@@ -85,6 +86,28 @@ const VALID_TABS = [
   "access",
   "performance",
 ];
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error;
+  }
+
+  if (
+    error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string" &&
+    error.message.trim()
+  ) {
+    return error.message;
+  }
+
+  return fallback;
+}
 
 export default function Settings() {
   const { overview, history, loading, error, fetchOverview } =
@@ -731,12 +754,13 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     setDesktopPortSaving(true);
     try {
       beginDesktopCoreRestart(desktopPortDraft);
-      setDesktopCorePhase("restarting", "Stopping the current proxy core and starting the new port.");
+      setDesktopCorePhase("restarting", "Rebinding the proxy listener to the requested port.");
       const runtime = await updateDesktopProxyPort(desktopPortDraft);
       setDesktopProxyPort(runtime.proxyPort);
       setDesktopExpectedProxyPort(runtime.expectedProxyPort);
       setDesktopActualProxyPort(runtime.proxyPort);
       setDesktopPortDraft(runtime.expectedProxyPort);
+      await waitForDesktopBackendReady(runtime.proxyPort);
       setDesktopCorePhase("reconnecting", "Refreshing proxy state and reconnecting live data streams.");
       const subscription = pushService.getSubscription();
       pushService.disconnect();
@@ -750,15 +774,14 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       ]);
       message.success(
         runtime.expectedProxyPort === runtime.proxyPort
-          ? `Proxy core restarted on port ${runtime.proxyPort}`
+          ? `Proxy listener moved to port ${runtime.proxyPort}`
           : `Preferred port ${runtime.expectedProxyPort} was busy, switched to ${runtime.proxyPort}`,
       );
       window.setTimeout(() => {
         hideDesktopCoreRestart();
       }, 600);
     } catch (error) {
-      const text =
-        error instanceof Error ? error.message : "Failed to restart proxy core";
+      const text = getErrorMessage(error, "Failed to switch proxy port");
       failDesktopCoreRestart(text);
       message.error(text);
       await Promise.all([fetchProxySettings(), fetchDesktopRuntime()]);

@@ -186,3 +186,42 @@ fn get_app_search_dirs() -> Vec<std::path::PathBuf> {
 
     dirs
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use hyper::{header, Method, Request, StatusCode};
+
+    use super::handle_app_icon;
+    use crate::{create_app_icon_cache, state::AdminState};
+
+    #[tokio::test]
+    async fn app_icon_success_response_allows_cors() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let cache = create_app_icon_cache(temp_dir.path());
+        std::fs::write(
+            temp_dir.path().join("app_info/Test_App.png"),
+            b"fake-png-bytes",
+        )
+        .expect("write cached icon");
+
+        let state = Arc::new(AdminState::new(0).with_app_icon_cache(cache));
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/app-icon/Test%20App")
+            .body(())
+            .expect("request");
+
+        let response = handle_app_icon(request, state, "/api/app-icon/Test%20App").await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+    }
+}

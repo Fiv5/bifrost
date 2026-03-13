@@ -558,8 +558,8 @@ impl PushManager {
                 recorded: traffic_count,
             },
             server: ServerInfo {
-                port: self.state.port,
-                admin_url: format!("http://127.0.0.1:{}/_bifrost/", self.state.port),
+                port: self.state.port(),
+                admin_url: format!("http://127.0.0.1:{}/_bifrost/", self.state.port()),
             },
             pending_authorizations: pending_count,
         };
@@ -693,8 +693,8 @@ impl PushManager {
                     recorded: traffic_count,
                 },
                 server: ServerInfo {
-                    port: self.state.port,
-                    admin_url: format!("http://127.0.0.1:{}/_bifrost/", self.state.port),
+                    port: self.state.port(),
+                    admin_url: format!("http://127.0.0.1:{}/_bifrost/", self.state.port()),
                 },
                 pending_authorizations: pending_count,
             };

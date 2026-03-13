@@ -177,8 +177,8 @@ async fn get_overview(state: SharedAdminState) -> Response<BoxBody> {
             "recorded": traffic_count
         },
         "server": {
-            "port": state.port,
-            "admin_url": format!("http://127.0.0.1:{}/_bifrost/", state.port)
+            "port": state.port(),
+            "admin_url": format!("http://127.0.0.1:{}/_bifrost/", state.port())
         },
         "pending_authorizations": pending_count
     });

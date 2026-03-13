@@ -1678,7 +1678,7 @@ fn format_timestamp_ms(timestamp_ms: u64) -> String {
         .unwrap_or_else(|| "-".to_string())
 }
 
-pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
+pub fn start_db_cleanup_task(store: SharedTrafficDbStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         loop {
@@ -1688,7 +1688,7 @@ pub fn start_db_cleanup_task(store: SharedTrafficDbStore) {
                 store.compact_db(false);
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]

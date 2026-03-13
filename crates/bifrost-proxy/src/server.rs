@@ -506,9 +506,19 @@ impl ProxyServer {
         self
     }
 
+    pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
+        self.access_control = access_control;
+        self
+    }
+
     pub fn with_admin_state(mut self, admin_state: AdminState) -> Self {
         let admin_state = admin_state.with_access_control(Arc::clone(&self.access_control));
         self.admin_state = Some(Arc::new(admin_state));
+        self
+    }
+
+    pub fn with_admin_state_shared(mut self, admin_state: Arc<AdminState>) -> Self {
+        self.admin_state = Some(admin_state);
         self
     }
 
@@ -545,6 +555,13 @@ impl ProxyServer {
             .map_err(|e| BifrostError::Config(format!("Invalid address: {}", e)))?;
 
         let listener = self.bind(addr).await?;
+        self.run_with_listener(listener).await
+    }
+
+    pub async fn run_with_listener(&self, listener: TcpListener) -> Result<()> {
+        let addr = listener
+            .local_addr()
+            .map_err(|e| BifrostError::Network(format!("Failed to get listener address: {}", e)))?;
 
         if self.config.enable_socks {
             let udp_addr = SocketAddr::new(addr.ip(), addr.port());

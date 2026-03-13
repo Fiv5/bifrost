@@ -1,12 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bifrost_admin::{
     start_async_traffic_processor, start_frame_cleanup_task, start_metrics_collector_task,
     start_push_tasks, start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState,
-    AsyncTrafficWriter, BodyStore, PushManager, ReplayDbStore, RuntimeConfig, WsPayloadStore,
+    AsyncTrafficWriter, BodyStore, PortRebindManager, PortRebindRequest, PushManager,
+    ReplayDbStore, RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
@@ -22,6 +24,169 @@ use crate::parsing::{parse_cli_rules, DynamicRulesResolver, SharedDynamicRulesRe
 use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_info, RuntimeInfo};
 
 const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
+const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
+
+fn log_startup_phase(phase: &'static str, started_at: Instant) {
+    tracing::info!(
+        target: "bifrost_cli::startup",
+        phase,
+        elapsed_ms = started_at.elapsed().as_millis() as u64,
+        "startup phase completed"
+    );
+}
+
+struct SystemProxyReconcileConfig {
+    bifrost_dir: PathBuf,
+    system_proxy_manager: Arc<tokio::sync::RwLock<bifrost_core::SystemProxyManager>>,
+    should_enable: bool,
+    proxy_host: String,
+    proxy_port: u16,
+    system_proxy_bypass: String,
+    enabled_flag: Arc<AtomicBool>,
+    daemon_mode: bool,
+}
+
+fn spawn_system_proxy_reconcile_task(config: SystemProxyReconcileConfig) {
+    let SystemProxyReconcileConfig {
+        bifrost_dir,
+        system_proxy_manager,
+        should_enable,
+        proxy_host,
+        proxy_port,
+        system_proxy_bypass,
+        enabled_flag,
+        daemon_mode,
+    } = config;
+
+    let _ = std::thread::Builder::new()
+        .name("bifrost-system-proxy-reconcile".to_string())
+        .spawn(move || {
+            let started_at = Instant::now();
+
+            if let Err(error) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
+                tracing::warn!(
+                    error = %error,
+                    "[SYSTEM_PROXY] Failed to recover system proxy from previous crash"
+                );
+            }
+
+            if !should_enable {
+                tracing::info!(
+                    target: "bifrost_cli::startup",
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    "system proxy reconcile completed without apply"
+                );
+                return;
+            }
+
+            let mut manager = system_proxy_manager.blocking_write();
+            let result = manager.enable(&proxy_host, proxy_port, Some(&system_proxy_bypass));
+
+            let final_result = match &result {
+                Ok(()) => result,
+                Err(error) => {
+                    let msg = error.to_string();
+                    if msg.contains("RequiresAdmin") {
+                        #[cfg(target_os = "macos")]
+                        {
+                            if daemon_mode {
+                                println!("System proxy requires admin privileges; applying asynchronously via GUI authorization if approved...");
+                            } else {
+                                println!("System proxy requires admin privileges, requesting authorization asynchronously...");
+                            }
+                            manager.enable_with_gui_auth(
+                                &proxy_host,
+                                proxy_port,
+                                Some(&system_proxy_bypass),
+                            )
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            result
+                        }
+                    } else {
+                        result
+                    }
+                }
+            };
+
+            match final_result {
+                Ok(()) => {
+                    enabled_flag.store(true, Ordering::Release);
+                    tracing::info!(
+                        target: "bifrost_cli::startup",
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        host = %proxy_host,
+                        port = proxy_port,
+                        "system proxy applied asynchronously"
+                    );
+                }
+                Err(error) => {
+                    let msg = error.to_string();
+                    if msg.contains("UserCancelled") {
+                        println!("System proxy not enabled (authorization cancelled)");
+                    } else if msg.contains("RequiresAdmin") && daemon_mode {
+                        println!("System proxy requires administrator privileges; daemon will continue without changing system proxy. You can toggle it later via CLI or Admin UI.");
+                    } else if msg.contains("RequiresAdmin") {
+                        println!("System proxy requires administrator privileges and was not enabled.");
+                    } else {
+                        eprintln!("Failed to enable system proxy asynchronously: {}", error);
+                    }
+                    tracing::warn!(
+                        target: "bifrost_cli::startup",
+                        error = %error,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "system proxy reconcile failed"
+                    );
+                }
+            }
+        });
+}
+
+fn find_available_port(host: &str, preferred_port: u16) -> bifrost_core::Result<u16> {
+    for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
+        let port = preferred_port.saturating_add(offset);
+        if port == 0 {
+            continue;
+        }
+
+        if std::net::TcpListener::bind((host, port)).is_ok() {
+            return Ok(port);
+        }
+    }
+
+    Err(bifrost_core::BifrostError::Network(format!(
+        "failed to find an available port starting from {}",
+        preferred_port
+    )))
+}
+
+async fn spawn_managed_proxy_task(
+    config: ProxyConfig,
+    rules: SharedDynamicRulesResolver,
+    tls_config: Arc<bifrost_proxy::TlsConfig>,
+    admin_state: Arc<AdminState>,
+    push_manager: Arc<PushManager>,
+    access_control: bifrost_admin::SharedAccessControl,
+) -> bifrost_core::Result<tokio::task::JoinHandle<()>> {
+    let addr = format!("{}:{}", config.host, config.port)
+        .parse()
+        .map_err(|e| bifrost_core::BifrostError::Config(format!("Invalid address: {}", e)))?;
+
+    let server = ProxyServer::new(config)
+        .with_access_control(access_control)
+        .with_tls_config(tls_config)
+        .with_admin_state_shared(admin_state)
+        .with_rules(rules)
+        .with_push_manager(push_manager);
+    let listener = server.bind(addr).await?;
+
+    Ok(tokio::spawn(async move {
+        if let Err(error) = server.run_with_listener(listener).await {
+            tracing::error!("Managed proxy listener exited with error: {}", error);
+        }
+    }))
+}
 
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
@@ -369,66 +534,11 @@ pub fn run_foreground(
     ));
     let _system_proxy_restore_guard = SystemProxyRestoreGuard::new(system_proxy_manager.clone());
     let mut shell_proxy_manager = bifrost_core::ShellProxyManager::new(bifrost_dir.clone());
-
-    if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
-        tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
-    }
     if let Err(e) = bifrost_core::ShellProxyManager::recover_from_crash(&bifrost_dir) {
         tracing::warn!("Failed to recover CLI proxy from previous crash: {}", e);
     }
 
-    let mut system_proxy_enabled = false;
-    if enable_system_proxy {
-        let proxy_host = if config.host == "0.0.0.0" {
-            "127.0.0.1".to_string()
-        } else {
-            config.host.clone()
-        };
-        let mut manager = system_proxy_manager.blocking_write();
-        let result = manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass));
-
-        let final_result = match &result {
-            Ok(()) => result,
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
-                    println!(
-                        "  ⚠ System proxy requires admin privileges, requesting authorization..."
-                    );
-                    #[cfg(target_os = "macos")]
-                    {
-                        manager.enable_with_gui_auth(
-                            &proxy_host,
-                            config.port,
-                            Some(&system_proxy_bypass),
-                        )
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        result
-                    }
-                } else {
-                    result
-                }
-            }
-        };
-
-        match final_result {
-            Ok(()) => {
-                system_proxy_enabled = true;
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("UserCancelled") {
-                    println!("  ⚠ System proxy not enabled (authorization cancelled)");
-                } else if msg.contains("RequiresAdmin") {
-                    println!("  ⚠ System proxy requires admin privileges (not enabled)");
-                } else {
-                    eprintln!("  ✗ Failed to enable system proxy: {}", e);
-                }
-            }
-        }
-    }
+    let system_proxy_enabled = Arc::new(AtomicBool::new(false));
 
     let mut cli_proxy_enabled = false;
     let cli_proxy_no_proxy =
@@ -524,11 +634,12 @@ pub fn run_foreground(
 
     println!();
     println!("🌐 SYSTEM PROXY");
-    if system_proxy_enabled {
+    if system_proxy_enabled.load(Ordering::Acquire) {
         println!("   Status:        ✓ Enabled");
         println!("   Bypass:        {}", system_proxy_bypass);
     } else if enable_system_proxy {
-        println!("   Status:        ⚠ Requested but not enabled");
+        println!("   Status:        Requested (applying asynchronously)");
+        println!("   Bypass:        {}", system_proxy_bypass);
     } else {
         println!("   Status:        Disabled");
     }
@@ -590,7 +701,20 @@ pub fn run_foreground(
 
     rt.block_on(async {
         let result: bifrost_core::Result<()> = async {
+            let startup_started_at = Instant::now();
+            tracing::info!(
+                target: "bifrost_cli::startup",
+                data_dir = %bifrost_dir.display(),
+                port = config.port,
+                host = %config.host,
+                "starting foreground runtime initialization"
+            );
+
+            let phase_started_at = Instant::now();
             let stored_config = config_manager.config().await;
+            log_startup_phase("config_manager.config", phase_started_at);
+
+            let phase_started_at = Instant::now();
             let body_temp_dir = bifrost_dir.join("body_cache");
             let body_store = Arc::new(ParkingRwLock::new(BodyStore::new(
                 body_temp_dir,
@@ -599,8 +723,10 @@ pub fn run_foreground(
                 stored_config.traffic.sse_stream_flush_bytes,
                 Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
             )));
-            bifrost_admin::start_body_cleanup_task(body_store.clone());
+            let body_cleanup_task = bifrost_admin::start_body_cleanup_task(body_store.clone());
+            log_startup_phase("body_store.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let ws_payload_store = Arc::new(WsPayloadStore::new(
                 bifrost_dir.clone(),
                 stored_config.traffic.ws_payload_flush_bytes,
@@ -608,8 +734,10 @@ pub fn run_foreground(
                 stored_config.traffic.ws_payload_max_open_files,
                 stored_config.traffic.file_retention_days,
             ));
-            start_ws_payload_cleanup_task(ws_payload_store.clone());
+            let ws_payload_cleanup_task = start_ws_payload_cleanup_task(ws_payload_store.clone());
+            log_startup_phase("ws_payload_store.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let traffic_dir = bifrost_dir.join("traffic");
             let traffic_db_store = Arc::new(
                 bifrost_admin::TrafficDbStore::new(
@@ -620,18 +748,23 @@ pub fn run_foreground(
                 )
                 .expect("Failed to create traffic database"),
             );
+            log_startup_phase("traffic_db_store.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let (async_traffic_writer, async_traffic_rx) =
                 AsyncTrafficWriter::new(ASYNC_TRAFFIC_BUFFER_SIZE);
             let async_traffic_writer = Arc::new(async_traffic_writer);
             let _async_traffic_task =
                 start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
+            log_startup_phase("async_traffic.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let frame_store = Arc::new(bifrost_admin::FrameStore::new(
                 bifrost_dir.clone(),
                 Some(stored_config.traffic.file_retention_days * 24),
             ));
-            start_frame_cleanup_task(frame_store.clone());
+            let frame_cleanup_task = start_frame_cleanup_task(frame_store.clone());
+            log_startup_phase("frame_store.init", phase_started_at);
 
             let cleanup_body_store = body_store.clone();
             let cleanup_frame_store = frame_store.clone();
@@ -642,6 +775,7 @@ pub fn run_foreground(
                 let _ = cleanup_ws_payload_store.delete_by_ids(ids);
             }));
 
+            let phase_started_at = Instant::now();
             let values_storage = config_manager.values_storage().await;
             let rules_storage = config_manager.rules_storage().await;
             let mut values = {
@@ -651,6 +785,7 @@ pub fn run_foreground(
             for (k, v) in cli_values {
                 values.entry(k).or_insert(v);
             }
+            log_startup_phase("config_storage.load", phase_started_at);
 
             let ca_cert_path = bifrost_dir.join("certs").join("ca.crt");
 
@@ -666,14 +801,19 @@ pub fn run_foreground(
             let connection_registry =
                 bifrost_admin::ConnectionRegistry::new(disconnect_on_config_change);
 
+            let phase_started_at = Instant::now();
             let app_icon_cache = bifrost_admin::create_app_icon_cache(&bifrost_dir);
+            log_startup_phase("app_icon_cache.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let scripts_dir = bifrost_dir.join("scripts");
             let script_manager = bifrost_admin::ScriptManager::new(scripts_dir);
             if let Err(e) = script_manager.init().await {
                 tracing::warn!("Failed to initialize script manager: {}", e);
             }
+            log_startup_phase("script_manager.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let replay_db_store = match ReplayDbStore::new(bifrost_dir.join("replay")) {
                 Ok(store) => Some(Arc::new(store)),
                 Err(e) => {
@@ -681,8 +821,14 @@ pub fn run_foreground(
                     None
                 }
             };
+            log_startup_phase("replay_db_store.init", phase_started_at);
 
+            let access_control = ProxyServer::new(config.clone()).access_control().clone();
+            let (port_rebind_manager, mut port_rebind_rx) = PortRebindManager::channel(8);
+
+            let phase_started_at = Instant::now();
             let admin_state = AdminState::new(config.port)
+                .with_access_control(access_control.clone())
                 .with_body_store(body_store)
                 .with_ws_payload_store(ws_payload_store)
                 .with_async_traffic_writer_shared(async_traffic_writer)
@@ -699,10 +845,13 @@ pub fn run_foreground(
                 .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
                 .with_app_icon_cache(app_icon_cache)
                 .with_script_manager(script_manager)
-                .with_replay_db_store_shared_opt(replay_db_store);
+                .with_replay_db_store_shared_opt(replay_db_store)
+                .with_port_rebind_manager_shared(port_rebind_manager);
+            log_startup_phase("admin_state.build", phase_started_at);
 
-            bifrost_admin::start_db_cleanup_task(traffic_db_store);
-            bifrost_admin::start_connection_cleanup_task(admin_state.connection_monitor.clone());
+            let db_cleanup_task = bifrost_admin::start_db_cleanup_task(traffic_db_store);
+            let connection_cleanup_task =
+                bifrost_admin::start_connection_cleanup_task(admin_state.connection_monitor.clone());
 
             let metrics_collector = admin_state.metrics_collector.clone();
             let rules_storage_for_resolver = admin_state.rules_storage.clone();
@@ -714,6 +863,7 @@ pub fn run_foreground(
             let connection_registry_for_resolver = admin_state.connection_registry.clone();
             let runtime_config_for_resolver = admin_state.runtime_config.clone();
 
+            let phase_started_at = Instant::now();
             let (stored_rules, inline_values) = load_stored_rules(&rules_storage_for_resolver);
             let mut merged_values = values.clone();
             for (k, v) in inline_values {
@@ -724,32 +874,31 @@ pub fn run_foreground(
                 stored_rules,
                 merged_values,
             ));
+            log_startup_phase("rules_resolver.init", phase_started_at);
 
             log_resolver_rules(&resolver);
 
             let unsafe_ssl = config.unsafe_ssl;
-            let server = ProxyServer::new(config)
-                .with_tls_config(tls_config)
-                .with_admin_state(admin_state)
-                .with_rules(resolver.clone());
+            let admin_state_arc = Arc::new(admin_state);
 
-            let admin_state_arc = server
-                .admin_state()
-                .cloned()
-                .expect("admin_state should be set");
-
+            let phase_started_at = Instant::now();
             let replay_executor = Arc::new(bifrost_admin::ReplayExecutor::new(
                 admin_state_arc.clone(),
                 unsafe_ssl,
             ));
             admin_state_arc.set_replay_executor(replay_executor);
+            log_startup_phase("replay_executor.init", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
-            let _push_tasks = start_push_tasks(push_manager.clone());
-            let server = server.with_push_manager(push_manager);
+            let push_tasks = start_push_tasks(push_manager.clone());
+            log_startup_phase("push_manager.init", phase_started_at);
 
-            let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
+            let phase_started_at = Instant::now();
+            let metrics_tasks = start_metrics_collector_task(metrics_collector, 1);
+            log_startup_phase("metrics_task.start", phase_started_at);
 
+            let phase_started_at = Instant::now();
             let rules_watcher_task = spawn_rules_watcher_task(
                 config_manager_for_resolver,
                 rules_storage_for_resolver,
@@ -758,13 +907,44 @@ pub fn run_foreground(
                 connection_registry_for_resolver,
                 runtime_config_for_resolver,
             );
+            log_startup_phase("rules_watcher.start", phase_started_at);
+
+            let mut current_port = config.port;
+            let base_config = config.clone();
+            let phase_started_at = Instant::now();
+            let mut listener_task = spawn_managed_proxy_task(
+                config.clone(),
+                resolver.clone(),
+                tls_config.clone(),
+                admin_state_arc.clone(),
+                push_manager.clone(),
+                access_control.clone(),
+            )
+            .await?;
+            log_startup_phase("proxy_listener.bind", phase_started_at);
+            tracing::info!(
+                target: "bifrost_cli::startup",
+                total_elapsed_ms = startup_started_at.elapsed().as_millis() as u64,
+                "foreground runtime initialization completed"
+            );
+
+            let system_proxy_host = if base_config.host == "0.0.0.0" {
+                "127.0.0.1".to_string()
+            } else {
+                base_config.host.clone()
+            };
+            spawn_system_proxy_reconcile_task(SystemProxyReconcileConfig {
+                bifrost_dir: bifrost_dir.clone(),
+                system_proxy_manager: system_proxy_manager.clone(),
+                should_enable: enable_system_proxy,
+                proxy_host: system_proxy_host,
+                proxy_port: current_port,
+                system_proxy_bypass: system_proxy_bypass.clone(),
+                enabled_flag: system_proxy_enabled.clone(),
+                daemon_mode: false,
+            });
 
             tokio::select! {
-                result = server.run() => {
-                    if let Err(e) = result {
-                        eprintln!("Server error: {}", e);
-                    }
-                }
                 _ = wait_for_shutdown_signal() => {
                     info!("Received shutdown signal");
                     println!("\nShutting down...");
@@ -788,9 +968,116 @@ pub fn run_foreground(
                     info!("Received SIGTERM");
                     println!("\nShutting down...");
                 },
+                _ = async {
+                    while let Some(PortRebindRequest { expected_port, response_tx }) = port_rebind_rx.recv().await {
+                        if base_config.socks5_port.is_some() {
+                            let _ = response_tx.send(Err(
+                                "dynamic port rebind is not supported when --socks5-port is enabled".to_string()
+                            ));
+                            continue;
+                        }
+
+                        if expected_port == current_port {
+                            let _ = response_tx.send(Ok(bifrost_admin::PortRebindResponse {
+                                expected_port,
+                                actual_port: current_port,
+                            }));
+                            continue;
+                        }
+
+                        let actual_port = match find_available_port(&base_config.host, expected_port) {
+                            Ok(port) => port,
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error.to_string()));
+                                continue;
+                            }
+                        };
+
+                        let mut next_config = base_config.clone();
+                        next_config.port = actual_port;
+                        let next_task = match spawn_managed_proxy_task(
+                            next_config,
+                            resolver.clone(),
+                            tls_config.clone(),
+                            admin_state_arc.clone(),
+                            push_manager.clone(),
+                            access_control.clone(),
+                        )
+                        .await {
+                            Ok(task) => task,
+                            Err(error) => {
+                                let _ = response_tx.send(Err(error.to_string()));
+                                continue;
+                            }
+                        };
+
+                        let old_task = std::mem::replace(&mut listener_task, next_task);
+                        old_task.abort();
+
+                        current_port = actual_port;
+                        admin_state_arc.set_port(actual_port);
+
+                        let runtime_info = RuntimeInfo {
+                            pid: std::process::id(),
+                            port: actual_port,
+                            socks5_port: base_config.socks5_port,
+                            host: Some(base_config.host.clone()),
+                        };
+                        if let Err(error) = write_runtime_info(&runtime_info) {
+                            tracing::warn!("Failed to update runtime info after port rebind: {}", error);
+                        }
+
+                        if system_proxy_enabled.load(Ordering::Acquire) {
+                            let proxy_host = if base_config.host == "0.0.0.0" {
+                                "127.0.0.1".to_string()
+                            } else {
+                                base_config.host.clone()
+                            };
+                            let mut manager = system_proxy_manager.write().await;
+                            let _ = manager.force_disable();
+                            if let Err(error) = manager.enable(&proxy_host, actual_port, Some(&system_proxy_bypass)) {
+                                tracing::warn!("Failed to update system proxy after port rebind: {}", error);
+                            }
+                        }
+
+                        if cli_proxy_enabled {
+                            let proxy_host = if base_config.host == "0.0.0.0" {
+                                "127.0.0.1".to_string()
+                            } else {
+                                base_config.host.clone()
+                            };
+                            if let Err(error) = shell_proxy_manager.enable_persistent(
+                                &proxy_host,
+                                actual_port,
+                                &cli_proxy_no_proxy,
+                            ) {
+                                tracing::warn!("Failed to update CLI proxy after port rebind: {}", error);
+                            }
+                        }
+
+                        push_manager.broadcast_overview().await;
+
+                        let _ = response_tx.send(Ok(bifrost_admin::PortRebindResponse {
+                            expected_port,
+                            actual_port,
+                        }));
+                    }
+                } => {}
             }
 
+            listener_task.abort();
             rules_watcher_task.abort();
+            body_cleanup_task.abort();
+            ws_payload_cleanup_task.abort();
+            frame_cleanup_task.abort();
+            db_cleanup_task.abort();
+            connection_cleanup_task.abort();
+            for task in push_tasks {
+                task.abort();
+            }
+            for task in metrics_tasks {
+                task.abort();
+            }
             Ok(())
         }
         .await;
@@ -922,58 +1209,10 @@ pub fn run_daemon(
                 bifrost_core::SystemProxyManager::new(bifrost_dir.clone()),
             ));
             let mut shell_proxy_manager = bifrost_core::ShellProxyManager::new(bifrost_dir.clone());
-
-            if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(&bifrost_dir) {
-                tracing::warn!("Failed to recover system proxy from previous crash: {}", e);
-            }
             if let Err(e) = bifrost_core::ShellProxyManager::recover_from_crash(&bifrost_dir) {
                 tracing::warn!("Failed to recover CLI proxy from previous crash: {}", e);
             }
-
-            if enable_system_proxy {
-                let proxy_host = if config.host == "0.0.0.0" {
-                    "127.0.0.1".to_string()
-                } else {
-                    config.host.clone()
-                };
-                let mut manager = system_proxy_manager.blocking_write();
-                let result = manager.enable(&proxy_host, config.port, Some(&system_proxy_bypass));
-
-                let final_result = match &result {
-                    Ok(()) => result,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        if msg.contains("RequiresAdmin") {
-                            println!("System proxy requires admin privileges, requesting authorization...");
-                            #[cfg(target_os = "macos")]
-                            {
-                                manager.enable_with_gui_auth(
-                                    &proxy_host,
-                                    config.port,
-                                    Some(&system_proxy_bypass),
-                                )
-                            }
-                            #[cfg(not(target_os = "macos"))]
-                            {
-                                result
-                            }
-                        } else {
-                            result
-                        }
-                    }
-                };
-
-                if let Err(e) = final_result {
-                    let msg = e.to_string();
-                    if msg.contains("UserCancelled") {
-                        println!("System proxy not enabled (authorization cancelled)");
-                    } else if msg.contains("RequiresAdmin") {
-                        println!("System proxy requires administrator privileges; daemon will continue without changing system proxy. You can toggle it later via CLI or Admin UI.");
-                    } else {
-                        eprintln!("Failed to enable system proxy: {}", e);
-                    }
-                }
-            }
+            let system_proxy_enabled = Arc::new(AtomicBool::new(false));
 
             let mut cli_proxy_enabled = false;
             let cli_proxy_no_proxy =
@@ -1029,7 +1268,7 @@ pub fn run_daemon(
                         stored_config.traffic.sse_stream_flush_bytes,
                         Duration::from_millis(stored_config.traffic.sse_stream_flush_interval_ms),
                     )));
-                    bifrost_admin::start_body_cleanup_task(body_store.clone());
+                    std::mem::drop(bifrost_admin::start_body_cleanup_task(body_store.clone()));
 
                     let ws_payload_store = Arc::new(WsPayloadStore::new(
                         bifrost_dir.clone(),
@@ -1038,7 +1277,7 @@ pub fn run_daemon(
                         stored_config.traffic.ws_payload_max_open_files,
                         stored_config.traffic.file_retention_days,
                     ));
-                    start_ws_payload_cleanup_task(ws_payload_store.clone());
+                    std::mem::drop(start_ws_payload_cleanup_task(ws_payload_store.clone()));
 
                     let traffic_dir = bifrost_dir.join("traffic");
                     let traffic_db_store = Arc::new(
@@ -1063,7 +1302,7 @@ pub fn run_daemon(
                         bifrost_dir.clone(),
                         Some(stored_config.traffic.file_retention_days * 24),
                     ));
-                    start_frame_cleanup_task(frame_store.clone());
+                    std::mem::drop(start_frame_cleanup_task(frame_store.clone()));
 
                     let cleanup_body_store = body_store.clone();
                     let cleanup_frame_store = frame_store.clone();
@@ -1130,10 +1369,10 @@ pub fn run_daemon(
                         .with_script_manager(script_manager)
                         .with_replay_db_store_shared_opt(replay_db_store);
 
-                    bifrost_admin::start_db_cleanup_task(traffic_db_store);
-                    bifrost_admin::start_connection_cleanup_task(
+                    std::mem::drop(bifrost_admin::start_db_cleanup_task(traffic_db_store));
+                    std::mem::drop(bifrost_admin::start_connection_cleanup_task(
                         admin_state.connection_monitor.clone(),
-                    );
+                    ));
 
                     let metrics_collector = admin_state.metrics_collector.clone();
                     let rules_storage_for_resolver = admin_state.rules_storage.clone();
@@ -1160,6 +1399,12 @@ pub fn run_daemon(
                     log_resolver_rules(&resolver);
 
                     let unsafe_ssl = config.unsafe_ssl;
+                    let system_proxy_host = if config.host == "0.0.0.0" {
+                        "127.0.0.1".to_string()
+                    } else {
+                        config.host.clone()
+                    };
+                    let system_proxy_port = config.port;
                     let server = ProxyServer::new(config)
                         .with_tls_config(tls_config)
                         .with_admin_state(admin_state)
@@ -1190,6 +1435,17 @@ pub fn run_daemon(
                         connection_registry_for_resolver,
                         runtime_config_for_resolver,
                     );
+
+                    spawn_system_proxy_reconcile_task(SystemProxyReconcileConfig {
+                        bifrost_dir: bifrost_dir.clone(),
+                        system_proxy_manager: system_proxy_manager.clone(),
+                        should_enable: enable_system_proxy,
+                        proxy_host: system_proxy_host,
+                        proxy_port: system_proxy_port,
+                        system_proxy_bypass: system_proxy_bypass.clone(),
+                        enabled_flag: system_proxy_enabled.clone(),
+                        daemon_mode: true,
+                    });
 
                     if let Err(e) = server.run().await {
                         eprintln!("Server error: {}", e);

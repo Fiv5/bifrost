@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
@@ -15,6 +15,7 @@ use crate::connection_registry::{ConnectionRegistry, SharedConnectionRegistry};
 use crate::frame_store::{FrameStore, SharedFrameStore};
 use crate::handlers::scripts::ScriptManager;
 use crate::metrics::{MetricsCollector, SharedMetricsCollector};
+use crate::port_rebind::SharedPortRebindManager;
 use crate::replay_db::{ReplayDbStore, SharedReplayDbStore};
 use crate::replay_executor::SharedReplayExecutor;
 use crate::sse::SseHub;
@@ -80,7 +81,7 @@ pub struct AdminState {
     pub frame_store: Option<SharedFrameStore>,
     pub ws_payload_store: Option<SharedWsPayloadStore>,
     pub start_time: u64,
-    pub port: u16,
+    port: AtomicU16,
     pub ca_cert_path: Option<PathBuf>,
     pub system_proxy_manager: Option<SharedSystemProxyManager>,
     pub connection_monitor: SharedConnectionMonitor,
@@ -96,6 +97,7 @@ pub struct AdminState {
     pub replay_db_store: Option<SharedReplayDbStore>,
     pub replay_executor: OnceCell<SharedReplayExecutor>,
     pub total_size_cleanup_counter: AtomicUsize,
+    pub port_rebind_manager: Option<SharedPortRebindManager>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -114,7 +116,7 @@ impl AdminState {
             frame_store: None,
             ws_payload_store: None,
             start_time: chrono::Utc::now().timestamp() as u64,
-            port,
+            port: AtomicU16::new(port),
             ca_cert_path: None,
             system_proxy_manager: None,
             connection_monitor: Arc::new(ConnectionMonitor::new()),
@@ -130,6 +132,18 @@ impl AdminState {
             replay_db_store: None,
             replay_executor: OnceCell::new(),
             total_size_cleanup_counter: AtomicUsize::new(0),
+            port_rebind_manager: None,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port.load(Ordering::Relaxed)
+    }
+
+    pub fn set_port(&self, port: u16) {
+        let old = self.port.swap(port, Ordering::SeqCst);
+        if old != port {
+            tracing::info!("AdminState port updated: {} -> {}", old, port);
         }
     }
 
@@ -465,6 +479,11 @@ impl AdminState {
 
     pub fn with_replay_db_store_shared_opt(mut self, store: Option<SharedReplayDbStore>) -> Self {
         self.replay_db_store = store;
+        self
+    }
+
+    pub fn with_port_rebind_manager_shared(mut self, manager: SharedPortRebindManager) -> Self {
+        self.port_rebind_manager = Some(manager);
         self
     }
 

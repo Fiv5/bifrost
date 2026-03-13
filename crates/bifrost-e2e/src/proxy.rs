@@ -884,7 +884,7 @@ impl ProxyInstance {
             128,
             7,
         ));
-        start_ws_payload_cleanup_task(ws_payload_store.clone());
+        std::mem::drop(start_ws_payload_cleanup_task(ws_payload_store.clone()));
 
         let traffic_dir = temp_dir.join("traffic");
         let traffic_db_store = Arc::new(
@@ -893,7 +893,7 @@ impl ProxyInstance {
         );
 
         let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir, Some(24)));
-        start_frame_cleanup_task(frame_store.clone());
+        std::mem::drop(start_frame_cleanup_task(frame_store.clone()));
 
         let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
         let _async_traffic_task =
@@ -907,7 +907,9 @@ impl ProxyInstance {
             .with_traffic_db_store_shared(traffic_db_store)
             .with_async_traffic_writer(async_traffic_writer)
             .with_frame_store_shared(frame_store);
-        start_connection_cleanup_task(admin_state.connection_monitor.clone());
+        std::mem::drop(start_connection_cleanup_task(
+            admin_state.connection_monitor.clone(),
+        ));
 
         let server = ProxyServer::new(config)
             .with_rules(resolver)

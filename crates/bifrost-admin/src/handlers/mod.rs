@@ -111,15 +111,15 @@ mod tests {
     fn cors_preflight_allows_desktop_client_header() {
         let response = cors_preflight();
         let headers = response.headers();
+        let allow_headers = headers
+            .get("Access-Control-Allow-Headers")
+            .and_then(|value| value.to_str().ok());
 
-        assert_eq!(
-            headers
-                .get("Access-Control-Allow-Headers")
-                .and_then(|value| value.to_str().ok()),
-            Some(ADMIN_CORS_ALLOW_HEADERS)
-        );
+        assert_eq!(allow_headers, Some(ADMIN_CORS_ALLOW_HEADERS));
         assert!(
-            ADMIN_CORS_ALLOW_HEADERS.contains("X-Client-Id"),
+            allow_headers
+                .map(|value| value.contains("X-Client-Id"))
+                .unwrap_or(false),
             "desktop requests require X-Client-Id to pass CORS preflight"
         );
     }

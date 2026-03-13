@@ -419,7 +419,7 @@ impl BodyStore {
 
 pub type SharedBodyStore = Arc<RwLock<BodyStore>>;
 
-pub fn start_body_cleanup_task(store: SharedBodyStore) {
+pub fn start_body_cleanup_task(store: SharedBodyStore) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -434,7 +434,7 @@ pub fn start_body_cleanup_task(store: SharedBodyStore) {
                 }
             }
         }
-    });
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

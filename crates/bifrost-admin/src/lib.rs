@@ -6,6 +6,7 @@ pub mod connection_registry;
 mod frame_store;
 mod handlers;
 mod metrics;
+mod port_rebind;
 pub mod push;
 pub mod replay_db;
 pub mod replay_executor;
@@ -43,6 +44,9 @@ pub use handlers::scripts::ScriptManager;
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
+};
+pub use port_rebind::{
+    PortRebindManager, PortRebindRequest, PortRebindResponse, SharedPortRebindManager,
 };
 pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;

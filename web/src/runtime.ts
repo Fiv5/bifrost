@@ -22,6 +22,10 @@ export function setDesktopProxyPort(port: number): void {
   desktopRuntime.proxyPort = port;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 export function getExpectedDesktopProxyPort(): number {
   return desktopRuntime.expectedProxyPort;
 }
@@ -43,8 +47,13 @@ export async function initializeDesktopRuntime(): Promise<void> {
         : runtime.platform === 'win32'
           ? 'windows'
           : runtime.platform === 'linux'
-            ? 'linux'
+          ? 'linux'
             : 'web';
+  } catch (error) {
+    console.error(
+      '[desktop-runtime] Failed to initialize Tauri runtime, falling back to default port 9900.',
+      error,
+    );
   } finally {
     desktopRuntime.initialized = true;
   }
@@ -88,6 +97,32 @@ export function buildWsUrl(path: string, params?: URLSearchParams): string {
     url.search = params.toString();
   }
   return url.toString();
+}
+
+export async function waitForDesktopBackendReady(
+  port: number,
+  timeoutMs = 8_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  const url = `http://127.0.0.1:${port}${DEFAULT_ADMIN_PREFIX}/api/system/overview`;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        cache: 'no-store',
+      });
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // The listener is still switching over; retry until timeout.
+    }
+
+    await delay(150);
+  }
+
+  throw new Error(`Timed out waiting for Bifrost core on port ${port}`);
 }
 
 export function resolveRequestUrl(input: RequestInfo | URL): RequestInfo | URL {

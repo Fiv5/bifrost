@@ -821,7 +821,9 @@ impl Default for ConnectionMonitor {
 
 pub type SharedConnectionMonitor = Arc<ConnectionMonitor>;
 
-pub fn start_connection_cleanup_task(monitor: SharedConnectionMonitor) {
+pub fn start_connection_cleanup_task(
+    monitor: SharedConnectionMonitor,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -829,7 +831,7 @@ pub fn start_connection_cleanup_task(monitor: SharedConnectionMonitor) {
             interval.tick().await;
             monitor.cleanup_closed_connections();
         }
-    });
+    })
 }
 
 #[cfg(test)]

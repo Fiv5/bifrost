@@ -8,6 +8,7 @@
   },
   "app": {
     "macOSPrivateApi": true,
+    "withGlobalTauri": true,
     "windows": [
       {
         "label": "main",
@@ -19,13 +20,7 @@
         "resizable": true,
         "transparent": true,
         "visible": false,
-        "decorations": true,
-        "hiddenTitle": true,
-        "titleBarStyle": "Overlay",
-        "trafficLightPosition": {
-          "x": 16,
-          "y": 18
-        }
+        "decorations": true
       }
     ]
   },

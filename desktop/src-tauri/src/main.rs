@@ -1,10 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{
     image::Image,
@@ -37,6 +42,14 @@ struct DesktopRuntimeInfo {
     platform: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DesktopPortUpdateResponse {
+    #[serde(alias = "expectedPort")]
+    expected_port: u16,
+    #[serde(alias = "actualPort")]
+    actual_port: u16,
+}
+
 struct BackendState {
     binary_path: PathBuf,
     data_dir: PathBuf,
@@ -44,6 +57,8 @@ struct BackendState {
     expected_port: Mutex<u16>,
     port: Mutex<u16>,
     child: Mutex<Option<Child>>,
+    shutdown_started: AtomicBool,
+    force_exit: AtomicBool,
 }
 
 fn main() {
@@ -59,9 +74,6 @@ fn main() {
             main_window.set_icon(load_app_icon()?)?;
             main_window.hide()?;
 
-            #[cfg(target_os = "windows")]
-            main_window.set_decorations(false)?;
-
             apply_window_effects(&main_window)?;
 
             let binary_path = resolve_bifrost_binary(app.handle())?;
@@ -72,6 +84,15 @@ fn main() {
                 .map_err(|error| anyhow(format!("failed to create config dir: {error}")))?;
             fs::create_dir_all(&app_data_dir)
                 .map_err(|error| anyhow(format!("failed to create data dir: {error}")))?;
+            append_desktop_bootstrap_log(
+                &app_data_dir,
+                format!(
+                    "desktop setup started; binary_path={} data_dir={} config_dir={}",
+                    binary_path.display(),
+                    app_data_dir.display(),
+                    app_config_dir.display()
+                ),
+            );
 
             let config_path = app_config_dir.join("desktop-config.json");
             let config = load_desktop_config(&config_path)?;
@@ -85,6 +106,8 @@ fn main() {
                 expected_port: Mutex::new(config.proxy_port),
                 port: Mutex::new(port),
                 child: Mutex::new(Some(child)),
+                shutdown_started: AtomicBool::new(false),
+                force_exit: AtomicBool::new(false),
             });
 
             main_window.show()?;
@@ -92,17 +115,29 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                stop_backend(window.app_handle());
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                request_desktop_shutdown(window.app_handle());
             }
         })
         .build(tauri::generate_context!())
         .expect("failed to build desktop app")
         .run(|app_handle, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                stop_backend(app_handle);
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if should_intercept_exit(app_handle) {
+                    api.prevent_exit();
+                    request_desktop_shutdown(app_handle);
+                }
             }
         });
+}
+
+fn should_intercept_exit(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<BackendState>() else {
+        return false;
+    };
+
+    !state.force_exit.load(Ordering::SeqCst)
 }
 
 fn load_app_icon() -> tauri::Result<Image<'static>> {
@@ -153,6 +188,20 @@ fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {
 
 fn start_backend(binary_path: &Path, data_dir: &Path, port: u16) -> tauri::Result<Child> {
     let port = port.to_string();
+    let stdout_log = open_sidecar_log_file(data_dir, "desktop-sidecar.out.log")?;
+    let stderr_log = open_sidecar_log_file(data_dir, "desktop-sidecar.err.log")?;
+
+    append_desktop_bootstrap_log(
+        data_dir,
+        format!(
+            "starting sidecar; binary_path={} data_dir={} port={} stdout_log={} stderr_log={}",
+            binary_path.display(),
+            data_dir.display(),
+            port,
+            log_dir(data_dir).join("desktop-sidecar.out.log").display(),
+            log_dir(data_dir).join("desktop-sidecar.err.log").display()
+        ),
+    );
 
     Command::new(binary_path)
         .args([
@@ -164,8 +213,8 @@ fn start_backend(binary_path: &Path, data_dir: &Path, port: u16) -> tauri::Resul
             "--skip-cert-check",
         ])
         .env("BIFROST_DATA_DIR", data_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
         .spawn()
         .map_err(|error| anyhow(format!("failed to start backend: {error}")))
 }
@@ -175,6 +224,14 @@ fn ensure_backend_running(
     data_dir: &Path,
     preferred_port: u16,
 ) -> tauri::Result<(Child, u16)> {
+    append_desktop_bootstrap_log(
+        data_dir,
+        format!(
+            "ensuring backend is running; preferred_port={} data_dir={}",
+            preferred_port,
+            data_dir.display()
+        ),
+    );
     cleanup_existing_backend(binary_path, data_dir);
 
     for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
@@ -188,8 +245,18 @@ fn ensure_backend_running(
 
         let child = start_backend(binary_path, data_dir, port)?;
         match wait_for_backend(port, Duration::from_secs(20)) {
-            Ok(()) => return Ok((child, port)),
+            Ok(()) => {
+                append_desktop_bootstrap_log(
+                    data_dir,
+                    format!("backend became ready at http://{BACKEND_HOST}:{port}"),
+                );
+                return Ok((child, port));
+            }
             Err(error) => {
+                append_desktop_bootstrap_log(
+                    data_dir,
+                    format!("backend failed to become ready on port {port}: {error}"),
+                );
                 let _ = stop_backend_with_binary(binary_path, data_dir);
                 let _ = terminate_child(child);
                 if offset == MAX_PORT_INCREMENT_ATTEMPTS {
@@ -232,11 +299,26 @@ fn has_runtime_marker(data_dir: &Path) -> bool {
 
 fn cleanup_existing_backend(binary_path: &Path, data_dir: &Path) {
     if has_runtime_marker(data_dir) {
+        append_desktop_bootstrap_log(
+            data_dir,
+            format!(
+                "found existing backend runtime markers under {}; stopping stale backend",
+                data_dir.display()
+            ),
+        );
         let _ = stop_backend_with_binary(binary_path, data_dir);
     }
 }
 
 fn stop_backend_with_binary(binary_path: &Path, data_dir: &Path) -> tauri::Result<()> {
+    append_desktop_bootstrap_log(
+        data_dir,
+        format!(
+            "running synchronous backend stop; binary_path={} data_dir={}",
+            binary_path.display(),
+            data_dir.display()
+        ),
+    );
     let status = Command::new(binary_path)
         .arg("stop")
         .env("BIFROST_DATA_DIR", data_dir)
@@ -254,6 +336,27 @@ fn stop_backend_with_binary(binary_path: &Path, data_dir: &Path) -> tauri::Resul
     }
 }
 
+fn spawn_backend_stop(binary_path: &Path, data_dir: &Path) -> tauri::Result<Child> {
+    append_desktop_bootstrap_log(
+        data_dir,
+        format!(
+            "spawning asynchronous backend stop; binary_path={} data_dir={}",
+            binary_path.display(),
+            data_dir.display()
+        ),
+    );
+    let stdout_log = open_sidecar_log_file(data_dir, "desktop-sidecar.out.log")?;
+    let stderr_log = open_sidecar_log_file(data_dir, "desktop-sidecar.err.log")?;
+
+    Command::new(binary_path)
+        .arg("stop")
+        .env("BIFROST_DATA_DIR", data_dir)
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log))
+        .spawn()
+        .map_err(|error| anyhow(format!("failed to spawn backend stop: {error}")))
+}
+
 fn terminate_child(mut child: Child) -> tauri::Result<()> {
     let _ = child.kill();
     child
@@ -262,28 +365,73 @@ fn terminate_child(mut child: Child) -> tauri::Result<()> {
     Ok(())
 }
 
-fn stop_backend(app: &AppHandle) {
+fn request_desktop_shutdown(app: &AppHandle) {
     let Some(state) = app.try_state::<BackendState>() else {
+        app.exit(0);
         return;
     };
-    stop_backend_process(&state);
+
+    if state.shutdown_started.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        "desktop shutdown requested; hiding window and stopping backend asynchronously",
+    );
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        complete_desktop_shutdown(&app_handle);
+    });
 }
 
-fn stop_backend_process(state: &BackendState) {
-    let Ok(mut child_guard) = state.child.lock() else {
+fn complete_desktop_shutdown(app: &AppHandle) {
+    let Some(state) = app.try_state::<BackendState>() else {
+        app.exit(0);
         return;
     };
 
-    if child_guard.is_none() {
+    match spawn_backend_stop(&state.binary_path, &state.data_dir) {
+        Ok(child) => {
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                format!("spawned backend stop helper pid={}", child.id()),
+            );
+        }
+        Err(error) => {
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                format!("failed to spawn backend stop helper: {error}"),
+            );
+        }
+    }
+
+    let Ok(mut child_guard) = state.child.lock() else {
+        state.force_exit.store(true, Ordering::SeqCst);
+        app.exit(0);
         return;
+    };
+
+    if let Some(child) = child_guard.take() {
+        append_desktop_bootstrap_log(
+            &state.data_dir,
+            format!(
+                "detached backend child pid={} so desktop UI can exit immediately",
+                child.id()
+            ),
+        );
     }
 
-    let _ = stop_backend_with_binary(&state.binary_path, &state.data_dir);
-
-    if let Some(mut child) = child_guard.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    state.force_exit.store(true, Ordering::SeqCst);
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        "desktop shutdown handoff complete; requesting final app exit",
+    );
+    app.exit(0);
 }
 
 fn load_desktop_config(config_path: &Path) -> tauri::Result<DesktopConfig> {
@@ -351,19 +499,15 @@ fn update_desktop_proxy_port(
         }
     }
 
-    stop_backend_process(&state);
-    let (child, actual_port) = ensure_backend_running(&state.binary_path, &state.data_dir, port)
-        .map_err(|error| error.to_string())?;
+    let current_port = *state
+        .port
+        .lock()
+        .map_err(|_| "failed to access current desktop port".to_string())?;
+    let updated_runtime =
+        rebind_backend_port(current_port, port).map_err(|error| error.to_string())?;
     save_desktop_config(&state.config_path, &DesktopConfig { proxy_port: port })
         .map_err(|error| error.to_string())?;
 
-    {
-        let mut child_guard = state
-            .child
-            .lock()
-            .map_err(|_| "failed to store desktop backend child".to_string())?;
-        *child_guard = Some(child);
-    }
     {
         let mut expected_port = state
             .expected_port
@@ -376,12 +520,12 @@ fn update_desktop_proxy_port(
             .port
             .lock()
             .map_err(|_| "failed to update desktop proxy port".to_string())?;
-        *current_port = actual_port;
+        *current_port = updated_runtime.actual_port;
     }
 
     Ok(DesktopRuntimeInfo {
         expected_proxy_port: port,
-        proxy_port: actual_port,
+        proxy_port: updated_runtime.actual_port,
         platform: std::env::consts::OS,
     })
 }
@@ -389,4 +533,62 @@ fn update_desktop_proxy_port(
 fn anyhow(message: String) -> tauri::Error {
     let error: Box<dyn std::error::Error> = Box::new(std::io::Error::other(message));
     tauri::Error::Setup(error.into())
+}
+
+fn log_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs")
+}
+
+fn append_desktop_bootstrap_log(data_dir: &Path, message: impl AsRef<str>) {
+    let log_dir = log_dir(data_dir);
+    if fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+
+    let log_path = log_dir.join("desktop-bootstrap.log");
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) else {
+        return;
+    };
+
+    let _ = writeln!(file, "[{:?}] {}", SystemTime::now(), message.as_ref());
+}
+
+fn open_sidecar_log_file(data_dir: &Path, file_name: &str) -> tauri::Result<fs::File> {
+    let log_dir = log_dir(data_dir);
+    fs::create_dir_all(&log_dir)
+        .map_err(|error| anyhow(format!("failed to create log dir: {error}")))?;
+
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join(file_name))
+        .map_err(|error| anyhow(format!("failed to open {file_name}: {error}")))
+}
+
+fn rebind_backend_port(current_port: u16, expected_port: u16) -> tauri::Result<DesktopPortUpdateResponse> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| anyhow(format!("failed to build backend rebind client: {error}")))?;
+    let url = format!(
+        "http://{BACKEND_HOST}:{current_port}/_bifrost/api/config/server"
+    );
+    let response = client
+        .put(url)
+        .json(&serde_json::json!({ "port": expected_port }))
+        .send()
+        .map_err(|error| anyhow(format!("failed to call backend port rebind API: {error}")))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(anyhow(format!(
+            "backend port rebind API failed with status {}: {}",
+            status, body
+        )));
+    }
+
+    response
+        .json::<DesktopPortUpdateResponse>()
+        .map_err(|error| anyhow(format!("failed to decode backend port rebind response: {error}")))
 }

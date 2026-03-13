@@ -13,7 +13,6 @@ import { useEffect } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 import StatusBar from "../StatusBar";
 import { setNavigateCallback, type ReferenceLocation } from "../BifrostEditor";
-import DesktopWindowChrome, { DESKTOP_CHROME_HEIGHT } from "./DesktopWindowChrome";
 import { getDesktopPlatform, isDesktopShell } from "../../runtime";
 import { useThemeStore } from "../../stores/useThemeStore";
 
@@ -135,7 +134,6 @@ export default function AppLayout() {
       display: "flex",
       flex: 1,
       overflow: "hidden",
-      paddingTop: desktopEnabled ? DESKTOP_CHROME_HEIGHT : 0,
       position: "relative",
       zIndex: 2,
     },
@@ -249,7 +247,6 @@ export default function AppLayout() {
           <div style={styles.desktopNoise} />
         </>
       ) : null}
-      <DesktopWindowChrome />
       <div style={styles.main}>
         <div style={styles.sidebar}>
           {menuItems.map((item) => {

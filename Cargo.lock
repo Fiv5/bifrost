@@ -284,6 +284,7 @@ dependencies = [
  "serde_urlencoded",
  "sha1",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "tokio-stream",

@@ -34,7 +34,7 @@ export const useDesktopCoreStore = create<DesktopCoreState>((set) => ({
       visible: true,
       phase: "saving",
       targetPort: port,
-      detail: `Preparing proxy core restart on port ${port}`,
+      detail: `Preparing proxy listener switch to port ${port}`,
       readyOnce: false,
     }),
   showBooting: (detail) =>

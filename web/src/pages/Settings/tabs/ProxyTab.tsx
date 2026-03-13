@@ -600,11 +600,11 @@ export default function ProxyTab({
                 <Alert
                   type="info"
                   showIcon
-                  message="Changing the port restarts the embedded bifrost core"
+                  message="Changing the port rebinds the embedded bifrost core listener"
                   description={
                     desktopPlatform === "macos"
-                      ? "The bundled UI stays in place while the local proxy core restarts and reconnects."
-                      : "The desktop shell restarts the local proxy core in place and then restores the live desktop connection."
+                      ? "The bundled UI stays in place while the local proxy listener switches ports and reconnects."
+                      : "The desktop shell updates the local proxy listener in place and then restores the live desktop connection."
                   }
                 />
                 <Row gutter={16} align="middle">

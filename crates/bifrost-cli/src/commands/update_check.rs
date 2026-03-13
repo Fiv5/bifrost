@@ -4,6 +4,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 
 const GITHUB_RELEASES_API_URL: &str =
     "https://api.github.com/repos/bifrost-proxy/bifrost/releases/latest";
@@ -460,6 +461,12 @@ pub fn check_and_print_update_notice() {
     }
 
     print_update_notice(current_version, &cache);
+}
+
+pub fn spawn_update_check_notice() {
+    let _ = thread::Builder::new()
+        .name("bifrost-update-check".to_string())
+        .spawn(check_and_print_update_notice);
 }
 
 fn print_update_notice(current_version: &str, cache: &VersionCache) {

@@ -135,7 +135,7 @@ async fn get_cert_info(_req: Request<Incoming>, state: SharedAdminState) -> Resp
         .unwrap_or(false);
 
     let local_ips = get_local_ips();
-    let port = state.port;
+    let port = state.port();
 
     let download_urls: Vec<String> = local_ips
         .iter()
@@ -234,7 +234,7 @@ async fn get_proxy_qrcode(req: Request<Incoming>, state: SharedAdminState) -> Re
             .to_string()
     });
 
-    let proxy_address = format!("{}:{}", host, state.port);
+    let proxy_address = format!("{}:{}", host, state.port());
 
     let code = match QrCode::new(proxy_address.as_bytes()) {
         Ok(code) => code,
