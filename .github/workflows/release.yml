@@ -111,6 +111,8 @@ jobs:
 
       - name: Update Cargo.toml versions (workflow_dispatch only)
         if: github.event_name == 'workflow_dispatch'
+        env:
+          BIFROST_VERSION: ${{ steps.version.outputs.version }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
 
@@ -126,13 +128,7 @@ jobs:
 
           sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" desktop/src-tauri/Cargo.toml
 
-          VERSION="${VERSION}" node <<'EOF'
-          const fs = require('fs');
-          const path = 'desktop/src-tauri/tauri.conf.json';
-          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
-          config.version = process.env.VERSION;
-          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
-          EOF
+          node scripts/sync-tauri-version.mjs
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -319,14 +315,7 @@ jobs:
       - name: Sync desktop version metadata
         env:
           BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          VERSION="${BIFROST_VERSION}" node <<'EOF'
-          const fs = require('fs');
-          const path = 'desktop/src-tauri/tauri.conf.json';
-          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
-          config.version = process.env.VERSION;
-          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
-          EOF
+        run: node scripts/sync-tauri-version.mjs
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
