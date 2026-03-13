@@ -5,7 +5,10 @@ use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::Serialize;
 
-use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
+use super::{
+    cors_preflight, error_response, full_body, json_response, method_not_allowed,
+    public_response_builder, BoxBody,
+};
 use crate::state::SharedAdminState;
 
 #[derive(Serialize)]
@@ -42,10 +45,12 @@ pub async fn handle_cert_public(
     match path {
         "/public/cert" | "/public/cert/" => match method {
             Method::GET => download_ca_cert(state).await,
+            Method::OPTIONS => cors_preflight(),
             _ => method_not_allowed(),
         },
         "/public/cert/qrcode" | "/public/cert/qrcode/" => match method {
             Method::GET => get_cert_qrcode(req, state).await,
+            Method::OPTIONS => cors_preflight(),
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -65,14 +70,12 @@ async fn download_ca_cert(state: SharedAdminState) -> Response<BoxBody> {
     }
 
     match std::fs::read(cert_path) {
-        Ok(cert_data) => Response::builder()
-            .status(StatusCode::OK)
+        Ok(cert_data) => public_response_builder(StatusCode::OK)
             .header("Content-Type", "application/x-pem-file")
             .header(
                 "Content-Disposition",
                 "attachment; filename=\"bifrost-ca.crt\"",
             )
-            .header("Access-Control-Allow-Origin", "*")
             .body(full_body(cert_data))
             .unwrap(),
         Err(e) => error_response(
@@ -119,10 +122,8 @@ async fn get_cert_qrcode(req: Request<Incoming>, _state: SharedAdminState) -> Re
         .light_color(svg::Color("#ffffff"))
         .build();
 
-    Response::builder()
-        .status(StatusCode::OK)
+    public_response_builder(StatusCode::OK)
         .header("Content-Type", "image/svg+xml")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(svg_string))
         .unwrap()
 }
@@ -209,6 +210,7 @@ pub async fn handle_proxy_public(
     match path {
         "/public/proxy/qrcode" | "/public/proxy/qrcode/" => match method {
             Method::GET => get_proxy_qrcode(req, state).await,
+            Method::OPTIONS => cors_preflight(),
             _ => method_not_allowed(),
         },
         _ => error_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -253,10 +255,8 @@ async fn get_proxy_qrcode(req: Request<Incoming>, state: SharedAdminState) -> Re
         .light_color(svg::Color("#ffffff"))
         .build();
 
-    Response::builder()
-        .status(StatusCode::OK)
+    public_response_builder(StatusCode::OK)
         .header("Content-Type", "image/svg+xml")
-        .header("Access-Control-Allow-Origin", "*")
         .body(full_body(svg_string))
         .unwrap()
 }

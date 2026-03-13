@@ -1,8 +1,9 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import { ConfigProvider, Modal, Spin, Steps, message, theme, Typography } from "antd";
+import { ConfigProvider, Modal, Steps, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
+import { beginStartupSplashExit } from "./components/StartupSplash";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";
@@ -21,7 +22,8 @@ import {
 } from "./runtime";
 
 export default function App() {
-  const [desktopReady, setDesktopReady] = useState(!isDesktopShell());
+  const desktopShell = isDesktopShell();
+  const [desktopReady, setDesktopReady] = useState(!desktopShell);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,20 +39,16 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!desktopShell || !desktopReady) {
+      return;
+    }
+
+    beginStartupSplashExit();
+  }, [desktopReady, desktopShell]);
+
   if (!desktopReady) {
-    return (
-      <div
-        style={{
-          height: "100vh",
-          display: "grid",
-          placeItems: "center",
-          background:
-            "linear-gradient(180deg, rgba(246,248,251,1) 0%, rgba(237,241,246,1) 100%)",
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
+    return null;
   }
 
   return <AppShell />;

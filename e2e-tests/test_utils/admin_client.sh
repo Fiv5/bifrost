@@ -475,6 +475,11 @@ download_cert() {
     curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert"
 }
 
+download_cert_absolute_form() {
+    local base_url="${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}"
+    curl -s --proxy "${base_url}" "${base_url}${ADMIN_PATH_PREFIX}/public/cert"
+}
+
 get_cert_qrcode() {
     curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert/qrcode"
 }

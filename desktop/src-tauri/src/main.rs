@@ -41,6 +41,8 @@ struct DesktopRuntimeInfo {
     expected_proxy_port: u16,
     proxy_port: u16,
     platform: &'static str,
+    startup_ready: bool,
+    startup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +62,8 @@ struct BackendState {
     child: Mutex<Option<Child>>,
     shutdown_started: AtomicBool,
     force_exit: AtomicBool,
+    startup_ready: AtomicBool,
+    startup_error: Mutex<Option<String>>,
 }
 
 fn main() {
@@ -73,7 +77,6 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or_else(|| anyhow("missing main window".to_string()))?;
             main_window.set_icon(load_app_icon()?)?;
-            main_window.hide()?;
 
             apply_window_effects(&main_window)?;
 
@@ -98,25 +101,29 @@ fn main() {
                     app_config_dir.display()
                 ),
             );
-            ensure_desktop_cert_ready(&app_data_dir);
-
             let config = load_desktop_config(&config_path)?;
-            let (child, port) =
-                ensure_backend_running(&binary_path, &app_data_dir, config.proxy_port)?;
 
             app.manage(BackendState {
                 binary_path,
                 data_dir: app_data_dir,
                 config_path,
                 expected_port: Mutex::new(config.proxy_port),
-                port: Mutex::new(port),
-                child: Mutex::new(Some(child)),
+                port: Mutex::new(config.proxy_port),
+                child: Mutex::new(None),
                 shutdown_started: AtomicBool::new(false),
                 force_exit: AtomicBool::new(false),
+                startup_ready: AtomicBool::new(false),
+                startup_error: Mutex::new(None),
             });
 
             main_window.show()?;
             main_window.set_focus()?;
+
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                bootstrap_desktop_backend(&app_handle);
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -374,6 +381,66 @@ fn ensure_backend_running(
     )))
 }
 
+fn bootstrap_desktop_backend(app: &AppHandle) {
+    let Some(state) = app.try_state::<BackendState>() else {
+        return;
+    };
+
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        "desktop backend bootstrap started asynchronously",
+    );
+    ensure_desktop_cert_ready(&state.data_dir);
+
+    let preferred_port = match state.expected_port.lock() {
+        Ok(port) => *port,
+        Err(_) => {
+            record_startup_error(
+                &state,
+                "failed to read desktop expected proxy port during startup".to_string(),
+            );
+            return;
+        }
+    };
+
+    match ensure_backend_running(&state.binary_path, &state.data_dir, preferred_port) {
+        Ok((child, port)) => {
+            if let Ok(mut child_guard) = state.child.lock() {
+                *child_guard = Some(child);
+            }
+
+            if let Ok(mut current_port) = state.port.lock() {
+                *current_port = port;
+            }
+
+            if let Ok(mut startup_error) = state.startup_error.lock() {
+                *startup_error = None;
+            }
+
+            state.startup_ready.store(true, Ordering::SeqCst);
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                format!("desktop backend bootstrap finished; active_port={port}"),
+            );
+        }
+        Err(error) => {
+            record_startup_error(&state, error.to_string());
+            request_desktop_shutdown(app);
+        }
+    }
+}
+
+fn record_startup_error(state: &BackendState, error: String) {
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        format!("desktop backend bootstrap failed: {error}"),
+    );
+
+    if let Ok(mut startup_error) = state.startup_error.lock() {
+        *startup_error = Some(error);
+    }
+}
+
 fn wait_for_backend(port: u16, timeout: Duration) -> tauri::Result<()> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -567,11 +634,18 @@ fn get_desktop_runtime(state: State<'_, BackendState>) -> Result<DesktopRuntimeI
         .port
         .lock()
         .map_err(|_| "failed to read desktop proxy port".to_string())?;
+    let startup_error = state
+        .startup_error
+        .lock()
+        .map_err(|_| "failed to read desktop startup error".to_string())?
+        .clone();
 
     Ok(DesktopRuntimeInfo {
         expected_proxy_port: expected_port,
         proxy_port: port,
         platform: std::env::consts::OS,
+        startup_ready: state.startup_ready.load(Ordering::SeqCst),
+        startup_error,
     })
 }
 
@@ -598,6 +672,12 @@ fn update_desktop_proxy_port(
                 expected_proxy_port: port,
                 proxy_port: current_port,
                 platform: std::env::consts::OS,
+                startup_ready: state.startup_ready.load(Ordering::SeqCst),
+                startup_error: state
+                    .startup_error
+                    .lock()
+                    .map_err(|_| "failed to read desktop startup error".to_string())?
+                    .clone(),
             });
         }
     }
@@ -630,6 +710,12 @@ fn update_desktop_proxy_port(
         expected_proxy_port: port,
         proxy_port: updated_runtime.actual_port,
         platform: std::env::consts::OS,
+        startup_ready: state.startup_ready.load(Ordering::SeqCst),
+        startup_error: state
+            .startup_error
+            .lock()
+            .map_err(|_| "failed to read desktop startup error".to_string())?
+            .clone(),
     })
 }
 

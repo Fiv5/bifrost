@@ -53,6 +53,10 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           ws: true,
         },
+        '/_bifrost/public': {
+          target: backendHttpTarget,
+          changeOrigin: true,
+        },
         '/_bifrost/ws': {
           target: backendWsTarget,
           ws: true,

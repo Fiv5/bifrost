@@ -24,6 +24,7 @@ use serde::Serialize;
 
 pub type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 pub const ADMIN_CORS_ALLOW_HEADERS: &str = "Content-Type, Authorization, X-Client-Id";
+pub const PUBLIC_CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
 
 pub fn full_body(body: impl Into<Bytes>) -> BoxBody {
     http_body_util::Full::new(body.into())
@@ -103,9 +104,21 @@ pub fn cors_preflight() -> Response<BoxBody> {
         .unwrap()
 }
 
+pub fn public_response_builder(status: StatusCode) -> hyper::http::response::Builder {
+    Response::builder()
+        .status(status)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", PUBLIC_CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", ADMIN_CORS_ALLOW_HEADERS)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cors_preflight, ADMIN_CORS_ALLOW_HEADERS};
+    use super::{
+        cors_preflight, public_response_builder, ADMIN_CORS_ALLOW_HEADERS,
+        PUBLIC_CORS_ALLOW_METHODS,
+    };
+    use hyper::StatusCode;
 
     #[test]
     fn cors_preflight_allows_desktop_client_header() {
@@ -121,6 +134,33 @@ mod tests {
                 .map(|value| value.contains("X-Client-Id"))
                 .unwrap_or(false),
             "desktop requests require X-Client-Id to pass CORS preflight"
+        );
+    }
+
+    #[test]
+    fn public_response_builder_includes_cors_headers() {
+        let response = public_response_builder(StatusCode::OK)
+            .body(super::empty_body())
+            .unwrap();
+        let headers = response.headers();
+
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Methods")
+                .and_then(|value| value.to_str().ok()),
+            Some(PUBLIC_CORS_ALLOW_METHODS)
+        );
+        assert_eq!(
+            headers
+                .get("Access-Control-Allow-Headers")
+                .and_then(|value| value.to_str().ok()),
+            Some(ADMIN_CORS_ALLOW_HEADERS)
         );
     }
 }

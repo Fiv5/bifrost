@@ -196,6 +196,38 @@ test_cert_download_format() {
     return 0
 }
 
+test_cert_download_absolute_form() {
+    local response
+    response=$(download_cert_absolute_form)
+
+    if [[ $? -ne 0 ]]; then
+        log_fail "Failed to call cert download API with absolute-form request target"
+        return 1
+    fi
+
+    if [[ -z "$response" ]]; then
+        log_debug "Absolute-form cert download returned empty response"
+        return 0
+    fi
+
+    if [[ "$response" == *"-----BEGIN CERTIFICATE-----"* ]]; then
+        if ! assert_contains "$response" "-----END CERTIFICATE-----" "Absolute-form cert should have END marker"; then
+            return 1
+        fi
+        return 0
+    fi
+
+    local error
+    error=$(echo "$response" | jq -r '.error // empty' 2>/dev/null)
+    if [[ -n "$error" ]]; then
+        log_fail "Absolute-form cert download should not return API error: $error"
+        return 1
+    fi
+
+    log_fail "Absolute-form cert download returned unexpected response"
+    return 1
+}
+
 test_cert_qrcode_api() {
     local response
     response=$(get_cert_qrcode)
@@ -305,6 +337,7 @@ main() {
     run_test "Cert Info Structure" test_cert_info_structure
     run_test "Cert Download API" test_cert_download_api
     run_test "Cert Download Format" test_cert_download_format
+    run_test "Cert Download Absolute Form" test_cert_download_absolute_form
     run_test "Cert QR Code API" test_cert_qrcode_api
     run_test "Cert QR Code Format" test_cert_qrcode_format
     run_test "Cert Info URLs Format" test_cert_info_urls_format

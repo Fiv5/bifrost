@@ -2,6 +2,8 @@ export interface DesktopRuntimeInfo {
   expectedProxyPort: number;
   proxyPort: number;
   platform: string;
+  startupReady: boolean;
+  startupError: string | null;
 }
 
 type TauriInvoke = <T>(
