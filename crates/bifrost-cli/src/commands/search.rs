@@ -20,6 +20,12 @@ use ratatui::{
 };
 use serde::Deserialize;
 
+fn direct_agent(timeout: Duration) -> ureq::Agent {
+    bifrost_core::direct_ureq_agent_builder()
+        .timeout(timeout)
+        .build()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct SearchResponse {
@@ -158,8 +164,8 @@ impl Default for SearchOptions {
 
 fn check_proxy_running(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics", port);
-    ureq::get(&url)
-        .timeout(Duration::from_secs(2))
+    direct_agent(Duration::from_secs(2))
+        .get(&url)
         .call()
         .is_ok()
 }
@@ -259,8 +265,8 @@ fn execute_search(options: &SearchOptions, cursor: Option<u64>) -> Result<Search
         body["cursor"] = serde_json::json!(c);
     }
 
-    let response = ureq::post(&url)
-        .timeout(Duration::from_secs(30))
+    let response = direct_agent(Duration::from_secs(30))
+        .post(&url)
         .set("Content-Type", "application/json")
         .send_string(&body.to_string())
         .map_err(|e| format!("Request failed: {}", e))?;
@@ -648,7 +654,7 @@ impl InteractiveApp {
         );
 
         self.loading = true;
-        match ureq::get(&url).timeout(Duration::from_secs(5)).call() {
+        match direct_agent(Duration::from_secs(5)).get(&url).call() {
             Ok(resp) => {
                 if let Ok(detail) = resp.into_json::<TrafficDetail>() {
                     self.detail_record = Some(detail);
@@ -681,7 +687,7 @@ impl InteractiveApp {
             self.options.port, id
         );
 
-        if let Ok(resp) = ureq::get(&req_url).timeout(Duration::from_secs(5)).call() {
+        if let Ok(resp) = direct_agent(Duration::from_secs(5)).get(&req_url).call() {
             if let Ok(body) = resp.into_json::<serde_json::Value>() {
                 if let Some(data) = body.get("data") {
                     if !data.is_null() {
@@ -691,7 +697,7 @@ impl InteractiveApp {
             }
         }
 
-        if let Ok(resp) = ureq::get(&res_url).timeout(Duration::from_secs(5)).call() {
+        if let Ok(resp) = direct_agent(Duration::from_secs(5)).get(&res_url).call() {
             if let Ok(body) = resp.into_json::<serde_json::Value>() {
                 if let Some(data) = body.get("data") {
                     if !data.is_null() {

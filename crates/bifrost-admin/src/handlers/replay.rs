@@ -275,7 +275,7 @@ async fn execute_replay_unified(
     }
 
     let unsafe_ssl = state.runtime_config.read().await.unsafe_ssl;
-    let client = reqwest::Client::builder()
+    let client = bifrost_core::direct_reqwest_client_builder()
         .danger_accept_invalid_certs(unsafe_ssl)
         .build()
         .unwrap_or_default();

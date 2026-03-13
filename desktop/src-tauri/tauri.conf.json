@@ -9,20 +9,7 @@
   "app": {
     "macOSPrivateApi": true,
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Bifrost",
-        "width": 1440,
-        "height": 920,
-        "minWidth": 1180,
-        "minHeight": 760,
-        "resizable": true,
-        "transparent": true,
-        "visible": false,
-        "decorations": true
-      }
-    ]
+    "windows": []
   },
   "bundle": {
     "active": true,

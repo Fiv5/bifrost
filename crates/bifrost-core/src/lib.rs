@@ -1,6 +1,7 @@
 pub mod access_control;
 pub mod bifrost_file;
 pub mod error;
+pub mod http_client;
 pub mod logging;
 pub mod matcher;
 pub mod panic_handler;
@@ -14,6 +15,10 @@ pub use access_control::{
     AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl, PendingAuth,
 };
 pub use error::{BifrostError, Result};
+pub use http_client::{
+    direct_blocking_reqwest_client_builder, direct_reqwest_client_builder, direct_ureq_agent,
+    direct_ureq_agent_builder,
+};
 pub use logging::{
     init_logging, init_logging_with_config, reinit_logging_for_daemon, rotate_daemon_err_log,
     LogConfig, LogGuard, LogOutput,

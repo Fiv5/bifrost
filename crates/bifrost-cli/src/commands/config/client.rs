@@ -79,7 +79,7 @@ impl ConfigApiClient {
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = ureq::get(&url).call().map_err(|e| {
+        let resp = bifrost_core::direct_ureq_agent().get(&url).call().map_err(|e| {
             format!(
                 "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
                 url, e
@@ -94,7 +94,10 @@ impl ConfigApiClient {
 
     fn put<T: DeserializeOwned, R: Serialize>(&self, path: &str, body: &R) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = ureq::put(&url).send_json(body).map_err(|e| {
+        let resp = bifrost_core::direct_ureq_agent()
+            .put(&url)
+            .send_json(body)
+            .map_err(|e| {
             format!(
                 "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
                 url, e
@@ -109,7 +112,10 @@ impl ConfigApiClient {
 
     fn post<T: DeserializeOwned, R: Serialize>(&self, path: &str, body: &R) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = ureq::post(&url).send_json(body).map_err(|e| {
+        let resp = bifrost_core::direct_ureq_agent()
+            .post(&url)
+            .send_json(body)
+            .map_err(|e| {
             format!(
                 "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
                 url, e
@@ -124,7 +130,10 @@ impl ConfigApiClient {
 
     fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = ureq::delete(&url).call().map_err(|e| {
+        let resp = bifrost_core::direct_ureq_agent()
+            .delete(&url)
+            .call()
+            .map_err(|e| {
             format!(
                 "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
                 url, e

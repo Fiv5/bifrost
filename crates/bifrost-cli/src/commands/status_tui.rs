@@ -20,6 +20,12 @@ use serde::Deserialize;
 
 use crate::process::{is_process_running, read_pid, read_runtime_port};
 
+fn direct_agent() -> ureq::Agent {
+    bifrost_core::direct_ureq_agent_builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 struct TrafficTypeMetrics {
     requests: u64,
@@ -449,100 +455,56 @@ fn fetch_all_data(
 
 fn fetch_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics", port);
-    let result: Option<MetricsSnapshot> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<MetricsSnapshot> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_rules(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/rules", port);
-    let result: Option<Vec<RuleGroup>> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<Vec<RuleGroup>> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_values(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/values", port);
-    let resp: Option<ValuesResponse> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let resp: Option<ValuesResponse> = direct_agent().get(&url).call().ok()?.into_json().ok();
     resp.map(|r| Box::new(r.values) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_scripts(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/scripts", port);
-    let result: Option<ScriptsResponse> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<ScriptsResponse> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/config", port);
-    let result: Option<ConfigResponse> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<ConfigResponse> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_performance_config(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/config/performance", port);
-    let result: Option<PerformanceConfigResponse> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<PerformanceConfigResponse> =
+        direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_app_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics/apps", port);
-    let result: Option<Vec<AppMetrics>> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<Vec<AppMetrics>> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_host_metrics(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/metrics/hosts", port);
-    let result: Option<Vec<HostMetrics>> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<Vec<HostMetrics>> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
 fn fetch_cli_proxy(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/proxy/cli", port);
-    let result: Option<CliProxyStatus> = ureq::get(&url)
-        .timeout(HTTP_TIMEOUT)
-        .call()
-        .ok()?
-        .into_json()
-        .ok();
+    let result: Option<CliProxyStatus> = direct_agent().get(&url).call().ok()?.into_json().ok();
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 

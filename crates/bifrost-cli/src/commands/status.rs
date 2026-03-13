@@ -11,8 +11,10 @@ struct RuleGroup {
 
 fn fetch_rules_from_api(port: u16) -> Option<Vec<RuleGroup>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/rules", port);
-    let response = ureq::get(&url)
+    let response = bifrost_core::direct_ureq_agent_builder()
         .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .get(&url)
         .call();
     match response {
         Ok(resp) => resp.into_json().ok(),

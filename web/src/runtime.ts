@@ -10,35 +10,23 @@ const desktopRuntime = {
   platform: 'web' as DesktopPlatform,
 };
 
-async function waitForDesktopRuntimeReady(): Promise<void> {
+async function loadDesktopRuntimeSnapshot(): Promise<void> {
   const { getDesktopRuntime } = await import('./desktop/tauri');
-  const deadline = Date.now() + 25_000;
+  const runtime = await getDesktopRuntime();
+  desktopRuntime.expectedProxyPort = runtime.expectedProxyPort;
+  desktopRuntime.proxyPort = runtime.proxyPort;
+  desktopRuntime.platform =
+    runtime.platform === 'darwin'
+      ? 'macos'
+      : runtime.platform === 'win32'
+        ? 'windows'
+        : runtime.platform === 'linux'
+          ? 'linux'
+          : 'web';
 
-  while (Date.now() < deadline) {
-    const runtime = await getDesktopRuntime();
-    desktopRuntime.expectedProxyPort = runtime.expectedProxyPort;
-    desktopRuntime.proxyPort = runtime.proxyPort;
-    desktopRuntime.platform =
-      runtime.platform === 'darwin'
-        ? 'macos'
-        : runtime.platform === 'win32'
-          ? 'windows'
-          : runtime.platform === 'linux'
-            ? 'linux'
-            : 'web';
-
-    if (runtime.startupError) {
-      throw new Error(runtime.startupError);
-    }
-
-    if (runtime.startupReady) {
-      return;
-    }
-
-    await delay(150);
+  if (runtime.startupError) {
+    console.error('[desktop-runtime] Core reported a startup error during snapshot.', runtime.startupError);
   }
-
-  throw new Error('Timed out waiting for desktop runtime startup.');
 }
 
 export function isDesktopShell(): boolean {
@@ -68,7 +56,7 @@ export async function initializeDesktopRuntime(): Promise<void> {
   }
 
   try {
-    await waitForDesktopRuntimeReady();
+    await loadDesktopRuntimeSnapshot();
   } catch (error) {
     console.error(
       '[desktop-runtime] Failed to initialize Tauri runtime, falling back to default port 9900.',

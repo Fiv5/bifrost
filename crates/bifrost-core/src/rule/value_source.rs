@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use ureq::AgentBuilder;
-
 use super::ValueStore;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,7 +137,9 @@ impl ValueSource {
             ValueSource::ValueRef(var_name) => store.get(var_name),
             ValueSource::FilePath(path) => std::fs::read_to_string(path).ok(),
             ValueSource::RemoteUrl(url) => {
-                let agent = AgentBuilder::new().timeout(Duration::from_secs(5)).build();
+                let agent = crate::direct_ureq_agent_builder()
+                    .timeout(Duration::from_secs(5))
+                    .build();
                 let response = agent.get(url).call().ok()?;
                 response.into_string().ok()
             }

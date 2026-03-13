@@ -64,7 +64,7 @@ fn is_cache_valid(cache: &VersionCache) -> bool {
 }
 
 fn fetch_latest_release() -> Option<(String, Vec<String>)> {
-    let agent = ureq::AgentBuilder::new()
+    let agent = bifrost_core::direct_ureq_agent_builder()
         .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("bifrost-cli")
         .build();

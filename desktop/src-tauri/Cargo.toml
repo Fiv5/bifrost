@@ -10,11 +10,30 @@ description = "Tauri desktop shell for Bifrost"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["image-png", "macos-private-api"] }
+tauri = { version = "2", features = ["image-png", "macos-private-api", "unstable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 bifrost-tls = { path = "../../crates/bifrost-tls" }
+bifrost-core = { path = "../../crates/bifrost-core" }
 dirs = "6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3", features = [
+  "NSColor",
+  "NSControl",
+  "NSFont",
+  "NSImage",
+  "NSImageView",
+  "NSProgressIndicator",
+  "NSResponder",
+  "NSText",
+  "NSTextField",
+  "NSVisualEffectView",
+  "NSView",
+] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 
 [workspace]

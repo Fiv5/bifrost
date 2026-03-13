@@ -43,6 +43,16 @@ export const useDesktopCoreStore = create<DesktopCoreState>((set) => ({
         return state;
       }
 
+      if (!state.readyOnce && state.targetPort === null) {
+        return {
+          visible: false,
+          phase: "booting",
+          targetPort: null,
+          detail: detail ?? "Bifrost core is starting. Reconnecting the interface...",
+          readyOnce: false,
+        };
+      }
+
       return {
         visible: true,
         phase: state.phase === "restarting" || state.phase === "reconnecting"

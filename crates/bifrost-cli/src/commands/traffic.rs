@@ -7,6 +7,12 @@ use serde_json::Value;
 
 use super::OutputFormat;
 
+fn direct_agent(timeout: Duration) -> ureq::Agent {
+    bifrost_core::direct_ureq_agent_builder()
+        .timeout(timeout)
+        .build()
+}
+
 pub struct TrafficListOptions {
     pub port: u16,
     pub limit: usize,
@@ -139,8 +145,8 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
         build_traffic_list_query(&options)
     );
 
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(10))
+    let resp = direct_agent(Duration::from_secs(10))
+        .get(&url)
         .call()
         .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
 
@@ -246,8 +252,8 @@ fn fetch_traffic_record(port: u16, id: &str) -> std::result::Result<Value, Fetch
         urlencoding::encode(id)
     );
 
-    let resp = match ureq::get(&record_url)
-        .timeout(Duration::from_secs(10))
+    let resp = match direct_agent(Duration::from_secs(10))
+        .get(&record_url)
         .call()
     {
         Ok(r) => r,
@@ -285,8 +291,8 @@ fn fetch_traffic_body(port: u16, id: &str, is_request: bool) -> Option<Value> {
         suffix
     );
 
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(10))
+    let resp = direct_agent(Duration::from_secs(10))
+        .get(&url)
         .call()
         .ok()?;
     let body = resp.into_string().ok()?;
@@ -313,7 +319,7 @@ fn find_id_by_sequence_db_style(port: u16, seq: u64) -> Result<Option<String>> {
         port, cursor
     );
 
-    let resp = match ureq::get(&url).timeout(Duration::from_secs(10)).call() {
+    let resp = match direct_agent(Duration::from_secs(10)).get(&url).call() {
         Ok(r) => r,
         Err(e) => return Err(BifrostError::Network(format!("Request failed: {}", e))),
     };
@@ -340,8 +346,8 @@ fn find_id_by_sequence_db_style(port: u16, seq: u64) -> Result<Option<String>> {
 
 fn find_id_by_sequence_scan(port: u16, seq: u64) -> Result<Option<String>> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/traffic?limit=500", port);
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(10))
+    let resp = direct_agent(Duration::from_secs(10))
+        .get(&url)
         .call()
         .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
     let body = resp
@@ -362,8 +368,8 @@ fn find_id_by_sequence_scan(port: u16, seq: u64) -> Result<Option<String>> {
 
 fn select_traffic_id(port: u16, hint: Option<&str>) -> Result<String> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/traffic?limit=100", port);
-    let resp = ureq::get(&url)
-        .timeout(Duration::from_secs(10))
+    let resp = direct_agent(Duration::from_secs(10))
+        .get(&url)
         .call()
         .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
 

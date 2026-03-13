@@ -3,58 +3,44 @@ import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router
 import { ConfigProvider, Modal, Steps, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
-import { beginStartupSplashExit } from "./components/StartupSplash/controller";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
+import {
+  DESKTOP_HANDOFF_COMPLETE_EVENT,
+  listenDesktopEvent,
+} from "./desktop/tauri";
 import { useThemeStore, initThemeListener } from "./stores/useThemeStore";
 import { useGlobalDataSync } from "./hooks/useGlobalDataSync";
 import { useEditorCompletion } from "./hooks/useEditorCompletion";
 import { useForceRefreshStore } from "./stores/useForceRefreshStore";
 import { useDesktopCoreStore } from "./stores/useDesktopCoreStore";
 import {
+  getDesktopPlatform,
   getAdminPrefix,
   initializeDesktopRuntime,
   isDesktopShell,
 } from "./runtime";
 
 export default function App() {
-  const desktopShell = isDesktopShell();
-  const [desktopReady, setDesktopReady] = useState(!desktopShell);
+  const [desktopPlatform, setDesktopPlatform] = useState(getDesktopPlatform());
 
   useEffect(() => {
-    let cancelled = false;
-
-    initializeDesktopRuntime().finally(() => {
-      if (!cancelled) {
-        setDesktopReady(true);
-      }
+    void initializeDesktopRuntime().finally(() => {
+      setDesktopPlatform(getDesktopPlatform());
     });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
-  useEffect(() => {
-    if (!desktopShell || !desktopReady) {
-      return;
-    }
-
-    beginStartupSplashExit();
-  }, [desktopReady, desktopShell]);
-
-  if (!desktopReady) {
-    return null;
-  }
-
-  return <AppShell />;
+  return <AppShell desktopPlatform={desktopPlatform} />;
 }
 
-function AppShell() {
+function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getDesktopPlatform> }) {
+  const [transitionMaskPhase, setTransitionMaskPhase] = useState<
+    "visible" | "exiting" | "hidden"
+  >("visible");
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const forceRefreshVisible = useForceRefreshStore((s) => s.visible);
   const forceRefreshReason = useForceRefreshStore((s) => s.reason);
@@ -86,6 +72,52 @@ function AppShell() {
       isDesktopShell() ? "desktop" : "web",
     );
   }, []);
+
+  useEffect(() => {
+    if (!isDesktopShell() || desktopPlatform !== "macos") {
+      setTransitionMaskPhase("hidden");
+      return;
+    }
+
+    let cancelled = false;
+    let exitTimer = 0;
+    let detach: (() => void | Promise<void>) | null = null;
+
+    void listenDesktopEvent(DESKTOP_HANDOFF_COMPLETE_EVENT, () => {
+      if (cancelled) {
+        return;
+      }
+
+      setTransitionMaskPhase("exiting");
+      if (exitTimer) {
+        window.clearTimeout(exitTimer);
+      }
+      exitTimer = window.setTimeout(() => {
+        setTransitionMaskPhase("hidden");
+      }, 220);
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          void unlisten();
+          return;
+        }
+        detach = unlisten;
+      })
+      .catch((error) => {
+        console.error("[desktop-runtime] Failed to subscribe to handoff completion.", error);
+        setTransitionMaskPhase("hidden");
+      });
+
+    return () => {
+      cancelled = true;
+      if (exitTimer) {
+        window.clearTimeout(exitTimer);
+      }
+      if (detach) {
+        void detach();
+      }
+    };
+  }, [desktopPlatform]);
 
   const overlayStyles =
     resolvedTheme === "dark"
@@ -141,6 +173,24 @@ function AppShell() {
         },
       }}
     >
+      {isDesktopShell() && desktopPlatform === "macos" && transitionMaskPhase !== "hidden" ? (
+        <div
+          aria-hidden="true"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1001,
+            pointerEvents: "none",
+            opacity: transitionMaskPhase === "exiting" ? 0 : 1,
+            transition: "opacity 220ms ease",
+            background:
+              resolvedTheme === "dark"
+                ? "linear-gradient(180deg, rgba(8, 14, 22, 0.90), rgba(8, 14, 22, 0.82))"
+                : "linear-gradient(180deg, rgba(239, 244, 250, 0.94), rgba(239, 244, 250, 0.88))",
+            backdropFilter: "blur(20px) saturate(1.04)",
+          }}
+        />
+      ) : null}
       <Modal
         open={desktopCoreVisible}
         title={

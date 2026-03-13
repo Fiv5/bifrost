@@ -25,6 +25,7 @@ use crate::process::{is_process_running, read_pid, remove_pid, write_runtime_inf
 
 const ASYNC_TRAFFIC_BUFFER_SIZE: usize = 10000;
 const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
+const PORT_REBIND_OLD_LISTENER_GRACE_PERIOD: Duration = Duration::from_millis(250);
 
 fn log_startup_phase(phase: &'static str, started_at: Instant) {
     tracing::info!(
@@ -186,6 +187,13 @@ async fn spawn_managed_proxy_task(
             tracing::error!("Managed proxy listener exited with error: {}", error);
         }
     }))
+}
+
+fn abort_listener_after_grace_period(handle: tokio::task::JoinHandle<()>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(PORT_REBIND_OLD_LISTENER_GRACE_PERIOD).await;
+        handle.abort();
+    });
 }
 
 async fn wait_for_shutdown_signal() {
@@ -1012,7 +1020,6 @@ pub fn run_foreground(
                         };
 
                         let old_task = std::mem::replace(&mut listener_task, next_task);
-                        old_task.abort();
 
                         current_port = actual_port;
                         admin_state_arc.set_port(actual_port);
@@ -1061,6 +1068,7 @@ pub fn run_foreground(
                             expected_port,
                             actual_port,
                         }));
+                        abort_listener_after_grace_period(old_task);
                     }
                 } => {}
             }

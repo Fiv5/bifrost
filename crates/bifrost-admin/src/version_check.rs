@@ -158,7 +158,7 @@ fn is_cache_valid(cache: &VersionCache) -> bool {
 }
 
 async fn fetch_latest_release() -> Option<(String, Vec<String>)> {
-    let client = reqwest::Client::builder()
+    let client = bifrost_core::direct_reqwest_client_builder()
         .timeout(StdDuration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("bifrost-admin")
         .build()

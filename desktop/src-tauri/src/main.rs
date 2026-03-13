@@ -1,3 +1,6 @@
+mod native_launcher;
+
+use bifrost_core::direct_blocking_reqwest_client_builder;
 use bifrost_tls::{ensure_valid_ca, generate_root_ca, save_root_ca, CertInstaller, CertStatus};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -14,14 +17,33 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{
     image::Image,
-    webview::PageLoadEvent,
-    window::{Effect, EffectState, EffectsBuilder},
-    AppHandle, Manager, State, WebviewWindow,
+    webview::{Color, WebviewBuilder},
+    window::{Effect, EffectsBuilder},
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State,
+    WebviewUrl,
 };
+use tauri::window::{Window, WindowBuilder};
+#[cfg(target_os = "macos")]
+use tauri::window::EffectState;
 
 const BACKEND_HOST: &str = "127.0.0.1";
 const DEFAULT_BACKEND_PORT: u16 = 9900;
 const MAX_PORT_INCREMENT_ATTEMPTS: u16 = 64;
+const HOST_WINDOW_LABEL: &str = "host";
+const MAIN_WINDOW_LABEL: &str = "main";
+const INITIAL_WINDOW_WIDTH: f64 = 360.0;
+const INITIAL_WINDOW_HEIGHT: f64 = 260.0;
+const TARGET_WINDOW_WIDTH: f64 = 1440.0;
+const TARGET_WINDOW_HEIGHT: f64 = 920.0;
+const TARGET_WINDOW_MIN_WIDTH: f64 = 1180.0;
+const TARGET_WINDOW_MIN_HEIGHT: f64 = 760.0;
+const WINDOW_EXPAND_STEPS: u16 = 10;
+const WINDOW_EXPAND_STEP_DELAY: Duration = Duration::from_millis(16);
+const OVERLAY_FADE_STEPS: u16 = 8;
+const OVERLAY_FADE_STEP_DELAY: Duration = Duration::from_millis(14);
+const WEBVIEW_PARK_OFFSET: f64 = 2000.0;
+const WEBVIEW_REVEAL_SETTLE_DELAY: Duration = Duration::from_millis(90);
+const HANDOFF_COMPLETE_EVENT: &str = "desktop://handoff-complete";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DesktopConfig {
@@ -54,10 +76,24 @@ struct DesktopPortUpdateResponse {
     actual_port: u16,
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopServerConfigResponse {
+    timeout_secs: u64,
+    http1_max_header_size: usize,
+    http2_max_header_list_size: usize,
+    websocket_handshake_max_header_size: usize,
+}
+
+enum BackendPortTransition {
+    Rebound(DesktopPortUpdateResponse),
+    RestartRequired,
+}
+
 struct BackendState {
     binary_path: PathBuf,
     data_dir: PathBuf,
     config_path: PathBuf,
+    launcher_only: bool,
     expected_port: Mutex<u16>,
     port: Mutex<u16>,
     child: Mutex<Option<Child>>,
@@ -65,44 +101,24 @@ struct BackendState {
     force_exit: AtomicBool,
     startup_ready: AtomicBool,
     startup_error: Mutex<Option<String>>,
+    main_webview_loaded: AtomicBool,
+    main_window_ready: AtomicBool,
+    handoff_started: AtomicBool,
+    handoff_completed: AtomicBool,
+    launcher_overlay: Mutex<Option<usize>>,
 }
 
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_desktop_runtime,
-            update_desktop_proxy_port
+            update_desktop_proxy_port,
+            notify_main_window_ready
         ])
-        .on_page_load(|webview, payload| {
-            if webview.label() != "main" || payload.event() != PageLoadEvent::Finished {
-                return;
-            }
-
-            let window = webview.window();
-            if window.is_visible().unwrap_or(false) {
-                return;
-            }
-
-            if let Some(state) = webview.try_state::<BackendState>() {
-                append_desktop_bootstrap_log(
-                    &state.data_dir,
-                    format!(
-                        "desktop webview finished loading; showing window on {}",
-                        payload.url()
-                    ),
-                );
-            }
-
-            let _ = window.show();
-            let _ = window.set_focus();
-        })
         .setup(|app| {
-            let main_window = app
-                .get_webview_window("main")
-                .ok_or_else(|| anyhow("missing main window".to_string()))?;
-            main_window.set_icon(load_app_icon()?)?;
-
-            apply_window_effects(&main_window)?;
+            let host_window = create_host_window(app.handle())?;
+            host_window.set_icon(load_app_icon()?)?;
+            apply_window_effects(&host_window)?;
 
             let binary_path = resolve_bifrost_binary(app.handle())?;
             let app_data_dir = resolve_desktop_data_dir()?;
@@ -126,11 +142,13 @@ fn main() {
                 ),
             );
             let config = load_desktop_config(&config_path)?;
+            let launcher_only = is_launcher_only_mode();
 
             app.manage(BackendState {
                 binary_path,
                 data_dir: app_data_dir,
                 config_path,
+                launcher_only,
                 expected_port: Mutex::new(config.proxy_port),
                 port: Mutex::new(config.proxy_port),
                 child: Mutex::new(None),
@@ -138,16 +156,54 @@ fn main() {
                 force_exit: AtomicBool::new(false),
                 startup_ready: AtomicBool::new(false),
                 startup_error: Mutex::new(None),
+                main_webview_loaded: AtomicBool::new(false),
+                main_window_ready: AtomicBool::new(false),
+                handoff_started: AtomicBool::new(false),
+                handoff_completed: AtomicBool::new(false),
+                launcher_overlay: Mutex::new(None),
             });
 
-            let app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                bootstrap_desktop_backend(&app_handle);
-            });
+            if supports_native_launcher() {
+                if let Some(state) = app.try_state::<BackendState>() {
+                    if let Some(overlay_ptr) = native_launcher::install(&host_window)? {
+                        if let Ok(mut overlay_guard) = state.launcher_overlay.lock() {
+                            *overlay_guard = Some(overlay_ptr);
+                        }
+                    }
+                }
+            } else if let Some(state) = app.try_state::<BackendState>() {
+                state.handoff_started.store(true, Ordering::SeqCst);
+                state.handoff_completed.store(true, Ordering::SeqCst);
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    "native launcher unsupported on this platform; entering webview directly",
+                );
+            }
+
+            if launcher_only {
+                if let Some(state) = app.try_state::<BackendState>() {
+                    append_desktop_bootstrap_log(
+                        &state.data_dir,
+                        "launcher-only mode enabled; skipping embedded webview and backend bootstrap",
+                    );
+                }
+            } else {
+                create_main_webview(&host_window)?;
+
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    bootstrap_desktop_backend(&app_handle);
+                });
+
+            }
 
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() != HOST_WINDOW_LABEL {
+                return;
+            }
+
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 request_desktop_shutdown(window.app_handle());
@@ -173,11 +229,26 @@ fn should_intercept_exit(app: &AppHandle) -> bool {
     !state.force_exit.load(Ordering::SeqCst)
 }
 
+fn is_launcher_only_mode() -> bool {
+    matches!(
+        std::env::var("BIFROST_DESKTOP_LAUNCHER_ONLY"),
+        Ok(value)
+            if matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+    )
+}
+
+fn supports_native_launcher() -> bool {
+    cfg!(target_os = "macos")
+}
+
 fn load_app_icon() -> tauri::Result<Image<'static>> {
     Image::from_bytes(include_bytes!("../../../assets/bifrost.png"))
 }
 
-fn apply_window_effects(window: &WebviewWindow) -> tauri::Result<()> {
+fn apply_window_effects(window: &Window) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     window.set_effects(
         EffectsBuilder::new()
@@ -189,6 +260,100 @@ fn apply_window_effects(window: &WebviewWindow) -> tauri::Result<()> {
 
     #[cfg(target_os = "windows")]
     window.set_effects(EffectsBuilder::new().effect(Effect::Mica).build())?;
+
+    Ok(())
+}
+
+fn create_host_window(app: &AppHandle) -> tauri::Result<Window> {
+    if let Some(window) = app.get_window(HOST_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let mut builder = WindowBuilder::new(app, HOST_WINDOW_LABEL).title("Bifrost").center();
+
+    if supports_native_launcher() {
+        builder = builder
+            .inner_size(INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT)
+            .min_inner_size(INITIAL_WINDOW_WIDTH, INITIAL_WINDOW_HEIGHT)
+            .resizable(true)
+            .maximizable(true)
+            .decorations(false)
+            .visible(true)
+            .transparent(true)
+            .shadow(true)
+            .background_color(Color(0, 0, 0, 0));
+    } else {
+        builder = builder
+            .inner_size(TARGET_WINDOW_WIDTH, TARGET_WINDOW_HEIGHT)
+            .min_inner_size(TARGET_WINDOW_MIN_WIDTH, TARGET_WINDOW_MIN_HEIGHT)
+            .resizable(true)
+            .maximizable(true)
+            .decorations(true)
+            .visible(true)
+            .transparent(false)
+            .shadow(true)
+            .background_color(Color(8, 17, 23, 255));
+    }
+
+    builder
+        .build()
+        .map_err(|error| anyhow(format!("failed to create host window: {error}")))
+}
+
+fn create_main_webview(window: &Window) -> tauri::Result<()> {
+    if window.app_handle().get_webview(MAIN_WINDOW_LABEL).is_some() {
+        return Ok(());
+    }
+
+    let webview = WebviewBuilder::new(MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
+        .background_color(Color(8, 17, 23, 255))
+        .auto_resize()
+        .on_page_load(|webview, payload| {
+            if let Some(state) = webview.try_state::<BackendState>() {
+                if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                    state.main_webview_loaded.store(true, Ordering::SeqCst);
+                }
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    format!(
+                        "embedded webview page load event {:?} on {}",
+                        payload.event(),
+                        payload.url()
+                    ),
+                );
+            }
+
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                try_start_native_handoff(webview.app_handle(), "webview finished loading");
+            }
+        });
+
+    let webview = window
+        .add_child(
+            webview,
+            Position::Logical(LogicalPosition::new(
+                if supports_native_launcher() {
+                    WEBVIEW_PARK_OFFSET
+                } else {
+                    0.0
+                },
+                0.0,
+            )),
+            Size::Logical(LogicalSize::new(
+                if supports_native_launcher() {
+                    INITIAL_WINDOW_WIDTH
+                } else {
+                    TARGET_WINDOW_WIDTH
+                },
+                if supports_native_launcher() {
+                    INITIAL_WINDOW_HEIGHT
+                } else {
+                    TARGET_WINDOW_HEIGHT
+                },
+            )),
+        )
+        .map_err(|error| anyhow(format!("failed to create embedded webview: {error}")))?;
+    let _ = webview.set_background_color(Some(Color(8, 17, 23, 255)));
 
     Ok(())
 }
@@ -354,7 +519,7 @@ fn ensure_backend_running(
     binary_path: &Path,
     data_dir: &Path,
     preferred_port: u16,
-) -> tauri::Result<(Child, u16)> {
+) -> tauri::Result<(Option<Child>, u16)> {
     append_desktop_bootstrap_log(
         data_dir,
         format!(
@@ -363,7 +528,26 @@ fn ensure_backend_running(
             data_dir.display()
         ),
     );
+
+    if let Some(port) = find_existing_backend_port(data_dir, preferred_port) {
+        append_desktop_bootstrap_log(
+            data_dir,
+            format!("reusing existing backend instance already serving on port {port}"),
+        );
+        return Ok((None, port));
+    }
+
     cleanup_existing_backend(binary_path, data_dir);
+
+    let (child, port) = launch_backend_on_available_port(binary_path, data_dir, preferred_port)?;
+    Ok((Some(child), port))
+}
+
+fn launch_backend_on_available_port(
+    binary_path: &Path,
+    data_dir: &Path,
+    preferred_port: u16,
+) -> tauri::Result<(Child, u16)> {
 
     for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
         let port = preferred_port.saturating_add(offset);
@@ -426,7 +610,7 @@ fn bootstrap_desktop_backend(app: &AppHandle) {
     match ensure_backend_running(&state.binary_path, &state.data_dir, preferred_port) {
         Ok((child, port)) => {
             if let Ok(mut child_guard) = state.child.lock() {
-                *child_guard = Some(child);
+                *child_guard = child;
             }
 
             if let Ok(mut current_port) = state.port.lock() {
@@ -442,6 +626,7 @@ fn bootstrap_desktop_backend(app: &AppHandle) {
                 &state.data_dir,
                 format!("desktop backend bootstrap finished; active_port={port}"),
             );
+            try_start_native_handoff(app, "backend ready");
             schedule_desktop_cert_ready(&state.data_dir);
         }
         Err(error) => {
@@ -491,7 +676,53 @@ fn wait_for_backend(port: u16, timeout: Duration) -> tauri::Result<()> {
 }
 
 fn is_backend_ready(port: u16) -> bool {
-    std::net::TcpStream::connect((BACKEND_HOST, port)).is_ok()
+    probe_backend_health(port)
+}
+
+fn find_existing_backend_port(data_dir: &Path, preferred_port: u16) -> Option<u16> {
+    for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
+        let port = preferred_port.saturating_add(offset);
+        if port == 0 {
+            continue;
+        }
+
+        if probe_backend_health(port) {
+            append_desktop_bootstrap_log(
+                data_dir,
+                format!("detected healthy backend candidate on port {port} before spawning"),
+            );
+            return Some(port);
+        }
+    }
+
+    None
+}
+
+fn probe_backend_health(port: u16) -> bool {
+    let Ok(client) = direct_blocking_reqwest_client_builder()
+        .timeout(Duration::from_millis(450))
+        .build()
+    else {
+        return false;
+    };
+
+    let url = format!("http://{BACKEND_HOST}:{port}/_bifrost/api/proxy/system/support");
+    let Ok(response) = client.get(url).send() else {
+        return false;
+    };
+
+    response.status().is_success()
+}
+
+fn wait_for_backend_shutdown(port: u16, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !probe_backend_health(port) {
+            return;
+        }
+
+        std::thread::sleep(Duration::from_millis(150));
+    }
 }
 
 fn is_port_available(port: u16) -> bool {
@@ -584,14 +815,19 @@ fn request_desktop_shutdown(app: &AppHandle) {
         &state.data_dir,
         "desktop shutdown requested; hiding window and stopping backend asynchronously",
     );
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_window(HOST_WINDOW_LABEL) {
         let _ = window.hide();
     }
 
     let app_handle = app.clone();
-    std::thread::spawn(move || {
-        complete_desktop_shutdown(&app_handle);
-    });
+    if state.launcher_only {
+        state.force_exit.store(true, Ordering::SeqCst);
+        app.exit(0);
+    } else {
+        std::thread::spawn(move || {
+            complete_desktop_shutdown(&app_handle);
+        });
+    }
 }
 
 fn complete_desktop_shutdown(app: &AppHandle) {
@@ -637,6 +873,162 @@ fn complete_desktop_shutdown(app: &AppHandle) {
         "desktop shutdown handoff complete; requesting final app exit",
     );
     app.exit(0);
+}
+
+fn start_main_window_handoff(app: &AppHandle, reason: &str) -> tauri::Result<()> {
+    let Some(state) = app.try_state::<BackendState>() else {
+        return Ok(());
+    };
+
+    if state.handoff_completed.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    if state.handoff_started.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        format!("starting embedded webview handoff; reason={reason}"),
+    );
+
+    let host_window = app
+        .get_window(HOST_WINDOW_LABEL)
+        .ok_or_else(|| anyhow("missing host window during embedded handoff".to_string()))?;
+    animate_host_window_to_main_size(&host_window)?;
+    let _ = host_window.set_background_color(Some(Color(8, 17, 23, 255)));
+    let _ = host_window.set_decorations(true);
+    let _ = host_window.show();
+    let _ = host_window.unminimize();
+    let _ = host_window.set_focus();
+    let _ = host_window.set_resizable(true);
+    let _ = host_window.set_maximizable(true);
+    let _ = host_window.set_min_size(Some(LogicalSize::new(
+        TARGET_WINDOW_MIN_WIDTH,
+        TARGET_WINDOW_MIN_HEIGHT,
+    )));
+    prepare_main_webview(app, &host_window);
+
+    let overlay_ptr = state
+        .launcher_overlay
+        .lock()
+        .ok()
+        .and_then(|mut overlay| overlay.take());
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(WEBVIEW_REVEAL_SETTLE_DELAY);
+        reveal_main_webview(&app_handle, &host_window);
+
+        if let Some(overlay_ptr) = overlay_ptr {
+            fade_out_launcher_overlay(&app_handle, overlay_ptr);
+        }
+
+        if let Some(state) = app_handle.try_state::<BackendState>() {
+            state.handoff_completed.store(true, Ordering::SeqCst);
+            let _ = app_handle.emit_to(MAIN_WINDOW_LABEL, HANDOFF_COMPLETE_EVENT, ());
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                "embedded webview handoff completed; native launcher overlay removed",
+            );
+        }
+    });
+
+    Ok(())
+}
+
+fn try_start_native_handoff(app: &AppHandle, reason: &str) {
+    if !supports_native_launcher() {
+        return;
+    }
+
+    let Some(state) = app.try_state::<BackendState>() else {
+        return;
+    };
+
+    if !state.startup_ready.load(Ordering::SeqCst) {
+        return;
+    }
+
+    if !state.main_webview_loaded.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let _ = start_main_window_handoff(app, reason);
+}
+
+fn animate_host_window_to_main_size(window: &Window) -> tauri::Result<()> {
+    let scale_factor = window.scale_factor()?;
+    let start_size = window.outer_size()?.to_logical::<f64>(scale_factor);
+    let start_position = window.outer_position()?.to_logical::<f64>(scale_factor);
+    let center_x = start_position.x + start_size.width * 0.5;
+    let center_y = start_position.y + start_size.height * 0.5;
+
+    for step in 1..=WINDOW_EXPAND_STEPS {
+        let progress = f64::from(step) / f64::from(WINDOW_EXPAND_STEPS);
+        let eased = 1.0 - (1.0 - progress) * (1.0 - progress);
+        let width = lerp(start_size.width, TARGET_WINDOW_WIDTH, eased);
+        let height = lerp(start_size.height, TARGET_WINDOW_HEIGHT, eased);
+        let x = center_x - width * 0.5;
+        let y = center_y - height * 0.5;
+
+        let _ = window.set_size(LogicalSize::new(width, height));
+        let _ = window.set_position(LogicalPosition::new(x, y));
+        std::thread::sleep(WINDOW_EXPAND_STEP_DELAY);
+    }
+
+    let _ = window.set_size(LogicalSize::new(TARGET_WINDOW_WIDTH, TARGET_WINDOW_HEIGHT));
+    Ok(())
+}
+
+fn prepare_main_webview(app: &AppHandle, host_window: &Window) {
+    let Some(webview) = app.get_webview(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+
+    if let Ok(inner_size) = host_window.inner_size() {
+        let _ = webview.set_size(inner_size);
+    }
+}
+
+fn reveal_main_webview(app: &AppHandle, host_window: &Window) {
+    let Some(webview) = app.get_webview(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+
+    if let Ok(inner_size) = host_window.inner_size() {
+        let _ = webview.set_size(inner_size);
+    }
+
+    let _ = webview.set_position(LogicalPosition::new(0.0, 0.0));
+}
+
+fn fade_out_launcher_overlay(app: &AppHandle, overlay_ptr: usize) {
+    let Some(window) = app.get_window(HOST_WINDOW_LABEL) else {
+        return;
+    };
+
+    for step in (0..OVERLAY_FADE_STEPS).rev() {
+        let alpha = f64::from(step) / f64::from(OVERLAY_FADE_STEPS);
+        let _ = window.run_on_main_thread({
+            let window = window.clone();
+            move || {
+                let _ = native_launcher::set_overlay_alpha(&window, overlay_ptr, alpha);
+            }
+        });
+        std::thread::sleep(OVERLAY_FADE_STEP_DELAY);
+    }
+
+    let _ = window.run_on_main_thread({
+        let window = window.clone();
+        move || {
+            let _ = native_launcher::remove_overlay(&window, overlay_ptr);
+        }
+    });
+}
+
+fn lerp(start: f64, end: f64, progress: f64) -> f64 {
+    start + (end - start) * progress
 }
 
 fn load_desktop_config(config_path: &Path) -> tauri::Result<DesktopConfig> {
@@ -721,8 +1113,14 @@ fn update_desktop_proxy_port(
         .port
         .lock()
         .map_err(|_| "failed to access current desktop port".to_string())?;
-    let updated_runtime =
-        rebind_backend_port(current_port, port).map_err(|error| error.to_string())?;
+    let updated_runtime = match request_backend_port_transition(current_port, port)
+        .map_err(|error| error.to_string())?
+    {
+        BackendPortTransition::Rebound(runtime) => runtime,
+        BackendPortTransition::RestartRequired => {
+            restart_backend_on_port(&state, current_port, port).map_err(|error| error.to_string())?
+        }
+    };
     save_desktop_config(&state.config_path, &DesktopConfig { proxy_port: port })
         .map_err(|error| error.to_string())?;
 
@@ -751,6 +1149,78 @@ fn update_desktop_proxy_port(
             .lock()
             .map_err(|_| "failed to read desktop startup error".to_string())?
             .clone(),
+    })
+}
+
+#[tauri::command]
+fn notify_main_window_ready(app: AppHandle) -> Result<(), String> {
+    if !supports_native_launcher() {
+        return Ok(());
+    }
+
+    let Some(state) = app.try_state::<BackendState>() else {
+        return Ok(());
+    };
+
+    state.main_window_ready.store(true, Ordering::SeqCst);
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        "received embedded webview ready handshake from frontend shell",
+    );
+
+    start_main_window_handoff(&app, "frontend ready handshake").map_err(|error| error.to_string())
+}
+
+fn restart_backend_on_port(
+    state: &BackendState,
+    current_port: u16,
+    expected_port: u16,
+) -> tauri::Result<DesktopPortUpdateResponse> {
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        format!(
+            "backend did not confirm dynamic port rebind; restarting embedded core on preferred port {expected_port}"
+        ),
+    );
+
+    state.startup_ready.store(false, Ordering::SeqCst);
+
+    if let Ok(mut startup_error) = state.startup_error.lock() {
+        *startup_error = None;
+    }
+
+    if let Ok(mut child_guard) = state.child.lock() {
+        if let Some(child) = child_guard.take() {
+            if let Err(error) = terminate_child(child) {
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    format!("failed to terminate managed backend child before restart: {error}"),
+                );
+            }
+        }
+    }
+
+    if let Err(error) = stop_backend_with_binary(&state.binary_path, &state.data_dir) {
+        append_desktop_bootstrap_log(
+            &state.data_dir,
+            format!("backend stop helper returned before restart: {error}"),
+        );
+    }
+
+    wait_for_backend_shutdown(current_port, Duration::from_secs(3));
+
+    let (child, actual_port) =
+        launch_backend_on_available_port(&state.binary_path, &state.data_dir, expected_port)?;
+
+    if let Ok(mut child_guard) = state.child.lock() {
+        *child_guard = Some(child);
+    }
+
+    state.startup_ready.store(true, Ordering::SeqCst);
+
+    Ok(DesktopPortUpdateResponse {
+        expected_port,
+        actual_port,
     })
 }
 
@@ -789,11 +1259,11 @@ fn open_sidecar_log_file(data_dir: &Path, file_name: &str) -> tauri::Result<fs::
         .map_err(|error| anyhow(format!("failed to open {file_name}: {error}")))
 }
 
-fn rebind_backend_port(
+fn request_backend_port_transition(
     current_port: u16,
     expected_port: u16,
-) -> tauri::Result<DesktopPortUpdateResponse> {
-    let client = reqwest::blocking::Client::builder()
+) -> tauri::Result<BackendPortTransition> {
+    let client = direct_blocking_reqwest_client_builder()
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| anyhow(format!("failed to build backend rebind client: {error}")))?;
@@ -813,18 +1283,71 @@ fn rebind_backend_port(
         )));
     }
 
-    response
-        .json::<DesktopPortUpdateResponse>()
-        .map_err(|error| {
+    let response_body = response
+        .text()
+        .map_err(|error| anyhow(format!("failed to read backend port rebind response: {error}")))?;
+
+    if let Some(runtime) = parse_port_update_response(&response_body) {
+        return Ok(BackendPortTransition::Rebound(runtime));
+    }
+
+    if is_server_config_response(&response_body) {
+        return Ok(BackendPortTransition::RestartRequired);
+    }
+
+    let actual_port = wait_for_rebound_backend_port(expected_port, Duration::from_secs(2))
+        .map_err(|probe_error| {
             anyhow(format!(
-                "failed to decode backend port rebind response: {error}"
+                "failed to decode backend port rebind response; fallback probe failed: {probe_error}; body={response_body}"
             ))
+        })?;
+
+    Ok(BackendPortTransition::Rebound(DesktopPortUpdateResponse {
+        expected_port,
+        actual_port,
+    }))
+}
+
+fn wait_for_rebound_backend_port(expected_port: u16, timeout: Duration) -> tauri::Result<u16> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        for offset in 0..=MAX_PORT_INCREMENT_ATTEMPTS {
+            let port = expected_port.saturating_add(offset);
+            if port == 0 {
+                continue;
+            }
+
+            if probe_backend_health(port) {
+                return Ok(port);
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    Err(anyhow(format!(
+        "backend did not become healthy on any port starting from {expected_port}"
+    )))
+}
+
+fn parse_port_update_response(response_body: &str) -> Option<DesktopPortUpdateResponse> {
+    serde_json::from_str::<DesktopPortUpdateResponse>(response_body).ok()
+}
+
+fn is_server_config_response(response_body: &str) -> bool {
+    serde_json::from_str::<DesktopServerConfigResponse>(response_body)
+        .map(|response| {
+            response.timeout_secs > 0
+                && response.http1_max_header_size > 0
+                && response.http2_max_header_list_size > 0
+                && response.websocket_handshake_max_header_size > 0
         })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_desktop_config_path;
+    use super::{is_server_config_response, parse_port_update_response, resolve_desktop_config_path};
     use std::path::PathBuf;
 
     #[test]
@@ -834,5 +1357,28 @@ mod tests {
             target,
             PathBuf::from("/tmp/shared-bifrost/desktop-config.json")
         );
+    }
+
+    #[test]
+    fn parses_snake_case_port_update_response() {
+        let response =
+            parse_port_update_response(r#"{"expected_port":9901,"actual_port":9901}"#).unwrap();
+        assert_eq!(response.expected_port, 9901);
+        assert_eq!(response.actual_port, 9901);
+    }
+
+    #[test]
+    fn parses_camel_case_port_update_response() {
+        let response =
+            parse_port_update_response(r#"{"expectedPort":9901,"actualPort":9902}"#).unwrap();
+        assert_eq!(response.expected_port, 9901);
+        assert_eq!(response.actual_port, 9902);
+    }
+
+    #[test]
+    fn detects_legacy_server_config_response() {
+        assert!(is_server_config_response(
+            r#"{"timeout_secs":30,"http1_max_header_size":65536,"http2_max_header_list_size":262144,"websocket_handshake_max_header_size":65536}"#
+        ));
     }
 }

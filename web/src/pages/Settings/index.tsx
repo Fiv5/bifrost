@@ -1068,7 +1068,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
   return (
     <div
       style={{
-        padding: "0 16px 16px",
+        padding: "0 16px 0px",
         height: "100%",
         minHeight: 0,
         display: "flex",

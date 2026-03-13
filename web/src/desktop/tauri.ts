@@ -6,6 +6,8 @@ export interface DesktopRuntimeInfo {
   startupError: string | null;
 }
 
+export const DESKTOP_HANDOFF_COMPLETE_EVENT = "desktop://handoff-complete";
+
 type TauriInvoke = <T>(
   cmd: string,
   args?: Record<string, unknown>,
@@ -19,12 +21,28 @@ type TauriWindowHandle = {
   isMaximized(): Promise<boolean>;
 };
 
+type TauriEvent = {
+  event: string;
+  id: number;
+  payload: unknown;
+};
+
+type TauriEventUnlisten = () => void | Promise<void>;
+
+type TauriEventApi = {
+  listen(
+    event: string,
+    handler: (event: TauriEvent) => void,
+  ): Promise<TauriEventUnlisten>;
+};
+
 declare global {
   interface Window {
     __TAURI__?: {
       core?: {
         invoke: TauriInvoke;
       };
+      event?: TauriEventApi;
       webviewWindow?: {
         getCurrentWebviewWindow(): TauriWindowHandle;
       };
@@ -69,6 +87,22 @@ export async function updateDesktopProxyPort(
   return invokeDesktop<DesktopRuntimeInfo>("update_desktop_proxy_port", {
     port,
   });
+}
+
+export async function notifyMainWindowReady(): Promise<void> {
+  await invokeDesktop<void>("notify_main_window_ready");
+}
+
+export async function listenDesktopEvent(
+  event: string,
+  handler: (event: TauriEvent) => void,
+): Promise<TauriEventUnlisten> {
+  const eventApi = window.__TAURI__?.event;
+  if (!eventApi) {
+    throw new Error("Tauri event API is not available");
+  }
+
+  return eventApi.listen(event, handler);
 }
 
 export function getCurrentDesktopWindow() {

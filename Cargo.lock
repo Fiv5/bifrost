@@ -347,6 +347,7 @@ dependencies = [
  "parking_lot",
  "rand 0.8.5",
  "regex 1.12.3",
+ "reqwest",
  "serde",
  "serde_json",
  "sysproxy",
