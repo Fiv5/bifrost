@@ -1,7 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { useTrafficStore } from '../stores/useTrafficStore';
-import { useRulesStore } from '../stores/useRulesStore';
-import { useValuesStore } from '../stores/useValuesStore';
 import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
@@ -11,16 +9,10 @@ import pushService from '../services/pushService';
 import { useForceRefreshStore } from '../stores/useForceRefreshStore';
 import { usePendingAuthStore } from '../stores/usePendingAuthStore';
 
-const PROXY_POLL_INTERVAL = 5000;
-const VALUES_POLL_INTERVAL = 10000;
-const RULES_POLL_INTERVAL = 10000;
 const VERSION_CHECK_INTERVAL = 60 * 60 * 1000;
 
 interface GlobalDataSyncState {
   initialized: boolean;
-  proxyIntervalId: number | null;
-  valuesIntervalId: number | null;
-  rulesIntervalId: number | null;
   versionCheckIntervalId: number | null;
   visibilityPaused: boolean;
   forceRefresh: boolean;
@@ -28,9 +20,6 @@ interface GlobalDataSyncState {
 
 const globalState: GlobalDataSyncState = {
   initialized: false,
-  proxyIntervalId: null,
-  valuesIntervalId: null,
-  rulesIntervalId: null,
   versionCheckIntervalId: null,
   visibilityPaused: false,
   forceRefresh: false,
@@ -47,8 +36,6 @@ export function useGlobalDataSync() {
     globalState.initialized = true;
 
     const trafficStore = useTrafficStore.getState();
-    const rulesStore = useRulesStore.getState();
-    const valuesStore = useValuesStore.getState();
     const proxyStore = useProxyStore.getState();
     const filterPanelStore = useFilterPanelStore.getState();
     const metricsStore = useMetricsStore.getState();
@@ -71,8 +58,6 @@ export function useGlobalDataSync() {
       useMetricsStore.getState().enablePush({
         needOverview: true,
         needMetrics: true,
-        needHistory: true,
-        historyLimit: 3600,
       });
     };
 
@@ -88,18 +73,6 @@ export function useGlobalDataSync() {
     const onPageShow = () => resumeRealtime();
 
     const stopAllPolling = () => {
-      if (globalState.proxyIntervalId) {
-        clearInterval(globalState.proxyIntervalId);
-        globalState.proxyIntervalId = null;
-      }
-      if (globalState.valuesIntervalId) {
-        clearInterval(globalState.valuesIntervalId);
-        globalState.valuesIntervalId = null;
-      }
-      if (globalState.rulesIntervalId) {
-        clearInterval(globalState.rulesIntervalId);
-        globalState.rulesIntervalId = null;
-      }
       if (globalState.versionCheckIntervalId) {
         clearInterval(globalState.versionCheckIntervalId);
         globalState.versionCheckIntervalId = null;
@@ -119,13 +92,10 @@ export function useGlobalDataSync() {
     const initializeGlobalData = async () => {
       await Promise.allSettled([
         trafficStore.fetchInitialData(),
-        rulesStore.fetchRules(),
-        valuesStore.fetchValues(),
         proxyStore.fetchSystemProxy(),
         proxyStore.fetchCliProxy(),
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
-        metricsStore.fetchHistory(3600),
         versionStore.checkVersion({ skipCache: true }),
       ]);
 
@@ -138,26 +108,11 @@ export function useGlobalDataSync() {
       metricsStore.enablePush({
         needOverview: true,
         needMetrics: true,
-        needHistory: true,
-        historyLimit: 3600,
       });
 
       if (globalState.forceRefresh) {
         return;
       }
-
-      globalState.proxyIntervalId = window.setInterval(() => {
-        useProxyStore.getState().fetchSystemProxy();
-        useProxyStore.getState().fetchCliProxy();
-      }, PROXY_POLL_INTERVAL);
-
-      globalState.valuesIntervalId = window.setInterval(() => {
-        useValuesStore.getState().fetchValues();
-      }, VALUES_POLL_INTERVAL);
-
-      globalState.rulesIntervalId = window.setInterval(() => {
-        useRulesStore.getState().fetchRules();
-      }, RULES_POLL_INTERVAL);
 
       globalState.versionCheckIntervalId = window.setInterval(() => {
         useVersionStore.getState().checkVersion({ skipCache: true });
@@ -196,18 +151,6 @@ export function useGlobalDataSync() {
 }
 
 export function resetGlobalDataSync() {
-  if (globalState.proxyIntervalId) {
-    clearInterval(globalState.proxyIntervalId);
-    globalState.proxyIntervalId = null;
-  }
-  if (globalState.valuesIntervalId) {
-    clearInterval(globalState.valuesIntervalId);
-    globalState.valuesIntervalId = null;
-  }
-  if (globalState.rulesIntervalId) {
-    clearInterval(globalState.rulesIntervalId);
-    globalState.rulesIntervalId = null;
-  }
   if (globalState.versionCheckIntervalId) {
     clearInterval(globalState.versionCheckIntervalId);
     globalState.versionCheckIntervalId = null;

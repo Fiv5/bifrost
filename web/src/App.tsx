@@ -38,9 +38,6 @@ export default function App() {
 }
 
 function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getDesktopPlatform> }) {
-  const [transitionMaskPhase, setTransitionMaskPhase] = useState<
-    "visible" | "exiting" | "hidden"
-  >("visible");
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const forceRefreshVisible = useForceRefreshStore((s) => s.visible);
   const forceRefreshReason = useForceRefreshStore((s) => s.reason);
@@ -72,52 +69,6 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
       isDesktopShell() ? "desktop" : "web",
     );
   }, []);
-
-  useEffect(() => {
-    if (!isDesktopShell() || desktopPlatform !== "macos") {
-      setTransitionMaskPhase("hidden");
-      return;
-    }
-
-    let cancelled = false;
-    let exitTimer = 0;
-    let detach: (() => void | Promise<void>) | null = null;
-
-    void listenDesktopEvent(DESKTOP_HANDOFF_COMPLETE_EVENT, () => {
-      if (cancelled) {
-        return;
-      }
-
-      setTransitionMaskPhase("exiting");
-      if (exitTimer) {
-        window.clearTimeout(exitTimer);
-      }
-      exitTimer = window.setTimeout(() => {
-        setTransitionMaskPhase("hidden");
-      }, 220);
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          void unlisten();
-          return;
-        }
-        detach = unlisten;
-      })
-      .catch((error) => {
-        console.error("[desktop-runtime] Failed to subscribe to handoff completion.", error);
-        setTransitionMaskPhase("hidden");
-      });
-
-    return () => {
-      cancelled = true;
-      if (exitTimer) {
-        window.clearTimeout(exitTimer);
-      }
-      if (detach) {
-        void detach();
-      }
-    };
-  }, [desktopPlatform]);
 
   const overlayStyles =
     resolvedTheme === "dark"
@@ -173,23 +124,8 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         },
       }}
     >
-      {isDesktopShell() && desktopPlatform === "macos" && transitionMaskPhase !== "hidden" ? (
-        <div
-          aria-hidden="true"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 1001,
-            pointerEvents: "none",
-            opacity: transitionMaskPhase === "exiting" ? 0 : 1,
-            transition: "opacity 220ms ease",
-            background:
-              resolvedTheme === "dark"
-                ? "linear-gradient(180deg, rgba(8, 14, 22, 0.90), rgba(8, 14, 22, 0.82))"
-                : "linear-gradient(180deg, rgba(239, 244, 250, 0.94), rgba(239, 244, 250, 0.88))",
-            backdropFilter: "blur(20px) saturate(1.04)",
-          }}
-        />
+      {isDesktopShell() && desktopPlatform === "macos" ? (
+        <DesktopTransitionMask resolvedTheme={resolvedTheme} />
       ) : null}
       <Modal
         open={desktopCoreVisible}
@@ -320,5 +256,75 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         </BrowserRouter>
       )}
     </ConfigProvider>
+  );
+}
+
+function DesktopTransitionMask({ resolvedTheme }: { resolvedTheme: "light" | "dark" }) {
+  const [transitionMaskPhase, setTransitionMaskPhase] = useState<
+    "visible" | "exiting" | "hidden"
+  >("visible");
+
+  useEffect(() => {
+    let cancelled = false;
+    let exitTimer = 0;
+    let detach: (() => void | Promise<void>) | null = null;
+
+    void listenDesktopEvent(DESKTOP_HANDOFF_COMPLETE_EVENT, () => {
+      if (cancelled) {
+        return;
+      }
+
+      setTransitionMaskPhase("exiting");
+      if (exitTimer) {
+        window.clearTimeout(exitTimer);
+      }
+      exitTimer = window.setTimeout(() => {
+        setTransitionMaskPhase("hidden");
+      }, 220);
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          void unlisten();
+          return;
+        }
+        detach = unlisten;
+      })
+      .catch((error) => {
+        console.error("[desktop-runtime] Failed to subscribe to handoff completion.", error);
+        setTransitionMaskPhase("hidden");
+      });
+
+    return () => {
+      cancelled = true;
+      if (exitTimer) {
+        window.clearTimeout(exitTimer);
+      }
+      if (detach) {
+        void detach();
+      }
+    };
+  }, []);
+
+  if (transitionMaskPhase === "hidden") {
+    return null;
+  }
+
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 1001,
+        pointerEvents: "none",
+        opacity: transitionMaskPhase === "exiting" ? 0 : 1,
+        transition: "opacity 220ms ease",
+        background:
+          resolvedTheme === "dark"
+            ? "linear-gradient(180deg, rgba(8, 14, 22, 0.90), rgba(8, 14, 22, 0.82))"
+            : "linear-gradient(180deg, rgba(239, 244, 250, 0.94), rgba(239, 244, 250, 0.88))",
+        backdropFilter: "blur(20px) saturate(1.04)",
+      }}
+    />
   );
 }

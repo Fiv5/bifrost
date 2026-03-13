@@ -15,9 +15,20 @@ export default function Values() {
   const values = useValuesStore((state) => state.values);
   const selectedValueName = useValuesStore((state) => state.selectedValueName);
   const selectValue = useValuesStore((state) => state.selectValue);
+  const fetchValues = useValuesStore((state) => state.fetchValues);
 
   const initRef = useRef(false);
   const urlParamRef = useRef(false);
+  const loadedRef = useRef(false);
+
+  useEffect(() => {
+    if (loadedRef.current) return;
+    loadedRef.current = true;
+
+    if (values.length === 0) {
+      void fetchValues();
+    }
+  }, [fetchValues, values.length]);
 
   useEffect(() => {
     const nameParam = searchParams.get('name');

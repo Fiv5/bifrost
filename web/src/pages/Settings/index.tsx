@@ -110,7 +110,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 export default function Settings() {
-  const { overview, history, loading, error, fetchOverview } =
+  const { overview, history, loading, error, fetchOverview, fetchHistory } =
     useMetricsStore();
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -680,6 +680,14 @@ export default function Settings() {
     fetchPending();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overview?.pending_authorizations]);
+
+  useEffect(() => {
+    if (activeTab !== "metrics" || history.length > 0) {
+      return;
+    }
+
+    fetchHistory(3600);
+  }, [activeTab, fetchHistory, history.length]);
 
   useEffect(() => {
     const timers = perfUpdateTimers.current;
