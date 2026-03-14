@@ -713,6 +713,8 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
             max_db_size_bytes: Some(2 * 1024 * 1024 * 1024),
             max_body_memory_size: Some(512 * 1024),
             max_body_buffer_size: Some(10 * 1024 * 1024),
+            max_body_probe_size: Some(64 * 1024),
+            binary_traffic_performance_mode: Some(true),
             file_retention_days: Some(7),
             sse_stream_flush_bytes: Some(256 * 1024),
             sse_stream_flush_interval_ms: Some(1000),

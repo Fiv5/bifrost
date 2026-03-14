@@ -7,7 +7,7 @@ import type {
   RecordContentType,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
-import { getContentTypeFromHeader } from "./helper/contentType";
+import { getContentTypeFromHeader, isImageContentType } from "./helper/contentType";
 import { Header } from "./Header";
 import { Panel } from "./Panel";
 import { Overview } from "./panes/Overview";
@@ -18,6 +18,7 @@ import { CookieView } from "./panes/Cookie";
 import { QueryView } from "./panes/Query";
 import { Messages } from "./panes/Messages";
 import ScriptLogsPane from "./panes/ScriptLogs";
+import { getResponseBodyContentUrl } from "../../api/traffic";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -112,6 +113,36 @@ export default function TrafficDetail({
     setLiveSseCount(null);
   }, [record?.id]);
 
+  const responseContentType = useMemo<RecordContentType>(() => {
+    return getContentTypeFromHeader(record?.content_type);
+  }, [record?.content_type]);
+
+  const canPreviewResponseImage = useMemo(() => {
+    return (
+      responseContentType === "Media" &&
+      isImageContentType(record?.content_type) &&
+      !!record?.id
+    );
+  }, [record?.content_type, record?.id, responseContentType]);
+
+  useEffect(() => {
+    if (!record) return;
+    setResponseDisplayFormat(
+      responseContentType === "Media" && isImageContentType(record.content_type)
+        ? "Media"
+        : "HighLight"
+    );
+  }, [
+    record?.id,
+    record,
+    responseContentType,
+    setResponseDisplayFormat,
+  ]);
+
+  const requestContentType = useMemo<RecordContentType>(() => {
+    return getContentTypeFromHeader(record?.request_content_type);
+  }, [record?.request_content_type]);
+
   const handleRequestTabChange = useCallback(
     (tab: string) => {
       setRequestTab(tab);
@@ -127,14 +158,6 @@ export default function TrafficDetail({
     },
     [setResponseTab, setResponsePreferredTab],
   );
-
-  const requestContentType = useMemo<RecordContentType>(() => {
-    return getContentTypeFromHeader(record?.request_content_type);
-  }, [record?.request_content_type]);
-
-  const responseContentType = useMemo<RecordContentType>(() => {
-    return getContentTypeFromHeader(record?.content_type);
-  }, [record?.content_type]);
 
   const handleRequestDisplayFormatChange = useCallback(
     (format: string) => {
@@ -334,11 +357,13 @@ export default function TrafficDetail({
       {
         key: "Body",
         label: "Body",
-        enable: !!responseBody,
+        enable: !!responseBody || canPreviewResponseImage,
         children: (
           <Body
             data={responseBody}
             contentType={responseContentType}
+            rawContentType={record.content_type}
+            mediaSrc={getResponseBodyContentUrl(record.id)}
             searchValue={responseSearch}
             displayFormat={responseDisplayFormat}
             onSearch={setResponseSearch}
@@ -376,6 +401,7 @@ export default function TrafficDetail({
     record,
     liveSseCount,
     responseBody,
+    canPreviewResponseImage,
     responseSearch,
     setResponseSearch,
     responseContentType,

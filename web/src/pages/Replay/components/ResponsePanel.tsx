@@ -14,8 +14,12 @@ import { Panel } from "../../../components/TrafficDetail/Panel";
 import { HeaderView } from "../../../components/TrafficDetail/panes/Header";
 import { Body } from "../../../components/TrafficDetail/panes/Body";
 import { CookieView } from "../../../components/TrafficDetail/panes/Cookie";
-import { getContentTypeFromHeader } from "../../../components/TrafficDetail/helper/contentType";
+import {
+  getContentTypeFromHeader,
+  isImageContentType,
+} from "../../../components/TrafficDetail/helper/contentType";
 import MessagesPanel from "./MessagesPanel";
+import { getResponseBodyContentUrl } from "../../../api/traffic";
 
 const { Text } = Typography;
 
@@ -70,6 +74,15 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function getHeaderValue(
+  headers: [string, string][] | null | undefined,
+  name: string
+): string | null {
+  if (!headers) return null;
+  const entry = headers.find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return entry?.[1] ?? null;
 }
 
 const hasSetCookies = (headers: [string, string][] | null): boolean => {
@@ -284,9 +297,47 @@ export default function ResponsePanel() {
 
   const isEmpty = !currentResponse && !currentTrafficRecord && !hasStreamingContent;
 
+  const responseRawContentType = useMemo(() => {
+    return (
+      currentTrafficRecord?.content_type ||
+      getHeaderValue(currentResponse?.headers, "content-type")
+    );
+  }, [currentResponse?.headers, currentTrafficRecord?.content_type]);
+
   const responseContentType = useMemo<RecordContentType>(() => {
-    return getContentTypeFromHeader(currentTrafficRecord?.content_type);
-  }, [currentTrafficRecord?.content_type]);
+    return getContentTypeFromHeader(responseRawContentType);
+  }, [responseRawContentType]);
+
+  const responseMediaSrc = useMemo(() => {
+    const trafficId = currentTrafficRecord?.id || currentResponse?.traffic_id;
+    return trafficId ? getResponseBodyContentUrl(trafficId) : null;
+  }, [currentResponse?.traffic_id, currentTrafficRecord?.id]);
+
+  const canPreviewImage = useMemo(() => {
+    return (
+      responseContentType === "Media" &&
+      isImageContentType(responseRawContentType) &&
+      !!responseMediaSrc
+    );
+  }, [responseContentType, responseMediaSrc, responseRawContentType]);
+
+  useEffect(() => {
+    const shouldUseMedia =
+      responseContentType === "Media" &&
+      isImageContentType(responseRawContentType);
+    if (displayFormat !== (shouldUseMedia ? "Media" : "HighLight")) {
+      updateUIState({
+        responsePanelDisplayFormat: shouldUseMedia ? "Media" : "HighLight",
+      });
+    }
+  }, [
+    currentTrafficRecord?.id,
+    currentResponse?.traffic_id,
+    displayFormat,
+    responseContentType,
+    responseRawContentType,
+    updateUIState,
+  ]);
 
   const tabs = useMemo(() => {
     if (isEmpty) {
@@ -332,11 +383,13 @@ export default function ResponsePanel() {
       {
         key: "Body",
         label: "Body",
-        enable: !!responseBody,
-        children: responseBody ? (
+        enable: !!responseBody || canPreviewImage,
+        children: responseBody || canPreviewImage ? (
           <Body
             data={responseBody}
             contentType={responseContentType}
+            rawContentType={responseRawContentType}
+            mediaSrc={responseMediaSrc}
             searchValue={searchState}
             displayFormat={displayFormat}
             onSearch={setSearchState}
@@ -394,7 +447,10 @@ export default function ResponsePanel() {
     error,
     token.colorError,
     responseBody,
+    canPreviewImage,
     responseContentType,
+    responseMediaSrc,
+    responseRawContentType,
     searchState,
     displayFormat,
     setSearchState,

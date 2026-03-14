@@ -114,9 +114,11 @@ export default function PerformanceTab({
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
                     <Text>Enable Binary File Capture and Decoding</Text>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      Record and decode large binary downloads in traffic details. This can
-                      noticeably reduce proxy throughput and increase CPU, memory, and disk usage.
-                      It is disabled by default, which keeps binary traffic in performance mode.
+                      Record and decode binary downloads and media streams in traffic details.
+                      This setting has higher priority than DB size, inline size, and body buffer
+                      limits, and can noticeably reduce proxy throughput while increasing CPU,
+                      memory, and disk usage. It is disabled by default, which keeps binary traffic
+                      in performance mode.
                     </Text>
                   </Space>
                 </Col>

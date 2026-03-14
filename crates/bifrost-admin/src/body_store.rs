@@ -285,6 +285,41 @@ impl BodyStore {
         }
     }
 
+    pub fn load_bytes(&self, body_ref: &BodyRef) -> Option<Vec<u8>> {
+        match body_ref {
+            BodyRef::Inline { data } => Some(data.as_bytes().to_vec()),
+            BodyRef::File { path, .. } => {
+                let path = PathBuf::from(path);
+                if !path.exists() {
+                    return None;
+                }
+                let mut file = fs::File::open(&path).ok()?;
+                let mut contents = Vec::new();
+                file.read_to_end(&mut contents).ok()?;
+                Some(contents)
+            }
+            BodyRef::FileRange { path, offset, size } => {
+                let path = PathBuf::from(path);
+                if !path.exists() {
+                    return None;
+                }
+                let mut file = fs::File::open(&path).ok()?;
+                file.seek(SeekFrom::Start(*offset)).ok()?;
+                let mut contents = vec![0u8; *size];
+                let mut read_size = 0usize;
+                while read_size < *size {
+                    let n = file.read(&mut contents[read_size..]).ok()?;
+                    if n == 0 {
+                        break;
+                    }
+                    read_size += n;
+                }
+                contents.truncate(read_size);
+                Some(contents)
+            }
+        }
+    }
+
     pub fn cleanup_expired(&self) -> std::io::Result<usize> {
         if !self.temp_dir.exists() {
             return Ok(0);

@@ -1055,13 +1055,10 @@ pub async fn handle_http_request(
         .as_ref()
         .map(|state| state.get_binary_traffic_performance_mode())
         .unwrap_or(false);
-    let skip_binary_recording = should_use_binary_performance_mode(
-        &res_parts,
-        res_content_length,
-        max_body_buffer_size,
-        binary_traffic_performance_mode,
-    ) && !is_websocket
-        && !is_sse;
+    let skip_binary_recording =
+        should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
+            && !is_websocket
+            && !is_sse;
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
     if !is_sse && res_body_stream.is_none() {

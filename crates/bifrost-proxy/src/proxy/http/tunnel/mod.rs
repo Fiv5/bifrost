@@ -1183,8 +1183,6 @@ fn is_likely_binary_content_type(content_type: &str) -> bool {
 
 fn should_use_binary_performance_mode(
     res_parts: &hyper::http::response::Parts,
-    res_content_length: Option<usize>,
-    max_body_buffer_size: usize,
     binary_traffic_performance_mode: bool,
 ) -> bool {
     if !binary_traffic_performance_mode {
@@ -1210,16 +1208,7 @@ fn should_use_binary_performance_mode(
         return false;
     }
 
-    let is_chunked = res_parts
-        .headers
-        .get(hyper::header::TRANSFER_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase().contains("chunked"))
-        .unwrap_or(false);
-
-    has_attachment
-        || is_chunked
-        || matches!(res_content_length, Some(len) if len > max_body_buffer_size)
+    has_attachment || is_likely_binary_content_type(&content_type_lower)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2104,13 +2093,10 @@ async fn handle_intercepted_request_with_protocol(
         .as_ref()
         .map(|state| state.get_binary_traffic_performance_mode())
         .unwrap_or(false);
-    let skip_binary_recording = should_use_binary_performance_mode(
-        &res_parts,
-        res_content_length,
-        max_body_buffer_size,
-        binary_traffic_performance_mode,
-    ) && !is_websocket
-        && !is_sse;
+    let skip_binary_recording =
+        should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
+            && !is_websocket
+            && !is_sse;
 
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;

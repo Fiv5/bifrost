@@ -3,7 +3,9 @@ use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use tokio_stream::StreamExt;
 
 use super::frames::{get_frame_detail, get_frames, subscribe_frames, unsubscribe_frames};
-use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
+use super::{
+    error_response, full_body, json_response, method_not_allowed, success_response, BoxBody,
+};
 use crate::body_store::BodyRef;
 use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::state::{AdminState, SharedAdminState};
@@ -43,6 +45,11 @@ pub async fn handle_traffic(
         if let Some(id) = rest.strip_suffix("/request-body") {
             match method {
                 Method::GET => get_request_body(state, id, req.uri().query()).await,
+                _ => method_not_allowed(),
+            }
+        } else if let Some(id) = rest.strip_suffix("/response-body/content") {
+            match method {
+                Method::GET => get_response_body_content(state, id, req.uri().query()).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(id) = rest.strip_suffix("/response-body") {
@@ -1197,6 +1204,57 @@ async fn get_response_body(
     }
 }
 
+async fn get_response_body_content(
+    state: SharedAdminState,
+    id: &str,
+    query: Option<&str>,
+) -> Response<BoxBody> {
+    let record = if let Some(ref db_store) = state.traffic_db_store {
+        let db_clone = db_store.clone();
+        let id_owned = id.to_string();
+        tokio::task::spawn_blocking(move || db_clone.get_by_id(&id_owned))
+            .await
+            .unwrap_or_default()
+    } else {
+        None
+    };
+
+    match record {
+        Some(record) => {
+            let want_raw = query_wants_raw(query);
+            let body_ref = if want_raw {
+                record
+                    .raw_response_body_ref
+                    .as_ref()
+                    .or(record.response_body_ref.as_ref())
+            } else {
+                record.response_body_ref.as_ref()
+            };
+
+            if let Some(body_ref) = body_ref {
+                get_body_bytes_async(
+                    &state,
+                    body_ref,
+                    record
+                        .content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream"),
+                )
+                .await
+            } else {
+                error_response(
+                    StatusCode::NOT_FOUND,
+                    &format!("Traffic response body '{}' not found", id),
+                )
+            }
+        }
+        None => error_response(
+            StatusCode::NOT_FOUND,
+            &format!("Traffic record '{}' not found", id),
+        ),
+    }
+}
+
 async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) -> Response<BoxBody> {
     match body_ref {
         BodyRef::Inline { data } => json_response(&serde_json::json!({
@@ -1236,5 +1294,41 @@ async fn get_body_content_async(state: &SharedAdminState, body_ref: &BodyRef) ->
                 }))
             }
         }
+    }
+}
+
+async fn get_body_bytes_async(
+    state: &SharedAdminState,
+    body_ref: &BodyRef,
+    content_type: &str,
+) -> Response<BoxBody> {
+    let bytes = match body_ref {
+        BodyRef::Inline { data } => Some(data.as_bytes().to_vec()),
+        BodyRef::File { .. } | BodyRef::FileRange { .. } => {
+            if let Some(ref body_store) = state.body_store {
+                let body_store_clone = body_store.clone();
+                let body_ref_clone = body_ref.clone();
+                tokio::task::spawn_blocking(move || {
+                    let store = body_store_clone.read();
+                    store.load_bytes(&body_ref_clone)
+                })
+                .await
+                .ok()
+                .flatten()
+            } else {
+                None
+            }
+        }
+    };
+
+    match bytes {
+        Some(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "no-store")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(full_body(bytes))
+            .unwrap(),
+        None => error_response(StatusCode::NOT_FOUND, "Body content not found"),
     }
 }

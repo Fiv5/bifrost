@@ -1,0 +1,63 @@
+{
+  "name": "Traffic 与 Replay 图片预览验证",
+  "description": "通过 Replay 请求图片响应，验证 Replay 与 Traffic 详情都能渲染图片内容",
+  "config": {
+    "baseUrl": "http://127.0.0.1:3000/_bifrost",
+    "waitForLogin": false,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 进入 Replay 页面并发送图片请求 ====" },
+    { "action": "goto", "url": "/replay" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-url-input']" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-url-input']",
+      "value": "http://127.0.0.1:9900/_bifrost/public/cert/qrcode"
+    },
+    { "action": "click", "selector": "[data-testid='replay-send-button']" },
+    {
+      "action": "waitForSelector",
+      "selector": "img[src*='/_bifrost/api/traffic/'][src*='/response-body/content']",
+      "timeout": 30000
+    },
+    {
+      "action": "assert",
+      "condition": "(() => { const img = document.querySelector(\"img[src*='/_bifrost/api/traffic/'][src*='/response-body/content']\"); return !!img && img.naturalWidth > 0 && img.naturalHeight > 0; })()",
+      "message": "Replay 响应面板成功渲染图片"
+    },
+    {
+      "action": "evaluate",
+      "variable": "trafficId",
+      "code": "(() => { const img = document.querySelector(\"img[src*='/_bifrost/api/traffic/'][src*='/response-body/content']\"); if (!img) return ''; const match = img.getAttribute('src')?.match(/\\/traffic\\/([^/]+)\\/response-body\\/content/); return match?.[1] || ''; })()"
+    },
+    {
+      "action": "assert",
+      "condition": "${trafficId}.length > 0",
+      "message": "Replay 结果中拿到了 traffic id"
+    },
+    { "action": "log", "message": "==== 步骤 2: 打开 Traffic 页面验证同一条记录 ====" },
+    { "action": "goto", "url": "/traffic" },
+    {
+      "action": "waitForSelector",
+      "selector": "[data-record-id='${trafficId}']",
+      "timeout": 30000
+    },
+    {
+      "action": "evaluate",
+      "code": "(() => { const el = document.querySelector(\"[data-record-id='${trafficId}']\"); if (el) { el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; } return false; })()"
+    },
+    { "action": "waitForSelector", "selector": "[data-testid='traffic-detail']" },
+    { "action": "click", "selector": "[data-testid='response-tab-body']" },
+    {
+      "action": "waitForSelector",
+      "selector": "[data-testid='traffic-detail'] img[src*='/_bifrost/api/traffic/${trafficId}/response-body/content']",
+      "timeout": 30000
+    },
+    {
+      "action": "assert",
+      "condition": "(() => { const img = document.querySelector(\"[data-testid='traffic-detail'] img[src*='/_bifrost/api/traffic/${trafficId}/response-body/content']\"); return !!img && img.naturalWidth > 0 && img.naturalHeight > 0; })()",
+      "message": "Traffic 详情页成功渲染图片"
+    }
+  ]
+}

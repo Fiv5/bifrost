@@ -7,11 +7,6 @@ export const getContentTypeFromHeader = (
 
   const ct = contentType.toLowerCase();
 
-  if (ct.includes('json')) return 'JSON';
-  if (ct.includes('html')) return 'HTML';
-  if (ct.includes('xml')) return 'XML';
-  if (ct.includes('javascript') || ct.includes('ecmascript')) return 'JavaScript';
-  if (ct.includes('css')) return 'CSS';
   if (
     ct.includes('image') ||
     ct.includes('audio') ||
@@ -19,6 +14,11 @@ export const getContentTypeFromHeader = (
     ct.includes('font')
   )
     return 'Media';
+  if (ct.includes('json')) return 'JSON';
+  if (ct.includes('html')) return 'HTML';
+  if (ct.includes('xml')) return 'XML';
+  if (ct.includes('javascript') || ct.includes('ecmascript')) return 'JavaScript';
+  if (ct.includes('css')) return 'CSS';
 
   return 'Other';
 };
@@ -38,6 +38,13 @@ export const getHighlightLanguage = (contentType: RecordContentType): string => 
     default:
       return 'plaintext';
   }
+};
+
+export const isImageContentType = (
+  contentType: string | null | undefined
+): boolean => {
+  if (!contentType) return false;
+  return contentType.toLowerCase().includes('image/');
 };
 
 export const DEFAULT_SHOW_MAX_SIZE = 600 * 1024;

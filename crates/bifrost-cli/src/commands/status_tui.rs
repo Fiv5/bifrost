@@ -149,6 +149,7 @@ struct TlsConfig {
     unsafe_ssl: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 struct TrafficConfig {
     max_records: usize,
