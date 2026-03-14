@@ -4,7 +4,7 @@ use std::time::Instant;
 use crate::ensure_crypto_provider;
 #[cfg(feature = "http3")]
 use crate::http3::Http3Client;
-use crate::protocol::ProtocolDetector;
+use crate::protocol::{ProtocolDetector, TransportProtocol};
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Bytes, BytesMut};
@@ -34,7 +34,7 @@ pub use self::bidirectional::{
 };
 pub use self::cert::SingleCertResolver;
 use self::host_rule::parse_host_rule;
-use self::io::CombinedAsyncRw;
+use self::io::{BufferedIo, CombinedAsyncRw};
 
 use super::handler::{
     build_connection_error_response, build_overridden_error_response, needs_body_processing,
@@ -95,6 +95,21 @@ pub fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
 
 pub fn get_tls_client_config_without_alpn(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config_without_alpn(unsafe_ssl)
+}
+
+fn is_standard_tls_intercept_port(port: u16) -> bool {
+    matches!(port, 443 | 8443)
+}
+
+fn is_explicit_tls_intercept_override(
+    host: &str,
+    client_app: Option<&str>,
+    tls_intercept_config: &TlsInterceptConfig,
+    resolved_rules: &ResolvedRules,
+) -> bool {
+    resolved_rules.tls_intercept == Some(true)
+        || is_domain_included(host, &tls_intercept_config.intercept_include)
+        || is_app_included(client_app, &tls_intercept_config.app_intercept_include)
 }
 
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
@@ -205,7 +220,7 @@ pub async fn handle_connect(
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
-    let intercept = should_intercept_tls_for_client(
+    let mut intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
         ctx.client_ip
@@ -215,6 +230,26 @@ pub async fn handle_connect(
         &tls_config,
         &resolved_rules,
     );
+
+    if intercept
+        && !is_standard_tls_intercept_port(port)
+        && !is_explicit_tls_intercept_override(
+            &host,
+            ctx.client_app.as_deref(),
+            tls_intercept_config,
+            &resolved_rules,
+        )
+    {
+        intercept = false;
+        if verbose_logging {
+            debug!(
+                "[{}] TLS interception skipped for {}:{} (non-standard TLS port without explicit override)",
+                ctx.id_str(),
+                host,
+                port
+            );
+        }
+    }
 
     if intercept {
         if verbose_logging {
@@ -728,11 +763,12 @@ async fn tls_intercept_tunnel_with_cancel(
     client_path: Option<String>,
 ) -> Result<bool> {
     let acceptor = TlsAcceptor::from(server_config);
-    let client_tls = acceptor
+    let mut client_tls = acceptor
         .accept(TokioIo::new(upgraded))
         .await
         .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
     let client_alpn = client_tls.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+    let should_sniff_payload = !is_standard_tls_intercept_port(original_port);
 
     if verbose_logging {
         debug!(
@@ -742,9 +778,18 @@ async fn tls_intercept_tunnel_with_cancel(
         );
     }
 
-    if !is_http_alpn(client_alpn.as_deref()) {
+    let initial_payload = if should_sniff_payload {
+        sniff_tls_client_payload(&mut client_tls, req_id, verbose_logging).await?
+    } else {
+        BytesMut::new()
+    };
+
+    if !is_http_alpn(client_alpn.as_deref())
+        || (should_sniff_payload && !looks_like_http_payload(&initial_payload))
+    {
         return tunnel_intercepted_non_http_tls_with_cancel(
             client_tls,
+            initial_payload,
             original_host,
             original_port,
             unsafe_ssl,
@@ -796,6 +841,7 @@ async fn tls_intercept_tunnel_with_cancel(
         }
     });
 
+    let client_tls = BufferedIo::new(client_tls, initial_payload);
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
@@ -850,6 +896,7 @@ fn format_tls_alpn(alpn: Option<&[u8]>) -> String {
 
 async fn tunnel_intercepted_non_http_tls_with_cancel(
     client_tls: tokio_rustls::server::TlsStream<TokioIo<Upgraded>>,
+    initial_payload: BytesMut,
     original_host: &str,
     original_port: u16,
     unsafe_ssl: bool,
@@ -903,6 +950,19 @@ async fn tunnel_intercepted_non_http_tls_with_cancel(
 
     let client_to_upstream = async move {
         let mut buf = [0u8; 16 * 1024];
+        if !initial_payload.is_empty() {
+            upstream_write.write_all(&initial_payload).await?;
+            if let Some(ref state) = admin_state_send {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Https, initial_payload.len() as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_send,
+                    bifrost_admin::FrameDirection::Send,
+                    initial_payload.len() as u64,
+                );
+            }
+        }
         loop {
             let n = client_read.read(&mut buf).await?;
             if n == 0 {
@@ -972,6 +1032,55 @@ async fn tunnel_intercepted_non_http_tls_with_cancel(
             Ok(true)
         }
     }
+}
+
+async fn sniff_tls_client_payload<T>(
+    client_tls: &mut T,
+    req_id: &str,
+    verbose_logging: bool,
+) -> Result<BytesMut>
+where
+    T: tokio::io::AsyncRead + Unpin,
+{
+    let mut sniff_buf = [0u8; 24];
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client_tls.read(&mut sniff_buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) if n > 0 => Ok(BytesMut::from(&sniff_buf[..n])),
+        Ok(Ok(_)) => Ok(BytesMut::new()),
+        Ok(Err(err)) => Err(BifrostError::Network(format!(
+            "Failed to sniff intercepted TLS payload: {err}"
+        ))),
+        Err(_) => {
+            if verbose_logging {
+                debug!(
+                    "[{}] Timed out while sniffing intercepted TLS payload; treating as non-HTTP on non-standard port",
+                    req_id
+                );
+            }
+            Ok(BytesMut::new())
+        }
+    }
+}
+
+fn looks_like_http_payload(payload: &BytesMut) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+
+    matches!(
+        ProtocolDetector::detect_protocol_type(payload.as_ref()),
+        Some(
+            TransportProtocol::Http1
+                | TransportProtocol::Http2
+                | TransportProtocol::WebSocket
+                | TransportProtocol::Sse
+                | TransportProtocol::Grpc
+        )
+    )
 }
 
 fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
@@ -3301,6 +3410,20 @@ mod tests {
         assert!(is_http_alpn(Some(b"http/1.1")));
         assert!(!is_http_alpn(None));
         assert!(!is_http_alpn(Some(b"stun.turn")));
+    }
+
+    #[test]
+    fn test_looks_like_http_payload_detects_http_preface() {
+        assert!(looks_like_http_payload(&BytesMut::from(
+            &b"GET / HTTP/1.1\r\nHost: example.com\r\n"[..]
+        )));
+        assert!(looks_like_http_payload(&BytesMut::from(
+            &b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"[..]
+        )));
+        assert!(!looks_like_http_payload(&BytesMut::from(
+            &b"\x01\x02\x03\x04"[..]
+        )));
+        assert!(!looks_like_http_payload(&BytesMut::new()));
     }
 
     #[test]
