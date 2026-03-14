@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use super::{error_response, BoxBody};
 use crate::push::{
     ClientSubscription, ConnectedData, PushMessage, SharedPushManager, MAX_ID_LEN,
-    MAX_SUBSCRIBED_IDS, METRICS_INTERVAL_MAX_MS, METRICS_INTERVAL_MIN_MS,
+    MAX_SETTINGS_SCOPES, MAX_SUBSCRIBED_IDS, METRICS_INTERVAL_MAX_MS, METRICS_INTERVAL_MIN_MS,
 };
 
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -100,11 +100,19 @@ fn parse_subscription_from_query(query: &str) -> (String, ClientSubscription) {
                         subscription.last_traffic_id = Some(value.to_string());
                     }
                 }
+                "last_sequence" => {
+                    if let Ok(sequence) = value.parse() {
+                        subscription.last_sequence = Some(sequence);
+                    }
+                }
                 "pending_ids" => {
                     if !value.is_empty() {
                         subscription.pending_ids =
                             value.split(',').map(|s| s.to_string()).collect();
                     }
+                }
+                "need_traffic" => {
+                    subscription.need_traffic = value == "true" || value == "1";
                 }
                 "need_overview" => {
                     subscription.need_overview = value == "true" || value == "1";
@@ -114,6 +122,24 @@ fn parse_subscription_from_query(query: &str) -> (String, ClientSubscription) {
                 }
                 "need_history" => {
                     subscription.need_history = value == "true" || value == "1";
+                }
+                "need_values" => {
+                    subscription.need_values = value == "true" || value == "1";
+                }
+                "need_scripts" => {
+                    subscription.need_scripts = value == "true" || value == "1";
+                }
+                "need_replay_saved_requests" => {
+                    subscription.need_replay_saved_requests = value == "true" || value == "1";
+                }
+                "need_replay_groups" => {
+                    subscription.need_replay_groups = value == "true" || value == "1";
+                }
+                "settings_scopes" => {
+                    if !value.is_empty() {
+                        subscription.settings_scopes =
+                            value.split(',').map(|s| s.to_string()).collect();
+                    }
                 }
                 "history_limit" => {
                     if let Ok(limit) = value.parse() {
@@ -290,5 +316,11 @@ fn sanitize_subscription(mut sub: ClientSubscription) -> ClientSubscription {
     }
     sub.pending_ids
         .retain(|id| !id.is_empty() && id.len() <= MAX_ID_LEN);
+    if sub.settings_scopes.len() > MAX_SETTINGS_SCOPES {
+        sub.settings_scopes.truncate(MAX_SETTINGS_SCOPES);
+    }
+    sub.settings_scopes.retain(|scope| !scope.is_empty());
+    sub.settings_scopes.sort();
+    sub.settings_scopes.dedup();
     sub
 }

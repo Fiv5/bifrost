@@ -163,7 +163,10 @@ export const useMetricsStore = create<MetricsState>((set, get) => ({
       server: data.server,
       pending_authorizations: data.pending_authorizations,
     };
-    set({ overview, current: data.metrics });
+    set((state) => ({
+      overview,
+      current: state.metricsUnsubscribe ? state.current : data.metrics,
+    }));
   },
 
   handleMetricsPush: (data: MetricsData) => {

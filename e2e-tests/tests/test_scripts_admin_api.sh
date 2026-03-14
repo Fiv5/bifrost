@@ -132,7 +132,7 @@ test_decode_script_test_api_returns_output() {
         cat <<'JSON'
 {
   "type": "decode",
-  "content": "log.info(\"decode phase:\", ctx.phase);\\nctx.output = { code: \"0\", data: request.body || \"\", msg: \"\" };",
+  "content": "log.info('decode phase', ctx.phase); ctx.output = { code: '0', data: request.body || '', msg: '' };",
   "mock_request": {
     "url": "https://example.com/",
     "method": "POST",
@@ -211,4 +211,3 @@ main() {
 }
 
 main "$@"
-

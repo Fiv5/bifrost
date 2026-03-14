@@ -313,10 +313,10 @@ export default function ValueEditor() {
     selectedValueName && editingContent[selectedValueName] !== undefined;
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="value-editor">
       <div className={styles.header}>
         <div className={styles.titleSection}>
-          <span className={styles.title}>{currentValue?.name}</span>
+          <span className={styles.title} data-testid="value-editor-title">{currentValue?.name}</span>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
         <Space size={4}>
@@ -327,6 +327,7 @@ export default function ValueEditor() {
                 size="small"
                 icon={<FormatPainterOutlined />}
                 onClick={handleFormat}
+                data-testid="value-format-button"
               />
             </Tooltip>
           )}
@@ -336,6 +337,7 @@ export default function ValueEditor() {
               size="small"
               icon={<CopyOutlined />}
               onClick={handleCopy}
+              data-testid="value-copy-button"
             />
           </Tooltip>
           <Tooltip title="Save (Cmd+S)">
@@ -346,11 +348,12 @@ export default function ValueEditor() {
               onClick={handleSave}
               disabled={!hasChanges}
               style={{ color: hasChanges ? token.colorPrimary : undefined }}
+              data-testid="value-save-button"
             />
           </Tooltip>
         </Space>
       </div>
-      <div className={styles.editorContainer} ref={setContainerElement} />
+      <div className={styles.editorContainer} ref={setContainerElement} data-testid="value-editor-container" />
       <div className={styles.statusBar} style={toolbarStyles.toolbar}>
         <span className={styles.hint}>
           Use <code>{"{" + (currentValue?.name || "name") + "}"}</code> to

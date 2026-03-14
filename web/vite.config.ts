@@ -46,6 +46,7 @@ export default defineConfig(({ mode }) => {
       __BIFROST_DESKTOP__: JSON.stringify(isDesktop),
     },
     server: {
+      host: '127.0.0.1',
       port: webPort,
       proxy: {
         '/_bifrost/api': {

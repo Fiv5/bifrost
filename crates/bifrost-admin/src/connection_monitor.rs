@@ -525,14 +525,27 @@ impl ConnectionMonitor {
         frame_store: Option<&SharedFrameStore>,
         ws_payload_store: Option<&SharedWsPayloadStore>,
     ) {
+        self.close_connection(connection_id, code, reason, frame_store, ws_payload_store);
+    }
+
+    pub fn close_connection(
+        &self,
+        connection_id: &str,
+        code: Option<u16>,
+        reason: Option<String>,
+        frame_store: Option<&SharedFrameStore>,
+        ws_payload_store: Option<&SharedWsPayloadStore>,
+    ) -> Option<SocketStatus> {
         let mut connections = self.connections.write();
+        let mut final_status = None;
         if let Some(store) = connections.get_mut(connection_id) {
             store.set_closed(code, reason);
+            final_status = Some(store.status.clone());
 
             // 对于隧道连接，关闭后自动清理，释放内存
             if store.is_tunnel {
                 connections.remove(connection_id);
-                return;
+                return final_status;
             }
         }
         if let Some(fs) = frame_store {
@@ -541,6 +554,7 @@ impl ConnectionMonitor {
         if let Some(ws_payload_store) = ws_payload_store {
             ws_payload_store.close(connection_id);
         }
+        final_status
     }
 
     pub fn start_monitoring(&self, connection_id: &str) -> bool {

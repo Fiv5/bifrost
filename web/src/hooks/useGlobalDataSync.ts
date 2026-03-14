@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { useTrafficStore } from '../stores/useTrafficStore';
 import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
@@ -35,7 +34,6 @@ export function useGlobalDataSync() {
     initRef.current = true;
     globalState.initialized = true;
 
-    const trafficStore = useTrafficStore.getState();
     const proxyStore = useProxyStore.getState();
     const filterPanelStore = useFilterPanelStore.getState();
     const metricsStore = useMetricsStore.getState();
@@ -44,7 +42,6 @@ export function useGlobalDataSync() {
     const pauseRealtime = () => {
       if (globalState.visibilityPaused) return;
       globalState.visibilityPaused = true;
-      useTrafficStore.getState().stopPolling();
       useMetricsStore.getState().disablePush();
     };
 
@@ -54,7 +51,6 @@ export function useGlobalDataSync() {
       }
       if (!globalState.visibilityPaused) return;
       globalState.visibilityPaused = false;
-      useTrafficStore.getState().startPolling();
       useMetricsStore.getState().enablePush({
         needOverview: true,
         needMetrics: true,
@@ -91,7 +87,6 @@ export function useGlobalDataSync() {
 
     const initializeGlobalData = async () => {
       await Promise.allSettled([
-        trafficStore.fetchInitialData(),
         proxyStore.fetchSystemProxy(),
         proxyStore.fetchCliProxy(),
         filterPanelStore.loadFromServer(),
@@ -102,9 +97,6 @@ export function useGlobalDataSync() {
       if (globalState.forceRefresh) {
         return;
       }
-
-      trafficStore.startPolling();
-
       metricsStore.enablePush({
         needOverview: true,
         needMetrics: true,
@@ -141,7 +133,6 @@ export function useGlobalDataSync() {
 
       stopAllPolling();
 
-      useTrafficStore.getState().stopPolling();
       useMetricsStore.getState().disablePush();
       globalState.initialized = false;
       globalState.visibilityPaused = false;

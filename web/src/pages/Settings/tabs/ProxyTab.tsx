@@ -151,6 +151,7 @@ function TlsInterceptionPatternsCard({
                 onChange={(e) => setNewIncludePattern(e.target.value)}
                 onPressEnter={handleAddIncludePattern}
                 size="small"
+                data-testid="settings-tls-include-input"
               />
               <Button
                 type="primary"
@@ -158,6 +159,7 @@ function TlsInterceptionPatternsCard({
                 onClick={handleAddIncludePattern}
                 size="small"
                 loading={tlsLoading}
+                data-testid="settings-tls-include-add-button"
                 style={{
                   background: token.colorSuccess,
                   borderColor: token.colorSuccess,
@@ -230,6 +232,7 @@ function TlsInterceptionPatternsCard({
                 onChange={(e) => setNewExcludePattern(e.target.value)}
                 onPressEnter={handleAddExcludePattern}
                 size="small"
+                data-testid="settings-tls-exclude-input"
               />
               <Button
                 type="primary"
@@ -237,6 +240,7 @@ function TlsInterceptionPatternsCard({
                 onClick={handleAddExcludePattern}
                 size="small"
                 loading={tlsLoading}
+                data-testid="settings-tls-exclude-add-button"
                 style={{
                   background: token.colorWarning,
                   borderColor: token.colorWarning,
@@ -698,6 +702,7 @@ export default function ProxyTab({
                       checked={systemProxy.enabled}
                       loading={systemProxyLoading}
                       onChange={onToggleSystemProxy}
+                      data-testid="settings-system-proxy-switch"
                     />
                   ) : (
                     <Tooltip title="System proxy is not supported on this platform">
@@ -839,6 +844,7 @@ export default function ProxyTab({
                         mask: <QrcodeOutlined style={{ fontSize: 20 }} />,
                       }}
                       fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
+                      data-testid="settings-proxy-qrcode"
                     />
                     <div style={{ marginTop: 4 }}>
                       <Text type="secondary" style={{ fontSize: 11 }}>
@@ -877,6 +883,7 @@ export default function ProxyTab({
                     checked={tlsConfig?.enable_tls_interception}
                     loading={tlsLoading}
                     onChange={onToggleTlsInterception}
+                    data-testid="settings-tls-enable-switch"
                   />
                 </Col>
               </Row>
@@ -901,6 +908,7 @@ export default function ProxyTab({
                     checked={tlsConfig?.unsafe_ssl}
                     loading={tlsLoading}
                     onChange={onToggleUnsafeSsl}
+                    data-testid="settings-tls-unsafe-switch"
                   />
                 </Col>
               </Row>
@@ -927,6 +935,7 @@ export default function ProxyTab({
                     checked={tlsConfig?.disconnect_on_config_change}
                     loading={tlsLoading}
                     onChange={onToggleDisconnectOnConfigChange}
+                    data-testid="settings-tls-disconnect-switch"
                   />
                 </Col>
               </Row>

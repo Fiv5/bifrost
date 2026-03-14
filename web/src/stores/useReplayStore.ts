@@ -95,6 +95,8 @@ interface ReplayState {
   uiState: ReplayUIState;
 
   createNewRequest: () => void;
+  applySavedRequestsSnapshot: (requests: ReplayRequestSummary[], total: number) => void;
+  applyGroupsSnapshot: (groups: ReplayGroup[]) => void;
   updateCurrentRequest: (updates: Partial<ReplayRequest>) => void;
   saveRequest: (name?: string, groupId?: string) => Promise<boolean>;
   executeRequest: () => Promise<void>;
@@ -229,6 +231,14 @@ export const useReplayStore = create<ReplayState>()(
         });
       },
 
+      applySavedRequestsSnapshot: (savedRequests, requestsTotal) => {
+        set({ savedRequests, requestsTotal, loading: false });
+      },
+
+      applyGroupsSnapshot: (groups) => {
+        set({ groups });
+      },
+
       updateCurrentRequest: (updates) => {
         const { currentRequest } = get();
         if (!currentRequest) return;
@@ -243,7 +253,7 @@ export const useReplayStore = create<ReplayState>()(
       },
 
       saveRequest: async (name?: string, groupId?: string) => {
-        const { currentRequest, loadSavedRequests } = get();
+        const { currentRequest } = get();
         if (!currentRequest) return false;
 
         try {
@@ -273,7 +283,6 @@ export const useReplayStore = create<ReplayState>()(
             set({ currentRequest: saved });
           }
 
-          await loadSavedRequests();
           message.success('Request saved');
           return true;
         } catch (e) {
@@ -578,9 +587,8 @@ export const useReplayStore = create<ReplayState>()(
       deleteGroup: async (id: string) => {
         try {
           await replayApi.deleteGroup(id);
-          const { groups, loadSavedRequests } = get();
+          const { groups } = get();
           set({ groups: groups.filter(g => g.id !== id) });
-          await loadSavedRequests();
           message.success('Folder deleted');
           return true;
         } catch (e) {
@@ -607,8 +615,12 @@ export const useReplayStore = create<ReplayState>()(
       moveRequest: async (requestId: string, groupId: string | null) => {
         try {
           await replayApi.moveRequest(requestId, groupId ?? undefined);
-          const { loadSavedRequests, currentRequest } = get();
-          await loadSavedRequests();
+          const { currentRequest, savedRequests } = get();
+          set({
+            savedRequests: savedRequests.map((item) =>
+              item.id === requestId ? { ...item, group_id: groupId ?? undefined } : item,
+            ),
+          });
           if (currentRequest?.id === requestId) {
             set({
               currentRequest: {
@@ -628,7 +640,7 @@ export const useReplayStore = create<ReplayState>()(
       deleteRequest: async (id: string) => {
         try {
           await replayApi.deleteRequest(id);
-          const { savedRequests, currentRequest, loadSavedRequests } = get();
+          const { savedRequests, currentRequest } = get();
 
           if (currentRequest?.id === id) {
             set({
@@ -642,8 +654,6 @@ export const useReplayStore = create<ReplayState>()(
           set({
             savedRequests: savedRequests.filter(r => r.id !== id),
           });
-
-          await loadSavedRequests();
           message.success('Request deleted');
           return true;
         } catch (e) {
@@ -1124,16 +1134,12 @@ export const useReplayStore = create<ReplayState>()(
   ),
 );
 
-pushService.onReplayRequestUpdated((data) => {
-  const { loadSavedRequests, loadGroups } = useReplayStore.getState();
-  console.log('[ReplayStore] Received replay_request_updated:', data);
+pushService.onReplaySavedRequestsUpdate((data) => {
+  useReplayStore.getState().applySavedRequestsSnapshot(data.requests, data.total);
+});
 
-  if (data.action === 'group_created' || data.action === 'group_deleted') {
-    loadGroups();
-  }
-  if (data.action === 'request_created' || data.action === 'request_deleted' || data.action === 'request_updated') {
-    loadSavedRequests();
-  }
+pushService.onReplayGroupsUpdate((data) => {
+  useReplayStore.getState().applyGroupsSnapshot(data.groups);
 });
 
 pushService.onReplayHistoryUpdated((data) => {

@@ -109,10 +109,6 @@ export default function AccessControlTab() {
   const [newTempIp, setNewTempIp] = useState("");
 
   useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
-
-  useEffect(() => {
     if (error) {
       notifyApiBusinessError(new Error(error), error);
       clearError();
@@ -239,7 +235,7 @@ export default function AccessControlTab() {
   }
 
   return (
-    <div>
+    <div data-testid="settings-access-tab">
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
         <Col>
           <Space>
@@ -251,7 +247,7 @@ export default function AccessControlTab() {
           </Space>
         </Col>
         <Col>
-          <Button icon={<ReloadOutlined />} onClick={() => fetchStatus()}>
+          <Button icon={<ReloadOutlined />} onClick={() => fetchStatus()} data-testid="settings-access-refresh-button">
             Refresh
           </Button>
         </Col>
@@ -276,6 +272,7 @@ export default function AccessControlTab() {
                     value={status.mode}
                     onChange={handleModeChange}
                     style={{ width: "100%" }}
+                    data-testid="settings-access-mode-select"
                     options={accessModeOptions.map((o) => ({
                       value: o.value,
                       label: (
@@ -298,6 +295,7 @@ export default function AccessControlTab() {
                   <Switch
                     checked={status.allow_lan}
                     onChange={handleAllowLanChange}
+                    data-testid="settings-access-allow-lan"
                   />
                   <Text>Allow LAN Connections</Text>
                 </Space>
@@ -329,12 +327,14 @@ export default function AccessControlTab() {
                   onPressEnter={handleAdd}
                   style={{ width: 200 }}
                   size="small"
+                  data-testid="settings-whitelist-input"
                 />
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
                   onClick={handleAdd}
                   size="small"
+                  data-testid="settings-whitelist-add-button"
                 >
                   Add
                 </Button>
@@ -348,6 +348,7 @@ export default function AccessControlTab() {
               loading={loading}
               size="small"
               pagination={{ pageSize: 10 }}
+              data-testid="settings-whitelist-table"
             />
           </Card>
         </Col>
@@ -372,12 +373,14 @@ export default function AccessControlTab() {
                   onPressEnter={handleAddTemp}
                   style={{ width: 200 }}
                   size="small"
+                  data-testid="settings-temp-whitelist-input"
                 />
                 <Button
                   type="primary"
                   icon={<PlusOutlined />}
                   onClick={handleAddTemp}
                   size="small"
+                  data-testid="settings-temp-whitelist-add-button"
                 >
                   Add
                 </Button>
@@ -391,6 +394,7 @@ export default function AccessControlTab() {
               loading={loading}
               size="small"
               pagination={{ pageSize: 10 }}
+              data-testid="settings-temp-whitelist-table"
             />
           </Card>
         </Col>

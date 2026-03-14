@@ -12,6 +12,7 @@ use tokio_stream::StreamExt;
 use tracing::info;
 
 use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
+use crate::push::SharedPushManager;
 use bifrost_core::{AccessMode, ClientAccessControl};
 use bifrost_storage::{AccessConfigUpdate, SharedConfigManager};
 
@@ -47,39 +48,44 @@ pub async fn handle_whitelist_request(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
     config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
     path: &str,
 ) -> Response<BoxBody> {
     match (req.method(), path) {
         (&Method::GET, "/api/whitelist") => handle_list(access_control).await,
-        (&Method::POST, "/api/whitelist") => handle_add(req, access_control, config_manager).await,
+        (&Method::POST, "/api/whitelist") => {
+            handle_add(req, access_control, config_manager, push_manager).await
+        }
         (&Method::DELETE, "/api/whitelist") => {
-            handle_remove(req, access_control, config_manager).await
+            handle_remove(req, access_control, config_manager, push_manager).await
         }
         (&Method::GET, "/api/whitelist/mode") => handle_get_mode(access_control).await,
         (&Method::PUT, "/api/whitelist/mode") => {
-            handle_set_mode(req, access_control, config_manager).await
+            handle_set_mode(req, access_control, config_manager, push_manager).await
         }
         (&Method::GET, "/api/whitelist/allow-lan") => handle_get_allow_lan(access_control).await,
         (&Method::PUT, "/api/whitelist/allow-lan") => {
-            handle_set_allow_lan(req, access_control, config_manager).await
+            handle_set_allow_lan(req, access_control, config_manager, push_manager).await
         }
         (&Method::POST, "/api/whitelist/temporary") => {
-            handle_add_temporary(req, access_control).await
+            handle_add_temporary(req, access_control, push_manager).await
         }
         (&Method::DELETE, "/api/whitelist/temporary") => {
-            handle_remove_temporary(req, access_control).await
+            handle_remove_temporary(req, access_control, push_manager).await
         }
         (&Method::GET, "/api/whitelist/pending") => handle_get_pending(access_control).await,
         (&Method::GET, "/api/whitelist/pending/stream") => {
             handle_pending_stream(access_control).await
         }
         (&Method::POST, "/api/whitelist/pending/approve") => {
-            handle_approve_pending(req, access_control).await
+            handle_approve_pending(req, access_control, push_manager).await
         }
         (&Method::POST, "/api/whitelist/pending/reject") => {
-            handle_reject_pending(req, access_control).await
+            handle_reject_pending(req, access_control, push_manager).await
         }
-        (&Method::DELETE, "/api/whitelist/pending") => handle_clear_pending(access_control).await,
+        (&Method::DELETE, "/api/whitelist/pending") => {
+            handle_clear_pending(access_control, push_manager).await
+        }
         _ => method_not_allowed(),
     }
 }
@@ -99,10 +105,26 @@ async fn handle_list(access_control: Arc<RwLock<ClientAccessControl>>) -> Respon
     json_response(&response)
 }
 
+async fn broadcast_access_snapshots(
+    push_manager: &Option<SharedPushManager>,
+    include_pending: bool,
+) {
+    if let Some(pm) = push_manager {
+        pm.invalidate_overview_cache();
+        pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_WHITELIST_STATUS)
+            .await;
+        if include_pending {
+            pm.broadcast_settings_scope(crate::push::SETTINGS_SCOPE_PENDING_AUTHORIZATIONS)
+                .await;
+        }
+    }
+}
+
 async fn handle_add(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
     config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -118,9 +140,10 @@ async fn handle_add(
     match ac.add_to_whitelist(&request.ip_or_cidr) {
         Ok(_) => {
             info!("Added {} to whitelist via API", request.ip_or_cidr);
+            let whitelist = ac.whitelist_entries();
+            drop(ac);
 
             if let Some(ref cm) = config_manager {
-                let whitelist = ac.whitelist_entries();
                 let update = AccessConfigUpdate {
                     mode: None,
                     whitelist: Some(whitelist),
@@ -130,6 +153,7 @@ async fn handle_add(
                     tracing::error!("Failed to persist whitelist: {}", e);
                 }
             }
+            broadcast_access_snapshots(&push_manager, false).await;
 
             let response = serde_json::json!({
                 "success": true,
@@ -150,6 +174,7 @@ async fn handle_remove(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
     config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -166,9 +191,10 @@ async fn handle_remove(
         Ok(removed) => {
             if removed {
                 info!("Removed {} from whitelist via API", request.ip_or_cidr);
+                let whitelist = ac.whitelist_entries();
+                drop(ac);
 
                 if let Some(ref cm) = config_manager {
-                    let whitelist = ac.whitelist_entries();
                     let update = AccessConfigUpdate {
                         mode: None,
                         whitelist: Some(whitelist),
@@ -178,6 +204,7 @@ async fn handle_remove(
                         tracing::error!("Failed to persist whitelist removal: {}", e);
                     }
                 }
+                broadcast_access_snapshots(&push_manager, false).await;
 
                 let response = serde_json::json!({
                     "success": true,
@@ -212,6 +239,7 @@ async fn handle_set_mode(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
     config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -230,6 +258,8 @@ async fn handle_set_mode(
 
     let mut ac = access_control.write().await;
     ac.set_mode(mode);
+    let mode_value = ac.mode().to_string();
+    drop(ac);
 
     if let Some(ref cm) = config_manager {
         let update = AccessConfigUpdate {
@@ -243,10 +273,11 @@ async fn handle_set_mode(
             info!("Access mode {} persisted to config", mode);
         }
     }
+    broadcast_access_snapshots(&push_manager, true).await;
 
     let response = serde_json::json!({
         "success": true,
-        "mode": ac.mode().to_string()
+        "mode": mode_value
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -270,6 +301,7 @@ async fn handle_set_allow_lan(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
     config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -283,6 +315,8 @@ async fn handle_set_allow_lan(
 
     let mut ac = access_control.write().await;
     ac.set_allow_lan(request.allow_lan);
+    let allow_lan = ac.allow_lan();
+    drop(ac);
 
     if let Some(ref cm) = config_manager {
         let update = AccessConfigUpdate {
@@ -299,10 +333,11 @@ async fn handle_set_allow_lan(
             );
         }
     }
+    broadcast_access_snapshots(&push_manager, false).await;
 
     let response = serde_json::json!({
         "success": true,
-        "allow_lan": ac.allow_lan()
+        "allow_lan": allow_lan
     });
     Response::builder()
         .status(StatusCode::OK)
@@ -315,6 +350,7 @@ async fn handle_set_allow_lan(
 async fn handle_add_temporary(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -338,6 +374,8 @@ async fn handle_add_temporary(
 
     let ac = access_control.read().await;
     ac.add_temporary(ip);
+    drop(ac);
+    broadcast_access_snapshots(&push_manager, false).await;
 
     let response = serde_json::json!({
         "success": true,
@@ -354,6 +392,7 @@ async fn handle_add_temporary(
 async fn handle_remove_temporary(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -377,8 +416,10 @@ async fn handle_remove_temporary(
 
     let ac = access_control.read().await;
     let removed = ac.remove_temporary(&ip);
+    drop(ac);
 
     if removed {
+        broadcast_access_snapshots(&push_manager, false).await;
         let response = serde_json::json!({
             "success": true,
             "message": format!("Removed {} from temporary whitelist", ip)
@@ -436,6 +477,7 @@ async fn handle_pending_stream(
 async fn handle_approve_pending(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -459,6 +501,8 @@ async fn handle_approve_pending(
 
     let ac = access_control.read().await;
     if ac.approve_pending(&ip) {
+        drop(ac);
+        broadcast_access_snapshots(&push_manager, true).await;
         info!("Approved pending authorization for {} via API", ip);
         let response = serde_json::json!({
             "success": true,
@@ -471,6 +515,7 @@ async fn handle_approve_pending(
             .body(full_body(response.to_string()))
             .unwrap()
     } else {
+        drop(ac);
         error_response(
             StatusCode::NOT_FOUND,
             &format!("{} not found in pending authorizations", ip),
@@ -481,6 +526,7 @@ async fn handle_approve_pending(
 async fn handle_reject_pending(
     req: Request<Incoming>,
     access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(b) => b.to_bytes(),
@@ -504,6 +550,8 @@ async fn handle_reject_pending(
 
     let ac = access_control.read().await;
     if ac.reject_pending(&ip) {
+        drop(ac);
+        broadcast_access_snapshots(&push_manager, true).await;
         info!("Rejected pending authorization for {} via API", ip);
         let response = serde_json::json!({
             "success": true,
@@ -516,6 +564,7 @@ async fn handle_reject_pending(
             .body(full_body(response.to_string()))
             .unwrap()
     } else {
+        drop(ac);
         error_response(
             StatusCode::NOT_FOUND,
             &format!("{} not found in pending authorizations", ip),
@@ -525,9 +574,12 @@ async fn handle_reject_pending(
 
 async fn handle_clear_pending(
     access_control: Arc<RwLock<ClientAccessControl>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let ac = access_control.read().await;
     ac.clear_pending_authorizations();
+    drop(ac);
+    broadcast_access_snapshots(&push_manager, true).await;
     info!("Cleared all pending authorizations via API");
     let response = serde_json::json!({
         "success": true,

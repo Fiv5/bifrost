@@ -25,8 +25,23 @@ description: "创建和执行 Bifrost 代理的端到端测试；在添加新功
 ## 使用说明
 
 - 启动代理服务时，必须显式设置临时数据目录，避免覆盖本机已有数据；目录前缀统一使用 `./.bifrost-e2e`
-- 若需要手动启动服务，优先使用仓库规则中的方式，例如 `BIFROST_DATA_DIR=./.bifrost-e2e-test cargo run --bin bifrost -- start -p 8800 --unsafe-ssl`
+- 若需要手动启动服务，优先使用“先编译、再启动”的方式，而不是直接假设 `cargo run` 或旧进程已生效
+- 对涉及前端静态资源或管理端推送逻辑的改动，优先执行：
+
+```bash
+CARGO_TARGET_DIR=./.bifrost-ui-target cargo build --bin bifrost
+BIFROST_DATA_DIR=./.bifrost-e2e-test ./.bifrost-ui-target/debug/bifrost start -p 8800 --unsafe-ssl
+```
+
+- 启动后，必须同时检查：
+  - 目标端口是否真的由最新 `bifrost` 进程监听，例如 `lsof -nP -iTCP:8800 -sTCP:LISTEN`
+  - 管理端 API 是否 ready，例如 `curl -sS http://127.0.0.1:8800/_bifrost/api/proxy/address`
+- 如果启动过程中出现证书安装交互，先显式处理掉，再继续测试，避免把“服务未启动完成”误判为功能问题
 - 不同场景的步骤已拆分为独立文档；按需打开对应文件执行即可
+- 当 UI 现象和 API 现象不一致时，优先做“进程级 + API + WebSocket frame”三层交叉验证：
+  - 先确认当前测试页面连到的是哪一个 `bifrost` 进程
+  - 再确认 `/_bifrost/api/traffic`、`/_bifrost/api/traffic/{id}` 返回的真实状态
+  - 最后抓浏览器 `/api/push` 的 `framesent/framereceived`，判断是“服务端没推”还是“页面没订阅/没消费”
 - 测试结束后清理临时目录和残留进程
 
 ## 场景文档

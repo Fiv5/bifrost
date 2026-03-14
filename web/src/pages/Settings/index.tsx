@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
+import { useShallow } from "zustand/react/shallow";
 import {
   Alert,
   Badge,
@@ -27,15 +28,18 @@ import {
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import {
-  getPendingAuthorizations,
   approvePending,
   rejectPending,
   clearPendingAuthorizations,
 } from "../../api/whitelist";
 import { getAppMetrics, getHostMetrics } from "../../api/metrics";
-import { getProxyAddressInfo, type ProxyAddressInfo } from "../../api/proxy";
 import {
-  getTlsConfig,
+  getProxyAddressInfo,
+  type CliProxyStatus,
+  type ProxyAddressInfo,
+  type SystemProxyStatus,
+} from "../../api/proxy";
+import {
   updateTlsConfig,
   getProxySettings,
   getPerformanceConfig,
@@ -49,12 +53,11 @@ import {
 } from "../../api/config";
 import { isConnectionIssueError } from "../../api/client";
 import {
-  getCertInfo,
   getCertDownloadUrl,
   getCertQRCodeUrl,
   type CertInfo,
 } from "../../api/cert";
-import type { PendingAuth, AppMetrics, HostMetrics } from "../../types";
+import type { PendingAuth, AppMetrics, HostMetrics, WhitelistStatus } from "../../types";
 import { useThemeStore } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import ProxyTab from "./tabs/ProxyTab";
@@ -73,6 +76,7 @@ import {
 } from "../../runtime";
 import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
 import pushService from "../../services/pushService";
+import type { SettingsUpdateData } from "../../services/pushService";
 
 const { Text } = Typography;
 
@@ -111,7 +115,16 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 export default function Settings() {
   const { overview, history, loading, error, fetchOverview, fetchHistory } =
-    useMetricsStore();
+    useMetricsStore(
+      useShallow((state) => ({
+        overview: state.overview,
+        history: state.history,
+        loading: state.loading,
+        error: state.error,
+        fetchOverview: state.fetchOverview,
+        fetchHistory: state.fetchHistory,
+      })),
+    );
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -138,9 +151,9 @@ export default function Settings() {
     systemProxy,
     cliProxy,
     loading: systemProxyLoading,
-    fetchSystemProxy,
-    fetchCliProxy,
     toggleSystemProxy,
+    applySystemProxySnapshot,
+    applyCliProxySnapshot,
   } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
   const [tlsLoading, setTlsLoading] = useState(false);
@@ -180,25 +193,12 @@ export default function Settings() {
   const hideDesktopCoreRestart = useDesktopCoreStore((state) => state.hide);
   const desktopCoreVisible = useDesktopCoreStore((state) => state.visible);
   const desktopCorePhase = useDesktopCoreStore((state) => state.phase);
+  const applyWhitelistStatus = useWhitelistStore((state) => state.applyStatusSnapshot);
   const suppressRestartErrors =
     isDesktopShell() &&
     desktopCoreVisible &&
     desktopCorePhase !== "idle" &&
     desktopCorePhase !== "error";
-
-  const fetchTlsConfig = useCallback(async () => {
-    setTlsLoading(true);
-    try {
-      const config = await getTlsConfig();
-      setTlsConfig(config);
-    } catch (error) {
-      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
-        console.error("Failed to fetch TLS config");
-      }
-    } finally {
-      setTlsLoading(false);
-    }
-  }, [suppressRestartErrors]);
 
   const fetchProxySettings = useCallback(async () => {
     try {
@@ -225,17 +225,6 @@ export default function Settings() {
     } catch (error) {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch desktop runtime");
-      }
-    }
-  }, [suppressRestartErrors]);
-
-  const fetchCertInfo = useCallback(async () => {
-    try {
-      const info = await getCertInfo();
-      setCertInfo(info);
-    } catch (error) {
-      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
-        console.error("Failed to fetch cert info");
       }
     }
   }, [suppressRestartErrors]);
@@ -287,15 +276,13 @@ export default function Settings() {
     try {
       const info = await getProxyAddressInfo();
       setProxyAddressInfo(info);
-      if (info.addresses.length > 0 && !selectedProxyIp) {
-        setSelectedProxyIp(info.addresses[0].ip);
-      }
+      setSelectedProxyIp((current) => current || info.addresses[0]?.ip || "");
     } catch (error) {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy address info");
       }
     }
-  }, [selectedProxyIp, suppressRestartErrors]);
+  }, [suppressRestartErrors]);
 
   const handleSystemProxyToggle = async (enabled: boolean) => {
     const success = await toggleSystemProxy(enabled);
@@ -640,46 +627,74 @@ export default function Settings() {
     }
   };
 
-  const fetchPending = async () => {
-    if (overview && overview.pending_authorizations > 0) {
-      setPendingLoading(true);
-      try {
-        const list = await getPendingAuthorizations();
-        setPendingList(list);
-      } catch {
-        console.error("Failed to fetch pending authorizations");
-      } finally {
-        setPendingLoading(false);
-      }
-    } else {
-      setPendingList([]);
-    }
-  };
-
   useEffect(() => {
     fetchDesktopRuntime();
-    fetchProxySettings();
-    fetchSystemProxy();
-    fetchCliProxy();
-    fetchTlsConfig();
-    fetchCertInfo();
-    fetchPerformanceConfig();
-    fetchProxyAddressInfo();
-  }, [
-    fetchDesktopRuntime,
-    fetchProxySettings,
-    fetchSystemProxy,
-    fetchCliProxy,
-    fetchTlsConfig,
-    fetchCertInfo,
-    fetchPerformanceConfig,
-    fetchProxyAddressInfo,
-  ]);
+    pushService.connect({
+      settings_scopes: [
+        "proxy_settings",
+        "tls_config",
+        "performance_config",
+        "cert_info",
+        "proxy_address",
+        "system_proxy",
+        "cli_proxy",
+        "whitelist_status",
+        "pending_authorizations",
+      ],
+    });
 
-  useEffect(() => {
-    fetchPending();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overview?.pending_authorizations]);
+    const unsubscribe = pushService.onSettingsUpdate((event: SettingsUpdateData) => {
+      switch (event.scope) {
+        case "proxy_settings":
+          setProxySettings(event.data as ProxySettings);
+          break;
+        case "tls_config":
+          setTlsConfig(event.data as TlsConfig);
+          break;
+        case "performance_config": {
+          const config = event.data as PerformanceConfig;
+          setPerformanceConfig(config);
+          setPerfDraft(config.traffic);
+          break;
+        }
+        case "cert_info":
+          setCertInfo(event.data as CertInfo);
+          break;
+        case "proxy_address": {
+          const info = event.data as ProxyAddressInfo;
+          setProxyAddressInfo(info);
+          setSelectedProxyIp((current) => current || info.addresses[0]?.ip || "");
+          break;
+        }
+        case "system_proxy":
+          applySystemProxySnapshot(event.data as SystemProxyStatus);
+          break;
+        case "cli_proxy":
+          applyCliProxySnapshot(event.data as CliProxyStatus);
+          break;
+        case "whitelist_status":
+          applyWhitelistStatus(event.data as WhitelistStatus);
+          break;
+        case "pending_authorizations":
+          setPendingList(event.data as PendingAuth[]);
+          setPendingLoading(false);
+          break;
+        default:
+          break;
+      }
+    });
+
+    return () => {
+      unsubscribe();
+      pushService.updateSubscription({ settings_scopes: [] });
+      pushService.disconnectIfIdle();
+    };
+  }, [
+    applyCliProxySnapshot,
+    applySystemProxySnapshot,
+    applyWhitelistStatus,
+    fetchDesktopRuntime,
+  ]);
 
   useEffect(() => {
     if (activeTab !== "metrics" || history.length > 0) {
@@ -698,15 +713,10 @@ export default function Settings() {
     };
   }, []);
 
-  const { fetchStatus: fetchWhitelistStatus } = useWhitelistStore();
-
   const handleApprove = async (ip: string) => {
     try {
       await approvePending(ip);
       message.success(`Approved ${ip}`);
-      fetchOverview();
-      fetchPending();
-      fetchWhitelistStatus();
     } catch {
       message.error(`Failed to approve ${ip}`);
     }
@@ -716,8 +726,6 @@ export default function Settings() {
     try {
       await rejectPending(ip);
       message.success(`Rejected ${ip}`);
-      fetchOverview();
-      fetchPending();
     } catch {
       message.error(`Failed to reject ${ip}`);
     }
@@ -727,8 +735,6 @@ export default function Settings() {
     try {
       await clearPendingAuthorizations();
       message.success("Cleared all pending authorizations");
-      fetchOverview();
-      fetchPending();
     } catch {
       message.error("Failed to clear pending authorizations");
     }

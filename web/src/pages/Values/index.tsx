@@ -6,6 +6,7 @@ import ValueList from './ValueList';
 import ValueEditor from './ValueEditor';
 import { useValuesStore } from '../../stores/useValuesStore';
 import { notifyApiBusinessError } from '../../api/client';
+import pushService from '../../services/pushService';
 
 export default function Values() {
   const { token } = theme.useToken();
@@ -15,7 +16,7 @@ export default function Values() {
   const values = useValuesStore((state) => state.values);
   const selectedValueName = useValuesStore((state) => state.selectedValueName);
   const selectValue = useValuesStore((state) => state.selectValue);
-  const fetchValues = useValuesStore((state) => state.fetchValues);
+  const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
   const initRef = useRef(false);
   const urlParamRef = useRef(false);
@@ -25,10 +26,17 @@ export default function Values() {
     if (loadedRef.current) return;
     loadedRef.current = true;
 
-    if (values.length === 0) {
-      void fetchValues();
-    }
-  }, [fetchValues, values.length]);
+    pushService.connect({ need_values: true });
+    const unsubscribe = pushService.onValuesUpdate((data) => {
+      applyValuesSnapshot(data.values);
+    });
+
+    return () => {
+      unsubscribe();
+      pushService.updateSubscription({ need_values: false });
+      pushService.disconnectIfIdle();
+    };
+  }, [applyValuesSnapshot]);
 
   useEffect(() => {
     const nameParam = searchParams.get('name');

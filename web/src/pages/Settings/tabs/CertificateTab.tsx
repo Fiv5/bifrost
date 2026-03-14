@@ -38,7 +38,7 @@ export default function CertificateTab({
     certStatus === "installed_and_trusted" ? <CheckOutlined /> : <CloseOutlined />;
 
   return (
-    <Row gutter={[16, 16]}>
+    <Row gutter={[16, 16]} data-testid="settings-certificate-tab">
       <Col xs={24}>
         <Card
           title={
@@ -75,6 +75,7 @@ export default function CertificateTab({
               download="bifrost-ca.crt"
               disabled={!certInfo?.available}
               block
+              data-testid="settings-certificate-download"
             >
               Download CA Certificate
             </Button>
@@ -111,6 +112,7 @@ export default function CertificateTab({
                   width={180}
                   height={180}
                   fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
+                  data-testid="settings-certificate-qrcode"
                 />
                 <Text
                   type="secondary"

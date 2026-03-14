@@ -23,6 +23,12 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 
 如果任一步失败，立即停止并返回失败报告。
 
+## 验证顺序补充
+
+- 对 UI / push / 管理端交互问题，必须先做 E2E 或 API 交叉验证，再进入 `fmt/clippy/build`
+- 在跑 `clippy/build/test` 前，先确认没有遗留的 `cargo`、`rustc`、旧 `bifrost` 进程，避免互相抢锁造成假卡死
+- 如果前面为了调试开过多轮 `cargo test` 或 `cargo clippy`，进入本技能前先清理残留任务，再顺序执行校验
+
 ## 输出
 
 - 结构化报告，按步骤给出状态（通过/失败）与关键信息

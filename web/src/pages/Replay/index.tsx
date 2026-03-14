@@ -8,6 +8,7 @@ import CollectionPanel from "./components/CollectionPanel";
 import RequestPanel from "./components/RequestPanel";
 import ResponsePanel from "./components/ResponsePanel";
 import HistoryView from "./components/HistoryView";
+import pushService from "../../services/pushService";
 
 interface ModeButtonProps {
   mode: ReplayMode;
@@ -17,13 +18,14 @@ interface ModeButtonProps {
   onClick: () => void;
 }
 
-const ModeButton = ({ icon, label, isActive, onClick }: ModeButtonProps) => {
+const ModeButton = ({ mode, icon, label, isActive, onClick }: ModeButtonProps) => {
   const { token } = theme.useToken();
 
   return (
     <Tooltip title={label} placement="left">
       <div
         onClick={onClick}
+        data-testid={`replay-mode-${mode}`}
         style={{
           width: 32,
           height: 32,
@@ -57,13 +59,12 @@ export default function Replay() {
   const { token } = theme.useToken();
   const {
     currentRequest,
+    savedRequests,
     loading,
     executing,
     streamingConnection,
     uiState,
-    loadSavedRequests,
     loadRecentHistory,
-    loadGroups,
     loadAllHistory,
     updateUIState,
     selectRequest,
@@ -74,21 +75,36 @@ export default function Replay() {
 
   useEffect(() => {
     const init = async () => {
-      await loadSavedRequests();
-      await loadGroups();
-      
-      const { uiState: currentUIState, savedRequests } = useReplayStore.getState();
-      if (currentUIState.selectedRequestId) {
-        const savedRequest = savedRequests.find(r => r.id === currentUIState.selectedRequestId);
-        if (savedRequest) {
-          await selectRequest(savedRequest);
-        }
-      }
-      
+      pushService.connect({
+        need_replay_saved_requests: true,
+        need_replay_groups: true,
+      });
       loadRecentHistory();
     };
     init();
-  }, [loadSavedRequests, loadRecentHistory, loadGroups, selectRequest]);
+
+    return () => {
+      pushService.updateSubscription({
+        need_replay_saved_requests: false,
+        need_replay_groups: false,
+      });
+      pushService.disconnectIfIdle();
+    };
+  }, [loadRecentHistory]);
+
+  useEffect(() => {
+    if (
+      !uiState.selectedRequestId ||
+      savedRequests.length === 0 ||
+      currentRequest?.id === uiState.selectedRequestId
+    ) {
+      return;
+    }
+    const savedRequest = savedRequests.find((item) => item.id === uiState.selectedRequestId);
+    if (savedRequest) {
+      void selectRequest(savedRequest);
+    }
+  }, [currentRequest?.id, savedRequests, selectRequest, uiState.selectedRequestId]);
 
   const handleModeChange = (mode: ReplayMode) => {
     if (mode === "history") {

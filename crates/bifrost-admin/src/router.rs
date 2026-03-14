@@ -67,7 +67,7 @@ impl AdminRouter {
         path: &str,
     ) -> Response<BoxBody> {
         if path.starts_with("/api/rules") {
-            handle_rules(req, state, path).await
+            handle_rules(req, state, push_manager.clone(), path).await
         } else if path.starts_with("/api/traffic") {
             handle_traffic(req, state, push_manager.clone(), path).await
         } else if path.starts_with("/api/metrics") {
@@ -83,6 +83,7 @@ impl AdminRouter {
                     req,
                     access_control.clone(),
                     state.config_manager.clone(),
+                    push_manager.clone(),
                     path,
                 )
                 .await

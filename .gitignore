@@ -18,7 +18,6 @@ site/dist/
 log/
 .cargo-target-*/
 .bifrost-*/
-design/
 target-e2e-*/
 .bifrost_test/
 e2e-tests/

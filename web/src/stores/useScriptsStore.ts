@@ -294,6 +294,7 @@ interface ScriptsState {
   testResult: ScriptExecutionResult | null;
   error: string | null;
 
+  applyScriptsSnapshot: (data: { request: ScriptInfo[]; response: ScriptInfo[]; decode: ScriptInfo[] }) => void;
   fetchScripts: () => Promise<void>;
   selectScript: (type: ScriptType, name: string) => Promise<void>;
   saveScript: (type: ScriptType, name: string, content: string) => Promise<void>;
@@ -304,7 +305,7 @@ interface ScriptsState {
   clearTestResult: () => void;
 }
 
-export const useScriptsStore = create<ScriptsState>((set, get) => ({
+export const useScriptsStore = create<ScriptsState>((set) => ({
   requestScripts: [],
   responseScripts: [],
   decodeScripts: [],
@@ -315,6 +316,16 @@ export const useScriptsStore = create<ScriptsState>((set, get) => ({
   testing: false,
   testResult: null,
   error: null,
+
+  applyScriptsSnapshot: (data) => {
+    set({
+      requestScripts: data.request,
+      responseScripts: data.response,
+      decodeScripts: data.decode,
+      loading: false,
+      error: null,
+    });
+  },
 
   fetchScripts: async () => {
     set({ loading: true, error: null });
@@ -345,8 +356,37 @@ export const useScriptsStore = create<ScriptsState>((set, get) => ({
     set({ saving: true, error: null });
     try {
       const script = await scriptsApi.save(type, name, { content });
-      set({ selectedScript: script, saving: false });
-      await get().fetchScripts();
+      set((state) => {
+        const updateList = (items: ScriptInfo[]) => {
+          const next = items.filter((item) => item.name !== script.name);
+          next.push({
+            name: script.name,
+            script_type: script.script_type,
+            created_at: script.created_at,
+            updated_at: script.updated_at,
+            description: script.description,
+          });
+          next.sort((left, right) => left.name.localeCompare(right.name));
+          return next;
+        };
+
+        return {
+          requestScripts:
+            type === 'request'
+              ? updateList(state.requestScripts)
+              : state.requestScripts,
+          responseScripts:
+            type === 'response'
+              ? updateList(state.responseScripts)
+              : state.responseScripts,
+          decodeScripts:
+            type === 'decode'
+              ? updateList(state.decodeScripts)
+              : state.decodeScripts,
+          selectedScript: script,
+          saving: false,
+        };
+      });
     } catch (e) {
       set({ error: String(e), saving: false });
     }
@@ -356,8 +396,26 @@ export const useScriptsStore = create<ScriptsState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await scriptsApi.delete(type, name);
-      set({ selectedScript: null, loading: false });
-      await get().fetchScripts();
+      set((state) => ({
+        requestScripts:
+          type === 'request'
+            ? state.requestScripts.filter((item) => item.name !== name)
+            : state.requestScripts,
+        responseScripts:
+          type === 'response'
+            ? state.responseScripts.filter((item) => item.name !== name)
+            : state.responseScripts,
+        decodeScripts:
+          type === 'decode'
+            ? state.decodeScripts.filter((item) => item.name !== name)
+            : state.decodeScripts,
+        selectedScript:
+          state.selectedScript?.name === name &&
+          state.selectedScript?.script_type === type
+            ? null
+            : state.selectedScript,
+        loading: false,
+      }));
     } catch (e) {
       set({ error: String(e), loading: false });
     }

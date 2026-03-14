@@ -30,6 +30,12 @@ const METRICS_CACHE_TTL: Duration = Duration::from_secs(5);
 pub type SharedTrafficDbStore = Arc<TrafficDbStore>;
 type CleanupNotifier = Arc<dyn Fn(&[String]) + Send + Sync>;
 
+#[derive(Debug, Clone)]
+pub enum TrafficStoreEvent {
+    Inserted(TrafficRecord),
+    Updated(TrafficRecord),
+}
+
 type SerializedBlob = Option<Vec<u8>>;
 
 struct SerializedDetailFields {
@@ -71,7 +77,7 @@ pub struct TrafficDbStore {
     max_records: AtomicUsize,
     max_db_size_bytes: AtomicU64,
     retention_hours: AtomicU64,
-    tx: broadcast::Sender<TrafficRecord>,
+    tx: broadcast::Sender<TrafficStoreEvent>,
     current_sequence: AtomicU64,
     // 仅用于“活跃/未完成连接”的轻量缓存：支持 traffic 列表/推送所需字段。
     // 详细信息（headers/body/script results 等）一律从 DB 按需读取，避免常驻内存膨胀。
@@ -80,6 +86,10 @@ pub struct TrafficDbStore {
     cleanup_notifier: RwLock<Option<CleanupNotifier>>,
     host_metrics_cache: Mutex<Option<CachedValue<Vec<HostMetricsAggregate>>>>,
     app_metrics_cache: Mutex<Option<CachedValue<Vec<AppMetricsAggregate>>>>,
+    #[cfg(test)]
+    query_calls: AtomicUsize,
+    #[cfg(test)]
+    get_by_ids_calls: AtomicUsize,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -190,6 +200,10 @@ impl TrafficDbStore {
             cleanup_notifier: RwLock::new(None),
             host_metrics_cache: Mutex::new(None),
             app_metrics_cache: Mutex::new(None),
+            #[cfg(test)]
+            query_calls: AtomicUsize::new(0),
+            #[cfg(test)]
+            get_by_ids_calls: AtomicUsize::new(0),
         })
     }
 
@@ -366,7 +380,7 @@ impl TrafficDbStore {
         let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
         record.sequence = seq;
 
-        let _ = self.tx.send(record.clone());
+        let _ = self.tx.send(TrafficStoreEvent::Inserted(record.clone()));
 
         let mut conn = self.write_conn.lock();
         let flags = encode_flags(&record);
@@ -503,7 +517,7 @@ impl TrafficDbStore {
                     cache.pop(&record.id);
                 }
             }
-            let _ = self.tx.send(record);
+            let _ = self.tx.send(TrafficStoreEvent::Updated(record));
             return true;
         }
 
@@ -615,10 +629,14 @@ impl TrafficDbStore {
     }
 
     pub fn query(&self, params: &QueryParams) -> QueryResult {
+        #[cfg(test)]
+        self.query_calls.fetch_add(1, Ordering::Relaxed);
         self.query_internal(params, QueryTotalMode::Estimated)
     }
 
     pub fn query_with_exact_total(&self, params: &QueryParams) -> QueryResult {
+        #[cfg(test)]
+        self.query_calls.fetch_add(1, Ordering::Relaxed);
         self.query_internal(params, QueryTotalMode::Exact)
     }
 
@@ -925,6 +943,8 @@ impl TrafficDbStore {
     }
 
     pub fn get_by_ids(&self, ids: &[&str]) -> Vec<TrafficSummaryCompact> {
+        #[cfg(test)]
+        self.get_by_ids_calls.fetch_add(1, Ordering::Relaxed);
         if ids.is_empty() {
             return vec![];
         }
@@ -1489,7 +1509,7 @@ impl TrafficDbStore {
         self.current_sequence.load(Ordering::Relaxed)
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<TrafficRecord> {
+    pub fn subscribe(&self) -> broadcast::Receiver<TrafficStoreEvent> {
         self.tx.subscribe()
     }
 
@@ -1664,6 +1684,20 @@ impl TrafficDbStore {
         if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)") {
             tracing::warn!(error = %e, "[TRAFFIC_DB] WAL checkpoint failed");
         }
+    }
+
+    #[cfg(test)]
+    pub fn reset_debug_query_counters(&self) {
+        self.query_calls.store(0, Ordering::Relaxed);
+        self.get_by_ids_calls.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub fn debug_query_counters(&self) -> (usize, usize) {
+        (
+            self.query_calls.load(Ordering::Relaxed),
+            self.get_by_ids_calls.load(Ordering::Relaxed),
+        )
     }
 }
 

@@ -23,7 +23,10 @@ pub enum ConfigChangeEvent {
     AccessConfigChanged,
     SystemProxyConfigChanged,
     SandboxConfigChanged,
+    ServerConfigChanged,
+    TrafficConfigChanged,
     RulesChanged,
+    ScriptsChanged,
     ValuesChanged(String),
     StateChanged,
 }
@@ -187,6 +190,9 @@ impl ConfigManager {
         }
 
         self.save_config(&config)?;
+        let _ = self
+            .change_notifier
+            .send(ConfigChangeEvent::ServerConfigChanged);
 
         Ok(config.server.clone())
     }
@@ -238,6 +244,9 @@ impl ConfigManager {
         }
 
         self.save_config(&config)?;
+        let _ = self
+            .change_notifier
+            .send(ConfigChangeEvent::TrafficConfigChanged);
 
         Ok(config.traffic.clone())
     }

@@ -8,7 +8,9 @@ import WebSocket, { WebSocketServer } from "ws";
 import { HttpProxyAgent } from "http-proxy-agent";
 
 const execFileAsync = promisify(execFile);
-const proxyUrl = process.env.PROXY_URL || "http://127.0.0.1:9900";
+const proxyUrl =
+  process.env.PROXY_URL ||
+  `http://127.0.0.1:${process.env.BIFROST_UI_TEST_PORT ?? process.env.BACKEND_PORT ?? 9910}`;
 const proxyHost = new URL(proxyUrl);
 const apiBase =
   process.env.ADMIN_API_BASE || `${proxyUrl.replace(/\/$/, "")}/_bifrost/api`;
@@ -87,6 +89,11 @@ const startWsServer = async () => {
   const port = (wss.address() as AddressInfo).port;
   return {
     port,
+    waitForClient: async () => {
+      await expect
+        .poll(() => wss.clients.size, { timeout: 15000 })
+        .toBeGreaterThan(0);
+    },
     close: () =>
       new Promise<void>((resolve, reject) =>
         wss.close((err?: Error) => (err ? reject(err) : resolve())),
@@ -153,6 +160,8 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
   await expect(page.getByTestId("traffic-table")).toBeVisible();
 
   await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+  await page.reload();
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
 
   const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
   await expect(row).toBeVisible();
@@ -256,6 +265,9 @@ test("订阅更新提示与滚动状态一致", async ({ page, request }) => {
   });
 
   await sendProxyRequest(`http://127.0.0.1:${server.port}/latest-${token}`);
+  const scrollBottomButton = page.getByTestId("traffic-scroll-bottom");
+  await expect(scrollBottomButton).toBeVisible();
+  await scrollBottomButton.click({ force: true });
   await expect(
     page.getByTestId("traffic-row").filter({ hasText: `/latest-${token}` }).first(),
   ).toBeVisible();
@@ -320,6 +332,54 @@ test("WebSocket 外部站点回显与 size 增长", async ({ page, request }) =>
   await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
   await expect(page.getByTestId("ws-frames-table")).toContainText("hello");
   await expect(page.getByTestId("ws-frames-table")).toContainText("6 B");
+});
+
+test("WebSocket 详情 Messages 面板打开后可实时收到新消息", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startWsServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const wsPath = `/ws-live-${token}`;
+  const wsUrl = `ws://127.0.0.1:${server.port}${wsPath}`;
+  const agent = new HttpProxyAgent(proxyUrl);
+  const ws = new WebSocket(wsUrl, { agent });
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    await server.waitForClient();
+
+    ws.send(`seed-${token}`);
+
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const wsRow = page.getByTestId("traffic-row").filter({ hasText: wsPath }).last();
+    await expect(wsRow).toBeVisible();
+    await wsRow.click();
+    await page.getByTestId("response-tab-messages").click();
+
+    await expect(page.getByTestId("ws-frames-pane")).toBeVisible();
+    await expect(page.getByTestId("ws-frames-table")).toContainText(`seed-${token}`);
+    await page.waitForTimeout(500);
+
+    const livePayload = `after-open-${token}`;
+    for (let i = 0; i < 5; i += 1) {
+      ws.send(`${livePayload}-${i}`);
+      await page.waitForTimeout(200);
+    }
+
+    await expect(page.getByTestId("ws-frames-table")).toContainText(livePayload);
+  } finally {
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+      await new Promise<void>((resolve) => {
+        ws.once("close", resolve);
+        ws.close();
+      });
+    }
+    await server.close();
+  }
 });
 
 test("WebSocket 列表未到底部时不应强制滚动到底部", async ({ page, request }) => {
@@ -541,6 +601,30 @@ test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, req
 
 test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) => {
   await clearTraffic(request);
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/external-sse-${token}`;
+  const server = createServer((req, res) => {
+    if (req.url !== ssePath) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write("id: 1\ndata: alpha\n\n");
+    const timer = setInterval(() => {
+      res.write(`id: ${Date.now()}\ndata: update-${Date.now()}\n\n`);
+    }, 400);
+    req.on("close", () => {
+      clearInterval(timer);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
   const stream = spawn(
     "curl",
     [
@@ -550,7 +634,7 @@ test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) =>
       "6",
       "-x",
       proxyUrl,
-      "https://echo.websocket.org/.sse",
+      `http://127.0.0.1:${port}${ssePath}`,
     ],
     { stdio: "ignore" },
   );
@@ -561,7 +645,7 @@ test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) =>
 
     const row = page
       .getByTestId("traffic-row")
-      .filter({ hasText: "echo.websocket.org" })
+      .filter({ hasText: ssePath })
       .first();
     await expect(row).toBeVisible();
 
@@ -584,6 +668,85 @@ test("SSE 外部站点流式更新与 size 增长", async ({ page, request }) =>
       })
       .toBeGreaterThan(0);
   } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err?: Error) => (err ? reject(err) : resolve())),
+    );
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
+});
+
+test("SSE 详情 Messages 面板打开后可实时收到新事件", async ({ page, request }) => {
+  await clearTraffic(request);
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-live-${token}`;
+  const server = createServer((req, res) => {
+    if (req.url !== ssePath) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`id: 1\ndata: seed-${token}\n\n`);
+    let counter = 0;
+    const timer = setInterval(() => {
+      counter += 1;
+      res.write(`id: ${counter + 1}\ndata: after-open-${token}-${counter}\n\n`);
+      if (counter >= 6) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 400);
+    req.on("close", () => {
+      clearInterval(timer);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "8",
+      "-x",
+      proxyUrl,
+      `http://127.0.0.1:${port}${ssePath}`,
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const sseRow = page.getByTestId("traffic-row").filter({ hasText: ssePath }).first();
+    await expect(sseRow).toBeVisible();
+    await sseRow.click();
+    await page.getByTestId("response-tab-messages").click();
+
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect(page.getByTestId("sse-message-list")).toContainText(`seed-${token}`);
+    await expect(page.getByTestId("sse-message-list")).toContainText(`after-open-${token}`);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err?: Error) => (err ? reject(err) : resolve())),
+    );
     const waitForClose = new Promise<void>((resolve) => {
       if (stream.exitCode !== null) {
         resolve();

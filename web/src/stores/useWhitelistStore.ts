@@ -7,6 +7,7 @@ interface WhitelistState {
   status: WhitelistStatus | null;
   loading: boolean;
   error: string | null;
+  applyStatusSnapshot: (status: WhitelistStatus) => void;
   fetchStatus: () => Promise<void>;
   addToWhitelist: (ipOrCidr: string) => Promise<boolean>;
   removeFromWhitelist: (ipOrCidr: string) => Promise<boolean>;
@@ -17,10 +18,14 @@ interface WhitelistState {
   clearError: () => void;
 }
 
-export const useWhitelistStore = create<WhitelistState>((set, get) => ({
+export const useWhitelistStore = create<WhitelistState>((set) => ({
   status: null,
   loading: false,
   error: null,
+
+  applyStatusSnapshot: (status) => {
+    set({ status, loading: false, error: null });
+  },
 
   fetchStatus: async () => {
     set({ loading: true, error: null });
@@ -36,7 +41,15 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.addToWhitelist(ipOrCidr);
-      await get().fetchStatus();
+      set((state) => ({
+        status: state.status
+          ? {
+              ...state.status,
+              whitelist: [...state.status.whitelist, ipOrCidr],
+            }
+          : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -48,7 +61,15 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.removeFromWhitelist(ipOrCidr);
-      await get().fetchStatus();
+      set((state) => ({
+        status: state.status
+          ? {
+              ...state.status,
+              whitelist: state.status.whitelist.filter((item) => item !== ipOrCidr),
+            }
+          : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -59,8 +80,11 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
   setMode: async (mode: AccessMode) => {
     set({ loading: true, error: null });
     try {
-      await api.setAccessMode(mode);
-      await get().fetchStatus();
+      const result = await api.setAccessMode(mode);
+      set((state) => ({
+        status: state.status ? { ...state.status, mode: result.mode } : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -71,8 +95,13 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
   setAllowLan: async (allow: boolean) => {
     set({ loading: true, error: null });
     try {
-      await api.setAllowLan(allow);
-      await get().fetchStatus();
+      const result = await api.setAllowLan(allow);
+      set((state) => ({
+        status: state.status
+          ? { ...state.status, allow_lan: result.allow_lan }
+          : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -84,7 +113,15 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.addTemporary(ip);
-      await get().fetchStatus();
+      set((state) => ({
+        status: state.status
+          ? {
+              ...state.status,
+              temporary_whitelist: [...state.status.temporary_whitelist, ip],
+            }
+          : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -96,7 +133,17 @@ export const useWhitelistStore = create<WhitelistState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.removeTemporary(ip);
-      await get().fetchStatus();
+      set((state) => ({
+        status: state.status
+          ? {
+              ...state.status,
+              temporary_whitelist: state.status.temporary_whitelist.filter(
+                (item) => item !== ip,
+              ),
+            }
+          : state.status,
+        loading: false,
+      }));
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });

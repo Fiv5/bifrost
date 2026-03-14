@@ -6,41 +6,10 @@ use tokio_stream::StreamExt;
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::search::{SearchEngine, SearchProgress, SearchRequest};
 use crate::state::SharedAdminState;
-use crate::traffic::SocketStatus;
 use crate::traffic_db::TrafficSummaryCompact;
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &SharedAdminState) {
-    if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() {
-        return;
-    }
-
-    if summary.is_sse() {
-        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
-            summary.fc = status.frame_count;
-            summary.ss = Some(status);
-        }
-    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-        summary.fc = status.frame_count;
-        summary.ss = Some(status);
-    } else if let Some(ref fs) = state.frame_store {
-        if let Some(metadata) = fs.get_metadata(&summary.id) {
-            summary.fc = metadata.frame_count as usize;
-            summary.ss = Some(SocketStatus {
-                is_open: !metadata.is_closed,
-                frame_count: metadata.frame_count as usize,
-                ..Default::default()
-            });
-        }
-    }
-
-    if summary.is_sse() {
-        if let Some(ref socket_status) = summary.ss {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if total > 0 {
-                summary.res_sz = summary.res_sz.max(total as usize);
-            }
-        }
-    }
+    state.reconcile_socket_summary(summary);
 }
 
 pub async fn handle_search(

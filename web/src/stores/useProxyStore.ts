@@ -8,6 +8,8 @@ interface ProxyState {
   cliProxy: CliProxyStatus | null;
   loading: boolean;
   error: string | null;
+  applySystemProxySnapshot: (status: SystemProxyStatus) => void;
+  applyCliProxySnapshot: (status: CliProxyStatus) => void;
   fetchSystemProxy: () => Promise<void>;
   fetchCliProxy: () => Promise<void>;
   toggleSystemProxy: (enabled: boolean) => Promise<boolean>;
@@ -19,6 +21,14 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
   cliProxy: null,
   loading: false,
   error: null,
+
+  applySystemProxySnapshot: (status) => {
+    set({ systemProxy: status, loading: false, error: null });
+  },
+
+  applyCliProxySnapshot: (status) => {
+    set({ cliProxy: status, error: null });
+  },
 
   fetchSystemProxy: async () => {
     try {
@@ -42,8 +52,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     const currentState = get().systemProxy;
     set({ loading: true, error: null });
     try {
-      await setSystemProxy({ enabled });
-      const status = await getSystemProxyStatus();
+      const status = await setSystemProxy({ enabled });
       set({ systemProxy: status, loading: false, error: null });
       return true;
     } catch (e) {

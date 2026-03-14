@@ -96,6 +96,20 @@ impl Default for CachedCpuMetrics {
     }
 }
 
+struct CachedMetricsSnapshot {
+    snapshot: RwLock<Option<MetricsSnapshot>>,
+    last_refresh_time: AtomicU64,
+}
+
+impl Default for CachedMetricsSnapshot {
+    fn default() -> Self {
+        Self {
+            snapshot: RwLock::new(None),
+            last_refresh_time: AtomicU64::new(0),
+        }
+    }
+}
+
 pub struct MetricsCollector {
     total_requests: AtomicU64,
     active_connections: AtomicU64,
@@ -120,6 +134,7 @@ pub struct MetricsCollector {
     max_bytes_sent_rate: RwLock<f32>,
     max_bytes_received_rate: RwLock<f32>,
     cached_cpu: CachedCpuMetrics,
+    cached_snapshot: CachedMetricsSnapshot,
     http: TrafficTypeCounters,
     https: TrafficTypeCounters,
     tunnel: TrafficTypeCounters,
@@ -162,6 +177,7 @@ impl MetricsCollector {
                 memory_total: AtomicU64::new(memory_total),
                 ..Default::default()
             },
+            cached_snapshot: CachedMetricsSnapshot::default(),
             http: TrafficTypeCounters::new(),
             https: TrafficTypeCounters::new(),
             tunnel: TrafficTypeCounters::new(),
@@ -278,11 +294,21 @@ impl MetricsCollector {
     }
 
     pub fn get_current(&self) -> MetricsSnapshot {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let cached_at = self
+            .cached_snapshot
+            .last_refresh_time
+            .load(Ordering::Relaxed);
+        if now.saturating_sub(cached_at) <= 250 {
+            if let Some(snapshot) = self.cached_snapshot.snapshot.read().clone() {
+                return snapshot;
+            }
+        }
+
         let memory_used = self.cached_cpu.memory_used.load(Ordering::Relaxed);
         let memory_total = self.cached_cpu.memory_total.load(Ordering::Relaxed);
         let cpu_usage = *self.cached_cpu.smoothed_cpu_usage.read();
 
-        let now = chrono::Utc::now().timestamp_millis() as u64;
         let total_requests = self.total_requests.load(Ordering::Relaxed);
         let bytes_sent = self.bytes_sent.load(Ordering::Relaxed);
         let bytes_received = self.bytes_received.load(Ordering::Relaxed);
@@ -364,7 +390,7 @@ impl MetricsCollector {
         let max_bytes_sent_rate = *self.max_bytes_sent_rate.read();
         let max_bytes_received_rate = *self.max_bytes_received_rate.read();
 
-        MetricsSnapshot {
+        let snapshot = MetricsSnapshot {
             timestamp: now,
             memory_used,
             memory_total,
@@ -386,7 +412,14 @@ impl MetricsCollector {
             wss: self.wss.to_metrics(),
             h3: self.h3.to_metrics(),
             socks5: self.socks5.to_metrics(),
-        }
+        };
+
+        *self.cached_snapshot.snapshot.write() = Some(snapshot.clone());
+        self.cached_snapshot
+            .last_refresh_time
+            .store(now, Ordering::Relaxed);
+
+        snapshot
     }
 
     pub fn take_snapshot(&self) -> MetricsSnapshot {

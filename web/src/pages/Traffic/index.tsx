@@ -116,8 +116,11 @@ export default function Traffic() {
     );
 
   const {
+    fetchInitialData,
     fetchTrafficDetail,
     clearTraffic,
+    startPolling,
+    stopPolling,
     setToolbarFilters,
     setFilterConditions,
     setAutoScroll,
@@ -127,8 +130,11 @@ export default function Traffic() {
     setSelectedId,
   } = useTrafficStore(
     useShallow((state) => ({
+      fetchInitialData: state.fetchInitialData,
       fetchTrafficDetail: state.fetchTrafficDetail,
       clearTraffic: state.clearTraffic,
+      startPolling: state.startPolling,
+      stopPolling: state.stopPolling,
       setToolbarFilters: state.setToolbarFilters,
       setFilterConditions: state.setFilterConditions,
       setAutoScroll: state.setAutoScroll,
@@ -138,6 +144,21 @@ export default function Traffic() {
       setSelectedId: state.setSelectedId,
     })),
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetchInitialData().finally(() => {
+      if (!cancelled) {
+        startPolling();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+  }, [fetchInitialData, startPolling, stopPolling]);
 
   const showFilterBar = true;
   const systemProxy = useProxyStore((state) => state.systemProxy);
