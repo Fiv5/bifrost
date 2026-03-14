@@ -865,6 +865,11 @@ export const useTrafficStore = create<TrafficState>()(
       },
 
       fetchInitialData: async () => {
+        const state = get();
+        if (state.loading || state.initialized) {
+          return;
+        }
+
         set({ loading: true, error: null });
         try {
           const filter: TrafficUpdatesFilter = {

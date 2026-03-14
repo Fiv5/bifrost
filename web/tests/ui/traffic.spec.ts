@@ -182,6 +182,73 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
   await server.close();
 });
 
+test("切换页面后保留已加载流量并持续接收 push", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const firstPath = `/persist-first-${token}`;
+  const secondPath = `/persist-second-${token}`;
+
+  try {
+    await page.goto("/_bifrost/settings");
+    await expect(page).toHaveURL(/\/_bifrost\/settings$/);
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${firstPath}`);
+
+    await page.getByText("Network", { exact: true }).click();
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: firstPath }).first(),
+    ).toBeVisible();
+
+    await page.getByText("Settings", { exact: true }).click();
+    await expect(page).toHaveURL(/\/_bifrost\/settings$/);
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${secondPath}`);
+
+    await page.getByText("Network", { exact: true }).click();
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: firstPath }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: secondPath }).first(),
+    ).toBeVisible();
+  } finally {
+    await server.close();
+  }
+});
+
+test("Header 仅在存在差异时显示切换", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/headers-plain-${token}`;
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+    await page.reload();
+    const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
+    await expect(row).toBeVisible();
+    await row.click();
+    await page.getByTestId("request-tab-header").click();
+
+    await expect(page.getByTestId("request-header-view-mode-tabs")).toHaveCount(0);
+    await expect(page.getByTestId("request-header-view-tab-current")).toHaveCount(0);
+    await expect(page.getByTestId("request-header-view-tab-original")).toHaveCount(0);
+
+    await page.getByTestId("response-tab-header").click();
+    await expect(page.getByTestId("response-header-view-mode-tabs")).toBeVisible();
+    await expect(page.getByTestId("response-header-view-tab-current")).toBeVisible();
+    await expect(page.getByTestId("response-header-view-tab-actual")).toBeVisible();
+  } finally {
+    await server.close();
+  }
+});
+
 test("清空流量时前端立即清理", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startMockServer();

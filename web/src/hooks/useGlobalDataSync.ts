@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
+import { useTrafficStore } from '../stores/useTrafficStore';
 import { useVersionStore } from '../stores/useVersionStore';
 import { syncDynamicData } from './useEditorCompletion';
 import pushService from '../services/pushService';
@@ -37,6 +38,7 @@ export function useGlobalDataSync() {
     const proxyStore = useProxyStore.getState();
     const filterPanelStore = useFilterPanelStore.getState();
     const metricsStore = useMetricsStore.getState();
+    const trafficStore = useTrafficStore.getState();
     const versionStore = useVersionStore.getState();
 
     const pauseRealtime = () => {
@@ -73,6 +75,7 @@ export function useGlobalDataSync() {
         clearInterval(globalState.versionCheckIntervalId);
         globalState.versionCheckIntervalId = null;
       }
+      useTrafficStore.getState().stopPolling();
     };
 
     const onForceRefresh = (data: { reason: string }) => {
@@ -91,12 +94,18 @@ export function useGlobalDataSync() {
         proxyStore.fetchCliProxy(),
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
+        trafficStore.fetchInitialData(),
         versionStore.checkVersion({ skipCache: true }),
       ]);
 
       if (globalState.forceRefresh) {
         return;
       }
+
+      if (!useTrafficStore.getState().paused) {
+        useTrafficStore.getState().startPolling();
+      }
+
       metricsStore.enablePush({
         needOverview: true,
         needMetrics: true,
@@ -134,6 +143,7 @@ export function useGlobalDataSync() {
       stopAllPolling();
 
       useMetricsStore.getState().disablePush();
+      useTrafficStore.getState().stopPolling();
       globalState.initialized = false;
       globalState.visibilityPaused = false;
       globalState.forceRefresh = false;
