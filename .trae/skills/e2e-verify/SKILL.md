@@ -40,6 +40,7 @@ BIFROST_DATA_DIR=./.bifrost-e2e-ui ./.bifrost-ui-target/debug/bifrost start -p 9
 
 - `scripts/browser-test.js`：UI 测试主入口
 - `scripts/api-test.js`：API 测试主入口
+- `scripts/push-debug.js`：最小化 push / websocket 排查工具
 - `scripts/scenarios/`：内置场景
 - `logs/`：快照和调试输出
 - `screenshots/`：截图输出
@@ -89,6 +90,16 @@ node api-test.js --api /_bifrost/api/system/overview -p 9900 -v
 node api-test.js --api /_bifrost/api/rules -p 9900
 ```
 
+### Push 排查命令
+
+```bash
+node push-debug.js -p 9900
+node push-debug.js -p 9900 --duration 8000 --headful
+node push-debug.js -p 9900 --seed http
+node push-debug.js -p 9900 --seed connect --duration 8000
+node push-debug.js -p 9900 --page /_bifrost/rules --no-expect-traffic-subscription
+```
+
 ## 常用工作流
 
 1. 优先运行已有场景，而不是新写一套交互脚本
@@ -96,6 +107,7 @@ node api-test.js --api /_bifrost/api/rules -p 9900
 3. API 问题优先用 `api-test.js` 单独确认
 4. 需要新增场景时，直接在 `scripts/scenarios/` 下补 JSON
 5. 如果页面现象和 API 不一致，必须抓浏览器 `/api/push` websocket frame，确认是“后端没推”还是“页面没订阅/没消费”
+6. 实时推送问题优先跑 `push-debug.js`，先拿到 websocket 和 API 证据，再决定是否进入完整 Playwright 用例
 
 ## CLI 对齐说明
 

@@ -3211,7 +3211,7 @@ async fn serve_mock_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bifrost_admin::TrafficDbStore;
+    use bifrost_admin::{FrameDirection, TrafficDbStore};
     use std::env;
     use std::fs;
     use std::path::PathBuf;

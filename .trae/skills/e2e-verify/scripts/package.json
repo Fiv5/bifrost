@@ -5,7 +5,8 @@
   "main": "browser-test.js",
   "bin": {
     "browser": "browser-test.js",
-    "api": "api-test.js"
+    "api": "api-test.js",
+    "push-debug": "push-debug.js"
   },
   "scripts": {
     "browser": "node browser-test.js",
@@ -17,7 +18,9 @@
     "browser:tools": "node browser-test.js tools",
     "browser:help": "node browser-test.js help",
     "api": "node api-test.js",
-    "api:help": "node api-test.js --help"
+    "api:help": "node api-test.js --help",
+    "push:debug": "node push-debug.js",
+    "push:debug:help": "node push-debug.js --help"
   },
   "dependencies": {
     "puppeteer": "^24.4.0"
