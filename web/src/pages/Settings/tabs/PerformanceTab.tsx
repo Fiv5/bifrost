@@ -1,4 +1,4 @@
-import { Card, Col, Row, Space, Typography, Slider, Divider, Button, Popconfirm, theme } from "antd";
+import { Card, Col, Row, Space, Typography, Slider, Divider, Button, Popconfirm, Switch, theme } from "antd";
 import {
   ThunderboltOutlined,
   FolderOutlined,
@@ -28,6 +28,7 @@ export interface PerformanceTabProps {
   handleMaxBodyMemorySizeChange: (value: number) => void;
   handleMaxBodyBufferSizeChange: (value: number) => void;
   handleMaxBodyProbeSizeChange: (value: number) => void;
+  handleEnableBinaryTrafficCaptureChange: (checked: boolean) => void;
   handleFileRetentionDaysChange: (value: number) => void;
   handleClearBodyCache: () => void;
   formatBytes: (bytes: number) => string;
@@ -51,6 +52,7 @@ export default function PerformanceTab({
   handleMaxBodyMemorySizeChange,
   handleMaxBodyBufferSizeChange,
   handleMaxBodyProbeSizeChange,
+  handleEnableBinaryTrafficCaptureChange,
   handleFileRetentionDaysChange,
   handleClearBodyCache,
   formatBytes,
@@ -102,6 +104,27 @@ export default function PerformanceTab({
                   <Text code>
                     {(trafficDraft?.max_records || 0).toLocaleString()}
                   </Text>
+                </Col>
+              </Row>
+
+              <Divider style={{ margin: "12px 0" }} />
+
+              <Row justify="space-between" align="middle">
+                <Col flex="1" style={{ marginRight: 16 }}>
+                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
+                    <Text>Enable Binary File Capture and Decoding</Text>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Record and decode large binary downloads in traffic details. This can
+                      noticeably reduce proxy throughput and increase CPU, memory, and disk usage.
+                      It is disabled by default, which keeps binary traffic in performance mode.
+                    </Text>
+                  </Space>
+                </Col>
+                <Col>
+                  <Switch
+                    checked={!trafficDraft?.binary_traffic_performance_mode}
+                    onChange={handleEnableBinaryTrafficCaptureChange}
+                  />
                 </Col>
               </Row>
 

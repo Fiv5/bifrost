@@ -12,7 +12,7 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Method, Request, Response};
+use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -58,8 +58,8 @@ use crate::utils::http_size::{
 };
 use crate::utils::logging::{format_rules_summary, RequestContext};
 use crate::utils::tee::{
-    create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
-    BodyCaptureHandle,
+    create_metrics_body, create_request_tee_body, create_sse_tee_body, create_tee_body_with_store,
+    store_request_body, BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
 
@@ -790,13 +790,15 @@ async fn tls_intercept_tunnel_with_cancel(
         return tunnel_intercepted_non_http_tls_with_cancel(
             client_tls,
             initial_payload,
-            original_host,
-            original_port,
-            unsafe_ssl,
-            verbose_logging,
-            req_id,
-            admin_state,
-            cancel_rx,
+            RawTlsTunnelContext {
+                original_host: original_host.to_string(),
+                original_port,
+                unsafe_ssl,
+                verbose_logging,
+                req_id: req_id.to_string(),
+                admin_state,
+                cancel_rx,
+            },
         )
         .await;
     }
@@ -894,17 +896,31 @@ fn format_tls_alpn(alpn: Option<&[u8]>) -> String {
     }
 }
 
-async fn tunnel_intercepted_non_http_tls_with_cancel(
-    client_tls: tokio_rustls::server::TlsStream<TokioIo<Upgraded>>,
-    initial_payload: BytesMut,
-    original_host: &str,
+struct RawTlsTunnelContext {
+    original_host: String,
     original_port: u16,
     unsafe_ssl: bool,
     verbose_logging: bool,
-    req_id: &str,
+    req_id: String,
     admin_state: Option<Arc<AdminState>>,
     cancel_rx: oneshot::Receiver<()>,
+}
+
+async fn tunnel_intercepted_non_http_tls_with_cancel(
+    client_tls: tokio_rustls::server::TlsStream<TokioIo<Upgraded>>,
+    initial_payload: BytesMut,
+    ctx: RawTlsTunnelContext,
 ) -> Result<bool> {
+    let RawTlsTunnelContext {
+        original_host,
+        original_port,
+        unsafe_ssl,
+        verbose_logging,
+        req_id,
+        admin_state,
+        cancel_rx,
+    } = ctx;
+
     if verbose_logging {
         info!(
             "[{}] Intercepted TLS payload is not HTTP; forwarding as raw TLS stream to {}:{}",
@@ -927,7 +943,7 @@ async fn tunnel_intercepted_non_http_tls_with_cancel(
         );
     }
 
-    let server_name = ServerName::try_from(original_host.to_string())
+    let server_name = ServerName::try_from(original_host.clone())
         .map_err(|e| BifrostError::Tls(format!("Invalid server name {original_host}: {e}")))?;
     let connector = TlsConnector::from(get_tls_client_config_without_alpn(unsafe_ssl));
     let upstream_tls = connector
@@ -1136,6 +1152,74 @@ fn is_likely_text_content_type(content_type: &str) -> bool {
         return true;
     }
     false
+}
+
+fn is_likely_binary_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() || is_likely_text_content_type(ct) {
+        return false;
+    }
+
+    ct.starts_with("application/octet-stream")
+        || ct.starts_with("application/pdf")
+        || ct.starts_with("application/zip")
+        || ct.starts_with("application/gzip")
+        || ct.starts_with("application/x-gzip")
+        || ct.starts_with("application/x-tar")
+        || ct.starts_with("application/x-rar")
+        || ct.starts_with("application/x-7z")
+        || ct.starts_with("application/vnd.rar")
+        || ct.starts_with("application/vnd.ms-cab-compressed")
+        || ct.starts_with("application/x-bittorrent")
+        || ct.starts_with("application/wasm")
+        || ct.starts_with("application/font-")
+        || ct.starts_with("application/vnd.ms-fontobject")
+        || ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.starts_with("font/")
+        || ct.contains("protobuf")
+        || ct.contains("grpc")
+}
+
+fn should_use_binary_performance_mode(
+    res_parts: &hyper::http::response::Parts,
+    res_content_length: Option<usize>,
+    max_body_buffer_size: usize,
+    binary_traffic_performance_mode: bool,
+) -> bool {
+    if !binary_traffic_performance_mode {
+        return false;
+    }
+
+    let content_type_lower = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    if content_type_lower.starts_with("image/") {
+        return false;
+    }
+    let has_attachment = res_parts
+        .headers
+        .get(hyper::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("attachment"))
+        .unwrap_or(false);
+    if !has_attachment && !is_likely_binary_content_type(&content_type_lower) {
+        return false;
+    }
+
+    let is_chunked = res_parts
+        .headers
+        .get(hyper::header::TRANSFER_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("chunked"))
+        .unwrap_or(false);
+
+    has_attachment
+        || is_chunked
+        || matches!(res_content_length, Some(len) if len > max_body_buffer_size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2016,6 +2100,17 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().starts_with("text/event-stream"))
         .unwrap_or(false);
+    let binary_traffic_performance_mode = admin_state
+        .as_ref()
+        .map(|state| state.get_binary_traffic_performance_mode())
+        .unwrap_or(false);
+    let skip_binary_recording = should_use_binary_performance_mode(
+        &res_parts,
+        res_content_length,
+        max_body_buffer_size,
+        binary_traffic_performance_mode,
+    ) && !is_websocket
+        && !is_sse;
 
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
@@ -2033,7 +2128,7 @@ async fn handle_intercepted_request_with_protocol(
     if let Some(body) = h3_buffered_body.clone() {
         pre_read_res = Some((body.to_vec(), 0));
     }
-    if needs_res_body_read && needs_processing && !is_sse {
+    if needs_res_body_read && needs_processing && !is_sse && !skip_binary_recording {
         if let Some(len) = res_content_length {
             if len > max_body_buffer_size {
                 res_body_too_large = true;
@@ -2104,8 +2199,10 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let skip_body_processing =
-        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
+    let skip_body_processing = skip_binary_recording
+        || is_sse
+        || !needs_processing
+        || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
         let size_display = res_content_length
@@ -2137,101 +2234,107 @@ async fn handle_intercepted_request_with_protocol(
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
 
-            let mut record =
-                TrafficRecord::new(record_id.clone(), method_str.clone(), original_uri.clone());
-            record.status = res_parts.status.as_u16();
-            record.content_type = res_parts
-                .headers
-                .get(hyper::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let res_headers: Vec<(String, String)> = res_parts
-                .headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect();
-            record.request_size =
-                calculate_request_size(&method_str, &original_uri, &req_headers, request_body_size);
-            record.response_size = 0;
-            record.duration_ms = total_ms;
-            record.host = original_host.to_string();
-            record.timing = Some(RequestTiming {
-                dns_ms,
-                connect_ms: None,
-                tls_ms,
-                send_ms: None,
-                wait_ms: Some(wait_ms),
-                receive_ms: None,
-                total_ms,
-            });
-            record.request_headers = Some(final_req_headers.clone());
-            record.response_headers = Some(original_res_headers.clone());
-            if res_headers != original_res_headers {
-                record.actual_response_headers = Some(res_headers.clone());
-            }
-            record.original_request_headers = Some(original_req_headers.clone());
-            if actual_target_host != original_host || actual_target_port != original_port {
-                let actual_scheme = if actual_use_http { "http" } else { "https" };
-                let actual_url = if (actual_use_http && actual_target_port == 80)
-                    || (!actual_use_http && actual_target_port == 443)
-                {
-                    format!("{}://{}{}", actual_scheme, actual_target_host, path)
+            if !skip_binary_recording {
+                let mut record =
+                    TrafficRecord::new(record_id.clone(), method_str.clone(), original_uri.clone());
+                record.status = res_parts.status.as_u16();
+                record.content_type = res_parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let res_headers: Vec<(String, String)> = res_parts
+                    .headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect();
+                record.request_size = calculate_request_size(
+                    &method_str,
+                    &original_uri,
+                    &req_headers,
+                    request_body_size,
+                );
+                record.response_size = 0;
+                record.duration_ms = total_ms;
+                record.host = original_host.to_string();
+                record.timing = Some(RequestTiming {
+                    dns_ms,
+                    connect_ms: None,
+                    tls_ms,
+                    send_ms: None,
+                    wait_ms: Some(wait_ms),
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.request_headers = Some(final_req_headers.clone());
+                record.response_headers = Some(original_res_headers.clone());
+                if res_headers != original_res_headers {
+                    record.actual_response_headers = Some(res_headers.clone());
+                }
+                record.original_request_headers = Some(original_req_headers.clone());
+                if actual_target_host != original_host || actual_target_port != original_port {
+                    let actual_scheme = if actual_use_http { "http" } else { "https" };
+                    let actual_url = if (actual_use_http && actual_target_port == 80)
+                        || (!actual_use_http && actual_target_port == 443)
+                    {
+                        format!("{}://{}{}", actual_scheme, actual_target_host, path)
+                    } else {
+                        format!(
+                            "{}://{}:{}{}",
+                            actual_scheme, actual_target_host, actual_target_port, path
+                        )
+                    };
+                    record.actual_url = Some(actual_url);
+                    record.actual_host = Some(actual_target_host.clone());
+                }
+                record.request_content_type = final_req_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.clone());
+                record.client_ip = client_ip.clone();
+                record.client_app = client_app.clone();
+                record.client_pid = client_pid;
+                record.client_path = client_path.clone();
+
+                if is_websocket {
+                    record.protocol = "wss".to_string();
+                }
+
+                if is_sse {
+                    record.set_sse();
+                    state.sse_hub.register(&record_id);
+                }
+
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
                 } else {
-                    format!(
-                        "{}://{}:{}{}",
-                        actual_scheme, actual_target_host, actual_target_port, path
+                    store_request_body(
+                        &admin_state,
+                        &record_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
                     )
                 };
-                record.actual_url = Some(actual_url);
-                record.actual_host = Some(actual_target_host.clone());
-            }
-            record.request_content_type = final_req_headers
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                .map(|(_, v)| v.clone());
-            record.client_ip = client_ip.clone();
-            record.client_app = client_app.clone();
-            record.client_pid = client_pid;
-            record.client_path = client_path.clone();
 
-            if is_websocket {
-                record.protocol = "wss".to_string();
-            }
-
-            if is_sse {
-                record.set_sse();
-                state.sse_hub.register(&record_id);
-            }
-
-            record.has_rule_hit = has_rules;
-            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-
-            record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                capture.take()
-            } else {
-                store_request_body(
-                    &admin_state,
-                    &record_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                )
-            };
-
-            if is_sse {
-                if let Some(ref body_store) = state.body_store {
-                    match body_store.read().start_stream(&record_id, "sse_raw") {
-                        Ok(writer) => {
-                            record.response_body_ref = Some(writer.body_ref());
-                            sse_stream_writer = Some(writer);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                if is_sse {
+                    if let Some(ref body_store) = state.body_store {
+                        match body_store.read().start_stream(&record_id, "sse_raw") {
+                            Ok(writer) => {
+                                record.response_body_ref = Some(writer.body_ref());
+                                sse_stream_writer = Some(writer);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                            }
                         }
                     }
                 }
-            }
 
-            state.record_traffic(record);
+                state.record_traffic(record);
+            }
         }
 
         if let Some(delay_ms) = resolved_rules.res_delay {
@@ -2261,18 +2364,22 @@ async fn handle_intercepted_request_with_protocol(
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         } else {
-            let response_headers_size =
-                calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
             let res_body = res_body_stream.take().unwrap();
-            let tee_body = create_tee_body_with_store(
-                res_body,
-                admin_state.clone(),
-                record_id,
-                Some(max_body_buffer_size),
-                res_content_encoding.clone(),
-                Some(traffic_type),
-                response_headers_size,
-            );
+            let tee_body = if skip_binary_recording {
+                create_metrics_body(res_body, admin_state.clone(), Some(traffic_type))
+            } else {
+                let response_headers_size =
+                    calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+                create_tee_body_with_store(
+                    res_body,
+                    admin_state.clone(),
+                    record_id,
+                    Some(max_body_buffer_size),
+                    res_content_encoding.clone(),
+                    Some(traffic_type),
+                    response_headers_size,
+                )
+            };
             let final_body = wrap_throttled_body(tee_body, resolved_rules.res_speed);
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));

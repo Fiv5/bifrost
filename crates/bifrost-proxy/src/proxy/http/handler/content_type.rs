@@ -47,6 +47,70 @@ pub(super) fn is_likely_text_content_type(content_type: &str) -> bool {
     false
 }
 
+pub(super) fn is_likely_binary_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() || is_likely_text_content_type(ct) {
+        return false;
+    }
+
+    ct.starts_with("application/octet-stream")
+        || ct.starts_with("application/pdf")
+        || ct.starts_with("application/zip")
+        || ct.starts_with("application/gzip")
+        || ct.starts_with("application/x-gzip")
+        || ct.starts_with("application/x-tar")
+        || ct.starts_with("application/x-rar")
+        || ct.starts_with("application/x-7z")
+        || ct.starts_with("application/vnd.rar")
+        || ct.starts_with("application/vnd.ms-cab-compressed")
+        || ct.starts_with("application/x-bittorrent")
+        || ct.starts_with("application/wasm")
+        || ct.starts_with("application/font-")
+        || ct.starts_with("application/vnd.ms-fontobject")
+        || ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.starts_with("font/")
+        || ct.contains("protobuf")
+        || ct.contains("grpc")
+}
+
+pub(super) fn should_use_binary_performance_mode(
+    res_parts: &ResponseParts,
+    res_content_length: Option<usize>,
+    max_body_buffer_size: usize,
+    binary_traffic_performance_mode: bool,
+) -> bool {
+    if !binary_traffic_performance_mode || is_sse_response(res_parts) {
+        return false;
+    }
+
+    let content_type_lower = get_content_type(res_parts);
+    if content_type_lower.starts_with("image/") {
+        return false;
+    }
+    let has_attachment = res_parts
+        .headers
+        .get(hyper::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("attachment"))
+        .unwrap_or(false);
+
+    if !has_attachment && !is_likely_binary_content_type(&content_type_lower) {
+        return false;
+    }
+
+    let is_chunked = res_parts
+        .headers
+        .get(hyper::header::TRANSFER_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("chunked"))
+        .unwrap_or(false);
+
+    has_attachment
+        || is_chunked
+        || matches!(res_content_length, Some(len) if len > max_body_buffer_size)
+}
+
 pub(super) fn get_content_type(res_parts: &ResponseParts) -> String {
     res_parts
         .headers

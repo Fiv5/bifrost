@@ -155,6 +155,8 @@ struct TrafficConfig {
     max_db_size_bytes: u64,
     max_body_memory_size: usize,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
+    binary_traffic_performance_mode: bool,
     file_retention_days: u64,
     sse_stream_flush_bytes: usize,
     sse_stream_flush_interval_ms: u64,

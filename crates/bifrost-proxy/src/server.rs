@@ -85,6 +85,7 @@ pub struct ProxyConfig {
     pub unsafe_ssl: bool,
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
+    pub binary_traffic_performance_mode: bool,
     pub enable_socks: bool,
 }
 
@@ -122,6 +123,7 @@ impl Default for ProxyConfig {
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
             max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
             enable_socks: true,
         }
     }
@@ -1277,6 +1279,7 @@ mod tests {
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
             enable_socks: true,
         };
         let server = ProxyServer::new(config);

@@ -643,6 +643,21 @@ export default function Settings() {
     );
   };
 
+  const handleEnableBinaryTrafficCaptureChange = (checked: boolean) => {
+    const performanceModeEnabled = !checked;
+    updatePerfDraft({
+      binary_traffic_performance_mode: performanceModeEnabled,
+    });
+    schedulePerformanceUpdate(
+      "binary_traffic_performance_mode",
+      { binary_traffic_performance_mode: performanceModeEnabled },
+      checked
+        ? "Binary file capture and decoding enabled"
+        : "Binary traffic performance mode enabled",
+      "Failed to update binary traffic capture setting",
+    );
+  };
+
   const handleFileRetentionDaysChange = (value: number) => {
     updatePerfDraft({ file_retention_days: value });
     schedulePerformanceUpdate(
@@ -1087,11 +1102,12 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
           handleMaxRecordsChange={handleMaxRecordsChange}
           handleMaxDbSizeChange={handleMaxDbSizeChange}
           handleMaxBodyMemorySizeChange={handleMaxBodyMemorySizeChange}
-          handleMaxBodyBufferSizeChange={handleMaxBodyBufferSizeChange}
-          handleMaxBodyProbeSizeChange={handleMaxBodyProbeSizeChange}
-          handleFileRetentionDaysChange={handleFileRetentionDaysChange}
-          handleClearBodyCache={handleClearBodyCache}
-          formatBytes={formatBytes}
+              handleMaxBodyBufferSizeChange={handleMaxBodyBufferSizeChange}
+              handleMaxBodyProbeSizeChange={handleMaxBodyProbeSizeChange}
+              handleEnableBinaryTrafficCaptureChange={handleEnableBinaryTrafficCaptureChange}
+              handleFileRetentionDaysChange={handleFileRetentionDaysChange}
+              handleClearBodyCache={handleClearBodyCache}
+              formatBytes={formatBytes}
         />
       ),
     },

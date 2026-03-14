@@ -380,6 +380,7 @@ pub fn run_start(
         verbose_logging,
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
         max_body_probe_size: stored_config.traffic.max_body_probe_size,
+        binary_traffic_performance_mode: stored_config.traffic.binary_traffic_performance_mode,
         timeout_secs: stored_config.server.timeout_secs,
         http1_max_header_size: stored_config.server.http1_max_header_size,
         http2_max_header_list_size: stored_config.server.http2_max_header_list_size,
@@ -856,6 +857,9 @@ pub fn run_foreground(
                 .with_config_manager(config_manager)
                 .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
                 .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
+                .with_binary_traffic_performance_mode(
+                    stored_config.traffic.binary_traffic_performance_mode,
+                )
                 .with_app_icon_cache(app_icon_cache)
                 .with_script_manager(script_manager)
                 .with_replay_db_store_shared_opt(replay_db_store)

@@ -2,6 +2,7 @@ use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -15,6 +16,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "WS 帧持久化 - Binary payload 通过 FileRange 读取并 Base64 返回",
             "ws_payload",
             test_ws_payload_persistence_binary,
+        ),
+        TestCase::standalone(
+            "ws_payload_shared_file_per_connection",
+            "同一个 WS 连接的多个 frame 共享同一个 payload 文件",
+            "ws_payload",
+            test_ws_payload_shared_file_per_connection,
         ),
         TestCase::standalone(
             "ws_payload_clear_closed_connection",
@@ -115,6 +122,65 @@ async fn wait_for_binary_frame(
     Err("No binary frame found".to_string())
 }
 
+async fn wait_for_binary_frames(
+    admin_base: &str,
+    connection_id: &str,
+    expected: usize,
+) -> Result<Vec<Value>, String> {
+    for _ in 0..30 {
+        if let Ok(resp) = reqwest::get(format!(
+            "{}/traffic/{}/frames?limit=50",
+            admin_base, connection_id
+        ))
+        .await
+        {
+            if let Ok(json) = resp.json::<Value>().await {
+                if let Some(frames) = json["frames"].as_array() {
+                    let binary_frames: Vec<Value> = frames
+                        .iter()
+                        .filter(|frame| frame["frame_type"] == "binary")
+                        .cloned()
+                        .collect();
+                    if binary_frames.len() >= expected {
+                        return Ok(binary_frames);
+                    }
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("Expected at least {} binary frames", expected))
+}
+
+fn file_range_path(frame: &Value) -> Result<String, String> {
+    frame["payload_ref"]["FileRange"]["path"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "payload_ref.FileRange.path missing".to_string())
+}
+
+fn temp_data_dir(port: u16) -> PathBuf {
+    std::env::temp_dir().join(format!("bifrost_e2e_test_{}", port))
+}
+
+fn count_root_frame_cache_files(dir: &Path, connection_id: &str) -> Result<usize, String> {
+    let prefix = format!("{}_frame_", connection_id);
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read temp data dir {}: {}", dir.display(), e))?;
+    let count = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_file())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .count();
+    Ok(count)
+}
+
 async fn test_ws_payload_persistence_binary() -> Result<(), String> {
     let (ws_port, server_handle) = start_ws_echo_server().await?;
 
@@ -182,6 +248,90 @@ async fn test_ws_payload_persistence_binary() -> Result<(), String> {
         return Err(format!(
             "Expected base64 payload {}, got {}",
             expected, full_payload
+        ));
+    }
+
+    let _ = ws_stream.close(None).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    server_handle.abort();
+    Ok(())
+}
+
+async fn test_ws_payload_shared_file_per_connection() -> Result<(), String> {
+    let (ws_port, server_handle) = start_ws_echo_server().await?;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let (_proxy, _admin_state) = ProxyInstance::start_with_admin(port, vec![], false, false)
+        .await
+        .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let target_url = format!("ws://127.0.0.1:{}/echo", ws_port);
+    let proxy_addr = format!("127.0.0.1:{}", port);
+    let stream = TcpStream::connect(proxy_addr)
+        .await
+        .map_err(|e| format!("Failed to connect to proxy: {}", e))?;
+    let request = target_url
+        .into_client_request()
+        .map_err(|e| format!("Failed to build ws request: {}", e))?;
+
+    let (mut ws_stream, _) = client_async(request, stream)
+        .await
+        .map_err(|e| format!("Failed to open websocket: {}", e))?;
+
+    let first_payload = vec![1u8, 3, 5, 7];
+    let second_payload = vec![2u8, 4, 6, 8, 10];
+    for payload in [&first_payload, &second_payload] {
+        ws_stream
+            .send(Message::Binary(payload.clone().into()))
+            .await
+            .map_err(|e| format!("Failed to send ws payload: {}", e))?;
+        if let Some(msg) = ws_stream.next().await {
+            let msg = msg.map_err(|e| format!("Failed to receive ws message: {}", e))?;
+            if msg.into_data() != *payload {
+                return Err("Echo payload mismatch".to_string());
+            }
+        }
+    }
+
+    let admin_base = format!("http://127.0.0.1:{}/_bifrost/api", port);
+    let connection_id = wait_for_websocket_record_id(&admin_base).await?;
+    let frames = wait_for_binary_frames(&admin_base, &connection_id, 2).await?;
+    let first_path = file_range_path(&frames[0])?;
+    let second_path = file_range_path(&frames[1])?;
+    if first_path != second_path {
+        return Err(format!(
+            "Expected both frames to share one payload file, got {} and {}",
+            first_path, second_path
+        ));
+    }
+
+    let payload_dir = temp_data_dir(port).join("ws_payload");
+    let payload_file_count = std::fs::read_dir(&payload_dir)
+        .map_err(|e| {
+            format!(
+                "Failed to read ws payload dir {}: {}",
+                payload_dir.display(),
+                e
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_file())
+        .count();
+    if payload_file_count != 1 {
+        return Err(format!(
+            "Expected exactly 1 ws payload file, found {}",
+            payload_file_count
+        ));
+    }
+
+    let frame_cache_count = count_root_frame_cache_files(&temp_data_dir(port), &connection_id)?;
+    if frame_cache_count != 0 {
+        return Err(format!(
+            "Expected no per-frame body cache files, found {}",
+            frame_cache_count
         ));
     }
 

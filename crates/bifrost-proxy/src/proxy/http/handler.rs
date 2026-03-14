@@ -37,8 +37,8 @@ use crate::utils::http_size::{
 use crate::utils::logging::{format_rules_detail, format_rules_summary, RequestContext};
 use crate::utils::mock::{generate_mock_response, should_intercept_response};
 use crate::utils::tee::{
-    create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
-    store_response_body, BodyCaptureHandle,
+    create_metrics_body, create_request_tee_body, create_sse_tee_body, create_tee_body_with_store,
+    store_request_body, store_response_body, BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
 use crate::utils::url::apply_url_rules;
@@ -49,6 +49,7 @@ mod scripts;
 
 use self::content_type::{
     get_content_type, is_likely_text_content_type, is_sse_response, is_streaming_response,
+    should_use_binary_performance_mode,
 };
 use self::decode::{
     apply_decode_scripts_for_storage, get_values_from_state, parse_url_parts,
@@ -1050,12 +1051,23 @@ pub async fn handle_http_request(
 
     let res_content_type = get_content_type(&res_parts);
     let is_sse = is_sse_response(&res_parts);
+    let binary_traffic_performance_mode = admin_state
+        .as_ref()
+        .map(|state| state.get_binary_traffic_performance_mode())
+        .unwrap_or(false);
+    let skip_binary_recording = should_use_binary_performance_mode(
+        &res_parts,
+        res_content_length,
+        max_body_buffer_size,
+        binary_traffic_performance_mode,
+    ) && !is_websocket
+        && !is_sse;
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
     if !is_sse && res_body_stream.is_none() {
         res_body_stream = Some(res_body_incoming.take().unwrap().boxed());
     }
-    if needs_res_body_read && needs_processing && !is_sse {
+    if needs_res_body_read && needs_processing && !is_sse && !skip_binary_recording {
         if let Some(len) = res_content_length {
             if len > max_body_buffer_size {
                 res_body_too_large = true;
@@ -1124,8 +1136,10 @@ pub async fn handle_http_request(
         }
     }
 
-    let skip_body_processing =
-        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
+    let skip_body_processing = skip_binary_recording
+        || is_sse
+        || !needs_processing
+        || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
         let size_display = res_content_length
@@ -1185,85 +1199,87 @@ pub async fn handle_http_request(
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
 
-            let mut record =
-                TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
-            record.status = res_parts.status.as_u16();
-            record.content_type = res_parts
-                .headers
-                .get(hyper::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            record.request_size =
-                calculate_request_size(&method, &record_url, &req_headers, request_body_size);
-            record.response_size = 0;
-            record.duration_ms = total_ms;
-            record.timing = Some(RequestTiming {
-                dns_ms,
-                connect_ms: None,
-                tls_ms: None,
-                send_ms: None,
-                wait_ms: Some(wait_ms),
-                receive_ms: None,
-                total_ms,
-            });
-            record.request_headers = Some(req_headers.clone());
-            record.response_headers = Some(original_res_headers.clone());
-            if res_headers != original_res_headers {
-                record.actual_response_headers = Some(res_headers.clone());
-            }
-            record.has_rule_hit = has_rules;
-            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-            record.request_content_type = req_headers
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                .map(|(_, v)| v.clone());
-            record.client_ip = ctx.client_ip.clone();
-            record.client_app = ctx.client_app.clone();
-            record.client_pid = ctx.client_pid;
-            record.client_path = ctx.client_path.clone();
+            if !skip_binary_recording {
+                let mut record =
+                    TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
+                record.status = res_parts.status.as_u16();
+                record.content_type = res_parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                record.request_size =
+                    calculate_request_size(&method, &record_url, &req_headers, request_body_size);
+                record.response_size = 0;
+                record.duration_ms = total_ms;
+                record.timing = Some(RequestTiming {
+                    dns_ms,
+                    connect_ms: None,
+                    tls_ms: None,
+                    send_ms: None,
+                    wait_ms: Some(wait_ms),
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.request_headers = Some(req_headers.clone());
+                record.response_headers = Some(original_res_headers.clone());
+                if res_headers != original_res_headers {
+                    record.actual_response_headers = Some(res_headers.clone());
+                }
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+                record.request_content_type = req_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.clone());
+                record.client_ip = ctx.client_ip.clone();
+                record.client_app = ctx.client_app.clone();
+                record.client_pid = ctx.client_pid;
+                record.client_path = ctx.client_path.clone();
 
-            if is_websocket {
-                record.protocol = "ws".to_string();
-                record.set_websocket();
-                state.connection_monitor.register_connection(&record_id);
-            } else if is_sse {
-                record.set_sse();
-                state.sse_hub.register(&record_id);
-            } else if is_streaming {
-                record.set_streaming();
-                state.connection_monitor.register_connection(&record_id);
-            }
+                if is_websocket {
+                    record.protocol = "ws".to_string();
+                    record.set_websocket();
+                    state.connection_monitor.register_connection(&record_id);
+                } else if is_sse {
+                    record.set_sse();
+                    state.sse_hub.register(&record_id);
+                } else if is_streaming {
+                    record.set_streaming();
+                    state.connection_monitor.register_connection(&record_id);
+                }
 
-            record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                capture.take()
-            } else {
-                store_request_body(
-                    &admin_state,
-                    &record_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                )
-            };
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
+                } else {
+                    store_request_body(
+                        &admin_state,
+                        &record_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
+                    )
+                };
 
-            if !req_script_results.is_empty() {
-                record.req_script_results = Some(req_script_results.clone());
-            }
+                if !req_script_results.is_empty() {
+                    record.req_script_results = Some(req_script_results.clone());
+                }
 
-            if is_sse {
-                if let Some(ref body_store) = state.body_store {
-                    match body_store.read().start_stream(&record_id, "sse_raw") {
-                        Ok(writer) => {
-                            record.response_body_ref = Some(writer.body_ref());
-                            sse_stream_writer = Some(writer);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                if is_sse {
+                    if let Some(ref body_store) = state.body_store {
+                        match body_store.read().start_stream(&record_id, "sse_raw") {
+                            Ok(writer) => {
+                                record.response_body_ref = Some(writer.body_ref());
+                                sse_stream_writer = Some(writer);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                            }
                         }
                     }
                 }
-            }
 
-            state.record_traffic(record);
+                state.record_traffic(record);
+            }
         }
 
         if is_sse {
@@ -1279,18 +1295,22 @@ pub async fn handle_http_request(
             let body = with_trailers(tee_body.boxed(), &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         } else {
-            let response_headers_size =
-                calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
             let res_body = res_body_stream.take().unwrap();
-            let tee_body = create_tee_body_with_store(
-                res_body,
-                admin_state.clone(),
-                record_id,
-                Some(max_body_buffer_size),
-                res_content_encoding.clone(),
-                Some(traffic_type),
-                response_headers_size,
-            );
+            let tee_body = if skip_binary_recording {
+                create_metrics_body(res_body, admin_state.clone(), Some(traffic_type))
+            } else {
+                let response_headers_size =
+                    calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+                create_tee_body_with_store(
+                    res_body,
+                    admin_state.clone(),
+                    record_id,
+                    Some(max_body_buffer_size),
+                    res_content_encoding.clone(),
+                    Some(traffic_type),
+                    response_headers_size,
+                )
+            };
             let body = with_trailers(tee_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         }

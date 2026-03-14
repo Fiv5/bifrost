@@ -23,3 +23,4 @@ target-e2e-*/
 e2e-tests/
 desktop/src-tauri/resources/bin/
 .pnpm-store/
+.codex-target/
