@@ -35,12 +35,12 @@ import {
 import { getAppMetrics, getHostMetrics } from "../../api/metrics";
 import {
   getProxyAddressInfo,
-  type CliProxyStatus,
   type ProxyAddressInfo,
 } from "../../api/proxy";
 import {
   updateTlsConfig,
   getProxySettings,
+  getTlsConfig,
   getPerformanceConfig,
   updatePerformanceConfig,
   clearBodyCache,
@@ -52,11 +52,13 @@ import {
 } from "../../api/config";
 import { isConnectionIssueError } from "../../api/client";
 import {
+  getCertInfo,
   getCertDownloadUrl,
   getCertQRCodeUrl,
   type CertInfo,
 } from "../../api/cert";
-import type { PendingAuth, AppMetrics, HostMetrics, WhitelistStatus } from "../../types";
+import { getPendingAuthorizations } from "../../api/whitelist";
+import type { PendingAuth, AppMetrics, HostMetrics } from "../../types";
 import { useThemeStore } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import ProxyTab from "./tabs/ProxyTab";
@@ -75,7 +77,6 @@ import {
 } from "../../runtime";
 import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
 import pushService from "../../services/pushService";
-import type { SettingsUpdateData } from "../../services/pushService";
 
 const { Text } = Typography;
 
@@ -151,7 +152,8 @@ export default function Settings() {
     cliProxy,
     loading: systemProxyLoading,
     toggleSystemProxy,
-    applyCliProxySnapshot,
+    fetchSystemProxy,
+    fetchCliProxy,
   } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
   const [tlsLoading, setTlsLoading] = useState(false);
@@ -191,7 +193,7 @@ export default function Settings() {
   const hideDesktopCoreRestart = useDesktopCoreStore((state) => state.hide);
   const desktopCoreVisible = useDesktopCoreStore((state) => state.visible);
   const desktopCorePhase = useDesktopCoreStore((state) => state.phase);
-  const applyWhitelistStatus = useWhitelistStore((state) => state.applyStatusSnapshot);
+  const fetchWhitelistStatus = useWhitelistStore((state) => state.fetchStatus);
   const suppressRestartErrors =
     isDesktopShell() &&
     desktopCoreVisible &&
@@ -206,6 +208,20 @@ export default function Settings() {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy settings");
       }
+    }
+  }, [suppressRestartErrors]);
+
+  const fetchTlsConfigData = useCallback(async () => {
+    setTlsLoading(true);
+    try {
+      const config = await getTlsConfig();
+      setTlsConfig(config);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch TLS config");
+      }
+    } finally {
+      setTlsLoading(false);
     }
   }, [suppressRestartErrors]);
 
@@ -239,6 +255,17 @@ export default function Settings() {
       }
     } finally {
       setPerfLoading(false);
+    }
+  }, [suppressRestartErrors]);
+
+  const fetchCertInfoData = useCallback(async () => {
+    try {
+      const info = await getCertInfo();
+      setCertInfo(info);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch certificate info");
+      }
     }
   }, [suppressRestartErrors]);
 
@@ -279,6 +306,20 @@ export default function Settings() {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy address info");
       }
+    }
+  }, [suppressRestartErrors]);
+
+  const fetchPendingAuthorizations = useCallback(async () => {
+    setPendingLoading(true);
+    try {
+      const list = await getPendingAuthorizations();
+      setPendingList(list);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch pending authorizations");
+      }
+    } finally {
+      setPendingLoading(false);
     }
   }, [suppressRestartErrors]);
 
@@ -626,76 +667,55 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    fetchDesktopRuntime();
-    pushService.connect({
-      settings_scopes: [
-        "proxy_settings",
-        "tls_config",
-        "performance_config",
-        "cert_info",
-        "proxy_address",
-        "cli_proxy",
-        "whitelist_status",
-        "pending_authorizations",
-      ],
-    });
-
-    const unsubscribe = pushService.onSettingsUpdate((event: SettingsUpdateData) => {
-      switch (event.scope) {
-        case "proxy_settings":
-          setProxySettings(event.data as ProxySettings);
-          break;
-        case "tls_config":
-          setTlsConfig(event.data as TlsConfig);
-          break;
-        case "performance_config": {
-          const config = event.data as PerformanceConfig;
-          setPerformanceConfig(config);
-          setPerfDraft(config.traffic);
-          break;
-        }
-        case "cert_info":
-          setCertInfo(event.data as CertInfo);
-          break;
-        case "proxy_address": {
-          const info = event.data as ProxyAddressInfo;
-          setProxyAddressInfo(info);
-          setSelectedProxyIp((current) => current || info.addresses[0]?.ip || "");
-          break;
-        }
-        case "cli_proxy":
-          applyCliProxySnapshot(event.data as CliProxyStatus);
-          break;
-        case "whitelist_status":
-          applyWhitelistStatus(event.data as WhitelistStatus);
-          break;
-        case "pending_authorizations":
-          setPendingList(event.data as PendingAuth[]);
-          setPendingLoading(false);
-          break;
-        default:
-          break;
-      }
-    });
-
-    return () => {
-      unsubscribe();
-      pushService.updateSubscription({ settings_scopes: [] });
-      pushService.disconnectIfIdle();
-    };
-  }, [
-    applyCliProxySnapshot,
-    applyWhitelistStatus,
-    fetchDesktopRuntime,
-  ]);
-
-  useEffect(() => {
-    if (activeTab !== "metrics" || history.length > 0) {
-      return;
+    switch (activeTab) {
+      case "proxy":
+        void Promise.all([
+          fetchDesktopRuntime(),
+          fetchProxySettings(),
+          fetchTlsConfigData(),
+          fetchProxyAddressInfo(),
+          fetchSystemProxy(),
+          fetchCliProxy(),
+        ]);
+        break;
+      case "certificate":
+        void Promise.all([fetchCertInfoData(), fetchProxyAddressInfo()]);
+        break;
+      case "metrics":
+        void Promise.all([
+          fetchHistory(3600),
+          fetchAppMetricsData(),
+          fetchHostMetricsData(),
+        ]);
+        break;
+      case "access":
+        void Promise.all([
+          fetchWhitelistStatus(),
+          fetchPendingAuthorizations(),
+        ]);
+        break;
+      case "performance":
+        void fetchPerformanceConfig();
+        break;
+      default:
+        break;
     }
-
-    fetchHistory(3600);
-  }, [activeTab, fetchHistory, history.length]);
+  }, [
+    activeTab,
+    fetchAppMetricsData,
+    fetchCertInfoData,
+    fetchCliProxy,
+    fetchDesktopRuntime,
+    fetchHistory,
+    fetchHostMetricsData,
+    fetchPendingAuthorizations,
+    fetchPerformanceConfig,
+    fetchProxyAddressInfo,
+    fetchProxySettings,
+    fetchSystemProxy,
+    fetchTlsConfigData,
+    fetchWhitelistStatus,
+  ]);
 
   useEffect(() => {
     const timers = perfUpdateTimers.current;
@@ -709,6 +729,7 @@ export default function Settings() {
   const handleApprove = async (ip: string) => {
     try {
       await approvePending(ip);
+      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
       message.success(`Approved ${ip}`);
     } catch {
       message.error(`Failed to approve ${ip}`);
@@ -718,6 +739,7 @@ export default function Settings() {
   const handleReject = async (ip: string) => {
     try {
       await rejectPending(ip);
+      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
       message.success(`Rejected ${ip}`);
     } catch {
       message.error(`Failed to reject ${ip}`);
@@ -727,6 +749,7 @@ export default function Settings() {
   const handleClearAll = async () => {
     try {
       await clearPendingAuthorizations();
+      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
       message.success("Cleared all pending authorizations");
     } catch {
       message.error("Failed to clear pending authorizations");
@@ -882,7 +905,9 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     ? (overview.metrics.memory_used / overview.metrics.memory_total) * 100
     : 0;
 
-  const pendingCount = overview?.pending_authorizations || 0;
+  const pendingCount = activeTab === "access"
+    ? pendingList.length
+    : (overview?.pending_authorizations || 0);
   const trafficDraft = perfDraft ?? performanceConfig?.traffic;
 
   const maxRecordsMin = 1000;
