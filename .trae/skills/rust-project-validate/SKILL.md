@@ -16,10 +16,10 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 ## 执行内容
 
 1. 格式检查：`cargo fmt --all -- --check`
-2. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
+2. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`（避免无差别检查，应该按改动范围检查）
 3. 执行端到端用例，按本次任务的测试范围执行
 4. 运行测试：优先按修改范围执行 `cargo test`，避免无差别跑完整套耗时用例
-5. 完整构建：`cargo build --all-targets --all-features`
+5. 完整构建：`cargo build --all-targets --all-features`（避免无差别构建，应该按改动范围构建）
 
 如果任一步失败，立即停止并返回失败报告。
 

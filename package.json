@@ -3,6 +3,9 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "cli:build": "cargo build -p bifrost-cli --release",
+    "site:dev": "pnpm --dir site dev",
+    "site:build": "pnpm --dir site build",
+    "site:preview": "pnpm --dir site preview",
     "desktop:fast": "RUSTC_WRAPPER= cargo build --manifest-path desktop/src-tauri/Cargo.toml && desktop/src-tauri/target/debug/bifrost-desktop",
     "desktop:web": "pnpm --dir web run build:desktop && RUSTC_WRAPPER= cargo build --manifest-path desktop/src-tauri/Cargo.toml && desktop/src-tauri/target/debug/bifrost-desktop",
     "desktop:launcher": "RUSTC_WRAPPER= cargo build --manifest-path desktop/src-tauri/Cargo.toml && BIFROST_DESKTOP_LAUNCHER_ONLY=1 desktop/src-tauri/target/debug/bifrost-desktop",

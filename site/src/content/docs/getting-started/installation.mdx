@@ -1,0 +1,158 @@
+---
+title: 安装与启动
+description: 按照 README 中的最新方式安装 Bifrost，并选择 CLI 或桌面端使用。
+---
+
+# 安装与启动
+
+## CLI 版本
+
+### 方式一：一键安装
+
+使用 `curl` 一键安装脚本，自动检测平台和架构：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash
+```
+
+常见安装选项：
+
+```bash
+# 指定安装目录
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --dir /usr/local/bin
+
+# 安装特定版本
+curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --version v0.2.0
+```
+
+### 方式二：Homebrew（macOS）
+
+```bash
+brew tap bifrost-proxy/bifrost
+brew install bifrost
+```
+
+### 方式三：从源码构建
+
+环境要求：
+
+- Rust 1.70+
+- Cargo
+- Node.js 22+ 与 `pnpm`（用于构建 Web UI）
+
+```bash
+git clone https://github.com/bifrost-proxy/bifrost.git
+cd bifrost
+
+# 使用安装脚本（推荐）
+# macOS: 安装 CLI，并同时构建/安装桌面应用到 /Applications/Bifrost.app
+# Linux: 安装 CLI（桌面应用暂不由该脚本安装）
+./install.sh
+
+# 或手动构建
+cd web && pnpm install && pnpm build && cd ..
+cargo build --release
+```
+
+### 方式四：手动下载
+
+从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载预编译的 CLI 二进制。
+
+支持的平台：
+
+| 平台 | 架构 | 文件 |
+| --- | --- | --- |
+| Linux | x64 | `bifrost-vX.X.X-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux | ARM64 | `bifrost-vX.X.X-aarch64-unknown-linux-gnu.tar.gz` |
+| Linux | ARMv7 | `bifrost-vX.X.X-armv7-unknown-linux-gnueabihf.tar.gz` |
+| macOS | Intel | `bifrost-vX.X.X-x86_64-apple-darwin.tar.gz` |
+| macOS | Apple Silicon | `bifrost-vX.X.X-aarch64-apple-darwin.tar.gz` |
+| Windows | x64 | `bifrost-vX.X.X-x86_64-pc-windows-msvc.zip` |
+| Windows | ARM64 | `bifrost-vX.X.X-aarch64-pc-windows-msvc.zip` |
+
+Windows ARM64 如果提示缺少运行库，请安装 [VC++ 运行库](https://aka.ms/vc14/vc_redist.arm64.exe)。
+
+## 桌面版本
+
+桌面版本基于 Tauri 构建，安装包内已经内置 Web 资源，并会在应用内部启动打包进去的 `bifrost` CLI 后端，所以不需要单独部署管理端静态页面。
+
+从源码安装时，macOS 可以直接执行：
+
+```bash
+./install.sh
+```
+
+脚本会：
+
+- 安装 `bifrost` CLI 到 `~/.local/bin`
+- 构建 `Bifrost.app` 并直接安装到 `/Applications/Bifrost.app`
+
+如果只想安装其中一部分，可以使用：
+
+```bash
+./install.sh --cli-only
+./install.sh --desktop-only
+./install.sh --app-dir ~/Applications
+```
+
+### 方式一：Homebrew Cask（macOS）
+
+由于当前桌面应用尚未签名，更推荐从源码执行 `./install.sh` 安装，或者先使用 CLI 版本。
+
+```bash
+brew tap bifrost-proxy/bifrost
+brew install --cask bifrost-desktop
+```
+
+### 方式二：手动下载桌面安装包
+
+从 [Releases](https://github.com/bifrost-proxy/bifrost/releases) 页面下载桌面安装包。
+
+当前发布计划：
+
+| 平台 | 架构 | 文件 |
+| --- | --- | --- |
+| macOS | Intel | `bifrost-desktop-vX.X.X-x86_64-apple-darwin.dmg` |
+| macOS | Apple Silicon | `bifrost-desktop-vX.X.X-aarch64-apple-darwin.dmg` |
+| Windows | x64 | `bifrost-desktop-vX.X.X-x86_64-pc-windows-msvc.msi` |
+| Windows | ARM64 | `bifrost-desktop-vX.X.X-aarch64-pc-windows-msvc.msi` |
+
+安装完成后：
+
+- macOS 直接启动 `Bifrost.app`
+- Windows 使用 `.msi` 安装后从开始菜单启动 `Bifrost`
+- 桌面端首次启动会在拉起内嵌 `bifrost` core 后异步检查 CA 证书；macOS 会通过系统管理员授权弹窗将证书安装到 `System.keychain`，Windows 会优先安装到 `CurrentUser\Root`，必要时再弹出 UAC 安装并信任 `Bifrost CA`
+- 安装版桌面端默认使用 `~/.bifrost` 作为 `config / certs / logs / runtime / desktop-config.json` 目录
+- 如果需要把桌面端内嵌 core 的 `config / certs / logs / runtime` 写入自定义目录，可在启动桌面应用前设置 `BIFROST_DATA_DIR`
+
+### 方式三：从源码构建桌面版
+
+```bash
+git clone https://github.com/bifrost-proxy/bifrost.git
+cd bifrost
+
+pnpm install
+cd web && pnpm install && cd ..
+pnpm run desktop:build
+
+# 仅构建 macOS .app（不生成 .dmg，适合 install.sh 的安装流程）
+pnpm run desktop:build:app
+```
+
+说明：
+
+- `pnpm run desktop:build` 会生成完整安装包；macOS 产物位于 `desktop/src-tauri/target/release/bundle/dmg/`
+- `pnpm run desktop:build:app` 仅生成 macOS `.app`；产物位于 `desktop/src-tauri/target/release/bundle/macos/`
+- Windows 产物位于 `desktop/src-tauri/target/release/bundle/msi/`
+
+## 启动方式
+
+- CLI：使用 `bifrost` 命令启动代理服务
+- Desktop：直接打开 `Bifrost.app` 或 Windows 安装包生成的应用
+- Web UI：启动代理服务后，通过管理端查看流量、规则与脚本日志
+
+## 下一步
+
+- 阅读 [项目概览](../overview/)
+- 查看 [规则引擎](../../reference/rule-engine/)
+- 进入 [参考文档总览](../../reference/)

@@ -1,0 +1,19 @@
+{
+  "name": "bifrost-site",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "docs:sync": "node scripts/sync-docs.mjs",
+    "dev": "ASTRO_TELEMETRY_DISABLED=1 node scripts/sync-docs.mjs && ASTRO_TELEMETRY_DISABLED=1 astro dev",
+    "build": "ASTRO_TELEMETRY_DISABLED=1 node scripts/sync-docs.mjs && ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "preview": "ASTRO_TELEMETRY_DISABLED=1 node scripts/sync-docs.mjs && ASTRO_TELEMETRY_DISABLED=1 astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "latest",
+    "astro": "latest"
+  }
+}
