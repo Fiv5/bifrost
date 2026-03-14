@@ -565,7 +565,7 @@ export default function RequestPanel() {
   ];
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} data-testid="replay-request-panel">
       <div style={styles.urlBar}>
         <Select
           value={currentRequest?.method || "GET"}
@@ -595,6 +595,7 @@ export default function RequestPanel() {
           onBlur={handleUrlBlur}
           style={{ flex: 1, fontSize: 12 }}
           onPressEnter={handleSend}
+          data-testid="replay-url-input"
         />
         <Dropdown
           menu={{
@@ -628,7 +629,7 @@ export default function RequestPanel() {
           </Tooltip>
         )}
         <Tooltip title="Save Request">
-          <Button icon={<SaveOutlined />} onClick={handleSave} size="small">
+          <Button icon={<SaveOutlined />} onClick={handleSave} size="small" data-testid="replay-save-button">
             Save
           </Button>
         </Tooltip>
@@ -657,6 +658,7 @@ export default function RequestPanel() {
               icon={<LinkOutlined />}
               onClick={connectWebSocket}
               size="small"
+              data-testid="replay-connect-button"
             >
               Connect
             </Button>
@@ -685,6 +687,7 @@ export default function RequestPanel() {
             icon={<SendOutlined />}
             onClick={handleSend}
             size="small"
+            data-testid="replay-send-button"
           >
             Send
           </Button>
@@ -719,6 +722,7 @@ export default function RequestPanel() {
           value={saveName}
           onChange={(e) => setSaveName(e.target.value)}
           onPressEnter={handleSaveConfirm}
+          data-testid="replay-save-name-input"
         />
       </Modal>
 

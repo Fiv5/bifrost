@@ -1,0 +1,39 @@
+:root {
+  --sl-color-accent-low: #d8f5f1;
+  --sl-color-accent: #0f9f8f;
+  --sl-color-accent-high: #0b7c72;
+  --sl-color-bg: #f6f8fc;
+  --sl-color-bg-nav: rgba(246, 248, 252, 0.9);
+  --sl-color-bg-sidebar: rgba(255, 255, 255, 0.92);
+  --sl-color-text: #122443;
+  --sl-color-text-accent: #0b7c72;
+  --sl-color-hairline: rgba(18, 36, 67, 0.12);
+}
+
+:root[data-theme="dark"] {
+  --sl-color-accent-low: #052c27;
+  --sl-color-accent: #36c4b4;
+  --sl-color-accent-high: #7be7dc;
+}
+
+body {
+  font-family:
+    "IBM Plex Sans", "Space Grotesk", "Segoe UI", sans-serif;
+}
+
+.hero .tagline,
+.sl-markdown-content p,
+.sl-markdown-content li {
+  line-height: 1.8;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+  letter-spacing: -0.03em;
+}
+
+.content-panel,
+.right-sidebar-panel {
+  border-radius: 20px;
+}

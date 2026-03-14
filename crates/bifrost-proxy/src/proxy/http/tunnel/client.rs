@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
@@ -23,6 +24,13 @@ use tower::Service;
 pub(super) type PooledHttpsConnector =
     hyper_rustls::HttpsConnector<HttpConnector<ProxyDnsResolver>>;
 type HttpsPooledClient = Client<PooledHttpsConnector, BoxBody>;
+
+#[derive(Debug, Clone)]
+pub(in crate::proxy::http) struct UpstreamRequestErrorInfo {
+    pub error_type: &'static str,
+    pub error_message: String,
+    pub source_chain: Vec<String>,
+}
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct ClientCacheKey {
@@ -225,6 +233,123 @@ pub(super) async fn send_pooled_request(
         .await
 }
 
+pub(super) fn classify_request_error(err: &ClientError) -> UpstreamRequestErrorInfo {
+    let source_chain = collect_error_source_chain(err);
+    let io_kind = find_io_error_kind(err);
+    let source_text = source_chain.join(" | ").to_ascii_lowercase();
+    let error_type = classify_error_type(err, io_kind, &source_text);
+
+    let error_message = match source_chain.first() {
+        Some(root_cause) => format!("Request Failed: {} | cause: {}", err, root_cause),
+        None => format!("Request Failed: {}", err),
+    };
+
+    UpstreamRequestErrorInfo {
+        error_type,
+        error_message,
+        source_chain,
+    }
+}
+
+fn classify_error_type(
+    err: &ClientError,
+    io_kind: Option<io::ErrorKind>,
+    source_text: &str,
+) -> &'static str {
+    classify_error_type_inner(err.is_connect(), io_kind, source_text)
+}
+
+fn classify_error_type_inner(
+    is_connect: bool,
+    io_kind: Option<io::ErrorKind>,
+    source_text: &str,
+) -> &'static str {
+    if is_connect {
+        if is_dns_failure(source_text) {
+            return "REQUEST_DNS_FAILED";
+        }
+        if is_tls_failure(source_text) {
+            return "REQUEST_TLS_FAILED";
+        }
+        if is_resource_exhaustion(io_kind, source_text) {
+            return "REQUEST_CONNECT_RESOURCE_EXHAUSTED";
+        }
+        return match io_kind {
+            Some(io::ErrorKind::TimedOut) => "REQUEST_CONNECT_TIMEOUT",
+            Some(io::ErrorKind::ConnectionRefused) => "REQUEST_CONNECT_REFUSED",
+            Some(io::ErrorKind::ConnectionReset) => "REQUEST_CONNECT_RESET",
+            Some(io::ErrorKind::ConnectionAborted) => "REQUEST_CONNECT_ABORTED",
+            Some(io::ErrorKind::AddrInUse) => "REQUEST_CONNECT_ADDR_IN_USE",
+            Some(io::ErrorKind::AddrNotAvailable) => "REQUEST_CONNECT_ADDR_NOT_AVAILABLE",
+            Some(io::ErrorKind::NotFound) => "REQUEST_CONNECT_NOT_FOUND",
+            Some(io::ErrorKind::NetworkUnreachable) => "REQUEST_CONNECT_NETWORK_UNREACHABLE",
+            Some(io::ErrorKind::HostUnreachable) => "REQUEST_CONNECT_HOST_UNREACHABLE",
+            _ => "REQUEST_CONNECT_FAILED",
+        };
+    }
+
+    if is_tls_failure(source_text) {
+        return "REQUEST_TLS_FAILED";
+    }
+    if is_resource_exhaustion(io_kind, source_text) {
+        return "REQUEST_RESOURCE_EXHAUSTED";
+    }
+    "REQUEST_FAILED"
+}
+
+fn collect_error_source_chain(err: &ClientError) -> Vec<String> {
+    let mut source = err.source();
+    let mut chain = Vec::new();
+    while let Some(err) = source {
+        chain.push(err.to_string());
+        source = err.source();
+    }
+    chain
+}
+
+fn find_io_error_kind(err: &ClientError) -> Option<io::ErrorKind> {
+    let mut source = err.source();
+    while let Some(inner) = source {
+        if let Some(io_err) = inner.downcast_ref::<io::Error>() {
+            return Some(io_err.kind());
+        }
+        source = inner.source();
+    }
+    None
+}
+
+fn is_dns_failure(source_text: &str) -> bool {
+    source_text.contains("dns error")
+        || source_text.contains("failed to lookup address information")
+        || source_text.contains("no such host")
+        || source_text.contains("name or service not known")
+        || source_text.contains("nodename nor servname provided")
+        || source_text.contains("temporary failure in name resolution")
+        || source_text.contains("resolve")
+}
+
+fn is_tls_failure(source_text: &str) -> bool {
+    source_text.contains("tls")
+        || source_text.contains("ssl")
+        || source_text.contains("certificate")
+        || source_text.contains("handshake")
+        || source_text.contains("peer sent")
+        || source_text.contains("invalid peer certificate")
+        || source_text.contains("unknown issuer")
+}
+
+fn is_resource_exhaustion(io_kind: Option<io::ErrorKind>, source_text: &str) -> bool {
+    matches!(io_kind, Some(io::ErrorKind::OutOfMemory))
+        || source_text.contains("too many open files")
+        || source_text.contains("cannot assign requested address")
+        || source_text.contains("address not available")
+        || source_text.contains("resource temporarily unavailable")
+        || source_text.contains("no buffer space available")
+        || source_text.contains("os error 24")
+        || source_text.contains("os error 49")
+        || source_text.contains("os error 55")
+}
+
 pub(super) fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     ensure_crypto_provider();
 
@@ -295,5 +420,50 @@ pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
         if !te.trim().eq_ignore_ascii_case("trailers") {
             headers.remove(header::TE);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_dns_failure_before_generic_connect() {
+        assert_eq!(
+            classify_error_type_inner(
+                true,
+                Some(io::ErrorKind::Other),
+                "dns error: failed to lookup address information",
+            ),
+            "REQUEST_DNS_FAILED"
+        );
+    }
+
+    #[test]
+    fn classifies_connect_timeout() {
+        assert_eq!(
+            classify_error_type_inner(true, Some(io::ErrorKind::TimedOut), "connection timeout",),
+            "REQUEST_CONNECT_TIMEOUT"
+        );
+    }
+
+    #[test]
+    fn classifies_resource_exhaustion() {
+        assert_eq!(
+            classify_error_type_inner(
+                true,
+                Some(io::ErrorKind::AddrNotAvailable),
+                "cannot assign requested address",
+            ),
+            "REQUEST_CONNECT_RESOURCE_EXHAUSTED"
+        );
+    }
+
+    #[test]
+    fn classifies_tls_failure() {
+        assert_eq!(
+            classify_error_type_inner(true, Some(io::ErrorKind::Other), "tls handshake eof",),
+            "REQUEST_TLS_FAILED"
+        );
     }
 }

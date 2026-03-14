@@ -58,7 +58,7 @@ export default function PerformanceTab({
   const { token } = theme.useToken();
 
   return (
-    <Row gutter={[16, 16]}>
+    <Row gutter={[16, 16]} data-testid="settings-performance-tab">
       <Col xs={24}>
         <Card
           title={
@@ -88,6 +88,7 @@ export default function PerformanceTab({
                       value={trafficDraft?.max_records}
                       onChange={handleMaxRecordsChange}
                       marks={maxRecordsMarks}
+                      data-testid="settings-performance-max-records"
                       tooltip={{
                         formatter: (value) =>
                           value !== null && value !== undefined
@@ -121,6 +122,7 @@ export default function PerformanceTab({
                       value={trafficDraft?.max_db_size_bytes}
                       onChange={handleMaxDbSizeChange}
                       marks={maxDbSizeMarks}
+                      data-testid="settings-performance-max-db-size"
                       tooltip={{
                         formatter: (value) => (value ? formatBytes(value) : ""),
                       }}
@@ -291,6 +293,7 @@ export default function PerformanceTab({
                             danger
                             icon={<DeleteOutlined />}
                             loading={perfLoading}
+                            data-testid="settings-performance-clear-cache"
                           >
                             Clear Cache
                           </Button>

@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
-import { useTrafficStore } from '../stores/useTrafficStore';
 import { useProxyStore } from '../stores/useProxyStore';
 import { useFilterPanelStore } from '../stores/useFilterPanelStore';
 import { useMetricsStore } from '../stores/useMetricsStore';
+import { useTrafficStore } from '../stores/useTrafficStore';
 import { useVersionStore } from '../stores/useVersionStore';
 import { syncDynamicData } from './useEditorCompletion';
 import pushService from '../services/pushService';
@@ -35,16 +35,15 @@ export function useGlobalDataSync() {
     initRef.current = true;
     globalState.initialized = true;
 
-    const trafficStore = useTrafficStore.getState();
     const proxyStore = useProxyStore.getState();
     const filterPanelStore = useFilterPanelStore.getState();
     const metricsStore = useMetricsStore.getState();
+    const trafficStore = useTrafficStore.getState();
     const versionStore = useVersionStore.getState();
 
     const pauseRealtime = () => {
       if (globalState.visibilityPaused) return;
       globalState.visibilityPaused = true;
-      useTrafficStore.getState().stopPolling();
       useMetricsStore.getState().disablePush();
     };
 
@@ -54,7 +53,6 @@ export function useGlobalDataSync() {
       }
       if (!globalState.visibilityPaused) return;
       globalState.visibilityPaused = false;
-      useTrafficStore.getState().startPolling();
       useMetricsStore.getState().enablePush({
         needOverview: true,
         needMetrics: true,
@@ -77,6 +75,7 @@ export function useGlobalDataSync() {
         clearInterval(globalState.versionCheckIntervalId);
         globalState.versionCheckIntervalId = null;
       }
+      useTrafficStore.getState().stopPolling();
     };
 
     const onForceRefresh = (data: { reason: string }) => {
@@ -91,11 +90,11 @@ export function useGlobalDataSync() {
 
     const initializeGlobalData = async () => {
       await Promise.allSettled([
-        trafficStore.fetchInitialData(),
         proxyStore.fetchSystemProxy(),
         proxyStore.fetchCliProxy(),
         filterPanelStore.loadFromServer(),
         metricsStore.fetchOverview(),
+        trafficStore.fetchInitialData(),
         versionStore.checkVersion({ skipCache: true }),
       ]);
 
@@ -103,7 +102,9 @@ export function useGlobalDataSync() {
         return;
       }
 
-      trafficStore.startPolling();
+      if (!useTrafficStore.getState().paused) {
+        useTrafficStore.getState().startPolling();
+      }
 
       metricsStore.enablePush({
         needOverview: true,
@@ -141,8 +142,8 @@ export function useGlobalDataSync() {
 
       stopAllPolling();
 
-      useTrafficStore.getState().stopPolling();
       useMetricsStore.getState().disablePush();
+      useTrafficStore.getState().stopPolling();
       globalState.initialized = false;
       globalState.visibilityPaused = false;
       globalState.forceRefresh = false;

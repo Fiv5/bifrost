@@ -344,10 +344,65 @@ jobs:
       - name: Prepare desktop sidecar
         run: node scripts/prepare-tauri-sidecar.mjs release ${{ matrix.target }}
 
+      - name: Resolve macOS signing mode
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [[ -n "${APPLE_CERTIFICATE}" ]]; then
+            if [[ -n "${APPLE_SIGNING_IDENTITY}" ]]; then
+              echo "APPLE_SIGNING_IDENTITY=${APPLE_SIGNING_IDENTITY}" >> "${GITHUB_ENV}"
+            fi
+            echo "Using Apple-authenticated signing for macOS desktop bundle."
+            exit 0
+          fi
+
+          echo "APPLE_SIGNING_IDENTITY=-" >> "${GITHUB_ENV}"
+          echo "No Apple certificate configured; using ad-hoc signing to avoid Gatekeeper damaged-app errors."
+
+      - name: Prepare App Store Connect API key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          if [[ -z "${APPLE_API_KEY}" || -z "${APPLE_API_KEY_CONTENT}" ]]; then
+            exit 0
+          fi
+
+          KEY_PATH="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "${APPLE_API_KEY_CONTENT}" > "${KEY_PATH}"
+          chmod 600 "${KEY_PATH}"
+          echo "APPLE_API_KEY_PATH=${KEY_PATH}" >> "${GITHUB_ENV}"
+
       - name: Build desktop bundle
         env:
           BIFROST_VERSION: ${{ needs.prepare.outputs.version }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json --target ${{ matrix.target }}
+
+      - name: Re-sign macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          APP_PATH=$(find "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name "*.app" | head -n 1)
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "macOS app bundle not found"
+            exit 1
+          fi
+
+          bash scripts/resign-macos-app.sh "${APP_PATH}"
 
       - name: Package desktop artifact
         shell: bash

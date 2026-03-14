@@ -93,10 +93,6 @@ export default function CollectionPanel() {
   const [editGroupName, setEditGroupName] = useState("");
 
   useEffect(() => {
-    loadGroups();
-  }, [loadGroups]);
-
-  useEffect(() => {
     const { uiState: currentUIState } = useReplayStore.getState();
     const currentKeys = currentUIState.collectionExpandedKeys;
     const keysToAdd: string[] = [];
@@ -322,6 +318,8 @@ export default function CollectionPanel() {
             ...(currentRequest?.id === req.id ? styles.treeNodeActive : {}),
           }}
           onClick={() => handleSelectRequest(req)}
+          data-testid="replay-request-node"
+          data-request-id={req.id}
         >
           <FileOutlined style={{ fontSize: 12, flexShrink: 0, marginRight: 6 }} />
           <span style={{ ...styles.methodBadge, color: METHOD_COLORS[req.method] || '#8c8c8c' }}>
@@ -543,7 +541,7 @@ export default function CollectionPanel() {
   }, []);
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} data-testid="replay-collection-panel">
       <div style={styles.header}>
         <span style={styles.headerTitle}>Collections</span>
         <div style={styles.headerActions}>
@@ -553,6 +551,7 @@ export default function CollectionPanel() {
             icon={<FolderAddOutlined />}
             onClick={() => setNewGroupModalVisible(true)}
             title="New Folder"
+            data-testid="replay-new-group-button"
           />
           <Button
             type="text"
@@ -560,6 +559,7 @@ export default function CollectionPanel() {
             icon={<PlusOutlined />}
             onClick={createNewRequest}
             title="New Request"
+            data-testid="replay-new-request-button"
           />
           {savedRequests.length > 0 && (
             <Button
@@ -588,6 +588,7 @@ export default function CollectionPanel() {
           onChange={(e) => setSearchText(e.target.value)}
           allowClear
           size="small"
+          data-testid="replay-search-input"
         />
       </div>
 
@@ -609,6 +610,7 @@ export default function CollectionPanel() {
             allowDrop={allowDrop}
             onDrop={handleDrop}
             style={{ backgroundColor: 'transparent' }}
+            data-testid="replay-collection-tree"
           />
         ) : (
           <Empty
@@ -645,6 +647,7 @@ export default function CollectionPanel() {
           onChange={(e) => setNewGroupName(e.target.value)}
           onPressEnter={handleCreateGroup}
           autoFocus
+          data-testid="replay-group-name-input"
         />
       </Modal>
 
@@ -664,6 +667,7 @@ export default function CollectionPanel() {
           onChange={(e) => setEditGroupName(e.target.value)}
           onPressEnter={handleUpdateGroup}
           autoFocus
+          data-testid="replay-group-rename-input"
         />
       </Modal>
     </div>

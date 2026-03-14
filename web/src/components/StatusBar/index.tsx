@@ -1,6 +1,7 @@
 import { useEffect, useMemo, memo, useCallback, type CSSProperties } from "react";
 import { theme, Tooltip } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
+import { useShallow } from "zustand/react/shallow";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useVersionStore } from "../../stores/useVersionStore";
@@ -33,10 +34,14 @@ function formatUptime(seconds: number): string {
 
 const StatusBar = memo(function StatusBar() {
   const { token } = theme.useToken();
-  const overview = useMetricsStore((state) => state.overview);
-  const current = useMetricsStore((state) => state.current);
-  const enablePush = useMetricsStore((state) => state.enablePush);
-  const disablePush = useMetricsStore((state) => state.disablePush);
+  const { overview, current, enablePush, disablePush } = useMetricsStore(
+    useShallow((state) => ({
+      overview: state.overview,
+      current: state.current,
+      enablePush: state.enablePush,
+      disablePush: state.disablePush,
+    })),
+  );
   const systemProxy = useProxyStore((state) => state.systemProxy);
   const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
   

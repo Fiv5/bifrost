@@ -183,7 +183,7 @@ export default function ValueList() {
   };
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="values-list">
       <div className={styles.header}>
         <span className={styles.headerTitle}>Values</span>
         <div className={styles.headerActions}>
@@ -193,6 +193,7 @@ export default function ValueList() {
               size="small"
               icon={<PlusOutlined />}
               onClick={() => setCreateModalVisible(true)}
+              data-testid="value-new-button"
             />
           </Tooltip>
           <Tooltip title="Refresh">
@@ -201,6 +202,7 @@ export default function ValueList() {
               size="small"
               icon={<ReloadOutlined />}
               onClick={() => fetchValues()}
+              data-testid="value-refresh-button"
             />
           </Tooltip>
           <ImportBifrostButton
@@ -216,6 +218,7 @@ export default function ValueList() {
               size="small"
               icon={<ExportOutlined />}
               onClick={handleExportAll}
+              data-testid="value-export-all-button"
             />
           </Tooltip>
         </div>
@@ -228,6 +231,7 @@ export default function ValueList() {
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
+          data-testid="value-search-input"
         />
       </div>
 
@@ -251,6 +255,8 @@ export default function ValueList() {
                   onClick={(e) =>
                     handleSelect(item.name, e.ctrlKey || e.metaKey)
                   }
+                  data-testid="value-item"
+                  data-value-name={item.name}
                 >
                   <div className={styles.itemContent}>
                     <span className={styles.itemName} title={item.name}>
@@ -274,6 +280,7 @@ export default function ValueList() {
                           icon={<MoreOutlined />}
                           onClick={(e) => e.stopPropagation()}
                           className={styles.moreBtn}
+                          data-testid="value-item-menu"
                         />
                       </Dropdown>
                     </div>

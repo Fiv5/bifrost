@@ -6,6 +6,7 @@ import RuleEditor from './RuleEditor';
 import { useRulesStore } from '../../stores/useRulesStore';
 import { useValuesStore } from '../../stores/useValuesStore';
 import { notifyApiBusinessError } from '../../api/client';
+import pushService from '../../services/pushService';
 
 export default function Rules() {
   const { token } = theme.useToken();
@@ -15,8 +16,7 @@ export default function Rules() {
   const selectedRuleName = useRulesStore((state) => state.selectedRuleName);
   const selectRule = useRulesStore((state) => state.selectRule);
   const fetchRules = useRulesStore((state) => state.fetchRules);
-  const values = useValuesStore((state) => state.values);
-  const fetchValues = useValuesStore((state) => state.fetchValues);
+  const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
   const initRef = useRef(false);
   const loadedRef = useRef(false);
@@ -28,10 +28,17 @@ export default function Rules() {
     if (rules.length === 0) {
       void fetchRules();
     }
-    if (values.length === 0) {
-      void fetchValues();
-    }
-  }, [fetchRules, fetchValues, rules.length, values.length]);
+    pushService.connect({ need_values: true });
+    const unsubscribe = pushService.onValuesUpdate((data) => {
+      applyValuesSnapshot(data.values);
+    });
+
+    return () => {
+      unsubscribe();
+      pushService.updateSubscription({ need_values: false });
+      pushService.disconnectIfIdle();
+    };
+  }, [applyValuesSnapshot, fetchRules, rules.length]);
 
   useEffect(() => {
     if (initRef.current) return;

@@ -6,10 +6,12 @@ import fs from "node:fs/promises";
 
 const PID_PATH = ".ui-backend.pid";
 const TRAFFIC_PID_PATH = ".ui-traffic.pid";
-const BASE_PROXY_URL = process.env.PROXY_URL || "http://127.0.0.1:9900";
+const backendPort = Number(process.env.BIFROST_UI_TEST_PORT ?? process.env.BACKEND_PORT ?? 9910);
+const BASE_PROXY_URL = process.env.PROXY_URL || `http://127.0.0.1:${backendPort}`;
 const BACKEND_URL =
   process.env.ADMIN_STATUS_URL ||
   `${BASE_PROXY_URL.replace(/\/$/, "")}/_bifrost/api/proxy/address`;
+const ACCESS_STATUS_URL = `${BASE_PROXY_URL.replace(/\/$/, "")}/_bifrost/api/whitelist`;
 
 const getRepoRoot = () => {
   const current = fileURLToPath(import.meta.url);
@@ -20,6 +22,19 @@ const isBackendReady = async () => {
   try {
     const res = await fetch(BACKEND_URL);
     return res.ok;
+  } catch {
+    return false;
+  }
+};
+
+const hasAccessControlConfigured = async () => {
+  try {
+    const res = await fetch(ACCESS_STATUS_URL);
+    if (!res.ok) {
+      return false;
+    }
+    const body = (await res.json()) as { mode?: string };
+    return typeof body.mode === "string" && body.mode.length > 0;
   } catch {
     return false;
   }
@@ -42,6 +57,24 @@ const isProcessAlive = (pid: number) => {
   }
 };
 
+const stopTrackedProcess = async (pidFile: string) => {
+  try {
+    const pidText = await fs.readFile(pidFile, "utf-8");
+    const pid = Number(pidText);
+    if (Number.isNaN(pid) || !isProcessAlive(pid)) {
+      return;
+    }
+    try {
+      process.kill(-pid);
+    } catch {
+      process.kill(pid);
+    }
+    await fs.rm(pidFile, { force: true });
+  } catch {
+    void 0;
+  }
+};
+
 const startTrafficGenerator = async (repoRoot: string) => {
   const trafficPidFile = path.join(repoRoot, TRAFFIC_PID_PATH);
   try {
@@ -57,12 +90,12 @@ const startTrafficGenerator = async (repoRoot: string) => {
   const generatorPath = path.join(repoRoot, "web", "tests", "ui", "traffic-generator.cjs");
   const child = spawn("node", [generatorPath], {
     cwd: path.join(repoRoot, "web"),
-    env: {
-      ...process.env,
-      PROXY_URL: process.env.PROXY_URL || "http://127.0.0.1:9900",
-    },
-    stdio: "ignore",
-    detached: true,
+      env: {
+        ...process.env,
+        PROXY_URL: BASE_PROXY_URL,
+      },
+      stdio: "ignore",
+      detached: true,
   });
   const pid = child.pid;
   if (!pid) {
@@ -72,9 +105,16 @@ const startTrafficGenerator = async (repoRoot: string) => {
 };
 
 export default async () => {
-  const ready = await isBackendReady();
   const repoRoot = getRepoRoot();
-  if (!ready) {
+  const pidFile = path.join(repoRoot, PID_PATH);
+  const ready = await isBackendReady();
+  const accessConfigured = ready ? await hasAccessControlConfigured() : false;
+
+  if (ready && !accessConfigured) {
+    await stopTrackedProcess(pidFile);
+  }
+
+  if (!ready || !accessConfigured) {
     const dataDir = path.join(repoRoot, ".bifrost-ui-test");
     const targetDir = path.join(repoRoot, ".bifrost-ui-target");
     const binPath = path.join(targetDir, "debug", "bifrost");
@@ -84,7 +124,16 @@ export default async () => {
       .access(binPath)
       .then(() => ({
         cmd: binPath,
-        args: ["start", "-p", "9900", "--unsafe-ssl"],
+        args: [
+          "start",
+          "--host",
+          "127.0.0.1",
+          "-p",
+          String(backendPort),
+          "--unsafe-ssl",
+          "--access-mode",
+          "allow_all",
+        ],
       }))
       .catch(() => ({
         cmd: "cargo",
@@ -94,15 +143,22 @@ export default async () => {
           "bifrost",
           "--",
           "start",
+          "--host",
+          "127.0.0.1",
           "-p",
-          "9900",
+          String(backendPort),
           "--unsafe-ssl",
+          "--access-mode",
+          "allow_all",
         ],
       }));
     const child = spawn(cmd, args, {
       cwd: repoRoot,
       env: {
         ...process.env,
+        PROXY_URL: BASE_PROXY_URL,
+        ADMIN_STATUS_URL: BACKEND_URL,
+        BIFROST_UI_TEST_PORT: String(backendPort),
         BIFROST_DATA_DIR: dataDir,
         CARGO_TARGET_DIR: targetDir,
       },
@@ -115,7 +171,7 @@ export default async () => {
     if (!pid) {
       throw new Error("Failed to start Bifrost backend process");
     }
-    await fs.writeFile(path.join(repoRoot, PID_PATH), String(pid));
+    await fs.writeFile(pidFile, String(pid));
 
     const ok = await waitForBackend();
     if (!ok) {

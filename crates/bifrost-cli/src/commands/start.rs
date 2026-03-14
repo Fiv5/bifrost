@@ -4,6 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bifrost_admin::push::{
+    SETTINGS_SCOPE_CERT_INFO, SETTINGS_SCOPE_CLI_PROXY, SETTINGS_SCOPE_PENDING_AUTHORIZATIONS,
+    SETTINGS_SCOPE_PERFORMANCE_CONFIG, SETTINGS_SCOPE_PROXY_ADDRESS, SETTINGS_SCOPE_PROXY_SETTINGS,
+    SETTINGS_SCOPE_SYSTEM_PROXY, SETTINGS_SCOPE_TLS_CONFIG, SETTINGS_SCOPE_WHITELIST_STATUS,
+};
 use bifrost_admin::{
     start_async_traffic_processor, start_frame_cleanup_task, start_metrics_collector_task,
     start_push_tasks, start_ws_payload_cleanup_task, status_printer::TlsStatusInfo, AdminState,
@@ -900,6 +905,10 @@ pub fn run_foreground(
             let phase_started_at = Instant::now();
             let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
             let push_tasks = start_push_tasks(push_manager.clone());
+            let admin_push_watcher_task = spawn_admin_push_watcher_task(
+                config_manager_for_resolver.clone(),
+                push_manager.clone(),
+            );
             log_startup_phase("push_manager.init", phase_started_at);
 
             let phase_started_at = Instant::now();
@@ -1075,6 +1084,7 @@ pub fn run_foreground(
 
             listener_task.abort();
             rules_watcher_task.abort();
+            admin_push_watcher_task.abort();
             body_cleanup_task.abort();
             ws_payload_cleanup_task.abort();
             frame_cleanup_task.abort();
@@ -1431,6 +1441,10 @@ pub fn run_daemon(
 
                     let push_manager = Arc::new(PushManager::new(admin_state_arc.clone()));
                     let _push_tasks = start_push_tasks(push_manager.clone());
+                    let _admin_push_watcher_task = spawn_admin_push_watcher_task(
+                        config_manager_for_resolver.clone(),
+                        push_manager.clone(),
+                    );
                     let server = server.with_push_manager(push_manager);
 
                     let _metrics_task = start_metrics_collector_task(metrics_collector, 1);
@@ -1691,6 +1705,104 @@ fn spawn_rules_watcher_task(
                     tracing::info!(
                         target: "bifrost_cli::rules",
                         "config change channel closed, stopping rules watcher"
+                    );
+                    break;
+                }
+            }
+        }
+    })
+}
+
+fn spawn_admin_push_watcher_task(
+    config_manager: Option<Arc<ConfigManager>>,
+    push_manager: Arc<PushManager>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let Some(config_manager) = config_manager else {
+            tracing::warn!(
+                target: "bifrost_cli::push",
+                "ConfigManager not available, admin push watcher disabled"
+            );
+            return;
+        };
+
+        let mut receiver = config_manager.subscribe();
+        tracing::info!(
+            target: "bifrost_cli::push",
+            "admin push watcher started"
+        );
+
+        loop {
+            match receiver.recv().await {
+                Ok(event) => match event {
+                    ConfigChangeEvent::TlsConfigChanged(_) => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_TLS_CONFIG)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PROXY_SETTINGS)
+                            .await;
+                    }
+                    ConfigChangeEvent::SandboxConfigChanged => {
+                        push_manager.broadcast_scripts_snapshot().await;
+                    }
+                    ConfigChangeEvent::SystemProxyConfigChanged => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_SYSTEM_PROXY)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_CLI_PROXY)
+                            .await;
+                    }
+                    ConfigChangeEvent::AccessConfigChanged => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_WHITELIST_STATUS)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PENDING_AUTHORIZATIONS)
+                            .await;
+                    }
+                    ConfigChangeEvent::ServerConfigChanged => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PROXY_SETTINGS)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PROXY_ADDRESS)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_CERT_INFO)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_SYSTEM_PROXY)
+                            .await;
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_CLI_PROXY)
+                            .await;
+                    }
+                    ConfigChangeEvent::TrafficConfigChanged => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_PERFORMANCE_CONFIG)
+                            .await;
+                    }
+                    ConfigChangeEvent::ScriptsChanged => {
+                        push_manager.broadcast_scripts_snapshot().await;
+                    }
+                    ConfigChangeEvent::ValuesChanged(_) => {
+                        push_manager.broadcast_values_snapshot().await;
+                    }
+                    ConfigChangeEvent::RulesChanged | ConfigChangeEvent::StateChanged => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    tracing::warn!(
+                        target: "bifrost_cli::push",
+                        count = count,
+                        "admin push watcher lagged, some events may have been missed"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!(
+                        target: "bifrost_cli::push",
+                        "config change channel closed, stopping admin push watcher"
                     );
                     break;
                 }

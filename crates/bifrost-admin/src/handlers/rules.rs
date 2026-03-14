@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
+use crate::push::SharedPushManager;
 use crate::state::SharedAdminState;
 
 #[derive(Debug, Serialize)]
@@ -64,6 +65,7 @@ struct ValidateRuleResponse {
 pub async fn handle_rules(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     path: &str,
 ) -> Response<BoxBody> {
     let method = req.method().clone();
@@ -71,7 +73,7 @@ pub async fn handle_rules(
     if path == "/api/rules" || path == "/api/rules/" {
         match method {
             Method::GET => list_rules(state).await,
-            Method::POST => create_rule(req, state).await,
+            Method::POST => create_rule(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/rules/validate" {
@@ -85,24 +87,24 @@ pub async fn handle_rules(
 
         if let Some(name) = name.strip_suffix("/enable") {
             match method {
-                Method::PUT => enable_rule(state, name, true).await,
+                Method::PUT => enable_rule(state, name, true, push_manager).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(name) = name.strip_suffix("/disable") {
             match method {
-                Method::PUT => enable_rule(state, name, false).await,
+                Method::PUT => enable_rule(state, name, false, push_manager).await,
                 _ => method_not_allowed(),
             }
         } else if let Some(name) = name.strip_suffix("/rename") {
             match method {
-                Method::PUT => rename_rule(req, state, name).await,
+                Method::PUT => rename_rule(req, state, name, push_manager).await,
                 _ => method_not_allowed(),
             }
         } else {
             match method {
                 Method::GET => get_rule(state, name).await,
-                Method::PUT => update_rule(req, state, name).await,
-                Method::DELETE => delete_rule(state, name).await,
+                Method::PUT => update_rule(req, state, name, push_manager).await,
+                Method::DELETE => delete_rule(state, name, push_manager).await,
                 _ => method_not_allowed(),
             }
         }
@@ -250,7 +252,11 @@ async fn validate_rule(req: Request<Incoming>, state: SharedAdminState) -> Respo
     json_response(&response)
 }
 
-async fn create_rule(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
+async fn create_rule(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     let body = match req.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
@@ -280,6 +286,7 @@ async fn create_rule(req: Request<Incoming>, state: SharedAdminState) -> Respons
     match state.rules_storage.save(&rule) {
         Ok(_) => {
             notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
             success_response(&format!("Rule '{}' created successfully", request.name))
         }
         Err(e) => error_response(
@@ -307,6 +314,7 @@ async fn update_rule(
     req: Request<Incoming>,
     state: SharedAdminState,
     name: &str,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let existing = match state.rules_storage.load(name) {
         Ok(r) => r,
@@ -338,6 +346,7 @@ async fn update_rule(
     match state.rules_storage.save(&rule) {
         Ok(_) => {
             notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
             success_response(&format!("Rule '{}' updated successfully", name))
         }
         Err(e) => error_response(
@@ -347,10 +356,15 @@ async fn update_rule(
     }
 }
 
-async fn delete_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
+async fn delete_rule(
+    state: SharedAdminState,
+    name: &str,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     match state.rules_storage.delete(name) {
         Ok(_) => {
             notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
             success_response(&format!("Rule '{}' deleted successfully", name))
         }
         Err(e) => error_response(
@@ -360,10 +374,16 @@ async fn delete_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
     }
 }
 
-async fn enable_rule(state: SharedAdminState, name: &str, enabled: bool) -> Response<BoxBody> {
+async fn enable_rule(
+    state: SharedAdminState,
+    name: &str,
+    enabled: bool,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
     match state.rules_storage.set_enabled(name, enabled) {
         Ok(_) => {
             notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
             let action = if enabled { "enabled" } else { "disabled" };
             success_response(&format!("Rule '{}' {} successfully", name, action))
         }
@@ -378,6 +398,7 @@ async fn rename_rule(
     req: Request<Incoming>,
     state: SharedAdminState,
     name: &str,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     if !state.rules_storage.exists(name) {
         return error_response(StatusCode::NOT_FOUND, &format!("Rule '{}' not found", name));
@@ -412,6 +433,7 @@ async fn rename_rule(
     match state.rules_storage.rename(name, &request.new_name) {
         Ok(_) => {
             notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
             success_response(&format!(
                 "Rule '{}' renamed to '{}' successfully",
                 name, request.new_name
@@ -427,6 +449,12 @@ async fn rename_rule(
             };
             error_response(status, &format!("Failed to rename rule: {}", e))
         }
+    }
+}
+
+fn invalidate_overview_cache(push_manager: &Option<SharedPushManager>) {
+    if let Some(pm) = push_manager {
+        pm.invalidate_overview_cache();
     }
 }
 

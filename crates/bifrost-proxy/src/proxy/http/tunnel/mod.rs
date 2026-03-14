@@ -62,6 +62,28 @@ use crate::utils::tee::{
 };
 use crate::utils::throttle::wrap_throttled_body;
 
+fn finalize_tunnel_tracking(state: &Arc<AdminState>, req_id: &str) {
+    state
+        .metrics_collector
+        .decrement_connections_by_type(TrafficType::Tunnel);
+    state.connection_registry.unregister(req_id);
+
+    let socket_status = state.connection_monitor.close_connection(
+        req_id,
+        None,
+        None,
+        state.frame_store.as_ref(),
+        state.ws_payload_store.as_ref(),
+    );
+
+    if let Some(socket_status) = socket_status {
+        let req_id = req_id.to_string();
+        state.update_traffic_by_id(&req_id, move |record| {
+            record.socket_status = Some(socket_status.clone());
+        });
+    }
+}
+
 pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config(unsafe_ssl)
 }
@@ -72,6 +94,12 @@ pub fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
 
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     client::sanitize_upstream_headers(headers)
+}
+
+pub(super) fn classify_request_error(
+    err: &hyper_util::client::legacy::Error,
+) -> client::UpstreamRequestErrorInfo {
+    client::classify_request_error(err)
 }
 
 pub(super) async fn send_pooled_request(
@@ -412,24 +440,7 @@ pub async fn handle_connect(
                 )
                 .await;
                 if let Some(ref state) = admin_state {
-                    state
-                        .metrics_collector
-                        .decrement_connections_by_type(TrafficType::Tunnel);
-                    state.connection_registry.unregister(&req_id);
-
-                    state.connection_monitor.set_connection_closed(
-                        &req_id,
-                        None,
-                        None,
-                        state.frame_store.as_ref(),
-                        state.ws_payload_store.as_ref(),
-                    );
-
-                    if let Some(socket_status) = state.connection_monitor.get_status(&req_id) {
-                        state.update_traffic_by_id(&req_id, move |record| {
-                            record.socket_status = Some(socket_status.clone());
-                        });
-                    }
+                    finalize_tunnel_tracking(state, &req_id);
                 }
                 match result {
                     Ok(stats) if stats.cancelled => {
@@ -456,10 +467,7 @@ pub async fn handle_connect(
             }
             Err(e) => {
                 if let Some(ref state) = admin_state {
-                    state
-                        .metrics_collector
-                        .decrement_connections_by_type(TrafficType::Tunnel);
-                    state.connection_registry.unregister(&req_id);
+                    finalize_tunnel_tracking(state, &req_id);
                 }
                 error!(
                     "[{}] Upgrade error for {}:{} client_ip={} client_app={:?} client_pid={:?} client_path={:?} error={}",
@@ -1609,15 +1617,17 @@ async fn handle_intercepted_request_with_protocol(
         {
             Ok(r) => r,
             Err(e) => {
-                error!("[{}] Failed to send request: {}", req_id, e);
-                let mut source = std::error::Error::source(&e);
-                while let Some(err) = source {
-                    error!("[{}] Request failure source: {}", req_id, err);
-                    source = std::error::Error::source(err);
+                let classified = classify_request_error(&e);
+                error!(
+                    "[{}] {} ({})",
+                    req_id, classified.error_message, classified.error_type
+                );
+                for source in &classified.source_chain {
+                    error!("[{}] Request failure source: {}", req_id, source);
                 }
                 return Ok(build_conn_error_record_and_response(
-                    "REQUEST_FAILED",
-                    format!("Request Failed: {}", e),
+                    classified.error_type,
+                    classified.error_message,
                     None,
                 ));
             }
@@ -1640,15 +1650,17 @@ async fn handle_intercepted_request_with_protocol(
         {
             Ok(r) => r,
             Err(e) => {
-                error!("[{}] Failed to send request: {}", req_id, e);
-                let mut source = std::error::Error::source(&e);
-                while let Some(err) = source {
-                    error!("[{}] Request failure source: {}", req_id, err);
-                    source = std::error::Error::source(err);
+                let classified = classify_request_error(&e);
+                error!(
+                    "[{}] {} ({})",
+                    req_id, classified.error_message, classified.error_type
+                );
+                for source in &classified.source_chain {
+                    error!("[{}] Request failure source: {}", req_id, source);
                 }
                 return Ok(build_conn_error_record_and_response(
-                    "REQUEST_FAILED",
-                    format!("Request Failed: {}", e),
+                    classified.error_type,
+                    classified.error_message,
                     None,
                 ));
             }
@@ -3199,6 +3211,32 @@ async fn serve_mock_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bifrost_admin::{FrameDirection, TrafficDbStore};
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn create_test_dir() -> PathBuf {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = env::temp_dir().join(format!(
+            "bifrost_tunnel_test_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            counter
+        ));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    fn cleanup_test_dir(dir: &PathBuf) {
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn test_parse_connect_authority_with_port() {
@@ -3281,6 +3319,45 @@ mod tests {
         assert!(is_domain_excluded("maps.google.com", &exclude));
         assert!(is_domain_excluded("api.internal.corp", &exclude));
         assert!(!is_domain_excluded("other.com", &exclude));
+    }
+
+    #[test]
+    fn finalize_tunnel_tracking_persists_closed_socket_status() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap());
+        let state = Arc::new(AdminState::new(9913).with_traffic_db_store_shared(store.clone()));
+
+        let req_id = "tunnel-close-1";
+        state.connection_monitor.register_tunnel_connection(req_id);
+        state
+            .connection_monitor
+            .update_traffic(req_id, FrameDirection::Send, 128);
+        state
+            .connection_monitor
+            .update_traffic(req_id, FrameDirection::Receive, 64);
+
+        let mut record = TrafficRecord::new(
+            req_id.to_string(),
+            "CONNECT".to_string(),
+            "tunnel://example.test:443".to_string(),
+        );
+        record.status = 200;
+        record.is_tunnel = true;
+        state.record_traffic(record);
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        finalize_tunnel_tracking(&state, req_id);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let persisted = store.get_by_id(req_id).expect("record should exist");
+        let socket_status = persisted
+            .socket_status
+            .expect("socket status should be persisted");
+        assert!(!socket_status.is_open);
+        assert_eq!(socket_status.send_bytes, 128);
+        assert_eq!(socket_status.receive_bytes, 64);
+
+        cleanup_test_dir(&dir);
     }
 
     fn make_tls_config_with_ca() -> TlsConfig {

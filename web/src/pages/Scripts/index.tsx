@@ -49,6 +49,7 @@ import VerticalSplitPane from "../../components/VerticalSplitPane";
 import { ImportBifrostButton } from "../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../hooks/useExportBifrost";
 import { getSandboxConfig, updateSandboxConfig } from "../../api/config";
+import pushService from "../../services/pushService";
 
 const { Text } = Typography;
 
@@ -462,6 +463,7 @@ function ScriptListPanel({
         background: resolvedTheme === "dark" ? "#141414" : "#fff",
         borderRight: `1px solid ${token.colorBorderSecondary}`,
       }}
+      data-testid="scripts-list-panel"
     >
       <div
         style={{
@@ -489,6 +491,7 @@ function ScriptListPanel({
               size="small"
               icon={<SettingOutlined />}
               onClick={onOpenSandboxSettings}
+              data-testid="scripts-sandbox-button"
             />
           </Tooltip>
           <Button
@@ -496,6 +499,7 @@ function ScriptListPanel({
             size="small"
             icon={<PlusOutlined />}
             onClick={() => onNewScript("request")}
+            data-testid="scripts-new-request-button"
           >
             Req
           </Button>
@@ -505,6 +509,7 @@ function ScriptListPanel({
             icon={<PlusOutlined />}
             onClick={() => onNewScript("response")}
             style={{ color: token.colorSuccess }}
+            data-testid="scripts-new-response-button"
           >
             Res
           </Button>
@@ -514,6 +519,7 @@ function ScriptListPanel({
             icon={<PlusOutlined />}
             onClick={() => onNewScript("decode")}
             style={{ color: "#722ed1" }}
+            data-testid="scripts-new-decode-button"
           >
             Dec
           </Button>
@@ -524,6 +530,7 @@ function ScriptListPanel({
                 size="small"
                 icon={<ExportOutlined />}
                 onClick={onExportAll}
+                data-testid="scripts-export-all-button"
               />
             </Tooltip>
           )}
@@ -551,6 +558,7 @@ function ScriptListPanel({
           onChange={(e) => onSearchChange(e.target.value)}
           allowClear
           size="small"
+          data-testid="scripts-search-input"
         />
       </div>
 
@@ -566,6 +574,7 @@ function ScriptListPanel({
               onSelect={onSelect as Parameters<typeof Tree>["0"]["onSelect"]}
               titleRender={renderTreeTitle}
               selectedKeys={selectedKeys}
+              data-testid="scripts-tree"
             />
           ) : searchValue ? (
             <Empty
@@ -720,7 +729,7 @@ api.example.com reqScript://add-auth-header
   }
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }} data-testid="scripts-editor-panel">
       <div
         style={{
           padding: "8px 12px",
@@ -763,6 +772,7 @@ api.example.com reqScript://add-auth-header
               icon={<PlayCircleOutlined />}
               onClick={onTest}
               loading={testing}
+              data-testid="scripts-test-button"
             />
           </Tooltip>
           <Tooltip title="Save (Cmd+S)">
@@ -772,6 +782,7 @@ api.example.com reqScript://add-auth-header
               icon={<SaveOutlined />}
               onClick={onSave}
               loading={saving}
+              data-testid="scripts-save-button"
             />
           </Tooltip>
           {!isNewScript && (
@@ -782,6 +793,7 @@ api.example.com reqScript://add-auth-header
                 danger
                 icon={<DeleteOutlined />}
                 onClick={onDelete}
+                data-testid="scripts-delete-button"
               />
             </Tooltip>
           )}
@@ -830,6 +842,7 @@ api.example.com reqScript://add-auth-header
             );
           }}
           key={selectedType}
+          wrapperProps={{ "data-testid": "scripts-editor" }}
           options={{
             minimap: { enabled: false },
             fontSize: 13,
@@ -922,6 +935,7 @@ function TestResultPanel({
         flexDirection: "column",
         overflow: "hidden",
       }}
+      data-testid="scripts-test-result-panel"
     >
       <div
         style={{
@@ -1106,6 +1120,7 @@ export default function ScriptsPage() {
     saving,
     testing,
     testResult,
+    applyScriptsSnapshot,
     fetchScripts,
     selectScript,
     saveScript,
@@ -1147,8 +1162,17 @@ export default function ScriptsPage() {
   );
 
   useEffect(() => {
-    fetchScripts();
-  }, [fetchScripts]);
+    pushService.connect({ need_scripts: true });
+    const unsubscribe = pushService.onScriptsUpdate((data) => {
+      applyScriptsSnapshot(data);
+    });
+
+    return () => {
+      unsubscribe();
+      pushService.updateSubscription({ need_scripts: false });
+      pushService.disconnectIfIdle();
+    };
+  }, [applyScriptsSnapshot]);
 
   useEffect(() => {
     if (testResult && !testResultExpanded) {
@@ -1515,7 +1539,13 @@ export default function ScriptsPage() {
         const scriptNode: TreeDataNode = {
           title: (
             <Space size={4}>
-              <HighlightText text={fileName} highlight={search} />
+              <span
+                data-testid="script-tree-node"
+                data-script-name={script.name}
+                data-script-type={script.script_type}
+              >
+                <HighlightText text={fileName} highlight={search} />
+              </span>
               <Tag
                 color={
                   script.script_type === "request"

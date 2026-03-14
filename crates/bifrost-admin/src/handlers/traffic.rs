@@ -7,54 +7,10 @@ use super::{error_response, json_response, method_not_allowed, success_response,
 use crate::body_store::BodyRef;
 use crate::push::{SharedPushManager, MAX_ID_LEN, MAX_SUBSCRIBED_IDS};
 use crate::state::{AdminState, SharedAdminState};
-use crate::traffic::SocketStatus;
 use crate::traffic_db::{QueryParams, TrafficSummaryCompact};
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &AdminState) {
-    if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() && summary.ss.is_none()
-    {
-        return;
-    }
-
-    if summary.is_sse() {
-        if let Some(status) = state.sse_hub.get_socket_status(&summary.id) {
-            summary.fc = status.frame_count;
-            summary.ss = Some(status);
-        }
-    } else if let Some(status) = state.connection_monitor.get_connection_status(&summary.id) {
-        summary.fc = status.frame_count;
-        summary.ss = Some(status);
-    } else if let Some(ref fs) = state.frame_store {
-        if let Some(metadata) = fs.get_metadata(&summary.id) {
-            summary.fc = metadata.frame_count as usize;
-            summary.ss = Some(SocketStatus {
-                is_open: !metadata.is_closed,
-                frame_count: metadata.frame_count as usize,
-                ..Default::default()
-            });
-        }
-    }
-
-    if summary.is_sse() {
-        if let Some(ref socket_status) = summary.ss {
-            let total = socket_status.send_bytes + socket_status.receive_bytes;
-            if total > 0 {
-                summary.res_sz = summary.res_sz.max(total as usize);
-            }
-
-            if !socket_status.is_open && summary.res_sz > 0 {
-                let total = summary.res_sz;
-                let status = socket_status.clone();
-                let frame_count = summary.fc;
-                let record_id = summary.id.clone();
-                state.update_traffic_by_id(&record_id, move |record| {
-                    record.response_size = total;
-                    record.socket_status = Some(status.clone());
-                    record.frame_count = frame_count;
-                });
-            }
-        }
-    }
+    state.reconcile_socket_summary(summary);
 }
 
 pub async fn handle_traffic(
@@ -974,44 +930,20 @@ async fn get_traffic_detail(state: SharedAdminState, id: &str) -> Response<BoxBo
 
     match record {
         Some(mut record) => {
-            if record.is_websocket || record.is_sse || record.is_tunnel {
-                if record.is_sse {
-                    if let Some(status) = state.sse_hub.get_socket_status(&record.id) {
-                        record.frame_count = status.frame_count;
-                        record.last_frame_id = status.frame_count as u64;
-                        record.socket_status = Some(status);
-                    }
-                } else if let Some(status) =
-                    state.connection_monitor.get_connection_status(&record.id)
-                {
-                    record.frame_count = status.frame_count;
-                    record.last_frame_id = status.frame_count as u64;
-                    record.socket_status = Some(status);
-                } else if let Some(ref fs) = state.frame_store {
-                    if let Some(metadata) = fs.get_metadata(&record.id) {
-                        record.frame_count = metadata.frame_count as usize;
-                        record.last_frame_id = metadata.last_frame_id;
-                        record.socket_status = Some(SocketStatus {
-                            is_open: !metadata.is_closed,
-                            frame_count: metadata.frame_count as usize,
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
+            state.reconcile_traffic_record(&mut record);
             if let Some(ref socket_status) = record.socket_status {
                 let total = socket_status.send_bytes + socket_status.receive_bytes;
-                if record.is_sse && total > 0 {
-                    record.response_size = record.response_size.max(total as usize);
-                }
-                if !socket_status.is_open && record.response_size == 0 && total > 0 {
-                    record.response_size = total as usize;
+                if !socket_status.is_open {
+                    if record.response_size == 0 && total > 0 {
+                        record.response_size = total as usize;
+                    }
                     let status = socket_status.clone();
                     let frame_count = record.frame_count;
                     let last_frame_id = record.last_frame_id;
+                    let response_size = record.response_size;
                     let record_id = record.id.clone();
                     state.update_traffic_by_id(&record_id, move |record| {
-                        record.response_size = total as usize;
+                        record.response_size = response_size;
                         record.socket_status = Some(status.clone());
                         record.frame_count = frame_count;
                         record.last_frame_id = last_frame_id;
@@ -1121,6 +1053,7 @@ async fn clear_traffic_by_ids(
     }
 
     if let Some(pm) = push_manager {
+        pm.invalidate_overview_cache();
         pm.broadcast_traffic_deleted(ids_to_delete.clone());
     }
 
@@ -1130,7 +1063,7 @@ async fn clear_traffic_by_ids(
 
 async fn clear_all_traffic(
     state: SharedAdminState,
-    _push_manager: Option<SharedPushManager>,
+    push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
     let active_connection_ids = state.connection_monitor.active_connection_ids();
 
@@ -1170,6 +1103,10 @@ async fn clear_all_traffic(
     }
 
     state.connection_monitor.clear();
+
+    if let Some(pm) = push_manager {
+        pm.invalidate_overview_cache();
+    }
 
     success_response("All traffic data cleared successfully")
 }

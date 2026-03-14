@@ -145,7 +145,7 @@ pub async fn handle_replay(
     } else if let Some(id) = path.strip_prefix("/api/replay/groups/") {
         match method {
             Method::GET => get_group(state, id).await,
-            Method::PUT => update_group(req, state, id).await,
+            Method::PUT => update_group(req, state, push_manager, id).await,
             Method::DELETE => delete_group(state, push_manager, id).await,
             _ => method_not_allowed(),
         }
@@ -163,7 +163,7 @@ pub async fn handle_replay(
     } else if let Some(rest) = path.strip_prefix("/api/replay/requests/") {
         if let Some(id) = rest.strip_suffix("/move") {
             match method {
-                Method::PUT => move_request(req, state, id).await,
+                Method::PUT => move_request(req, state, push_manager, id).await,
                 _ => method_not_allowed(),
             }
         } else {
@@ -740,6 +740,7 @@ async fn create_group(
 
     if let Some(pm) = push_manager {
         pm.broadcast_replay_request_updated("group_created", None, Some(&group.id));
+        pm.broadcast_replay_groups_snapshot().await;
     }
 
     json_response(&group)
@@ -772,6 +773,7 @@ struct UpdateGroupRequest {
 async fn update_group(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     id: &str,
 ) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
@@ -817,6 +819,11 @@ async fn update_group(
         );
     }
 
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated("group_updated", None, Some(id));
+        pm.broadcast_replay_groups_snapshot().await;
+    }
+
     json_response(&group)
 }
 
@@ -844,6 +851,8 @@ async fn delete_group(
 
     if let Some(pm) = push_manager {
         pm.broadcast_replay_request_updated("group_deleted", None, Some(id));
+        pm.broadcast_replay_groups_snapshot().await;
+        pm.broadcast_replay_saved_requests_snapshot().await;
     }
 
     success_response("Group deleted")
@@ -994,6 +1003,8 @@ async fn create_request(
             Some(&request.id),
             request.group_id.as_deref(),
         );
+        pm.broadcast_replay_saved_requests_snapshot().await;
+        pm.broadcast_replay_groups_snapshot().await;
     }
 
     json_response(&request)
@@ -1111,6 +1122,8 @@ async fn update_request(
             Some(&request.id),
             request.group_id.as_deref(),
         );
+        pm.broadcast_replay_saved_requests_snapshot().await;
+        pm.broadcast_replay_groups_snapshot().await;
     }
 
     json_response(&request)
@@ -1140,6 +1153,8 @@ async fn delete_request(
 
     if let Some(pm) = push_manager {
         pm.broadcast_replay_request_updated("request_deleted", Some(id), None);
+        pm.broadcast_replay_saved_requests_snapshot().await;
+        pm.broadcast_replay_groups_snapshot().await;
     }
 
     success_response("Request deleted")
@@ -1153,6 +1168,7 @@ struct MoveRequestRequest {
 async fn move_request(
     req: Request<Incoming>,
     state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
     id: &str,
 ) -> Response<BoxBody> {
     let store = match &state.replay_db_store {
@@ -1180,6 +1196,16 @@ async fn move_request(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to move request: {}", e),
         );
+    }
+
+    if let Some(pm) = push_manager {
+        pm.broadcast_replay_request_updated(
+            "request_updated",
+            Some(id),
+            move_req.group_id.as_deref(),
+        );
+        pm.broadcast_replay_saved_requests_snapshot().await;
+        pm.broadcast_replay_groups_snapshot().await;
     }
 
     success_response("Request moved")

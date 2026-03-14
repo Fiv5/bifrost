@@ -1,6 +1,6 @@
 use crate::handlers::{error_response, json_response, success_response, BoxBody};
 use bifrost_script::{ScriptDetail, ScriptEngine, ScriptEngineConfig, ScriptInfo, ScriptType};
-use bifrost_storage::{SharedConfigManager, UnifiedConfig};
+use bifrost_storage::{ConfigChangeEvent, SharedConfigManager, UnifiedConfig};
 use http_body_util::BodyExt;
 use hyper::{Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -271,8 +271,8 @@ pub async fn handle_scripts_request(
 
     match method {
         Method::GET => handle_get(path, script_manager).await,
-        Method::PUT => handle_put(req, path, script_manager).await,
-        Method::DELETE => handle_delete(path, script_manager).await,
+        Method::PUT => handle_put(req, path, script_manager, config_manager.clone()).await,
+        Method::DELETE => handle_delete(path, script_manager, config_manager.clone()).await,
         Method::POST => handle_post(req, path, script_manager, config_manager).await,
         _ => error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"),
     }
@@ -381,6 +381,7 @@ async fn handle_put(
     req: Request<hyper::body::Incoming>,
     path: String,
     script_manager: Arc<RwLock<ScriptManager>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let remaining = path.trim_start_matches("/api/scripts/");
     let first_slash = remaining.find('/');
@@ -434,6 +435,9 @@ async fn handle_put(
     {
         Ok(()) => {
             info!("Saved {} script: {}", script_type, name);
+            if let Some(ref cm) = config_manager {
+                let _ = cm.notify(ConfigChangeEvent::ScriptsChanged);
+            }
             let detail = ScriptDetail {
                 info: ScriptInfo {
                     name: name.to_string(),
@@ -459,6 +463,7 @@ async fn handle_put(
 async fn handle_delete(
     path: String,
     script_manager: Arc<RwLock<ScriptManager>>,
+    config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
     let remaining = path.trim_start_matches("/api/scripts/");
     let first_slash = remaining.find('/');
@@ -491,6 +496,9 @@ async fn handle_delete(
     match manager.engine().delete_script(script_type, name).await {
         Ok(()) => {
             info!("Deleted {} script: {}", script_type, name);
+            if let Some(ref cm) = config_manager {
+                let _ = cm.notify(ConfigChangeEvent::ScriptsChanged);
+            }
             success_response(&format!("Script {} deleted", name))
         }
         Err(e) => {

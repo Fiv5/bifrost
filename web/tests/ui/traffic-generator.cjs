@@ -3,7 +3,7 @@ const WebSocket = require("ws");
 const { WebSocketServer } = require("ws");
 const { HttpProxyAgent } = require("http-proxy-agent");
 
-const proxyUrl = process.env.PROXY_URL || "http://127.0.0.1:9900";
+const proxyUrl = process.env.PROXY_URL || `http://127.0.0.1:${process.env.BIFROST_UI_TEST_PORT || "9910"}`;
 const proxyHost = new URL(proxyUrl);
 
 const httpServer = http.createServer((req, res) => {

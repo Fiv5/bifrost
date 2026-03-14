@@ -247,10 +247,10 @@ export default function RuleEditor() {
     selectedRuleName && editingContent[selectedRuleName] !== undefined;
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="rule-editor">
       <div className={styles.header}>
         <div className={styles.titleSection}>
-          <span className={styles.title}>{currentRule?.name}</span>
+          <span className={styles.title} data-testid="rule-editor-title">{currentRule?.name}</span>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
         <Space size={4}>
@@ -270,11 +270,12 @@ export default function RuleEditor() {
               onClick={handleSave}
               disabled={!hasChanges}
               style={{ color: hasChanges ? token.colorPrimary : undefined }}
+              data-testid="rule-save-button"
             />
           </Tooltip>
         </Space>
       </div>
-      <div className={styles.editorContainer} ref={setContainerElement} />
+      <div className={styles.editorContainer} ref={setContainerElement} data-testid="rule-editor-container" />
     </div>
   );
 }

@@ -4,7 +4,20 @@ import type {
   TrafficDeltaData,
   SystemOverview,
   MetricsSnapshot,
+  PendingAuth,
+  ReplayGroup,
+  ReplayRequestSummary,
+  WhitelistStatus,
 } from '../types';
+import type { ScriptInfo } from '../api/scripts';
+import type { ValueItem } from '../api/values';
+import type { TlsConfig, PerformanceConfig } from '../api/config';
+import type { CertInfo } from '../api/cert';
+import type {
+  CliProxyStatus,
+  ProxyAddressInfo,
+  SystemProxyStatus,
+} from '../api/proxy';
 import { getClientId } from './clientId';
 import { buildWsUrl } from '../runtime';
 import {
@@ -50,6 +63,52 @@ export interface HistoryData {
   history: MetricsSnapshot[];
 }
 
+export interface ValuesData {
+  values: ValueItem[];
+  total: number;
+}
+
+export interface ScriptsData {
+  request: ScriptInfo[];
+  response: ScriptInfo[];
+  decode: ScriptInfo[];
+}
+
+export type SettingsScope =
+  | 'proxy_settings'
+  | 'tls_config'
+  | 'performance_config'
+  | 'cert_info'
+  | 'proxy_address'
+  | 'system_proxy'
+  | 'cli_proxy'
+  | 'whitelist_status'
+  | 'pending_authorizations';
+
+export interface SettingsUpdateData {
+  scope: SettingsScope;
+  data:
+    | unknown
+    | TlsConfig
+    | PerformanceConfig
+    | CertInfo
+    | ProxyAddressInfo
+    | SystemProxyStatus
+    | CliProxyStatus
+    | WhitelistStatus
+    | PendingAuth[];
+}
+
+export interface ReplaySavedRequestsData {
+  requests: ReplayRequestSummary[];
+  total: number;
+  max_requests: number;
+}
+
+export interface ReplayGroupsData {
+  groups: ReplayGroup[];
+}
+
 export interface ConnectedData {
   client_id: number;
   message: string;
@@ -82,6 +141,11 @@ export type PushMessageType =
   | 'overview_update'
   | 'metrics_update'
   | 'history_update'
+  | 'values_update'
+  | 'scripts_update'
+  | 'settings_update'
+  | 'replay_saved_requests_update'
+  | 'replay_groups_update'
   | 'connected'
   | 'error'
   | 'disconnect'
@@ -97,6 +161,11 @@ export interface PushMessage {
   | OverviewData
   | MetricsData
   | HistoryData
+  | ValuesData
+  | ScriptsData
+  | SettingsUpdateData
+  | ReplaySavedRequestsData
+  | ReplayGroupsData
   | ConnectedData
   | ErrorData
   | DisconnectData
@@ -108,16 +177,22 @@ export interface ClientSubscription {
   last_traffic_id?: string;
   last_sequence?: number;
   pending_ids?: string[];
+  need_traffic?: boolean;
   need_overview?: boolean;
   need_metrics?: boolean;
   need_history?: boolean;
+  need_values?: boolean;
+  need_scripts?: boolean;
+  need_replay_saved_requests?: boolean;
+  need_replay_groups?: boolean;
+  settings_scopes?: SettingsScope[];
   history_limit?: number;
   metrics_interval_ms?: number;
 }
 
 export const METRICS_INTERVAL_MIN_MS = 200;
 export const METRICS_INTERVAL_MAX_MS = 5000;
-export const METRICS_INTERVAL_DEFAULT_MS = 1000;
+export const METRICS_INTERVAL_DEFAULT_MS = 2000;
 export const METRICS_INTERVAL_FAST_MS = 250;
 
 type MessageHandler<T> = (data: T) => void;
@@ -125,6 +200,33 @@ type MessageHandler<T> = (data: T) => void;
 interface PushServiceConfig {
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+}
+
+function normalizeStringArray(values?: string[]): string[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+
+  return [...new Set(values)].sort();
+}
+
+function normalizeSubscription(
+  subscription: ClientSubscription,
+): ClientSubscription {
+  return {
+    ...subscription,
+    pending_ids: normalizeStringArray(subscription.pending_ids),
+    settings_scopes: normalizeStringArray(subscription.settings_scopes) as
+      | SettingsScope[]
+      | undefined,
+  };
+}
+
+function subscriptionsEqual(
+  left: ClientSubscription,
+  right: ClientSubscription,
+): boolean {
+  return JSON.stringify(normalizeSubscription(left)) === JSON.stringify(normalizeSubscription(right));
 }
 
 class PushService {
@@ -142,6 +244,11 @@ class PushService {
   private overviewHandlers: Set<MessageHandler<OverviewData>> = new Set();
   private metricsHandlers: Set<MessageHandler<MetricsData>> = new Set();
   private historyHandlers: Set<MessageHandler<HistoryData>> = new Set();
+  private valuesHandlers: Set<MessageHandler<ValuesData>> = new Set();
+  private scriptsHandlers: Set<MessageHandler<ScriptsData>> = new Set();
+  private settingsHandlers: Set<MessageHandler<SettingsUpdateData>> = new Set();
+  private replaySavedRequestsHandlers: Set<MessageHandler<ReplaySavedRequestsData>> = new Set();
+  private replayGroupsHandlers: Set<MessageHandler<ReplayGroupsData>> = new Set();
   private connectionHandlers: Set<MessageHandler<{ connected: boolean; clientId?: number }>> = new Set();
   private forceRefreshHandlers: Set<MessageHandler<DisconnectData>> = new Set();
   private replayRequestHandlers: Set<MessageHandler<ReplayRequestUpdatedData>> = new Set();
@@ -202,8 +309,16 @@ class PushService {
       params.append('last_traffic_id', this.subscription.last_traffic_id);
     }
 
+    if (this.subscription.last_sequence !== undefined) {
+      params.append('last_sequence', String(this.subscription.last_sequence));
+    }
+
     if (this.subscription.pending_ids && this.subscription.pending_ids.length > 0) {
       params.append('pending_ids', this.subscription.pending_ids.join(','));
+    }
+
+    if (this.subscription.need_traffic) {
+      params.append('need_traffic', 'true');
     }
 
     if (this.subscription.need_overview) {
@@ -216,6 +331,26 @@ class PushService {
 
     if (this.subscription.need_history) {
       params.append('need_history', 'true');
+    }
+
+    if (this.subscription.need_values) {
+      params.append('need_values', 'true');
+    }
+
+    if (this.subscription.need_scripts) {
+      params.append('need_scripts', 'true');
+    }
+
+    if (this.subscription.need_replay_saved_requests) {
+      params.append('need_replay_saved_requests', 'true');
+    }
+
+    if (this.subscription.need_replay_groups) {
+      params.append('need_replay_groups', 'true');
+    }
+
+    if (this.subscription.settings_scopes && this.subscription.settings_scopes.length > 0) {
+      params.append('settings_scopes', this.subscription.settings_scopes.join(','));
     }
 
     if (this.subscription.history_limit) {
@@ -235,6 +370,10 @@ class PushService {
     this.ws.onopen = () => {
       console.log('[PushService] Connected');
       this.reconnectAttempts = 0;
+      // The connection URL only captures the subscription snapshot at create time.
+      // If another store updates the subscription while the socket is CONNECTING,
+      // send the latest merged subscription once the socket opens.
+      this.ws?.send(JSON.stringify(this.subscription));
       useDesktopCoreStore.getState().markReady();
     };
 
@@ -314,6 +453,31 @@ class PushService {
         this.historyHandlers.forEach((handler) => handler(data));
         break;
       }
+      case 'values_update': {
+        const data = message.data as ValuesData;
+        this.valuesHandlers.forEach((handler) => handler(data));
+        break;
+      }
+      case 'scripts_update': {
+        const data = message.data as ScriptsData;
+        this.scriptsHandlers.forEach((handler) => handler(data));
+        break;
+      }
+      case 'settings_update': {
+        const data = message.data as SettingsUpdateData;
+        this.settingsHandlers.forEach((handler) => handler(data));
+        break;
+      }
+      case 'replay_saved_requests_update': {
+        const data = message.data as ReplaySavedRequestsData;
+        this.replaySavedRequestsHandlers.forEach((handler) => handler(data));
+        break;
+      }
+      case 'replay_groups_update': {
+        const data = message.data as ReplayGroupsData;
+        this.replayGroupsHandlers.forEach((handler) => handler(data));
+        break;
+      }
       case 'error': {
         const data = message.data as ErrorData;
         console.error('[PushService] Server error:', data.message);
@@ -384,6 +548,11 @@ class PushService {
       this.overviewHandlers.size > 0 ||
       this.metricsHandlers.size > 0 ||
       this.historyHandlers.size > 0 ||
+      this.valuesHandlers.size > 0 ||
+      this.scriptsHandlers.size > 0 ||
+      this.settingsHandlers.size > 0 ||
+      this.replaySavedRequestsHandlers.size > 0 ||
+      this.replayGroupsHandlers.size > 0 ||
       this.replayRequestHandlers.size > 0 ||
       this.replayHistoryHandlers.size > 0;
     if (!hasHandlers) {
@@ -395,7 +564,17 @@ class PushService {
     if (this.forceRefresh) {
       return;
     }
-    this.subscription = { ...this.subscription, ...subscription };
+
+    const nextSubscription = {
+      ...this.subscription,
+      ...subscription,
+    };
+
+    if (subscriptionsEqual(this.subscription, nextSubscription)) {
+      return;
+    }
+
+    this.subscription = nextSubscription;
 
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(this.subscription));
@@ -438,6 +617,31 @@ class PushService {
   onHistoryUpdate(handler: MessageHandler<HistoryData>): () => void {
     this.historyHandlers.add(handler);
     return () => this.historyHandlers.delete(handler);
+  }
+
+  onValuesUpdate(handler: MessageHandler<ValuesData>): () => void {
+    this.valuesHandlers.add(handler);
+    return () => this.valuesHandlers.delete(handler);
+  }
+
+  onScriptsUpdate(handler: MessageHandler<ScriptsData>): () => void {
+    this.scriptsHandlers.add(handler);
+    return () => this.scriptsHandlers.delete(handler);
+  }
+
+  onSettingsUpdate(handler: MessageHandler<SettingsUpdateData>): () => void {
+    this.settingsHandlers.add(handler);
+    return () => this.settingsHandlers.delete(handler);
+  }
+
+  onReplaySavedRequestsUpdate(handler: MessageHandler<ReplaySavedRequestsData>): () => void {
+    this.replaySavedRequestsHandlers.add(handler);
+    return () => this.replaySavedRequestsHandlers.delete(handler);
+  }
+
+  onReplayGroupsUpdate(handler: MessageHandler<ReplayGroupsData>): () => void {
+    this.replayGroupsHandlers.add(handler);
+    return () => this.replayGroupsHandlers.delete(handler);
   }
 
   onConnectionChange(handler: MessageHandler<{ connected: boolean; clientId?: number }>): () => void {

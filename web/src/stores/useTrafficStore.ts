@@ -171,6 +171,27 @@ const isPendingRecord = (record: TrafficSummary): boolean => {
   return record.status === 0 || record.socket_status?.is_open === true;
 };
 
+const shouldReplaceRecord = (
+  existing: TrafficSummary | undefined,
+  next: TrafficSummary,
+): boolean => {
+  if (!existing) return true;
+
+  return (
+    existing.status !== next.status ||
+    existing.request_size !== next.request_size ||
+    existing.response_size !== next.response_size ||
+    existing.duration_ms !== next.duration_ms ||
+    existing.frame_count !== next.frame_count ||
+    existing.content_type !== next.content_type ||
+    existing.socket_status?.is_open !== next.socket_status?.is_open ||
+    existing.socket_status?.send_bytes !== next.socket_status?.send_bytes ||
+    existing.socket_status?.receive_bytes !== next.socket_status?.receive_bytes ||
+    existing.socket_status?.frame_count !== next.socket_status?.frame_count ||
+    getDisplaySizeBytes(existing) !== getDisplaySizeBytes(next)
+  );
+};
+
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
   const isH3 = record.is_h3 || record.protocol === 'h3' || record.protocol === 'h3s';
   const displayProtocol = isH3
@@ -514,14 +535,6 @@ export const useTrafficStore = create<TrafficState>()(
         const state = get();
         if (state.pushUnsubscribe || state.pushDeltaUnsubscribe || state.pushDeletedUnsubscribe) return;
 
-        const subscription = {
-          last_traffic_id: state.lastId || undefined,
-          last_sequence: state.lastSequence || undefined,
-          pending_ids: Array.from(state.pendingIds),
-        };
-
-        pushService.connect(subscription);
-
         const unsubscribe = pushService.onTrafficUpdates((data) => {
           get().handleTrafficPush(data);
         });
@@ -539,6 +552,15 @@ export const useTrafficStore = create<TrafficState>()(
           pushDeltaUnsubscribe: unsubscribeDelta,
           pushDeletedUnsubscribe: unsubscribeDeleted,
         });
+
+        const subscription = {
+          last_traffic_id: state.lastId || undefined,
+          last_sequence: state.lastSequence || undefined,
+          pending_ids: Array.from(state.pendingIds),
+          need_traffic: true,
+        };
+
+        pushService.connect(subscription);
       },
 
       disablePush: () => {
@@ -553,6 +575,12 @@ export const useTrafficStore = create<TrafficState>()(
           state.pushDeletedUnsubscribe();
         }
         set({ pushUnsubscribe: null, pushDeltaUnsubscribe: null, pushDeletedUnsubscribe: null });
+        pushService.updateSubscription({
+          need_traffic: false,
+          last_traffic_id: undefined,
+          last_sequence: undefined,
+          pending_ids: [],
+        });
         pushService.disconnectIfIdle();
       },
 
@@ -599,9 +627,7 @@ export const useTrafficStore = create<TrafficState>()(
 
               for (const r of batch.updatedRecords) {
                 const existing = recordsMap.get(r.id);
-                const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
-                const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
-                if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
+                if (shouldReplaceRecord(existing, r)) {
                   recordsMap.set(r.id, r);
                   hasChanges = true;
                 }
@@ -708,9 +734,7 @@ export const useTrafficStore = create<TrafficState>()(
 
           for (const r of updatedRecords) {
             const existing = recordsMap.get(r.id);
-            const displaySizeChanged = getDisplaySizeBytes(existing) !== getDisplaySizeBytes(r);
-            const socketOpenChanged = existing?.socket_status?.is_open !== r.socket_status?.is_open;
-            if (!existing || existing.status !== r.status || socketOpenChanged || displaySizeChanged) {
+            if (shouldReplaceRecord(existing, r)) {
               recordsMap.set(r.id, r);
               hasChanges = true;
             }
@@ -842,7 +866,7 @@ export const useTrafficStore = create<TrafficState>()(
 
       fetchInitialData: async () => {
         const state = get();
-        if (state.initialized && state.records.length > 0) {
+        if (state.loading || state.initialized) {
           return;
         }
 
@@ -914,7 +938,7 @@ export const useTrafficStore = create<TrafficState>()(
 
               for (const r of preprocessedUpdated) {
                 const existing = recordsMap.get(r.id);
-                if (!existing || existing.status !== r.status) {
+                if (shouldReplaceRecord(existing, r)) {
                   recordsMap.set(r.id, r);
                   hasChanges = true;
                 }

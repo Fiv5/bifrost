@@ -61,7 +61,7 @@ pub use traffic::{
 };
 pub use traffic_db::{
     start_db_cleanup_task, Direction, QueryParams, QueryResult, SharedTrafficDbStore,
-    TrafficDbStats, TrafficDbStore, TrafficFlags, TrafficSummaryCompact,
+    TrafficDbStats, TrafficDbStore, TrafficFlags, TrafficStoreEvent, TrafficSummaryCompact,
 };
 pub use ws_payload_store::{
     start_ws_payload_cleanup_task, SharedWsPayloadStore, WsPayloadStore, WsPayloadStoreConfigUpdate,

@@ -3,6 +3,16 @@ import type { ValueItem } from '../api/values';
 import * as api from '../api';
 import { isConnectionIssueError } from '../api/client';
 
+const VALUES_SYNC_CHANNEL = 'bifrost-values-sync';
+const valuesSyncChannel =
+  typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(VALUES_SYNC_CHANNEL)
+    : null;
+
+function broadcastValuesSnapshot(values: ValueItem[]): void {
+  valuesSyncChannel?.postMessage({ type: 'snapshot', values });
+}
+
 interface ValuesState {
   values: ValueItem[];
   currentValue: ValueItem | null;
@@ -12,6 +22,7 @@ interface ValuesState {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  applyValuesSnapshot: (values: ValueItem[]) => void;
   fetchValues: () => Promise<void>;
   selectValue: (name: string | null) => void;
   createValue: (name: string, value: string) => Promise<boolean>;
@@ -34,6 +45,14 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
   loading: false,
   saving: false,
   error: null,
+
+  applyValuesSnapshot: (values) => {
+    const { selectedValueName } = get();
+    const currentValue = selectedValueName
+      ? values.find((item) => item.name === selectedValueName) ?? null
+      : null;
+    set({ values, currentValue, loading: false, error: null });
+  },
 
   fetchValues: async () => {
     set({ loading: true, error: null });
@@ -59,9 +78,18 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.createValue(name, value);
-      await get().fetchValues();
-      set({ selectedValueName: name });
-      get().selectValue(name);
+      set((state) => {
+        const values = [...state.values, { name, value }].sort((a, b) =>
+          a.name.localeCompare(b.name),
+        );
+        broadcastValuesSnapshot(values);
+        return {
+          values,
+          selectedValueName: name,
+          currentValue: { name, value },
+          loading: false,
+        };
+      });
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -73,10 +101,18 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       await api.updateValue(name, value);
-      await get().fetchValues();
-      if (get().currentValue?.name === name) {
-        get().selectValue(name);
-      }
+      set((state) => {
+        const values = state.values.map((item) =>
+          item.name === name ? { ...item, value } : item,
+        );
+        broadcastValuesSnapshot(values);
+        return {
+          values,
+          currentValue:
+            state.currentValue?.name === name ? { name, value } : state.currentValue,
+          loading: false,
+        };
+      });
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
@@ -96,11 +132,20 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
     set({ saving: true, error: null });
     try {
       await api.updateValue(selectedValueName, content);
-      await get().fetchValues();
       const newEditingContent = { ...get().editingContent };
       delete newEditingContent[selectedValueName];
-      set({ editingContent: newEditingContent, saving: false });
-      get().selectValue(selectedValueName);
+      set((state) => {
+        const values = state.values.map((item) =>
+          item.name === selectedValueName ? { ...item, value: content } : item,
+        );
+        broadcastValuesSnapshot(values);
+        return {
+          values,
+          currentValue: { name: selectedValueName, value: content },
+          editingContent: newEditingContent,
+          saving: false,
+        };
+      });
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, saving: false });
@@ -115,22 +160,26 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       const { selectedValueName, editingContent } = get();
       const newEditingContent = { ...editingContent };
       delete newEditingContent[name];
+      const values = get().values.filter((item) => item.name !== name);
+      broadcastValuesSnapshot(values);
 
       if (selectedValueName === name) {
-        await get().fetchValues();
-        const values = get().values;
         const nextValue = values.length > 0 ? values[0].name : null;
         set({
+          values,
           selectedValueName: nextValue,
-          currentValue: null,
+          currentValue: nextValue
+            ? values.find((item) => item.name === nextValue) ?? null
+            : null,
           editingContent: newEditingContent,
+          loading: false,
         });
-        if (nextValue) {
-          get().selectValue(nextValue);
-        }
       } else {
-        await get().fetchValues();
-        set({ editingContent: newEditingContent });
+        set({
+          values,
+          editingContent: newEditingContent,
+          loading: false,
+        });
       }
       return true;
     } catch (e) {
@@ -160,15 +209,25 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
         delete newEditingContent[oldName];
       }
 
-      await get().fetchValues();
+      const nextValues = values
+        .filter((item) => item.name !== oldName)
+        .concat({ name: newName, value: content })
+        .sort((a, b) => a.name.localeCompare(b.name));
+      broadcastValuesSnapshot(nextValues);
       if (selectedValueName === oldName) {
         set({
+          values: nextValues,
           selectedValueName: newName,
+          currentValue: { name: newName, value: content },
           editingContent: newEditingContent,
+          loading: false,
         });
-        get().selectValue(newName);
       } else {
-        set({ editingContent: newEditingContent });
+        set({
+          values: nextValues,
+          editingContent: newEditingContent,
+          loading: false,
+        });
       }
       return true;
     } catch (e) {
@@ -201,3 +260,12 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
 
   clearError: () => set({ error: null }),
 }));
+
+valuesSyncChannel?.addEventListener('message', (event: MessageEvent) => {
+  const data = event.data as { type?: string; values?: ValueItem[] };
+  if (data?.type !== 'snapshot' || !Array.isArray(data.values)) {
+    return;
+  }
+
+  useValuesStore.getState().applyValuesSnapshot(data.values);
+});

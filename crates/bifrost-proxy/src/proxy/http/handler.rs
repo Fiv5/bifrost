@@ -21,7 +21,7 @@ use crate::dns::DnsResolver;
 use crate::http3::Http3Client;
 use crate::protocol::ProtocolDetector;
 
-use super::tunnel::{sanitize_upstream_headers, send_pooled_request};
+use super::tunnel::{classify_request_error, sanitize_upstream_headers, send_pooled_request};
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
@@ -954,16 +954,19 @@ pub async fn handle_http_request(
         {
             Ok(r) => r,
             Err(e) => {
-                let error_msg = format!("Request failed: {}", e);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                let mut source = std::error::Error::source(&e);
-                while let Some(err) = source {
-                    error!("[{}] Request failure source: {}", ctx.id_str(), err);
-                    source = std::error::Error::source(err);
+                let classified = classify_request_error(&e);
+                error!(
+                    "[{}] {} ({})",
+                    ctx.id_str(),
+                    classified.error_message,
+                    classified.error_type
+                );
+                for source in &classified.source_chain {
+                    error!("[{}] Request failure source: {}", ctx.id_str(), source);
                 }
                 return Ok(build_conn_error_and_record(
-                    "REQUEST_FAILED",
-                    error_msg,
+                    classified.error_type,
+                    classified.error_message,
                     None,
                 ));
             }
@@ -986,16 +989,19 @@ pub async fn handle_http_request(
         {
             Ok(r) => r,
             Err(e) => {
-                let error_msg = format!("Request failed: {}", e);
-                error!("[{}] {}", ctx.id_str(), error_msg);
-                let mut source = std::error::Error::source(&e);
-                while let Some(err) = source {
-                    error!("[{}] Request failure source: {}", ctx.id_str(), err);
-                    source = std::error::Error::source(err);
+                let classified = classify_request_error(&e);
+                error!(
+                    "[{}] {} ({})",
+                    ctx.id_str(),
+                    classified.error_message,
+                    classified.error_type
+                );
+                for source in &classified.source_chain {
+                    error!("[{}] Request failure source: {}", ctx.id_str(), source);
                 }
                 return Ok(build_conn_error_and_record(
-                    "REQUEST_FAILED",
-                    error_msg,
+                    classified.error_type,
+                    classified.error_message,
                     None,
                 ));
             }

@@ -22,11 +22,16 @@ description: |
 - 前端开发服务器通过 `web/` 目录启动：`pnpm dev`
 - 默认 UI 入口：`http://localhost:3000/_bifrost/`
 - 默认管理端 API：`http://127.0.0.1:9900/_bifrost/api`
-- 若 9900 端口未启动，可在仓库根目录使用：
+- 若 9900 端口未启动，或者本次修改涉及管理端静态资源 / push / Traffic 页面，请优先使用“先编译、再启动”的方式：
 
 ```bash
-BIFROST_DATA_DIR=./.bifrost-e2e-ui cargo run --bin bifrost -- start -p 9900 --unsafe-ssl
+CARGO_TARGET_DIR=./.bifrost-ui-target cargo build --bin bifrost
+BIFROST_DATA_DIR=./.bifrost-e2e-ui ./.bifrost-ui-target/debug/bifrost start -p 9900 --unsafe-ssl
 ```
+
+- 启动后必须确认：
+  - `lsof -nP -iTCP:9900 -sTCP:LISTEN`
+  - `curl -sS http://127.0.0.1:9900/_bifrost/api/proxy/address`
 
 - 路由定义查看 [web/src/App.tsx](../../../web/src/App.tsx)
 - API 说明查看 [crates/bifrost-admin/ADMIN_API.md](../../../crates/bifrost-admin/ADMIN_API.md)
@@ -35,6 +40,7 @@ BIFROST_DATA_DIR=./.bifrost-e2e-ui cargo run --bin bifrost -- start -p 9900 --un
 
 - `scripts/browser-test.js`：UI 测试主入口
 - `scripts/api-test.js`：API 测试主入口
+- `scripts/push-debug.js`：最小化 push / websocket 排查工具
 - `scripts/scenarios/`：内置场景
 - `logs/`：快照和调试输出
 - `screenshots/`：截图输出
@@ -84,12 +90,24 @@ node api-test.js --api /_bifrost/api/system/overview -p 9900 -v
 node api-test.js --api /_bifrost/api/rules -p 9900
 ```
 
+### Push 排查命令
+
+```bash
+node push-debug.js -p 9900
+node push-debug.js -p 9900 --duration 8000 --headful
+node push-debug.js -p 9900 --seed http
+node push-debug.js -p 9900 --seed connect --duration 8000
+node push-debug.js -p 9900 --page /_bifrost/rules --no-expect-traffic-subscription
+```
+
 ## 常用工作流
 
 1. 优先运行已有场景，而不是新写一套交互脚本
 2. 如果元素定位不稳，先用 `launch -i` 或 `watch` 查看快照
 3. API 问题优先用 `api-test.js` 单独确认
 4. 需要新增场景时，直接在 `scripts/scenarios/` 下补 JSON
+5. 如果页面现象和 API 不一致，必须抓浏览器 `/api/push` websocket frame，确认是“后端没推”还是“页面没订阅/没消费”
+6. 实时推送问题优先跑 `push-debug.js`，先拿到 websocket 和 API 证据，再决定是否进入完整 Playwright 用例
 
 ## CLI 对齐说明
 

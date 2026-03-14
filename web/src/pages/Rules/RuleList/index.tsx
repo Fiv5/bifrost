@@ -181,7 +181,7 @@ export default function RuleList() {
   };
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="rules-list">
       <div className={styles.header}>
         <span className={styles.headerTitle}>Rules</span>
         <div className={styles.headerActions}>
@@ -191,6 +191,7 @@ export default function RuleList() {
               size="small"
               icon={<PlusOutlined />}
               onClick={() => setCreateModalVisible(true)}
+              data-testid="rule-new-button"
             />
           </Tooltip>
           <Tooltip title="Refresh">
@@ -199,6 +200,7 @@ export default function RuleList() {
               size="small"
               icon={<ReloadOutlined />}
               onClick={() => fetchRules()}
+              data-testid="rule-refresh-button"
             />
           </Tooltip>
           <ImportBifrostButton
@@ -218,6 +220,7 @@ export default function RuleList() {
           value={searchKeyword}
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
+          data-testid="rule-search-input"
         />
       </div>
 
@@ -242,6 +245,9 @@ export default function RuleList() {
                     className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
                     onClick={(e) => handleSelect(rule.name, e.ctrlKey || e.metaKey)}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
+                    data-testid="rule-item"
+                    data-rule-name={rule.name}
+                    data-rule-enabled={rule.enabled ? "true" : "false"}
                   >
                     <div className={styles.itemContent}>
                       <span className={styles.itemName} title={rule.name}>

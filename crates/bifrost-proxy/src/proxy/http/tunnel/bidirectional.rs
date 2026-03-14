@@ -7,6 +7,7 @@ use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tracing::debug;
 
 pub async fn tunnel_bidirectional(
@@ -97,6 +98,33 @@ pub struct TunnelStats {
     pub cancelled: bool,
 }
 
+fn shutdown_tunnel_task<T>(task: &mut JoinHandle<std::io::Result<T>>) {
+    task.abort();
+}
+
+fn tunnel_result_from_error(
+    verbose_logging: bool,
+    req_id: &str,
+    error: std::io::Error,
+) -> Result<TunnelStats> {
+    if error.kind() == std::io::ErrorKind::ConnectionReset
+        || error.kind() == std::io::ErrorKind::BrokenPipe
+    {
+        if verbose_logging {
+            debug!("[{}] Tunnel closed: {}", req_id, error);
+        } else {
+            debug!("Tunnel closed: {}", error);
+        }
+        Ok(TunnelStats {
+            bytes_sent: 0,
+            bytes_received: 0,
+            cancelled: false,
+        })
+    } else {
+        Err(BifrostError::Network(format!("Tunnel error: {}", error)))
+    }
+}
+
 pub async fn tunnel_bidirectional_with_cancel(
     upgraded: Upgraded,
     target: TcpStream,
@@ -171,36 +199,59 @@ pub async fn tunnel_bidirectional_with_cancel(
         Ok::<_, std::io::Error>(total_received)
     };
 
-    let bidirectional = async { tokio::try_join!(client_to_target, target_to_client) };
+    let mut client_to_target_task = tokio::spawn(client_to_target);
+    let mut target_to_client_task = tokio::spawn(target_to_client);
 
     tokio::select! {
-        result = bidirectional => {
+        result = &mut client_to_target_task => {
+            shutdown_tunnel_task(&mut target_to_client_task);
             match result {
-                Ok((bytes_sent, bytes_received)) => {
+                Ok(Ok(bytes_sent)) => {
                     if verbose_logging {
-                        debug!("[{}] Tunnel closed normally", req_id);
+                        debug!("[{}] Tunnel closed after client stream ended", req_id);
                     } else {
-                        debug!("Tunnel closed normally");
+                        debug!("Tunnel closed after client stream ended");
                     }
-                    Ok(TunnelStats { bytes_sent, bytes_received, cancelled: false })
+                    Ok(TunnelStats { bytes_sent, bytes_received: 0, cancelled: false })
                 }
-                Err(e) => {
-                    if e.kind() == std::io::ErrorKind::ConnectionReset
-                        || e.kind() == std::io::ErrorKind::BrokenPipe
-                    {
-                        if verbose_logging {
-                            debug!("[{}] Tunnel closed: {}", req_id, e);
-                        } else {
-                            debug!("Tunnel closed: {}", e);
-                        }
-                        Ok(TunnelStats { bytes_sent: 0, bytes_received: 0, cancelled: false })
+                Ok(Err(error)) => tunnel_result_from_error(verbose_logging, req_id, error),
+                Err(join_error) if join_error.is_cancelled() => Ok(TunnelStats {
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    cancelled: false,
+                }),
+                Err(join_error) => Err(BifrostError::Network(format!(
+                    "Tunnel task join error: {}",
+                    join_error
+                ))),
+            }
+        }
+        result = &mut target_to_client_task => {
+            shutdown_tunnel_task(&mut client_to_target_task);
+            match result {
+                Ok(Ok(bytes_received)) => {
+                    if verbose_logging {
+                        debug!("[{}] Tunnel closed after target stream ended", req_id);
                     } else {
-                        Err(BifrostError::Network(format!("Tunnel error: {}", e)))
+                        debug!("Tunnel closed after target stream ended");
                     }
+                    Ok(TunnelStats { bytes_sent: 0, bytes_received, cancelled: false })
                 }
+                Ok(Err(error)) => tunnel_result_from_error(verbose_logging, req_id, error),
+                Err(join_error) if join_error.is_cancelled() => Ok(TunnelStats {
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    cancelled: false,
+                }),
+                Err(join_error) => Err(BifrostError::Network(format!(
+                    "Tunnel task join error: {}",
+                    join_error
+                ))),
             }
         }
         _ = cancel_rx => {
+            shutdown_tunnel_task(&mut client_to_target_task);
+            shutdown_tunnel_task(&mut target_to_client_task);
             if verbose_logging {
                 debug!("[{}] Tunnel cancelled by config change", req_id);
             }
