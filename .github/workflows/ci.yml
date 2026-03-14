@@ -153,8 +153,10 @@ jobs:
         include:
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            bundle_ext: dmg
           - os: macos-15
             target: aarch64-apple-darwin
+            bundle_ext: dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           - os: windows-11-arm
@@ -186,5 +188,55 @@ jobs:
         run: cargo build -p bifrost-cli --release --target ${{ matrix.target }}
       - name: Prepare desktop sidecar
         run: node scripts/prepare-tauri-sidecar.mjs release ${{ matrix.target }}
+      - name: Resolve macOS signing mode
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo "APPLE_SIGNING_IDENTITY=-" >> "${GITHUB_ENV}"
+          echo "Using ad-hoc signing for macOS desktop CI bundle validation."
+      - name: Build macOS desktop bundle
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+        run: pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json --target ${{ matrix.target }}
+      - name: Re-sign macOS app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH=$(find "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name "*.app" | head -n 1)
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "macOS app bundle not found"
+            exit 1
+          fi
+
+          bash scripts/resign-macos-app.sh "${APP_PATH}"
+      - name: Validate macOS desktop bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          TARGET="${{ matrix.target }}"
+          APP_PATH=$(find "desktop/src-tauri/target/${TARGET}/release/bundle/macos" -maxdepth 1 -type d -name "*.app" | head -n 1)
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "macOS app bundle not found"
+            exit 1
+          fi
+
+          DMG_PATH=$(find "desktop/src-tauri/target/${TARGET}/release/bundle" -type f -name "*.dmg" | head -n 1)
+          if [[ -z "${DMG_PATH}" ]]; then
+            echo "macOS dmg bundle not found"
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=4 "${APP_PATH}"
+          mkdir -p dist
+          cp "${DMG_PATH}" "dist/bifrost-desktop-${TARGET}.dmg"
+      - name: Upload macOS desktop bundle
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bifrost-desktop-${{ matrix.target }}
+          path: dist/bifrost-desktop-${{ matrix.target }}.dmg
+          if-no-files-found: error
       - name: Check desktop client
+        if: runner.os != 'macOS'
         run: cargo check --manifest-path desktop/src-tauri/Cargo.toml --target ${{ matrix.target }}

@@ -1092,17 +1092,11 @@ cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
 
 ### macOS 桌面发布前置条件
 
-macOS 桌面版 `.dmg` 下载后如果完全不做代码签名，Gatekeeper 可能会提示 `Bifrost.app 已损坏，无法打开`。发布工作流现在会按下面两种模式自动选择：
+macOS 桌面版 `.dmg` 下载后如果完全不做代码签名，Gatekeeper 可能会提示 `Bifrost.app 已损坏，无法打开`。发布工作流当前固定使用 ad-hoc signing（`APPLE_SIGNING_IDENTITY=-`）：
 
-- 未配置 `APPLE_CERTIFICATE` 时，自动使用 ad-hoc signing（`APPLE_SIGNING_IDENTITY=-`），用户看到的会是“未知开发者/未验证开发者”提示，而不是“已损坏”
-- 配置了 `APPLE_CERTIFICATE` 和 `APPLE_CERTIFICATE_PASSWORD` 时，走 Apple Developer 签名
-- 如果还提供完整 notarization 凭据 `APPLE_API_KEY`、`APPLE_API_ISSUER`、`APPLE_API_KEY_CONTENT`，或 `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`，Tauri 会继续执行 notarization，分发体验会更接近正式发布
+- 目标是避免“已损坏”提示，把分发体验降级为“未知开发者/未验证开发者”
 - release workflow 会在 `tauri build` 之后对最终 `.app` 再执行一次显式重签，确保 `Resources/resources/bin` 里的 sidecar 也被纳入 macOS bundle 签名校验
-
-可选 secrets 说明：
-
-- `APPLE_CERTIFICATE` 是导出的 Developer ID Application `.p12` 的 base64 内容
-- `APPLE_API_KEY_CONTENT` 是 App Store Connect 私钥 `.p8` 的原始文本内容
+- CI 里的 `desktop-check` 也会在 macOS runner 上执行同样的 ad-hoc 打包与重签，并上传 `.dmg` artifact 供预发布验证
 - ad-hoc signing 只能把错误从“已损坏”降到“未知开发者”，用户仍需要在系统安全设置里手动放行
 
 ### 构建目标
