@@ -1,7 +1,9 @@
 use std::net::IpAddr;
+use std::time::Duration;
 
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
+use tokio::time::sleep;
 
 use super::{
     error_response, json_response, json_response_with_status, method_not_allowed, BoxBody,
@@ -53,6 +55,8 @@ struct ProxyAddress {
     address: String,
     qrcode_url: String,
 }
+
+const SYSTEM_PROXY_VERIFY_DELAYS_MS: [u64; 4] = [200, 400, 800, 1600];
 
 pub async fn handle_proxy(
     req: Request<Incoming>,
@@ -138,6 +142,67 @@ async fn get_system_proxy_status(_state: SharedAdminState) -> Response<BoxBody> 
     }
 }
 
+fn read_system_proxy_status() -> Result<SystemProxyStatus, String> {
+    if !SystemProxyManager::is_supported() {
+        return Ok(SystemProxyStatus {
+            supported: false,
+            enabled: false,
+            host: String::new(),
+            port: 0,
+            bypass: String::new(),
+        });
+    }
+
+    let proxy = SystemProxyManager::get_current()
+        .map_err(|e| format!("Failed to get system proxy: {}", e))?;
+
+    Ok(SystemProxyStatus {
+        supported: true,
+        enabled: proxy.enable,
+        host: proxy.host,
+        port: proxy.port,
+        bypass: proxy.bypass,
+    })
+}
+
+async fn wait_for_system_proxy_status(
+    expected_enabled: bool,
+    expected_host: &str,
+    expected_port: u16,
+) -> Result<SystemProxyStatus, String> {
+    let mut latest = read_system_proxy_status()?;
+    if matches_expected_system_proxy(&latest, expected_enabled, expected_host, expected_port) {
+        return Ok(latest);
+    }
+
+    for delay_ms in SYSTEM_PROXY_VERIFY_DELAYS_MS {
+        sleep(Duration::from_millis(delay_ms)).await;
+        latest = read_system_proxy_status()?;
+        if matches_expected_system_proxy(&latest, expected_enabled, expected_host, expected_port) {
+            return Ok(latest);
+        }
+    }
+
+    Ok(latest)
+}
+
+fn matches_expected_system_proxy(
+    status: &SystemProxyStatus,
+    expected_enabled: bool,
+    expected_host: &str,
+    expected_port: u16,
+) -> bool {
+    if status.enabled != expected_enabled {
+        return false;
+    }
+
+    if !expected_enabled {
+        return true;
+    }
+
+    status.host == expected_host && status.port == expected_port
+}
+
 async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {
     use http_body_util::BodyExt;
 
@@ -168,46 +233,61 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
         .unwrap_or_else(|| "localhost,127.0.0.1,::1,*.local".to_string());
 
     if let Some(ref manager) = state.system_proxy_manager {
-        let mut manager = manager.write().await;
         let host = "127.0.0.1";
+        let target_port = if request.enabled { state.port() } else { 0 };
 
-        let result = if request.enabled {
-            manager.enable(host, state.port(), Some(&bypass))
-        } else {
-            manager.force_disable()
-        };
+        let final_result = {
+            let mut manager = manager.write().await;
 
-        let final_result = match &result {
-            Ok(()) => result,
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("RequiresAdmin") {
-                    tracing::info!("Permission denied, trying GUI authorization...");
-                    #[cfg(target_os = "macos")]
-                    {
-                        if request.enabled {
-                            manager.enable_with_gui_auth(host, state.port(), Some(&bypass))
-                        } else {
-                            manager.disable_with_gui_auth()
+            let result = if request.enabled {
+                manager.enable(host, state.port(), Some(&bypass))
+            } else {
+                manager.force_disable()
+            };
+
+            match &result {
+                Ok(()) => result,
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("RequiresAdmin") {
+                        tracing::info!("Permission denied, trying GUI authorization...");
+                        #[cfg(target_os = "macos")]
+                        {
+                            if request.enabled {
+                                manager.enable_with_gui_auth(host, state.port(), Some(&bypass))
+                            } else {
+                                manager.disable_with_gui_auth()
+                            }
                         }
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            result
+                        }
+                    } else {
                         result
                     }
-                } else {
-                    result
                 }
             }
         };
 
         match final_result {
             Ok(()) => {
+                let status =
+                    match wait_for_system_proxy_status(request.enabled, host, target_port).await {
+                        Ok(status) => status,
+                        Err(e) => {
+                            return error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                &format!("Failed to verify system proxy: {}", e),
+                            )
+                        }
+                    };
+
                 if let Some(ref config_manager) = state.config_manager {
                     let update = SystemProxyConfigUpdate {
-                        enabled: Some(request.enabled),
-                        bypass: if request.enabled {
-                            Some(bypass.clone())
+                        enabled: Some(status.enabled),
+                        bypass: if status.enabled {
+                            Some(status.bypass.clone())
                         } else {
                             None
                         },
@@ -216,28 +296,10 @@ async fn set_system_proxy(req: Request<Incoming>, state: SharedAdminState) -> Re
                     if let Err(e) = config_manager.update_system_proxy_config(update).await {
                         tracing::error!("Failed to persist system proxy config: {}", e);
                     } else {
-                        tracing::info!(
-                            "System proxy config persisted: enabled={}",
-                            request.enabled
-                        );
+                        tracing::info!("System proxy config persisted: enabled={}", status.enabled);
                     }
                 }
 
-                let status = SystemProxyStatus {
-                    supported: true,
-                    enabled: request.enabled,
-                    host: if request.enabled {
-                        "127.0.0.1".to_string()
-                    } else {
-                        String::new()
-                    },
-                    port: if request.enabled { state.port() } else { 0 },
-                    bypass: if request.enabled {
-                        bypass
-                    } else {
-                        String::new()
-                    },
-                };
                 json_response(&status)
             }
             Err(e) => {

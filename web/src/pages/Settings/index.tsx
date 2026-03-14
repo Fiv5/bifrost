@@ -37,7 +37,6 @@ import {
   getProxyAddressInfo,
   type CliProxyStatus,
   type ProxyAddressInfo,
-  type SystemProxyStatus,
 } from "../../api/proxy";
 import {
   updateTlsConfig,
@@ -152,7 +151,6 @@ export default function Settings() {
     cliProxy,
     loading: systemProxyLoading,
     toggleSystemProxy,
-    applySystemProxySnapshot,
     applyCliProxySnapshot,
   } = useProxyStore();
   const [tlsConfig, setTlsConfig] = useState<TlsConfig | null>(null);
@@ -636,7 +634,6 @@ export default function Settings() {
         "performance_config",
         "cert_info",
         "proxy_address",
-        "system_proxy",
         "cli_proxy",
         "whitelist_status",
         "pending_authorizations",
@@ -666,9 +663,6 @@ export default function Settings() {
           setSelectedProxyIp((current) => current || info.addresses[0]?.ip || "");
           break;
         }
-        case "system_proxy":
-          applySystemProxySnapshot(event.data as SystemProxyStatus);
-          break;
         case "cli_proxy":
           applyCliProxySnapshot(event.data as CliProxyStatus);
           break;
@@ -691,7 +685,6 @@ export default function Settings() {
     };
   }, [
     applyCliProxySnapshot,
-    applySystemProxySnapshot,
     applyWhitelistStatus,
     fetchDesktopRuntime,
   ]);

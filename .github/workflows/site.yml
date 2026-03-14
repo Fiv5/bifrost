@@ -55,8 +55,12 @@ jobs:
       - name: Build site
         env:
           SITE_URL: ${{ vars.SITE_URL || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
-          BASE_PATH: ${{ vars.BASE_PATH || format('/{0}', github.event.repository.name) }}
-        run: pnpm run build
+          BASE_PATH_OVERRIDE: ${{ vars.BASE_PATH }}
+        run: |
+          if [ -n "$BASE_PATH_OVERRIDE" ]; then
+            export BASE_PATH="$BASE_PATH_OVERRIDE"
+          fi
+          pnpm run build
         working-directory: site
       - name: Upload pages artifact
         if: github.event_name != 'pull_request'

@@ -462,7 +462,7 @@ async fn test_https_interception_accepts_h2_websocket_extended_connect() {
 }
 
 #[tokio::test]
-async fn test_https_interception_wss_upstream_uses_h2_extended_connect() {
+async fn test_https_interception_wss_upstream_uses_http1_upgrade() {
     init_crypto_provider();
 
     let config = ProxyConfig {
@@ -573,12 +573,12 @@ async fn test_https_interception_wss_upstream_uses_h2_extended_connect() {
     );
     assert_eq!(
         negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"h2".to_vec())
+        Some(b"http/1.1".to_vec())
     );
 }
 
 #[tokio::test]
-async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h2() {
+async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_http1() {
     init_crypto_provider();
 
     let config = ProxyConfig {
@@ -702,7 +702,7 @@ async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h
     );
     assert_eq!(
         negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"h2".to_vec())
+        Some(b"http/1.1".to_vec())
     );
 }
 

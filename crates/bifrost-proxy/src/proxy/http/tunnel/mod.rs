@@ -8,18 +8,19 @@ use crate::protocol::ProtocolDetector;
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Bytes, BytesMut};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, ServerConfig};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, error, info, warn};
 
 mod bidirectional;
@@ -90,6 +91,10 @@ pub fn get_tls_client_config(unsafe_ssl: bool) -> Arc<ClientConfig> {
 
 pub fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config_http1_only(unsafe_ssl)
+}
+
+pub fn get_tls_client_config_without_alpn(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    client::get_tls_client_config_without_alpn(unsafe_ssl)
 }
 
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
@@ -727,9 +732,28 @@ async fn tls_intercept_tunnel_with_cancel(
         .accept(TokioIo::new(upgraded))
         .await
         .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+    let client_alpn = client_tls.get_ref().1.alpn_protocol().map(|p| p.to_vec());
 
     if verbose_logging {
-        debug!("[{}] TLS handshake with client completed", req_id);
+        debug!(
+            "[{}] TLS handshake with client completed (alpn={})",
+            req_id,
+            format_tls_alpn(client_alpn.as_deref())
+        );
+    }
+
+    if !is_http_alpn(client_alpn.as_deref()) {
+        return tunnel_intercepted_non_http_tls_with_cancel(
+            client_tls,
+            original_host,
+            original_port,
+            unsafe_ssl,
+            verbose_logging,
+            req_id,
+            admin_state,
+            cancel_rx,
+        )
+        .await;
     }
 
     let original_host_for_requests = original_host.to_string();
@@ -808,6 +832,143 @@ async fn tls_intercept_tunnel_with_cancel(
             }
             conn.as_mut().graceful_shutdown();
             let _ = conn.await;
+            Ok(true)
+        }
+    }
+}
+
+fn is_http_alpn(alpn: Option<&[u8]>) -> bool {
+    matches!(alpn, Some(b"h2") | Some(b"http/1.1"))
+}
+
+fn format_tls_alpn(alpn: Option<&[u8]>) -> String {
+    match alpn {
+        Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        None => "none".to_string(),
+    }
+}
+
+async fn tunnel_intercepted_non_http_tls_with_cancel(
+    client_tls: tokio_rustls::server::TlsStream<TokioIo<Upgraded>>,
+    original_host: &str,
+    original_port: u16,
+    unsafe_ssl: bool,
+    verbose_logging: bool,
+    req_id: &str,
+    admin_state: Option<Arc<AdminState>>,
+    cancel_rx: oneshot::Receiver<()>,
+) -> Result<bool> {
+    if verbose_logging {
+        info!(
+            "[{}] Intercepted TLS payload is not HTTP; forwarding as raw TLS stream to {}:{}",
+            req_id, original_host, original_port
+        );
+    }
+
+    let target_stream = TcpStream::connect(format!("{}:{}", original_host, original_port))
+        .await
+        .map_err(|e| {
+            BifrostError::Network(format!(
+                "Failed to connect raw TLS upstream {}:{}: {}",
+                original_host, original_port, e
+            ))
+        })?;
+    if let Err(err) = target_stream.set_nodelay(true) {
+        debug!(
+            "[{}] Failed to set TCP_NODELAY on raw TLS upstream {}:{}: {}",
+            req_id, original_host, original_port, err
+        );
+    }
+
+    let server_name = ServerName::try_from(original_host.to_string())
+        .map_err(|e| BifrostError::Tls(format!("Invalid server name {original_host}: {e}")))?;
+    let connector = TlsConnector::from(get_tls_client_config_without_alpn(unsafe_ssl));
+    let upstream_tls = connector
+        .connect(server_name, target_stream)
+        .await
+        .map_err(|e| {
+            BifrostError::Tls(format!(
+                "Failed to establish raw TLS upstream {}:{}: {}",
+                original_host, original_port, e
+            ))
+        })?;
+
+    let (mut client_read, mut client_write) = tokio::io::split(client_tls);
+    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+
+    let admin_state_send = admin_state.clone();
+    let admin_state_recv = admin_state.clone();
+    let req_id_send = req_id.to_string();
+    let req_id_recv = req_id.to_string();
+
+    let client_to_upstream = async move {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            upstream_write.write_all(&buf[..n]).await?;
+            if let Some(ref state) = admin_state_send {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Https, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_send,
+                    bifrost_admin::FrameDirection::Send,
+                    n as u64,
+                );
+            }
+        }
+        upstream_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    let upstream_to_client = async move {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = upstream_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&buf[..n]).await?;
+            if let Some(ref state) = admin_state_recv {
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(TrafficType::Https, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_recv,
+                    bifrost_admin::FrameDirection::Receive,
+                    n as u64,
+                );
+            }
+        }
+        client_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    tokio::pin!(client_to_upstream);
+    tokio::pin!(upstream_to_client);
+
+    tokio::select! {
+        result = &mut client_to_upstream => {
+            match result {
+                Ok(()) => Ok(false),
+                Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof) => Ok(false),
+                Err(err) => Err(BifrostError::Network(format!("Raw TLS client->upstream forwarding error: {err}"))),
+            }
+        }
+        result = &mut upstream_to_client => {
+            match result {
+                Ok(()) => Ok(false),
+                Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof) => Ok(false),
+                Err(err) => Err(BifrostError::Network(format!("Raw TLS upstream->client forwarding error: {err}"))),
+            }
+        }
+        _ = cancel_rx => {
+            if verbose_logging {
+                debug!("[{}] Raw TLS intercept tunnel cancelled by config change", req_id);
+            }
             Ok(true)
         }
     }
@@ -2442,7 +2603,10 @@ async fn handle_intercepted_websocket(
             extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
         }
     } else {
-        let tls_config = get_tls_client_config(unsafe_ssl);
+        // Real-world WSS endpoints commonly expect the classic HTTP/1.1 Upgrade flow even when
+        // the TLS endpoint also advertises h2. Forcing HTTP/1.1 here matches browser behavior
+        // more closely and avoids hanging on servers that do not implement RFC 8441.
+        let tls_config = get_tls_client_config_http1_only(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
         let server_name = match ServerName::try_from(target_host.to_string()) {
@@ -2467,81 +2631,59 @@ async fn handle_intercepted_websocket(
             }
         };
 
-        match tls_stream.get_ref().1.alpn_protocol() {
-            Some(b"h2") => match connect_upstream_websocket_h2(
-                &req,
-                &target_host,
-                target_port,
-                req_id,
-                tls_stream,
-            )
-            .await
-            {
-                Ok(handshake) => handshake,
-                Err(e) => {
-                    error!("[{}] {}", req_id, e);
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"WebSocket handshake failed".to_vec()))
-                        .unwrap());
-                }
-            },
-            _ => {
-                let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(tls_stream);
-                let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
-                let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+        let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(tls_stream);
+        let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
+        let (mut stream_read, mut stream_write) = tokio::io::split(stream);
 
-                if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
-                    error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"Bad Gateway".to_vec()))
-                        .unwrap());
-                }
+        if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
+            error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
 
-                let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
-                    &mut stream_read,
-                    websocket_handshake_max_header_size,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!(
-                            "[{}] Failed to read WebSocket handshake response: {}",
-                            req_id, e
-                        );
-                        return Ok(Response::builder()
-                            .status(502)
-                            .body(full_body(b"Bad Gateway".to_vec()))
-                            .unwrap());
-                    }
-                };
-
-                if upstream_resp.status_code != 101 {
-                    error!(
-                        "[{}] WebSocket handshake failed: {} {}",
-                        req_id, upstream_resp.status_code, upstream_resp.status_text
-                    );
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"WebSocket handshake failed".to_vec()))
-                        .unwrap());
-                }
-
-                UpstreamWebSocketHandshake {
-                    stream: Box::new(stream_read.unsplit(stream_write)),
-                    leftover: upstream_leftover,
-                    headers: upstream_resp.headers.clone(),
-                    sec_accept: upstream_resp
-                        .header("Sec-WebSocket-Accept")
-                        .map(|v| v.to_string()),
-                    protocol: upstream_resp
-                        .header("Sec-WebSocket-Protocol")
-                        .map(ToOwned::to_owned),
-                    extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
-                }
+        let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
+            &mut stream_read,
+            websocket_handshake_max_header_size,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to read WebSocket handshake response: {}",
+                    req_id, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
             }
+        };
+
+        if upstream_resp.status_code != 101 {
+            error!(
+                "[{}] WebSocket handshake failed: {} {}",
+                req_id, upstream_resp.status_code, upstream_resp.status_text
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"WebSocket handshake failed".to_vec()))
+                .unwrap());
+        }
+
+        UpstreamWebSocketHandshake {
+            stream: Box::new(stream_read.unsplit(stream_write)),
+            leftover: upstream_leftover,
+            headers: upstream_resp.headers.clone(),
+            sec_accept: upstream_resp
+                .header("Sec-WebSocket-Accept")
+                .map(|v| v.to_string()),
+            protocol: upstream_resp
+                .header("Sec-WebSocket-Protocol")
+                .map(ToOwned::to_owned),
+            extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
         }
     };
 
@@ -2843,124 +2985,6 @@ struct UpstreamWebSocketHandshake {
     sec_accept: Option<String>,
     protocol: Option<String>,
     extensions: Vec<String>,
-}
-
-async fn connect_upstream_websocket_h2<S>(
-    req: &Request<Incoming>,
-    target_host: &str,
-    target_port: u16,
-    req_id: &str,
-    stream: S,
-) -> std::result::Result<UpstreamWebSocketHandshake, String>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
-        .handshake(TokioIo::new(stream))
-        .await
-        .map_err(|e| format!("Failed to establish upstream h2 connection: {e}"))?;
-
-    let req_id_owned = req_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            debug!(
-                "[{}] Upstream h2 websocket connection closed: {}",
-                req_id_owned, e
-            );
-        }
-    });
-
-    let path = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    let authority_host = if target_host.contains(':') && !target_host.starts_with('[') {
-        format!("[{}]", target_host)
-    } else {
-        target_host.to_string()
-    };
-    let authority = match target_port {
-        443 => authority_host,
-        _ => format!("{authority_host}:{target_port}"),
-    };
-    let upstream_uri = format!("https://{}{}", authority, path);
-
-    let mut builder = Request::builder()
-        .method(Method::CONNECT)
-        .uri(upstream_uri)
-        .version(hyper::Version::HTTP_2)
-        .extension(hyper::ext::Protocol::from_static("websocket"));
-
-    for (name, value) in req.headers().iter() {
-        let n = name.as_str();
-        if n.eq_ignore_ascii_case("host")
-            || n.eq_ignore_ascii_case("upgrade")
-            || n.eq_ignore_ascii_case("connection")
-            || n.eq_ignore_ascii_case("sec-websocket-key")
-            || n.eq_ignore_ascii_case("sec-websocket-version")
-            || n.eq_ignore_ascii_case("content-length")
-            || n.eq_ignore_ascii_case("transfer-encoding")
-            || n.eq_ignore_ascii_case("proxy-connection")
-            || n.eq_ignore_ascii_case("keep-alive")
-            || n.eq_ignore_ascii_case("te")
-            || n.eq_ignore_ascii_case("trailer")
-        {
-            continue;
-        }
-
-        builder = builder.header(name, value);
-    }
-
-    let request = builder
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| format!("Failed to build upstream h2 websocket request: {e}"))?;
-
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(|e| format!("Failed to send upstream h2 websocket request: {e}"))?;
-
-    if response.status() != hyper::StatusCode::OK {
-        return Err(format!(
-            "Upstream h2 websocket handshake failed: {}",
-            response.status()
-        ));
-    }
-
-    let protocol = response
-        .headers()
-        .get("Sec-WebSocket-Protocol")
-        .and_then(|v| v.to_str().ok())
-        .map(ToOwned::to_owned);
-    let extensions = response
-        .headers()
-        .get_all("Sec-WebSocket-Extensions")
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(ToOwned::to_owned))
-        .collect::<Vec<_>>();
-    let headers = response
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_string(), v.to_string()))
-        })
-        .collect::<Vec<_>>();
-    let upgraded = hyper::upgrade::on(response)
-        .await
-        .map_err(|e| format!("Failed to upgrade upstream h2 websocket stream: {e}"))?;
-
-    Ok(UpstreamWebSocketHandshake {
-        stream: Box::new(TokioIo::new(upgraded)),
-        leftover: BytesMut::new(),
-        headers,
-        sec_accept: None,
-        protocol,
-        extensions,
-    })
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
@@ -3269,6 +3293,14 @@ mod tests {
     fn test_parse_connect_authority_multiple_colons() {
         let result = parse_connect_authority("example.com:443:extra");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_http_alpn_matches_supported_http_protocols() {
+        assert!(is_http_alpn(Some(b"h2")));
+        assert!(is_http_alpn(Some(b"http/1.1")));
+        assert!(!is_http_alpn(None));
+        assert!(!is_http_alpn(Some(b"stun.turn")));
     }
 
     #[test]

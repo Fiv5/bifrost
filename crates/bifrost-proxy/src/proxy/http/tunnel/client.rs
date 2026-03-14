@@ -388,6 +388,23 @@ pub(super) fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientCo
     Arc::new(config)
 }
 
+pub(super) fn get_tls_client_config_without_alpn(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    ensure_crypto_provider();
+
+    let config = if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
+    } else {
+        ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth()
+    };
+
+    Arc::new(config)
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     use hyper::header;
 
