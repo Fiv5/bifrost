@@ -210,7 +210,7 @@ Windows ARM64 若提示缺少运行库，请安装 VC++ 运行库：https://aka.
 ./install.sh --app-dir ~/Applications
 ```
 
-#### 方式一：Homebrew Cask（macOS）- 由于尚未签名，下载的包启动会提示损坏（后续购买签名证书后可用）
+#### 方式一：Homebrew Cask（macOS）- 由于尚未签名
 > 替代方式是，下载仓库自行构建使用./install.sh 编译并安装
 > 使用 CLI 版本
 
@@ -1089,6 +1089,20 @@ cargo build --release --target x86_64-unknown-linux-gnu # Linux x64
 # 预览发布（不实际执行）
 ./release.sh --dry-run 1.0.0
 ```
+
+### macOS 桌面发布前置条件
+
+macOS 桌面版 `.dmg` 下载后如果完全不做代码签名，Gatekeeper 可能会提示 `Bifrost.app 已损坏，无法打开`。发布工作流现在会按下面两种模式自动选择：
+
+- 未配置 `APPLE_CERTIFICATE` 时，自动使用 ad-hoc signing（`APPLE_SIGNING_IDENTITY=-`），用户看到的会是“未知开发者/未验证开发者”提示，而不是“已损坏”
+- 配置了 `APPLE_CERTIFICATE` 和 `APPLE_CERTIFICATE_PASSWORD` 时，走 Apple Developer 签名
+- 如果还提供完整 notarization 凭据 `APPLE_API_KEY`、`APPLE_API_ISSUER`、`APPLE_API_KEY_CONTENT`，或 `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`，Tauri 会继续执行 notarization，分发体验会更接近正式发布
+
+可选 secrets 说明：
+
+- `APPLE_CERTIFICATE` 是导出的 Developer ID Application `.p12` 的 base64 内容
+- `APPLE_API_KEY_CONTENT` 是 App Store Connect 私钥 `.p8` 的原始文本内容
+- ad-hoc signing 只能把错误从“已损坏”降到“未知开发者”，用户仍需要在系统安全设置里手动放行
 
 ### 构建目标
 
