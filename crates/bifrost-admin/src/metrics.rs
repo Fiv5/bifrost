@@ -200,8 +200,16 @@ impl MetricsCollector {
         }
     }
 
+    fn invalidate_cached_snapshot(&self) {
+        self.cached_snapshot
+            .last_refresh_time
+            .store(0, Ordering::Relaxed);
+        *self.cached_snapshot.snapshot.write() = None;
+    }
+
     pub fn increment_requests(&self) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn increment_requests_by_type(&self, traffic_type: TrafficType) {
@@ -209,10 +217,12 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .requests
             .fetch_add(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn increment_connections(&self) {
         self.active_connections.fetch_add(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn increment_connections_by_type(&self, traffic_type: TrafficType) {
@@ -220,10 +230,12 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .active_connections
             .fetch_add(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn decrement_connections(&self) {
         self.active_connections.fetch_sub(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn decrement_connections_by_type(&self, traffic_type: TrafficType) {
@@ -231,10 +243,12 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .active_connections
             .fetch_sub(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn add_bytes_sent(&self, bytes: u64) {
         self.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn add_bytes_sent_by_type(&self, traffic_type: TrafficType, bytes: u64) {
@@ -242,10 +256,12 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .bytes_sent
             .fetch_add(bytes, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn add_bytes_received(&self, bytes: u64) {
         self.bytes_received.fetch_add(bytes, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn add_bytes_received_by_type(&self, traffic_type: TrafficType, bytes: u64) {
@@ -253,6 +269,7 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .bytes_received
             .fetch_add(bytes, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
     }
 
     pub fn refresh_cpu_metrics(&self) {
