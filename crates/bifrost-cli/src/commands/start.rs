@@ -289,6 +289,9 @@ pub fn run_start(
         check_and_install_certificate()?;
     }
 
+    #[cfg(not(unix))]
+    let _ = (&log_dir, log_retention_days);
+
     let bifrost_dir = get_bifrost_dir()?;
     set_data_dir(bifrost_dir.clone());
 
