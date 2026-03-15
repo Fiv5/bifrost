@@ -961,7 +961,7 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 
 ### 数据存储
 
-请求集合数据存储在 `~/.bifrost/replay.db`（SQLite 数据库）。
+请求集合数据存储在 `~/.bifrost/replay/replay.db`（SQLite 数据库）。
 
 ## 配置
 
@@ -973,6 +973,9 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 ├── bifrost.pid     # 进程 PID 文件
 ├── bifrost.log     # 日志文件
 ├── bifrost.err     # 错误日志
+├── traffic/        # 流量数据库目录
+├── body_cache/     # 请求/响应 body 缓存目录
+├── logs/           # 默认日志目录
 ├── rules/          # 规则文件目录
 ├── values/         # Values 变量目录
 ├── scripts/        # 脚本目录
@@ -983,7 +986,7 @@ Bifrost 提供类似 Postman 的请求管理和重放能力，支持保存、组
 ├── certs/          # 证书目录
 │   ├── ca.crt      # CA 证书
 │   └── ca.key      # CA 私钥
-└── replay.db       # 请求集合数据库
+└── replay/         # Replay 数据目录（包含 replay.db）
 
 ```
 
