@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use bifrost_core::bifrost_file::{
     BifrostFileParser, BifrostFileWriter, RuleFileMeta as BifrostRuleFileMeta,
+    RuleFileOptions as BifrostRuleFileOptions,
 };
 use bifrost_core::{BifrostError, Result};
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,13 @@ impl From<&RuleFile> for RuleSummary {
             updated_at: rule.updated_at.clone(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct RuleSummaryWrapper {
+    meta: BifrostRuleFileMeta,
+    #[serde(default)]
+    options: BifrostRuleFileOptions,
 }
 
 #[derive(Clone)]
@@ -291,8 +299,20 @@ impl RulesStorage {
     }
 
     pub fn list_summaries(&self) -> Result<Vec<RuleSummary>> {
-        let rules = self.load_all()?;
-        Ok(rules.iter().map(RuleSummary::from).collect())
+        let names = self.list()?;
+        let mut summaries = Vec::new();
+
+        for name in names {
+            match self.load_summary(&name) {
+                Ok(summary) => summaries.push(summary),
+                Err(e) => {
+                    tracing::warn!(name = %name, error = %e, "Failed to load rule summary, skipping");
+                }
+            }
+        }
+
+        summaries.sort_by_key(|r| r.sort_order);
+        Ok(summaries)
     }
 
     pub fn reorder(&self, order: &[String]) -> Result<()> {
@@ -302,6 +322,49 @@ impl RulesStorage {
             }
         }
         Ok(())
+    }
+}
+
+impl RulesStorage {
+    fn load_summary(&self, name: &str) -> Result<RuleSummary> {
+        let bifrost_path = self.rule_path(name);
+        let legacy_path = self.legacy_rule_path(name);
+
+        if bifrost_path.exists() {
+            let content = fs::read_to_string(&bifrost_path)?;
+            let raw = BifrostFileParser::parse_raw(&content)
+                .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
+
+            let parsed: RuleSummaryWrapper = toml::from_str(&raw.meta_raw)
+                .map_err(|e| BifrostError::Parse(format!("Failed to parse rule meta: {}", e)))?;
+
+            Ok(RuleSummary {
+                name: parsed.meta.name,
+                enabled: parsed.meta.enabled,
+                sort_order: parsed.meta.sort_order,
+                rule_count: parsed.options.rule_count,
+                description: parsed.meta.description,
+                updated_at: parsed.meta.updated_at,
+            })
+        } else if legacy_path.exists() {
+            #[derive(Deserialize)]
+            struct LegacyRuleFile {
+                name: String,
+                content: String,
+                enabled: bool,
+            }
+
+            let content = fs::read_to_string(&legacy_path)?;
+            let legacy: LegacyRuleFile = serde_json::from_str(&content).map_err(|e| {
+                BifrostError::Parse(format!("Failed to parse legacy rule file: {}", e))
+            })?;
+
+            Ok(RuleSummary::from(
+                &RuleFile::new(legacy.name, legacy.content).with_enabled(legacy.enabled),
+            ))
+        } else {
+            Err(BifrostError::NotFound(format!("Rule '{}' not found", name)))
+        }
     }
 }
 

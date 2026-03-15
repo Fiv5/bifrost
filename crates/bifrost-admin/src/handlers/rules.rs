@@ -1,7 +1,7 @@
 use bifrost_core::{
     validate_rules_with_context, ParseError, ParseErrorSeverity, ScriptReference, VariableInfo,
 };
-use bifrost_storage::{ConfigChangeEvent, RuleFile};
+use bifrost_storage::{ConfigChangeEvent, RuleFile, RuleSummary};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -16,8 +16,6 @@ struct RuleFileInfo {
     name: String,
     enabled: bool,
     rule_count: usize,
-    error_count: usize,
-    warning_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,19 +112,14 @@ pub async fn handle_rules(
 }
 
 async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
-    match state.rules_storage.load_all() {
+    match state.rules_storage.list_summaries() {
         Ok(rules) => {
             let infos: Vec<RuleFileInfo> = rules
-                .iter()
-                .map(|r| {
-                    let result = validate_rules_with_context(&r.content, &HashMap::new());
-                    RuleFileInfo {
-                        name: r.name.clone(),
-                        enabled: r.enabled,
-                        rule_count: result.rule_count,
-                        error_count: result.errors.len(),
-                        warning_count: result.warnings.len(),
-                    }
+                .into_iter()
+                .map(|r: RuleSummary| RuleFileInfo {
+                    name: r.name,
+                    enabled: r.enabled,
+                    rule_count: r.rule_count,
                 })
                 .collect();
             json_response(&infos)

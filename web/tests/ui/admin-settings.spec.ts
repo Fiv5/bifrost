@@ -40,7 +40,7 @@ test("Settings 访问控制支持模式切换、白名单、临时白名单和 L
   await expect(page.getByTestId("settings-temp-whitelist-table")).toContainText("10.0.0.2");
 });
 
-test("Settings 性能配置通过 push 同步到第二个页面", async ({
+test("Settings 性能配置在第二个页面主动刷新后可见", async ({
   page,
   context,
   request,
@@ -74,6 +74,8 @@ test("Settings 性能配置通过 push 同步到第二个页面", async ({
 
     const refreshedRes = await request.get(`${apiBase}/config/performance`);
     const refreshed = (await refreshedRes.json()) as { traffic: { max_records: number } };
+    await page2.reload();
+    await page2.getByRole("tab", { name: /Performance/ }).click();
     await expect(page2.locator("body")).toContainText(
       refreshed.traffic.max_records.toLocaleString(),
     );

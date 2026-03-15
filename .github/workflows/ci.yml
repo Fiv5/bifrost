@@ -198,7 +198,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-        run: pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json --target ${{ matrix.target }}
+        run: pnpm exec tauri build --config desktop/src-tauri/tauri.conf.json --target ${{ matrix.target }} --bundles app
       - name: Re-sign macOS app bundle
         if: runner.os == 'macOS'
         shell: bash
@@ -210,6 +210,19 @@ jobs:
           fi
 
           bash scripts/resign-macos-app.sh "${APP_PATH}"
+      - name: Package macOS desktop dmg
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH=$(find "desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -type d -name "*.app" | head -n 1)
+          if [[ -z "${APP_PATH}" ]]; then
+            echo "macOS app bundle not found"
+            exit 1
+          fi
+
+          ARCH_SUFFIX=$( [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]] && echo x64 || echo aarch64 )
+          DMG_PATH="desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/Bifrost_ci_${ARCH_SUFFIX}.dmg"
+          bash scripts/package-macos-dmg.sh "${APP_PATH}" "${DMG_PATH}"
       - name: Validate macOS desktop bundle
         if: runner.os == 'macOS'
         shell: bash

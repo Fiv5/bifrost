@@ -13,6 +13,10 @@ use tokio::time::Sleep;
 use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body_with_limit;
 
+// Keep hot-path metrics updates coarse-grained so high-throughput relays do
+// not burn CPU on bookkeeping.
+const BODY_TRAFFIC_FLUSH_BYTES: usize = 1024 * 1024;
+
 fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
     let status = state.sse_hub.get_socket_status(record_id).map(|mut s| {
         s.is_open = false;
@@ -38,6 +42,7 @@ struct TeeBodyDropGuard {
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     total_bytes: usize,
+    pending_traffic_bytes: usize,
     finished: bool,
     buffer: BytesMut,
     max_body_size: usize,
@@ -56,7 +61,32 @@ impl Drop for TeeBodyDropGuard {
 }
 
 impl TeeBodyDropGuard {
+    fn flush_pending_traffic(&mut self) {
+        if self.pending_traffic_bytes == 0 {
+            return;
+        }
+
+        if let Some(ref state) = self.admin_state {
+            let bytes = self.pending_traffic_bytes as u64;
+            if let Some(traffic_type) = self.traffic_type {
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(traffic_type, bytes);
+            } else {
+                state.metrics_collector.add_bytes_received(bytes);
+            }
+            state.connection_monitor.update_traffic(
+                &self.record_id,
+                FrameDirection::Receive,
+                bytes,
+            );
+        }
+
+        self.pending_traffic_bytes = 0;
+    }
+
     fn store_body_and_update_record(&mut self) {
+        self.flush_pending_traffic();
         if let Some(ref state) = self.admin_state {
             let response_body_ref = if let Some(writer) = self.file_writer.take() {
                 Some(writer.finish())
@@ -125,6 +155,7 @@ impl<B> TeeBody<B> {
                 admin_state,
                 record_id,
                 total_bytes: 0,
+                pending_traffic_bytes: 0,
                 finished: false,
                 buffer: BytesMut::with_capacity(8192),
                 max_body_size: max_size,
@@ -164,6 +195,8 @@ where
                 if let Some(data) = frame.data_ref() {
                     let len = data.len();
                     self.guard.total_bytes += len;
+                    self.guard.pending_traffic_bytes =
+                        self.guard.pending_traffic_bytes.saturating_add(len);
 
                     let mut new_writer: Option<BodyStreamWriter> = None;
                     if self.guard.file_writer.is_none()
@@ -197,19 +230,8 @@ where
                         self.guard.buffer.clear();
                     }
 
-                    if let Some(ref state) = self.guard.admin_state {
-                        if let Some(traffic_type) = self.guard.traffic_type {
-                            state
-                                .metrics_collector
-                                .add_bytes_received_by_type(traffic_type, len as u64);
-                        } else {
-                            state.metrics_collector.add_bytes_received(len as u64);
-                        }
-                        state.connection_monitor.update_traffic(
-                            &self.guard.record_id,
-                            FrameDirection::Receive,
-                            len as u64,
-                        );
+                    if self.guard.pending_traffic_bytes >= BODY_TRAFFIC_FLUSH_BYTES {
+                        self.guard.flush_pending_traffic();
                     }
                 }
                 Poll::Ready(Some(Ok(frame)))
@@ -256,6 +278,119 @@ pub fn create_tee_body_with_store(
         response_headers_size,
     )
     .boxed()
+}
+
+struct MetricsBodyDropGuard {
+    admin_state: Option<Arc<AdminState>>,
+    traffic_type: Option<TrafficType>,
+    pending_traffic_bytes: usize,
+}
+
+impl MetricsBodyDropGuard {
+    fn flush_pending_traffic(&mut self) {
+        if self.pending_traffic_bytes == 0 {
+            return;
+        }
+
+        if let Some(ref state) = self.admin_state {
+            let bytes = self.pending_traffic_bytes as u64;
+            if let Some(traffic_type) = self.traffic_type {
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(traffic_type, bytes);
+            } else {
+                state.metrics_collector.add_bytes_received(bytes);
+            }
+        }
+
+        self.pending_traffic_bytes = 0;
+    }
+}
+
+impl Drop for MetricsBodyDropGuard {
+    fn drop(&mut self) {
+        self.flush_pending_traffic();
+    }
+}
+
+struct MetricsBody<B> {
+    inner: Pin<Box<B>>,
+    guard: MetricsBodyDropGuard,
+}
+
+impl<B> MetricsBody<B> {
+    fn new(
+        inner: B,
+        admin_state: Option<Arc<AdminState>>,
+        traffic_type: Option<TrafficType>,
+    ) -> Self {
+        Self {
+            inner: Box::pin(inner),
+            guard: MetricsBodyDropGuard {
+                admin_state,
+                traffic_type,
+                pending_traffic_bytes: 0,
+            },
+        }
+    }
+
+    fn boxed(self) -> BoxBody
+    where
+        B: Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
+    {
+        BodyExt::boxed(self)
+    }
+}
+
+impl<B> Body for MetricsBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error>,
+{
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        match self.inner.as_mut().poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    self.guard.pending_traffic_bytes =
+                        self.guard.pending_traffic_bytes.saturating_add(data.len());
+                    if self.guard.pending_traffic_bytes >= BODY_TRAFFIC_FLUSH_BYTES {
+                        self.guard.flush_pending_traffic();
+                    }
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                self.guard.flush_pending_traffic();
+                Poll::Ready(Some(Err(e)))
+            }
+            Poll::Ready(None) => {
+                self.guard.flush_pending_traffic();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+pub fn create_metrics_body(
+    body: impl Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
+    admin_state: Option<Arc<AdminState>>,
+    traffic_type: Option<TrafficType>,
+) -> BoxBody {
+    MetricsBody::new(body, admin_state, traffic_type).boxed()
 }
 
 #[derive(Clone)]
@@ -404,8 +539,8 @@ impl SseTeeBodyDropGuard {
 
 const DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES: usize = 256 * 1024;
 
-pub struct SseTeeBody {
-    inner: Incoming,
+pub struct SseTeeBody<B = Incoming> {
+    inner: B,
     guard: SseTeeBodyDropGuard,
     prev_byte: Option<u8>,
     event_size: usize,
@@ -415,9 +550,12 @@ pub struct SseTeeBody {
     flush_sleep: Option<Pin<Box<Sleep>>>,
 }
 
-impl SseTeeBody {
+impl<B> SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     pub fn new(
-        inner: Incoming,
+        inner: B,
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         traffic_type: Option<TrafficType>,
@@ -510,7 +648,10 @@ impl SseTeeBody {
     }
 }
 
-impl Body for SseTeeBody {
+impl<B> Body for SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     type Data = Bytes;
     type Error = hyper::Error;
 
@@ -591,14 +732,17 @@ impl Body for SseTeeBody {
     }
 }
 
-pub fn create_sse_tee_body(
-    body: Incoming,
+pub fn create_sse_tee_body<B>(
+    body: B,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     traffic_type: Option<TrafficType>,
     file_writer: Option<BodyStreamWriter>,
     max_buffer_size: usize,
-) -> SseTeeBody {
+) -> SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     let max_buffer_size = max_buffer_size.min(DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES);
     SseTeeBody::new(
         body,

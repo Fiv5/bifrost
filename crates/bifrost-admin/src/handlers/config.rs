@@ -76,6 +76,7 @@ pub struct TrafficConfig {
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
+    pub binary_traffic_performance_mode: bool,
     pub file_retention_days: u64,
     pub sse_stream_flush_bytes: usize,
     pub sse_stream_flush_interval_ms: u64,
@@ -99,6 +100,7 @@ pub struct UpdateTrafficConfigRequest {
     pub max_body_memory_size: Option<usize>,
     pub max_body_buffer_size: Option<usize>,
     pub max_body_probe_size: Option<usize>,
+    pub binary_traffic_performance_mode: Option<bool>,
     pub file_retention_days: Option<u64>,
     pub sse_stream_flush_bytes: Option<usize>,
     pub sse_stream_flush_interval_ms: Option<u64>,
@@ -717,6 +719,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_body_memory_size: config.traffic.max_body_memory_size,
             max_body_buffer_size: config.traffic.max_body_buffer_size,
             max_body_probe_size: config.traffic.max_body_probe_size,
+            binary_traffic_performance_mode: config.traffic.binary_traffic_performance_mode,
             file_retention_days: config.traffic.file_retention_days,
             sse_stream_flush_bytes: config.traffic.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: config.traffic.sse_stream_flush_interval_ms,
@@ -731,6 +734,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
             max_body_memory_size: 512 * 1024,
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
             file_retention_days: 7,
             sse_stream_flush_bytes: 256 * 1024,
             sse_stream_flush_interval_ms: 1000,
@@ -799,6 +803,7 @@ async fn update_performance_config(
             max_body_memory_size: request.max_body_memory_size,
             max_body_buffer_size: request.max_body_buffer_size,
             max_body_probe_size: request.max_body_probe_size,
+            binary_traffic_performance_mode: request.binary_traffic_performance_mode,
             file_retention_days: request.file_retention_days,
             sse_stream_flush_bytes: request.sse_stream_flush_bytes,
             sse_stream_flush_interval_ms: request.sse_stream_flush_interval_ms,
@@ -860,6 +865,10 @@ async fn update_performance_config(
 
     if let Some(max_body_probe_size) = request.max_body_probe_size {
         state.set_max_body_probe_size(max_body_probe_size);
+    }
+
+    if let Some(binary_traffic_performance_mode) = request.binary_traffic_performance_mode {
+        state.set_binary_traffic_performance_mode(binary_traffic_performance_mode);
     }
 
     get_performance_config(state).await

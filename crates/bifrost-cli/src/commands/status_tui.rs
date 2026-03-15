@@ -1,13 +1,20 @@
 use std::io::stdout;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use bifrost_admin::push::{
+    PushMessage as AdminPushMessage, SETTINGS_SCOPE_CLI_PROXY, SETTINGS_SCOPE_PERFORMANCE_CONFIG,
+    SETTINGS_SCOPE_PROXY_SETTINGS,
+};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use futures::{SinkExt, StreamExt};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
@@ -17,6 +24,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use serde::Deserialize;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::process::{is_process_running, read_pid, read_runtime_port};
 
@@ -149,12 +157,15 @@ struct TlsConfig {
     unsafe_ssl: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, Clone)]
 struct TrafficConfig {
     max_records: usize,
     max_db_size_bytes: u64,
     max_body_memory_size: usize,
     max_body_buffer_size: usize,
+    max_body_probe_size: usize,
+    binary_traffic_performance_mode: bool,
     file_retention_days: u64,
     sse_stream_flush_bytes: usize,
     sse_stream_flush_interval_ms: u64,
@@ -183,11 +194,44 @@ struct PerformanceConfigResponse {
 }
 
 const SLOW_REFRESH_INTERVAL: u64 = 5;
+const PROCESS_CHECK_INTERVAL: Duration = Duration::from_secs(3);
 const CPU_HISTORY_SIZE: usize = 3600;
 const QPS_HISTORY_SIZE: usize = 60;
+const PUSH_STALE_TIMEOUT: Duration = Duration::from_secs(4);
+const PUSH_RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const PUSH_METRICS_INTERVAL_MS: u64 = 1_000;
+
+#[derive(Debug, Clone, Copy)]
+struct FetchPlan {
+    metrics: bool,
+    rules: bool,
+    values: bool,
+    scripts: bool,
+    config: bool,
+    performance: bool,
+    app_metrics: bool,
+    host_metrics: bool,
+    cli_proxy: bool,
+}
+
+#[derive(Debug)]
+enum TuiPushEvent {
+    Connected,
+    Disconnected,
+    Metrics(MetricsSnapshot),
+    Values(Vec<Value>),
+    Scripts(ScriptsResponse),
+    Config(ConfigResponse),
+    Performance(PerformanceConfigResponse),
+    CliProxy(CliProxyStatus),
+}
 
 struct App {
     port: u16,
+    push_port: Arc<AtomicU16>,
+    push_rx: mpsc::Receiver<TuiPushEvent>,
+    push_connected: bool,
+    last_push_event: Option<Instant>,
     is_running: bool,
     pid: Option<u32>,
     metrics: MetricsSnapshot,
@@ -205,6 +249,7 @@ struct App {
     performance_config: Option<PerformanceConfigResponse>,
     cli_proxy: Option<CliProxyStatus>,
     selected_tab: usize,
+    last_process_check: Instant,
     last_update: Instant,
     last_slow_refresh: Instant,
     refresh_count: u64,
@@ -212,8 +257,15 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        let port = read_runtime_port().unwrap_or(9900);
+        let push_port = Arc::new(AtomicU16::new(port));
+        let push_rx = spawn_push_client(push_port.clone());
         Self {
-            port: read_runtime_port().unwrap_or(9900),
+            port,
+            push_port,
+            push_rx,
+            push_connected: false,
+            last_push_event: None,
             is_running: false,
             pid: None,
             metrics: MetricsSnapshot::default(),
@@ -234,6 +286,7 @@ impl App {
             performance_config: None,
             cli_proxy: None,
             selected_tab: 0,
+            last_process_check: Instant::now() - PROCESS_CHECK_INTERVAL,
             last_update: Instant::now(),
             last_slow_refresh: Instant::now() - Duration::from_secs(SLOW_REFRESH_INTERVAL),
             refresh_count: 0,
@@ -244,20 +297,116 @@ impl App {
         self.refresh_with_options(false);
     }
 
+    fn apply_metrics_snapshot(&mut self, metrics: MetricsSnapshot) {
+        self.qps_history.remove(0);
+        self.qps_history.push(metrics.qps as f64);
+
+        self.cpu_history.remove(0);
+        self.cpu_history.push(metrics.cpu_usage);
+        self.max_cpu = self.max_cpu.max(metrics.cpu_usage);
+
+        self.memory_used_history.remove(0);
+        self.memory_used_history.push(metrics.memory_used);
+        self.max_memory_used = self.max_memory_used.max(metrics.memory_used);
+
+        self.metrics = metrics;
+    }
+
+    fn apply_push_event(&mut self, event: TuiPushEvent) {
+        match event {
+            TuiPushEvent::Connected => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+            }
+            TuiPushEvent::Disconnected => {
+                self.push_connected = false;
+            }
+            TuiPushEvent::Metrics(metrics) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.apply_metrics_snapshot(metrics);
+            }
+            TuiPushEvent::Values(values) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.values = values;
+            }
+            TuiPushEvent::Scripts(scripts) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.scripts = scripts;
+            }
+            TuiPushEvent::Config(config) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.config = Some(config);
+            }
+            TuiPushEvent::Performance(config) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.performance_config = Some(config);
+            }
+            TuiPushEvent::CliProxy(cli_proxy) => {
+                self.push_connected = true;
+                self.last_push_event = Some(Instant::now());
+                self.cli_proxy = Some(cli_proxy);
+            }
+        }
+    }
+
+    fn drain_push_events(&mut self) {
+        while let Ok(event) = self.push_rx.try_recv() {
+            self.apply_push_event(event);
+        }
+    }
+
+    fn push_is_healthy(&self) -> bool {
+        self.push_connected
+            && self
+                .last_push_event
+                .map(|instant| instant.elapsed() <= PUSH_STALE_TIMEOUT)
+                .unwrap_or(false)
+    }
+
     fn refresh_with_options(&mut self, force_all: bool) {
-        self.pid = read_pid();
-        self.is_running = self.pid.map(is_process_running).unwrap_or(false);
+        if force_all
+            || !self.is_running
+            || self.last_process_check.elapsed() >= PROCESS_CHECK_INTERVAL
+        {
+            self.pid = read_pid();
+            self.is_running = self.pid.map(is_process_running).unwrap_or(false);
+            self.last_process_check = Instant::now();
+        }
 
         if !self.is_running {
             self.port = read_runtime_port().unwrap_or(9900);
+            self.push_port.store(self.port, Ordering::Relaxed);
+            self.push_connected = false;
             return;
         }
 
+        self.push_port.store(self.port, Ordering::Relaxed);
+        self.drain_push_events();
+
         let need_slow_refresh =
             self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
+        let push_healthy = self.push_is_healthy();
+        let force_full = self.refresh_count == 0 || force_all;
+        let needs_rules_config = self.selected_tab == 1;
 
         let port = self.port;
         let fetch_agg_metrics = force_all && self.selected_tab == 2;
+        let plan = FetchPlan {
+            metrics: !push_healthy,
+            rules: needs_rules_config && (need_slow_refresh || force_full),
+            values: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            scripts: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            config: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            performance: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            app_metrics: fetch_agg_metrics,
+            host_metrics: fetch_agg_metrics,
+            cli_proxy: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+        };
         let (
             metrics,
             rules,
@@ -268,26 +417,10 @@ impl App {
             app_metrics,
             host_metrics,
             cli_proxy,
-        ) = fetch_all_data(
-            port,
-            need_slow_refresh,
-            self.refresh_count == 0 || force_all,
-            fetch_agg_metrics,
-        );
+        ) = fetch_all_data(port, plan);
 
         if let Some(m) = metrics {
-            self.qps_history.remove(0);
-            self.qps_history.push(m.qps as f64);
-
-            self.cpu_history.remove(0);
-            self.cpu_history.push(m.cpu_usage);
-            self.max_cpu = self.max_cpu.max(m.cpu_usage);
-
-            self.memory_used_history.remove(0);
-            self.memory_used_history.push(m.memory_used);
-            self.max_memory_used = self.max_memory_used.max(m.memory_used);
-
-            self.metrics = m;
+            self.apply_metrics_snapshot(m);
         }
 
         if let Some(r) = rules {
@@ -355,58 +488,67 @@ type FetchAllDataResult = (
     Option<CliProxyStatus>,
 );
 
-fn fetch_all_data(
-    port: u16,
-    need_slow_refresh: bool,
-    force_all: bool,
-    fetch_agg_metrics: bool,
-) -> FetchAllDataResult {
+fn fetch_all_data(port: u16, plan: FetchPlan) -> FetchAllDataResult {
     let (tx, rx) = mpsc::channel();
 
-    let tx_metrics = tx.clone();
-    thread::spawn(move || {
-        let _ = tx_metrics.send(("metrics", fetch_metrics(port)));
-    });
+    if plan.metrics {
+        let tx_metrics = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_metrics.send(("metrics", fetch_metrics(port)));
+        });
+    }
 
-    if need_slow_refresh || force_all {
+    if plan.rules {
         let tx_rules = tx.clone();
         thread::spawn(move || {
             let _ = tx_rules.send(("rules", fetch_rules(port)));
         });
+    }
 
+    if plan.values {
         let tx_values = tx.clone();
         thread::spawn(move || {
             let _ = tx_values.send(("values", fetch_values(port)));
         });
+    }
 
+    if plan.scripts {
         let tx_scripts = tx.clone();
         thread::spawn(move || {
             let _ = tx_scripts.send(("scripts", fetch_scripts(port)));
         });
+    }
 
+    if plan.config {
         let tx_config = tx.clone();
         thread::spawn(move || {
             let _ = tx_config.send(("config", fetch_config(port)));
         });
+    }
 
+    if plan.performance {
         let tx_performance = tx.clone();
         thread::spawn(move || {
             let _ = tx_performance.send(("performance", fetch_performance_config(port)));
         });
+    }
 
-        // apps/hosts 属于 DB 聚合计算：仅在用户主动触发时请求，避免后台定时拉取导致 CPU 开销过高。
-        if fetch_agg_metrics {
-            let tx_apps = tx.clone();
-            thread::spawn(move || {
-                let _ = tx_apps.send(("apps", fetch_app_metrics(port)));
-            });
+    // apps/hosts 属于 DB 聚合计算：仅在用户主动触发时请求，避免后台定时拉取导致 CPU 开销过高。
+    if plan.app_metrics {
+        let tx_apps = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_apps.send(("apps", fetch_app_metrics(port)));
+        });
+    }
 
-            let tx_hosts = tx.clone();
-            thread::spawn(move || {
-                let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
-            });
-        }
+    if plan.host_metrics {
+        let tx_hosts = tx.clone();
+        thread::spawn(move || {
+            let _ = tx_hosts.send(("hosts", fetch_host_metrics(port)));
+        });
+    }
 
+    if plan.cli_proxy {
         let tx_cli_proxy = tx.clone();
         thread::spawn(move || {
             let _ = tx_cli_proxy.send(("cli_proxy", fetch_cli_proxy(port)));
@@ -508,6 +650,127 @@ fn fetch_cli_proxy(port: u16) -> Option<Box<dyn std::any::Any + Send>> {
     result.map(|r| Box::new(r) as Box<dyn std::any::Any + Send>)
 }
 
+fn spawn_push_client(port: Arc<AtomicU16>) -> mpsc::Receiver<TuiPushEvent> {
+    let (tx, rx) = mpsc::channel();
+
+    thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(_) => return,
+        };
+
+        runtime.block_on(async move {
+            loop {
+                let current_port = port.load(Ordering::Relaxed);
+                let url = format!(
+                    "ws://127.0.0.1:{}/_bifrost/api/push?need_metrics=true&need_values=true&need_scripts=true&settings_scopes={},{},{}&metrics_interval_ms={}",
+                    current_port,
+                    SETTINGS_SCOPE_PROXY_SETTINGS,
+                    SETTINGS_SCOPE_PERFORMANCE_CONFIG,
+                    SETTINGS_SCOPE_CLI_PROXY,
+                    PUSH_METRICS_INTERVAL_MS
+                );
+
+                match connect_async(&url).await {
+                    Ok((mut ws_stream, _)) => {
+                        let _ = tx.send(TuiPushEvent::Connected);
+
+                        while let Some(message) = ws_stream.next().await {
+                            match message {
+                                Ok(Message::Text(text)) => {
+                                    if let Some(event) = parse_push_message(text.as_ref()) {
+                                        let _ = tx.send(event);
+                                    }
+                                }
+                                Ok(Message::Ping(payload)) => {
+                                    let _ = ws_stream.send(Message::Pong(payload)).await;
+                                }
+                                Ok(Message::Close(_)) => {
+                                    let _ = tx.send(TuiPushEvent::Disconnected);
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(_) => {
+                                    let _ = tx.send(TuiPushEvent::Disconnected);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        let _ = tx.send(TuiPushEvent::Disconnected);
+                    }
+                }
+
+                tokio::time::sleep(PUSH_RECONNECT_DELAY).await;
+            }
+        });
+    });
+
+    rx
+}
+
+fn parse_push_message(text: &str) -> Option<TuiPushEvent> {
+    let message = serde_json::from_str::<AdminPushMessage>(text).ok()?;
+
+    match message {
+        AdminPushMessage::Connected(_) => Some(TuiPushEvent::Connected),
+        AdminPushMessage::Disconnect(_) | AdminPushMessage::Error(_) => {
+            Some(TuiPushEvent::Disconnected)
+        }
+        AdminPushMessage::MetricsUpdate(data) => {
+            serde_json::from_value::<MetricsSnapshot>(data.metrics)
+                .ok()
+                .map(TuiPushEvent::Metrics)
+        }
+        AdminPushMessage::ValuesUpdate(data) => Some(TuiPushEvent::Values(
+            data.values
+                .into_iter()
+                .map(|value| Value {
+                    name: value.name,
+                    value: value.value,
+                })
+                .collect(),
+        )),
+        AdminPushMessage::ScriptsUpdate(data) => Some(TuiPushEvent::Scripts(ScriptsResponse {
+            request: data
+                .request
+                .into_iter()
+                .map(|script| Script {
+                    name: script.name,
+                    script_type: script.script_type.to_string(),
+                })
+                .collect(),
+            response: data
+                .response
+                .into_iter()
+                .map(|script| Script {
+                    name: script.name,
+                    script_type: script.script_type.to_string(),
+                })
+                .collect(),
+        })),
+        AdminPushMessage::SettingsUpdate(data) => match data.scope.as_str() {
+            SETTINGS_SCOPE_PROXY_SETTINGS => serde_json::from_value::<ConfigResponse>(data.data)
+                .ok()
+                .map(TuiPushEvent::Config),
+            SETTINGS_SCOPE_PERFORMANCE_CONFIG => {
+                serde_json::from_value::<PerformanceConfigResponse>(data.data)
+                    .ok()
+                    .map(TuiPushEvent::Performance)
+            }
+            SETTINGS_SCOPE_CLI_PROXY => serde_json::from_value::<CliProxyStatus>(data.data)
+                .ok()
+                .map(TuiPushEvent::CliProxy),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -563,6 +826,7 @@ pub fn run_status_tui() -> bifrost_core::Result<()> {
     let mut last_tick = Instant::now();
 
     loop {
+        app.drain_push_events();
         terminal.draw(|frame| ui(frame, &app))?;
 
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
@@ -1265,4 +1529,96 @@ fn render_footer(frame: &mut Frame, area: Rect) {
 
     let footer = Paragraph::new(help).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bifrost_admin::push::{MetricsData, PushMessage, SettingsUpdateData};
+    use serde_json::json;
+
+    #[test]
+    fn parses_metrics_update_from_push_message() {
+        let message = serde_json::to_string(&PushMessage::MetricsUpdate(MetricsData {
+            metrics: json!({
+                "timestamp": 1,
+                "memory_used": 2,
+                "memory_total": 3,
+                "cpu_usage": 4.5,
+                "total_requests": 6,
+                "active_connections": 7,
+                "bytes_sent": 8,
+                "bytes_received": 9,
+                "bytes_sent_rate": 10.0,
+                "bytes_received_rate": 11.0,
+                "qps": 12.0,
+                "max_qps": 13.0,
+                "max_bytes_sent_rate": 14.0,
+                "max_bytes_received_rate": 15.0,
+                "http": {"requests": 1, "bytes_sent": 2, "bytes_received": 3, "active_connections": 4},
+                "https": {"requests": 0, "bytes_sent": 0, "bytes_received": 0, "active_connections": 0},
+                "tunnel": {"requests": 0, "bytes_sent": 0, "bytes_received": 0, "active_connections": 0},
+                "ws": {"requests": 0, "bytes_sent": 0, "bytes_received": 0, "active_connections": 0},
+                "wss": {"requests": 0, "bytes_sent": 0, "bytes_received": 0, "active_connections": 0},
+                "socks5": {"requests": 0, "bytes_sent": 0, "bytes_received": 0, "active_connections": 0}
+            }),
+        }))
+        .expect("serialize push message");
+
+        let event = parse_push_message(&message).expect("parse push message");
+        match event {
+            TuiPushEvent::Metrics(metrics) => {
+                assert_eq!(metrics.memory_used, 2);
+                assert_eq!(metrics.qps, 12.0);
+            }
+            _ => panic!("expected metrics event"),
+        }
+    }
+
+    #[test]
+    fn parses_performance_settings_update_from_push_message() {
+        let message = serde_json::to_string(&PushMessage::SettingsUpdate(SettingsUpdateData {
+            scope: SETTINGS_SCOPE_PERFORMANCE_CONFIG.to_string(),
+            data: json!({
+                "traffic": {
+                    "max_records": 2048,
+                    "max_db_size_bytes": 1048576,
+                    "max_body_memory_size": 65536,
+                    "max_body_buffer_size": 10485760,
+                    "max_body_probe_size": 65536,
+                    "binary_traffic_performance_mode": true,
+                    "file_retention_days": 7,
+                    "sse_stream_flush_bytes": 262144,
+                    "sse_stream_flush_interval_ms": 250,
+                    "ws_payload_flush_bytes": 262144,
+                    "ws_payload_flush_interval_ms": 250,
+                    "ws_payload_max_open_files": 64
+                },
+                "body_store_stats": {
+                    "file_count": 1,
+                    "total_size": 128
+                },
+                "frame_store_stats": {
+                    "connection_count": 0,
+                    "total_size": 0
+                }
+            }),
+        }))
+        .expect("serialize settings update");
+
+        let event = parse_push_message(&message).expect("parse push message");
+        match event {
+            TuiPushEvent::Performance(config) => {
+                assert_eq!(config.traffic.max_records, 2048);
+                assert_eq!(
+                    config
+                        .body_store_stats
+                        .expect("body stats should be present")
+                        .file_count,
+                    1
+                );
+            }
+            _ => panic!("expected performance event"),
+        }
+    }
 }

@@ -18,9 +18,75 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use tokio_rustls::TlsConnector;
+
+fn make_insecure_test_client_config(alpn_protocols: Vec<Vec<u8>>) -> ClientConfig {
+    let mut client_config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(NoVerifier))
+        .with_no_client_auth();
+    client_config.alpn_protocols = alpn_protocols;
+    client_config
+}
+
+#[derive(Debug)]
+struct NoVerifier;
+
+impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+        _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: tokio_rustls::rustls::pki_types::UnixTime,
+    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
+    {
+        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<
+        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+        tokio_rustls::rustls::Error,
+    > {
+        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ECDSA_NISTP521_SHA512,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::ED25519,
+            SignatureScheme::ED448,
+        ]
+    }
+}
 
 async fn start_websocket_echo_server(ready_tx: oneshot::Sender<u16>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -91,8 +157,11 @@ async fn start_tls_websocket_echo_server(
     let port = listener.local_addr().unwrap().port();
     ready_tx.send(port).unwrap();
 
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
+        "localhost".to_string(),
+        "intercepted.example.com".to_string(),
+    ])
+    .unwrap();
     let key_der = signing_key.serialize_der();
     let certs = vec![cert.der().clone()];
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
@@ -393,21 +462,8 @@ async fn test_https_interception_accepts_h2_websocket_extended_connect() {
         response_str
     );
 
-    let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(
-            proxy
-                .ca_cert_der
-                .clone()
-                .expect("test proxy should expose CA cert"),
-        ))
-        .unwrap();
-
-    let mut client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
+    let client_config =
+        make_insecure_test_client_config(vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     let connector = TlsConnector::from(Arc::new(client_config));
     let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
     let tls_stream = connector.connect(server_name, tunnel).await.unwrap();
@@ -462,7 +518,7 @@ async fn test_https_interception_accepts_h2_websocket_extended_connect() {
 }
 
 #[tokio::test]
-async fn test_https_interception_wss_upstream_uses_h2_extended_connect() {
+async fn test_https_interception_wss_upstream_uses_http1_upgrade() {
     init_crypto_provider();
 
     let config = ProxyConfig {
@@ -502,21 +558,8 @@ async fn test_https_interception_wss_upstream_uses_h2_extended_connect() {
         response_str
     );
 
-    let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(
-            proxy
-                .ca_cert_der
-                .clone()
-                .expect("test proxy should expose CA cert"),
-        ))
-        .unwrap();
-
-    let mut client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
+    let client_config =
+        make_insecure_test_client_config(vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     let connector = TlsConnector::from(Arc::new(client_config));
     let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
     let tls_stream = connector.connect(server_name, tunnel).await.unwrap();
@@ -573,12 +616,12 @@ async fn test_https_interception_wss_upstream_uses_h2_extended_connect() {
     );
     assert_eq!(
         negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"h2".to_vec())
+        Some(b"http/1.1".to_vec())
     );
 }
 
 #[tokio::test]
-async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h2() {
+async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_http1() {
     init_crypto_provider();
 
     let config = ProxyConfig {
@@ -618,21 +661,7 @@ async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h
         response_str
     );
 
-    let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(
-            proxy
-                .ca_cert_der
-                .clone()
-                .expect("test proxy should expose CA cert"),
-        ))
-        .unwrap();
-
-    let mut client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
-
+    let client_config = make_insecure_test_client_config(vec![b"http/1.1".to_vec()]);
     let connector = TlsConnector::from(Arc::new(client_config));
     let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
     let mut tls_stream = connector.connect(server_name, tunnel).await.unwrap();
@@ -702,7 +731,7 @@ async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h
     );
     assert_eq!(
         negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"h2".to_vec())
+        Some(b"http/1.1".to_vec())
     );
 }
 
@@ -740,21 +769,8 @@ async fn test_https_interception_accepts_large_h2_request_headers() {
         response_str
     );
 
-    let mut root_store = RootCertStore::empty();
-    root_store
-        .add(CertificateDer::from(
-            proxy
-                .ca_cert_der
-                .clone()
-                .expect("test proxy should expose CA cert"),
-        ))
-        .unwrap();
-
-    let mut client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
+    let client_config =
+        make_insecure_test_client_config(vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     let connector = TlsConnector::from(Arc::new(client_config));
     let server_name = ServerName::try_from("intercepted.example.com".to_string()).unwrap();
     let tls_stream = connector.connect(server_name, tunnel).await.unwrap();

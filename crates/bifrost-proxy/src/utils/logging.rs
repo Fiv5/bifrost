@@ -24,6 +24,7 @@ pub fn generate_request_id() -> String {
 #[derive(Debug, Clone)]
 pub struct RequestContext {
     pub id: u64,
+    pub id_string: String,
     pub start_time: Instant,
     pub req_headers: HashMap<String, String>,
     pub req_cookies: HashMap<String, String>,
@@ -41,8 +42,11 @@ pub struct RequestContext {
 
 impl RequestContext {
     pub fn new() -> Self {
+        let id = REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let id_string = format!("REQ-{:x}-{:06}", *PROCESS_START_TS, id);
         Self {
-            id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed),
+            id,
+            id_string,
             start_time: Instant::now(),
             req_headers: HashMap::new(),
             req_cookies: HashMap::new(),
@@ -63,8 +67,8 @@ impl RequestContext {
         self.start_time.elapsed().as_millis()
     }
 
-    pub fn id_str(&self) -> String {
-        format!("REQ-{:x}-{:06}", *PROCESS_START_TS, self.id)
+    pub fn id_str(&self) -> &str {
+        &self.id_string
     }
 
     pub fn with_request_info(

@@ -59,25 +59,8 @@ impl RequestContext {
         let mut ctx = Self::new();
         ctx.url = url_str.to_string();
 
-        if let Ok(parsed) = url::Url::parse(url_str) {
-            ctx.hostname = parsed.host_str().unwrap_or("").to_string();
-            ctx.port = parsed.port().unwrap_or_else(|| match parsed.scheme() {
-                "https" | "wss" => 443,
-                _ => 80,
-            });
-            ctx.host = if ctx.port == 80 || ctx.port == 443 {
-                ctx.hostname.clone()
-            } else {
-                format!("{}:{}", ctx.hostname, ctx.port)
-            };
-            ctx.pathname = parsed.path().to_string();
-            ctx.query = parsed.query().map(|s| s.to_string());
-            ctx.search = ctx.query.as_ref().map(|q| format!("?{}", q));
-            ctx.path = if let Some(ref q) = ctx.search {
-                format!("{}{}", ctx.pathname, q)
-            } else {
-                ctx.pathname.clone()
-            };
+        if !populate_from_fast_url(url_str, &mut ctx) {
+            populate_from_parsed_url(url_str, &mut ctx);
         }
 
         ctx
@@ -163,6 +146,115 @@ impl RequestContext {
                 }
             }
         }
+    }
+}
+
+fn populate_from_parsed_url(url_str: &str, ctx: &mut RequestContext) {
+    if let Ok(parsed) = url::Url::parse(url_str) {
+        ctx.hostname = parsed.host_str().unwrap_or("").to_string();
+        ctx.port = parsed
+            .port()
+            .unwrap_or_else(|| default_port(parsed.scheme()));
+        ctx.host = format_host(&ctx.hostname, ctx.port, parsed.scheme());
+        ctx.pathname = parsed.path().to_string();
+        ctx.query = parsed.query().map(|s| s.to_string());
+        ctx.search = ctx.query.as_ref().map(|q| format!("?{}", q));
+        ctx.path = build_path(&ctx.pathname, ctx.search.as_deref());
+    }
+}
+
+fn populate_from_fast_url(url_str: &str, ctx: &mut RequestContext) -> bool {
+    let Some((scheme, rest)) = split_scheme(url_str) else {
+        return false;
+    };
+
+    let default_port = default_port(scheme);
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() {
+        return false;
+    }
+
+    let Some((hostname, port)) = parse_authority(authority, default_port) else {
+        return false;
+    };
+    let path_and_more = &rest[authority_end..];
+    let path_end = path_and_more.find('#').unwrap_or(path_and_more.len());
+    let path_and_query = &path_and_more[..path_end];
+    let (pathname, query) = split_path_and_query(path_and_query);
+
+    ctx.hostname = hostname.to_string();
+    ctx.port = port;
+    ctx.host = format_host(&ctx.hostname, ctx.port, scheme);
+    ctx.pathname = pathname.to_string();
+    ctx.query = query.map(str::to_string);
+    ctx.search = ctx.query.as_ref().map(|value| format!("?{}", value));
+    ctx.path = build_path(&ctx.pathname, ctx.search.as_deref());
+    true
+}
+
+fn split_scheme(url_str: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = url_str.split_once("://")?;
+    match scheme {
+        "http" | "https" | "ws" | "wss" => Some((scheme, rest)),
+        _ => None,
+    }
+}
+
+fn default_port(scheme: &str) -> u16 {
+    match scheme {
+        "https" | "wss" => 443,
+        _ => 80,
+    }
+}
+
+fn parse_authority(authority: &str, default_port: u16) -> Option<(&str, u16)> {
+    if authority.starts_with('[') {
+        let end = authority.find(']')?;
+        let host = &authority[..=end];
+        let remainder = &authority[end + 1..];
+        if remainder.is_empty() {
+            return Some((host, default_port));
+        }
+        let port = remainder.strip_prefix(':')?.parse().ok()?;
+        return Some((host, port));
+    }
+
+    let mut segments = authority.rsplitn(2, ':');
+    let last = segments.next()?;
+    if let Some(host) = segments.next() {
+        if !last.is_empty() && last.as_bytes().iter().all(u8::is_ascii_digit) {
+            return Some((host, last.parse().ok()?));
+        }
+    }
+
+    Some((authority, default_port))
+}
+
+fn split_path_and_query(path_and_query: &str) -> (&str, Option<&str>) {
+    if path_and_query.is_empty() {
+        return ("/", None);
+    }
+    if let Some((pathname, query)) = path_and_query.split_once('?') {
+        let normalized = if pathname.is_empty() { "/" } else { pathname };
+        return (normalized, Some(query));
+    }
+    (path_and_query, None)
+}
+
+fn format_host(hostname: &str, port: u16, scheme: &str) -> String {
+    if port == default_port(scheme) {
+        hostname.to_string()
+    } else {
+        format!("{}:{}", hostname, port)
+    }
+}
+
+fn build_path(pathname: &str, search: Option<&str>) -> String {
+    if let Some(search) = search {
+        format!("{}{}", pathname, search)
+    } else {
+        pathname.to_string()
     }
 }
 
@@ -338,6 +430,27 @@ mod tests {
         let ctx = RequestContext::from_url("http://example.com/path");
         assert_eq!(ctx.port, 80);
         assert_eq!(ctx.host, "example.com");
+    }
+
+    #[test]
+    fn test_request_context_from_url_fast_path_with_query_only() {
+        let ctx = RequestContext::from_url("http://example.com?name=test");
+        assert_eq!(ctx.hostname, "example.com");
+        assert_eq!(ctx.port, 80);
+        assert_eq!(ctx.pathname, "/");
+        assert_eq!(ctx.query, Some("name=test".to_string()));
+        assert_eq!(ctx.search, Some("?name=test".to_string()));
+        assert_eq!(ctx.path, "/?name=test");
+    }
+
+    #[test]
+    fn test_request_context_from_url_fast_path_with_ipv6_port() {
+        let ctx = RequestContext::from_url("https://[::1]:8443/api");
+        assert_eq!(ctx.hostname, "[::1]");
+        assert_eq!(ctx.port, 8443);
+        assert_eq!(ctx.host, "[::1]:8443");
+        assert_eq!(ctx.pathname, "/api");
+        assert_eq!(ctx.path, "/api");
     }
 
     #[test]

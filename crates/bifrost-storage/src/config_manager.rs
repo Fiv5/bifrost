@@ -224,6 +224,9 @@ impl ConfigManager {
         if let Some(max_body_probe_size) = update.max_body_probe_size {
             config.traffic.max_body_probe_size = max_body_probe_size;
         }
+        if let Some(binary_traffic_performance_mode) = update.binary_traffic_performance_mode {
+            config.traffic.binary_traffic_performance_mode = binary_traffic_performance_mode;
+        }
         if let Some(file_retention_days) = update.file_retention_days {
             config.traffic.file_retention_days = file_retention_days;
         }
@@ -451,10 +454,27 @@ impl ConfigManager {
         self.change_notifier.send(event)
     }
 
+    fn expected_data_subdirs() -> &'static [&'static str] {
+        &[
+            "rules",
+            "values",
+            "certs",
+            "traffic",
+            "body_cache",
+            "logs",
+            "replay",
+            "scripts",
+            "scripts/request",
+            "scripts/response",
+            "scripts/decode",
+            "scripts/_sandbox",
+        ]
+    }
+
     fn init_data_dir(dir: &Path) -> Result<()> {
         let is_new = !dir.exists();
         std::fs::create_dir_all(dir)?;
-        for subdir in ["rules", "values", "certs", "traffic", "body_cache"] {
+        for subdir in Self::expected_data_subdirs() {
             std::fs::create_dir_all(dir.join(subdir))?;
         }
         if is_new {
@@ -546,6 +566,7 @@ impl ConfigManager {
                 max_body_memory_size: legacy.traffic.max_body_memory_size,
                 max_body_buffer_size: legacy.traffic.max_body_buffer_size,
                 max_body_probe_size: 64 * 1024,
+                binary_traffic_performance_mode: true,
                 file_retention_days: legacy.traffic.file_retention_days,
                 sse_stream_flush_bytes: legacy.traffic.sse_stream_flush_bytes,
                 sse_stream_flush_interval_ms: legacy.traffic.sse_stream_flush_interval_ms,
@@ -613,6 +634,25 @@ mod tests {
 
         assert_eq!(config.server.timeout_secs, 30);
         assert!(!config.tls.enable_interception);
+    }
+
+    #[tokio::test]
+    async fn test_missing_expected_data_subdirs_are_recreated() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp_dir.path()).unwrap();
+
+        for subdir in ["rules", "body_cache"] {
+            std::fs::create_dir_all(temp_dir.path().join(subdir)).unwrap();
+        }
+
+        let _manager = ConfigManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        for subdir in ConfigManager::expected_data_subdirs() {
+            assert!(
+                temp_dir.path().join(subdir).is_dir(),
+                "expected subdir to exist: {subdir}"
+            );
+        }
     }
 
     #[tokio::test]

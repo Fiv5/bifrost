@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
 
@@ -35,8 +37,60 @@ use crate::unified::{DetectedProtocol, PeekableStream};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::{
     resolve_client_process_async, resolve_client_process_async_with_retry,
+    spawn_async_process_resolver, ClientProcess,
 };
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
+
+const NOISY_CONN_ERROR_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct NoisyConnErrorLogState {
+    last_log_at: Option<Instant>,
+    suppressed: u64,
+}
+
+static INCOMPLETE_MESSAGE_LOG_STATE: LazyLock<Mutex<NoisyConnErrorLogState>> =
+    LazyLock::new(|| Mutex::new(NoisyConnErrorLogState::default()));
+
+fn log_connection_serve_error(peer_addr: SocketAddr, err: &hyper::Error) {
+    let err_debug = format!("{err:?}");
+    let is_noisy_disconnect =
+        err_debug.contains("IncompleteMessage") || err.to_string().contains("message completed");
+
+    if !is_noisy_disconnect {
+        error!("Error serving connection from {}: {:?}", peer_addr, err);
+        return;
+    }
+
+    let now = Instant::now();
+    let mut state = INCOMPLETE_MESSAGE_LOG_STATE
+        .lock()
+        .expect("incomplete message log state poisoned");
+
+    match state.last_log_at {
+        Some(last_log_at) if now.duration_since(last_log_at) < NOISY_CONN_ERROR_LOG_INTERVAL => {
+            state.suppressed += 1;
+        }
+        _ => {
+            let suppressed = std::mem::take(&mut state.suppressed);
+            state.last_log_at = Some(now);
+            warn!(
+                "Noisy connection close from {}: {:?} (suppressed {} similar events in last {:?})",
+                peer_addr, err, suppressed, NOISY_CONN_ERROR_LOG_INTERVAL
+            );
+        }
+    }
+}
+
+fn should_defer_client_process_resolution(
+    method: &Method,
+    verbose_logging: bool,
+    has_script_manager: bool,
+) -> bool {
+    // Client process information is part of the policy input for CONNECT/TLS interception.
+    // That path must resolve the process before making an interception decision.
+    method != Method::CONNECT && !verbose_logging && !has_script_manager
+}
 
 #[derive(Debug, Clone)]
 pub struct TlsInterceptConfig {
@@ -85,6 +139,7 @@ pub struct ProxyConfig {
     pub unsafe_ssl: bool,
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
+    pub binary_traffic_performance_mode: bool,
     pub enable_socks: bool,
 }
 
@@ -122,6 +177,7 @@ impl Default for ProxyConfig {
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
             max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
             enable_socks: true,
         }
     }
@@ -827,6 +883,8 @@ async fn handle_http_connection(
     initial_generation: u64,
 ) {
     let io = TokioIo::new(stream);
+    let client_process_cache = Arc::new(Mutex::new(None::<ClientProcess>));
+    let client_process_resolution_started = Arc::new(AtomicBool::new(false));
     let http1_max_header_size = if let Some(ref state) = admin_state {
         if let Some(ref config_manager) = state.config_manager {
             config_manager.config().await.server.http1_max_header_size
@@ -846,6 +904,8 @@ async fn handle_http_connection(
         let admin_security_config = admin_security_config.clone();
         let dns_resolver = Arc::clone(&dns_resolver);
         let access_control = Arc::clone(&access_control);
+        let client_process_cache = Arc::clone(&client_process_cache);
+        let client_process_resolution_started = Arc::clone(&client_process_resolution_started);
         async move {
             handle_request(
                 req,
@@ -859,6 +919,8 @@ async fn handle_http_connection(
                 dns_resolver,
                 access_control,
                 initial_generation,
+                client_process_cache,
+                client_process_resolution_started,
             )
             .await
         }
@@ -871,7 +933,7 @@ async fn handle_http_connection(
         .max_buf_size(http1_max_header_size);
 
     if let Err(err) = builder.serve_connection(io, service).with_upgrades().await {
-        error!("Error serving connection from {}: {:?}", peer_addr, err);
+        log_connection_serve_error(peer_addr, &err);
     }
 }
 
@@ -888,12 +950,21 @@ async fn handle_request(
     dns_resolver: Arc<DnsResolver>,
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
     initial_generation: u64,
+    client_process_cache: Arc<Mutex<Option<ClientProcess>>>,
+    client_process_resolution_started: Arc<AtomicBool>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().clone();
     let uri = req.uri().clone();
     let path = uri.path();
     let verbose_logging = proxy_config.verbose_logging;
     let is_local_client = peer_addr.ip().is_loopback();
+    let can_defer_client_process = should_defer_client_process_resolution(
+        &method,
+        verbose_logging,
+        admin_state
+            .as_ref()
+            .is_some_and(|state| state.script_manager.is_some()),
+    );
 
     let connect_tls_intercept_config = if method == Method::CONNECT {
         Some(if let Some(ref state) = admin_state {
@@ -913,23 +984,61 @@ async fn handle_request(
         None
     };
 
-    let client_process = if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
-        if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
-            resolve_client_process_async_with_retry(&peer_addr, 10, 20).await
-        } else {
-            resolve_client_process_async(&peer_addr).await
+    let mut ctx = RequestContext::new().with_client_ip(peer_addr.ip().to_string());
+    let cached_client_process = client_process_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone());
+
+    let client_process = if let Some(client_process) = cached_client_process {
+        Some(client_process)
+    } else if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
+        let client_process =
+            if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
+                resolve_client_process_async_with_retry(&peer_addr, 10, 20).await
+            } else {
+                resolve_client_process_async(&peer_addr).await
+            };
+        if let Some(ref client_process) = client_process {
+            if let Ok(mut cache) = client_process_cache.lock() {
+                *cache = Some(client_process.clone());
+            }
         }
+        client_process
+    } else if can_defer_client_process {
+        if let Some(state) = admin_state.clone() {
+            let should_spawn = !client_process_resolution_started.swap(true, Ordering::AcqRel);
+            if should_spawn {
+                let record_id = ctx.id_str();
+                let client_process_cache = Arc::clone(&client_process_cache);
+                spawn_async_process_resolver(
+                    peer_addr,
+                    record_id.to_string(),
+                    move |id, process| {
+                        if let Ok(mut cache) = client_process_cache.lock() {
+                            *cache = Some(process.clone());
+                        }
+                        state.update_client_process(&id, process.name, process.pid, process.path);
+                    },
+                );
+            }
+        }
+        None
     } else {
-        resolve_client_process_async(&peer_addr).await
+        let client_process = resolve_client_process_async(&peer_addr).await;
+        if let Some(ref client_process) = client_process {
+            if let Ok(mut cache) = client_process_cache.lock() {
+                *cache = Some(client_process.clone());
+            }
+        }
+        client_process
     };
     let (client_app, client_pid, client_path) = client_process
         .as_ref()
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
         .unwrap_or((None, None, None));
 
-    let ctx = RequestContext::new()
-        .with_client_process(client_app, client_pid, client_path)
-        .with_client_ip(peer_addr.ip().to_string());
+    ctx = ctx.with_client_process(client_app, client_pid, client_path);
 
     let client_info = client_process
         .as_ref()
@@ -1277,6 +1386,7 @@ mod tests {
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
             enable_socks: true,
         };
         let server = ProxyServer::new(config);
@@ -1294,6 +1404,38 @@ mod tests {
         assert!(server.config().verbose_logging);
         assert_eq!(server.config().access_mode, AccessMode::Whitelist);
         assert!(server.config().allow_lan);
+    }
+
+    #[test]
+    fn test_should_not_defer_client_process_for_connect() {
+        assert!(!should_defer_client_process_resolution(
+            &Method::CONNECT,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn test_should_not_defer_client_process_when_scripts_are_enabled() {
+        assert!(!should_defer_client_process_resolution(
+            &Method::GET,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_should_defer_client_process_only_for_plain_http_without_scripts() {
+        assert!(should_defer_client_process_resolution(
+            &Method::GET,
+            false,
+            false
+        ));
+        assert!(!should_defer_client_process_resolution(
+            &Method::GET,
+            true,
+            false
+        ));
     }
 
     #[test]

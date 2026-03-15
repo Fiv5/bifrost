@@ -1,5 +1,6 @@
 import { get, del, post } from './client';
 import type { TrafficListResponse, TrafficRecord, TrafficFilter, TrafficUpdatesFilter, TrafficUpdatesResponseCompact, ApiResponse, TrafficQueryRequest, TrafficQueryResponse } from '../types';
+import { buildApiUrl } from '../runtime';
 
 export async function queryTraffic(request: TrafficQueryRequest): Promise<TrafficQueryResponse> {
   return post<TrafficQueryResponse>('/traffic/query', request);
@@ -50,4 +51,15 @@ export async function getRequestBody(id: string): Promise<string | null> {
 export async function getResponseBody(id: string): Promise<string | null> {
   const response = await get<ApiResponse<string>>(`/traffic/${encodeURIComponent(id)}/response-body`);
   return response.data || null;
+}
+
+export function getResponseBodyContentUrl(id: string, raw = true): string {
+  const params = new URLSearchParams();
+  if (raw) {
+    params.set('raw', '1');
+  }
+  const suffix = params.toString();
+  return buildApiUrl(
+    `/traffic/${encodeURIComponent(id)}/response-body/content${suffix ? `?${suffix}` : ''}`
+  );
 }

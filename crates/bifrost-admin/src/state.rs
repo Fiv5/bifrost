@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
@@ -93,6 +93,7 @@ pub struct AdminState {
     pub config_manager: Option<SharedConfigManager>,
     pub max_body_buffer_size: AtomicUsize,
     pub max_body_probe_size: AtomicUsize,
+    pub binary_traffic_performance_mode: AtomicBool,
     pub app_icon_cache: Option<SharedAppIconCache>,
     pub version_checker: SharedVersionChecker,
     pub script_manager: Option<SharedScriptManager>,
@@ -128,6 +129,7 @@ impl AdminState {
             config_manager: None,
             max_body_buffer_size: AtomicUsize::new(DEFAULT_MAX_BODY_BUFFER_SIZE),
             max_body_probe_size: AtomicUsize::new(DEFAULT_MAX_BODY_PROBE_SIZE),
+            binary_traffic_performance_mode: AtomicBool::new(true),
             app_icon_cache: None,
             version_checker: Arc::new(VersionChecker::new()),
             script_manager: None,
@@ -157,6 +159,10 @@ impl AdminState {
         self.max_body_probe_size.load(Ordering::Relaxed)
     }
 
+    pub fn get_binary_traffic_performance_mode(&self) -> bool {
+        self.binary_traffic_performance_mode.load(Ordering::Relaxed)
+    }
+
     pub fn set_max_body_buffer_size(&self, size: usize) {
         let old = self.max_body_buffer_size.swap(size, Ordering::SeqCst);
         if old != size {
@@ -175,6 +181,19 @@ impl AdminState {
                 "AdminState config updated: max_body_probe_size {} -> {}",
                 old,
                 size
+            );
+        }
+    }
+
+    pub fn set_binary_traffic_performance_mode(&self, enabled: bool) {
+        let old = self
+            .binary_traffic_performance_mode
+            .swap(enabled, Ordering::SeqCst);
+        if old != enabled {
+            tracing::info!(
+                "AdminState config updated: binary_traffic_performance_mode {} -> {}",
+                old,
+                enabled
             );
         }
     }
@@ -546,6 +565,12 @@ impl AdminState {
 
     pub fn with_max_body_probe_size(self, size: usize) -> Self {
         self.max_body_probe_size.store(size, Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_binary_traffic_performance_mode(self, enabled: bool) -> Self {
+        self.binary_traffic_performance_mode
+            .store(enabled, Ordering::SeqCst);
         self
     }
 

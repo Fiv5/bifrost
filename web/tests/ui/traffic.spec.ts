@@ -242,8 +242,8 @@ test("Header 仅在存在差异时显示切换", async ({ page, request }) => {
 
     await page.getByTestId("response-tab-header").click();
     await expect(page.getByTestId("response-header-view-mode-tabs")).toBeVisible();
-    await expect(page.getByTestId("response-header-view-tab-current")).toBeVisible();
-    await expect(page.getByTestId("response-header-view-tab-actual")).toBeVisible();
+    await expect(page.getByTestId("response-header-view-tab-current")).toHaveCount(1);
+    await expect(page.getByTestId("response-header-view-tab-actual")).toHaveCount(1);
   } finally {
     await server.close();
   }

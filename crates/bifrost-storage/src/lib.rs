@@ -9,7 +9,7 @@ mod values;
 pub(crate) use config::BifrostConfig as LegacyBifrostConfig;
 pub use config_manager::{ConfigChangeEvent, ConfigManager, SharedConfigManager};
 pub use data_dir::{data_dir, set_data_dir};
-pub use rules::{RuleFile, RulesStorage};
+pub use rules::{RuleFile, RuleSummary, RulesStorage};
 pub use state::{RuntimeState, StateManager};
 pub use unified_config::{
     AccessConfig as NewAccessConfig, AccessConfigUpdate, CollapsedSections, FilterPanelConfig,

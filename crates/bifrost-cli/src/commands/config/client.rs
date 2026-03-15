@@ -210,6 +210,8 @@ pub struct TrafficConfig {
     pub max_db_size_bytes: u64,
     pub max_body_memory_size: usize,
     pub max_body_buffer_size: usize,
+    pub max_body_probe_size: usize,
+    pub binary_traffic_performance_mode: bool,
     pub file_retention_days: u64,
     pub sse_stream_flush_bytes: usize,
     pub sse_stream_flush_interval_ms: u64,
@@ -253,6 +255,10 @@ pub struct UpdatePerformanceConfigRequest {
     pub max_body_memory_size: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_body_buffer_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_body_probe_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_traffic_performance_mode: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_retention_days: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

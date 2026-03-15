@@ -139,6 +139,11 @@ pub struct AppMetricsAggregate {
 }
 
 impl TrafficDbStore {
+    #[inline]
+    pub fn has_traffic_event_subscribers(&self) -> bool {
+        self.tx.receiver_count() > 0
+    }
+
     pub fn new(
         db_dir: PathBuf,
         max_records: usize,
@@ -376,14 +381,12 @@ impl TrafficDbStore {
         }
     }
 
-    pub fn record(&self, mut record: TrafficRecord) {
-        let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
-        record.sequence = seq;
-
-        let _ = self.tx.send(TrafficStoreEvent::Inserted(record.clone()));
-
-        let mut conn = self.write_conn.lock();
-        let flags = encode_flags(&record);
+    fn insert_record_tx(
+        tx: &rusqlite::Transaction<'_>,
+        seq: u64,
+        record: &TrafficRecord,
+    ) -> rusqlite::Result<()> {
+        let flags = encode_flags(record);
         let socket_is_open = record.socket_status.as_ref().is_some_and(|s| s.is_open);
         let socket_send_count = record.socket_status.as_ref().map_or(0, |s| s.send_count);
         let socket_receive_count = record.socket_status.as_ref().map_or(0, |s| s.receive_count);
@@ -411,68 +414,81 @@ impl TrafficDbStore {
             res_script_results_blob,
             decode_req_results_blob,
             decode_res_results_blob,
-        } = Self::serialize_detail_fields(&record);
+        } = Self::serialize_detail_fields(record);
 
+        tx.execute(
+            get_insert_sql(),
+            params![
+                seq as i64,
+                &record.id,
+                record.timestamp as i64,
+                &record.host,
+                &record.method,
+                record.status as i32,
+                &record.protocol,
+                &record.url,
+                &record.path,
+                &record.content_type,
+                &record.request_content_type,
+                record.request_size as i64,
+                record.response_size as i64,
+                record.duration_ms as i64,
+                &record.client_ip,
+                &record.client_app,
+                record.client_pid.map(|p| p as i32),
+                &record.client_path,
+                flags as i32,
+                record.frame_count as i64,
+                record.last_frame_id as i64,
+                socket_is_open,
+                socket_send_count as i64,
+                socket_receive_count as i64,
+                socket_send_bytes as i64,
+                socket_receive_bytes as i64,
+                socket_frame_count as i64,
+                rule_count as i64,
+                rule_protocols_json,
+            ],
+        )?;
+        tx.execute(
+            get_insert_detail_sql(),
+            params![
+                &record.id,
+                timing_blob,
+                req_headers_blob,
+                res_headers_blob,
+                rules_blob,
+                req_body_blob,
+                res_body_blob,
+                raw_req_body_blob,
+                raw_res_body_blob,
+                &record.actual_url,
+                &record.actual_host,
+                orig_req_headers_blob,
+                actual_res_headers_blob,
+                socket_status_blob,
+                req_script_results_blob,
+                res_script_results_blob,
+                decode_req_results_blob,
+                decode_res_results_blob,
+                &record.error_message,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record(&self, mut record: TrafficRecord) {
+        let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
+        record.sequence = seq;
+
+        if self.tx.receiver_count() > 0 {
+            let _ = self.tx.send(TrafficStoreEvent::Inserted(record.clone()));
+        }
+
+        let mut conn = self.write_conn.lock();
         let result = (|| -> rusqlite::Result<()> {
             let tx = conn.transaction()?;
-            tx.execute(
-                get_insert_sql(),
-                params![
-                    seq as i64,
-                    &record.id,
-                    record.timestamp as i64,
-                    &record.host,
-                    &record.method,
-                    record.status as i32,
-                    &record.protocol,
-                    &record.url,
-                    &record.path,
-                    &record.content_type,
-                    &record.request_content_type,
-                    record.request_size as i64,
-                    record.response_size as i64,
-                    record.duration_ms as i64,
-                    &record.client_ip,
-                    &record.client_app,
-                    record.client_pid.map(|p| p as i32),
-                    &record.client_path,
-                    flags as i32,
-                    record.frame_count as i64,
-                    record.last_frame_id as i64,
-                    socket_is_open,
-                    socket_send_count as i64,
-                    socket_receive_count as i64,
-                    socket_send_bytes as i64,
-                    socket_receive_bytes as i64,
-                    socket_frame_count as i64,
-                    rule_count as i64,
-                    rule_protocols_json,
-                ],
-            )?;
-            tx.execute(
-                get_insert_detail_sql(),
-                params![
-                    &record.id,
-                    timing_blob,
-                    req_headers_blob,
-                    res_headers_blob,
-                    rules_blob,
-                    req_body_blob,
-                    res_body_blob,
-                    raw_req_body_blob,
-                    raw_res_body_blob,
-                    &record.actual_url,
-                    &record.actual_host,
-                    orig_req_headers_blob,
-                    actual_res_headers_blob,
-                    socket_status_blob,
-                    req_script_results_blob,
-                    res_script_results_blob,
-                    decode_req_results_blob,
-                    decode_res_results_blob,
-                    &record.error_message,
-                ],
-            )?;
+            Self::insert_record_tx(&tx, seq, &record)?;
             tx.commit()
         })();
 
@@ -492,6 +508,58 @@ impl TrafficDbStore {
         }
 
         let count = self.write_count.fetch_add(1, Ordering::Relaxed);
+        if count.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
+            self.maybe_cleanup(&conn);
+        }
+    }
+
+    pub fn record_batch(&self, records: Vec<TrafficRecord>) {
+        if records.is_empty() {
+            return;
+        }
+
+        let mut records_with_seq = Vec::with_capacity(records.len());
+        let should_broadcast = self.tx.receiver_count() > 0;
+        for mut record in records {
+            let seq = self.current_sequence.fetch_add(1, Ordering::SeqCst);
+            record.sequence = seq;
+            if should_broadcast {
+                let _ = self.tx.send(TrafficStoreEvent::Inserted(record.clone()));
+            }
+            records_with_seq.push((seq, record));
+        }
+
+        let mut conn = self.write_conn.lock();
+        let result = (|| -> rusqlite::Result<()> {
+            let tx = conn.transaction()?;
+            for (seq, record) in &records_with_seq {
+                Self::insert_record_tx(&tx, *seq, record)?;
+            }
+            tx.commit()
+        })();
+
+        if let Err(e) = result {
+            tracing::error!(error = %e, batch_size = records_with_seq.len(), "[TRAFFIC_DB] Failed to insert record batch");
+            return;
+        }
+
+        let mut cache = self.recent_cache.write();
+        for (_, record) in &records_with_seq {
+            if Self::should_keep_in_cache(record) {
+                cache.put(
+                    record.id.clone(),
+                    TrafficSummaryCompact::from_record(record),
+                );
+            }
+        }
+        drop(cache);
+
+        self.increase_record_count(records_with_seq.len());
+        self.invalidate_metrics_cache();
+
+        let count = self
+            .write_count
+            .fetch_add(records_with_seq.len() as u64, Ordering::Relaxed);
         if count.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
             self.maybe_cleanup(&conn);
         }
@@ -517,7 +585,9 @@ impl TrafficDbStore {
                     cache.pop(&record.id);
                 }
             }
-            let _ = self.tx.send(TrafficStoreEvent::Updated(record));
+            if self.tx.receiver_count() > 0 {
+                let _ = self.tx.send(TrafficStoreEvent::Updated(record));
+            }
             return true;
         }
 

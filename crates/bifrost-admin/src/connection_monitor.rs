@@ -379,7 +379,9 @@ impl ConnectionMonitor {
                 }
             }
 
-            if let Some(body_store) = body_store {
+            if let Some(ws_payload_store) = ws_payload_store {
+                frame.payload_ref = ws_payload_store.append_bytes(connection_id, payload);
+            } else if let Some(body_store) = body_store {
                 let ref_key = format!("{}_frame_{}_{}", connection_id, frame_id, direction_str);
                 let payload_for_store: Vec<u8> = if payload_is_text {
                     payload.to_vec()
@@ -390,8 +392,6 @@ impl ConnectionMonitor {
                 frame.payload_ref = body_store
                     .read()
                     .store(&ref_key, "frame", &payload_for_store);
-            } else if let Some(ws_payload_store) = ws_payload_store {
-                frame.payload_ref = ws_payload_store.append_bytes(connection_id, payload);
             } else {
                 frame.payload_ref = Some(BodyRef::Inline {
                     data: String::from_utf8_lossy(payload).to_string(),

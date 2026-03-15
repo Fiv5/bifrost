@@ -282,6 +282,7 @@ fn test_proxy_config_default() {
     assert_eq!(config.http1_max_header_size, 64 * 1024);
     assert_eq!(config.http2_max_header_list_size, 256 * 1024);
     assert_eq!(config.websocket_handshake_max_header_size, 64 * 1024);
+    assert!(config.binary_traffic_performance_mode);
 }
 
 #[test]
@@ -309,6 +310,7 @@ fn test_proxy_config_custom() {
         unsafe_ssl: false,
         max_body_buffer_size: 10 * 1024 * 1024,
         max_body_probe_size: 64 * 1024,
+        binary_traffic_performance_mode: true,
         enable_socks: true,
     };
     assert_eq!(config.port, 9000);

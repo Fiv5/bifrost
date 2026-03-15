@@ -10,7 +10,11 @@ use crate::utils::logging::RequestContext;
 use super::decode::{build_matched_rules_info, parse_url_parts};
 
 pub(super) fn headers_to_hashmap(headers: &[(String, String)]) -> HashMap<String, String> {
-    headers.iter().cloned().collect()
+    let mut map = HashMap::with_capacity(headers.len());
+    for (key, value) in headers {
+        map.insert(key.clone(), value.clone());
+    }
+    map
 }
 
 #[allow(clippy::too_many_arguments)]

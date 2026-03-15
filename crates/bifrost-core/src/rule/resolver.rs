@@ -112,6 +112,11 @@ impl LruCache {
         }
     }
 
+    fn peek(&self, key: &str) -> Option<ResolvedRules> {
+        self.cache.peek(key).cloned()
+    }
+
+    #[cfg(test)]
     fn get(&mut self, key: &str) -> Option<ResolvedRules> {
         self.cache.get(key).cloned()
     }
@@ -207,8 +212,7 @@ impl RulesResolver {
         );
 
         if self.cache_enabled {
-            let mut cache = self.cache.write();
-            if let Some(cached) = cache.get(&cache_key) {
+            if let Some(cached) = self.cache.read().peek(&cache_key) {
                 tracing::trace!(
                     target: "bifrost_core::rules",
                     url = %ctx.url,
@@ -1128,6 +1132,27 @@ mod tests {
         let result = resolver.resolve(&ctx);
 
         assert_eq!(result.len(), 1, "Should match the path wildcard rule");
+    }
+
+    #[test]
+    fn test_host_rule_matches_request_with_explicit_port() {
+        use crate::rule::parser::RuleParser;
+
+        let parser = RuleParser::new();
+        let rules = parser
+            .parse_line("127.0.0.1 reqHeaders://X-UI-Rule=alpha")
+            .expect("Failed to parse rule");
+
+        let resolver = RulesResolver::new(rules);
+        let ctx = RequestContext::from_url("http://127.0.0.1:18084/rules-check");
+        let result = resolver.resolve(&ctx);
+
+        assert_eq!(
+            result.len(),
+            1,
+            "Host-only rule should match requests with an explicit port"
+        );
+        assert_eq!(result.rules[0].resolved_value, "X-UI-Rule=alpha");
     }
 
     #[test]

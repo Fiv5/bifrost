@@ -11,13 +11,17 @@ use std::time::Duration;
 use crate::dns::DnsResolver;
 use crate::ensure_crypto_provider;
 use crate::server::BoxBody;
-use hyper::body::Incoming;
+use bytes::Bytes;
+use http_body_util::BodyExt;
+use hyper::body::{Body, Frame};
 use hyper::Request;
 use hyper_util::client::legacy::connect::dns::Name;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::Error as ClientError;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
+use pin_project_lite::pin_project;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tower::Service;
 
@@ -37,6 +41,27 @@ struct ClientCacheKey {
     unsafe_ssl: bool,
     dns_servers: Vec<String>,
     pool_partition: String,
+    protocol: ClientProtocolPreference,
+}
+
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+enum ClientProtocolPreference {
+    Auto,
+    Http1Only,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct Http1FallbackKey {
+    unsafe_ssl: bool,
+    dns_servers: Vec<String>,
+    pool_partition: String,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+struct UpstreamConcurrencyKey {
+    unsafe_ssl: bool,
+    dns_servers: Vec<String>,
+    pool_partition: String,
 }
 
 #[derive(Clone)]
@@ -50,6 +75,68 @@ type ResolveFuture = Pin<Box<dyn Future<Output = io::Result<ResolveAddrs>> + Sen
 
 static HTTPS_CLIENTS: LazyLock<RwLock<HashMap<ClientCacheKey, Arc<HttpsPooledClient>>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+static HTTP1_FALLBACKS: LazyLock<RwLock<HashMap<Http1FallbackKey, std::time::Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+static HTTP1_FALLBACK_LAST_CLEANUP: LazyLock<RwLock<Option<std::time::Instant>>> =
+    LazyLock::new(|| RwLock::new(None));
+static UPSTREAM_LIMITERS: LazyLock<RwLock<HashMap<UpstreamConcurrencyKey, Arc<Semaphore>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+const HTTP1_FALLBACK_TTL: Duration = Duration::from_secs(120);
+const HTTP1_FALLBACK_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+static MAX_UPSTREAM_INFLIGHT_PER_PARTITION: LazyLock<usize> = LazyLock::new(|| {
+    std::env::var("BIFROST_UPSTREAM_MAX_INFLIGHT_PER_PARTITION")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64)
+});
+
+pin_project! {
+    struct UpstreamPermitBody<B> {
+        #[pin]
+        inner: B,
+        permit: Option<OwnedSemaphorePermit>,
+    }
+}
+
+impl<B> UpstreamPermitBody<B> {
+    fn new(inner: B, permit: OwnedSemaphorePermit) -> Self {
+        Self {
+            inner,
+            permit: Some(permit),
+        }
+    }
+}
+
+impl<B> Body for UpstreamPermitBody<B>
+where
+    B: Body<Data = Bytes>,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        match this.inner.as_mut().poll_frame(cx) {
+            Poll::Ready(None) => {
+                this.permit.take();
+                Poll::Ready(None)
+            }
+            other => other,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
 
 fn build_root_cert_store() -> RootCertStore {
     let mut root_store = RootCertStore::empty();
@@ -158,7 +245,11 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
     }
 }
 
-fn build_https_client(unsafe_ssl: bool, dns_servers: &[String]) -> HttpsPooledClient {
+fn build_https_client(
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    protocol: ClientProtocolPreference,
+) -> HttpsPooledClient {
     ensure_crypto_provider();
 
     let config = if unsafe_ssl {
@@ -179,11 +270,18 @@ fn build_https_client(unsafe_ssl: bool, dns_servers: &[String]) -> HttpsPooledCl
     http_connector.set_keepalive(Some(Duration::from_secs(60)));
     http_connector.set_connect_timeout(Some(Duration::from_secs(10)));
 
-    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(config)
-        .https_or_http()
-        .enable_all_versions()
-        .wrap_connector(http_connector);
+    let https_connector = match protocol {
+        ClientProtocolPreference::Auto => hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_all_versions()
+            .wrap_connector(http_connector),
+        ClientProtocolPreference::Http1Only => hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http_connector),
+    };
 
     let mut builder = Client::builder(TokioExecutor::new());
     builder.timer(TokioTimer::new());
@@ -197,15 +295,17 @@ fn build_https_client(unsafe_ssl: bool, dns_servers: &[String]) -> HttpsPooledCl
     builder.build(https_connector)
 }
 
-pub(super) fn get_https_client(
+fn get_https_client(
     unsafe_ssl: bool,
     dns_servers: &[String],
     pool_partition: &str,
+    protocol: ClientProtocolPreference,
 ) -> Arc<HttpsPooledClient> {
     let key = ClientCacheKey {
         unsafe_ssl,
         dns_servers: dns_servers.to_vec(),
         pool_partition: pool_partition.to_string(),
+        protocol,
     };
 
     if let Ok(clients) = HTTPS_CLIENTS.read() {
@@ -214,7 +314,11 @@ pub(super) fn get_https_client(
         }
     }
 
-    let client = Arc::new(build_https_client(unsafe_ssl, &key.dns_servers));
+    let client = Arc::new(build_https_client(
+        unsafe_ssl,
+        &key.dns_servers,
+        key.protocol,
+    ));
     if let Ok(mut clients) = HTTPS_CLIENTS.write() {
         let entry = clients.entry(key).or_insert_with(|| Arc::clone(&client));
         return Arc::clone(entry);
@@ -222,15 +326,163 @@ pub(super) fn get_https_client(
     client
 }
 
+fn fallback_key(
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> Http1FallbackKey {
+    Http1FallbackKey {
+        unsafe_ssl,
+        dns_servers: dns_servers.to_vec(),
+        pool_partition: pool_partition.to_string(),
+    }
+}
+
+fn concurrency_key(
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> UpstreamConcurrencyKey {
+    UpstreamConcurrencyKey {
+        unsafe_ssl,
+        dns_servers: dns_servers.to_vec(),
+        pool_partition: pool_partition.to_string(),
+    }
+}
+
+fn get_upstream_limiter(
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> Arc<Semaphore> {
+    let key = concurrency_key(unsafe_ssl, dns_servers, pool_partition);
+
+    if let Ok(limiters) = UPSTREAM_LIMITERS.read() {
+        if let Some(limiter) = limiters.get(&key) {
+            return Arc::clone(limiter);
+        }
+    }
+
+    let limiter = Arc::new(Semaphore::new(*MAX_UPSTREAM_INFLIGHT_PER_PARTITION));
+    if let Ok(mut limiters) = UPSTREAM_LIMITERS.write() {
+        let entry = limiters.entry(key).or_insert_with(|| Arc::clone(&limiter));
+        return Arc::clone(entry);
+    }
+    limiter
+}
+
+pub(super) fn should_prefer_http1_upstream(
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> bool {
+    let key = fallback_key(unsafe_ssl, dns_servers, pool_partition);
+    let now = std::time::Instant::now();
+
+    if let Ok(fallbacks) = HTTP1_FALLBACKS.read() {
+        if let Some(expires_at) = fallbacks.get(&key) {
+            return *expires_at > now;
+        }
+    }
+
+    cleanup_http1_fallbacks_if_needed(now);
+    false
+}
+
+fn cleanup_http1_fallbacks_if_needed(now: std::time::Instant) {
+    if let Ok(last_cleanup) = HTTP1_FALLBACK_LAST_CLEANUP.read() {
+        if last_cleanup
+            .as_ref()
+            .is_some_and(|last| now.duration_since(*last) < HTTP1_FALLBACK_CLEANUP_INTERVAL)
+        {
+            return;
+        }
+    }
+
+    if let Ok(mut last_cleanup) = HTTP1_FALLBACK_LAST_CLEANUP.write() {
+        if last_cleanup
+            .as_ref()
+            .is_some_and(|last| now.duration_since(*last) < HTTP1_FALLBACK_CLEANUP_INTERVAL)
+        {
+            return;
+        }
+        *last_cleanup = Some(now);
+        if let Ok(mut fallbacks) = HTTP1_FALLBACKS.write() {
+            fallbacks.retain(|_, expires_at| *expires_at > now);
+        }
+    }
+}
+
+pub(super) fn mark_http1_fallback(unsafe_ssl: bool, dns_servers: &[String], pool_partition: &str) {
+    if let Ok(mut fallbacks) = HTTP1_FALLBACKS.write() {
+        fallbacks.insert(
+            fallback_key(unsafe_ssl, dns_servers, pool_partition),
+            std::time::Instant::now() + HTTP1_FALLBACK_TTL,
+        );
+    }
+}
+
+pub(super) fn is_retryable_http2_error(err: &ClientError) -> bool {
+    let source_text = collect_error_source_chain(err)
+        .join(" | ")
+        .to_ascii_lowercase();
+    let err_text = err.to_string().to_ascii_lowercase();
+    let err_debug = format!("{err:?}").to_ascii_lowercase();
+    source_text.contains("http2 error")
+        || source_text.contains("connection closed before message completed")
+        || source_text.contains("stream error")
+        || err_text.contains("http2")
+        || err_debug.contains("http2")
+        || err_debug.contains("reset(streamid")
+}
+
+async fn send_pooled_request_with_protocol(
+    request: Request<BoxBody>,
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+    protocol: ClientProtocolPreference,
+) -> Result<hyper::Response<BoxBody>, ClientError> {
+    let permit = get_upstream_limiter(unsafe_ssl, dns_servers, pool_partition)
+        .acquire_owned()
+        .await
+        .expect("upstream limiter should not be closed");
+
+    let response = get_https_client(unsafe_ssl, dns_servers, pool_partition, protocol)
+        .request(request)
+        .await?;
+    Ok(response.map(|body| UpstreamPermitBody::new(body, permit).boxed()))
+}
+
 pub(super) async fn send_pooled_request(
     request: Request<BoxBody>,
     unsafe_ssl: bool,
     dns_servers: &[String],
     pool_partition: &str,
-) -> Result<hyper::Response<Incoming>, ClientError> {
-    get_https_client(unsafe_ssl, dns_servers, pool_partition)
-        .request(request)
+) -> Result<hyper::Response<BoxBody>, ClientError> {
+    let protocol = if should_prefer_http1_upstream(unsafe_ssl, dns_servers, pool_partition) {
+        ClientProtocolPreference::Http1Only
+    } else {
+        ClientProtocolPreference::Auto
+    };
+    send_pooled_request_with_protocol(request, unsafe_ssl, dns_servers, pool_partition, protocol)
         .await
+}
+
+pub(super) async fn send_pooled_request_http1_only(
+    request: Request<BoxBody>,
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> Result<hyper::Response<BoxBody>, ClientError> {
+    send_pooled_request_with_protocol(
+        request,
+        unsafe_ssl,
+        dns_servers,
+        pool_partition,
+        ClientProtocolPreference::Http1Only,
+    )
+    .await
 }
 
 pub(super) fn classify_request_error(err: &ClientError) -> UpstreamRequestErrorInfo {
@@ -388,26 +640,38 @@ pub(super) fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientCo
     Arc::new(config)
 }
 
+pub(super) fn get_tls_client_config_without_alpn(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    ensure_crypto_provider();
+
+    let config = if unsafe_ssl {
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerifier))
+            .with_no_client_auth()
+    } else {
+        ClientConfig::builder()
+            .with_root_certificates(build_root_cert_store())
+            .with_no_client_auth()
+    };
+
+    Arc::new(config)
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     use hyper::header;
 
     // RFC7540: HTTP/2 禁止 hop-by-hop headers。
     // 同时移除 Connection 指定的额外 header。
-    let extra_to_remove: Vec<header::HeaderName> = headers
-        .get(header::CONNECTION)
-        .and_then(|v| v.to_str().ok())
-        .map(|conn| {
-            conn.split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .filter_map(|token| header::HeaderName::from_bytes(token.as_bytes()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    headers.remove(header::CONNECTION);
-    for name in extra_to_remove {
-        headers.remove(name);
+    if let Some(connection) = headers.remove(header::CONNECTION) {
+        if let Ok(connection) = connection.to_str() {
+            for token in connection
+                .split(',')
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+            {
+                headers.remove(token);
+            }
+        }
     }
     headers.remove("proxy-connection");
     headers.remove("keep-alive");
@@ -465,5 +729,29 @@ mod tests {
             classify_error_type_inner(true, Some(io::ErrorKind::Other), "tls handshake eof",),
             "REQUEST_TLS_FAILED"
         );
+    }
+
+    #[test]
+    fn marks_http1_fallback_for_partition() {
+        let pool_partition = "orig=example.com|target=https://example.com:443";
+        assert!(!should_prefer_http1_upstream(false, &[], pool_partition));
+        mark_http1_fallback(false, &[], pool_partition);
+        assert!(should_prefer_http1_upstream(false, &[], pool_partition));
+        assert!(!should_prefer_http1_upstream(
+            false,
+            &[],
+            "orig=other|target=https://other:443"
+        ));
+    }
+
+    #[tokio::test]
+    async fn releases_upstream_permit_when_body_drops() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let body = UpstreamPermitBody::new(http_body_util::Empty::<Bytes>::new(), permit);
+
+        assert!(semaphore.try_acquire().is_err());
+        drop(body);
+        assert!(semaphore.try_acquire().is_ok());
     }
 }

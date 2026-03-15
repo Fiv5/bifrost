@@ -4,22 +4,23 @@ use std::time::Instant;
 use crate::ensure_crypto_provider;
 #[cfg(feature = "http3")]
 use crate::http3::Http3Client;
-use crate::protocol::ProtocolDetector;
+use crate::protocol::{ProtocolDetector, TransportProtocol};
 use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Bytes, BytesMut};
-use http_body_util::{BodyExt, Empty};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
-use hyper::{Method, Request, Response};
+use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder as AutoServerBuilder;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
+use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, ServerConfig};
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, error, info, warn};
 
 mod bidirectional;
@@ -33,7 +34,7 @@ pub use self::bidirectional::{
 };
 pub use self::cert::SingleCertResolver;
 use self::host_rule::parse_host_rule;
-use self::io::CombinedAsyncRw;
+use self::io::{BufferedIo, CombinedAsyncRw};
 
 use super::handler::{
     build_connection_error_response, build_overridden_error_response, needs_body_processing,
@@ -57,8 +58,8 @@ use crate::utils::http_size::{
 };
 use crate::utils::logging::{format_rules_summary, RequestContext};
 use crate::utils::tee::{
-    create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
-    BodyCaptureHandle,
+    create_metrics_body, create_request_tee_body, create_sse_tee_body, create_tee_body_with_store,
+    store_request_body, BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
 
@@ -92,6 +93,25 @@ pub fn get_tls_client_config_http1_only(unsafe_ssl: bool) -> Arc<ClientConfig> {
     client::get_tls_client_config_http1_only(unsafe_ssl)
 }
 
+pub fn get_tls_client_config_without_alpn(unsafe_ssl: bool) -> Arc<ClientConfig> {
+    client::get_tls_client_config_without_alpn(unsafe_ssl)
+}
+
+fn is_standard_tls_intercept_port(port: u16) -> bool {
+    matches!(port, 443 | 8443)
+}
+
+fn is_explicit_tls_intercept_override(
+    host: &str,
+    client_app: Option<&str>,
+    tls_intercept_config: &TlsInterceptConfig,
+    resolved_rules: &ResolvedRules,
+) -> bool {
+    resolved_rules.tls_intercept == Some(true)
+        || is_domain_included(host, &tls_intercept_config.intercept_include)
+        || is_app_included(client_app, &tls_intercept_config.app_intercept_include)
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     client::sanitize_upstream_headers(headers)
 }
@@ -102,13 +122,30 @@ pub(super) fn classify_request_error(
     client::classify_request_error(err)
 }
 
+pub(super) fn is_retryable_http2_error(err: &hyper_util::client::legacy::Error) -> bool {
+    client::is_retryable_http2_error(err)
+}
+
+pub(super) fn mark_http1_fallback(unsafe_ssl: bool, dns_servers: &[String], pool_partition: &str) {
+    client::mark_http1_fallback(unsafe_ssl, dns_servers, pool_partition)
+}
+
 pub(super) async fn send_pooled_request(
     request: Request<BoxBody>,
     unsafe_ssl: bool,
     dns_servers: &[String],
     pool_partition: &str,
-) -> std::result::Result<Response<Incoming>, hyper_util::client::legacy::Error> {
+) -> std::result::Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
     client::send_pooled_request(request, unsafe_ssl, dns_servers, pool_partition).await
+}
+
+pub(super) async fn send_pooled_request_http1_only(
+    request: Request<BoxBody>,
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> std::result::Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
+    client::send_pooled_request_http1_only(request, unsafe_ssl, dns_servers, pool_partition).await
 }
 
 fn build_upstream_pool_partition(
@@ -200,7 +237,7 @@ pub async fn handle_connect(
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
 
-    let intercept = should_intercept_tls_for_client(
+    let mut intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
         ctx.client_ip
@@ -210,6 +247,26 @@ pub async fn handle_connect(
         &tls_config,
         &resolved_rules,
     );
+
+    if intercept
+        && !is_standard_tls_intercept_port(port)
+        && !is_explicit_tls_intercept_override(
+            &host,
+            ctx.client_app.as_deref(),
+            tls_intercept_config,
+            &resolved_rules,
+        )
+    {
+        intercept = false;
+        if verbose_logging {
+            debug!(
+                "[{}] TLS interception skipped for {}:{} (non-standard TLS port without explicit override)",
+                ctx.id_str(),
+                host,
+                port
+            );
+        }
+    }
 
     if intercept {
         if verbose_logging {
@@ -369,7 +426,7 @@ pub async fn handle_connect(
         );
     }
 
-    let req_id = ctx.id_str();
+    let req_id = ctx.id_str().to_string();
     let verbose = verbose_logging;
     let client_ip = ctx.client_ip.clone();
     let client_app = ctx.client_app.clone();
@@ -391,7 +448,7 @@ pub async fn handle_connect(
             .increment_requests_by_type(TrafficType::Tunnel);
 
         let conn_info = ConnectionInfo::new(
-            req_id.clone(),
+            req_id.to_string(),
             host.clone(),
             port,
             false,
@@ -403,7 +460,7 @@ pub async fn handle_connect(
         state.connection_registry.register(conn_info);
 
         let mut record = TrafficRecord::new(
-            req_id.clone(),
+            req_id.to_string(),
             "CONNECT".to_string(),
             format!("tunnel://{}:{}", host, port),
         );
@@ -509,7 +566,7 @@ async fn handle_tls_interception(
     let alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let server_config = tls_config.resolve_server_config(original_host, &alpn_protocols)?;
 
-    let req_id = ctx.id_str();
+    let req_id = ctx.id_str().to_string();
     let verbose = verbose_logging;
     let original_host_owned = original_host.to_string();
     let client_ip = ctx.client_ip.clone();
@@ -526,7 +583,7 @@ async fn handle_tls_interception(
             .increment_connections_by_type(TrafficType::Https);
 
         let conn_info = ConnectionInfo::new(
-            req_id.clone(),
+            req_id.to_string(),
             original_host_owned.clone(),
             original_port,
             true,
@@ -723,13 +780,44 @@ async fn tls_intercept_tunnel_with_cancel(
     client_path: Option<String>,
 ) -> Result<bool> {
     let acceptor = TlsAcceptor::from(server_config);
-    let client_tls = acceptor
+    let mut client_tls = acceptor
         .accept(TokioIo::new(upgraded))
         .await
         .map_err(|e| BifrostError::Tls(format!("TLS accept failed: {e}")))?;
+    let client_alpn = client_tls.get_ref().1.alpn_protocol().map(|p| p.to_vec());
+    let should_sniff_payload = !is_standard_tls_intercept_port(original_port);
 
     if verbose_logging {
-        debug!("[{}] TLS handshake with client completed", req_id);
+        debug!(
+            "[{}] TLS handshake with client completed (alpn={})",
+            req_id,
+            format_tls_alpn(client_alpn.as_deref())
+        );
+    }
+
+    let initial_payload = if should_sniff_payload {
+        sniff_tls_client_payload(&mut client_tls, req_id, verbose_logging).await?
+    } else {
+        BytesMut::new()
+    };
+
+    if !is_http_alpn(client_alpn.as_deref())
+        || (should_sniff_payload && !looks_like_http_payload(&initial_payload))
+    {
+        return tunnel_intercepted_non_http_tls_with_cancel(
+            client_tls,
+            initial_payload,
+            RawTlsTunnelContext {
+                original_host: original_host.to_string(),
+                original_port,
+                unsafe_ssl,
+                verbose_logging,
+                req_id: req_id.to_string(),
+                admin_state,
+                cancel_rx,
+            },
+        )
+        .await;
     }
 
     let original_host_for_requests = original_host.to_string();
@@ -772,6 +860,7 @@ async fn tls_intercept_tunnel_with_cancel(
         }
     });
 
+    let client_tls = BufferedIo::new(client_tls, initial_payload);
     let (client_read, client_write) = tokio::io::split(client_tls);
     let client_io = TokioIo::new(CombinedAsyncRw::new(client_read, client_write));
 
@@ -811,6 +900,220 @@ async fn tls_intercept_tunnel_with_cancel(
             Ok(true)
         }
     }
+}
+
+fn is_http_alpn(alpn: Option<&[u8]>) -> bool {
+    matches!(alpn, Some(b"h2") | Some(b"http/1.1"))
+}
+
+fn format_tls_alpn(alpn: Option<&[u8]>) -> String {
+    match alpn {
+        Some(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        None => "none".to_string(),
+    }
+}
+
+struct RawTlsTunnelContext {
+    original_host: String,
+    original_port: u16,
+    unsafe_ssl: bool,
+    verbose_logging: bool,
+    req_id: String,
+    admin_state: Option<Arc<AdminState>>,
+    cancel_rx: oneshot::Receiver<()>,
+}
+
+async fn tunnel_intercepted_non_http_tls_with_cancel(
+    client_tls: tokio_rustls::server::TlsStream<TokioIo<Upgraded>>,
+    initial_payload: BytesMut,
+    ctx: RawTlsTunnelContext,
+) -> Result<bool> {
+    let RawTlsTunnelContext {
+        original_host,
+        original_port,
+        unsafe_ssl,
+        verbose_logging,
+        req_id,
+        admin_state,
+        cancel_rx,
+    } = ctx;
+
+    if verbose_logging {
+        info!(
+            "[{}] Intercepted TLS payload is not HTTP; forwarding as raw TLS stream to {}:{}",
+            req_id, original_host, original_port
+        );
+    }
+
+    let target_stream = TcpStream::connect(format!("{}:{}", original_host, original_port))
+        .await
+        .map_err(|e| {
+            BifrostError::Network(format!(
+                "Failed to connect raw TLS upstream {}:{}: {}",
+                original_host, original_port, e
+            ))
+        })?;
+    if let Err(err) = target_stream.set_nodelay(true) {
+        debug!(
+            "[{}] Failed to set TCP_NODELAY on raw TLS upstream {}:{}: {}",
+            req_id, original_host, original_port, err
+        );
+    }
+
+    let server_name = ServerName::try_from(original_host.clone())
+        .map_err(|e| BifrostError::Tls(format!("Invalid server name {original_host}: {e}")))?;
+    let connector = TlsConnector::from(get_tls_client_config_without_alpn(unsafe_ssl));
+    let upstream_tls = connector
+        .connect(server_name, target_stream)
+        .await
+        .map_err(|e| {
+            BifrostError::Tls(format!(
+                "Failed to establish raw TLS upstream {}:{}: {}",
+                original_host, original_port, e
+            ))
+        })?;
+
+    let (mut client_read, mut client_write) = tokio::io::split(client_tls);
+    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
+
+    let admin_state_send = admin_state.clone();
+    let admin_state_recv = admin_state.clone();
+    let req_id_send = req_id.to_string();
+    let req_id_recv = req_id.to_string();
+
+    let client_to_upstream = async move {
+        let mut buf = [0u8; 16 * 1024];
+        if !initial_payload.is_empty() {
+            upstream_write.write_all(&initial_payload).await?;
+            if let Some(ref state) = admin_state_send {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Https, initial_payload.len() as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_send,
+                    bifrost_admin::FrameDirection::Send,
+                    initial_payload.len() as u64,
+                );
+            }
+        }
+        loop {
+            let n = client_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            upstream_write.write_all(&buf[..n]).await?;
+            if let Some(ref state) = admin_state_send {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(TrafficType::Https, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_send,
+                    bifrost_admin::FrameDirection::Send,
+                    n as u64,
+                );
+            }
+        }
+        upstream_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    let upstream_to_client = async move {
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = upstream_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            client_write.write_all(&buf[..n]).await?;
+            if let Some(ref state) = admin_state_recv {
+                state
+                    .metrics_collector
+                    .add_bytes_received_by_type(TrafficType::Https, n as u64);
+                state.connection_monitor.update_traffic(
+                    &req_id_recv,
+                    bifrost_admin::FrameDirection::Receive,
+                    n as u64,
+                );
+            }
+        }
+        client_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    tokio::pin!(client_to_upstream);
+    tokio::pin!(upstream_to_client);
+
+    tokio::select! {
+        result = &mut client_to_upstream => {
+            match result {
+                Ok(()) => Ok(false),
+                Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof) => Ok(false),
+                Err(err) => Err(BifrostError::Network(format!("Raw TLS client->upstream forwarding error: {err}"))),
+            }
+        }
+        result = &mut upstream_to_client => {
+            match result {
+                Ok(()) => Ok(false),
+                Err(err) if matches!(err.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof) => Ok(false),
+                Err(err) => Err(BifrostError::Network(format!("Raw TLS upstream->client forwarding error: {err}"))),
+            }
+        }
+        _ = cancel_rx => {
+            if verbose_logging {
+                debug!("[{}] Raw TLS intercept tunnel cancelled by config change", req_id);
+            }
+            Ok(true)
+        }
+    }
+}
+
+async fn sniff_tls_client_payload<T>(
+    client_tls: &mut T,
+    req_id: &str,
+    verbose_logging: bool,
+) -> Result<BytesMut>
+where
+    T: tokio::io::AsyncRead + Unpin,
+{
+    let mut sniff_buf = [0u8; 24];
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        client_tls.read(&mut sniff_buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) if n > 0 => Ok(BytesMut::from(&sniff_buf[..n])),
+        Ok(Ok(_)) => Ok(BytesMut::new()),
+        Ok(Err(err)) => Err(BifrostError::Network(format!(
+            "Failed to sniff intercepted TLS payload: {err}"
+        ))),
+        Err(_) => {
+            if verbose_logging {
+                debug!(
+                    "[{}] Timed out while sniffing intercepted TLS payload; treating as non-HTTP on non-standard port",
+                    req_id
+                );
+            }
+            Ok(BytesMut::new())
+        }
+    }
+}
+
+fn looks_like_http_payload(payload: &BytesMut) -> bool {
+    if payload.is_empty() {
+        return false;
+    }
+
+    matches!(
+        ProtocolDetector::detect_protocol_type(payload.as_ref()),
+        Some(
+            TransportProtocol::Http1
+                | TransportProtocol::Http2
+                | TransportProtocol::WebSocket
+                | TransportProtocol::Sse
+                | TransportProtocol::Grpc
+        )
+    )
 }
 
 fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
@@ -866,6 +1169,63 @@ fn is_likely_text_content_type(content_type: &str) -> bool {
         return true;
     }
     false
+}
+
+fn is_likely_binary_content_type(content_type: &str) -> bool {
+    let ct = content_type.trim();
+    if ct.is_empty() || is_likely_text_content_type(ct) {
+        return false;
+    }
+
+    ct.starts_with("application/octet-stream")
+        || ct.starts_with("application/pdf")
+        || ct.starts_with("application/zip")
+        || ct.starts_with("application/gzip")
+        || ct.starts_with("application/x-gzip")
+        || ct.starts_with("application/x-tar")
+        || ct.starts_with("application/x-rar")
+        || ct.starts_with("application/x-7z")
+        || ct.starts_with("application/vnd.rar")
+        || ct.starts_with("application/vnd.ms-cab-compressed")
+        || ct.starts_with("application/x-bittorrent")
+        || ct.starts_with("application/wasm")
+        || ct.starts_with("application/font-")
+        || ct.starts_with("application/vnd.ms-fontobject")
+        || ct.starts_with("audio/")
+        || ct.starts_with("video/")
+        || ct.starts_with("font/")
+        || ct.contains("protobuf")
+        || ct.contains("grpc")
+}
+
+fn should_use_binary_performance_mode(
+    res_parts: &hyper::http::response::Parts,
+    binary_traffic_performance_mode: bool,
+) -> bool {
+    if !binary_traffic_performance_mode {
+        return false;
+    }
+
+    let content_type_lower = res_parts
+        .headers
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+    if content_type_lower.starts_with("image/") {
+        return false;
+    }
+    let has_attachment = res_parts
+        .headers
+        .get(hyper::header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("attachment"))
+        .unwrap_or(false);
+    if !has_attachment && !is_likely_binary_content_type(&content_type_lower) {
+        return false;
+    }
+
+    has_attachment || is_likely_binary_content_type(&content_type_lower)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1746,6 +2106,14 @@ async fn handle_intercepted_request_with_protocol(
         .and_then(|v| v.to_str().ok())
         .map(|v| v.to_lowercase().starts_with("text/event-stream"))
         .unwrap_or(false);
+    let binary_traffic_performance_mode = admin_state
+        .as_ref()
+        .map(|state| state.get_binary_traffic_performance_mode())
+        .unwrap_or(false);
+    let skip_binary_recording =
+        should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
+            && !is_websocket
+            && !is_sse;
 
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
@@ -1763,7 +2131,7 @@ async fn handle_intercepted_request_with_protocol(
     if let Some(body) = h3_buffered_body.clone() {
         pre_read_res = Some((body.to_vec(), 0));
     }
-    if needs_res_body_read && needs_processing && !is_sse {
+    if needs_res_body_read && needs_processing && !is_sse && !skip_binary_recording {
         if let Some(len) = res_content_length {
             if len > max_body_buffer_size {
                 res_body_too_large = true;
@@ -1834,8 +2202,10 @@ async fn handle_intercepted_request_with_protocol(
         }
     }
 
-    let skip_body_processing =
-        is_sse || !needs_processing || (res_body_too_large && needs_res_body_read);
+    let skip_body_processing = skip_binary_recording
+        || is_sse
+        || !needs_processing
+        || (res_body_too_large && needs_res_body_read);
 
     if needs_res_body_read && res_body_too_large {
         let size_display = res_content_length
@@ -1867,101 +2237,107 @@ async fn handle_intercepted_request_with_protocol(
                 .metrics_collector
                 .increment_requests_by_type(traffic_type);
 
-            let mut record =
-                TrafficRecord::new(record_id.clone(), method_str.clone(), original_uri.clone());
-            record.status = res_parts.status.as_u16();
-            record.content_type = res_parts
-                .headers
-                .get(hyper::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let res_headers: Vec<(String, String)> = res_parts
-                .headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect();
-            record.request_size =
-                calculate_request_size(&method_str, &original_uri, &req_headers, request_body_size);
-            record.response_size = 0;
-            record.duration_ms = total_ms;
-            record.host = original_host.to_string();
-            record.timing = Some(RequestTiming {
-                dns_ms,
-                connect_ms: None,
-                tls_ms,
-                send_ms: None,
-                wait_ms: Some(wait_ms),
-                receive_ms: None,
-                total_ms,
-            });
-            record.request_headers = Some(final_req_headers.clone());
-            record.response_headers = Some(original_res_headers.clone());
-            if res_headers != original_res_headers {
-                record.actual_response_headers = Some(res_headers.clone());
-            }
-            record.original_request_headers = Some(original_req_headers.clone());
-            if actual_target_host != original_host || actual_target_port != original_port {
-                let actual_scheme = if actual_use_http { "http" } else { "https" };
-                let actual_url = if (actual_use_http && actual_target_port == 80)
-                    || (!actual_use_http && actual_target_port == 443)
-                {
-                    format!("{}://{}{}", actual_scheme, actual_target_host, path)
+            if !skip_binary_recording {
+                let mut record =
+                    TrafficRecord::new(record_id.clone(), method_str.clone(), original_uri.clone());
+                record.status = res_parts.status.as_u16();
+                record.content_type = res_parts
+                    .headers
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let res_headers: Vec<(String, String)> = res_parts
+                    .headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                    .collect();
+                record.request_size = calculate_request_size(
+                    &method_str,
+                    &original_uri,
+                    &req_headers,
+                    request_body_size,
+                );
+                record.response_size = 0;
+                record.duration_ms = total_ms;
+                record.host = original_host.to_string();
+                record.timing = Some(RequestTiming {
+                    dns_ms,
+                    connect_ms: None,
+                    tls_ms,
+                    send_ms: None,
+                    wait_ms: Some(wait_ms),
+                    receive_ms: None,
+                    total_ms,
+                });
+                record.request_headers = Some(final_req_headers.clone());
+                record.response_headers = Some(original_res_headers.clone());
+                if res_headers != original_res_headers {
+                    record.actual_response_headers = Some(res_headers.clone());
+                }
+                record.original_request_headers = Some(original_req_headers.clone());
+                if actual_target_host != original_host || actual_target_port != original_port {
+                    let actual_scheme = if actual_use_http { "http" } else { "https" };
+                    let actual_url = if (actual_use_http && actual_target_port == 80)
+                        || (!actual_use_http && actual_target_port == 443)
+                    {
+                        format!("{}://{}{}", actual_scheme, actual_target_host, path)
+                    } else {
+                        format!(
+                            "{}://{}:{}{}",
+                            actual_scheme, actual_target_host, actual_target_port, path
+                        )
+                    };
+                    record.actual_url = Some(actual_url);
+                    record.actual_host = Some(actual_target_host.clone());
+                }
+                record.request_content_type = final_req_headers
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+                    .map(|(_, v)| v.clone());
+                record.client_ip = client_ip.clone();
+                record.client_app = client_app.clone();
+                record.client_pid = client_pid;
+                record.client_path = client_path.clone();
+
+                if is_websocket {
+                    record.protocol = "wss".to_string();
+                }
+
+                if is_sse {
+                    record.set_sse();
+                    state.sse_hub.register(&record_id);
+                }
+
+                record.has_rule_hit = has_rules;
+                record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
+
+                record.request_body_ref = if let Some(ref capture) = req_body_capture {
+                    capture.take()
                 } else {
-                    format!(
-                        "{}://{}:{}{}",
-                        actual_scheme, actual_target_host, actual_target_port, path
+                    store_request_body(
+                        &admin_state,
+                        &record_id,
+                        &body_bytes,
+                        req_content_encoding.as_deref(),
                     )
                 };
-                record.actual_url = Some(actual_url);
-                record.actual_host = Some(actual_target_host.clone());
-            }
-            record.request_content_type = final_req_headers
-                .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-                .map(|(_, v)| v.clone());
-            record.client_ip = client_ip.clone();
-            record.client_app = client_app.clone();
-            record.client_pid = client_pid;
-            record.client_path = client_path.clone();
 
-            if is_websocket {
-                record.protocol = "wss".to_string();
-            }
-
-            if is_sse {
-                record.set_sse();
-                state.sse_hub.register(&record_id);
-            }
-
-            record.has_rule_hit = has_rules;
-            record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
-
-            record.request_body_ref = if let Some(ref capture) = req_body_capture {
-                capture.take()
-            } else {
-                store_request_body(
-                    &admin_state,
-                    &record_id,
-                    &body_bytes,
-                    req_content_encoding.as_deref(),
-                )
-            };
-
-            if is_sse {
-                if let Some(ref body_store) = state.body_store {
-                    match body_store.read().start_stream(&record_id, "sse_raw") {
-                        Ok(writer) => {
-                            record.response_body_ref = Some(writer.body_ref());
-                            sse_stream_writer = Some(writer);
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                if is_sse {
+                    if let Some(ref body_store) = state.body_store {
+                        match body_store.read().start_stream(&record_id, "sse_raw") {
+                            Ok(writer) => {
+                                record.response_body_ref = Some(writer.body_ref());
+                                sse_stream_writer = Some(writer);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, record_id = %record_id, "failed to start sse raw stream writer");
+                            }
                         }
                     }
                 }
-            }
 
-            state.record_traffic(record);
+                state.record_traffic(record);
+            }
         }
 
         if let Some(delay_ms) = resolved_rules.res_delay {
@@ -1991,18 +2367,22 @@ async fn handle_intercepted_request_with_protocol(
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         } else {
-            let response_headers_size =
-                calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
             let res_body = res_body_stream.take().unwrap();
-            let tee_body = create_tee_body_with_store(
-                res_body,
-                admin_state.clone(),
-                record_id,
-                Some(max_body_buffer_size),
-                res_content_encoding.clone(),
-                Some(traffic_type),
-                response_headers_size,
-            );
+            let tee_body = if skip_binary_recording {
+                create_metrics_body(res_body, admin_state.clone(), Some(traffic_type))
+            } else {
+                let response_headers_size =
+                    calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
+                create_tee_body_with_store(
+                    res_body,
+                    admin_state.clone(),
+                    record_id,
+                    Some(max_body_buffer_size),
+                    res_content_encoding.clone(),
+                    Some(traffic_type),
+                    response_headers_size,
+                )
+            };
             let final_body = wrap_throttled_body(tee_body, resolved_rules.res_speed);
             let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
@@ -2442,7 +2822,10 @@ async fn handle_intercepted_websocket(
             extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
         }
     } else {
-        let tls_config = get_tls_client_config(unsafe_ssl);
+        // Real-world WSS endpoints commonly expect the classic HTTP/1.1 Upgrade flow even when
+        // the TLS endpoint also advertises h2. Forcing HTTP/1.1 here matches browser behavior
+        // more closely and avoids hanging on servers that do not implement RFC 8441.
+        let tls_config = get_tls_client_config_http1_only(unsafe_ssl);
         let connector = TlsConnector::from(tls_config);
 
         let server_name = match ServerName::try_from(target_host.to_string()) {
@@ -2467,81 +2850,59 @@ async fn handle_intercepted_websocket(
             }
         };
 
-        match tls_stream.get_ref().1.alpn_protocol() {
-            Some(b"h2") => match connect_upstream_websocket_h2(
-                &req,
-                &target_host,
-                target_port,
-                req_id,
-                tls_stream,
-            )
-            .await
-            {
-                Ok(handshake) => handshake,
-                Err(e) => {
-                    error!("[{}] {}", req_id, e);
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"WebSocket handshake failed".to_vec()))
-                        .unwrap());
-                }
-            },
-            _ => {
-                let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(tls_stream);
-                let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
-                let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+        let stream: Box<dyn AsyncReadWrite + Send + Unpin> = Box::new(tls_stream);
+        let handshake = build_websocket_handshake_request(&req, &target_host, target_port);
+        let (mut stream_read, mut stream_write) = tokio::io::split(stream);
 
-                if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
-                    error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"Bad Gateway".to_vec()))
-                        .unwrap());
-                }
+        if let Err(e) = stream_write.write_all(handshake.as_bytes()).await {
+            error!("[{}] Failed to send WebSocket handshake: {}", req_id, e);
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"Bad Gateway".to_vec()))
+                .unwrap());
+        }
 
-                let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
-                    &mut stream_read,
-                    websocket_handshake_max_header_size,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        error!(
-                            "[{}] Failed to read WebSocket handshake response: {}",
-                            req_id, e
-                        );
-                        return Ok(Response::builder()
-                            .status(502)
-                            .body(full_body(b"Bad Gateway".to_vec()))
-                            .unwrap());
-                    }
-                };
-
-                if upstream_resp.status_code != 101 {
-                    error!(
-                        "[{}] WebSocket handshake failed: {} {}",
-                        req_id, upstream_resp.status_code, upstream_resp.status_text
-                    );
-                    return Ok(Response::builder()
-                        .status(502)
-                        .body(full_body(b"WebSocket handshake failed".to_vec()))
-                        .unwrap());
-                }
-
-                UpstreamWebSocketHandshake {
-                    stream: Box::new(stream_read.unsplit(stream_write)),
-                    leftover: upstream_leftover,
-                    headers: upstream_resp.headers.clone(),
-                    sec_accept: upstream_resp
-                        .header("Sec-WebSocket-Accept")
-                        .map(|v| v.to_string()),
-                    protocol: upstream_resp
-                        .header("Sec-WebSocket-Protocol")
-                        .map(ToOwned::to_owned),
-                    extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
-                }
+        let (upstream_resp, upstream_leftover) = match read_http1_response_with_leftover(
+            &mut stream_read,
+            websocket_handshake_max_header_size,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                error!(
+                    "[{}] Failed to read WebSocket handshake response: {}",
+                    req_id, e
+                );
+                return Ok(Response::builder()
+                    .status(502)
+                    .body(full_body(b"Bad Gateway".to_vec()))
+                    .unwrap());
             }
+        };
+
+        if upstream_resp.status_code != 101 {
+            error!(
+                "[{}] WebSocket handshake failed: {} {}",
+                req_id, upstream_resp.status_code, upstream_resp.status_text
+            );
+            return Ok(Response::builder()
+                .status(502)
+                .body(full_body(b"WebSocket handshake failed".to_vec()))
+                .unwrap());
+        }
+
+        UpstreamWebSocketHandshake {
+            stream: Box::new(stream_read.unsplit(stream_write)),
+            leftover: upstream_leftover,
+            headers: upstream_resp.headers.clone(),
+            sec_accept: upstream_resp
+                .header("Sec-WebSocket-Accept")
+                .map(|v| v.to_string()),
+            protocol: upstream_resp
+                .header("Sec-WebSocket-Protocol")
+                .map(ToOwned::to_owned),
+            extensions: header_values(&upstream_resp, "Sec-WebSocket-Extensions"),
         }
     };
 
@@ -2843,124 +3204,6 @@ struct UpstreamWebSocketHandshake {
     sec_accept: Option<String>,
     protocol: Option<String>,
     extensions: Vec<String>,
-}
-
-async fn connect_upstream_websocket_h2<S>(
-    req: &Request<Incoming>,
-    target_host: &str,
-    target_port: u16,
-    req_id: &str,
-    stream: S,
-) -> std::result::Result<UpstreamWebSocketHandshake, String>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
-        .handshake(TokioIo::new(stream))
-        .await
-        .map_err(|e| format!("Failed to establish upstream h2 connection: {e}"))?;
-
-    let req_id_owned = req_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            debug!(
-                "[{}] Upstream h2 websocket connection closed: {}",
-                req_id_owned, e
-            );
-        }
-    });
-
-    let path = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
-    let authority_host = if target_host.contains(':') && !target_host.starts_with('[') {
-        format!("[{}]", target_host)
-    } else {
-        target_host.to_string()
-    };
-    let authority = match target_port {
-        443 => authority_host,
-        _ => format!("{authority_host}:{target_port}"),
-    };
-    let upstream_uri = format!("https://{}{}", authority, path);
-
-    let mut builder = Request::builder()
-        .method(Method::CONNECT)
-        .uri(upstream_uri)
-        .version(hyper::Version::HTTP_2)
-        .extension(hyper::ext::Protocol::from_static("websocket"));
-
-    for (name, value) in req.headers().iter() {
-        let n = name.as_str();
-        if n.eq_ignore_ascii_case("host")
-            || n.eq_ignore_ascii_case("upgrade")
-            || n.eq_ignore_ascii_case("connection")
-            || n.eq_ignore_ascii_case("sec-websocket-key")
-            || n.eq_ignore_ascii_case("sec-websocket-version")
-            || n.eq_ignore_ascii_case("content-length")
-            || n.eq_ignore_ascii_case("transfer-encoding")
-            || n.eq_ignore_ascii_case("proxy-connection")
-            || n.eq_ignore_ascii_case("keep-alive")
-            || n.eq_ignore_ascii_case("te")
-            || n.eq_ignore_ascii_case("trailer")
-        {
-            continue;
-        }
-
-        builder = builder.header(name, value);
-    }
-
-    let request = builder
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| format!("Failed to build upstream h2 websocket request: {e}"))?;
-
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(|e| format!("Failed to send upstream h2 websocket request: {e}"))?;
-
-    if response.status() != hyper::StatusCode::OK {
-        return Err(format!(
-            "Upstream h2 websocket handshake failed: {}",
-            response.status()
-        ));
-    }
-
-    let protocol = response
-        .headers()
-        .get("Sec-WebSocket-Protocol")
-        .and_then(|v| v.to_str().ok())
-        .map(ToOwned::to_owned);
-    let extensions = response
-        .headers()
-        .get_all("Sec-WebSocket-Extensions")
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(ToOwned::to_owned))
-        .collect::<Vec<_>>();
-    let headers = response
-        .headers()
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_string(), v.to_string()))
-        })
-        .collect::<Vec<_>>();
-    let upgraded = hyper::upgrade::on(response)
-        .await
-        .map_err(|e| format!("Failed to upgrade upstream h2 websocket stream: {e}"))?;
-
-    Ok(UpstreamWebSocketHandshake {
-        stream: Box::new(TokioIo::new(upgraded)),
-        leftover: BytesMut::new(),
-        headers,
-        sec_accept: None,
-        protocol,
-        extensions,
-    })
 }
 
 fn build_redirect_response(status_code: u16, location: &str) -> Response<BoxBody> {
@@ -3269,6 +3512,28 @@ mod tests {
     fn test_parse_connect_authority_multiple_colons() {
         let result = parse_connect_authority("example.com:443:extra");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_http_alpn_matches_supported_http_protocols() {
+        assert!(is_http_alpn(Some(b"h2")));
+        assert!(is_http_alpn(Some(b"http/1.1")));
+        assert!(!is_http_alpn(None));
+        assert!(!is_http_alpn(Some(b"stun.turn")));
+    }
+
+    #[test]
+    fn test_looks_like_http_payload_detects_http_preface() {
+        assert!(looks_like_http_payload(&BytesMut::from(
+            &b"GET / HTTP/1.1\r\nHost: example.com\r\n"[..]
+        )));
+        assert!(looks_like_http_payload(&BytesMut::from(
+            &b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"[..]
+        )));
+        assert!(!looks_like_http_payload(&BytesMut::from(
+            &b"\x01\x02\x03\x04"[..]
+        )));
+        assert!(!looks_like_http_payload(&BytesMut::new()));
     }
 
     #[test]

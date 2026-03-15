@@ -126,4 +126,80 @@ mod unix_tests {
             );
         }
     }
+
+    #[test]
+    fn start_recreates_missing_expected_data_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let log_dir = tmp.path().join("logs");
+        std::fs::create_dir_all(data_dir.join("rules")).unwrap();
+        std::fs::create_dir_all(&log_dir).unwrap();
+
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+
+        let output = Command::new(env!("CARGO_BIN_EXE_bifrost"))
+            .env("BIFROST_DATA_DIR", &data_dir)
+            .arg("--log-dir")
+            .arg(&log_dir)
+            .arg("start")
+            .arg("-p")
+            .arg(port.to_string())
+            .arg("-H")
+            .arg("127.0.0.1")
+            .arg("--daemon")
+            .arg("--skip-cert-check")
+            .arg("--no-intercept")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "start failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let runtime_file = data_dir.join("runtime.json");
+        for _ in 0..200 {
+            if runtime_file.exists() {
+                break;
+            }
+            sleep(Duration::from_millis(50));
+        }
+        assert!(runtime_file.exists(), "runtime.json not created");
+
+        for subdir in [
+            "rules",
+            "values",
+            "certs",
+            "traffic",
+            "body_cache",
+            "logs",
+            "replay",
+            "scripts",
+            "scripts/request",
+            "scripts/response",
+            "scripts/decode",
+            "scripts/_sandbox",
+        ] {
+            assert!(
+                data_dir.join(subdir).is_dir(),
+                "expected subdir to exist after start: {subdir}"
+            );
+        }
+
+        let stop_output = Command::new(env!("CARGO_BIN_EXE_bifrost"))
+            .env("BIFROST_DATA_DIR", &data_dir)
+            .arg("stop")
+            .output()
+            .unwrap();
+        assert!(
+            stop_output.status.success(),
+            "stop failed: {} {}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr)
+        );
+    }
 }
