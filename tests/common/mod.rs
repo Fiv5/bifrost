@@ -370,8 +370,11 @@ impl MockH2TlsServer {
         let addr = listener.local_addr().unwrap();
 
         // Self-signed cert is enough because tests run proxy with unsafe_ssl=true.
-        let rcgen::CertifiedKey { cert, signing_key } =
-            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec![
+            "localhost".to_string(),
+            "intercepted.example.com".to_string(),
+        ])
+        .unwrap();
         let key_der = signing_key.serialize_der();
 
         let certs = vec![cert.der().clone()];
