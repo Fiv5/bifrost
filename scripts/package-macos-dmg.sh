@@ -16,7 +16,7 @@ fi
 
 APP_NAME="$(basename "${APP_PATH}")"
 VOLUME_NAME="${APP_NAME%.app}"
-OUTPUT_DIR="$(cd "$(dirname "${OUTPUT_DMG}")" && pwd)"
+OUTPUT_DIR_RAW="$(dirname "${OUTPUT_DMG}")"
 OUTPUT_NAME="$(basename "${OUTPUT_DMG}")"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/bifrost-dmg.XXXXXX")"
 STAGING_DIR="${TMP_ROOT}/staging"
@@ -31,7 +31,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${STAGING_DIR}" "${MOUNT_DIR}" "${OUTPUT_DIR}"
+mkdir -p "${STAGING_DIR}" "${MOUNT_DIR}" "${OUTPUT_DIR_RAW}"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR_RAW}" && pwd)"
 cp -R "${APP_PATH}" "${STAGING_DIR}/"
 ln -s /Applications "${STAGING_DIR}/Applications"
 
