@@ -194,6 +194,7 @@ struct PerformanceConfigResponse {
 }
 
 const SLOW_REFRESH_INTERVAL: u64 = 5;
+const PROCESS_CHECK_INTERVAL: Duration = Duration::from_secs(3);
 const CPU_HISTORY_SIZE: usize = 3600;
 const QPS_HISTORY_SIZE: usize = 60;
 const PUSH_STALE_TIMEOUT: Duration = Duration::from_secs(4);
@@ -248,6 +249,7 @@ struct App {
     performance_config: Option<PerformanceConfigResponse>,
     cli_proxy: Option<CliProxyStatus>,
     selected_tab: usize,
+    last_process_check: Instant,
     last_update: Instant,
     last_slow_refresh: Instant,
     refresh_count: u64,
@@ -284,6 +286,7 @@ impl App {
             performance_config: None,
             cli_proxy: None,
             selected_tab: 0,
+            last_process_check: Instant::now() - PROCESS_CHECK_INTERVAL,
             last_update: Instant::now(),
             last_slow_refresh: Instant::now() - Duration::from_secs(SLOW_REFRESH_INTERVAL),
             refresh_count: 0,
@@ -366,8 +369,14 @@ impl App {
     }
 
     fn refresh_with_options(&mut self, force_all: bool) {
-        self.pid = read_pid();
-        self.is_running = self.pid.map(is_process_running).unwrap_or(false);
+        if force_all
+            || !self.is_running
+            || self.last_process_check.elapsed() >= PROCESS_CHECK_INTERVAL
+        {
+            self.pid = read_pid();
+            self.is_running = self.pid.map(is_process_running).unwrap_or(false);
+            self.last_process_check = Instant::now();
+        }
 
         if !self.is_running {
             self.port = read_runtime_port().unwrap_or(9900);
@@ -383,19 +392,20 @@ impl App {
             self.last_slow_refresh.elapsed() >= Duration::from_secs(SLOW_REFRESH_INTERVAL);
         let push_healthy = self.push_is_healthy();
         let force_full = self.refresh_count == 0 || force_all;
+        let needs_rules_config = self.selected_tab == 1;
 
         let port = self.port;
         let fetch_agg_metrics = force_all && self.selected_tab == 2;
         let plan = FetchPlan {
             metrics: !push_healthy,
-            rules: need_slow_refresh || force_full,
-            values: (need_slow_refresh || force_full) && !push_healthy,
-            scripts: (need_slow_refresh || force_full) && !push_healthy,
-            config: (need_slow_refresh || force_full) && !push_healthy,
-            performance: (need_slow_refresh || force_full) && !push_healthy,
+            rules: needs_rules_config && (need_slow_refresh || force_full),
+            values: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            scripts: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            config: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
+            performance: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
             app_metrics: fetch_agg_metrics,
             host_metrics: fetch_agg_metrics,
-            cli_proxy: (need_slow_refresh || force_full) && !push_healthy,
+            cli_proxy: needs_rules_config && (need_slow_refresh || force_full) && !push_healthy,
         };
         let (
             metrics,
