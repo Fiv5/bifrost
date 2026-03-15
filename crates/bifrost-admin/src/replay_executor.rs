@@ -302,18 +302,16 @@ impl ReplayExecutor {
             )
             .await;
 
-        if let Some(request_id) = &request.request_id {
-            self.record_history(
-                request_id,
-                &traffic_id,
-                method,
-                url,
-                status,
-                duration_ms,
-                &request.rule_config,
-            )
-            .await;
-        }
+        self.record_history(
+            request.request_id.as_deref(),
+            &traffic_id,
+            method,
+            url,
+            status,
+            duration_ms,
+            &request.rule_config,
+        )
+        .await;
 
         info!(
             replay_id = %replay_id,
@@ -1104,7 +1102,7 @@ impl ReplayExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn record_history(
         &self,
-        request_id: &str,
+        request_id: Option<&str>,
         traffic_id: &str,
         method: &str,
         url: &str,
@@ -1114,7 +1112,7 @@ impl ReplayExecutor {
     ) {
         if let Some(ref replay_db) = self.admin_state.replay_db_store {
             let history = ReplayHistory::new(
-                Some(request_id.to_string()),
+                request_id.map(|id| id.to_string()),
                 traffic_id.to_string(),
                 method.to_string(),
                 url.to_string(),

@@ -142,6 +142,7 @@ export async function moveRequest(id: string, groupId?: string): Promise<void> {
 
 interface ListHistoryParams {
   request_id?: string;
+  binding?: 'unbound';
   limit?: number;
   offset?: number;
 }
@@ -150,6 +151,7 @@ export async function listHistory(params?: ListHistoryParams): Promise<HistoryRe
   const urlParams = new URLSearchParams();
   if (params) {
     if (params.request_id !== undefined) urlParams.append('request_id', params.request_id);
+    if (params.binding !== undefined) urlParams.append('binding', params.binding);
     if (params.limit !== undefined) urlParams.append('limit', String(params.limit));
     if (params.offset !== undefined) urlParams.append('offset', String(params.offset));
   }
@@ -157,9 +159,10 @@ export async function listHistory(params?: ListHistoryParams): Promise<HistoryRe
   return get<HistoryResponse>(`/replay/history${query ? `?${query}` : ''}`);
 }
 
-export async function countHistory(requestId?: string): Promise<CountResponse> {
+export async function countHistory(requestId?: string, binding?: 'unbound'): Promise<CountResponse> {
   const urlParams = new URLSearchParams();
   if (requestId !== undefined) urlParams.append('request_id', requestId);
+  if (binding !== undefined) urlParams.append('binding', binding);
   const query = urlParams.toString();
   return get<CountResponse>(`/replay/history/count${query ? `?${query}` : ''}`);
 }

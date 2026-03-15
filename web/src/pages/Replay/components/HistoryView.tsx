@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useRef } from "react";
-import { Input, Empty, Spin, Tag, theme, Typography } from "antd";
+import { Input, Empty, Pagination, Spin, Tag, theme, Typography } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import TrafficDetail from "../../../components/TrafficDetail";
@@ -153,6 +153,7 @@ export const HistoryView = () => {
 
   const {
     currentRequest,
+    historyFilter,
     allHistory,
     allHistoryTotal,
     loading,
@@ -161,11 +162,14 @@ export const HistoryView = () => {
     historyRequestBody,
     historyResponseBody,
     uiState,
+    loadAllHistory,
     updateUIState,
     selectHistoryForDetail,
   } = useReplayStore();
 
   const searchText = uiState.historySearchText;
+  const historyPage = uiState.historyPage;
+  const historyPageSize = uiState.historyPageSize;
   const selectedHistoryId = uiState.selectedHistoryId;
 
   const filteredHistory = useMemo(() => {
@@ -192,6 +196,30 @@ export const HistoryView = () => {
     [selectHistoryForDetail],
   );
 
+  const handlePageChange = useCallback(
+    (page: number, pageSize: number) => {
+      void loadAllHistory(page, pageSize);
+    },
+    [loadAllHistory],
+  );
+
+  const filterLabel = useMemo(() => {
+    if (historyFilter.type === "request") {
+      return currentRequest?.name || "Unnamed";
+    }
+    if (historyFilter.type === "unbound") {
+      return "Unbound replay history";
+    }
+    return "All replay history";
+  }, [currentRequest?.name, historyFilter]);
+
+  const pageSummary = useMemo(() => {
+    if (searchText) {
+      return `${filteredHistory.length} matches on this page · ${allHistoryTotal} total`;
+    }
+    return `${allHistoryTotal} total records`;
+  }, [allHistoryTotal, filteredHistory.length, searchText]);
+
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
       <div
@@ -211,24 +239,22 @@ export const HistoryView = () => {
             borderBottom: `1px solid ${token.colorBorderSecondary}`,
           }}
         >
-          {currentRequest && (
-            <div
-              style={{
-                marginBottom: 8,
-                padding: "6px 8px",
-                backgroundColor: token.colorBgLayout,
-                borderRadius: 4,
-                fontSize: 12,
-              }}
-            >
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                Template:
-              </Text>
-              <div style={{ fontWeight: 500 }}>
-                {currentRequest.name || "Unnamed"}
-              </div>
+          <div
+            style={{
+              marginBottom: 8,
+              padding: "6px 8px",
+              backgroundColor: token.colorBgLayout,
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            <Text type="secondary" style={{ fontSize: 10 }}>
+              Scope:
+            </Text>
+            <div style={{ fontWeight: 500 }}>
+              {filterLabel}
             </div>
-          )}
+          </div>
           <Input
             prefix={<SearchOutlined />}
             placeholder="Search history..."
@@ -244,7 +270,7 @@ export const HistoryView = () => {
               color: token.colorTextSecondary,
             }}
           >
-            {filteredHistory.length} of {allHistoryTotal} records
+            {pageSummary}
           </div>
         </div>
 
@@ -277,6 +303,25 @@ export const HistoryView = () => {
               />
             ))
           )}
+        </div>
+
+        <div
+          style={{
+            padding: "8px 12px",
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+            backgroundColor: token.colorBgLayout,
+          }}
+        >
+          <Pagination
+            current={historyPage}
+            pageSize={historyPageSize}
+            total={allHistoryTotal}
+            size="small"
+            showSizeChanger
+            pageSizeOptions={["20", "50", "100", "200"]}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+          />
         </div>
       </div>
 

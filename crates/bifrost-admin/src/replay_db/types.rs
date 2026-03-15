@@ -222,5 +222,5 @@ impl From<&ReplayRequest> for ReplayRequestSummary {
 }
 
 pub const MAX_REQUESTS: usize = 1000;
-pub const MAX_HISTORY: usize = 10000;
+pub const MAX_HISTORY: usize = 2000;
 pub const MAX_CONCURRENT_REPLAYS: usize = 100;

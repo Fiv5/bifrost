@@ -333,7 +333,7 @@ export interface ReplayDbStats {
 
 export const REPLAY_LIMITS = {
   MAX_REQUESTS: 1000,
-  MAX_HISTORY: 10000,
+  MAX_HISTORY: 2000,
   MAX_CONCURRENT: 100,
 } as const;
 

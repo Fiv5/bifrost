@@ -361,19 +361,17 @@ async fn execute_replay_unified(
         };
         let _ = tx.send(serde_json::to_string(&conn_event).unwrap());
 
-        if let Some(ref req_id) = unified_req.request_id {
-            record_history(
-                &state,
-                &push_manager,
-                req_id,
-                &traffic_id,
-                &applied_request.method,
-                &applied_request.url,
-                200,
-                0,
-                &rule_config,
-            );
-        }
+        record_history(
+            &state,
+            &push_manager,
+            unified_req.request_id.as_deref(),
+            &traffic_id,
+            &applied_request.method,
+            &applied_request.url,
+            200,
+            0,
+            &rule_config,
+        );
 
         let state_clone = state.clone();
         let replay_id_clone = replay_id.clone();
@@ -441,19 +439,17 @@ async fn execute_replay_unified(
             &matched_rules,
         );
 
-        if let Some(ref req_id) = unified_req.request_id {
-            record_history(
-                &state,
-                &push_manager,
-                req_id,
-                &traffic_id,
-                &unified_req.method,
-                &unified_req.url,
-                status,
-                duration_ms,
-                &rule_config,
-            );
-        }
+        record_history(
+            &state,
+            &push_manager,
+            unified_req.request_id.as_deref(),
+            &traffic_id,
+            &unified_req.method,
+            &unified_req.url,
+            status,
+            duration_ms,
+            &rule_config,
+        );
 
         info!(
             replay_id = %replay_id,
@@ -1228,11 +1224,12 @@ async fn list_history(req: Request<Incoming>, state: SharedAdminState) -> Respon
         .collect();
 
     let request_id = params.get("request_id").map(|s| s.as_str());
+    let request_unbound_only = matches!(params.get("binding").map(String::as_str), Some("unbound"));
     let limit = params.get("limit").and_then(|v| v.parse().ok());
     let offset = params.get("offset").and_then(|v| v.parse().ok());
 
-    let history = store.list_history(request_id, limit, offset);
-    let total = store.count_history(request_id);
+    let history = store.list_history(request_id, request_unbound_only, limit, offset);
+    let total = store.count_history(request_id, request_unbound_only);
 
     #[derive(Serialize)]
     struct HistoryResponse {
@@ -1264,7 +1261,8 @@ async fn count_history(req: Request<Incoming>, state: SharedAdminState) -> Respo
         .collect();
 
     let request_id = params.get("request_id").map(|s| s.as_str());
-    let count = store.count_history(request_id);
+    let request_unbound_only = matches!(params.get("binding").map(String::as_str), Some("unbound"));
+    let count = store.count_history(request_id, request_unbound_only);
 
     #[derive(Serialize)]
     struct CountResponse {
@@ -1474,19 +1472,17 @@ async fn execute_replay_websocket(
     let traffic_id =
         record_traffic_for_stream(&state, &replay_id, &applied_request, &matched_rules, false);
 
-    if let Some(ref req_id) = request_id {
-        record_history(
-            &state,
-            &push_manager,
-            req_id,
-            &traffic_id,
-            "GET",
-            &applied_request.url,
-            101,
-            0,
-            &rule_config,
-        );
-    }
+    record_history(
+        &state,
+        &push_manager,
+        request_id.as_deref(),
+        &traffic_id,
+        "GET",
+        &applied_request.url,
+        101,
+        0,
+        &rule_config,
+    );
 
     state.connection_monitor.register_connection(&traffic_id);
 
@@ -2506,7 +2502,7 @@ fn record_sse_event(
 fn record_history(
     state: &SharedAdminState,
     push_manager: &Option<SharedPushManager>,
-    request_id: &str,
+    request_id: Option<&str>,
     traffic_id: &str,
     method: &str,
     url: &str,
@@ -2515,18 +2511,13 @@ fn record_history(
     rule_config: &RuleConfig,
 ) {
     if let Some(ref replay_db) = state.replay_db_store {
-        let request = replay_db.get_request(request_id);
-        let is_saved = request.as_ref().map(|r| r.is_saved).unwrap_or(false);
-
         info!(
-            request_id = %request_id,
-            is_saved = %is_saved,
-            request_exists = %request.is_some(),
+            request_id = request_id.unwrap_or("<unbound>"),
             "[REPLAY] Recording history"
         );
 
         let history = ReplayHistory::new(
-            Some(request_id.to_string()),
+            request_id.map(|id| id.to_string()),
             traffic_id.to_string(),
             method.to_string(),
             url.to_string(),
@@ -2535,30 +2526,16 @@ fn record_history(
             Some(rule_config.clone()),
         );
 
-        if is_saved {
-            info!(
-                history_id = %history.id,
-                "[REPLAY] Saving history to database"
-            );
-            if let Err(e) = replay_db.create_history(&history) {
-                warn!(error = %e, "[REPLAY] Failed to record history");
-            } else {
-                info!(
-                    history_id = %history.id,
-                    "[REPLAY] History saved successfully"
-                );
-                if let Some(pm) = push_manager {
-                    pm.broadcast_replay_history_updated(
-                        "history_created",
-                        request_id,
-                        Some(&history.id),
-                    );
-                }
-            }
+        info!(
+            history_id = %history.id,
+            "[REPLAY] Saving history to database"
+        );
+        if let Err(e) = replay_db.create_history(&history) {
+            warn!(error = %e, "[REPLAY] Failed to record history");
         } else {
             info!(
                 history_id = %history.id,
-                "[REPLAY] Request not saved, only broadcasting history event"
+                "[REPLAY] History saved successfully"
             );
             if let Some(pm) = push_manager {
                 pm.broadcast_replay_history_updated(

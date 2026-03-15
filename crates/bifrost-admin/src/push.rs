@@ -202,7 +202,7 @@ pub struct ReplayRequestUpdatedData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayHistoryUpdatedData {
     pub action: String,
-    pub request_id: String,
+    pub request_id: Option<String>,
     pub history_id: Option<String>,
 }
 
@@ -1293,12 +1293,12 @@ impl PushManager {
     pub fn broadcast_replay_history_updated(
         &self,
         action: &str,
-        request_id: &str,
+        request_id: Option<&str>,
         history_id: Option<&str>,
     ) {
         let msg = PushMessage::ReplayHistoryUpdated(ReplayHistoryUpdatedData {
             action: action.to_string(),
-            request_id: request_id.to_string(),
+            request_id: request_id.map(|s| s.to_string()),
             history_id: history_id.map(|s| s.to_string()),
         });
 

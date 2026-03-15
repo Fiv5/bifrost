@@ -33,6 +33,10 @@ export type ResponsePanelTab = 'Body' | 'Header' | 'Set-Cookie' | 'Matched Rules
 export type ResponseViewMode = 'pretty' | 'raw' | 'preview';
 export type ResponseContentType = 'json' | 'xml' | 'html' | 'javascript' | 'css' | 'text';
 export type ReplayMode = 'composer' | 'history';
+export type ReplayHistoryFilter =
+  | { type: 'all' }
+  | { type: 'unbound' }
+  | { type: 'request'; requestId: string };
 
 interface ReplayUIState {
   mode: ReplayMode;
@@ -48,6 +52,8 @@ interface ReplayUIState {
   collectionSearchText: string;
   collectionExpandedKeys: string[];
   historySearchText: string;
+  historyPage: number;
+  historyPageSize: number;
   selectedHistoryId: string | null;
   wsMessageInput: string;
   selectedRequestId: string | null;
@@ -65,6 +71,7 @@ interface ReplayState {
   recentHistory: ReplayHistory[];
   allHistory: ReplayHistory[];
   groups: ReplayGroup[];
+  historyFilter: ReplayHistoryFilter;
 
   currentResponse: ReplayExecuteResponse | null;
   currentTrafficRecord: TrafficRecord | null;
@@ -101,8 +108,8 @@ interface ReplayState {
   saveRequest: (name?: string, groupId?: string) => Promise<boolean>;
   executeRequest: () => Promise<void>;
   loadSavedRequests: () => Promise<void>;
-  loadRecentHistory: (requestId?: string) => Promise<void>;
-  loadAllHistory: (requestId: string) => Promise<void>;
+  loadRecentHistory: (filter?: ReplayHistoryFilter) => Promise<void>;
+  loadAllHistory: (page?: number, pageSize?: number) => Promise<void>;
   loadGroups: () => Promise<void>;
   createGroup: (name: string) => Promise<boolean>;
   deleteGroup: (id: string) => Promise<boolean>;
@@ -118,6 +125,7 @@ interface ReplayState {
   selectHistoryForDetail: (history: ReplayHistory) => Promise<void>;
   importFromTraffic: (trafficId: string) => Promise<void>;
   setResponsePanelCollapsed: (collapsed: boolean) => void;
+  setHistoryFilter: (filter: ReplayHistoryFilter) => void;
   updateUIState: (updates: Partial<ReplayUIState>) => void;
   connectSSE: () => void;
   disconnectSSE: () => void;
@@ -147,6 +155,8 @@ const defaultUIState: ReplayUIState = {
   collectionSearchText: '',
   collectionExpandedKeys: ['saved', 'ungrouped'],
   historySearchText: '',
+  historyPage: 1,
+  historyPageSize: 50,
   selectedHistoryId: null,
   wsMessageInput: '',
   selectedRequestId: null,
@@ -185,6 +195,20 @@ function handleReplayLoadError(error: unknown, fallback: string) {
   notifyApiBusinessError(error, fallback);
 }
 
+function toHistoryApiParams(
+  filter: ReplayHistoryFilter,
+  limit: number,
+  offset: number,
+): { request_id?: string; binding?: 'unbound'; limit: number; offset: number } {
+  if (filter.type === 'request') {
+    return { request_id: filter.requestId, limit, offset };
+  }
+  if (filter.type === 'unbound') {
+    return { binding: 'unbound', limit, offset };
+  }
+  return { limit, offset };
+}
+
 export const useReplayStore = create<ReplayState>()(
   persist(
     (set, get) => ({
@@ -193,6 +217,7 @@ export const useReplayStore = create<ReplayState>()(
       recentHistory: [],
       allHistory: [],
       groups: [],
+      historyFilter: { type: 'all' },
       currentResponse: null,
       currentTrafficRecord: null,
       selectedHistoryRecord: null,
@@ -224,10 +249,20 @@ export const useReplayStore = create<ReplayState>()(
           currentResponse: null,
           currentTrafficRecord: null,
           recentHistory: [],
+          allHistory: [],
+          allHistoryTotal: 0,
           streamingConnection: null,
           sseEvents: [],
           wsMessages: [],
-          uiState: { ...uiState, selectedRequestId: null, mode: 'composer', requestType: 'http' },
+          historyFilter: { type: 'unbound' },
+          uiState: {
+            ...uiState,
+            selectedRequestId: null,
+            selectedHistoryId: null,
+            mode: 'composer',
+            requestType: 'http',
+            historyPage: 1,
+          },
         });
       },
 
@@ -492,7 +527,9 @@ export const useReplayStore = create<ReplayState>()(
               }
 
               if (currentRequest.is_saved) {
-                await loadRecentHistory(currentRequest.id);
+                await loadRecentHistory({ type: 'request', requestId: currentRequest.id });
+              } else {
+                await loadRecentHistory({ type: 'unbound' });
               }
             } else {
               throw new Error(result.error || 'Unknown error');
@@ -532,12 +569,9 @@ export const useReplayStore = create<ReplayState>()(
         }
       },
 
-      loadRecentHistory: async (requestId?: string) => {
+      loadRecentHistory: async (filter = get().historyFilter) => {
         try {
-          const response = await replayApi.listHistory({
-            request_id: requestId,
-            limit: 50,
-          });
+          const response = await replayApi.listHistory(toHistoryApiParams(filter, 50, 0));
           set({
             recentHistory: response.history,
             historyTotal: response.total,
@@ -547,13 +581,27 @@ export const useReplayStore = create<ReplayState>()(
         }
       },
 
-      loadAllHistory: async (requestId: string) => {
+      loadAllHistory: async (page, pageSize) => {
         try {
           set({ loading: true });
-          const response = await replayApi.listHistory({ request_id: requestId, limit: 500 });
+          const { historyFilter, uiState } = get();
+          const nextPage = page ?? uiState.historyPage;
+          const nextPageSize = pageSize ?? uiState.historyPageSize;
+          const response = await replayApi.listHistory(
+            toHistoryApiParams(
+              historyFilter,
+              nextPageSize,
+              (nextPage - 1) * nextPageSize,
+            ),
+          );
           set({
             allHistory: response.history,
             allHistoryTotal: response.total,
+            uiState: {
+              ...get().uiState,
+              historyPage: nextPage,
+              historyPageSize: nextPageSize,
+            },
           });
         } catch (e) {
           handleReplayLoadError(e, 'Failed to load history');
@@ -640,7 +688,9 @@ export const useReplayStore = create<ReplayState>()(
       deleteRequest: async (id: string) => {
         try {
           await replayApi.deleteRequest(id);
-          const { savedRequests, currentRequest } = get();
+          const { savedRequests, currentRequest, historyFilter, uiState, loadAllHistory } = get();
+          const shouldResetHistoryFilter =
+            historyFilter.type === 'request' && historyFilter.requestId === id;
 
           if (currentRequest?.id === id) {
             set({
@@ -648,12 +698,22 @@ export const useReplayStore = create<ReplayState>()(
               currentResponse: null,
               currentTrafficRecord: null,
               recentHistory: [],
+              historyFilter: shouldResetHistoryFilter ? { type: 'all' } : historyFilter,
             });
           }
 
           set({
             savedRequests: savedRequests.filter(r => r.id !== id),
+            allHistory: shouldResetHistoryFilter ? [] : get().allHistory,
+            allHistoryTotal: shouldResetHistoryFilter ? 0 : get().allHistoryTotal,
+            uiState: shouldResetHistoryFilter
+              ? { ...get().uiState, selectedRequestId: null, selectedHistoryId: null, historyPage: 1 }
+              : get().uiState,
           });
+
+          if (uiState.mode === 'history') {
+            await loadAllHistory(1);
+          }
           message.success('Request deleted');
           return true;
         } catch (e) {
@@ -717,12 +777,22 @@ export const useReplayStore = create<ReplayState>()(
             streamingConnection: null,
             sseEvents: [],
             wsMessages: [],
-            uiState: { ...uiState, selectedRequestId: fullRequest.is_saved ? fullRequest.id : null, requestType },
+            historyFilter: fullRequest.is_saved ? { type: 'request', requestId: fullRequest.id } : { type: 'all' },
+            uiState: {
+              ...uiState,
+              selectedRequestId: fullRequest.is_saved ? fullRequest.id : null,
+              selectedHistoryId: null,
+              historyPage: 1,
+              requestType,
+            },
           });
 
           if (fullRequest.is_saved) {
-            const { loadRecentHistory } = get();
-            await loadRecentHistory(fullRequest.id);
+            const { loadRecentHistory, loadAllHistory, uiState: nextUiState } = get();
+            await loadRecentHistory({ type: 'request', requestId: fullRequest.id });
+            if (nextUiState.mode === 'history') {
+              await loadAllHistory(1);
+            }
           }
         } catch (e) {
           handleReplayLoadError(e, 'Failed to load request');
@@ -855,7 +925,17 @@ export const useReplayStore = create<ReplayState>()(
             currentTrafficRecord: null,
             responsePanelCollapsed: true,
             recentHistory: [],
-            uiState: { ...uiState, selectedRequestId: null, mode: 'composer', requestType },
+            allHistory: [],
+            allHistoryTotal: 0,
+            historyFilter: { type: 'unbound' },
+            uiState: {
+              ...uiState,
+              selectedRequestId: null,
+              selectedHistoryId: null,
+              mode: 'composer',
+              historyPage: 1,
+              requestType,
+            },
           });
 
           message.success('Request imported from traffic');
@@ -868,6 +948,17 @@ export const useReplayStore = create<ReplayState>()(
 
       setResponsePanelCollapsed: (collapsed) => {
         set({ responsePanelCollapsed: collapsed });
+      },
+
+      setHistoryFilter: (filter) => {
+        const { uiState } = get();
+        set({
+          historyFilter: filter,
+          selectedHistoryRecord: null,
+          historyRequestBody: null,
+          historyResponseBody: null,
+          uiState: { ...uiState, selectedHistoryId: null, historyPage: 1 },
+        });
       },
 
       updateUIState: (updates) => {
@@ -1092,7 +1183,9 @@ export const useReplayStore = create<ReplayState>()(
           currentRequest: createEmptyRequest(),
           savedRequests: [],
           recentHistory: [],
+          allHistory: [],
           groups: [],
+          historyFilter: { type: 'all' },
           currentResponse: null,
           currentTrafficRecord: null,
           ruleConfig: { mode: 'enabled' },
@@ -1143,10 +1236,29 @@ pushService.onReplayGroupsUpdate((data) => {
 });
 
 pushService.onReplayHistoryUpdated((data) => {
-  const { currentRequest, loadRecentHistory } = useReplayStore.getState();
-  console.log('[ReplayStore] Received replay_history_updated:', data);
+  const { currentRequest, historyFilter, uiState, loadRecentHistory, loadAllHistory } = useReplayStore.getState();
 
-  if (currentRequest?.id && currentRequest.id === data.request_id) {
-    loadRecentHistory(data.request_id);
+  if (currentRequest?.is_saved && currentRequest.id === data.request_id) {
+    void loadRecentHistory({ type: 'request', requestId: currentRequest.id });
+  } else if (!data.request_id && historyFilter.type === 'unbound') {
+    void loadRecentHistory({ type: 'unbound' });
+  }
+
+  if (uiState.mode !== 'history') {
+    return;
+  }
+
+  if (historyFilter.type === 'all') {
+    void loadAllHistory(uiState.historyPage, uiState.historyPageSize);
+    return;
+  }
+
+  if (historyFilter.type === 'unbound' && !data.request_id) {
+    void loadAllHistory(uiState.historyPage, uiState.historyPageSize);
+    return;
+  }
+
+  if (historyFilter.type === 'request' && historyFilter.requestId === data.request_id) {
+    void loadAllHistory(uiState.historyPage, uiState.historyPageSize);
   }
 });
