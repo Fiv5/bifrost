@@ -21,15 +21,19 @@ use crate::dns::DnsResolver;
 use crate::http3::Http3Client;
 use crate::protocol::ProtocolDetector;
 
-use super::tunnel::{classify_request_error, sanitize_upstream_headers, send_pooled_request};
+use super::tunnel::{
+    classify_request_error, is_retryable_http2_error as is_retryable_http2_upstream_error,
+    mark_http1_fallback as mark_http1_upstream_fallback, sanitize_upstream_headers,
+    send_pooled_request, send_pooled_request_http1_only,
+};
 use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
 use crate::server::{full_body, with_trailers, BoxBody, ResolvedRules, RulesResolver};
 use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
+use crate::transform::decompress_body_with_limit;
 use crate::transform::{apply_body_rules, apply_content_injection, Phase};
-use crate::transform::{decompress_body_with_limit, get_content_encoding};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -67,6 +71,50 @@ fn get_traffic_type_from_url(url: &str) -> TrafficType {
     }
 }
 
+fn headers_to_pairs(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
+    let mut pairs = Vec::with_capacity(headers.len());
+    for (key, value) in headers {
+        pairs.push((key.to_string(), value.to_str().unwrap_or("").to_string()));
+    }
+    pairs
+}
+
+fn header_map_to_hashmap(headers: &hyper::HeaderMap) -> HashMap<String, String> {
+    let mut map = HashMap::with_capacity(headers.len());
+    for (key, value) in headers {
+        map.insert(key.to_string(), value.to_str().unwrap_or("").to_string());
+    }
+    map
+}
+
+fn cloned_headers_hashmap(
+    cache: &mut Option<HashMap<String, String>>,
+    headers: &[(String, String)],
+) -> HashMap<String, String> {
+    if let Some(map) = cache.as_ref() {
+        return map.clone();
+    }
+
+    let map = headers_to_hashmap(headers);
+    *cache = Some(map.clone());
+    map
+}
+
+fn response_content_encoding(parts: &ResponseParts) -> Option<String> {
+    parts
+        .headers
+        .get(hyper::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+fn header_content_encoding(headers: &hyper::HeaderMap) -> Option<String> {
+    headers
+        .get(hyper::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
 fn build_upstream_pool_partition(
     original_host: &str,
     target_host: &str,
@@ -74,16 +122,39 @@ fn build_upstream_pool_partition(
     use_tls: bool,
     rules: &ResolvedRules,
 ) -> String {
-    format!(
-        "orig={original_host}|target={}://{}:{}|host={:?}|proxy={:?}|proto={:?}|ignored_host={}",
-        if use_tls { "https" } else { "http" },
-        target_host,
-        target_port,
-        rules.host,
-        rules.proxy,
-        rules.host_protocol,
-        rules.ignored.host
-    )
+    let mut partition = String::with_capacity(
+        original_host.len()
+            + target_host.len()
+            + rules.host.as_ref().map_or(4, |value| value.len())
+            + rules.proxy.as_ref().map_or(4, |value| value.len())
+            + 96,
+    );
+    partition.push_str("orig=");
+    partition.push_str(original_host);
+    partition.push_str("|target=");
+    partition.push_str(if use_tls { "https" } else { "http" });
+    partition.push_str("://");
+    partition.push_str(target_host);
+    partition.push(':');
+    partition.push_str(&target_port.to_string());
+    partition.push_str("|host=");
+    partition.push_str(rules.host.as_deref().unwrap_or("-"));
+    partition.push_str("|proxy=");
+    partition.push_str(rules.proxy.as_deref().unwrap_or("-"));
+    partition.push_str("|proto=");
+    partition.push_str(match rules.host_protocol {
+        Some(Protocol::Http) => "http",
+        Some(Protocol::Https) => "https",
+        Some(Protocol::Ws) => "ws",
+        Some(Protocol::Wss) => "wss",
+        Some(Protocol::Host) => "host",
+        Some(Protocol::XHost) => "xhost",
+        Some(_) => "other",
+        None => "-",
+    });
+    partition.push_str("|ignored_host=");
+    partition.push(if rules.ignored.host { '1' } else { '0' });
+    partition
 }
 
 #[cfg(feature = "http3")]
@@ -129,11 +200,45 @@ enum BodyMode {
     StreamWithTrailers,
 }
 
+#[derive(Clone)]
+struct RetryableRequestBlueprint {
+    method: hyper::Method,
+    uri: Uri,
+    version: hyper::Version,
+    headers: hyper::HeaderMap<HeaderValue>,
+    body: Bytes,
+}
+
+impl RetryableRequestBlueprint {
+    fn build(&self) -> Result<Request<BoxBody>> {
+        let mut builder = Request::builder()
+            .method(self.method.clone())
+            .uri(self.uri.clone())
+            .version(self.version);
+        for (name, value) in &self.headers {
+            builder = builder.header(name, value);
+        }
+        builder.body(full_body(self.body.clone())).map_err(|e| {
+            BifrostError::Network(format!("Failed to rebuild request for retry: {}", e))
+        })
+    }
+}
+
 fn is_no_body_response(status: StatusCode, method: &str) -> bool {
     status.is_informational()
         || status == StatusCode::NO_CONTENT
         || status == StatusCode::NOT_MODIFIED
         || method.eq_ignore_ascii_case("HEAD")
+}
+
+fn should_use_metrics_only_forwarding_mode(
+    skip_binary_recording: bool,
+    has_rules: bool,
+    needs_processing: bool,
+    is_websocket: bool,
+    is_sse: bool,
+) -> bool {
+    skip_binary_recording && !has_rules && !needs_processing && !is_websocket && !is_sse
 }
 
 fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
@@ -403,21 +508,13 @@ pub async fn handle_http_request(
 
     let (mut parts, body) = req.into_parts();
 
-    let original_req_headers: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let original_req_headers = admin_state
+        .as_ref()
+        .map(|_| headers_to_pairs(&parts.headers));
 
-    let req_content_encoding = get_content_encoding(&original_req_headers);
+    let req_content_encoding = header_content_encoding(&parts.headers);
 
     apply_req_rules(&mut parts, &resolved_rules, verbose_logging, ctx);
-
-    let mut req_headers: Vec<(String, String)> = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
 
     let content_length = parts
         .headers
@@ -434,7 +531,7 @@ pub async fn handle_http_request(
     let mut skip_req_scripts = false;
     let mut streaming_body: Option<BoxBody> = None;
     let mut req_body_capture: Option<BodyCaptureHandle> = None;
-    let (body_bytes, final_body) = if needs_req_body_read {
+    let (body_bytes, mut final_body) = if needs_req_body_read {
         if let Some(len) = content_length {
             if len > max_body_buffer_size {
                 warn!(
@@ -615,75 +712,73 @@ pub async fn handle_http_request(
         }
         (Bytes::new(), Bytes::new())
     };
-    let state_values = get_values_from_state(&admin_state).await;
-    let mut values = resolved_rules.values.clone();
-    for (k, v) in state_values {
-        values.entry(k).or_insert(v);
+    let has_res_scripts = !resolved_rules.res_scripts.is_empty();
+    let has_decode_scripts = !resolved_rules.decode_scripts.is_empty();
+    let mut values = HashMap::new();
+    if has_req_scripts || has_res_scripts || has_decode_scripts {
+        values = resolved_rules.values.clone();
+        let state_values = get_values_from_state(&admin_state).await;
+        for (k, v) in state_values {
+            values.entry(k).or_insert(v);
+        }
     }
 
-    let mut script_method = method.clone();
-    let mut script_headers = headers_to_hashmap(&req_headers);
-    let mut script_body = if has_req_scripts && !skip_req_scripts && !final_body.is_empty() {
-        String::from_utf8(final_body.to_vec()).ok()
+    let req_script_results = if has_req_scripts && !skip_req_scripts {
+        let mut script_method = method.clone();
+        let mut script_headers = header_map_to_hashmap(&parts.headers);
+        let mut script_body = if !final_body.is_empty() {
+            String::from_utf8(final_body.to_vec()).ok()
+        } else {
+            None
+        };
+
+        let results = execute_request_scripts(
+            &admin_state,
+            &resolved_rules.req_scripts,
+            ctx,
+            &resolved_rules,
+            &url,
+            &mut script_method,
+            &mut script_headers,
+            &mut script_body,
+            &values,
+        )
+        .await;
+
+        if results.iter().any(|r| r.success) {
+            if let Ok(new_method) = script_method.parse() {
+                parts.method = new_method;
+            }
+
+            let mut new_headers = hyper::HeaderMap::new();
+            for (key, value) in &script_headers {
+                if let (Ok(name), Ok(val)) = (
+                    hyper::header::HeaderName::from_bytes(key.as_bytes()),
+                    hyper::header::HeaderValue::from_str(value),
+                ) {
+                    new_headers.insert(name, val);
+                }
+            }
+            parts.headers = new_headers;
+
+            if let Some(ref new_body) = script_body {
+                final_body = Bytes::from(new_body.clone());
+            }
+        }
+
+        results
     } else {
-        None
+        Vec::new()
     };
 
-    let req_script_results = execute_request_scripts(
-        &admin_state,
-        if skip_req_scripts {
-            &[]
-        } else {
-            &resolved_rules.req_scripts
-        },
-        ctx,
-        &resolved_rules,
-        &url,
-        &mut script_method,
-        &mut script_headers,
-        &mut script_body,
-        &values,
-    )
-    .await;
-
-    if !req_script_results.is_empty() && req_script_results.iter().any(|r| r.success) {
-        if let Ok(new_method) = script_method.parse() {
-            parts.method = new_method;
-        }
-
-        let mut new_headers = hyper::HeaderMap::new();
-        for (key, value) in &script_headers {
-            if let (Ok(name), Ok(val)) = (
-                hyper::header::HeaderName::from_bytes(key.as_bytes()),
-                hyper::header::HeaderValue::from_str(value),
-            ) {
-                new_headers.insert(name, val);
-            }
-        }
-        parts.headers = new_headers;
-    }
-
-    let final_body =
-        if !req_script_results.is_empty() && req_script_results.iter().any(|r| r.success) {
-            if let Some(ref new_body) = script_body {
-                Bytes::from(new_body.clone())
-            } else {
-                final_body
-            }
-        } else {
-            final_body
-        };
     let req_body_mode = if streaming_body.is_some() {
         BodyMode::Stream
     } else {
         BodyMode::Known(final_body.len())
     };
     normalize_req_headers(&mut parts, req_body_mode);
-    req_headers = parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
+    let req_headers = headers_to_pairs(&parts.headers);
+    let mut req_headers_hashmap_cache: Option<HashMap<String, String>> = None;
     let request_body_size = if !final_body.is_empty() {
         final_body.len()
     } else {
@@ -708,6 +803,18 @@ pub async fn handle_http_request(
             _ => is_https,
         }
     };
+    let retry_blueprint =
+        if use_tls && matches!(method.as_str(), "GET" | "HEAD") && !request_body_is_streaming {
+            Some(RetryableRequestBlueprint {
+                method: parts.method.clone(),
+                uri: parts.uri.clone(),
+                version: parts.version,
+                headers: parts.headers.clone(),
+                body: final_body.clone(),
+            })
+        } else {
+            None
+        };
 
     let build_conn_error_and_record =
         |error_type: &'static str, error_msg: String, err_tls_ms: Option<u64>| {
@@ -743,7 +850,12 @@ pub async fn handle_http_request(
                     receive_ms: None,
                     total_ms,
                 });
-                record.original_request_headers = Some(original_req_headers.clone());
+                record.original_request_headers = Some(
+                    original_req_headers
+                        .as_ref()
+                        .expect("request headers captured when admin state is enabled")
+                        .clone(),
+                );
                 record.has_rule_hit = has_rules;
                 record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
                 record.error_message = Some(error_msg.clone());
@@ -751,28 +863,16 @@ pub async fn handle_http_request(
                     capture.take()
                 } else if let Some(ref body_store) = state.body_store {
                     let store = body_store.read();
-                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
-                    let _request_data = RequestData {
-                        url: record_url.clone(),
-                        method: method.clone(),
-                        host: req_host,
-                        path: req_path,
-                        protocol: req_proto,
-                        client_ip: ctx.client_ip.clone(),
-                        client_app: ctx.client_app.clone(),
-                        headers: headers_to_hashmap(&req_headers),
-                        body: None,
-                    };
                     let decompressed_req_body = decompress_body_with_limit(
                         &final_body,
                         req_content_encoding.as_deref(),
                         max_decompress_output_bytes,
                     );
-                    store.store(&ctx.id_str(), "req", decompressed_req_body.as_ref())
+                    store.store(ctx.id_str(), "req", decompressed_req_body.as_ref())
                 } else {
                     store_request_body(
                         &admin_state,
-                        &ctx.id_str(),
+                        ctx.id_str(),
                         &final_body,
                         req_content_encoding.as_deref(),
                     )
@@ -789,32 +889,9 @@ pub async fn handle_http_request(
                 };
                 record.response_body_ref = if let Some(ref body_store) = state.body_store {
                     let store = body_store.read();
-                    let (req_host, req_path, req_proto) = parse_url_parts(&record_url);
-                    let request_data = RequestData {
-                        url: record_url.clone(),
-                        method: method.clone(),
-                        host: req_host,
-                        path: req_path,
-                        protocol: req_proto,
-                        client_ip: ctx.client_ip.clone(),
-                        client_app: ctx.client_app.clone(),
-                        headers: headers_to_hashmap(&req_headers),
-                        body: None,
-                    };
-                    let _response_data = ResponseData {
-                        status: record.status,
-                        status_text: StatusCode::from_u16(record.status)
-                            .ok()
-                            .and_then(|s| s.canonical_reason())
-                            .unwrap_or("ERROR")
-                            .to_string(),
-                        headers: HashMap::new(),
-                        body: None,
-                        request: request_data,
-                    };
-                    store.store(&ctx.id_str(), "res", response_body.as_ref())
+                    store.store(ctx.id_str(), "res", response_body.as_ref())
                 } else {
-                    store_response_body(&admin_state, &ctx.id_str(), &response_body)
+                    store_response_body(&admin_state, ctx.id_str(), &response_body)
                 };
                 state.record_traffic(record);
             }
@@ -955,21 +1032,75 @@ pub async fn handle_http_request(
         {
             Ok(r) => r,
             Err(e) => {
-                let classified = classify_request_error(&e);
-                error!(
-                    "[{}] {} ({})",
-                    ctx.id_str(),
-                    classified.error_message,
-                    classified.error_type
-                );
-                for source in &classified.source_chain {
-                    error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                let retryable_upstream_h2 = use_tls
+                    && matches!(method.as_str(), "GET" | "HEAD")
+                    && retry_blueprint.is_some()
+                    && (!e.is_connect() || is_retryable_http2_upstream_error(&e));
+
+                if retryable_upstream_h2 {
+                    warn!(
+                        "[{}] Upstream HTTP/2 request failed; retrying with HTTP/1.1 fallback",
+                        ctx.id_str()
+                    );
+                    mark_http1_upstream_fallback(
+                        unsafe_ssl,
+                        &resolved_rules.dns_servers,
+                        &pool_partition,
+                    );
+                    let retry_request = retry_blueprint
+                        .as_ref()
+                        .expect("retry blueprint exists for retryable request")
+                        .build()?;
+                    match send_pooled_request_http1_only(
+                        retry_request,
+                        unsafe_ssl,
+                        &resolved_rules.dns_servers,
+                        &pool_partition,
+                    )
+                    .await
+                    {
+                        Ok(response) => {
+                            info!(
+                                "[{}] Upstream request recovered via HTTP/1.1 fallback",
+                                ctx.id_str()
+                            );
+                            response
+                        }
+                        Err(retry_err) => {
+                            let classified = classify_request_error(&retry_err);
+                            error!(
+                                "[{}] {} ({})",
+                                ctx.id_str(),
+                                classified.error_message,
+                                classified.error_type
+                            );
+                            for source in &classified.source_chain {
+                                error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                            }
+                            return Ok(build_conn_error_and_record(
+                                classified.error_type,
+                                classified.error_message,
+                                None,
+                            ));
+                        }
+                    }
+                } else {
+                    let classified = classify_request_error(&e);
+                    error!(
+                        "[{}] {} ({})",
+                        ctx.id_str(),
+                        classified.error_message,
+                        classified.error_type
+                    );
+                    for source in &classified.source_chain {
+                        error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                    }
+                    return Ok(build_conn_error_and_record(
+                        classified.error_type,
+                        classified.error_message,
+                        None,
+                    ));
                 }
-                return Ok(build_conn_error_and_record(
-                    classified.error_type,
-                    classified.error_message,
-                    None,
-                ));
             }
         };
         let wait_ms = send_start.elapsed().as_millis() as u64;
@@ -1015,21 +1146,12 @@ pub async fn handle_http_request(
     let (mut res_parts, mut res_body_incoming, mut res_body_stream, mut pre_read_res, wait_ms) =
         upstream_result;
 
-    let original_res_headers: Vec<(String, String)> = res_parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-
-    let res_content_encoding = get_content_encoding(&original_res_headers);
+    let original_res_headers = admin_state
+        .as_ref()
+        .map(|_| headers_to_pairs(&res_parts.headers));
+    let res_content_encoding = response_content_encoding(&res_parts);
 
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
-
-    let res_headers: Vec<(String, String)> = res_parts
-        .headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
 
     let needs_processing = needs_body_processing(&resolved_rules);
     let has_res_body_override = resolved_rules.res_body.is_some();
@@ -1059,6 +1181,13 @@ pub async fn handle_http_request(
         should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
             && !is_websocket
             && !is_sse;
+    let metrics_only_forwarding = should_use_metrics_only_forwarding_mode(
+        skip_binary_recording,
+        has_rules,
+        needs_processing,
+        is_websocket,
+        is_sse,
+    );
     let mut res_body_too_large = false;
     let mut res_body_limit = max_body_buffer_size;
     if !is_sse && res_body_stream.is_none() {
@@ -1159,11 +1288,6 @@ pub async fn handle_http_request(
             BodyMode::StreamWithTrailers
         };
         normalize_res_headers(&mut res_parts, res_body_mode, &method);
-        let res_headers: Vec<(String, String)> = res_parts
-            .headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
         if verbose_logging && !res_body_too_large {
             if is_sse {
                 info!(
@@ -1189,16 +1313,21 @@ pub async fn handle_http_request(
         let mut sse_stream_writer: Option<bifrost_admin::BodyStreamWriter> = None;
 
         if let Some(ref state) = admin_state {
-            state
-                .metrics_collector
-                .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
-            state
-                .metrics_collector
-                .increment_requests_by_type(traffic_type);
-
-            if !skip_binary_recording {
+            if !metrics_only_forwarding {
+                state
+                    .metrics_collector
+                    .add_bytes_sent_by_type(traffic_type, request_body_size as u64);
+                state
+                    .metrics_collector
+                    .increment_requests_by_type(traffic_type);
+            }
+            if !metrics_only_forwarding {
+                let res_headers = headers_to_pairs(&res_parts.headers);
+                let original_res_headers = original_res_headers
+                    .as_ref()
+                    .expect("response headers captured when admin state is enabled");
                 let mut record =
-                    TrafficRecord::new(record_id.clone(), method.clone(), record_url.clone());
+                    TrafficRecord::new(record_id.to_string(), method.clone(), record_url.clone());
                 record.status = res_parts.status.as_u16();
                 record.content_type = res_parts
                     .headers
@@ -1220,7 +1349,7 @@ pub async fn handle_http_request(
                 });
                 record.request_headers = Some(req_headers.clone());
                 record.response_headers = Some(original_res_headers.clone());
-                if res_headers != original_res_headers {
+                if res_headers != *original_res_headers {
                     record.actual_response_headers = Some(res_headers.clone());
                 }
                 record.has_rule_hit = has_rules;
@@ -1237,13 +1366,13 @@ pub async fn handle_http_request(
                 if is_websocket {
                     record.protocol = "ws".to_string();
                     record.set_websocket();
-                    state.connection_monitor.register_connection(&record_id);
+                    state.connection_monitor.register_connection(record_id);
                 } else if is_sse {
                     record.set_sse();
-                    state.sse_hub.register(&record_id);
+                    state.sse_hub.register(record_id);
                 } else if is_streaming {
                     record.set_streaming();
-                    state.connection_monitor.register_connection(&record_id);
+                    state.connection_monitor.register_connection(record_id);
                 }
 
                 record.request_body_ref = if let Some(ref capture) = req_body_capture {
@@ -1251,7 +1380,7 @@ pub async fn handle_http_request(
                 } else {
                     store_request_body(
                         &admin_state,
-                        &record_id,
+                        record_id,
                         &body_bytes,
                         req_content_encoding.as_deref(),
                     )
@@ -1263,7 +1392,7 @@ pub async fn handle_http_request(
 
                 if is_sse {
                     if let Some(ref body_store) = state.body_store {
-                        match body_store.read().start_stream(&record_id, "sse_raw") {
+                        match body_store.read().start_stream(record_id, "sse_raw") {
                             Ok(writer) => {
                                 record.response_body_ref = Some(writer.body_ref());
                                 sse_stream_writer = Some(writer);
@@ -1284,7 +1413,7 @@ pub async fn handle_http_request(
             let tee_body = create_sse_tee_body(
                 res_body,
                 admin_state.clone(),
-                record_id,
+                record_id.to_string(),
                 Some(traffic_type),
                 sse_stream_writer,
                 max_body_buffer_size,
@@ -1293,15 +1422,18 @@ pub async fn handle_http_request(
             return Ok(Response::from_parts(res_parts, body));
         } else {
             let res_body = res_body_stream.take().unwrap();
-            let tee_body = if skip_binary_recording {
+            let tee_body = if metrics_only_forwarding {
+                res_body
+            } else if skip_binary_recording {
                 create_metrics_body(res_body, admin_state.clone(), Some(traffic_type))
             } else {
+                let res_headers = headers_to_pairs(&res_parts.headers);
                 let response_headers_size =
                     calculate_response_headers_size(res_parts.status.as_u16(), &res_headers);
                 create_tee_body_with_store(
                     res_body,
                     admin_state.clone(),
-                    record_id,
+                    record_id.to_string(),
                     Some(max_body_buffer_size),
                     res_content_encoding.clone(),
                     Some(traffic_type),
@@ -1337,7 +1469,7 @@ pub async fn handle_http_request(
         .to_string();
 
     let original_res_body_len = res_content_length.unwrap_or(res_body_bytes.len());
-    let final_res_body = if let Some(ref new_body) = resolved_rules.res_body {
+    let mut final_res_body = if let Some(ref new_body) = resolved_rules.res_body {
         if verbose_logging {
             info!(
                 "[{}] [RES_BODY] replaced: {} bytes -> {} bytes",
@@ -1366,58 +1498,59 @@ pub async fn handle_http_request(
         )
     };
 
-    let mut res_script_status = res_parts.status.as_u16();
-    let mut res_script_status_text = res_parts
-        .status
-        .canonical_reason()
-        .unwrap_or("OK")
-        .to_string();
-    let mut res_script_headers = headers_to_hashmap(&res_headers);
-    let mut res_script_body = String::from_utf8(final_res_body.to_vec()).ok();
+    let res_script_results = if has_res_scripts {
+        let mut res_script_status = res_parts.status.as_u16();
+        let mut res_script_status_text = res_parts
+            .status
+            .canonical_reason()
+            .unwrap_or("OK")
+            .to_string();
+        let mut res_script_headers = header_map_to_hashmap(&res_parts.headers);
+        let mut res_script_body = String::from_utf8(final_res_body.to_vec()).ok();
+        let req_script_headers =
+            cloned_headers_hashmap(&mut req_headers_hashmap_cache, &req_headers);
 
-    let res_script_results = execute_response_scripts(
-        &admin_state,
-        &resolved_rules.res_scripts,
-        ctx,
-        &resolved_rules,
-        &url,
-        &method,
-        &headers_to_hashmap(&req_headers),
-        &mut res_script_status,
-        &mut res_script_status_text,
-        &mut res_script_headers,
-        &mut res_script_body,
-        &values,
-    )
-    .await;
+        let results = execute_response_scripts(
+            &admin_state,
+            &resolved_rules.res_scripts,
+            ctx,
+            &resolved_rules,
+            &url,
+            &method,
+            &req_script_headers,
+            &mut res_script_status,
+            &mut res_script_status_text,
+            &mut res_script_headers,
+            &mut res_script_body,
+            &values,
+        )
+        .await;
 
-    if !res_script_results.is_empty() && res_script_results.iter().any(|r| r.success) {
-        if let Ok(new_status) = hyper::StatusCode::from_u16(res_script_status) {
-            res_parts.status = new_status;
-        }
-
-        let mut new_headers = hyper::HeaderMap::new();
-        for (key, value) in &res_script_headers {
-            if let (Ok(name), Ok(val)) = (
-                hyper::header::HeaderName::from_bytes(key.as_bytes()),
-                hyper::header::HeaderValue::from_str(value),
-            ) {
-                new_headers.insert(name, val);
+        if results.iter().any(|r| r.success) {
+            if let Ok(new_status) = hyper::StatusCode::from_u16(res_script_status) {
+                res_parts.status = new_status;
             }
-        }
-        res_parts.headers = new_headers;
-    }
 
-    let final_res_body =
-        if !res_script_results.is_empty() && res_script_results.iter().any(|r| r.success) {
+            let mut new_headers = hyper::HeaderMap::new();
+            for (key, value) in &res_script_headers {
+                if let (Ok(name), Ok(val)) = (
+                    hyper::header::HeaderName::from_bytes(key.as_bytes()),
+                    hyper::header::HeaderValue::from_str(value),
+                ) {
+                    new_headers.insert(name, val);
+                }
+            }
+            res_parts.headers = new_headers;
+
             if let Some(ref new_body) = res_script_body {
-                Bytes::from(new_body.clone())
-            } else {
-                final_res_body
+                final_res_body = Bytes::from(new_body.clone());
             }
-        } else {
-            final_res_body
-        };
+        }
+
+        results
+    } else {
+        Vec::new()
+    };
     normalize_res_headers(
         &mut res_parts,
         BodyMode::Known(final_res_body.len()),
@@ -1438,18 +1571,18 @@ pub async fn handle_http_request(
             .metrics_collector
             .increment_requests_by_type(traffic_type);
 
-        let mut record = TrafficRecord::new(ctx.id_str(), method.clone(), record_url.clone());
+        let mut record =
+            TrafficRecord::new(ctx.id_str().to_string(), method.clone(), record_url.clone());
         record.status = res_parts.status.as_u16();
         record.content_type = res_parts
             .headers
             .get(hyper::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let res_headers: Vec<(String, String)> = res_parts
-            .headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
+        let res_headers = headers_to_pairs(&res_parts.headers);
+        let original_res_headers = original_res_headers
+            .as_ref()
+            .expect("response headers captured when admin state is enabled");
         record.request_size =
             calculate_request_size(&method, &record_url, &req_headers, request_body_size);
         record.response_size = calculate_response_size(
@@ -1469,10 +1602,15 @@ pub async fn handle_http_request(
         });
         record.request_headers = Some(req_headers.clone());
         record.response_headers = Some(original_res_headers.clone());
-        if res_headers != original_res_headers {
+        if res_headers != *original_res_headers {
             record.actual_response_headers = Some(res_headers.clone());
         }
-        record.original_request_headers = Some(original_req_headers.clone());
+        record.original_request_headers = Some(
+            original_req_headers
+                .as_ref()
+                .expect("request headers captured when admin state is enabled")
+                .clone(),
+        );
         if host != original_host || port != original_port {
             let actual_scheme = if use_tls { "https" } else { "http" };
             let actual_url = if (use_tls && port == 443) || (!use_tls && port == 80) {
@@ -1514,7 +1652,7 @@ pub async fn handle_http_request(
         if is_websocket {
             record.protocol = "ws".to_string();
             record.set_websocket();
-            state.connection_monitor.register_connection(&ctx.id_str());
+            state.connection_monitor.register_connection(ctx.id_str());
         }
 
         let is_sse = is_sse_response(&res_parts);
@@ -1533,7 +1671,7 @@ pub async fn handle_http_request(
                 protocol: req_proto,
                 client_ip: ctx.client_ip.clone(),
                 client_app: ctx.client_app.clone(),
-                headers: headers_to_hashmap(&req_headers),
+                headers: cloned_headers_hashmap(&mut req_headers_hashmap_cache, &req_headers),
                 body: None,
             };
 
@@ -1570,6 +1708,7 @@ pub async fn handle_http_request(
                 max_decompress_output_bytes,
             );
             let raw_res_body = decompressed_res_body.clone();
+            let res_headers_hashmap = headers_to_hashmap(&res_headers);
             let response_data = ResponseData {
                 status: res_parts.status.as_u16(),
                 status_text: res_parts
@@ -1577,7 +1716,7 @@ pub async fn handle_http_request(
                     .canonical_reason()
                     .unwrap_or("OK")
                     .to_string(),
-                headers: headers_to_hashmap(&res_headers),
+                headers: res_headers_hashmap,
                 body: None,
                 request: request_data,
             };
@@ -1603,9 +1742,9 @@ pub async fn handle_http_request(
 
             if !resolved_rules.decode_scripts.is_empty() {
                 record.raw_request_body_ref =
-                    store.store(&ctx.id_str(), "req_raw", raw_req_body.as_ref());
+                    store.store(ctx.id_str(), "req_raw", raw_req_body.as_ref());
                 record.raw_response_body_ref =
-                    store.store(&ctx.id_str(), "res_raw", raw_res_body.as_ref());
+                    store.store(ctx.id_str(), "res_raw", raw_res_body.as_ref());
 
                 if !decoded_req_results.is_empty() {
                     record.decode_req_script_results = Some(decoded_req_results.clone());
@@ -1615,10 +1754,9 @@ pub async fn handle_http_request(
                 }
             }
 
-            record.request_body_ref =
-                store.store(&ctx.id_str(), "req", decoded_req_output.as_ref());
+            record.request_body_ref = store.store(ctx.id_str(), "req", decoded_req_output.as_ref());
             record.response_body_ref =
-                store.store(&ctx.id_str(), "res", decoded_res_output.as_ref());
+                store.store(ctx.id_str(), "res", decoded_res_output.as_ref());
         }
 
         if !req_script_results.is_empty() {
@@ -1934,7 +2072,7 @@ async fn handle_http_websocket(
     };
 
     let total_ms = start_time.elapsed().as_millis() as u64;
-    let record_id = ctx.id_str();
+    let record_id = ctx.id_str().to_string();
 
     if let Some(ref state) = admin_state {
         state
@@ -1951,7 +2089,7 @@ async fn handle_http_websocket(
         );
 
         let mut record =
-            bifrost_admin::TrafficRecord::new(record_id.clone(), method.clone(), ws_url);
+            bifrost_admin::TrafficRecord::new(record_id.to_string(), method.clone(), ws_url);
         record.status = 101;
         record.protocol = record_protocol.to_string();
         record.duration_ms = total_ms;
@@ -2338,5 +2476,21 @@ mod tests {
             build_upstream_pool_partition("example.com", "127.0.0.1", 9999, false, &proxy_rules);
 
         assert_ne!(host_partition, proxy_partition);
+    }
+
+    #[test]
+    fn test_metrics_only_forwarding_mode_only_for_binary_fast_path() {
+        assert!(!should_use_metrics_only_forwarding_mode(
+            false, false, false, false, false
+        ));
+        assert!(should_use_metrics_only_forwarding_mode(
+            true, false, false, false, false
+        ));
+        assert!(!should_use_metrics_only_forwarding_mode(
+            true, true, false, false, false
+        ));
+        assert!(!should_use_metrics_only_forwarding_mode(
+            true, false, true, false, false
+        ));
     }
 }

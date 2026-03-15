@@ -13,7 +13,9 @@ use tokio::time::Sleep;
 use crate::server::BoxBody;
 use crate::transform::decompress::decompress_body_with_limit;
 
-const BODY_TRAFFIC_FLUSH_BYTES: usize = 256 * 1024;
+// Keep hot-path metrics updates coarse-grained so high-throughput relays do
+// not burn CPU on bookkeeping.
+const BODY_TRAFFIC_FLUSH_BYTES: usize = 1024 * 1024;
 
 fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
     let status = state.sse_hub.get_socket_status(record_id).map(|mut s| {
@@ -537,8 +539,8 @@ impl SseTeeBodyDropGuard {
 
 const DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES: usize = 256 * 1024;
 
-pub struct SseTeeBody {
-    inner: Incoming,
+pub struct SseTeeBody<B = Incoming> {
+    inner: B,
     guard: SseTeeBodyDropGuard,
     prev_byte: Option<u8>,
     event_size: usize,
@@ -548,9 +550,12 @@ pub struct SseTeeBody {
     flush_sleep: Option<Pin<Box<Sleep>>>,
 }
 
-impl SseTeeBody {
+impl<B> SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     pub fn new(
-        inner: Incoming,
+        inner: B,
         admin_state: Option<Arc<AdminState>>,
         record_id: String,
         traffic_type: Option<TrafficType>,
@@ -643,7 +648,10 @@ impl SseTeeBody {
     }
 }
 
-impl Body for SseTeeBody {
+impl<B> Body for SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     type Data = Bytes;
     type Error = hyper::Error;
 
@@ -724,14 +732,17 @@ impl Body for SseTeeBody {
     }
 }
 
-pub fn create_sse_tee_body(
-    body: Incoming,
+pub fn create_sse_tee_body<B>(
+    body: B,
     admin_state: Option<Arc<AdminState>>,
     record_id: String,
     traffic_type: Option<TrafficType>,
     file_writer: Option<BodyStreamWriter>,
     max_buffer_size: usize,
-) -> SseTeeBody {
+) -> SseTeeBody<B>
+where
+    B: Body<Data = Bytes, Error = hyper::Error> + Unpin + Send + Sync + 'static,
+{
     let max_buffer_size = max_buffer_size.min(DEFAULT_MAX_SSE_EVENT_BUFFER_BYTES);
     SseTeeBody::new(
         body,

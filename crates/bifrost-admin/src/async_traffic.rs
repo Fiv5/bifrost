@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -120,16 +121,38 @@ pub fn start_async_traffic_processor(
 
                     if !batch.is_empty() {
                         let batch_size = batch.len();
-                        for record in batch.drain(..) {
-                            traffic_db_store.record(*record);
-                        }
+                        let records: Vec<TrafficRecord> =
+                            batch.drain(..).map(|record| *record).collect();
+                        traffic_db_store.record_batch(records);
                         debug!("Processed {} traffic records", batch_size);
                     }
 
                     if !updates.is_empty() {
                         let update_count = updates.len();
-                        for (id, updater) in updates.drain(..) {
-                            traffic_db_store.update_by_id(&id, |r| updater(r));
+                        if traffic_db_store.has_traffic_event_subscribers() {
+                            for (id, updater) in updates.drain(..) {
+                                traffic_db_store.update_by_id(&id, |r| updater(r));
+                            }
+                        } else {
+                            let mut grouped: HashMap<String, Vec<TrafficUpdater>> = HashMap::new();
+                            let mut order: Vec<String> = Vec::new();
+                            for (id, updater) in updates.drain(..) {
+                                let bucket = grouped.entry(id.clone()).or_insert_with(|| {
+                                    order.push(id.clone());
+                                    Vec::new()
+                                });
+                                bucket.push(updater);
+                            }
+
+                            for id in order {
+                                if let Some(grouped_updaters) = grouped.remove(&id) {
+                                    traffic_db_store.update_by_id(&id, move |record| {
+                                        for updater in &grouped_updaters {
+                                            updater(record);
+                                        }
+                                    });
+                                }
+                            }
                         }
                         debug!("Processed {} traffic updates", update_count);
                     }

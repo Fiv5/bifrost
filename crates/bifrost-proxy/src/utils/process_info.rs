@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use tracing::{debug, trace, warn};
 
 #[derive(Debug, Clone)]
@@ -22,10 +23,18 @@ struct CachedProcess {
     expires_at: Instant,
 }
 
+struct SocketSnapshot {
+    ports_to_pids: HashMap<u16, u32>,
+    expires_at: Instant,
+}
+
 pub struct ProcessResolver {
     cache: RwLock<HashMap<u16, CachedProcess>>,
+    pid_cache: RwLock<HashMap<u32, CachedProcess>>,
+    socket_snapshot: RwLock<Option<SocketSnapshot>>,
     cache_ttl: Duration,
     negative_cache_ttl: Duration,
+    socket_snapshot_ttl: Duration,
 }
 
 impl Default for ProcessResolver {
@@ -38,8 +47,11 @@ impl ProcessResolver {
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
+            pid_cache: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(None),
             cache_ttl: Duration::from_secs(30),
             negative_cache_ttl: Duration::from_secs(5),
+            socket_snapshot_ttl: Duration::from_millis(250),
         }
     }
 
@@ -99,21 +111,10 @@ impl ProcessResolver {
             return None;
         }
 
-        let port = peer_addr.port();
-        match tokio::task::spawn_blocking(move || {
-            lookup_process_with_retry(&peer_addr, max_retries, delay_ms)
-        })
-        .await
-        {
-            Ok(process) => {
-                self.update_cache(port, process.clone());
-                process
-            }
-            Err(err) => {
-                warn!(peer_addr = %peer_addr, error = %err, "Async process resolution task failed");
-                None
-            }
-        }
+        // Keep the method for tests and low-frequency callers. Production async lookups
+        // go through the static wrappers below so they can reuse the shared resolver caches
+        // from a blocking worker without rebuilding socket snapshots.
+        self.resolve_with_retry(&peer_addr, max_retries, delay_ms)
     }
 
     fn get_from_cache(&self, port: u16) -> Option<Option<ClientProcess>> {
@@ -150,7 +151,64 @@ impl ProcessResolver {
     }
 
     fn lookup_process(&self, peer_addr: &SocketAddr) -> Option<ClientProcess> {
-        lookup_process(peer_addr)
+        let pid = self.lookup_pid(peer_addr)?;
+        self.lookup_cached_process_by_pid(pid)
+    }
+
+    fn lookup_pid(&self, peer_addr: &SocketAddr) -> Option<u32> {
+        let port = peer_addr.port();
+        let now = Instant::now();
+
+        if let Ok(snapshot_guard) = self.socket_snapshot.read() {
+            if let Some(snapshot) = snapshot_guard.as_ref() {
+                if snapshot.expires_at > now {
+                    return snapshot.ports_to_pids.get(&port).copied();
+                }
+            }
+        }
+
+        let ports_to_pids = lookup_socket_pid_map();
+        let pid = ports_to_pids.get(&port).copied();
+
+        if let Ok(mut snapshot_guard) = self.socket_snapshot.write() {
+            *snapshot_guard = Some(SocketSnapshot {
+                ports_to_pids,
+                expires_at: now + self.socket_snapshot_ttl,
+            });
+        }
+
+        pid
+    }
+
+    fn lookup_cached_process_by_pid(&self, pid: u32) -> Option<ClientProcess> {
+        let now = Instant::now();
+
+        if let Ok(cache) = self.pid_cache.read() {
+            if let Some(cached) = cache.get(&pid) {
+                if cached.expires_at > now {
+                    trace!(pid = pid, "Process info pid cache hit");
+                    return cached.process.clone();
+                }
+            }
+        }
+
+        let (name, path) = get_process_info(pid);
+        let process = Some(ClientProcess { pid, name, path });
+
+        if let Ok(mut cache) = self.pid_cache.write() {
+            cache.insert(
+                pid,
+                CachedProcess {
+                    process: process.clone(),
+                    expires_at: now + self.cache_ttl,
+                },
+            );
+            if cache.len() > 10000 {
+                cache.retain(|_, v| v.expires_at > now);
+            }
+        }
+
+        process
     }
 
     pub fn cleanup_expired(&self) {
@@ -166,6 +224,10 @@ impl ProcessResolver {
                     "Cleaned up expired process cache entries"
                 );
             }
+        }
+
+        if let Ok(mut cache) = self.pid_cache.write() {
+            cache.retain(|_, v| v.expires_at > Instant::now());
         }
     }
 }
@@ -309,32 +371,24 @@ lazy_static::lazy_static! {
     pub static ref PROCESS_RESOLVER: ProcessResolver = ProcessResolver::new();
 }
 
-fn lookup_process_with_retry(
-    peer_addr: &SocketAddr,
-    max_retries: u32,
-    delay_ms: u64,
-) -> Option<ClientProcess> {
-    for attempt in 0..=max_retries {
-        if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        }
+static BACKGROUND_PROCESS_RESOLUTION_CONCURRENCY: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("BIFROST_BACKGROUND_PROCESS_RESOLUTION_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(8)
+    });
 
-        let process = lookup_process(peer_addr);
-        if process.is_some() {
-            return process;
-        }
-    }
-
-    None
-}
+static BACKGROUND_PROCESS_RESOLUTION_SEMAPHORE: std::sync::LazyLock<Semaphore> =
+    std::sync::LazyLock::new(|| Semaphore::new(*BACKGROUND_PROCESS_RESOLUTION_CONCURRENCY));
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-fn lookup_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
+fn lookup_socket_pid_map() -> HashMap<u16, u32> {
     use netstat2::{
         get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState,
     };
 
-    let port = peer_addr.port();
     let af_flags = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
     let proto_flags = ProtocolFlags::TCP;
 
@@ -342,46 +396,40 @@ fn lookup_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "Failed to get socket info");
-            return None;
+            return HashMap::new();
         }
     };
 
+    let mut ports_to_pids = HashMap::new();
     for socket in sockets {
         if let ProtocolSocketInfo::Tcp(tcp) = socket.protocol_socket_info {
-            if tcp.local_port == port
-                && matches!(
-                    tcp.state,
-                    TcpState::Established
-                        | TcpState::SynSent
-                        | TcpState::SynReceived
-                        | TcpState::FinWait1
-                        | TcpState::FinWait2
-                        | TcpState::CloseWait
-                        | TcpState::LastAck
-                )
-            {
+            if matches!(
+                tcp.state,
+                TcpState::Established
+                    | TcpState::SynSent
+                    | TcpState::SynReceived
+                    | TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::CloseWait
+                    | TcpState::LastAck
+            ) {
                 if let Some(&pid) = socket.associated_pids.first() {
-                    let (name, path) = get_process_info(pid);
-                    debug!(
-                        port = port,
-                        pid = pid,
-                        name = %name,
-                        state = ?tcp.state,
-                        "Resolved client process"
-                    );
-                    return Some(ClientProcess { pid, name, path });
+                    ports_to_pids.entry(tcp.local_port).or_insert(pid);
                 }
             }
         }
     }
 
-    trace!(port = port, "No process found for port");
-    None
+    debug!(
+        socket_count = ports_to_pids.len(),
+        "Refreshed client socket pid snapshot"
+    );
+    ports_to_pids
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn lookup_process(_peer_addr: &SocketAddr) -> Option<ClientProcess> {
-    None
+fn lookup_socket_pid_map() -> HashMap<u16, u32> {
+    HashMap::new()
 }
 
 pub fn resolve_client_process(peer_addr: &SocketAddr) -> Option<ClientProcess> {
@@ -401,7 +449,7 @@ pub fn resolve_client_process_with_retry(
 }
 
 pub async fn resolve_client_process_async(peer_addr: &SocketAddr) -> Option<ClientProcess> {
-    PROCESS_RESOLVER.resolve_async(*peer_addr, 3, 10).await
+    resolve_client_process_async_with_retry(peer_addr, 3, 10).await
 }
 
 pub async fn resolve_client_process_async_with_retry(
@@ -409,9 +457,26 @@ pub async fn resolve_client_process_async_with_retry(
     max_retries: u32,
     delay_ms: u64,
 ) -> Option<ClientProcess> {
-    PROCESS_RESOLVER
-        .resolve_async(*peer_addr, max_retries, delay_ms)
-        .await
+    if let Some(cached) = PROCESS_RESOLVER.resolve_cached(peer_addr) {
+        return Some(cached);
+    }
+
+    if !peer_addr.ip().is_loopback() {
+        return None;
+    }
+
+    let peer_addr = *peer_addr;
+    match tokio::task::spawn_blocking(move || {
+        PROCESS_RESOLVER.resolve_with_retry(&peer_addr, max_retries, delay_ms)
+    })
+    .await
+    {
+        Ok(process) => process,
+        Err(err) => {
+            warn!(peer_addr = %peer_addr, error = %err, "Async process resolution task failed");
+            None
+        }
+    }
 }
 
 pub fn spawn_async_process_resolver<F>(peer_addr: SocketAddr, record_id: String, callback: F)
@@ -419,10 +484,16 @@ where
     F: FnOnce(String, ClientProcess) + Send + 'static,
 {
     tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            PROCESS_RESOLVER.resolve_with_retry(&peer_addr, 3, 10)
-        })
-        .await;
+        let permit = match BACKGROUND_PROCESS_RESOLUTION_SEMAPHORE.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => return,
+        };
+        // Defer a beat so the socket table has time to reflect the accepted connection,
+        // then do a single lookup instead of retrying on the hot path.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let result =
+            tokio::task::spawn_blocking(move || PROCESS_RESOLVER.resolve(&peer_addr)).await;
+        drop(permit);
 
         if let Ok(Some(process)) = result {
             callback(record_id, process);

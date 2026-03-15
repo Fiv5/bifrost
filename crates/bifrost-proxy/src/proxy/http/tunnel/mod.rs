@@ -122,13 +122,30 @@ pub(super) fn classify_request_error(
     client::classify_request_error(err)
 }
 
+pub(super) fn is_retryable_http2_error(err: &hyper_util::client::legacy::Error) -> bool {
+    client::is_retryable_http2_error(err)
+}
+
+pub(super) fn mark_http1_fallback(unsafe_ssl: bool, dns_servers: &[String], pool_partition: &str) {
+    client::mark_http1_fallback(unsafe_ssl, dns_servers, pool_partition)
+}
+
 pub(super) async fn send_pooled_request(
     request: Request<BoxBody>,
     unsafe_ssl: bool,
     dns_servers: &[String],
     pool_partition: &str,
-) -> std::result::Result<Response<Incoming>, hyper_util::client::legacy::Error> {
+) -> std::result::Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
     client::send_pooled_request(request, unsafe_ssl, dns_servers, pool_partition).await
+}
+
+pub(super) async fn send_pooled_request_http1_only(
+    request: Request<BoxBody>,
+    unsafe_ssl: bool,
+    dns_servers: &[String],
+    pool_partition: &str,
+) -> std::result::Result<Response<BoxBody>, hyper_util::client::legacy::Error> {
+    client::send_pooled_request_http1_only(request, unsafe_ssl, dns_servers, pool_partition).await
 }
 
 fn build_upstream_pool_partition(
@@ -409,7 +426,7 @@ pub async fn handle_connect(
         );
     }
 
-    let req_id = ctx.id_str();
+    let req_id = ctx.id_str().to_string();
     let verbose = verbose_logging;
     let client_ip = ctx.client_ip.clone();
     let client_app = ctx.client_app.clone();
@@ -431,7 +448,7 @@ pub async fn handle_connect(
             .increment_requests_by_type(TrafficType::Tunnel);
 
         let conn_info = ConnectionInfo::new(
-            req_id.clone(),
+            req_id.to_string(),
             host.clone(),
             port,
             false,
@@ -443,7 +460,7 @@ pub async fn handle_connect(
         state.connection_registry.register(conn_info);
 
         let mut record = TrafficRecord::new(
-            req_id.clone(),
+            req_id.to_string(),
             "CONNECT".to_string(),
             format!("tunnel://{}:{}", host, port),
         );
@@ -549,7 +566,7 @@ async fn handle_tls_interception(
     let alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     let server_config = tls_config.resolve_server_config(original_host, &alpn_protocols)?;
 
-    let req_id = ctx.id_str();
+    let req_id = ctx.id_str().to_string();
     let verbose = verbose_logging;
     let original_host_owned = original_host.to_string();
     let client_ip = ctx.client_ip.clone();
@@ -566,7 +583,7 @@ async fn handle_tls_interception(
             .increment_connections_by_type(TrafficType::Https);
 
         let conn_info = ConnectionInfo::new(
-            req_id.clone(),
+            req_id.to_string(),
             original_host_owned.clone(),
             original_port,
             true,

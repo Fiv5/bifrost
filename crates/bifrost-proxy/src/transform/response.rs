@@ -208,7 +208,7 @@ fn process_template_value(value: &str, ctx: &RequestContext) -> String {
         .replace("${query}", &ctx.search)
         .replace("${url.search}", &ctx.search)
         .replace("${clientIp}", &ctx.client_ip)
-        .replace("${reqId}", &ctx.id_str())
+        .replace("${reqId}", ctx.id_str())
         .replace("${now}", &now)
         .replace("${timestamp}", &now)
         .replace("${random}", &random.to_string());

@@ -124,7 +124,7 @@ pub async fn handle_websocket_upgrade(
     let upstream_headers = upstream_resp.headers.clone();
 
     let total_ms = start_time.elapsed().as_millis() as u64;
-    let record_id = ctx.id_str();
+    let record_id = ctx.id_str().to_string();
 
     if compression_enabled {
         debug!(
@@ -150,7 +150,7 @@ pub async fn handle_websocket_upgrade(
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
             .unwrap_or((None, None, None));
 
-        let mut record = TrafficRecord::new(record_id.clone(), method, ws_url);
+        let mut record = TrafficRecord::new(record_id.to_string(), method, ws_url);
         record.status = 101;
         record.protocol = "ws".to_string();
         record.duration_ms = total_ms;

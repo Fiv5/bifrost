@@ -96,7 +96,16 @@ export async function sendProxyRequest(
     body?: string;
   } = {},
 ): Promise<void> {
-  const args = ["-sS", "--fail", "-x", proxyUrl, "-X", options.method || "GET"];
+  const args = [
+    "-sS",
+    "--fail",
+    "--noproxy",
+    "",
+    "-x",
+    proxyUrl,
+    "-X",
+    options.method || "GET",
+  ];
   for (const [key, value] of Object.entries(options.headers || {})) {
     args.push("-H", `${key}: ${value}`);
   }
