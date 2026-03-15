@@ -75,14 +75,22 @@ async fn start_ws_echo_server() -> Result<(u16, tokio::task::JoinHandle<()>), St
 }
 
 async fn wait_for_websocket_record_id(admin_base: &str) -> Result<String, String> {
+    const IS_WEBSOCKET_FLAG: u64 = 1 << 1;
+
     for _ in 0..20 {
         if let Ok(resp) = reqwest::get(format!("{}/traffic?limit=20", admin_base)).await {
             if let Ok(json) = resp.json::<Value>().await {
                 if let Some(records) = json["records"].as_array() {
-                    if let Some(record) = records
-                        .iter()
-                        .find(|item| item["is_websocket"].as_bool().unwrap_or(false))
-                    {
+                    if let Some(record) = records.iter().find(|item| {
+                        item["is_websocket"].as_bool().unwrap_or(false)
+                            || item["flags"]
+                                .as_u64()
+                                .is_some_and(|flags| flags & IS_WEBSOCKET_FLAG != 0)
+                            || matches!(
+                                item["protocol"].as_str().or_else(|| item["proto"].as_str()),
+                                Some("ws" | "wss")
+                            )
+                    }) {
                         if let Some(id) = record["id"].as_str() {
                             return Ok(id.to_string());
                         }
