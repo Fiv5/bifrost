@@ -17,6 +17,7 @@
 - 在拦截入口同时识别两类 WebSocket 请求：
   - HTTP/1.1 `Upgrade: websocket`
   - HTTP/2 `CONNECT` + `:protocol = websocket`
+- 对非 TLS 拦截的 HTTP 转发入口保持同样的识别规则，避免 H2 extended CONNECT 被误判成普通 HTTP 请求并错误复用上游 H2 连接池。
 - H2 WebSocket 继续复用现有的握手转发、连接监控、帧捕获与流量记录逻辑。
 
 ### 3. 兼容上游仍是 HTTP/1.1 WebSocket 握手的场景
