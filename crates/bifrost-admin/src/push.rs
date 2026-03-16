@@ -732,6 +732,17 @@ impl PushManager {
         );
     }
 
+    pub fn send_initial_traffic(&self, client: &Arc<PushClient>) {
+        let subscription = client.get_subscription();
+        if !subscription.need_traffic {
+            return;
+        }
+
+        if let Some(ref db_store) = self.state.traffic_db_store {
+            self.send_initial_traffic_delta(client, db_store, &subscription);
+        }
+    }
+
     pub async fn broadcast_overview(&self) {
         let mut clients_to_remove = Vec::new();
         let overview = self.build_full_overview().await;
@@ -1710,6 +1721,45 @@ mod tests {
         for handle in handles {
             handle.abort();
         }
+        cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_initial_traffic_can_bootstrap_late_traffic_subscription() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap());
+        let state = Arc::new(AdminState::new(9913).with_traffic_db_store_shared(store.clone()));
+        let manager = Arc::new(PushManager::new(state));
+
+        let mut record = TrafficRecord::new(
+            "late-subscription-1".to_string(),
+            "GET".to_string(),
+            "http://example.test/late-subscription".to_string(),
+        );
+        record.status = 200;
+        store.record(record);
+
+        let (client, mut receiver) =
+            manager.register_client("push-late-subscription".to_string(), Default::default());
+
+        client.update_subscription(ClientSubscription {
+            need_traffic: true,
+            ..Default::default()
+        });
+
+        manager.send_initial_traffic(&client);
+
+        let message = timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("expected push message")
+            .expect("channel should stay open");
+
+        let PushMessage::TrafficDelta(data) = message else {
+            panic!("expected traffic delta");
+        };
+        assert_eq!(data.inserts.len(), 1);
+        assert_eq!(data.inserts[0].id, "late-subscription-1");
+
         cleanup_test_dir(&dir);
     }
 }

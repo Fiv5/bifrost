@@ -44,7 +44,9 @@ export function useGlobalDataSync() {
     const pauseRealtime = () => {
       if (globalState.visibilityPaused) return;
       globalState.visibilityPaused = true;
+      useTrafficStore.getState().disablePush();
       useMetricsStore.getState().disablePush();
+      pushService.disconnect();
     };
 
     const resumeRealtime = () => {
@@ -53,12 +55,18 @@ export function useGlobalDataSync() {
       }
       if (!globalState.visibilityPaused) return;
       globalState.visibilityPaused = false;
+      const currentTrafficStore = useTrafficStore.getState();
+      if (currentTrafficStore.polling && currentTrafficStore.usePush) {
+        currentTrafficStore.enablePush();
+      }
       useMetricsStore.getState().enablePush({
         needOverview: true,
         needMetrics: true,
       });
     };
 
+    // Only browser-window visibility changes should pause realtime push.
+    // In-app tab or route switches must not affect the status bar or traffic subscriptions.
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         pauseRealtime();

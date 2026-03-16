@@ -17,6 +17,20 @@ import {
 } from "./helpers/admin-helpers";
 
 const BASE_PROXY_URL = process.env.PROXY_URL || `http://127.0.0.1:${backendPort}`;
+const PUSH_RECORDER_KEY = "__bifrostPushRecorder";
+
+type PushRecorderSnapshot = {
+  urls: string[];
+  messages: string[];
+};
+
+type RecordedTrafficDelta = {
+  inserts: Array<Record<string, unknown>>;
+  updates: Array<Record<string, unknown>>;
+  has_more?: boolean;
+  server_total?: number;
+  server_sequence?: number;
+};
 
 const getRepoRoot = () => {
   const current = fileURLToPath(import.meta.url);
@@ -286,6 +300,97 @@ async function openTrafficPageAndWaitForPush(page: Page) {
   await pushSocketPromise;
 }
 
+async function installPushRecorder(page: Page) {
+  await page.addInitScript((recorderKey) => {
+    const nativeWebSocket = window.WebSocket;
+    const recorder = {
+      urls: [] as string[],
+      messages: [] as string[],
+    };
+
+    class InstrumentedWebSocket extends nativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        const urlString = String(url);
+        if (!urlString.includes("/api/push")) {
+          return;
+        }
+        recorder.urls.push(urlString);
+        this.addEventListener("message", (event) => {
+          if (typeof event.data === "string") {
+            recorder.messages.push(event.data);
+          }
+        });
+      }
+    }
+
+    Object.setPrototypeOf(InstrumentedWebSocket, nativeWebSocket);
+    Object.defineProperty(window, recorderKey, {
+      configurable: true,
+      value: recorder,
+      writable: false,
+    });
+    window.WebSocket = InstrumentedWebSocket as typeof WebSocket;
+  }, PUSH_RECORDER_KEY);
+}
+
+async function readPushRecorder(page: Page): Promise<PushRecorderSnapshot> {
+  return page.evaluate((recorderKey) => {
+    const recorder = (window as typeof window & {
+      [key: string]: PushRecorderSnapshot | undefined;
+    })[recorderKey];
+    return {
+      urls: [...(recorder?.urls || [])],
+      messages: [...(recorder?.messages || [])],
+    };
+  }, PUSH_RECORDER_KEY);
+}
+
+async function setDocumentVisibility(page: Page, state: "hidden" | "visible") {
+  await page.evaluate((nextState) => {
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => nextState,
+    });
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => nextState === "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event(nextState === "hidden" ? "pagehide" : "pageshow"));
+  }, state);
+}
+
+function extractTrafficDelta(
+  messages: string[],
+  predicate: (delta: RecordedTrafficDelta) => boolean = () => true,
+): RecordedTrafficDelta | null {
+  for (const raw of messages) {
+    try {
+      const parsed = JSON.parse(raw) as {
+        type?: string;
+        data?: RecordedTrafficDelta;
+      };
+      if (parsed.type === "traffic_delta" && parsed.data && predicate(parsed.data)) {
+        return parsed.data;
+      }
+    } catch {
+      void 0;
+    }
+  }
+  return null;
+}
+
+function countMatchingPaths(
+  delta: RecordedTrafficDelta,
+  paths: Set<string>,
+): number {
+  return delta.inserts.reduce((count, record) => {
+    const path = typeof record.p === "string" ? record.p : null;
+    return path && paths.has(path) ? count + 1 : count;
+  }, 0);
+}
+
 test.describe.serial("traffic push regressions", () => {
   test("服务重启后保留数据并恢复实时推送", async ({ page, context, request }) => {
     test.setTimeout(180000);
@@ -408,6 +513,53 @@ test.describe.serial("traffic push regressions", () => {
       if (!serverClosed) {
         await server.close();
       }
+    }
+  });
+
+  test("窗口隐藏后恢复时会通过批量 delta 补齐 backlog", async ({ page, request }) => {
+    await clearTraffic(request);
+    await installPushRecorder(page);
+    const server = await startMockHttpServer();
+    const hiddenPaths = Array.from({ length: 5 }, () => `/${uniqueName("hidden-batch")}`);
+    const hiddenPathSet = new Set(hiddenPaths);
+
+    try {
+      await openTrafficPageAndWaitForPush(page);
+      const initialRecorder = await readPushRecorder(page);
+
+      await setDocumentVisibility(page, "hidden");
+      await page.waitForTimeout(800);
+
+      await Promise.all(
+        hiddenPaths.map((requestPath) =>
+          sendProxyRequest(`http://127.0.0.1:${server.port}${requestPath}`),
+        ),
+      );
+
+      await setDocumentVisibility(page, "visible");
+
+      let resumedDelta: RecordedTrafficDelta | null = null;
+      await expect
+        .poll(
+          async () => {
+            const currentRecorder = await readPushRecorder(page);
+            resumedDelta = extractTrafficDelta(
+              currentRecorder.messages.slice(initialRecorder.messages.length),
+              (delta) => countMatchingPaths(delta, hiddenPathSet) >= 2,
+            );
+            return resumedDelta ? countMatchingPaths(resumedDelta, hiddenPathSet) : 0;
+          },
+          { timeout: 15000 },
+        )
+        .toBeGreaterThanOrEqual(2);
+
+      for (const requestPath of hiddenPaths) {
+        await expect(
+          page.getByTestId("traffic-row").filter({ hasText: requestPath }).first(),
+        ).toBeVisible();
+      }
+    } finally {
+      await server.close();
     }
   });
 });

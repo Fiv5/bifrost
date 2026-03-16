@@ -196,7 +196,8 @@ async fn handle_websocket_connection<S>(
 
     push_manager.send_initial_data(&client).await;
 
-    let push_manager_clone = push_manager.clone();
+    let push_manager_unregister = push_manager.clone();
+    let push_manager_receiver = push_manager.clone();
     let client_clone = client.clone();
     let last_pong_ms_sender = last_pong_ms.clone();
 
@@ -254,7 +255,14 @@ async fn handle_websocket_connection<S>(
                         }
                         if let Ok(subscription) = serde_json::from_str::<ClientSubscription>(&text)
                         {
-                            client_clone.update_subscription(sanitize_subscription(subscription));
+                            let subscription = sanitize_subscription(subscription);
+                            let previous = client_clone.get_subscription();
+                            let needs_initial_traffic =
+                                subscription.need_traffic && !previous.need_traffic;
+                            client_clone.update_subscription(subscription);
+                            if needs_initial_traffic {
+                                push_manager_receiver.send_initial_traffic(&client_clone);
+                            }
                         }
                         last_pong_ms_receiver.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                     }
@@ -293,7 +301,7 @@ async fn handle_websocket_connection<S>(
         }
     };
 
-    push_manager_clone.unregister_client(client_id);
+    push_manager_unregister.unregister_client(client_id);
     info!(client_id = client_id, "WebSocket connection closed");
 }
 
