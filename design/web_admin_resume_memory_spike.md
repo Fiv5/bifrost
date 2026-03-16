@@ -15,7 +15,17 @@
   - `MAX_PENDING_IDS = 500`
   - `POLL_MIN_INTERVAL = 200`
   - `HAS_MORE_BACKOFF_INTERVAL = 500`
-- 页面隐藏时会暂停实时同步，恢复时再继续。
+- 页面隐藏时会暂停 `traffic` 与 `metrics` 的实时 push，恢复时先恢复 `traffic` 再恢复 `metrics`。
+
+## 隐藏后恢复的补量策略
+
+- `traffic` 列表恢复时必须重新建立 `/api/push` 连接，而不是沿用隐藏前的连接状态。
+- 隐藏阶段需要显式断开底层 `pushService` 连接，避免被其他仍持有 ref 的订阅者继续把旧连接保活。
+- 重连时需要让 `need_traffic` 和 `last_sequence` 出现在建连阶段的订阅快照中，这样服务端 `send_initial_traffic_delta` 才会按 backlog 批量补发 `traffic_delta`。
+- 恢复顺序必须是：
+  - 先 `useTrafficStore.enablePush()`
+  - 再 `useMetricsStore.enablePush()`
+- 如果先恢复 `metrics`，WebSocket 会以“只有 metrics 订阅”的快照先连上，`traffic` 只能在 open 后靠二次订阅补上，服务端就拿不到首个批量补量窗口。
 
 ## 仍需谨慎的点
 

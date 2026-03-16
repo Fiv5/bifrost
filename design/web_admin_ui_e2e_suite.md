@@ -9,12 +9,7 @@
 - Admin API / Proxy E2E：`e2e-tests/` 下大量 shell 场景，偏接口与代理内核能力验证
 - 管理端浏览器场景：`.trae/skills/e2e-verify/scripts/scenarios/` 下只有少量场景
 
-当前浏览器侧可见场景只有：
-
-- `stream-sse`
-- `stream-ws`
-- `traffic-delete`
-- `rules-values-manual-refresh`
+当前浏览器侧可见场景不止 4 个，已涵盖 stream / traffic / replay 等多类能力，完整清单以 `.trae/skills/e2e-verify/scripts/scenarios/` 目录为准。
 
 这意味着以下关键链路仍缺完整 UI 设计：
 
