@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use bifrost_core::{BifrostError, Result, ValueStore};
+use chrono::{DateTime, Utc};
 
 #[derive(Clone)]
 pub struct ValuesStorage {
@@ -14,6 +16,21 @@ pub struct ValuesStorage {
 pub struct ValueEntry {
     pub name: String,
     pub value: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+fn metadata_times(path: &PathBuf) -> (SystemTime, SystemTime) {
+    let metadata = fs::metadata(path).ok();
+    let updated_at = metadata
+        .as_ref()
+        .and_then(|item| item.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let created_at = metadata
+        .as_ref()
+        .and_then(|item| item.created().ok())
+        .unwrap_or(updated_at);
+    (created_at, updated_at)
 }
 
 impl ValuesStorage {
@@ -60,6 +77,18 @@ impl ValuesStorage {
         self.cache.get(key).cloned()
     }
 
+    pub fn get_entry(&self, key: &str) -> Option<ValueEntry> {
+        let value = self.cache.get(key)?.clone();
+        let path = self.value_path(key);
+        let (created_at, updated_at) = metadata_times(&path);
+        Some(ValueEntry {
+            name: key.to_string(),
+            value,
+            created_at: DateTime::<Utc>::from(created_at).to_rfc3339(),
+            updated_at: DateTime::<Utc>::from(updated_at).to_rfc3339(),
+        })
+    }
+
     pub fn set_value(&mut self, key: &str, value: &str) -> Result<()> {
         let path = self.value_path(key);
         fs::write(&path, value)?;
@@ -104,16 +133,22 @@ impl ValuesStorage {
     }
 
     pub fn list_entries(&self) -> Result<Vec<ValueEntry>> {
-        let mut entries: Vec<ValueEntry> = self
+        let mut entries: Vec<(SystemTime, ValueEntry)> = self
             .cache
-            .iter()
-            .map(|(k, v)| ValueEntry {
-                name: k.clone(),
-                value: v.clone(),
+            .keys()
+            .filter_map(|key| {
+                let entry = self.get_entry(key)?;
+                let path = self.value_path(key);
+                let (created_at, _) = metadata_times(&path);
+                Some((created_at, entry))
             })
             .collect();
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        entries.sort_by(|(left_time, left_entry), (right_time, right_entry)| {
+            right_time
+                .cmp(left_time)
+                .then_with(|| left_entry.name.cmp(&right_entry.name))
+        });
+        Ok(entries.into_iter().map(|(_, entry)| entry).collect())
     }
 
     pub fn create(&mut self, name: &str, value: &str) -> Result<()> {
@@ -351,6 +386,18 @@ mod tests {
 
         storage.refresh().unwrap();
         assert_eq!(storage.get_value("key2"), Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_list_entries_sorted_by_updated_at_desc() {
+        let (_temp_dir, mut storage) = setup();
+        storage.set_value("older", "value1").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        storage.set_value("newer", "value2").unwrap();
+
+        let entries = storage.list_entries().unwrap();
+        let names: Vec<_> = entries.into_iter().map(|entry| entry.name).collect();
+        assert_eq!(names, vec!["newer", "older"]);
     }
 
     #[test]

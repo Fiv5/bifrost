@@ -6,6 +6,19 @@ export async function queryTraffic(request: TrafficQueryRequest): Promise<Traffi
   return post<TrafficQueryResponse>('/traffic/query', request);
 }
 
+export async function getTrafficPage(filter?: TrafficQueryRequest): Promise<TrafficQueryResponse> {
+  const params = new URLSearchParams();
+  if (filter) {
+    Object.entries(filter).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params.append(key, String(value));
+      }
+    });
+  }
+  const query = params.toString();
+  return get<TrafficQueryResponse>(`/traffic${query ? `?${query}` : ''}`);
+}
+
 export async function getTrafficList(filter?: TrafficFilter): Promise<TrafficListResponse> {
   const params = new URLSearchParams();
   if (filter) {

@@ -760,16 +760,22 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
     if let Some(ref db_store) = state.traffic_db_store {
         let limit = params.limit.unwrap_or(100);
         let cursor = params.after_seq;
-
-        let query_params = QueryParams {
-            cursor,
-            limit: Some(limit),
-            direction: crate::traffic_db::Direction::Forward,
-            ..Default::default()
-        };
-
+        let pending_ids = params.pending_ids.clone();
         let db_clone = db_store.clone();
-        let query_result = tokio::task::spawn_blocking(move || db_clone.query(&query_params)).await;
+        let query_result = tokio::task::spawn_blocking(move || {
+            if let Some(cursor) = cursor {
+                let query_params = QueryParams {
+                    cursor: Some(cursor),
+                    limit: Some(limit),
+                    direction: crate::traffic_db::Direction::Forward,
+                    ..Default::default()
+                };
+                db_clone.query(&query_params)
+            } else {
+                db_clone.query_latest_window(limit)
+            }
+        })
+        .await;
 
         let result = match query_result {
             Ok(r) => r,
@@ -786,8 +792,8 @@ async fn get_traffic_updates(req: Request<Incoming>, state: SharedAdminState) ->
             enrich_compact_frame_info(record, &state);
         }
 
-        let updated_records: Vec<TrafficSummaryCompact> = if !params.pending_ids.is_empty() {
-            let ids: Vec<String> = params.pending_ids.clone();
+        let updated_records: Vec<TrafficSummaryCompact> = if !pending_ids.is_empty() {
+            let ids: Vec<String> = pending_ids;
             let db_clone = db_store.clone();
             let ids_result = tokio::task::spawn_blocking(move || {
                 let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();

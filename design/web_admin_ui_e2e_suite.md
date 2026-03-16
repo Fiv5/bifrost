@@ -9,12 +9,7 @@
 - Admin API / Proxy E2E：`e2e-tests/` 下大量 shell 场景，偏接口与代理内核能力验证
 - 管理端浏览器场景：`.trae/skills/e2e-verify/scripts/scenarios/` 下只有少量场景
 
-当前浏览器侧可见场景只有：
-
-- `stream-sse`
-- `stream-ws`
-- `traffic-delete`
-- `rules-values-manual-refresh`
+当前浏览器侧可见场景不止 4 个，已涵盖 stream / traffic / replay 等多类能力，完整清单以 `.trae/skills/e2e-verify/scripts/scenarios/` 目录为准。
 
 这意味着以下关键链路仍缺完整 UI 设计：
 
@@ -89,16 +84,19 @@
 
 所有 Core UI 场景统一使用：
 
-- 临时数据目录：`BIFROST_DATA_DIR=./.bifrost-e2e-ui-*`
-- 临时代理端口：建议 `9910` 或 `9911`
-- 前端入口：`pnpm -C web dev -- --backend-port <PORT>`
-- UI 地址：`http://127.0.0.1:3000/_bifrost/`
+- 独立运行目录：`./.bifrost-ui-test-runs/<run-id>/`
+- 临时数据目录：`BIFROST_DATA_DIR=./.bifrost-ui-test-runs/<run-id>/data`
+- 临时代理端口：每次运行自动分配，不允许写死 `9900`
+- 临时前端端口：每次运行自动分配，不允许复用其他任务的 dev server
+- 前端入口：`BACKEND_PORT=<PORT> WEB_PORT=<WEB_PORT> pnpm -C web dev --host 127.0.0.1 --port <WEB_PORT>`
+- UI 地址：`http://127.0.0.1:<WEB_PORT>/_bifrost/`
 - Mock 服务：复用 `e2e-tests/mock_servers/start_servers.sh`
 - 浏览器执行器：`.trae/skills/e2e-verify/scripts/browser-test.js`
 
 统一要求：
 
 - 每个场景使用唯一前缀，例如 `ui-e2e-<timestamp>`
+- 每次测试必须启动独立代理进程，禁止复用共享代理实例
 - 场景结束必须清理 rules / values / scripts / replay 数据
 - 不允许复用正式服务端口 `9900`
 - 代理服务启动时应显式 `--host 127.0.0.1`
@@ -609,6 +607,9 @@
 - `ui-scripts-crud.json`
 - `ui-scripts-apply-request-response.json`
 - `ui-replay-group-execute.json`
+- `replay-collection-sync.json`
+- `replay-execute-traffic.json`
+- `replay-history-filters.json`
 - `ui-settings-proxy-tls.json`
 - `ui-settings-performance-sync.json`
 - `ui-settings-access-control.json`

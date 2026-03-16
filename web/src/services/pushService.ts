@@ -130,7 +130,7 @@ export interface ReplayRequestUpdatedData {
 
 export interface ReplayHistoryUpdatedData {
   action: string;
-  request_id: string;
+  request_id?: string;
   history_id?: string;
 }
 

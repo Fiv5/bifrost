@@ -9,6 +9,14 @@ const valuesSyncChannel =
     ? new BroadcastChannel(VALUES_SYNC_CHANNEL)
     : null;
 
+function sortValuesByCreatedAt(values: ValueItem[]): ValueItem[] {
+  return [...values].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    return rightTime - leftTime || left.name.localeCompare(right.name);
+  });
+}
+
 function broadcastValuesSnapshot(values: ValueItem[]): void {
   valuesSyncChannel?.postMessage({ type: 'snapshot', values });
 }
@@ -47,18 +55,19 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
   error: null,
 
   applyValuesSnapshot: (values) => {
+    const sortedValues = sortValuesByCreatedAt(values);
     const { selectedValueName } = get();
     const currentValue = selectedValueName
-      ? values.find((item) => item.name === selectedValueName) ?? null
+      ? sortedValues.find((item) => item.name === selectedValueName) ?? null
       : null;
-    set({ values, currentValue, loading: false, error: null });
+    set({ values: sortedValues, currentValue, loading: false, error: null });
   },
 
   fetchValues: async () => {
     set({ loading: true, error: null });
     try {
       const response = await api.getValues();
-      set({ values: response.values, loading: false });
+      set({ values: sortValuesByCreatedAt(response.values), loading: false });
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
@@ -79,14 +88,21 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
     try {
       await api.createValue(name, value);
       set((state) => {
-        const values = [...state.values, { name, value }].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        );
+        const now = new Date().toISOString();
+        const values = sortValuesByCreatedAt([
+          ...state.values,
+          {
+            name,
+            value,
+            created_at: now,
+            updated_at: now,
+          },
+        ]);
         broadcastValuesSnapshot(values);
         return {
           values,
           selectedValueName: name,
-          currentValue: { name, value },
+          currentValue: values.find((item) => item.name === name) ?? null,
           loading: false,
         };
       });
@@ -102,14 +118,18 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
     try {
       await api.updateValue(name, value);
       set((state) => {
+        const updatedAt = new Date().toISOString();
         const values = state.values.map((item) =>
-          item.name === name ? { ...item, value } : item,
+          item.name === name ? { ...item, value, updated_at: updatedAt } : item,
         );
-        broadcastValuesSnapshot(values);
+        const sortedValues = sortValuesByCreatedAt(values);
+        broadcastValuesSnapshot(sortedValues);
         return {
-          values,
+          values: sortedValues,
           currentValue:
-            state.currentValue?.name === name ? { name, value } : state.currentValue,
+            state.currentValue?.name === name
+              ? sortedValues.find((item) => item.name === name) ?? null
+              : state.currentValue,
           loading: false,
         };
       });
@@ -135,13 +155,17 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
       const newEditingContent = { ...get().editingContent };
       delete newEditingContent[selectedValueName];
       set((state) => {
+        const updatedAt = new Date().toISOString();
         const values = state.values.map((item) =>
-          item.name === selectedValueName ? { ...item, value: content } : item,
+          item.name === selectedValueName
+            ? { ...item, value: content, updated_at: updatedAt }
+            : item,
         );
-        broadcastValuesSnapshot(values);
+        const sortedValues = sortValuesByCreatedAt(values);
+        broadcastValuesSnapshot(sortedValues);
         return {
-          values,
-          currentValue: { name: selectedValueName, value: content },
+          values: sortedValues,
+          currentValue: sortedValues.find((item) => item.name === selectedValueName) ?? null,
           editingContent: newEditingContent,
           saving: false,
         };
@@ -211,20 +235,25 @@ export const useValuesStore = create<ValuesState>((set, get) => ({
 
       const nextValues = values
         .filter((item) => item.name !== oldName)
-        .concat({ name: newName, value: content })
-        .sort((a, b) => a.name.localeCompare(b.name));
-      broadcastValuesSnapshot(nextValues);
+        .concat({
+          name: newName,
+          value: content,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      const sortedValues = sortValuesByCreatedAt(nextValues);
+      broadcastValuesSnapshot(sortedValues);
       if (selectedValueName === oldName) {
         set({
-          values: nextValues,
+          values: sortedValues,
           selectedValueName: newName,
-          currentValue: { name: newName, value: content },
+          currentValue: sortedValues.find((item) => item.name === newName) ?? null,
           editingContent: newEditingContent,
           loading: false,
         });
       } else {
         set({
-          values: nextValues,
+          values: sortedValues,
           editingContent: newEditingContent,
           loading: false,
         });

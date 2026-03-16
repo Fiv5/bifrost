@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useEffect, type CSSProperties } from "react";
-import { Tag, Typography, Empty, theme } from "antd";
+import { Tag, Typography, Empty, Spin, theme } from "antd";
 import { CloseCircleOutlined } from "@ant-design/icons";
 import {
   useReplayStore,
@@ -222,6 +222,7 @@ export default function ResponsePanel() {
     currentResponse,
     currentTrafficRecord,
     streamingConnection,
+    executing,
     sseEvents,
     wsMessages,
     uiState,
@@ -296,6 +297,8 @@ export default function ResponsePanel() {
   }, [currentResponse?.applied_rules, currentTrafficRecord?.matched_rules]);
 
   const isEmpty = !currentResponse && !currentTrafficRecord && !hasStreamingContent;
+  const isExecutingPending =
+    executing && !currentResponse && !currentTrafficRecord && !hasStreamingContent;
 
   const responseRawContentType = useMemo(() => {
     return (
@@ -340,6 +343,20 @@ export default function ResponsePanel() {
   ]);
 
   const tabs = useMemo(() => {
+    if (isExecutingPending) {
+      return [
+        {
+          key: "Body",
+          label: "Body",
+          children: (
+            <div style={staticStyles.emptyState} data-testid="replay-response-executing">
+              <Spin tip="Executing request..." />
+            </div>
+          ),
+        },
+      ];
+    }
+
     if (isEmpty) {
       return [
         {
@@ -443,6 +460,7 @@ export default function ResponsePanel() {
         : []),
     ];
   }, [
+    isExecutingPending,
     isEmpty,
     error,
     token.colorError,
@@ -462,7 +480,7 @@ export default function ResponsePanel() {
   ]);
 
   useEffect(() => {
-    if (isEmpty || error) {
+    if (isExecutingPending || isEmpty || error) {
       if (activeTab !== "Body") {
         setActiveTab("Body");
       }
@@ -475,7 +493,7 @@ export default function ResponsePanel() {
     if (!currentTabEnabled && enabledTabs.length > 0) {
       setActiveTab(enabledTabs[0].key);
     }
-  }, [isEmpty, error, tabs, activeTab, setActiveTab]);
+  }, [isExecutingPending, isEmpty, error, tabs, activeTab, setActiveTab]);
 
   const styles: Record<string, CSSProperties> = {
     container: {

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 
 use super::schema::{
     get_insert_group_sql, get_insert_history_sql, get_insert_request_sql, get_update_group_sql,
@@ -428,22 +428,41 @@ impl ReplayDbStore {
     pub fn list_history(
         &self,
         request_id: Option<&str>,
+        request_unbound_only: bool,
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Vec<ReplayHistory> {
         let conn = self.read_conn.lock();
 
-        let where_clause = if let Some(rid) = request_id {
-            format!("WHERE request_id = '{}'", rid.replace('\'', "''"))
-        } else {
+        let mut conditions = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(rid) = request_id {
+            conditions.push("request_id = ?");
+            params.push(Box::new(rid.to_string()));
+        } else if request_unbound_only {
+            conditions.push("request_id IS NULL");
+        }
+
+        let where_clause = if conditions.is_empty() {
             String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
         };
 
         let limit_clause = match (limit, offset) {
-            (Some(l), Some(o)) => format!("LIMIT {} OFFSET {}", l, o),
-            (Some(l), None) => format!("LIMIT {}", l),
-            _ => String::new(),
+            (Some(_), Some(_)) => "LIMIT ? OFFSET ?".to_string(),
+            (Some(_), None) => "LIMIT ?".to_string(),
+            (None, Some(_)) => "LIMIT -1 OFFSET ?".to_string(),
+            (None, None) => String::new(),
         };
+
+        if let Some(l) = limit {
+            params.push(Box::new(l as i64));
+        }
+        if let Some(o) = offset {
+            params.push(Box::new(o as i64));
+        }
 
         let sql = format!(
             "SELECT id, request_id, traffic_id, method, url, status, duration_ms, executed_at, rule_config_blob \
@@ -456,7 +475,9 @@ impl ReplayDbStore {
             Err(_) => return vec![],
         };
 
-        stmt.query_map([], |row| {
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        stmt.query_map(params_from_iter(param_refs), |row| {
             let rule_config_json: Option<String> = row.get(8)?;
             let rule_config: Option<RuleConfig> =
                 rule_config_json.and_then(|s| serde_json::from_str(&s).ok());
@@ -477,20 +498,29 @@ impl ReplayDbStore {
         .unwrap_or_default()
     }
 
-    pub fn count_history(&self, request_id: Option<&str>) -> usize {
+    pub fn count_history(&self, request_id: Option<&str>, request_unbound_only: bool) -> usize {
         let conn = self.read_conn.lock();
-        let sql = if let Some(rid) = request_id {
-            format!(
-                "SELECT COUNT(*) FROM replay_history WHERE request_id = '{}'",
-                rid.replace('\'', "''")
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(rid) = request_id {
+            (
+                "SELECT COUNT(*) FROM replay_history WHERE request_id = ?",
+                vec![Box::new(rid.to_string())],
+            )
+        } else if request_unbound_only {
+            (
+                "SELECT COUNT(*) FROM replay_history WHERE request_id IS NULL",
+                Vec::new(),
             )
         } else {
-            "SELECT COUNT(*) FROM replay_history".to_string()
+            ("SELECT COUNT(*) FROM replay_history", Vec::new())
         };
 
-        conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-            .map(|v| v as usize)
-            .unwrap_or(0)
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+        conn.query_row(sql, params_from_iter(param_refs), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|v| v as usize)
+        .unwrap_or(0)
     }
 
     fn maybe_cleanup_history(&self, conn: &Connection) {
@@ -535,7 +565,7 @@ impl ReplayDbStore {
 
         ReplayDbStats {
             request_count: self.count_requests(),
-            history_count: self.count_history(None),
+            history_count: self.count_history(None, false),
             group_count: self.count_groups(),
             db_size,
             db_path: self.db_path.display().to_string(),
@@ -577,5 +607,90 @@ fn str_to_request_source(s: &str) -> RequestSource {
     match s {
         "imported" => RequestSource::Imported,
         _ => RequestSource::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_store() -> ReplayDbStore {
+        let dir = TempDir::new().expect("temp dir");
+        ReplayDbStore::new(dir.keep()).expect("replay db store")
+    }
+
+    fn make_history(id: &str, request_id: Option<&str>, executed_at: u64) -> ReplayHistory {
+        ReplayHistory {
+            id: id.to_string(),
+            request_id: request_id.map(str::to_string),
+            traffic_id: format!("traffic-{id}"),
+            method: "GET".to_string(),
+            url: format!("https://example.com/{id}"),
+            status: 200,
+            duration_ms: 10,
+            executed_at,
+            rule_config: None,
+        }
+    }
+
+    fn make_request(id: &str) -> ReplayRequest {
+        let mut request = ReplayRequest::new("GET".to_string(), "https://example.com".to_string());
+        request.id = id.to_string();
+        request.is_saved = true;
+        request
+    }
+
+    #[test]
+    fn list_and_count_unbound_history() {
+        let store = make_store();
+        store
+            .create_request(&make_request("req-1"))
+            .expect("save request");
+
+        store
+            .create_history(&make_history("saved-1", Some("req-1"), 1))
+            .expect("save bound history");
+        store
+            .create_history(&make_history("unbound-1", None, 2))
+            .expect("save unbound history");
+        store
+            .create_history(&make_history("unbound-2", None, 3))
+            .expect("save unbound history");
+
+        let all_history = store.list_history(None, false, Some(10), Some(0));
+        let unbound_history = store.list_history(None, true, Some(10), Some(0));
+        let request_history = store.list_history(Some("req-1"), false, Some(10), Some(0));
+
+        assert_eq!(store.count_history(None, false), 3);
+        assert_eq!(store.count_history(None, true), 2);
+        assert_eq!(store.count_history(Some("req-1"), false), 1);
+        assert_eq!(all_history.len(), 3);
+        assert_eq!(unbound_history.len(), 2);
+        assert!(unbound_history.iter().all(|item| item.request_id.is_none()));
+        assert_eq!(request_history.len(), 1);
+        assert_eq!(request_history[0].request_id.as_deref(), Some("req-1"));
+    }
+
+    #[test]
+    fn create_history_auto_cleans_up_oldest_records() {
+        let store = make_store();
+
+        for idx in 0..(MAX_HISTORY + CLEANUP_CHECK_INTERVAL + 1) {
+            store
+                .create_history(&make_history(&format!("history-{idx}"), None, idx as u64))
+                .expect("save history");
+        }
+
+        let history = store.list_history(None, false, Some(MAX_HISTORY + 10), Some(0));
+
+        assert_eq!(store.count_history(None, false), MAX_HISTORY);
+        assert_eq!(history.len(), MAX_HISTORY);
+        assert_eq!(
+            history
+                .last()
+                .and_then(|item| item.executed_at.checked_sub(0)),
+            Some((CLEANUP_CHECK_INTERVAL + 1) as u64)
+        );
     }
 }

@@ -10,6 +10,15 @@
 - SQLite 流量存储只保留活跃连接的轻量 `recent_cache`，详细数据按需从 DB 读取，避免常驻大对象。
 - 前端 SSE 消息列表有 `MAX_SSE_EVENTS = 20_000` 上限。
 - SSE response body 在前端合并时也有字符上限保护。
+- `SseHub` 当前只维护连接是否打开、收发计数和字节数，不再承担历史事件 ring 缓存。
+- 帧连接 metadata 已落到 `frame_connection_metadata` 表，启动时不再依赖一堆 `frames/*.meta.json` 预热。
+
+## 与 SSE / Traffic 现状对齐
+
+- SSE 历史内容的权威来源已经是 response body / `sse/stream` 读取链路，不是内存事件缓存。
+- `TrafficDbStore::recent_cache` 当前缓存的是 summary，而不是完整 `TrafficRecord`。
+- 活跃 WebSocket / SSE / tunnel 连接仍会保留必要的运行态 summary，连接结束后再逐步从 cache 收敛。
+- 管理端 `Traffic` 列表前端仍然是“虚拟列表 + 常驻窗口上限”的模型，并没有落地单独的服务端分页窗口化方案；所以不能把“按页按需加载历史列表”写成已实现事实。
 
 ## 不宜直接写成“已完成事实”的部分
 

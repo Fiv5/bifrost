@@ -1,0 +1,122 @@
+{
+  "name": "Replay 集合管理与 UI 同步",
+  "description": "验证 Replay 分组创建、请求保存、移动同步、请求删除和分组删除的 UI 收敛",
+  "variables": {
+    "caseId": "replay-collection-${uuid}",
+    "groupName": "Replay Group ${random}",
+    "requestName": "Replay Request ${random}",
+    "requestUrl": "http://127.0.0.1:9900/_bifrost/api/proxy/address?case=${caseId}&collection=1"
+  },
+  "config": {
+    "baseUrl": "http://127.0.0.1:9900/_bifrost",
+    "waitForLogin": false,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 清理 Replay 数据 ====" },
+    {
+      "action": "evaluate",
+      "variable": "cleanupOk",
+      "code": "(async () => { const base = '/_bifrost/api/replay'; const requests = await fetch(`${base}/requests?limit=200`).then((r) => r.json()); for (const request of requests.requests || []) { await fetch(`${base}/requests/${encodeURIComponent(request.id)}`, { method: 'DELETE' }); } const groups = await fetch(`${base}/groups`).then((r) => r.json()); for (const group of groups.groups || []) { await fetch(`${base}/groups/${encodeURIComponent(group.id)}`, { method: 'DELETE' }); } await fetch(`${base}/history`, { method: 'DELETE' }); return true; })()"
+    },
+    { "action": "assert", "condition": "${cleanupOk}", "message": "Replay 清理完成" },
+    { "action": "goto", "url": "/replay" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-collection-panel']" },
+
+    { "action": "log", "message": "==== 步骤 2: 通过 UI 创建分组 ====" },
+    { "action": "click", "selector": "[data-testid='replay-new-group-button']" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-group-name-input']" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-group-name-input']",
+      "value": "${groupName}"
+    },
+    {
+      "action": "evaluate",
+      "variable": "groupCreateSubmitted",
+      "code": "(() => { const buttons = Array.from(document.querySelectorAll('.ant-modal-root .ant-btn-primary')); const target = buttons.find((button) => button.offsetParent !== null); if (!target) return false; target.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()"
+    },
+    { "action": "assert", "condition": "${groupCreateSubmitted}", "message": "分组创建弹窗已提交" },
+    {
+      "action": "evaluate",
+      "variable": "groupId",
+      "code": "(async () => { const response = await fetch('/_bifrost/api/replay/groups').then((r) => r.json()); const group = (response.groups || []).find((item) => item.name === '${groupName}'); return group?.id || ''; })()"
+    },
+    { "action": "assert", "condition": "${groupId}", "message": "分组已创建" },
+
+    { "action": "log", "message": "==== 步骤 3: 通过 UI 保存请求 ====" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-url-input']",
+      "value": "${requestUrl}"
+    },
+    { "action": "click", "selector": "[data-testid='replay-save-button']" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-save-name-input']" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-save-name-input']",
+      "value": "${requestName}"
+    },
+    {
+      "action": "evaluate",
+      "variable": "requestSaveSubmitted",
+      "code": "(() => { const buttons = Array.from(document.querySelectorAll('.ant-modal-root .ant-btn-primary')); const target = buttons.find((button) => button.offsetParent !== null); if (!target) return false; target.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()"
+    },
+    { "action": "assert", "condition": "${requestSaveSubmitted}", "message": "请求保存弹窗已提交" },
+    {
+      "action": "evaluate",
+      "variable": "requestId",
+      "code": "(async () => { const response = await fetch('/_bifrost/api/replay/requests?saved=true&limit=100').then((r) => r.json()); const request = (response.requests || []).find((item) => item.name === '${requestName}'); return request?.id || ''; })()"
+    },
+    { "action": "assert", "condition": "${requestId}", "message": "请求已保存到集合" },
+
+    { "action": "log", "message": "==== 步骤 4: 移动请求到分组并验证 UI 同步 ====" },
+    {
+      "action": "evaluate",
+      "variable": "moveOk",
+      "code": "(async () => { const response = await fetch('/_bifrost/api/replay/requests/${requestId}/move', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ group_id: '${groupId}' }) }); return response.ok; })()"
+    },
+    { "action": "assert", "condition": "${moveOk}", "message": "请求移动 API 执行成功" },
+    { "action": "wait", "ms": 1000 },
+    {
+      "action": "evaluate",
+      "variable": "groupCountOk",
+      "code": "(() => { const groupNode = document.querySelector(\"[data-group-id='${groupId}']\"); return !!groupNode && groupNode.textContent.includes('${groupName}') && groupNode.textContent.includes('1'); })()"
+    },
+    { "action": "assert", "condition": "${groupCountOk}", "message": "分组数量已同步为 1" },
+
+    { "action": "log", "message": "==== 步骤 5: 通过 UI 删除请求 ====" },
+    { "action": "click", "selector": "[data-request-id='${requestId}'] [data-testid='replay-request-actions-button']" },
+    { "action": "wait", "ms": 300 },
+    {
+      "action": "evaluate",
+      "variable": "requestDeleted",
+      "code": "(() => { const items = Array.from(document.querySelectorAll('.ant-dropdown .ant-dropdown-menu-title-content')); const target = items.find((item) => item.textContent.trim() === 'Delete'); if (!target) return false; target.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()"
+    },
+    { "action": "assert", "condition": "${requestDeleted}", "message": "请求删除菜单已触发" },
+    { "action": "wait", "ms": 1000 },
+    {
+      "action": "evaluate",
+      "variable": "requestGone",
+      "code": "(() => !document.querySelector(\"[data-request-id='${requestId}']\"))()"
+    },
+    { "action": "assert", "condition": "${requestGone}", "message": "请求已从 UI 列表移除" },
+
+    { "action": "log", "message": "==== 步骤 6: 通过 UI 删除分组 ====" },
+    { "action": "click", "selector": "[data-group-id='${groupId}'] [data-testid='replay-group-actions-button']" },
+    { "action": "wait", "ms": 300 },
+    {
+      "action": "evaluate",
+      "variable": "groupDeleted",
+      "code": "(() => { const items = Array.from(document.querySelectorAll('.ant-dropdown .ant-dropdown-menu-title-content')); const target = items.find((item) => item.textContent.trim() === 'Delete'); if (!target) return false; target.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()"
+    },
+    { "action": "assert", "condition": "${groupDeleted}", "message": "分组删除菜单已触发" },
+    { "action": "wait", "ms": 1000 },
+    {
+      "action": "evaluate",
+      "variable": "groupGone",
+      "code": "(() => !document.querySelector(\"[data-group-id='${groupId}']\"))()"
+    },
+    { "action": "assert", "condition": "${groupGone}", "message": "分组已从 UI 列表移除" }
+  ]
+}

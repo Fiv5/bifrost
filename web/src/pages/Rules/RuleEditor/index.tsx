@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
-import { Empty, Spin, message, Button, Tooltip, Space, theme } from "antd";
-import { SaveOutlined, CopyOutlined } from "@ant-design/icons";
+import { Empty, Spin, message, Button, Modal, Space } from "antd";
+import { SaveOutlined, CopyOutlined, DeleteOutlined } from "@ant-design/icons";
 import BifrostEditor, {
   THEME_DARK,
   THEME_LIGHT,
@@ -20,7 +20,6 @@ import { useValuesStore } from "../../../stores/useValuesStore";
 import styles from "./index.module.css";
 
 export default function RuleEditor() {
-  const { token } = theme.useToken();
   const navigate = useNavigate();
   const {
     currentRule,
@@ -30,6 +29,7 @@ export default function RuleEditor() {
     saving,
     setEditingContent,
     saveCurrentRule,
+    deleteRule,
   } = useRulesStore();
   const { resolvedTheme } = useThemeStore();
   const { values } = useValuesStore();
@@ -111,6 +111,23 @@ export default function RuleEditor() {
       message.error("Failed to copy");
     }
   }, []);
+
+  const handleDelete = useCallback(() => {
+    if (!currentRule?.name) return;
+    Modal.confirm({
+      title: "Delete Rule",
+      content: `Are you sure to delete "${currentRule.name}"?`,
+      okText: "Delete",
+      okType: "danger",
+      cancelText: "Cancel",
+      onOk: async () => {
+        const success = await deleteRule(currentRule.name);
+        if (success) {
+          message.success("Rule deleted");
+        }
+      },
+    });
+  }, [currentRule, deleteRule]);
 
   const handleNavigate = useCallback(
     (location: ReferenceLocation) => {
@@ -253,26 +270,35 @@ export default function RuleEditor() {
           <span className={styles.title} data-testid="rule-editor-title">{currentRule?.name}</span>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
-        <Space size={4}>
-          <Tooltip title="Copy">
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={handleCopy}
-            />
-          </Tooltip>
-          <Tooltip title="Save (Cmd+S)">
-            <Button
-              type="text"
-              size="small"
-              icon={<SaveOutlined />}
-              onClick={handleSave}
-              disabled={!hasChanges}
-              style={{ color: hasChanges ? token.colorPrimary : undefined }}
-              data-testid="rule-save-button"
-            />
-          </Tooltip>
+        <Space size={8}>
+          <Button
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={handleCopy}
+            data-testid="rule-copy-button"
+          >
+            Copy
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<SaveOutlined />}
+            onClick={handleSave}
+            disabled={!hasChanges}
+            loading={saving}
+            data-testid="rule-save-button"
+          >
+            Save
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleDelete}
+            data-testid="rule-delete-button"
+          >
+            Delete
+          </Button>
         </Space>
       </div>
       <div className={styles.editorContainer} ref={setContainerElement} data-testid="rule-editor-container" />

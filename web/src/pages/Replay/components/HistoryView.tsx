@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useRef } from "react";
-import { Input, Empty, Spin, Tag, theme, Typography } from "antd";
-import { SearchOutlined } from "@ant-design/icons";
+import { Button, Input, Empty, Pagination, Spin, Tag, theme, Typography } from "antd";
+import { HistoryOutlined, SearchOutlined } from "@ant-design/icons";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import TrafficDetail from "../../../components/TrafficDetail";
 import type { ReplayHistory } from "../../../types";
@@ -68,6 +68,7 @@ const HistoryItem = ({ item, isSelected, onClick }: HistoryItemProps) => {
   return (
     <div
       onClick={onClick}
+      data-testid="replay-history-item"
       style={{
         padding: "6px 12px",
         cursor: "pointer",
@@ -153,6 +154,7 @@ export const HistoryView = () => {
 
   const {
     currentRequest,
+    historyFilter,
     allHistory,
     allHistoryTotal,
     loading,
@@ -161,11 +163,15 @@ export const HistoryView = () => {
     historyRequestBody,
     historyResponseBody,
     uiState,
+    loadAllHistory,
     updateUIState,
     selectHistoryForDetail,
+    reuseSelectedHistory,
   } = useReplayStore();
 
   const searchText = uiState.historySearchText;
+  const historyPage = uiState.historyPage;
+  const historyPageSize = uiState.historyPageSize;
   const selectedHistoryId = uiState.selectedHistoryId;
 
   const filteredHistory = useMemo(() => {
@@ -192,6 +198,30 @@ export const HistoryView = () => {
     [selectHistoryForDetail],
   );
 
+  const handlePageChange = useCallback(
+    (page: number, pageSize: number) => {
+      void loadAllHistory(page, pageSize);
+    },
+    [loadAllHistory],
+  );
+
+  const filterLabel = useMemo(() => {
+    if (historyFilter.type === "request") {
+      return currentRequest?.name || "Unnamed";
+    }
+    if (historyFilter.type === "unbound") {
+      return "Unbound replay history";
+    }
+    return "All replay history";
+  }, [currentRequest?.name, historyFilter]);
+
+  const pageSummary = useMemo(() => {
+    if (searchText) {
+      return `${filteredHistory.length} matches on this page · ${allHistoryTotal} total`;
+    }
+    return `${allHistoryTotal} total records`;
+  }, [allHistoryTotal, filteredHistory.length, searchText]);
+
   return (
     <div style={{ display: "flex", height: "100%", overflow: "hidden" }}>
       <div
@@ -211,24 +241,22 @@ export const HistoryView = () => {
             borderBottom: `1px solid ${token.colorBorderSecondary}`,
           }}
         >
-          {currentRequest && (
-            <div
-              style={{
-                marginBottom: 8,
-                padding: "6px 8px",
-                backgroundColor: token.colorBgLayout,
-                borderRadius: 4,
-                fontSize: 12,
-              }}
-            >
-              <Text type="secondary" style={{ fontSize: 10 }}>
-                Template:
-              </Text>
-              <div style={{ fontWeight: 500 }}>
-                {currentRequest.name || "Unnamed"}
-              </div>
+          <div
+            style={{
+              marginBottom: 8,
+              padding: "6px 8px",
+              backgroundColor: token.colorBgLayout,
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            <Text type="secondary" style={{ fontSize: 10 }}>
+              Scope:
+            </Text>
+            <div style={{ fontWeight: 500 }} data-testid="replay-history-scope">
+              {filterLabel}
             </div>
-          )}
+          </div>
           <Input
             prefix={<SearchOutlined />}
             placeholder="Search history..."
@@ -243,8 +271,9 @@ export const HistoryView = () => {
               fontSize: 11,
               color: token.colorTextSecondary,
             }}
+            data-testid="replay-history-summary"
           >
-            {filteredHistory.length} of {allHistoryTotal} records
+            {pageSummary}
           </div>
         </div>
 
@@ -278,6 +307,26 @@ export const HistoryView = () => {
             ))
           )}
         </div>
+
+        <div
+          style={{
+            padding: "8px 12px",
+            borderTop: `1px solid ${token.colorBorderSecondary}`,
+            backgroundColor: token.colorBgLayout,
+          }}
+        >
+          <Pagination
+            current={historyPage}
+            pageSize={historyPageSize}
+            total={allHistoryTotal}
+            size="small"
+            showSizeChanger
+            pageSizeOptions={["20", "50", "100", "200"]}
+            onChange={handlePageChange}
+            onShowSizeChange={handlePageChange}
+            data-testid="replay-history-pagination"
+          />
+        </div>
       </div>
 
       <div style={{ flex: 1, overflow: "hidden" }}>
@@ -293,11 +342,35 @@ export const HistoryView = () => {
             <Spin size="large" />
           </div>
         ) : selectedHistoryRecord ? (
-          <TrafficDetail
-            record={selectedHistoryRecord}
-            requestBody={historyRequestBody}
-            responseBody={historyResponseBody}
-          />
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                alignItems: "center",
+                gap: 8,
+                padding: "12px 16px",
+                borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                backgroundColor: token.colorBgContainer,
+              }}
+            >
+              <Button
+                type="primary"
+                icon={<HistoryOutlined />}
+                onClick={reuseSelectedHistory}
+                data-testid="replay-history-reuse-button"
+              >
+                Reuse in Replay
+              </Button>
+            </div>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <TrafficDetail
+                record={selectedHistoryRecord}
+                requestBody={historyRequestBody}
+                responseBody={historyResponseBody}
+              />
+            </div>
+          </div>
         ) : (
           <Empty
             description="Select a history record to view details"

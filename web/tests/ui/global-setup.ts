@@ -3,10 +3,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
+import { allocateUiTestEnv } from "./helpers/test-env";
 
-const PID_PATH = ".ui-backend.pid";
-const TRAFFIC_PID_PATH = ".ui-traffic.pid";
-const backendPort = Number(process.env.BIFROST_UI_TEST_PORT ?? process.env.BACKEND_PORT ?? 9910);
+const env = await allocateUiTestEnv();
+const backendPort = env.backendPort;
 const BASE_PROXY_URL = process.env.PROXY_URL || `http://127.0.0.1:${backendPort}`;
 const BACKEND_URL =
   process.env.ADMIN_STATUS_URL ||
@@ -76,7 +76,7 @@ const stopTrackedProcess = async (pidFile: string) => {
 };
 
 const startTrafficGenerator = async (repoRoot: string) => {
-  const trafficPidFile = path.join(repoRoot, TRAFFIC_PID_PATH);
+  const trafficPidFile = process.env.BIFROST_UI_TEST_TRAFFIC_PID_FILE || path.join(repoRoot, ".ui-traffic.pid");
   try {
     const pidText = await fs.readFile(trafficPidFile, "utf-8");
     const pid = Number(pidText);
@@ -106,19 +106,16 @@ const startTrafficGenerator = async (repoRoot: string) => {
 
 export default async () => {
   const repoRoot = getRepoRoot();
-  const pidFile = path.join(repoRoot, PID_PATH);
+  const pidFile = process.env.BIFROST_UI_TEST_PID_FILE || path.join(repoRoot, ".ui-backend.pid");
   const ready = await isBackendReady();
   const accessConfigured = ready ? await hasAccessControlConfigured() : false;
 
-  if (ready && !accessConfigured) {
-    await stopTrackedProcess(pidFile);
-  }
-
   if (!ready || !accessConfigured) {
-    const dataDir = path.join(repoRoot, ".bifrost-ui-test");
-    const targetDir = path.join(repoRoot, ".bifrost-ui-target");
+    await stopTrackedProcess(pidFile);
+    const dataDir = process.env.BIFROST_DATA_DIR || path.join(repoRoot, ".bifrost-ui-test");
+    const targetDir = process.env.BIFROST_UI_TEST_TARGET_DIR || path.join(repoRoot, ".bifrost-ui-target");
     const binPath = path.join(targetDir, "debug", "bifrost");
-    const logPath = path.join(repoRoot, ".ui-backend.log");
+    const logPath = process.env.BIFROST_UI_TEST_LOG_FILE || path.join(repoRoot, ".ui-backend.log");
     const logStream = createWriteStream(logPath, { flags: "a" });
     const { cmd, args } = await fs
       .access(binPath)

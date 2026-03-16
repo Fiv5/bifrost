@@ -16,6 +16,8 @@ struct RuleFileInfo {
     name: String,
     enabled: bool,
     rule_count: usize,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +122,8 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
                     name: r.name,
                     enabled: r.enabled,
                     rule_count: r.rule_count,
+                    created_at: r.created_at,
+                    updated_at: r.updated_at,
                 })
                 .collect();
             json_response(&infos)

@@ -1,6 +1,7 @@
 mod native_launcher;
 
 use bifrost_core::direct_blocking_reqwest_client_builder;
+use bifrost_storage::data_dir as shared_bifrost_data_dir;
 use bifrost_tls::{ensure_valid_ca, generate_root_ca, save_root_ca, CertInstaller, CertStatus};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -107,6 +108,12 @@ struct BackendState {
     launcher_overlay: Mutex<Option<usize>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostWindowCloseBehavior {
+    HideWindow,
+    ShutdownApp,
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -205,17 +212,29 @@ fn main() {
 
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                request_desktop_shutdown(window.app_handle());
+                handle_host_window_close_request(window);
             }
         })
         .build(tauri::generate_context!())
         .expect("failed to build desktop app")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                if should_intercept_exit(app_handle) {
-                    api.prevent_exit();
-                    request_desktop_shutdown(app_handle);
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if should_intercept_exit(app_handle) {
+                        api.prevent_exit();
+                        request_desktop_shutdown(app_handle);
+                    }
                 }
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen {
+                    has_visible_windows,
+                    ..
+                } => {
+                    if !has_visible_windows {
+                        restore_host_window(app_handle);
+                    }
+                }
+                _ => {}
             }
         });
 }
@@ -226,6 +245,33 @@ fn should_intercept_exit(app: &AppHandle) -> bool {
     };
 
     !state.force_exit.load(Ordering::SeqCst)
+}
+
+fn handle_host_window_close_request(window: &Window) {
+    match host_window_close_behavior() {
+        HostWindowCloseBehavior::HideWindow => {
+            if let Some(state) = window.app_handle().try_state::<BackendState>() {
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    "host window close requested on macOS; hiding window and keeping app alive",
+                );
+            }
+            let _ = window.hide();
+        }
+        HostWindowCloseBehavior::ShutdownApp => request_desktop_shutdown(window.app_handle()),
+    }
+}
+
+fn host_window_close_behavior() -> HostWindowCloseBehavior {
+    host_window_close_behavior_for_platform(cfg!(target_os = "macos"))
+}
+
+fn host_window_close_behavior_for_platform(is_macos: bool) -> HostWindowCloseBehavior {
+    if is_macos {
+        HostWindowCloseBehavior::HideWindow
+    } else {
+        HostWindowCloseBehavior::ShutdownApp
+    }
 }
 
 fn is_launcher_only_mode() -> bool {
@@ -386,24 +432,11 @@ fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {
 }
 
 fn resolve_desktop_data_dir() -> tauri::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("BIFROST_DATA_DIR") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
-    }
-
-    Ok(default_bifrost_data_dir())
+    Ok(shared_bifrost_data_dir())
 }
 
 fn resolve_desktop_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("desktop-config.json")
-}
-
-fn default_bifrost_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|home| home.join(".bifrost"))
-        .unwrap_or_else(|| PathBuf::from(".bifrost"))
 }
 
 fn ensure_desktop_cert_ready(data_dir: &Path) {
@@ -899,9 +932,7 @@ fn start_main_window_handoff(app: &AppHandle, reason: &str) -> tauri::Result<()>
     animate_host_window_to_main_size(&host_window)?;
     let _ = host_window.set_background_color(Some(Color(8, 17, 23, 255)));
     let _ = host_window.set_decorations(true);
-    let _ = host_window.show();
-    let _ = host_window.unminimize();
-    let _ = host_window.set_focus();
+    reveal_host_window(&host_window);
     let _ = host_window.set_resizable(true);
     let _ = host_window.set_maximizable(true);
     let _ = host_window.set_min_size(Some(LogicalSize::new(
@@ -955,6 +986,27 @@ fn try_start_native_handoff(app: &AppHandle, reason: &str) {
     }
 
     let _ = start_main_window_handoff(app, reason);
+}
+
+fn restore_host_window(app: &AppHandle) {
+    let Some(window) = app.get_window(HOST_WINDOW_LABEL) else {
+        return;
+    };
+
+    if let Some(state) = app.try_state::<BackendState>() {
+        append_desktop_bootstrap_log(
+            &state.data_dir,
+            "desktop reopen requested on macOS; restoring host window",
+        );
+    }
+
+    reveal_host_window(&window);
+}
+
+fn reveal_host_window(window: &Window) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
 }
 
 fn animate_host_window_to_main_size(window: &Window) -> tauri::Result<()> {
@@ -1351,8 +1403,11 @@ fn is_server_config_response(response_body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_server_config_response, parse_port_update_response, resolve_desktop_config_path,
+        host_window_close_behavior_for_platform, is_server_config_response,
+        parse_port_update_response, resolve_desktop_config_path, resolve_desktop_data_dir,
+        HostWindowCloseBehavior,
     };
+    use bifrost_storage::data_dir as shared_bifrost_data_dir;
     use std::path::PathBuf;
 
     #[test]
@@ -1361,6 +1416,14 @@ mod tests {
         assert_eq!(
             target,
             PathBuf::from("/tmp/shared-bifrost/desktop-config.json")
+        );
+    }
+
+    #[test]
+    fn desktop_data_dir_matches_shared_cli_dir() {
+        assert_eq!(
+            resolve_desktop_data_dir().unwrap(),
+            shared_bifrost_data_dir()
         );
     }
 
@@ -1385,5 +1448,21 @@ mod tests {
         assert!(is_server_config_response(
             r#"{"timeout_secs":30,"http1_max_header_size":65536,"http2_max_header_list_size":262144,"websocket_handshake_max_header_size":65536}"#
         ));
+    }
+
+    #[test]
+    fn macos_close_request_hides_window() {
+        assert_eq!(
+            host_window_close_behavior_for_platform(true),
+            HostWindowCloseBehavior::HideWindow
+        );
+    }
+
+    #[test]
+    fn non_macos_close_request_shuts_down_app() {
+        assert_eq!(
+            host_window_close_behavior_for_platform(false),
+            HostWindowCloseBehavior::ShutdownApp
+        );
     }
 }

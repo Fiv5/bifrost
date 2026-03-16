@@ -1,5 +1,5 @@
 import { useEffect, type CSSProperties } from "react";
-import { Spin, Tooltip, message, theme } from "antd";
+import { Spin, Tooltip, theme } from "antd";
 import { EditOutlined, HistoryOutlined } from "@ant-design/icons";
 import { useReplayStore, type ReplayMode } from "../../stores/useReplayStore";
 import SplitPane from "../../components/SplitPane";
@@ -61,25 +61,27 @@ export default function Replay() {
     currentRequest,
     savedRequests,
     loading,
-    executing,
-    streamingConnection,
     uiState,
-    loadRecentHistory,
+    loadGroups,
+    loadSavedRequests,
     loadAllHistory,
     updateUIState,
     selectRequest,
   } = useReplayStore();
 
   const currentMode = uiState.mode;
-  const canSwitchToHistory = currentRequest?.is_saved && currentRequest?.id;
 
   useEffect(() => {
     const init = async () => {
+      await Promise.all([
+        loadGroups(),
+        loadSavedRequests(),
+      ]);
+
       pushService.connect({
         need_replay_saved_requests: true,
         need_replay_groups: true,
       });
-      loadRecentHistory();
     };
     init();
 
@@ -90,7 +92,7 @@ export default function Replay() {
       });
       pushService.disconnectIfIdle();
     };
-  }, [loadRecentHistory]);
+  }, [loadGroups, loadSavedRequests]);
 
   useEffect(() => {
     if (
@@ -108,11 +110,7 @@ export default function Replay() {
 
   const handleModeChange = (mode: ReplayMode) => {
     if (mode === "history") {
-      if (!canSwitchToHistory) {
-        message.warning("Please select a saved request template first");
-        return;
-      }
-      loadAllHistory(currentRequest!.id);
+      void loadAllHistory(1);
     }
     updateUIState({ mode });
   };
@@ -174,8 +172,7 @@ export default function Replay() {
     },
   };
 
-  const isStreaming = streamingConnection?.status === "connected" || streamingConnection?.status === "connecting";
-  const showSpinner = loading || (executing && !isStreaming);
+  const showSpinner = loading;
 
   const composerContent = (
     <div style={styles.centerArea}>
@@ -228,15 +225,13 @@ export default function Replay() {
           isActive={currentMode === "composer"}
           onClick={() => handleModeChange("composer")}
         />
-        {canSwitchToHistory && (
-          <ModeButton
-            mode="history"
-            icon={<HistoryOutlined style={{ fontSize: 16 }} />}
-            label="History"
-            isActive={currentMode === "history"}
-            onClick={() => handleModeChange("history")}
-          />
-        )}
+        <ModeButton
+          mode="history"
+          icon={<HistoryOutlined style={{ fontSize: 16 }} />}
+          label="History"
+          isActive={currentMode === "history"}
+          onClick={() => handleModeChange("history")}
+        />
       </div>
     </div>
   );

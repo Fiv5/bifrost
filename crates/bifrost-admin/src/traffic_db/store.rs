@@ -710,6 +710,17 @@ impl TrafficDbStore {
         self.query_internal(params, QueryTotalMode::Exact)
     }
 
+    pub fn query_latest_window(&self, limit: usize) -> QueryResult {
+        let params = QueryParams {
+            limit: Some(limit),
+            direction: Direction::Backward,
+            ..Default::default()
+        };
+        let mut result = self.query(&params);
+        Self::normalize_latest_window_result(&mut result);
+        result
+    }
+
     /// 用于搜索等高频迭代场景的查询：不会计算 total（COUNT(*)），避免重复全表扫描。
     pub fn query_for_search(&self, params: &QueryParams) -> QueryResult {
         self.query_internal(params, QueryTotalMode::None)
@@ -826,6 +837,18 @@ impl TrafficDbStore {
             total,
             server_sequence: self.current_sequence.load(Ordering::Relaxed),
         }
+    }
+
+    fn normalize_latest_window_result(result: &mut QueryResult) {
+        if result.records.is_empty() {
+            result.next_cursor = None;
+            result.prev_cursor = None;
+            return;
+        }
+
+        result.records.reverse();
+        result.prev_cursor = result.records.first().map(|r| r.seq);
+        result.next_cursor = result.records.last().map(|r| r.seq);
     }
 
     /// 批量拉取搜索所需的轻量字段，避免 search 中的 N+1 `get_by_id`。
@@ -1857,6 +1880,32 @@ mod tests {
         assert_eq!(normal.has_more, fast.has_more);
         assert!(normal.total >= 3);
         assert_eq!(fast.total, 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_query_latest_window_returns_latest_records_in_ascending_order() {
+        let dir = create_test_dir();
+        let store = TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap();
+
+        for i in 0..5 {
+            store.record(TrafficRecord::new(
+                format!("req-{}", i),
+                "GET".to_string(),
+                format!("https://a.com/{}", i),
+            ));
+        }
+
+        let result = store.query_latest_window(2);
+        let sequences: Vec<u64> = result.records.iter().map(|r| r.seq).collect();
+        let ids: Vec<&str> = result.records.iter().map(|r| r.id.as_str()).collect();
+
+        assert_eq!(sequences.len(), 2);
+        assert!(sequences[0] < sequences[1]);
+        assert_eq!(ids, vec!["req-3", "req-4"]);
+        assert_eq!(result.prev_cursor, Some(sequences[0]));
+        assert_eq!(result.next_cursor, Some(sequences[1]));
 
         cleanup_test_dir(&dir);
     }

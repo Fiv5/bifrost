@@ -16,6 +16,7 @@ export default function Values() {
   const values = useValuesStore((state) => state.values);
   const selectedValueName = useValuesStore((state) => state.selectedValueName);
   const selectValue = useValuesStore((state) => state.selectValue);
+  const fetchValues = useValuesStore((state) => state.fetchValues);
   const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
   const initRef = useRef(false);
@@ -26,6 +27,9 @@ export default function Values() {
     if (loadedRef.current) return;
     loadedRef.current = true;
 
+    if (values.length === 0) {
+      void fetchValues();
+    }
     pushService.connect({ need_values: true });
     const unsubscribe = pushService.onValuesUpdate((data) => {
       applyValuesSnapshot(data.values);
@@ -36,7 +40,7 @@ export default function Values() {
       pushService.updateSubscription({ need_values: false });
       pushService.disconnectIfIdle();
     };
-  }, [applyValuesSnapshot]);
+  }, [applyValuesSnapshot, fetchValues, values.length]);
 
   useEffect(() => {
     const nameParam = searchParams.get('name');

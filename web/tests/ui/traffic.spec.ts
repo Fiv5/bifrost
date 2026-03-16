@@ -28,9 +28,11 @@ const startMockServer = async () => {
   return {
     port,
     close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((err?: Error) => (err ? reject(err) : resolve())),
-      ),
+      new Promise<void>((resolve, reject) => {
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+        server.close((err?: Error) => (err ? reject(err) : resolve()));
+      }),
   };
 };
 
@@ -72,9 +74,11 @@ const startSseServer = async () => {
   return {
     port,
     close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((err?: Error) => (err ? reject(err) : resolve())),
-      ),
+      new Promise<void>((resolve, reject) => {
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+        server.close((err?: Error) => (err ? reject(err) : resolve()));
+      }),
   };
 };
 
@@ -281,6 +285,40 @@ test("清空流量时前端立即清理", async ({ page, request }) => {
   await server.close();
 });
 
+async function sendHttpViaProxy(url: string) {
+  await new Promise<void>((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: proxyHost.hostname,
+        port: proxyHost.port || 80,
+        method: "GET",
+        path: url,
+        headers: {
+          Host: new URL(url).host,
+        },
+      },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve());
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function seedTrafficBatch(paths: string[], serverPort: number) {
+  const batchSize = 40;
+  for (let i = 0; i < paths.length; i += batchSize) {
+    const batch = paths.slice(i, i + batchSize);
+    await Promise.all(
+      batch.map((path) =>
+        sendHttpViaProxy(`http://127.0.0.1:${serverPort}${path}`),
+      ),
+    );
+  }
+}
+
 test("实时更新与页面刷新保持数据", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startMockServer();
@@ -307,6 +345,84 @@ test("实时更新与页面刷新保持数据", async ({ page, request }) => {
   ).toBeVisible();
 
   await server.close();
+});
+
+test("刷新时首屏仍能保留最新窗口中的筛选结果", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const targetPrefix = `/latest-window-${token}`;
+  const filterParam = Buffer.from(
+    JSON.stringify([
+      {
+        id: `filter-${token}`,
+        field: "path",
+        operator: "contains",
+        value: targetPrefix,
+      },
+    ]),
+  ).toString("base64url");
+
+  try {
+    const paths = Array.from({ length: 1000 }, (_, index) => `/noise-${token}-${index}`);
+    paths.push(`${targetPrefix}-a`, `${targetPrefix}-b`);
+    await seedTrafficBatch(paths, server.port);
+
+    await page.goto(`/_bifrost/traffic?filter=${filterParam}`);
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-a` }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-b` }).first(),
+    ).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-a` }).first(),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-b` }).first(),
+    ).toBeVisible();
+  } finally {
+    await server.close();
+  }
+});
+
+test("后台历史回填会自动补齐首屏之外的旧记录", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const targetPrefix = `/historic-backfill-${token}`;
+  const filterParam = Buffer.from(
+    JSON.stringify([
+      {
+        id: `filter-historic-${token}`,
+        field: "path",
+        operator: "contains",
+        value: targetPrefix,
+      },
+    ]),
+  ).toString("base64url");
+
+  try {
+    const paths = [`${targetPrefix}-a`, `${targetPrefix}-b`];
+    paths.push(...Array.from({ length: 1000 }, (_, index) => `/historic-noise-${token}-${index}`));
+    await seedTrafficBatch(paths, server.port);
+
+    await page.goto(`/_bifrost/traffic?filter=${filterParam}`);
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-a` }).first(),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.getByTestId("traffic-row").filter({ hasText: `${targetPrefix}-b` }).first(),
+    ).toBeVisible({ timeout: 15000 });
+  } finally {
+    await server.close();
+  }
 });
 
 test("订阅更新提示与滚动状态一致", async ({ page, request }) => {

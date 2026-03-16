@@ -2,6 +2,8 @@ export interface RuleFile {
   name: string;
   enabled: boolean;
   rule_count: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RuleFileDetail {
@@ -333,7 +335,7 @@ export interface ReplayDbStats {
 
 export const REPLAY_LIMITS = {
   MAX_REQUESTS: 1000,
-  MAX_HISTORY: 10000,
+  MAX_HISTORY: 2000,
   MAX_CONCURRENT: 100,
 } as const;
 
@@ -378,6 +380,7 @@ export interface TrafficQueryResponse {
 
 export interface TrafficUpdatesFilter extends TrafficFilter {
   after_id?: string;
+  after_seq?: number;
   pending_ids?: string;
 }
 

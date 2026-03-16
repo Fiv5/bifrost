@@ -44,7 +44,9 @@ export function useGlobalDataSync() {
     const pauseRealtime = () => {
       if (globalState.visibilityPaused) return;
       globalState.visibilityPaused = true;
+      useTrafficStore.getState().disablePush();
       useMetricsStore.getState().disablePush();
+      pushService.disconnect();
     };
 
     const resumeRealtime = () => {
@@ -53,12 +55,19 @@ export function useGlobalDataSync() {
       }
       if (!globalState.visibilityPaused) return;
       globalState.visibilityPaused = false;
+      const currentTrafficStore = useTrafficStore.getState();
+      if (currentTrafficStore.polling && currentTrafficStore.usePush) {
+        currentTrafficStore.enablePush();
+        void currentTrafficStore.catchUpUpdates();
+      }
       useMetricsStore.getState().enablePush({
         needOverview: true,
         needMetrics: true,
       });
     };
 
+    // Only browser-window visibility changes should pause realtime push.
+    // In-app tab or route switches must not affect the status bar or traffic subscriptions.
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') {
         pauseRealtime();
@@ -133,12 +142,22 @@ export function useGlobalDataSync() {
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
     const unsubscribeForceRefresh = pushService.onForceRefresh(onForceRefresh);
+    const unsubscribePushConnection = pushService.onConnectionChange(({ connected }) => {
+      if (!connected || globalState.visibilityPaused || globalState.forceRefresh) {
+        return;
+      }
+      const currentTrafficStore = useTrafficStore.getState();
+      if (currentTrafficStore.polling && currentTrafficStore.usePush) {
+        void currentTrafficStore.catchUpUpdates();
+      }
+    });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
       unsubscribeForceRefresh();
+      unsubscribePushConnection();
 
       stopAllPolling();
 

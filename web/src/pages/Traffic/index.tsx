@@ -12,6 +12,7 @@ import { message, theme } from "antd";
 import { useShallow } from "zustand/react/shallow";
 import {
   useTrafficStore,
+  applyTrafficRecordsMutationToFilteredRecords,
   filterRecords,
   type PanelFilters,
 } from "../../stores/useTrafficStore";
@@ -96,6 +97,7 @@ export default function Traffic() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const records = useTrafficStore((state) => state.records);
+  const recordsMutation = useTrafficStore((state) => state.recordsMutation);
   const hasMore = useTrafficStore((state) => state.hasMore);
   const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
   const filterConditions = useTrafficStore((state) => state.filterConditions);
@@ -103,6 +105,13 @@ export default function Traffic() {
   const newRecordsCount = useTrafficStore((state) => state.newRecordsCount);
   const scrollTop = useTrafficStore((state) => state.scrollTop);
   const selectedId = useTrafficStore((state) => state.selectedId);
+  const clientInfo = useTrafficStore(
+    useShallow((state) => ({
+      apps: state.availableClientApps,
+      ips: state.availableClientIps,
+      domains: state.availableDomains,
+    })),
+  );
   const { currentRecord, requestBody, responseBody, detailLoading, detailError } =
     useTrafficStore(
       useShallow((state) => ({
@@ -515,19 +524,59 @@ export default function Traffic() {
   const deferredToolbarFilters = useDeferredValue(toolbarFilters);
   const deferredFilterConditions = useDeferredValue(filterConditions);
   const deferredPanelFilters = useDeferredValue(panelFilters);
+  const [filteredRecords, setFilteredRecords] = useState<TrafficSummary[]>([]);
+  const appliedMutationVersionRef = useRef(-1);
+  const filterSignature = useMemo(
+    () => JSON.stringify({
+      toolbar: deferredToolbarFilters,
+      conditions: deferredFilterConditions,
+      panel: deferredPanelFilters,
+    }),
+    [deferredFilterConditions, deferredPanelFilters, deferredToolbarFilters],
+  );
+  const previousFilterSignatureRef = useRef<string | null>(null);
 
-  const filteredRecords = useMemo(() => {
-    return filterRecords(
-      records,
-      deferredToolbarFilters,
-      deferredFilterConditions,
-      deferredPanelFilters,
+  useEffect(() => {
+    const filtersChanged = previousFilterSignatureRef.current !== filterSignature;
+    if (
+      filtersChanged ||
+      recordsMutation.reset ||
+      recordsMutation.version < appliedMutationVersionRef.current
+    ) {
+      previousFilterSignatureRef.current = filterSignature;
+      appliedMutationVersionRef.current = recordsMutation.version;
+      setFilteredRecords(
+        filterRecords(
+          records,
+          deferredToolbarFilters,
+          deferredFilterConditions,
+          deferredPanelFilters,
+        ),
+      );
+      return;
+    }
+
+    if (recordsMutation.version === appliedMutationVersionRef.current) {
+      return;
+    }
+
+    appliedMutationVersionRef.current = recordsMutation.version;
+    setFilteredRecords((current) =>
+      applyTrafficRecordsMutationToFilteredRecords(
+        current,
+        recordsMutation,
+        deferredToolbarFilters,
+        deferredFilterConditions,
+        deferredPanelFilters,
+      ),
     );
   }, [
-    records,
-    deferredToolbarFilters,
     deferredFilterConditions,
     deferredPanelFilters,
+    deferredToolbarFilters,
+    filterSignature,
+    records,
+    recordsMutation,
   ]);
 
   const handleClearFiltered = useCallback(async () => {
@@ -541,22 +590,6 @@ export default function Traffic() {
       }
     }
   }, [clearTraffic, filteredRecords, selectedId, setSelectedId]);
-
-  const clientInfo = useMemo(() => {
-    const appSet = new Set<string>();
-    const ipSet = new Set<string>();
-    const domainSet = new Set<string>();
-    for (const record of records) {
-      if (record.client_app) appSet.add(record.client_app);
-      if (record.client_ip) ipSet.add(record.client_ip);
-      if (record.host) domainSet.add(record.host);
-    }
-    return {
-      apps: Array.from(appSet).sort(),
-      ips: Array.from(ipSet).sort(),
-      domains: Array.from(domainSet).sort(),
-    };
-  }, [records]);
 
   const styles = useMemo<Record<string, CSSProperties>>(
     () => ({

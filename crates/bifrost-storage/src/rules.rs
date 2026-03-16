@@ -100,6 +100,7 @@ pub struct RuleSummary {
     pub sort_order: i32,
     pub rule_count: usize,
     pub description: Option<String>,
+    pub created_at: String,
     pub updated_at: String,
 }
 
@@ -120,6 +121,7 @@ impl From<&RuleFile> for RuleSummary {
             sort_order: rule.sort_order,
             rule_count,
             description: rule.description.clone(),
+            created_at: rule.created_at.clone(),
             updated_at: rule.updated_at.clone(),
         }
     }
@@ -344,6 +346,7 @@ impl RulesStorage {
                 sort_order: parsed.meta.sort_order,
                 rule_count: parsed.options.rule_count,
                 description: parsed.meta.description,
+                created_at: parsed.meta.created_at,
                 updated_at: parsed.meta.updated_at,
             })
         } else if legacy_path.exists() {

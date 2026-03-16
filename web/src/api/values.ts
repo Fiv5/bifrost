@@ -4,6 +4,8 @@ import type { ApiResponse } from '../types';
 export interface ValueItem {
   name: string;
   value: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ValuesListResponse {

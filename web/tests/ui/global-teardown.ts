@@ -1,19 +1,11 @@
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import fs from "node:fs/promises";
 
-const PID_PATH = ".ui-backend.pid";
-const TRAFFIC_PID_PATH = ".ui-traffic.pid";
-
-const getRepoRoot = () => {
-  const current = fileURLToPath(import.meta.url);
-  return path.resolve(path.dirname(current), "../../..");
-};
-
 export default async () => {
-  const repoRoot = getRepoRoot();
-  const trafficPidFile = path.join(repoRoot, TRAFFIC_PID_PATH);
+  const trafficPidFile = process.env.BIFROST_UI_TEST_TRAFFIC_PID_FILE;
   try {
+    if (!trafficPidFile) {
+      throw new Error("missing traffic pid file");
+    }
     const pidText = await fs.readFile(trafficPidFile, "utf-8");
     const pid = Number(pidText);
     if (!Number.isNaN(pid)) {
@@ -31,8 +23,11 @@ export default async () => {
   } catch {
     void 0;
   }
-  const pidFile = path.join(repoRoot, PID_PATH);
+  const pidFile = process.env.BIFROST_UI_TEST_PID_FILE;
   try {
+    if (!pidFile) {
+      throw new Error("missing backend pid file");
+    }
     const pidText = await fs.readFile(pidFile, "utf-8");
     const pid = Number(pidText);
     if (!Number.isNaN(pid)) {

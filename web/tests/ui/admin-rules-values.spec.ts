@@ -13,19 +13,25 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+async function changeSort(page: import("@playwright/test").Page, testId: string, label: string) {
+  await page.getByTestId(testId).click();
+  await page.locator(".ant-select-dropdown").getByText(label, { exact: true }).click();
+}
+
 test.beforeEach(async ({ request }) => {
   await clearTraffic(request);
   await clearRules(request);
   await clearValues(request);
 });
 
-test("Values 页面完成 CRUD，并通过 push 自动同步外部写入", async ({
+test("Values 页面完成 CRUD、支持多种排序，并通过 push 自动同步外部写入", async ({
   page,
   context,
+  request,
 }) => {
-  const valueName = uniqueName("ui-value");
+  const valueName = uniqueName("a-ui-value");
   const renamedValueName = `${valueName}-renamed`;
-  const pushedValueName = uniqueName("push-value");
+  const pushedValueName = uniqueName("z-push-value");
 
   await openPage(page, "values");
   await expect(page.getByTestId("values-list")).toBeVisible();
@@ -65,9 +71,39 @@ test("Values 页面完成 CRUD，并通过 push 自动同步外部写入", async
   await expect(
     page.getByTestId("value-item").filter({ hasText: pushedValueName }).first(),
   ).toBeVisible();
+  await expect(page.getByTestId("value-item").first()).toHaveAttribute(
+    "data-value-name",
+    pushedValueName,
+  );
   await expect(
     syncPage.getByTestId("value-item").filter({ hasText: pushedValueName }).first(),
   ).toBeVisible();
+  await expect(syncPage.getByTestId("value-item").first()).toHaveAttribute(
+    "data-value-name",
+    pushedValueName,
+  );
+
+  await changeSort(page, "value-sort-select", "Name");
+  await expect(page.getByTestId("value-item").first()).toHaveAttribute(
+    "data-value-name",
+    renamedValueName,
+  );
+
+  await page.waitForTimeout(1100);
+  const updateValueRes = await request.put(
+    `${apiBase}/values/${encodeURIComponent(renamedValueName)}`,
+    { data: { value: "updated-by-api" } },
+  );
+  if (!updateValueRes.ok()) {
+    throw new Error(await updateValueRes.text());
+  }
+  await page.getByTestId("value-refresh-button").click();
+
+  await changeSort(page, "value-sort-select", "Updated");
+  await expect(page.getByTestId("value-item").first()).toHaveAttribute(
+    "data-value-name",
+    renamedValueName,
+  );
 
   await renamedValueItem.getByTestId("value-item-menu").click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
@@ -82,11 +118,12 @@ test("Values 页面完成 CRUD，并通过 push 自动同步外部写入", async
   await syncPage.close();
 });
 
-test("Rules 页面创建、应用、禁用、删除规则，并验证 Values 引用生效", async ({
+test("Rules 页面创建、应用、禁用、删除规则，并支持切换排序", async ({
   page,
   request,
 }) => {
-  const ruleName = uniqueName("ui-rule");
+  const ruleName = uniqueName("a-ui-rule");
+  const latestRuleName = uniqueName("z-ui-rule");
   const server = await startMockHttpServer();
 
   try {
@@ -101,12 +138,34 @@ test("Rules 页面创建、应用、禁用、删除规则，并验证 Values 引
     await expect(ruleItem).toBeVisible();
     await ruleItem.click();
 
+    await page.getByTestId("rule-new-button").click();
+    await page.getByRole("dialog").getByPlaceholder("Rule name").fill(latestRuleName);
+    await page.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByTestId("rule-item").first()).toHaveAttribute(
+      "data-rule-name",
+      latestRuleName,
+    );
+
+    await changeSort(page, "rule-sort-select", "Name");
+    await expect(page.getByTestId("rule-item").first()).toHaveAttribute(
+      "data-rule-name",
+      ruleName,
+    );
+
+    await page.waitForTimeout(1100);
     const updateRuleRes = await request.put(`${apiBase}/rules/${encodeURIComponent(ruleName)}`, {
       data: { content: "127.0.0.1 reqHeaders://X-UI-Rule=alpha" },
     });
     if (!updateRuleRes.ok()) {
       throw new Error(await updateRuleRes.text());
     }
+    await page.getByTestId("rule-refresh-button").click();
+
+    await changeSort(page, "rule-sort-select", "Updated");
+    await expect(page.getByTestId("rule-item").first()).toHaveAttribute(
+      "data-rule-name",
+      ruleName,
+    );
 
     await sendProxyRequest(`http://127.0.0.1:${server.port}/rules-check`);
     await expect.poll(() => server.requests.length).toBeGreaterThan(0);

@@ -1,0 +1,116 @@
+{
+  "name": "Replay 历史筛选与级联删除",
+  "description": "验证 Replay 历史默认显示全部、模板筛选、无模板筛选，以及模板删除后的历史级联删除",
+  "variables": {
+    "caseId": "replay-history-${uuid}",
+    "savedName": "Replay History ${random}",
+    "savedUrl": "http://127.0.0.1:9900/_bifrost/api/proxy/address?case=${caseId}&binding=saved",
+    "unboundUrl": "http://127.0.0.1:9900/_bifrost/api/proxy/address?case=${caseId}&binding=unbound"
+  },
+  "config": {
+    "baseUrl": "http://127.0.0.1:9900/_bifrost",
+    "waitForLogin": false,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 清理 Replay 数据 ====" },
+    {
+      "action": "evaluate",
+      "variable": "cleanupOk",
+      "code": "(async () => { const base = '/_bifrost/api/replay'; const requests = await fetch(`${base}/requests?limit=200`).then((r) => r.json()); for (const request of requests.requests || []) { await fetch(`${base}/requests/${encodeURIComponent(request.id)}`, { method: 'DELETE' }); } const groups = await fetch(`${base}/groups`).then((r) => r.json()); for (const group of groups.groups || []) { await fetch(`${base}/groups/${encodeURIComponent(group.id)}`, { method: 'DELETE' }); } await fetch(`${base}/history`, { method: 'DELETE' }); return true; })()"
+    },
+    { "action": "assert", "condition": "${cleanupOk}", "message": "Replay 清理完成" },
+    { "action": "goto", "url": "/replay" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-url-input']" },
+
+    { "action": "log", "message": "==== 步骤 2: 保存模板并执行一次 ====" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-url-input']",
+      "value": "${savedUrl}"
+    },
+    { "action": "click", "selector": "[data-testid='replay-save-button']" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-save-name-input']" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-save-name-input']",
+      "value": "${savedName}"
+    },
+    { "action": "click", "selector": ".ant-modal-root .ant-btn-primary" },
+    {
+      "action": "evaluate",
+      "variable": "requestId",
+      "code": "(async () => { const response = await fetch('/_bifrost/api/replay/requests?saved=true&limit=100').then((r) => r.json()); const request = (response.requests || []).find((item) => item.name === '${savedName}'); return request?.id || ''; })()"
+    },
+    { "action": "assert", "condition": "${requestId}", "message": "模板请求已保存" },
+    { "action": "click", "selector": "[data-testid='replay-send-button']" },
+    { "action": "wait", "ms": 1500 },
+
+    { "action": "log", "message": "==== 步骤 3: 新建无模板 replay 并执行一次 ====" },
+    { "action": "click", "selector": "[data-testid='replay-new-request-button']" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-url-input']" },
+    {
+      "action": "fill",
+      "selector": "[data-testid='replay-url-input']",
+      "value": "${unboundUrl}"
+    },
+    { "action": "click", "selector": "[data-testid='replay-send-button']" },
+    { "action": "wait", "ms": 1500 },
+
+    { "action": "log", "message": "==== 步骤 4: 重新进入 Replay，验证历史默认显示全部 ====" },
+    { "action": "goto", "url": "/replay" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-mode-history']" },
+    { "action": "click", "selector": "[data-testid='replay-mode-history']" },
+    { "action": "waitForSelector", "selector": "[data-testid='replay-history-scope']" },
+    {
+      "action": "assert",
+      "condition": "(() => { const el = document.querySelector(\"[data-testid='replay-history-scope']\"); return !!el && el.textContent.includes('All replay history'); })()",
+      "message": "历史面板默认显示全部历史"
+    },
+    {
+      "action": "evaluate",
+      "variable": "allHistoryOk",
+      "code": "(() => document.querySelectorAll(\"[data-testid='replay-history-item']\").length === 2)()"
+    },
+    { "action": "assert", "condition": "${allHistoryOk}", "message": "全部历史包含 2 条记录" },
+
+    { "action": "log", "message": "==== 步骤 5: 选择模板后仅显示模板历史 ====" },
+    { "action": "click", "selector": "[data-request-id='${requestId}']" },
+    { "action": "wait", "ms": 1000 },
+    {
+      "action": "assert",
+      "condition": "(() => { const el = document.querySelector(\"[data-testid='replay-history-scope']\"); return !!el && el.textContent.includes('${savedName}'); })()",
+      "message": "选择模板后历史范围切换到模板"
+    },
+    {
+      "action": "evaluate",
+      "variable": "requestHistoryOk",
+      "code": "(() => document.querySelectorAll(\"[data-testid='replay-history-item']\").length === 1)()"
+    },
+    { "action": "assert", "condition": "${requestHistoryOk}", "message": "模板历史只显示 1 条记录" },
+
+    { "action": "log", "message": "==== 步骤 6: 新建 replay 后仅显示无模板历史 ====" },
+    { "action": "click", "selector": "[data-testid='replay-new-request-button']" },
+    { "action": "click", "selector": "[data-testid='replay-mode-history']" },
+    { "action": "wait", "ms": 1000 },
+    {
+      "action": "assert",
+      "condition": "(() => { const el = document.querySelector(\"[data-testid='replay-history-scope']\"); return !!el && el.textContent.includes('Unbound replay history'); })()",
+      "message": "新建 replay 后历史范围切换到无模板"
+    },
+    {
+      "action": "evaluate",
+      "variable": "unboundHistoryOk",
+      "code": "(() => document.querySelectorAll(\"[data-testid='replay-history-item']\").length === 1)()"
+    },
+    { "action": "assert", "condition": "${unboundHistoryOk}", "message": "无模板历史只显示 1 条记录" },
+
+    { "action": "log", "message": "==== 步骤 7: 删除模板后历史级联删除 ====" },
+    {
+      "action": "evaluate",
+      "variable": "cascadeDeleteOk",
+      "code": "(async () => { await fetch('/_bifrost/api/replay/requests/${requestId}', { method: 'DELETE' }); const requestHistory = await fetch('/_bifrost/api/replay/history?request_id=${requestId}&limit=10').then((r) => r.json()); const allHistory = await fetch('/_bifrost/api/replay/history?limit=10').then((r) => r.json()); return requestHistory.total === 0 && allHistory.total === 1; })()"
+    },
+    { "action": "assert", "condition": "${cascadeDeleteOk}", "message": "模板删除后对应历史已级联删除" }
+  ]
+}

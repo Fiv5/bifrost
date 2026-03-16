@@ -4,6 +4,11 @@
 
 旧文档描述的是“独立 launcher 窗口 + 主窗口”双窗口方案；当前实现已经改成“单个 host window + 原生启动遮罩 + 内嵌 webview handoff”。
 
+## 实现入口速查
+
+- 原生启动遮罩：`desktop/src-tauri/src/native_launcher.rs`
+- 启动状态与 handoff：`desktop/src-tauri/src/main.rs` 的 `BackendState` 与 `notify_main_window_ready`
+
 ## 当前实现
 
 - 桌面端只创建一个 Tauri `host` 窗口，不再创建独立的 `launcher` 窗口。

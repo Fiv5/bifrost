@@ -39,6 +39,9 @@
 }
 
 .searchBox {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid #e8e8e8;
 }
@@ -51,6 +54,11 @@
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.sortControl {
+  width: 104px;
+  flex-shrink: 0;
 }
 
 .loading {
