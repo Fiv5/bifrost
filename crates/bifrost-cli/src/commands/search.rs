@@ -131,13 +131,18 @@ pub struct SearchOptions {
     pub scope_url: bool,
     pub scope_headers: bool,
     pub scope_body: bool,
+    pub scope_request_headers: bool,
+    pub scope_response_headers: bool,
+    pub scope_request_body: bool,
+    pub scope_response_body: bool,
     pub filter_status: Option<String>,
-    #[allow(dead_code)]
     pub filter_method: Option<String>,
     #[allow(dead_code)]
     pub filter_protocol: Option<String>,
     pub filter_content_type: Option<String>,
     pub filter_domain: Option<String>,
+    pub filter_host: Option<String>,
+    pub filter_path: Option<String>,
     pub no_color: bool,
 }
 
@@ -152,11 +157,17 @@ impl Default for SearchOptions {
             scope_url: false,
             scope_headers: false,
             scope_body: false,
+            scope_request_headers: false,
+            scope_response_headers: false,
+            scope_request_body: false,
+            scope_response_body: false,
             filter_status: None,
             filter_method: None,
             filter_protocol: None,
             filter_content_type: None,
             filter_domain: None,
+            filter_host: None,
+            filter_path: None,
             no_color: false,
         }
     }
@@ -227,20 +238,38 @@ fn run_simple_search(options: SearchOptions) -> i32 {
 
 fn execute_search(options: &SearchOptions, cursor: Option<u64>) -> Result<SearchResponse, String> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/search", options.port);
+    let body = build_search_request_body(options, cursor);
 
+    let response = direct_agent(Duration::from_secs(30))
+        .post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    response
+        .into_json::<SearchResponse>()
+        .map_err(|e| format!("Failed to parse response: {}", e))
+}
+
+fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> serde_json::Value {
+    let request_headers = options.scope_headers || options.scope_request_headers;
+    let response_headers = options.scope_headers || options.scope_response_headers;
+    let request_body = options.scope_body || options.scope_request_body;
+    let response_body = options.scope_body || options.scope_response_body;
     let mut scope = serde_json::json!({});
-    if options.scope_url || options.scope_headers || options.scope_body {
+    if options.scope_url || request_headers || response_headers || request_body || response_body {
         scope = serde_json::json!({
             "all": false,
             "url": options.scope_url,
-            "request_headers": options.scope_headers,
-            "response_headers": options.scope_headers,
-            "request_body": options.scope_body,
-            "response_body": options.scope_body,
+            "request_headers": request_headers,
+            "response_headers": response_headers,
+            "request_body": request_body,
+            "response_body": response_body,
         });
     }
 
     let mut filters = serde_json::json!({});
+    let mut conditions = Vec::new();
     if let Some(ref status) = options.filter_status {
         filters["status_ranges"] = serde_json::json!([status]);
     }
@@ -252,6 +281,30 @@ fn execute_search(options: &SearchOptions, cursor: Option<u64>) -> Result<Search
     }
     if let Some(ref proto) = options.filter_protocol {
         filters["protocols"] = serde_json::json!([proto]);
+    }
+    if let Some(ref method) = options.filter_method {
+        conditions.push(serde_json::json!({
+            "field": "method",
+            "operator": "equals",
+            "value": method,
+        }));
+    }
+    if let Some(ref host) = options.filter_host {
+        conditions.push(serde_json::json!({
+            "field": "host",
+            "operator": "contains",
+            "value": host,
+        }));
+    }
+    if let Some(ref path) = options.filter_path {
+        conditions.push(serde_json::json!({
+            "field": "path",
+            "operator": "contains",
+            "value": path,
+        }));
+    }
+    if !conditions.is_empty() {
+        filters["conditions"] = serde_json::Value::Array(conditions);
     }
 
     let mut body = serde_json::json!({
@@ -265,15 +318,7 @@ fn execute_search(options: &SearchOptions, cursor: Option<u64>) -> Result<Search
         body["cursor"] = serde_json::json!(c);
     }
 
-    let response = direct_agent(Duration::from_secs(30))
-        .post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    response
-        .into_json::<SearchResponse>()
-        .map_err(|e| format!("Failed to parse response: {}", e))
+    body
 }
 
 fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
@@ -1453,4 +1498,107 @@ fn draw_status_bar(f: &mut Frame, app: &InteractiveApp, area: Rect) {
         .alignment(ratatui::layout::Alignment::Center);
 
     f.render_widget(status, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_search_request_body, SearchOptions};
+
+    #[test]
+    fn build_search_request_body_includes_basic_conditions() {
+        let options = SearchOptions {
+            keyword: "token".to_string(),
+            filter_method: Some("POST".to_string()),
+            filter_host: Some("api.example.com".to_string()),
+            filter_path: Some("/v1/chat".to_string()),
+            ..SearchOptions::default()
+        };
+
+        let body = build_search_request_body(&options, Some(42));
+
+        assert_eq!(body["keyword"], "token");
+        assert_eq!(body["cursor"], 42);
+        assert_eq!(body["limit"], 50);
+        assert_eq!(
+            body["filters"]["conditions"],
+            serde_json::json!([
+                {
+                    "field": "method",
+                    "operator": "equals",
+                    "value": "POST"
+                },
+                {
+                    "field": "host",
+                    "operator": "contains",
+                    "value": "api.example.com"
+                },
+                {
+                    "field": "path",
+                    "operator": "contains",
+                    "value": "/v1/chat"
+                }
+            ])
+        );
+    }
+
+    #[test]
+    fn build_search_request_body_omits_conditions_when_not_needed() {
+        let options = SearchOptions {
+            keyword: "token".to_string(),
+            ..SearchOptions::default()
+        };
+
+        let body = build_search_request_body(&options, None);
+
+        assert!(body["filters"]["conditions"].is_null());
+        assert!(body["cursor"].is_null());
+    }
+
+    #[test]
+    fn build_search_request_body_supports_granular_scope_flags() {
+        let options = SearchOptions {
+            keyword: "token".to_string(),
+            scope_request_headers: true,
+            scope_response_body: true,
+            ..SearchOptions::default()
+        };
+
+        let body = build_search_request_body(&options, None);
+
+        assert_eq!(
+            body["scope"],
+            serde_json::json!({
+                "all": false,
+                "url": false,
+                "request_headers": true,
+                "response_headers": false,
+                "request_body": false,
+                "response_body": true,
+            })
+        );
+    }
+
+    #[test]
+    fn build_search_request_body_keeps_legacy_scope_aliases() {
+        let options = SearchOptions {
+            keyword: "token".to_string(),
+            scope_headers: true,
+            scope_body: true,
+            ..SearchOptions::default()
+        };
+
+        let body = build_search_request_body(&options, None);
+
+        assert_eq!(
+            body["scope"],
+            serde_json::json!({
+                "all": false,
+                "url": false,
+                "request_headers": true,
+                "response_headers": true,
+                "request_body": true,
+                "response_body": true,
+            })
+        );
+    }
 }
