@@ -63,6 +63,13 @@ function highlightText(text: string, keyword: string, color: string): React.Reac
   );
 }
 
+function isActionButtonClick(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  return !!target.closest(".tree-node-more-btn");
+}
+
 export default function CollectionPanel() {
   const { token } = theme.useToken();
   const {
@@ -317,7 +324,12 @@ export default function CollectionPanel() {
             ...styles.treeNode,
             ...(currentRequest?.id === req.id ? styles.treeNodeActive : {}),
           }}
-          onClick={() => handleSelectRequest(req)}
+          onClick={(e) => {
+            if (isActionButtonClick(e.target)) {
+              return;
+            }
+            handleSelectRequest(req);
+          }}
           data-testid="replay-request-node"
           data-request-id={req.id}
         >
@@ -368,7 +380,9 @@ export default function CollectionPanel() {
               size="small"
               icon={<MoreOutlined />}
               onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
               className="tree-node-more-btn"
+              data-testid="replay-request-actions-button"
             />
           </Dropdown>
         </div>
@@ -388,7 +402,7 @@ export default function CollectionPanel() {
       nodes.push({
         key: `group-${group.id}`,
         title: (
-          <div style={styles.groupHeader}>
+          <div style={styles.groupHeader} data-group-id={group.id}>
             <div style={styles.folderTitle}>
               {isExpanded ? (
                 <FolderOpenOutlined style={{ fontSize: 12, marginRight: 6 }} />
@@ -425,7 +439,9 @@ export default function CollectionPanel() {
                 size="small"
                 icon={<MoreOutlined />}
                 onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 className="tree-node-more-btn"
+                data-testid="replay-group-actions-button"
               />
             </Dropdown>
           </div>

@@ -75,6 +75,12 @@ test("Replay 页面保存请求、创建分组、移动并执行，然后查看�
 
     await page.getByTestId("replay-mode-history").click();
     await expect(page.getByText("/replay-check")).toBeVisible();
+    await page.getByTestId("replay-history-item").first().click();
+    await expect(page.getByTestId("replay-history-reuse-button")).toBeVisible();
+    await page.getByTestId("replay-history-reuse-button").click();
+    await expect(page.getByTestId("replay-url-input")).toHaveValue(
+      `http://127.0.0.1:${server.port}/replay-check`,
+    );
 
     await openPage(page, "traffic");
     await waitForTrafficRow(page, "/replay-check");

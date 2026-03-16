@@ -72,6 +72,7 @@ interface ReplayState {
   allHistory: ReplayHistory[];
   groups: ReplayGroup[];
   historyFilter: ReplayHistoryFilter;
+  deletingRequestIds: string[];
 
   currentResponse: ReplayExecuteResponse | null;
   currentTrafficRecord: TrafficRecord | null;
@@ -124,6 +125,7 @@ interface ReplayState {
   selectHistory: (history: ReplayHistory) => Promise<void>;
   selectHistoryForDetail: (history: ReplayHistory) => Promise<void>;
   importFromTraffic: (trafficId: string) => Promise<void>;
+  reuseSelectedHistory: () => void;
   setResponsePanelCollapsed: (collapsed: boolean) => void;
   setHistoryFilter: (filter: ReplayHistoryFilter) => void;
   updateUIState: (updates: Partial<ReplayUIState>) => void;
@@ -209,6 +211,59 @@ function toHistoryApiParams(
   return { limit, offset };
 }
 
+function buildReplayRequestFromTrafficRecord(
+  record: TrafficRecord,
+  requestBody: string | null,
+): { request: ReplayRequest; requestType: RequestType } {
+  const headers: ReplayKeyValueItem[] = (record.request_headers || []).map(([key, value]) => ({
+    id: generateId(),
+    key,
+    value,
+    enabled: true,
+  }));
+
+  let body: ReplayBody = { type: 'none' };
+  if (requestBody) {
+    const contentType = record.request_content_type || '';
+    if (contentType.includes('json')) {
+      body = { type: 'raw', raw_type: 'json', content: requestBody };
+    } else if (contentType.includes('xml')) {
+      body = { type: 'raw', raw_type: 'xml', content: requestBody };
+    } else if (contentType.includes('form-urlencoded')) {
+      const params = new URLSearchParams(requestBody);
+      const formData: ReplayKeyValueItem[] = [];
+      params.forEach((value, key) => {
+        formData.push({ id: generateId(), key, value, enabled: true });
+      });
+      body = { type: 'x-www-form-urlencoded', form_data: formData };
+    } else {
+      body = { type: 'raw', raw_type: 'text', content: requestBody };
+    }
+  }
+
+  const now = Date.now();
+  const requestType =
+    record.url?.toLowerCase().startsWith('ws://') || record.url?.toLowerCase().startsWith('wss://')
+      ? 'websocket'
+      : 'http';
+
+  return {
+    request: {
+      id: generateId(),
+      request_type: requestType,
+      method: record.method,
+      url: record.url,
+      headers,
+      body,
+      is_saved: false,
+      sort_order: 0,
+      created_at: now,
+      updated_at: now,
+    },
+    requestType,
+  };
+}
+
 export const useReplayStore = create<ReplayState>()(
   persist(
     (set, get) => ({
@@ -218,6 +273,7 @@ export const useReplayStore = create<ReplayState>()(
       allHistory: [],
       groups: [],
       historyFilter: { type: 'all' },
+      deletingRequestIds: [],
       currentResponse: null,
       currentTrafficRecord: null,
       selectedHistoryRecord: null,
@@ -264,10 +320,39 @@ export const useReplayStore = create<ReplayState>()(
             historyPage: 1,
           },
         });
+
+        void get().loadRecentHistory({ type: 'unbound' });
+        void get().loadAllHistory(1, get().uiState.historyPageSize);
       },
 
       applySavedRequestsSnapshot: (savedRequests, requestsTotal) => {
-        set({ savedRequests, requestsTotal, loading: false });
+        const { currentRequest, uiState } = get();
+        const selectedRequestId = uiState.selectedRequestId;
+        const selectedRequestStillExists =
+          !!selectedRequestId && savedRequests.some((item) => item.id === selectedRequestId);
+
+        const nextState: Partial<ReplayState> = {
+          savedRequests,
+          requestsTotal,
+          loading: false,
+        };
+
+        if (selectedRequestId && !selectedRequestStillExists) {
+          nextState.uiState = {
+            ...uiState,
+            selectedRequestId: null,
+            selectedHistoryId: null,
+          };
+
+          if (currentRequest?.id === selectedRequestId) {
+            nextState.currentRequest = createEmptyRequest();
+            nextState.currentResponse = null;
+            nextState.currentTrafficRecord = null;
+            nextState.recentHistory = [];
+          }
+        }
+
+        set(nextState);
       },
 
       applyGroupsSnapshot: (groups) => {
@@ -531,6 +616,18 @@ export const useReplayStore = create<ReplayState>()(
               } else {
                 await loadRecentHistory({ type: 'unbound' });
               }
+
+              const { historyFilter, uiState: nextUiState, loadAllHistory } = get();
+              const shouldRefreshAllHistory =
+                historyFilter.type === 'all' ||
+                (historyFilter.type === 'request' &&
+                  currentRequest.is_saved &&
+                  historyFilter.requestId === currentRequest.id) ||
+                (historyFilter.type === 'unbound' && !currentRequest.is_saved);
+
+              if (shouldRefreshAllHistory) {
+                await loadAllHistory(1, nextUiState.historyPageSize);
+              }
             } else {
               throw new Error(result.error || 'Unknown error');
             }
@@ -687,10 +784,13 @@ export const useReplayStore = create<ReplayState>()(
 
       deleteRequest: async (id: string) => {
         try {
+          set({ deletingRequestIds: [...get().deletingRequestIds, id] });
           await replayApi.deleteRequest(id);
           const { savedRequests, currentRequest, historyFilter, uiState, loadAllHistory } = get();
           const shouldResetHistoryFilter =
             historyFilter.type === 'request' && historyFilter.requestId === id;
+          const shouldResetSelection =
+            uiState.selectedRequestId === id || currentRequest?.id === id;
 
           if (currentRequest?.id === id) {
             set({
@@ -699,6 +799,11 @@ export const useReplayStore = create<ReplayState>()(
               currentTrafficRecord: null,
               recentHistory: [],
               historyFilter: shouldResetHistoryFilter ? { type: 'all' } : historyFilter,
+              uiState: {
+                ...get().uiState,
+                selectedRequestId: shouldResetSelection ? null : get().uiState.selectedRequestId,
+                selectedHistoryId: shouldResetSelection ? null : get().uiState.selectedHistoryId,
+              },
             });
           }
 
@@ -706,7 +811,7 @@ export const useReplayStore = create<ReplayState>()(
             savedRequests: savedRequests.filter(r => r.id !== id),
             allHistory: shouldResetHistoryFilter ? [] : get().allHistory,
             allHistoryTotal: shouldResetHistoryFilter ? 0 : get().allHistoryTotal,
-            uiState: shouldResetHistoryFilter
+            uiState: shouldResetHistoryFilter || shouldResetSelection
               ? { ...get().uiState, selectedRequestId: null, selectedHistoryId: null, historyPage: 1 }
               : get().uiState,
           });
@@ -719,6 +824,10 @@ export const useReplayStore = create<ReplayState>()(
         } catch (e) {
           message.error(`Failed to delete: ${e}`);
           return false;
+        } finally {
+          set({
+            deletingRequestIds: get().deletingRequestIds.filter((item) => item !== id),
+          });
         }
       },
 
@@ -762,6 +871,9 @@ export const useReplayStore = create<ReplayState>()(
 
       selectRequest: async (request) => {
         try {
+          if (get().deletingRequestIds.includes(request.id)) {
+            return;
+          }
           const { disconnectSSE, disconnectWebSocket } = get();
           disconnectSSE();
           disconnectWebSocket();
@@ -875,50 +987,12 @@ export const useReplayStore = create<ReplayState>()(
           } catch {
             // ignore request body fetch error
           }
-
-          const headers: ReplayKeyValueItem[] = (record.request_headers || []).map(([key, value]) => ({
-            id: generateId(),
-            key,
-            value,
-            enabled: true,
-          }));
-
-          let body: ReplayBody = { type: 'none' };
-          if (requestBody) {
-            const contentType = record.request_content_type || '';
-            if (contentType.includes('json')) {
-              body = { type: 'raw', raw_type: 'json', content: requestBody };
-            } else if (contentType.includes('xml')) {
-              body = { type: 'raw', raw_type: 'xml', content: requestBody };
-            } else if (contentType.includes('form-urlencoded')) {
-              const params = new URLSearchParams(requestBody);
-              const formData: ReplayKeyValueItem[] = [];
-              params.forEach((value, key) => {
-                formData.push({ id: generateId(), key, value, enabled: true });
-              });
-              body = { type: 'x-www-form-urlencoded', form_data: formData };
-            } else {
-              body = { type: 'raw', raw_type: 'text', content: requestBody };
-            }
-          }
-
-          const now = Date.now();
-          const newRequest: ReplayRequest = {
-            id: generateId(),
-            request_type: 'http',
-            method: record.method,
-            url: record.url,
-            headers,
-            body,
-            is_saved: false,
-            sort_order: 0,
-            created_at: now,
-            updated_at: now,
-          };
+          const { request: newRequest, requestType } = buildReplayRequestFromTrafficRecord(
+            record,
+            requestBody,
+          );
 
           const { uiState } = get();
-          const url = record.url?.toLowerCase() || '';
-          const requestType = (url.startsWith('ws://') || url.startsWith('wss://')) ? 'websocket' : 'http';
           set({
             currentRequest: newRequest,
             currentResponse: null,
@@ -944,6 +1018,44 @@ export const useReplayStore = create<ReplayState>()(
         } finally {
           set({ loading: false });
         }
+      },
+
+      reuseSelectedHistory: () => {
+        const {
+          selectedHistoryRecord,
+          historyRequestBody,
+          uiState,
+        } = get();
+
+        if (!selectedHistoryRecord) {
+          return;
+        }
+
+        const { request: newRequest, requestType } = buildReplayRequestFromTrafficRecord(
+          selectedHistoryRecord,
+          historyRequestBody,
+        );
+
+        set({
+          currentRequest: newRequest,
+          currentResponse: null,
+          currentTrafficRecord: null,
+          responsePanelCollapsed: true,
+          recentHistory: [],
+          allHistory: [],
+          allHistoryTotal: 0,
+          historyFilter: { type: 'unbound' },
+          uiState: {
+            ...uiState,
+            selectedRequestId: null,
+            selectedHistoryId: null,
+            mode: 'composer',
+            historyPage: 1,
+            requestType,
+          },
+        });
+
+        message.success('Replay parameters restored from history');
       },
 
       setResponsePanelCollapsed: (collapsed) => {

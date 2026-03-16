@@ -1,9 +1,11 @@
 import { defineConfig } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import { allocateUiTestEnv } from "./tests/ui/helpers/test-env";
 
-const webPort = Number(process.env.WEB_PORT ?? 3000);
+const env = await allocateUiTestEnv();
+const webPort = env.webPort;
 const webRoot = fileURLToPath(new URL(".", import.meta.url));
-const backendPort = Number(process.env.BIFROST_UI_TEST_PORT ?? process.env.BACKEND_PORT ?? 9910);
+const backendPort = env.backendPort;
 
 export default defineConfig({
   testDir: "./tests/ui",
@@ -18,9 +20,9 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   webServer: {
-    command: `BACKEND_PORT=${backendPort} pnpm dev -- --host 127.0.0.1 --port ${webPort} --backend-port ${backendPort}`,
+    command: `BACKEND_PORT=${backendPort} WEB_PORT=${webPort} pnpm run dev -- --host 127.0.0.1 --port ${webPort}`,
     url: `http://127.0.0.1:${webPort}/_bifrost/`,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
     cwd: webRoot,
     timeout: 120000,
   },

@@ -151,7 +151,8 @@ async function cmdScenario(args) {
 
   const { loadScenario } = require("./lib/scenario-executor");
   const { NetworkCollector } = require("./lib/network-collector");
-  const { SCENARIOS_DIR } = require("./lib/config");
+  const { SCENARIOS_DIR, SESSION_DIR } = require("./lib/config");
+  const { startIsolatedProxy, rewriteScenarioStrings } = require("./lib/isolated-proxy");
   const path = require("path");
 
   const scenarioPath = path.join(SCENARIOS_DIR, `${scenarioName}.json`);
@@ -162,45 +163,73 @@ async function cmdScenario(args) {
     logger.error(`Failed to load scenario '${scenarioName}': ${e.message}`);
     process.exit(1);
   }
+  let isolatedProxy = null;
+  let browser = null;
+  let networkCollector = null;
+  try {
+    if (options.isolatedProxy) {
+      isolatedProxy = await startIsolatedProxy(scenarioName);
+      scenario = rewriteScenarioStrings(scenario, isolatedProxy.port);
+      scenario.config = {
+        ...scenario.config,
+        baseUrl: isolatedProxy.baseUrl,
+      };
+      logger.info(
+        `Started isolated proxy for scenario '${scenarioName}' on port ${isolatedProxy.port}`,
+      );
+    }
 
-  const browser = await launchBrowser({ headless: options.headless });
-  const page = await browser.newPage();
-  setupPageListeners(page);
+    const userDataDir = path.join(
+      SESSION_DIR,
+      `profile-${isolatedProxy?.runId || `${scenarioName}-${Date.now()}`}`,
+    );
+    browser = await launchBrowser({ headless: options.headless, userDataDir });
+    const page = await browser.newPage();
+    setupPageListeners(page);
 
-  const ctx = await createTestContext(page, { timeout: options.timeout });
+    const ctx = await createTestContext(page, { timeout: options.timeout });
 
-  const networkCollector = new NetworkCollector();
-  networkCollector.attach(page);
-  networkCollector.start();
+    networkCollector = new NetworkCollector();
+    networkCollector.attach(page);
+    networkCollector.start();
 
-  const baseUrl = scenario.config?.baseUrl || DEFAULT_UI_URL;
-  logger.info(`Navigating to: ${baseUrl}`);
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: options.timeout });
-  await new Promise((r) => setTimeout(r, 2000));
+    const baseUrl = options.baseUrl || scenario.config?.baseUrl || DEFAULT_UI_URL;
+    logger.info(`Navigating to: ${baseUrl}`);
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: options.timeout });
+    await new Promise((r) => setTimeout(r, 2000));
 
-  if (scenario.config?.waitForLogin) {
-    await handleSSOIfNeeded(page, ctx, { timeout: scenario.config?.loginTimeout || 120000 });
+    if (scenario.config?.waitForLogin) {
+      await handleSSOIfNeeded(page, ctx, { timeout: scenario.config?.loginTimeout || 120000 });
+    }
+
+    const executor = new ScenarioExecutor(ctx, scenario, {
+      networkCollector,
+      showNetwork: options.verbose,
+    });
+
+    const result = await executor.run();
+
+    if (result.success) {
+      logger.info(`Scenario '${scenarioName}' completed successfully`);
+    } else {
+      logger.error(`Scenario '${scenarioName}' failed`);
+      process.exitCode = 1;
+    }
+  } finally {
+    networkCollector?.stop();
+    if (browser) {
+      await closeBrowser(browser);
+    }
+    if (isolatedProxy) {
+      await isolatedProxy.stop();
+      logger.info(
+        `Stopped isolated proxy for scenario '${scenarioName}' on port ${isolatedProxy.port}`,
+      );
+    }
   }
 
-  const executor = new ScenarioExecutor(ctx, scenario, {
-    networkCollector,
-    showNetwork: options.verbose,
-  });
-
-  const result = await executor.run();
-
-  networkCollector.stop();
-
-  if (result.success) {
-    logger.info(`Scenario '${scenarioName}' completed successfully`);
-  } else {
-    logger.error(`Scenario '${scenarioName}' failed`);
-  }
-
-  await closeBrowser(browser);
-
-  if (!result.success) {
-    process.exit(1);
+  if (process.exitCode) {
+    process.exit(process.exitCode);
   }
 }
 

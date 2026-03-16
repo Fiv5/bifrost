@@ -19,19 +19,23 @@ description: |
 
 ## 前置条件
 
-- 前端开发服务器通过 `web/` 目录启动：`pnpm dev`
-- 默认 UI 入口：`http://localhost:3000/_bifrost/`
-- 默认管理端 API：`http://127.0.0.1:9900/_bifrost/api`
-- 若 9900 端口未启动，或者本次修改涉及管理端静态资源 / push / Traffic 页面，请优先使用“先编译、再启动”的方式：
+- 场景测试默认使用独立代理进程，不再复用共享 `9900`
+- `browser-test.js scenario` 会自动：
+  - 分配独立代理端口
+  - 创建独立 `BIFROST_DATA_DIR`
+  - 在结束后停止该代理进程
+- 前端开发服务器用于手工调试时再单独启动：`pnpm dev`
+- 默认手工调试 UI 入口：`http://localhost:3000/_bifrost/`
+- 若需要手工启动独立管理端，请优先使用“先编译、再启动”的方式：
 
 ```bash
 CARGO_TARGET_DIR=./.bifrost-ui-target cargo build --bin bifrost
-BIFROST_DATA_DIR=./.bifrost-e2e-ui ./.bifrost-ui-target/debug/bifrost start -p 9900 --unsafe-ssl
+BIFROST_DATA_DIR=./.bifrost-e2e-ui ./.bifrost-ui-target/debug/bifrost start -p 9910 --unsafe-ssl
 ```
 
 - 启动后必须确认：
-  - `lsof -nP -iTCP:9900 -sTCP:LISTEN`
-  - `curl -sS http://127.0.0.1:9900/_bifrost/api/proxy/address`
+  - `lsof -nP -iTCP:9910 -sTCP:LISTEN`
+  - `curl -sS http://127.0.0.1:9910/_bifrost/api/proxy/address`
 
 - 路由定义查看 [web/src/App.tsx](../../../web/src/App.tsx)
 - API 说明查看 [crates/bifrost-admin/ADMIN_API.md](../../../crates/bifrost-admin/ADMIN_API.md)
@@ -74,6 +78,9 @@ node browser-test.js scenario stream-ws --headless --verbose
 node browser-test.js scenario traffic-delete --actions
 ```
 
+- 如需显式复用已有代理，可加 `--shared-proxy`
+- 如需覆盖入口地址，可加 `--base-url <url>`
+
 ### 浏览器命令
 
 ```bash
@@ -107,6 +114,7 @@ node push-debug.js -p 9900 --page /_bifrost/rules --no-expect-traffic-subscripti
 3. API 问题优先用 `api-test.js` 单独确认
 4. 需要新增场景时，直接在 `scripts/scenarios/` 下补 JSON
 5. 如果页面现象和 API 不一致，必须抓浏览器 `/api/push` websocket frame，确认是“后端没推”还是“页面没订阅/没消费”
+6. 不允许复用其他任务占用的共享代理端口；默认走独立代理进程，只有明确需要联调时才使用 `--shared-proxy`
 6. 实时推送问题优先跑 `push-debug.js`，先拿到 websocket 和 API 证据，再决定是否进入完整 Playwright 用例
 
 ## CLI 对齐说明

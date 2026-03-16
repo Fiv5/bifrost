@@ -16,7 +16,6 @@ import {
   uniqueName,
 } from "./helpers/admin-helpers";
 
-const PID_PATH = ".ui-backend.pid";
 const BASE_PROXY_URL = process.env.PROXY_URL || `http://127.0.0.1:${backendPort}`;
 
 const getRepoRoot = () => {
@@ -53,7 +52,8 @@ const waitForBackend = async () => {
 };
 
 const stopTrackedBackend = async () => {
-  const pidFile = path.join(getRepoRoot(), PID_PATH);
+  const pidFile =
+    process.env.BIFROST_UI_TEST_PID_FILE || path.join(getRepoRoot(), ".ui-backend.pid");
   try {
     const pidText = await fs.readFile(pidFile, "utf-8");
     const pid = Number(pidText);
@@ -74,11 +74,14 @@ const stopTrackedBackend = async () => {
 
 const startTrackedBackend = async () => {
   const repoRoot = getRepoRoot();
-  const pidFile = path.join(repoRoot, PID_PATH);
-  const dataDir = path.join(repoRoot, ".bifrost-ui-test");
-  const targetDir = path.join(repoRoot, ".bifrost-ui-target");
+  const pidFile =
+    process.env.BIFROST_UI_TEST_PID_FILE || path.join(repoRoot, ".ui-backend.pid");
+  const dataDir = process.env.BIFROST_DATA_DIR || path.join(repoRoot, ".bifrost-ui-test");
+  const targetDir =
+    process.env.BIFROST_UI_TEST_TARGET_DIR || path.join(repoRoot, ".bifrost-ui-target");
   const binPath = path.join(targetDir, "debug", "bifrost");
-  const logPath = path.join(repoRoot, ".ui-backend.log");
+  const logPath =
+    process.env.BIFROST_UI_TEST_LOG_FILE || path.join(repoRoot, ".ui-backend.log");
   const logStream = createWriteStream(logPath, { flags: "a" });
   const { cmd, args } = await fs
     .access(binPath)

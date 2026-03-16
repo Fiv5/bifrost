@@ -16,6 +16,8 @@ function parseArgs(argv) {
       branch: null,
       verbose: false,
       timeout: 30000,
+      isolatedProxy: true,
+      baseUrl: null,
     },
     positionalArgs: [],
     rawArgs: argv,
@@ -80,6 +82,12 @@ function parseArgs(argv) {
       case "--timeout":
         args.options.timeout = parseInt(argv[++i], 10) || 30000;
         break;
+      case "--shared-proxy":
+        args.options.isolatedProxy = false;
+        break;
+      case "--base-url":
+        args.options.baseUrl = argv[++i];
+        break;
       default:
         if (arg.startsWith("-")) {
           console.warn(`Unknown option: ${arg}`);
@@ -124,6 +132,8 @@ Options:
   -s, --session <name>   Session name for save/load
   -b, --branch <name>    Branch name for session
   -t, --timeout <ms>     Default timeout (default: 30000)
+  --base-url <url>       Override UI base URL
+  --shared-proxy         Reuse an existing proxy instead of starting an isolated one
   --headless             Run in headless mode
   --verbose              Verbose output
   -h, --help             Show help
@@ -165,11 +175,14 @@ Options:
   -l, --list             List all available scenarios
   -a, --actions          Show steps for the selected scenario
   -b, --branch <name>    Branch name for session
+  --base-url <url>       Override UI base URL
+  --shared-proxy         Reuse an existing proxy instead of starting an isolated one
   --verbose              Verbose output
 
 Examples:
   node browser-test.js scenario --list
   node browser-test.js scenario stream-sse
+  node browser-test.js scenario replay-history-filters --headless
   node browser-test.js scenario traffic-delete --actions
 `);
 }

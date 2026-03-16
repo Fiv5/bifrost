@@ -1,0 +1,59 @@
+{
+  "name": "Replay 执行与 Traffic 联动",
+  "description": "验证从 Replay 执行已保存模板后，Traffic 页面能看到对应的 replay 流量记录",
+  "variables": {
+    "caseId": "replay-traffic-${uuid}",
+    "requestName": "Replay Traffic ${random}",
+    "requestUrl": "http://127.0.0.1:9900/_bifrost/api/proxy/address?case=${caseId}&traffic=1"
+  },
+  "config": {
+    "baseUrl": "http://127.0.0.1:9900/_bifrost",
+    "waitForLogin": false,
+    "timeout": 30000
+  },
+  "steps": [
+    { "action": "log", "message": "==== 步骤 1: 清理 Replay 数据 ====" },
+    {
+      "action": "evaluate",
+      "variable": "cleanupOk",
+      "code": "(async () => { const base = '/_bifrost/api/replay'; const requests = await fetch(`${base}/requests?limit=200`).then((r) => r.json()); for (const request of requests.requests || []) { await fetch(`${base}/requests/${encodeURIComponent(request.id)}`, { method: 'DELETE' }); } const groups = await fetch(`${base}/groups`).then((r) => r.json()); for (const group of groups.groups || []) { await fetch(`${base}/groups/${encodeURIComponent(group.id)}`, { method: 'DELETE' }); } await fetch(`${base}/history`, { method: 'DELETE' }); return true; })()"
+    },
+    { "action": "assert", "condition": "${cleanupOk}", "message": "Replay 清理完成" },
+    {
+      "action": "evaluate",
+      "variable": "requestId",
+      "code": "(async () => { const response = await fetch('/_bifrost/api/replay/requests', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '${requestName}', request_type: 'http', method: 'GET', url: '${requestUrl}', headers: [], body: { type: 'none' }, is_saved: true }) }); const data = await response.json(); return data.id || ''; })()"
+    },
+    { "action": "assert", "condition": "${requestId}", "message": "Replay 模板已预置" },
+    { "action": "goto", "url": "/replay" },
+    { "action": "waitForSelector", "selector": "[data-request-id='${requestId}']" },
+    { "action": "click", "selector": "[data-request-id='${requestId}']" },
+
+    { "action": "log", "message": "==== 步骤 2: 执行模板并拿到 traffic id ====" },
+    { "action": "click", "selector": "[data-testid='replay-send-button']" },
+    {
+      "action": "evaluate",
+      "variable": "trafficId",
+      "code": "(async () => { for (let i = 0; i < 30; i += 1) { const response = await fetch('/_bifrost/api/replay/history?request_id=${requestId}&limit=1').then((r) => r.json()); const history = response.history || []; if (history.length > 0 && history[0].traffic_id) { return history[0].traffic_id; } await new Promise((resolve) => setTimeout(resolve, 500)); } return ''; })()"
+    },
+    { "action": "assert", "condition": "${trafficId}", "message": "执行后拿到了 traffic id" },
+
+    { "action": "log", "message": "==== 步骤 3: 在 Traffic 页面验证 replay 流量 ====" },
+    { "action": "goto", "url": "/traffic" },
+    {
+      "action": "waitForSelector",
+      "selector": "[data-record-id='${trafficId}']",
+      "timeout": 30000
+    },
+    {
+      "action": "assert",
+      "condition": "(() => !!document.querySelector(\"[data-record-id='${trafficId}']\"))()",
+      "message": "Traffic 列表已出现 replay 请求记录"
+    },
+    {
+      "action": "evaluate",
+      "code": "(() => { const row = document.querySelector(\"[data-record-id='${trafficId}']\"); if (!row) return false; row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()"
+    },
+    { "action": "waitForSelector", "selector": "[data-testid='traffic-detail']" }
+  ]
+}

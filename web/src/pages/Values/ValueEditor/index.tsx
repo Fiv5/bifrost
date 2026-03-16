@@ -4,14 +4,14 @@ import {
   useRef,
   useMemo,
   useState,
-  type CSSProperties,
 } from "react";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
-import { Empty, Spin, message, theme, Button, Tooltip, Space } from "antd";
+import { Empty, Spin, message, Button, Modal, Space } from "antd";
 import {
   FormatPainterOutlined,
   CopyOutlined,
   SaveOutlined,
+  DeleteOutlined,
 } from "@ant-design/icons";
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { useThemeStore } from "../../../stores/useThemeStore";
@@ -72,7 +72,6 @@ function formatXML(content: string): string {
 }
 
 export default function ValueEditor() {
-  const { token } = theme.useToken();
   const {
     currentValue,
     selectedValueName,
@@ -81,6 +80,7 @@ export default function ValueEditor() {
     saving,
     setEditingContent,
     saveCurrentValue,
+    deleteValue,
   } = useValuesStore();
   const { resolvedTheme } = useThemeStore();
 
@@ -250,16 +250,22 @@ export default function ValueEditor() {
     }
   }, []);
 
-  const toolbarStyles: Record<string, CSSProperties> = {
-    toolbar: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: "4px 8px",
-      backgroundColor: token.colorBgLayout,
-      borderBottom: `1px solid ${token.colorBorderSecondary}`,
-    },
-  };
+  const handleDelete = useCallback(() => {
+    if (!currentValue?.name) return;
+    Modal.confirm({
+      title: "Delete Value",
+      content: `Are you sure to delete "${currentValue.name}"?`,
+      okText: "Delete",
+      okType: "danger",
+      cancelText: "Cancel",
+      onOk: async () => {
+        const success = await deleteValue(currentValue.name);
+        if (success) {
+          message.success("Value deleted");
+        }
+      },
+    });
+  }, [currentValue, deleteValue]);
 
   if (!selectedValueName) {
     return (
@@ -319,42 +325,49 @@ export default function ValueEditor() {
           <span className={styles.title} data-testid="value-editor-title">{currentValue?.name}</span>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
-        <Space size={4}>
+        <Space size={8}>
           {canFormat && (
-            <Tooltip title="Format (JSON/XML)">
-              <Button
-                type="text"
-                size="small"
-                icon={<FormatPainterOutlined />}
-                onClick={handleFormat}
-                data-testid="value-format-button"
-              />
-            </Tooltip>
+            <Button
+              size="small"
+              icon={<FormatPainterOutlined />}
+              onClick={handleFormat}
+              data-testid="value-format-button"
+            >
+              Format
+            </Button>
           )}
-          <Tooltip title="Copy">
-            <Button
-              type="text"
-              size="small"
-              icon={<CopyOutlined />}
-              onClick={handleCopy}
-              data-testid="value-copy-button"
-            />
-          </Tooltip>
-          <Tooltip title="Save (Cmd+S)">
-            <Button
-              type="text"
-              size="small"
-              icon={<SaveOutlined />}
-              onClick={handleSave}
-              disabled={!hasChanges}
-              style={{ color: hasChanges ? token.colorPrimary : undefined }}
-              data-testid="value-save-button"
-            />
-          </Tooltip>
+          <Button
+            size="small"
+            icon={<CopyOutlined />}
+            onClick={handleCopy}
+            data-testid="value-copy-button"
+          >
+            Copy
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<SaveOutlined />}
+            onClick={handleSave}
+            disabled={!hasChanges}
+            loading={saving}
+            data-testid="value-save-button"
+          >
+            Save
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            onClick={handleDelete}
+            data-testid="value-delete-button"
+          >
+            Delete
+          </Button>
         </Space>
       </div>
       <div className={styles.editorContainer} ref={setContainerElement} data-testid="value-editor-container" />
-      <div className={styles.statusBar} style={toolbarStyles.toolbar}>
+      <div className={styles.statusBar}>
         <span className={styles.hint}>
           Use <code>{"{" + (currentValue?.name || "name") + "}"}</code> to
           reference this value in rules

@@ -764,38 +764,36 @@ api.example.com reqScript://add-auth-header
             {selectedType}
           </Tag>
         </Space>
-        <Space size={4}>
-          <Tooltip title="Test Script">
-            <Button
-              type="text"
-              size="small"
-              icon={<PlayCircleOutlined />}
-              onClick={onTest}
-              loading={testing}
-              data-testid="scripts-test-button"
-            />
-          </Tooltip>
-          <Tooltip title="Save (Cmd+S)">
-            <Button
-              type="text"
-              size="small"
-              icon={<SaveOutlined />}
-              onClick={onSave}
-              loading={saving}
-              data-testid="scripts-save-button"
-            />
-          </Tooltip>
+        <Space size={8}>
+          <Button
+            size="small"
+            icon={<PlayCircleOutlined />}
+            onClick={onTest}
+            loading={testing}
+            data-testid="scripts-test-button"
+          >
+            Run
+          </Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<SaveOutlined />}
+            onClick={onSave}
+            loading={saving}
+            data-testid="scripts-save-button"
+          >
+            Save
+          </Button>
           {!isNewScript && (
-            <Tooltip title="Delete">
-              <Button
-                type="text"
-                size="small"
-                danger
-                icon={<DeleteOutlined />}
-                onClick={onDelete}
-                data-testid="scripts-delete-button"
-              />
-            </Tooltip>
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={onDelete}
+              data-testid="scripts-delete-button"
+            >
+              Delete
+            </Button>
           )}
         </Space>
       </div>

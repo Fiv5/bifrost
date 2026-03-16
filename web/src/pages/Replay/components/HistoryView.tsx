@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useRef } from "react";
-import { Input, Empty, Pagination, Spin, Tag, theme, Typography } from "antd";
-import { SearchOutlined } from "@ant-design/icons";
+import { Button, Input, Empty, Pagination, Spin, Tag, theme, Typography } from "antd";
+import { HistoryOutlined, SearchOutlined } from "@ant-design/icons";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import TrafficDetail from "../../../components/TrafficDetail";
 import type { ReplayHistory } from "../../../types";
@@ -68,6 +68,7 @@ const HistoryItem = ({ item, isSelected, onClick }: HistoryItemProps) => {
   return (
     <div
       onClick={onClick}
+      data-testid="replay-history-item"
       style={{
         padding: "6px 12px",
         cursor: "pointer",
@@ -165,6 +166,7 @@ export const HistoryView = () => {
     loadAllHistory,
     updateUIState,
     selectHistoryForDetail,
+    reuseSelectedHistory,
   } = useReplayStore();
 
   const searchText = uiState.historySearchText;
@@ -251,7 +253,7 @@ export const HistoryView = () => {
             <Text type="secondary" style={{ fontSize: 10 }}>
               Scope:
             </Text>
-            <div style={{ fontWeight: 500 }}>
+            <div style={{ fontWeight: 500 }} data-testid="replay-history-scope">
               {filterLabel}
             </div>
           </div>
@@ -269,6 +271,7 @@ export const HistoryView = () => {
               fontSize: 11,
               color: token.colorTextSecondary,
             }}
+            data-testid="replay-history-summary"
           >
             {pageSummary}
           </div>
@@ -321,6 +324,7 @@ export const HistoryView = () => {
             pageSizeOptions={["20", "50", "100", "200"]}
             onChange={handlePageChange}
             onShowSizeChange={handlePageChange}
+            data-testid="replay-history-pagination"
           />
         </div>
       </div>
@@ -338,11 +342,35 @@ export const HistoryView = () => {
             <Spin size="large" />
           </div>
         ) : selectedHistoryRecord ? (
-          <TrafficDetail
-            record={selectedHistoryRecord}
-            requestBody={historyRequestBody}
-            responseBody={historyResponseBody}
-          />
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                alignItems: "center",
+                gap: 8,
+                padding: "12px 16px",
+                borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                backgroundColor: token.colorBgContainer,
+              }}
+            >
+              <Button
+                type="primary"
+                icon={<HistoryOutlined />}
+                onClick={reuseSelectedHistory}
+                data-testid="replay-history-reuse-button"
+              >
+                Reuse in Replay
+              </Button>
+            </div>
+            <div style={{ flex: 1, overflow: "hidden" }}>
+              <TrafficDetail
+                record={selectedHistoryRecord}
+                requestBody={historyRequestBody}
+                responseBody={historyResponseBody}
+              />
+            </div>
+          </div>
         ) : (
           <Empty
             description="Select a history record to view details"
