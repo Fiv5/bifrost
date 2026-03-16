@@ -379,8 +379,9 @@ export const useReplayStore = create<ReplayState>()(
         try {
           set({ loading: true });
 
+          let savedRequest = currentRequest;
           if (currentRequest.is_saved) {
-            await replayApi.updateRequest(currentRequest.id, {
+            savedRequest = await replayApi.updateRequest(currentRequest.id, {
               name: name || currentRequest.name,
               request_type: currentRequest.request_type,
               method: currentRequest.method,
@@ -400,7 +401,33 @@ export const useReplayStore = create<ReplayState>()(
               is_saved: true,
               group_id: groupId,
             });
-            set({ currentRequest: saved });
+            savedRequest = saved;
+          }
+
+          const nextHistoryFilter: ReplayHistoryFilter = {
+            type: 'request',
+            requestId: savedRequest.id,
+          };
+          const nextUiState = {
+            ...get().uiState,
+            selectedRequestId: savedRequest.id,
+            selectedHistoryId: null,
+            historyPage: 1,
+          };
+
+          set({
+            currentRequest: savedRequest,
+            recentHistory: [],
+            historyTotal: 0,
+            allHistory: [],
+            allHistoryTotal: 0,
+            historyFilter: nextHistoryFilter,
+            uiState: nextUiState,
+          });
+
+          await get().loadRecentHistory(nextHistoryFilter);
+          if (nextUiState.mode === 'history') {
+            await get().loadAllHistory(1, nextUiState.historyPageSize);
           }
 
           message.success('Request saved');
@@ -719,8 +746,11 @@ export const useReplayStore = create<ReplayState>()(
       createGroup: async (name: string) => {
         try {
           const group = await replayApi.createGroup(name);
-          const { groups } = get();
-          set({ groups: [...groups, group] });
+          set((state) => ({
+            groups: state.groups.some((item) => item.id === group.id)
+              ? state.groups.map((item) => (item.id === group.id ? group : item))
+              : [...state.groups, group],
+          }));
           message.success('Folder created');
           return true;
         } catch (e) {

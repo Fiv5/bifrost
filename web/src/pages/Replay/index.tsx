@@ -61,9 +61,9 @@ export default function Replay() {
     currentRequest,
     savedRequests,
     loading,
-    executing,
-    streamingConnection,
     uiState,
+    loadGroups,
+    loadSavedRequests,
     loadAllHistory,
     updateUIState,
     selectRequest,
@@ -73,6 +73,11 @@ export default function Replay() {
 
   useEffect(() => {
     const init = async () => {
+      await Promise.all([
+        loadGroups(),
+        loadSavedRequests(),
+      ]);
+
       pushService.connect({
         need_replay_saved_requests: true,
         need_replay_groups: true,
@@ -87,7 +92,7 @@ export default function Replay() {
       });
       pushService.disconnectIfIdle();
     };
-  }, []);
+  }, [loadGroups, loadSavedRequests]);
 
   useEffect(() => {
     if (
@@ -167,8 +172,7 @@ export default function Replay() {
     },
   };
 
-  const isStreaming = streamingConnection?.status === "connected" || streamingConnection?.status === "connecting";
-  const showSpinner = loading || (executing && !isStreaming);
+  const showSpinner = loading;
 
   const composerContent = (
     <div style={styles.centerArea}>
