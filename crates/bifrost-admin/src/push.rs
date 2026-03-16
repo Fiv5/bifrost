@@ -159,6 +159,8 @@ pub struct HistoryData {
 pub struct ValueItemData {
     pub name: String,
     pub value: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -857,6 +859,8 @@ impl PushManager {
             .map(|entry| ValueItemData {
                 name: entry.name,
                 value: entry.value,
+                created_at: entry.created_at,
+                updated_at: entry.updated_at,
             })
             .collect();
         let total = values.len();

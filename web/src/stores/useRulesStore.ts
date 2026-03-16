@@ -3,6 +3,14 @@ import type { RuleFile, RuleFileDetail } from '../types';
 import * as api from '../api';
 import { isConnectionIssueError } from '../api/client';
 
+function sortRulesByCreatedAt(rules: RuleFile[]): RuleFile[] {
+  return [...rules].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    return rightTime - leftTime || left.name.localeCompare(right.name);
+  });
+}
+
 interface RulesState {
   rules: RuleFile[];
   currentRule: RuleFileDetail | null;
@@ -41,7 +49,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const rules = await api.getRules();
-      set({ rules, loading: false });
+      set({ rules: sortRulesByCreatedAt(rules), loading: false });
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }

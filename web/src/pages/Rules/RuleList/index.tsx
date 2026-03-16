@@ -8,6 +8,7 @@ import {
   Switch,
   Tooltip,
   Spin,
+  Select,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -24,6 +25,14 @@ import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
 import styles from './index.module.css';
+
+type RuleSortMode = 'created_desc' | 'updated_desc' | 'name_asc';
+
+const ruleSortOptions = [
+  { label: 'Newest', value: 'created_desc' },
+  { label: 'Updated', value: 'updated_desc' },
+  { label: 'Name', value: 'name_asc' },
+];
 
 export default function RuleList() {
   const {
@@ -48,13 +57,29 @@ export default function RuleList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
+  const [sortMode, setSortMode] = useState<RuleSortMode>('created_desc');
   const { exportFile } = useExportBifrost();
 
   const filteredRules = useMemo(() => {
-    if (!searchKeyword) return rules;
+    const sortedRules = [...rules].sort((left, right) => {
+      if (sortMode === 'updated_desc') {
+        return (
+          Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
+          left.name.localeCompare(right.name)
+        );
+      }
+      if (sortMode === 'name_asc') {
+        return left.name.localeCompare(right.name);
+      }
+      return (
+        Date.parse(right.created_at) - Date.parse(left.created_at) ||
+        left.name.localeCompare(right.name)
+      );
+    });
+    if (!searchKeyword) return sortedRules;
     const keyword = searchKeyword.toLowerCase();
-    return rules.filter((rule) => rule.name.toLowerCase().includes(keyword));
-  }, [rules, searchKeyword]);
+    return sortedRules.filter((rule) => rule.name.toLowerCase().includes(keyword));
+  }, [rules, searchKeyword, sortMode]);
 
   const handleCreate = async () => {
     if (!newRuleName.trim()) {
@@ -221,6 +246,15 @@ export default function RuleList() {
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
           data-testid="rule-search-input"
+        />
+        <Select
+          size="small"
+          value={sortMode}
+          onChange={(value: RuleSortMode) => setSortMode(value)}
+          options={ruleSortOptions}
+          className={styles.sortControl}
+          popupMatchSelectWidth={false}
+          data-testid="rule-sort-select"
         />
       </div>
 

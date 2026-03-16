@@ -11,6 +11,8 @@ use crate::state::SharedAdminState;
 pub struct ValueItem {
     pub name: String,
     pub value: String,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +85,8 @@ fn list_values(storage: &crate::state::SharedValuesStorage) -> Response<BoxBody>
                 .map(|e| ValueItem {
                     name: e.name,
                     value: e.value,
+                    created_at: e.created_at,
+                    updated_at: e.updated_at,
                 })
                 .collect();
             let total = values.len();
@@ -97,10 +101,12 @@ fn list_values(storage: &crate::state::SharedValuesStorage) -> Response<BoxBody>
 
 fn get_value(name: &str, storage: &crate::state::SharedValuesStorage) -> Response<BoxBody> {
     let guard = storage.read();
-    match guard.get_value(name) {
-        Some(value) => json_response(&ValueItem {
-            name: name.to_string(),
-            value,
+    match guard.get_entry(name) {
+        Some(entry) => json_response(&ValueItem {
+            name: entry.name,
+            value: entry.value,
+            created_at: entry.created_at,
+            updated_at: entry.updated_at,
         }),
         None => error_response(
             StatusCode::NOT_FOUND,

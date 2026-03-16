@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from "react";
-import { Input, Button, Dropdown, Modal, message, Tooltip, Spin } from "antd";
+import { Input, Button, Dropdown, Modal, message, Tooltip, Spin, Select } from "antd";
 import type { MenuProps } from "antd";
 import {
   PlusOutlined,
@@ -15,6 +15,14 @@ import { useValuesStore } from "../../../stores/useValuesStore";
 import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../../hooks/useExportBifrost";
 import styles from "./index.module.css";
+
+type ValueSortMode = "created_desc" | "updated_desc" | "name_asc";
+
+const valueSortOptions = [
+  { label: "Newest", value: "created_desc" },
+  { label: "Updated", value: "updated_desc" },
+  { label: "Name", value: "name_asc" },
+];
 
 export default function ValueList() {
   const {
@@ -38,17 +46,33 @@ export default function ValueList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [selectedValues, setSelectedValues] = useState<string[]>([]);
+  const [sortMode, setSortMode] = useState<ValueSortMode>("created_desc");
   const { exportFile } = useExportBifrost();
 
   const filteredValues = useMemo(() => {
-    if (!searchKeyword) return values;
+    const sortedValues = [...values].sort((left, right) => {
+      if (sortMode === "updated_desc") {
+        return (
+          Date.parse(right.updated_at) - Date.parse(left.updated_at) ||
+          left.name.localeCompare(right.name)
+        );
+      }
+      if (sortMode === "name_asc") {
+        return left.name.localeCompare(right.name);
+      }
+      return (
+        Date.parse(right.created_at) - Date.parse(left.created_at) ||
+        left.name.localeCompare(right.name)
+      );
+    });
+    if (!searchKeyword) return sortedValues;
     const keyword = searchKeyword.toLowerCase();
-    return values.filter(
+    return sortedValues.filter(
       (v) =>
         v.name.toLowerCase().includes(keyword) ||
         v.value.toLowerCase().includes(keyword),
     );
-  }, [values, searchKeyword]);
+  }, [values, searchKeyword, sortMode]);
 
   const handleCreate = async () => {
     if (!newValueName.trim()) {
@@ -232,6 +256,15 @@ export default function ValueList() {
           onChange={(e) => setSearchKeyword(e.target.value)}
           allowClear
           data-testid="value-search-input"
+        />
+        <Select
+          size="small"
+          value={sortMode}
+          onChange={(value: ValueSortMode) => setSortMode(value)}
+          options={valueSortOptions}
+          className={styles.sortControl}
+          popupMatchSelectWidth={false}
+          data-testid="value-sort-select"
         />
       </div>
 
