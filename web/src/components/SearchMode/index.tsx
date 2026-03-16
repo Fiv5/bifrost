@@ -58,7 +58,6 @@ export default function SearchMode({
   } = useSearchStore();
 
   const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
-  const filterConditions = useTrafficStore((state) => state.filterConditions);
   const selectedClientIps = useFilterPanelStore(
     (state) => state.selectedClientIps,
   );
@@ -79,18 +78,15 @@ export default function SearchMode({
       status_ranges: toolbarFilters.status,
       content_types: toolbarFilters.type,
       has_rule_hit: toolbarFilters.rule.length > 0 ? true : undefined,
-      conditions: filterConditions.map((c) => ({
-        field: c.field,
-        operator: c.operator,
-        value: c.value,
-      })),
+      // "Add Filter" only scopes the live traffic table. Fuzzy search should
+      // stay keyword-driven instead of inheriting those local conditions.
+      conditions: [],
       client_ips: selectedClientIps,
       client_apps: allClientApps,
       domains: selectedDomains,
     };
   }, [
     toolbarFilters,
-    filterConditions,
     selectedClientIps,
     selectedClientApps,
     selectedDomains,

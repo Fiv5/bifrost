@@ -64,6 +64,28 @@ impl RulesResolver for TestRulesResolver {
                     Protocol::Host => {
                         resolved.host = Some(rule.value.clone());
                     }
+                    Protocol::Http | Protocol::Https => {
+                        let prefix = if matches!(rule.protocol, Protocol::Http) {
+                            "http://"
+                        } else {
+                            "https://"
+                        };
+                        if let Some(rest) = rule.value.strip_prefix(prefix) {
+                            let host_port = rest.split('/').next().unwrap_or(rest);
+                            let default_port = if matches!(rule.protocol, Protocol::Http) {
+                                80
+                            } else {
+                                443
+                            };
+                            let normalized_host = if host_port.contains(':') {
+                                host_port.to_string()
+                            } else {
+                                format!("{host_port}:{default_port}")
+                            };
+                            resolved.host = Some(normalized_host);
+                            resolved.host_protocol = Some(rule.protocol);
+                        }
+                    }
                     Protocol::Ws => {
                         resolved.host = Some(rule.value.clone());
                         resolved.host_protocol = Some(Protocol::Ws);
@@ -162,6 +184,19 @@ pub async fn start_test_proxy() -> TestProxy {
 }
 
 pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy {
+    let enable_tls_support = config.enable_tls_interception;
+    start_test_proxy_with_config_inner(&mut config, enable_tls_support).await
+}
+
+#[allow(dead_code)]
+pub async fn start_test_proxy_with_tls_support(mut config: ProxyConfig) -> TestProxy {
+    start_test_proxy_with_config_inner(&mut config, true).await
+}
+
+async fn start_test_proxy_with_config_inner(
+    config: &mut ProxyConfig,
+    enable_tls_support: bool,
+) -> TestProxy {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     config.port = addr.port();
@@ -169,7 +204,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
 
     let rules = Arc::new(TestRulesResolver::new());
     // 为 TLS interception 测试准备 CA/证书生成器。
-    let tls_config = if config.enable_tls_interception {
+    let tls_config = if enable_tls_support {
         bifrost_tls::init_crypto_provider();
 
         let ca = Arc::new(bifrost_tls::generate_root_ca().expect("Failed to generate test CA"));
@@ -215,7 +250,7 @@ pub async fn start_test_proxy_with_config(mut config: ProxyConfig) -> TestProxy 
 
     TestProxy {
         port: config.port,
-        host: config.host,
+        host: config.host.clone(),
         ca_cert_der: tls_config.ca_cert.clone(),
         server,
         rules,
