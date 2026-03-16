@@ -1,6 +1,7 @@
 mod native_launcher;
 
 use bifrost_core::direct_blocking_reqwest_client_builder;
+use bifrost_storage::data_dir as shared_bifrost_data_dir;
 use bifrost_tls::{ensure_valid_ca, generate_root_ca, save_root_ca, CertInstaller, CertStatus};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -386,24 +387,11 @@ fn resolve_bifrost_binary(app: &AppHandle) -> tauri::Result<PathBuf> {
 }
 
 fn resolve_desktop_data_dir() -> tauri::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("BIFROST_DATA_DIR") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
-    }
-
-    Ok(default_bifrost_data_dir())
+    Ok(shared_bifrost_data_dir())
 }
 
 fn resolve_desktop_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("desktop-config.json")
-}
-
-fn default_bifrost_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|home| home.join(".bifrost"))
-        .unwrap_or_else(|| PathBuf::from(".bifrost"))
 }
 
 fn ensure_desktop_cert_ready(data_dir: &Path) {
@@ -1352,7 +1340,9 @@ fn is_server_config_response(response_body: &str) -> bool {
 mod tests {
     use super::{
         is_server_config_response, parse_port_update_response, resolve_desktop_config_path,
+        resolve_desktop_data_dir,
     };
+    use bifrost_storage::data_dir as shared_bifrost_data_dir;
     use std::path::PathBuf;
 
     #[test]
@@ -1361,6 +1351,14 @@ mod tests {
         assert_eq!(
             target,
             PathBuf::from("/tmp/shared-bifrost/desktop-config.json")
+        );
+    }
+
+    #[test]
+    fn desktop_data_dir_matches_shared_cli_dir() {
+        assert_eq!(
+            resolve_desktop_data_dir().unwrap(),
+            shared_bifrost_data_dir()
         );
     }
 
