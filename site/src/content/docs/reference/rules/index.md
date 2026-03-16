@@ -12,26 +12,26 @@ editUrl: false
 
 在阅读本目录前，建议先了解整体语法与基础概念：
 
-- 规则整体语法：[rule.md](../rule.md)
-- URL 匹配（pattern）：[pattern.md](../pattern.md)
-- 操作指令（operation/value/模板变量/Values 引用）：[operation.md](../operation.md)
+- 规则整体语法：[rule.md](../rule-engine)
+- URL 匹配（pattern）：[pattern.md](../patterns)
+- 操作指令（operation/value/模板变量/Values 引用）：[operation.md](../operations)
 
 ---
 
 ## 文档导航
 
-- 匹配模式详解：[patterns.md](./patterns.md)
-- 规则优先级与执行顺序：[rule-priority.md](./rule-priority.md)
-- 路由与转发规则：[routing.md](./routing.md)
-- 请求修改规则：[request-modification.md](./request-modification.md)
-- 响应修改规则：[response-modification.md](./response-modification.md)
-- URL 操作规则：[url-manipulation.md](./url-manipulation.md)
-- Body 操作规则：[body-manipulation.md](./body-manipulation.md)
-- 状态码与重定向：[status-redirect.md](./status-redirect.md)
-- 延迟与限速规则：[timing-throttle.md](./timing-throttle.md)
-- 过滤器规则：[filters.md](./filters.md)
-- 脚本规则：[scripts.md](./scripts.md)
-- WebSocket 规则：[websocket.md](./websocket.md)
+- 匹配模式详解：[patterns.md](./patterns)
+- 规则优先级与执行顺序：[rule-priority.md](./rule-priority)
+- 路由与转发规则：[routing.md](./routing)
+- 请求修改规则：[request-modification.md](./request-modification)
+- 响应修改规则：[response-modification.md](./response-modification)
+- URL 操作规则：[url-manipulation.md](./url-manipulation)
+- Body 操作规则：[body-manipulation.md](./body-manipulation)
+- 状态码与重定向：[status-redirect.md](./status-redirect)
+- 延迟与限速规则：[timing-throttle.md](./timing-throttle)
+- 过滤器规则：[filters.md](./filters)
+- 脚本规则：[scripts.md](./scripts)
+- WebSocket 规则：[websocket.md](./websocket)
 
 ---
 
@@ -46,7 +46,7 @@ editUrl: false
 - `tunnel`
 - `redirect`
 
-详见：[routing.md](./routing.md)、[status-redirect.md](./status-redirect.md)
+详见：[routing.md](./routing)、[status-redirect.md](./status-redirect)
 
 ### 2) 请求修改
 
@@ -54,7 +54,7 @@ editUrl: false
 - 方法与常用字段：`method`、`ua`、`referer`
 - Body：`reqBody`、`reqReplace`、`reqMerge`
 
-详见：[request-modification.md](./request-modification.md)、[body-manipulation.md](./body-manipulation.md)
+详见：[request-modification.md](./request-modification)、[body-manipulation.md](./body-manipulation)
 
 ### 3) 响应修改
 
@@ -62,24 +62,24 @@ editUrl: false
 - Body：`resBody`、`resReplace`、`resMerge`
 - 状态码：`statusCode` / `replaceStatus`
 
-详见：[response-modification.md](./response-modification.md)、[body-manipulation.md](./body-manipulation.md)、[status-redirect.md](./status-redirect.md)
+详见：[response-modification.md](./response-modification)、[body-manipulation.md](./body-manipulation)、[status-redirect.md](./status-redirect)
 
 ### 4) URL 操作
 
 - `urlParams`
 - `pathReplace`
 
-详见：[url-manipulation.md](./url-manipulation.md)
+详见：[url-manipulation.md](./url-manipulation)
 
 ### 5) 脚本与 decode
 
 - `reqScript` / `resScript`
 - `decode`
 
-详见：[scripts.md](./scripts.md)（脚本规则）与 [../scripts.md](../scripts.md)（管理端 Scripts 使用与开发指南）
+详见：[scripts.md](./scripts)（脚本规则）与 [../scripts.md](../scripting)（管理端 Scripts 使用与开发指南）
 
 ### 6) WebSocket
 
 - `ws` / `wss`
 
-详见：[websocket.md](./websocket.md)
+详见：[websocket.md](./websocket)

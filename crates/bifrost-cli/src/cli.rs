@@ -148,9 +148,14 @@ search [keyword] [OPTIONS]         Search traffic records with advanced filterin
   -i, --interactive                   Interactive TUI mode (default if no keyword)
   -l, --limit <N>                     Maximum results to return (default: 50)
   -f, --format <FMT>                  Output format: table|compact|json|json-pretty
-  --url|--headers|--body              Search only in URL, headers, or body
+  --url                               Search only in URL/path
+  --headers|--body                    Search in both request+response headers or bodies
+  --req-header|--res-header           Search only in request or response headers
+  --req-body|--res-body               Search only in request or response body
   --status <FILTER>                   Status: 2xx|3xx|4xx|5xx|error
   --method <METHOD>                   HTTP method filter
+  --host <TEXT>                       Host contains filter
+  --path <TEXT>                       Path contains filter
   --protocol <PROTO>                 Protocol: HTTP|HTTPS|WS|WSS
   --domain <PATTERN>                 Domain pattern filter
   --no-color                          Disable colored output
@@ -438,10 +443,22 @@ pub enum Commands {
         headers: bool,
         #[arg(long, help = "Search only in body")]
         body: bool,
+        #[arg(long = "req-header", help = "Search only in request headers")]
+        req_header: bool,
+        #[arg(long = "res-header", help = "Search only in response headers")]
+        res_header: bool,
+        #[arg(long = "req-body", help = "Search only in request body")]
+        req_body: bool,
+        #[arg(long = "res-body", help = "Search only in response body")]
+        res_body: bool,
         #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
         status: Option<String>,
         #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
         method: Option<String>,
+        #[arg(long, help = "Filter host contains")]
+        host: Option<String>,
+        #[arg(long, help = "Filter path contains")]
+        path: Option<String>,
         #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
         protocol: Option<String>,
         #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]
@@ -547,10 +564,22 @@ pub enum TrafficCommands {
         headers: bool,
         #[arg(long, help = "Search only in body")]
         body: bool,
+        #[arg(long = "req-header", help = "Search only in request headers")]
+        req_header: bool,
+        #[arg(long = "res-header", help = "Search only in response headers")]
+        res_header: bool,
+        #[arg(long = "req-body", help = "Search only in request body")]
+        req_body: bool,
+        #[arg(long = "res-body", help = "Search only in response body")]
+        res_body: bool,
         #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
         status: Option<String>,
         #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
         method: Option<String>,
+        #[arg(long, help = "Filter host contains")]
+        host: Option<String>,
+        #[arg(long, help = "Filter path contains")]
+        path: Option<String>,
         #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
         protocol: Option<String>,
         #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]

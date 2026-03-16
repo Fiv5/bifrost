@@ -1,11 +1,3 @@
----
-title: 项目概览
-description: 用几分钟理解 Bifrost 的定位、能力边界和适合的使用场景。
-editUrl: false
----
-
-> 此页面由 `docs/overview.md` 自动同步生成。
-
 # Bifrost 是什么
 
 Bifrost 是一个由 Rust 编写的高性能代理服务器，灵感来源于 Whistle，但目标不只是“转发请求”，而是把规则、脚本、流量观测、TLS MITM 与回放工作流整合进同一套体验里。

@@ -1,11 +1,3 @@
----
-title: 安装与启动
-description: 按照 docs/getting-started.md 的最新方式安装和启动 Bifrost。
-editUrl: false
----
-
-> 此页面由 `docs/getting-started.md` 自动同步生成。
-
 # 安装与启动
 
 本文档汇总 Bifrost 的安装、启动、管理端入口与卸载方式。
