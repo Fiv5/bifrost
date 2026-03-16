@@ -380,6 +380,7 @@ export interface TrafficQueryResponse {
 
 export interface TrafficUpdatesFilter extends TrafficFilter {
   after_id?: string;
+  after_seq?: number;
   pending_ids?: string;
 }
 

@@ -315,7 +315,14 @@ impl PushClient {
     }
 
     pub fn update_subscription(&self, subscription: ClientSubscription) {
-        *self.subscription.write() = subscription;
+        let current_last_sequence = self.subscription.read().last_sequence;
+        let mut next = subscription;
+        next.last_sequence = match (current_last_sequence, next.last_sequence) {
+            (Some(current), Some(incoming)) => Some(current.max(incoming)),
+            (Some(current), None) => Some(current),
+            (None, incoming) => incoming,
+        };
+        *self.subscription.write() = next;
     }
 
     pub fn get_subscription(&self) -> ClientSubscription {
@@ -559,7 +566,7 @@ impl PushManager {
 
         let mut sub = client.subscription.write();
         if let Some(seq) = last_seq {
-            sub.last_sequence = Some(seq);
+            sub.last_sequence = Some(sub.last_sequence.map_or(seq, |current| current.max(seq)));
         }
         sub.pending_ids = next_pending_ids;
         true
@@ -636,14 +643,17 @@ impl PushManager {
                 continue;
             }
 
-            let query_params = QueryParams {
-                cursor: subscription.last_sequence,
-                limit: Some(500),
-                direction: Direction::Forward,
-                ..Default::default()
+            let result = if let Some(cursor) = subscription.last_sequence {
+                let query_params = QueryParams {
+                    cursor: Some(cursor),
+                    limit: Some(500),
+                    direction: Direction::Forward,
+                    ..Default::default()
+                };
+                db_store.query(&query_params)
+            } else {
+                db_store.query_latest_window(500)
             };
-
-            let result = db_store.query(&query_params);
             let new_records: Vec<_> = result
                 .records
                 .into_iter()
@@ -693,14 +703,17 @@ impl PushManager {
             return;
         }
 
-        let query_params = QueryParams {
-            cursor: subscription.last_sequence,
-            limit: Some(500),
-            direction: Direction::Forward,
-            ..Default::default()
+        let result = if let Some(cursor) = subscription.last_sequence {
+            let query_params = QueryParams {
+                cursor: Some(cursor),
+                limit: Some(500),
+                direction: Direction::Forward,
+                ..Default::default()
+            };
+            db_store.query(&query_params)
+        } else {
+            db_store.query_latest_window(500)
         };
-
-        let result = db_store.query(&query_params);
         let new_records: Vec<_> = result
             .records
             .into_iter()
@@ -1569,6 +1582,34 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    fn compact(seq: u64, id: &str) -> TrafficSummaryCompact {
+        TrafficSummaryCompact {
+            id: id.to_string(),
+            seq,
+            ts: seq,
+            m: "GET".to_string(),
+            h: "example.test".to_string(),
+            p: format!("/{}", id),
+            s: 200,
+            ct: None,
+            req_ct: None,
+            req_sz: 0,
+            res_sz: 0,
+            dur: 0,
+            proto: "http".to_string(),
+            cip: "127.0.0.1".to_string(),
+            capp: None,
+            cpid: None,
+            flags: 0,
+            fc: 0,
+            ss: None,
+            st: "-".to_string(),
+            et: None,
+            rc: 0,
+            rp: vec![],
+        }
+    }
+
     #[tokio::test]
     async fn traffic_push_uses_in_memory_events_without_querying_db_for_new_records() {
         let dir = create_test_dir();
@@ -1761,5 +1802,101 @@ mod tests {
         assert_eq!(data.inserts[0].id, "late-subscription-1");
 
         cleanup_test_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn send_initial_traffic_without_last_sequence_uses_latest_window() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 2000, 0, None).unwrap());
+        let state = Arc::new(AdminState::new(9914).with_traffic_db_store_shared(store.clone()));
+        let manager = Arc::new(PushManager::new(state));
+
+        for i in 0..520 {
+            let mut record = TrafficRecord::new(
+                format!("bootstrap-{}", i),
+                "GET".to_string(),
+                format!("http://example.test/bootstrap-{}", i),
+            );
+            record.status = 200;
+            store.record(record);
+        }
+
+        let (client, mut receiver) =
+            manager.register_client("push-latest-window".to_string(), Default::default());
+
+        client.update_subscription(ClientSubscription {
+            need_traffic: true,
+            ..Default::default()
+        });
+
+        manager.send_initial_traffic(&client);
+
+        let message = timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("expected push message")
+            .expect("channel should stay open");
+
+        let PushMessage::TrafficDelta(data) = message else {
+            panic!("expected traffic delta");
+        };
+
+        let ids: Vec<&str> = data.inserts.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(data.inserts.len(), 500);
+        assert_eq!(ids.first().copied(), Some("bootstrap-20"));
+        assert_eq!(ids.last().copied(), Some("bootstrap-519"));
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn client_subscription_update_keeps_last_sequence_monotonic() {
+        let (client, _receiver) = PushClient::new(
+            "push-client-monotonic".to_string(),
+            ClientSubscription {
+                need_traffic: true,
+                last_sequence: Some(200),
+                ..Default::default()
+            },
+        );
+
+        client.update_subscription(ClientSubscription {
+            need_traffic: true,
+            last_sequence: Some(100),
+            ..Default::default()
+        });
+        assert_eq!(client.get_subscription().last_sequence, Some(200));
+
+        client.update_subscription(ClientSubscription {
+            need_traffic: true,
+            last_sequence: None,
+            ..Default::default()
+        });
+        assert_eq!(client.get_subscription().last_sequence, Some(200));
+    }
+
+    #[test]
+    fn send_traffic_delta_does_not_regress_last_sequence() {
+        let state = Arc::new(AdminState::new(9915));
+        let manager = PushManager::new(state);
+        let (client, _receiver) = PushClient::new(
+            "push-client-seq".to_string(),
+            ClientSubscription {
+                need_traffic: true,
+                last_sequence: Some(200),
+                ..Default::default()
+            },
+        );
+        let client = Arc::new(client);
+
+        assert!(manager.send_traffic_delta_to_client(
+            &client,
+            vec![compact(100, "older-batch")],
+            vec![],
+            false,
+            1,
+            200,
+        ));
+
+        assert_eq!(client.get_subscription().last_sequence, Some(200));
     }
 }

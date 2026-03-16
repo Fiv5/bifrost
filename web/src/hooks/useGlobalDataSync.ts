@@ -58,6 +58,7 @@ export function useGlobalDataSync() {
       const currentTrafficStore = useTrafficStore.getState();
       if (currentTrafficStore.polling && currentTrafficStore.usePush) {
         currentTrafficStore.enablePush();
+        void currentTrafficStore.catchUpUpdates();
       }
       useMetricsStore.getState().enablePush({
         needOverview: true,
@@ -141,12 +142,22 @@ export function useGlobalDataSync() {
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);
     const unsubscribeForceRefresh = pushService.onForceRefresh(onForceRefresh);
+    const unsubscribePushConnection = pushService.onConnectionChange(({ connected }) => {
+      if (!connected || globalState.visibilityPaused || globalState.forceRefresh) {
+        return;
+      }
+      const currentTrafficStore = useTrafficStore.getState();
+      if (currentTrafficStore.polling && currentTrafficStore.usePush) {
+        void currentTrafficStore.catchUpUpdates();
+      }
+    });
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onPageShow);
       unsubscribeForceRefresh();
+      unsubscribePushConnection();
 
       stopAllPolling();
 
