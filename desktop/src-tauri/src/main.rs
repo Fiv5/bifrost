@@ -124,7 +124,9 @@ fn main() {
         .setup(|app| {
             let host_window = create_host_window(app.handle())?;
             host_window.set_icon(load_app_icon()?)?;
-            apply_window_effects(&host_window)?;
+            if !supports_native_launcher() {
+                apply_window_effects(&host_window)?;
+            }
 
             let binary_path = resolve_bifrost_binary(app.handle())?;
             let app_data_dir = resolve_desktop_data_dir()?;
@@ -172,6 +174,7 @@ fn main() {
             if supports_native_launcher() {
                 if let Some(state) = app.try_state::<BackendState>() {
                     if let Some(overlay_ptr) = native_launcher::install(&host_window)? {
+                        native_launcher::start_animation(&host_window, overlay_ptr)?;
                         if let Ok(mut overlay_guard) = state.launcher_overlay.lock() {
                             *overlay_guard = Some(overlay_ptr);
                         }
@@ -327,7 +330,7 @@ fn create_host_window(app: &AppHandle) -> tauri::Result<Window> {
             .decorations(false)
             .visible(true)
             .transparent(true)
-            .shadow(true)
+            .shadow(false)
             .background_color(Color(0, 0, 0, 0));
     } else {
         builder = builder
@@ -929,9 +932,17 @@ fn start_main_window_handoff(app: &AppHandle, reason: &str) -> tauri::Result<()>
     let host_window = app
         .get_window(HOST_WINDOW_LABEL)
         .ok_or_else(|| anyhow("missing host window during embedded handoff".to_string()))?;
-    animate_host_window_to_main_size(&host_window)?;
+    let overlay_ptr = state
+        .launcher_overlay
+        .lock()
+        .ok()
+        .and_then(|mut overlay| overlay.take());
+    animate_host_window_to_main_size(&host_window, overlay_ptr)?;
     let _ = host_window.set_background_color(Some(Color(8, 17, 23, 255)));
     let _ = host_window.set_decorations(true);
+    #[cfg(target_os = "macos")]
+    let _ = host_window.set_shadow(true);
+    let _ = apply_window_effects(&host_window);
     reveal_host_window(&host_window);
     let _ = host_window.set_resizable(true);
     let _ = host_window.set_maximizable(true);
@@ -940,12 +951,6 @@ fn start_main_window_handoff(app: &AppHandle, reason: &str) -> tauri::Result<()>
         TARGET_WINDOW_MIN_HEIGHT,
     )));
     prepare_main_webview(app, &host_window);
-
-    let overlay_ptr = state
-        .launcher_overlay
-        .lock()
-        .ok()
-        .and_then(|mut overlay| overlay.take());
     let app_handle = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(WEBVIEW_REVEAL_SETTLE_DELAY);
@@ -1009,7 +1014,10 @@ fn reveal_host_window(window: &Window) {
     let _ = window.set_focus();
 }
 
-fn animate_host_window_to_main_size(window: &Window) -> tauri::Result<()> {
+fn animate_host_window_to_main_size(
+    window: &Window,
+    overlay_ptr: Option<usize>,
+) -> tauri::Result<()> {
     let scale_factor = window.scale_factor()?;
     let start_size = window.outer_size()?.to_logical::<f64>(scale_factor);
     let start_position = window.outer_position()?.to_logical::<f64>(scale_factor);
@@ -1026,10 +1034,16 @@ fn animate_host_window_to_main_size(window: &Window) -> tauri::Result<()> {
 
         let _ = window.set_size(LogicalSize::new(width, height));
         let _ = window.set_position(LogicalPosition::new(x, y));
+        if let Some(overlay_ptr) = overlay_ptr {
+            let _ = native_launcher::set_overlay_progress(window, overlay_ptr, eased);
+        }
         std::thread::sleep(WINDOW_EXPAND_STEP_DELAY);
     }
 
     let _ = window.set_size(LogicalSize::new(TARGET_WINDOW_WIDTH, TARGET_WINDOW_HEIGHT));
+    if let Some(overlay_ptr) = overlay_ptr {
+        let _ = native_launcher::set_overlay_progress(window, overlay_ptr, 1.0);
+    }
     Ok(())
 }
 

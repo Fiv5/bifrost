@@ -285,6 +285,47 @@ test("清空流量时前端立即清理", async ({ page, request }) => {
   await server.close();
 });
 
+test("Add Filter 不影响 Fuzzy Search", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/fuzzy-filter-${token}`;
+  const impossibleKeyword = `missing-${token}`;
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+    await expect(page.getByTestId("traffic-row").filter({ hasText: path }).first()).toBeVisible();
+
+    await page.getByRole("button", { name: "Add Filter" }).click();
+    await page.locator(".ant-select").nth(0).click();
+    await page.locator(".ant-select-dropdown").getByText("Path", { exact: true }).click();
+    await page.locator(".ant-select").nth(1).click();
+    await page.locator(".ant-select-dropdown").getByText("Contains", { exact: true }).click();
+    await page.getByPlaceholder("Enter value...").fill(impossibleKeyword);
+
+    const searchRequestPromise = page.waitForRequest((req) => {
+      return req.url().includes("/_bifrost/api/search/stream") && req.method() === "POST";
+    });
+
+    await page.getByRole("button", { name: "Fuzzy Search" }).click();
+    await page.getByPlaceholder("Enter keyword to search all content...").fill(token);
+    await page.getByRole("button", { name: "Search" }).click();
+
+    const searchRequest = await searchRequestPromise;
+    const payload = searchRequest.postDataJSON() as {
+      filters?: { conditions?: Array<{ field: string; operator: string; value: string }> };
+    };
+    expect(payload.filters?.conditions ?? []).toEqual([]);
+
+    await expect(page.locator("span").filter({ hasText: path }).first()).toBeVisible();
+  } finally {
+    await server.close();
+  }
+});
+
 async function sendHttpViaProxy(url: string) {
   await new Promise<void>((resolve, reject) => {
     const req = httpRequest(

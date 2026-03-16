@@ -112,6 +112,14 @@ fn is_explicit_tls_intercept_override(
         || is_app_included(client_app, &tls_intercept_config.app_intercept_include)
 }
 
+fn requires_tls_interception_for_host_rewrite(resolved_rules: &ResolvedRules) -> bool {
+    resolved_rules.host.is_some()
+        && matches!(
+            resolved_rules.host_protocol,
+            Some(Protocol::Http | Protocol::Ws)
+        )
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     client::sanitize_upstream_headers(headers)
 }
@@ -3331,6 +3339,10 @@ pub fn should_intercept_tls_for_client(
         return rule_intercept;
     }
 
+    if requires_tls_interception_for_host_rewrite(resolved_rules) {
+        return true;
+    }
+
     if is_local_client
         && requires_client_app_for_tls_decision(tls_intercept_config)
         && !matches!(client_app, Some(app) if !app.is_empty())
@@ -3903,6 +3915,76 @@ mod tests {
             "Rule override should work even when globally disabled"
         );
         println!("✓ Rule override with global disabled: intercept={}", result);
+    }
+
+    #[test]
+    fn test_should_intercept_http_host_rewrite_even_when_global_disable() {
+        let tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules {
+            host: Some("localhost:8000".to_string()),
+            host_protocol: Some(Protocol::Http),
+            ..Default::default()
+        };
+
+        let result = should_intercept_tls(
+            "nextoncall-bd.byteintl.net",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "HTTPS CONNECT rewritten to HTTP upstream should force interception"
+        );
+    }
+
+    #[test]
+    fn test_should_intercept_ws_host_rewrite_even_when_global_disable() {
+        let tls_intercept_config = make_tls_intercept_config(false, vec![], vec![]);
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules {
+            host: Some("localhost:8000".to_string()),
+            host_protocol: Some(Protocol::Ws),
+            ..Default::default()
+        };
+
+        let result = should_intercept_tls(
+            "nextoncall-bd.byteintl.net",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "WSS CONNECT rewritten to WS upstream should force interception"
+        );
+    }
+
+    #[test]
+    fn test_tls_passthrough_rule_still_overrides_http_host_rewrite() {
+        let tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules {
+            host: Some("localhost:8000".to_string()),
+            host_protocol: Some(Protocol::Http),
+            tls_intercept: Some(false),
+            ..Default::default()
+        };
+
+        let result = should_intercept_tls(
+            "nextoncall-bd.byteintl.net",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            !result,
+            "Explicit tlsPassthrough:// should keep higher priority than auto interception"
+        );
     }
 
     #[test]

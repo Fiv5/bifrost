@@ -2276,7 +2276,17 @@ fn build_http_websocket_handshake(
     Ok(handshake)
 }
 
-pub fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+pub fn is_websocket_upgrade<B>(req: &Request<B>) -> bool {
+    if req.version() == hyper::Version::HTTP_2
+        && req.method() == hyper::Method::CONNECT
+        && req
+            .extensions()
+            .get::<hyper::ext::Protocol>()
+            .is_some_and(|protocol| protocol.as_str().eq_ignore_ascii_case("websocket"))
+    {
+        return true;
+    }
+
     let connection = req
         .headers()
         .get(hyper::header::CONNECTION)
@@ -2342,7 +2352,9 @@ pub fn parse_and_record_sse_events(body: &[u8]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hyper::Method;
     use hyper::Uri;
+    use hyper::Version;
 
     #[test]
     fn test_extract_host_port_from_uri() {
@@ -2351,6 +2363,44 @@ mod tests {
         let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "example.com");
         assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_accepts_http11_upgrade() {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("http://example.com/socket")
+            .header(hyper::header::CONNECTION, "Upgrade")
+            .header(hyper::header::UPGRADE, "websocket")
+            .body(())
+            .unwrap();
+
+        assert!(is_websocket_upgrade(&req));
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_accepts_http2_extended_connect() {
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri("https://example.com/socket")
+            .version(Version::HTTP_2)
+            .extension(hyper::ext::Protocol::from_static("websocket"))
+            .body(())
+            .unwrap();
+
+        assert!(is_websocket_upgrade(&req));
+    }
+
+    #[test]
+    fn test_is_websocket_upgrade_rejects_plain_http2_connect() {
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri("https://example.com/socket")
+            .version(Version::HTTP_2)
+            .body(())
+            .unwrap();
+
+        assert!(!is_websocket_upgrade(&req));
     }
 
     #[test]

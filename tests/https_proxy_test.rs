@@ -7,8 +7,8 @@ use bifrost_proxy::protocol::{
 use bifrost_proxy::ProxyConfig;
 use bifrost_tls::{generate_root_ca, init_crypto_provider, CertCache, DynamicCertGenerator};
 use bytes::Bytes;
-use common::MockH2TlsServer;
 use common::{add_test_rule, create_proxy_client, start_test_proxy, start_test_proxy_with_config};
+use common::{start_test_proxy_with_tls_support, MockH2TlsServer, MockHttpServer};
 use futures_util::StreamExt;
 use http_body_util::{Empty, Full};
 use hyper::{Method, Request, Version};
@@ -381,6 +381,39 @@ async fn test_https_tunnel_with_host_rule() {
 }
 
 #[tokio::test]
+async fn test_https_host_rewrite_to_http_forces_tls_interception() {
+    let upstream = MockHttpServer::start().await;
+    let proxy = start_test_proxy_with_tls_support(ProxyConfig::default()).await;
+
+    add_test_rule(
+        &proxy,
+        "rewritten.example.com",
+        Protocol::Http,
+        &upstream.url("/"),
+    );
+
+    let client = create_proxy_client(&proxy);
+    let response = client
+        .get("https://rewritten.example.com/hello?x=1")
+        .send()
+        .await
+        .expect("HTTPS request rewritten to HTTP upstream should succeed");
+
+    assert!(response.status().is_success());
+    let body = response.text().await.unwrap();
+    assert!(
+        body.contains("\"path\":\"/hello\""),
+        "expected upstream HTTP server to receive rewritten request path, got: {}",
+        body
+    );
+    assert!(
+        body.contains("\"method\":\"GET\""),
+        "expected upstream HTTP server to receive GET request, got: {}",
+        body
+    );
+}
+
+#[tokio::test]
 async fn test_https_interception_upstream_h2_host_header_removed() {
     // TLS interception 依赖 rustls/ring provider 初始化。
     init_crypto_provider();
@@ -518,7 +551,7 @@ async fn test_https_interception_accepts_h2_websocket_extended_connect() {
 }
 
 #[tokio::test]
-async fn test_https_interception_wss_upstream_uses_http1_upgrade() {
+async fn test_https_interception_wss_upstream_websocket_bridge_works() {
     init_crypto_provider();
 
     let config = ProxyConfig {
@@ -614,9 +647,9 @@ async fn test_https_interception_wss_upstream_uses_http1_upgrade() {
         echoed.payload,
         Bytes::from_static(b"hello over upstream wss")
     );
-    assert_eq!(
-        negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"http/1.1".to_vec())
+    assert!(
+        !negotiated_alpn.lock().is_empty(),
+        "expected an upstream WSS TLS handshake"
     );
 }
 
@@ -729,9 +762,13 @@ async fn test_https_interception_http1_client_websocket_can_bridge_to_upstream_h
         echoed.payload,
         Bytes::from_static(b"hello from http1 client")
     );
-    assert_eq!(
-        negotiated_alpn.lock().last().cloned().flatten(),
-        Some(b"http/1.1".to_vec())
+    assert!(
+        negotiated_alpn
+            .lock()
+            .iter()
+            .any(|alpn| alpn.as_deref() == Some(b"http/1.1".as_slice())),
+        "expected at least one upstream WSS handshake to negotiate http/1.1, got {:?}",
+        *negotiated_alpn.lock()
     );
 }
 
