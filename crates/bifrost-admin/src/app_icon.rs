@@ -1,4 +1,4 @@
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ const CACHE_VERSION: u32 = 2;
 pub struct AppIconCache {
     cache_dir: PathBuf,
     memory_cache: RwLock<HashMap<String, Option<Vec<u8>>>>,
+    extract_lock: Mutex<()>,
 }
 
 impl AppIconCache {
@@ -23,6 +24,7 @@ impl AppIconCache {
         let cache = Self {
             cache_dir,
             memory_cache: RwLock::new(HashMap::new()),
+            extract_lock: Mutex::new(()),
         };
 
         cache.check_and_migrate_cache();
@@ -79,6 +81,17 @@ impl AppIconCache {
         }
 
         if let Some(path) = app_path {
+            let _extract_guard = self.extract_lock.lock();
+
+            if let Some(cached) = self.get_from_memory(&cache_key) {
+                return cached;
+            }
+
+            if let Some(cached) = self.get_from_disk(&cache_key) {
+                self.set_memory_cache(&cache_key, Some(cached.clone()));
+                return Some(cached);
+            }
+
             if let Some(icon_data) = extract_app_icon(path) {
                 self.save_to_disk(&cache_key, &icon_data);
                 self.set_memory_cache(&cache_key, Some(icon_data.clone()));

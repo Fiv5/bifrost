@@ -1,11 +1,14 @@
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+
+use crate::resource_alerts::{resource_alert_level, ResourceAlertLevel};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BodyRef {
@@ -43,10 +46,13 @@ pub struct BodyStore {
     retention_days: u64,
     stream_flush_bytes: usize,
     stream_flush_interval: Duration,
+    active_stream_writers: Arc<AtomicUsize>,
+    max_open_stream_writers: usize,
 }
 
 // 兜底：当文件写入失败时，最多只保留这么多字节的 inline 预览，避免把完整 body 复制到内存里。
 const INLINE_FALLBACK_PREVIEW_BYTES: usize = 8 * 1024;
+const DEFAULT_MAX_OPEN_STREAM_WRITERS: usize = 128;
 
 pub struct BodyStreamWriter {
     path: PathBuf,
@@ -56,6 +62,8 @@ pub struct BodyStreamWriter {
     flush_bytes: usize,
     flush_interval: Duration,
     last_flush: Instant,
+    active_stream_writers: Arc<AtomicUsize>,
+    released_stream_slot: bool,
 }
 
 impl BodyStreamWriter {
@@ -103,10 +111,25 @@ impl BodyStreamWriter {
 
     pub fn finish(mut self) -> BodyRef {
         let _ = self.flush();
+        self.release_stream_slot();
         BodyRef::File {
             path: self.path.to_string_lossy().to_string(),
             size: self.size,
         }
+    }
+
+    fn release_stream_slot(&mut self) {
+        if self.released_stream_slot {
+            return;
+        }
+        self.released_stream_slot = true;
+        self.active_stream_writers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Drop for BodyStreamWriter {
+    fn drop(&mut self) {
+        self.release_stream_slot();
     }
 }
 
@@ -126,6 +149,24 @@ impl BodyStore {
         stream_flush_bytes: usize,
         stream_flush_interval: Duration,
     ) -> Self {
+        Self::new_with_limits(
+            temp_dir,
+            max_memory_size,
+            retention_days,
+            stream_flush_bytes,
+            stream_flush_interval,
+            DEFAULT_MAX_OPEN_STREAM_WRITERS,
+        )
+    }
+
+    fn new_with_limits(
+        temp_dir: PathBuf,
+        max_memory_size: usize,
+        retention_days: u64,
+        stream_flush_bytes: usize,
+        stream_flush_interval: Duration,
+        max_open_stream_writers: usize,
+    ) -> Self {
         if !temp_dir.exists() {
             let _ = fs::create_dir_all(&temp_dir);
         }
@@ -135,6 +176,8 @@ impl BodyStore {
             retention_days,
             stream_flush_bytes,
             stream_flush_interval,
+            active_stream_writers: Arc::new(AtomicUsize::new(0)),
+            max_open_stream_writers: max_open_stream_writers.max(1),
         }
     }
 
@@ -236,9 +279,16 @@ impl BodyStore {
     }
 
     pub fn start_stream(&self, id: &str, kind: &str) -> std::io::Result<BodyStreamWriter> {
+        self.acquire_stream_slot()?;
         let filename = format!("{}_{}", id, kind);
         let path = self.temp_dir.join(&filename);
-        let file = fs::File::create(&path)?;
+        let file = match fs::File::create(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                self.active_stream_writers.fetch_sub(1, Ordering::SeqCst);
+                return Err(error);
+            }
+        };
         Ok(BodyStreamWriter {
             path,
             file,
@@ -247,7 +297,47 @@ impl BodyStore {
             flush_bytes: self.stream_flush_bytes,
             flush_interval: self.stream_flush_interval,
             last_flush: Instant::now(),
+            active_stream_writers: Arc::clone(&self.active_stream_writers),
+            released_stream_slot: false,
         })
+    }
+
+    fn acquire_stream_slot(&self) -> std::io::Result<()> {
+        loop {
+            let current = self.active_stream_writers.load(Ordering::SeqCst);
+            if current >= self.max_open_stream_writers {
+                tracing::warn!(
+                    active_stream_writers = current,
+                    max_open_stream_writers = self.max_open_stream_writers,
+                    "[BODY_STORE] refusing to open new stream writer because active writer limit was reached"
+                );
+                return Err(std::io::Error::other(format!(
+                    "body stream writer limit reached ({}/{})",
+                    current, self.max_open_stream_writers
+                )));
+            }
+
+            if self
+                .active_stream_writers
+                .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let next = current + 1;
+                let level = resource_alert_level(next, self.max_open_stream_writers);
+                if matches!(
+                    level,
+                    ResourceAlertLevel::Warn | ResourceAlertLevel::Critical
+                ) {
+                    tracing::warn!(
+                        active_stream_writers = next,
+                        max_open_stream_writers = self.max_open_stream_writers,
+                        level = ?level,
+                        "[BODY_STORE] stream writer usage is approaching the open-file limit"
+                    );
+                }
+                return Ok(());
+            }
+        }
     }
 
     pub fn load(&self, body_ref: &BodyRef) -> Option<String> {
@@ -426,6 +516,8 @@ impl BodyStore {
             temp_dir: self.temp_dir.to_string_lossy().to_string(),
             max_memory_size: self.max_memory_size,
             retention_days: self.retention_days,
+            active_stream_writers: self.active_stream_writers.load(Ordering::SeqCst),
+            max_open_stream_writers: self.max_open_stream_writers,
         }
     }
 
@@ -479,6 +571,8 @@ pub struct BodyStoreStats {
     pub temp_dir: String,
     pub max_memory_size: usize,
     pub retention_days: u64,
+    pub active_stream_writers: usize,
+    pub max_open_stream_writers: usize,
 }
 
 #[cfg(test)]
@@ -611,6 +705,32 @@ mod tests {
 
         let removed = store.cleanup_expired().unwrap();
         assert!(removed >= 1);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn test_stream_writer_limit_released_after_finish() {
+        let dir = create_test_dir();
+        let store = BodyStore::new_with_limits(
+            dir.clone(),
+            10,
+            7,
+            64 * 1024,
+            Duration::from_millis(200),
+            1,
+        );
+
+        let writer = store.start_stream("test-stream", "res").unwrap();
+        let stats = store.stats();
+        assert_eq!(stats.active_stream_writers, 1);
+        assert!(store.start_stream("test-stream-2", "res").is_err());
+
+        let _ = writer.finish();
+
+        let stats = store.stats();
+        assert_eq!(stats.active_stream_writers, 0);
+        assert!(store.start_stream("test-stream-3", "res").is_ok());
 
         cleanup_test_dir(&dir);
     }

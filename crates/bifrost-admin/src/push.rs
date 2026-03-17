@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::replay_db::{ReplayGroup, ReplayRequestSummary, MAX_REQUESTS};
+use crate::resource_alerts::build_resource_alerts;
 use crate::state::SharedAdminState;
 use crate::traffic::TrafficSummary;
 use crate::traffic_db::{Direction, QueryParams, TrafficStoreEvent, TrafficSummaryCompact};
@@ -997,6 +998,10 @@ impl PushManager {
                 let frame_store_stats = self.state.frame_store.as_ref().map(|fs| fs.stats());
                 let ws_payload_store_stats =
                     self.state.ws_payload_store.as_ref().map(|ws| ws.stats());
+                let resource_alerts = build_resource_alerts(
+                    body_store_stats.as_ref(),
+                    ws_payload_store_stats.as_ref(),
+                );
                 json!({
                     "traffic": {
                         "max_records": config.traffic.max_records,
@@ -1009,6 +1014,7 @@ impl PushManager {
                     "body_store_stats": body_store_stats,
                     "frame_store_stats": frame_store_stats,
                     "ws_payload_store_stats": ws_payload_store_stats,
+                    "resource_alerts": resource_alerts,
                 })
             }
             SETTINGS_SCOPE_CERT_INFO => {

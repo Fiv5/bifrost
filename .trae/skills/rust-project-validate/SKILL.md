@@ -15,7 +15,9 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 
 ## 执行内容
 
-1. 格式检查：`cargo fmt --all -- --check`
+1. 格式检查：
+   - `cargo fmt --all -- --check`
+   - `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all -- --check`
 2. Lint 检查：`cargo clippy --all-targets --all-features -- -D warnings`
 3. 执行端到端用例，按本次任务的测试范围执行
 4. 运行测试：优先按修改范围执行 `cargo test`，避免无差别跑完整套耗时用例
@@ -32,7 +34,9 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 ## 输出
 
 - 结构化报告，按步骤给出状态（通过/失败）与关键信息
-- 当 `fmt --check` 失败时提示可使用 `cargo fmt --all` 自动修复
+- 当 `fmt --check` 失败时提示可使用以下命令自动修复：
+  - `cargo fmt --all`
+  - `cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all`
 
 ## 前置条件
 
@@ -44,7 +48,8 @@ description: "运行 cargo fmt/clippy/build/e2e/test 验证项目规范；在每
 运行本技能将顺序执行：
 
 ```bash
-cargo fmt --all -- --check # 检查代码格式是否符合规范
+cargo fmt --all -- --check # 检查工作区 Rust 代码格式
+cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all -- --check # 检查 desktop Tauri Rust 代码格式
 cargo clippy --all-targets --all-features -- -D warnings # 检查代码是否符合 Rust 编码规范
 cargo test -p bifrost-e2e -- --list # 先确认本次需要覆盖的 E2E 范围
 cargo test -p <changed-crate> --all-features # 按修改范围执行测试
@@ -54,3 +59,4 @@ cargo build --all-targets --all-features # 最终构建项目
 ## 注意
 
 - 与项目规则一致：参考 [../../rules/project_rules.md](../../rules/project_rules.md)
+- 若改动涉及 `desktop/src-tauri`，必须确保本地执行过独立 `fmt` 检查，不能只依赖工作区根 `cargo fmt --all -- --check`

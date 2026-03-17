@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::body_store::BodyRef;
+use crate::resource_alerts::{resource_alert_level, ResourceAlertLevel};
 
 const WS_PAYLOAD_SUBDIR: &str = "ws_payload";
 
@@ -161,6 +162,19 @@ impl WsPayloadStore {
                     } else {
                         break;
                     }
+                }
+                let active_writers = state.writers.len();
+                let level = resource_alert_level(active_writers, state.max_open_files);
+                if matches!(
+                    level,
+                    ResourceAlertLevel::Warn | ResourceAlertLevel::Critical
+                ) {
+                    tracing::warn!(
+                        active_writers,
+                        max_open_files = state.max_open_files,
+                        level = ?level,
+                        "[WS_PAYLOAD_STORE] writer usage is approaching the open-file limit"
+                    );
                 }
             } else {
                 return None;
@@ -347,6 +361,7 @@ impl WsPayloadStore {
         let payload_dir = self.payload_dir();
         let mut file_count = 0;
         let mut total_size = 0u64;
+        let state = self.state.lock();
         if payload_dir.exists() {
             if let Ok(entries) = fs::read_dir(&payload_dir) {
                 for entry in entries.flatten() {
@@ -364,7 +379,9 @@ impl WsPayloadStore {
             file_count,
             total_size,
             payload_dir: payload_dir.to_string_lossy().to_string(),
-            retention_days: self.get_retention_days(),
+            retention_days: state.retention_days,
+            active_writers: state.writers.len(),
+            max_open_files: state.max_open_files,
         }
     }
 
@@ -418,4 +435,6 @@ pub struct WsPayloadStoreStats {
     pub total_size: u64,
     pub payload_dir: String,
     pub retention_days: u64,
+    pub active_writers: usize,
+    pub max_open_files: usize,
 }

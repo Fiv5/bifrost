@@ -41,6 +41,8 @@ const WINDOW_EXPAND_STEPS: u16 = 10;
 const WINDOW_EXPAND_STEP_DELAY: Duration = Duration::from_millis(16);
 const OVERLAY_FADE_STEPS: u16 = 8;
 const OVERLAY_FADE_STEP_DELAY: Duration = Duration::from_millis(14);
+const BACKEND_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const BACKEND_WATCHDOG_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(3);
 const WEBVIEW_PARK_OFFSET: f64 = 2000.0;
 const WEBVIEW_REVEAL_SETTLE_DELAY: Duration = Duration::from_millis(90);
 const HANDOFF_COMPLETE_EVENT: &str = "desktop://handoff-complete";
@@ -99,6 +101,7 @@ struct BackendState {
     child: Mutex<Option<Child>>,
     shutdown_started: AtomicBool,
     force_exit: AtomicBool,
+    backend_recovery_in_progress: AtomicBool,
     startup_ready: AtomicBool,
     startup_error: Mutex<Option<String>>,
     main_webview_loaded: AtomicBool,
@@ -162,6 +165,7 @@ fn main() {
                 child: Mutex::new(None),
                 shutdown_started: AtomicBool::new(false),
                 force_exit: AtomicBool::new(false),
+                backend_recovery_in_progress: AtomicBool::new(false),
                 startup_ready: AtomicBool::new(false),
                 startup_error: Mutex::new(None),
                 main_webview_loaded: AtomicBool::new(false),
@@ -202,6 +206,11 @@ fn main() {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     bootstrap_desktop_backend(&app_handle);
+                });
+
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    monitor_desktop_backend(&app_handle);
                 });
 
             }
@@ -668,6 +677,176 @@ fn bootstrap_desktop_backend(app: &AppHandle) {
         Err(error) => {
             record_startup_error(&state, error.to_string());
             request_desktop_shutdown(app);
+        }
+    }
+}
+
+struct BackendRecoveryGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for BackendRecoveryGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
+fn begin_backend_recovery(state: &BackendState) -> Option<BackendRecoveryGuard<'_>> {
+    if state
+        .backend_recovery_in_progress
+        .swap(true, Ordering::SeqCst)
+    {
+        return None;
+    }
+
+    Some(BackendRecoveryGuard {
+        flag: &state.backend_recovery_in_progress,
+    })
+}
+
+fn monitor_desktop_backend(app: &AppHandle) {
+    let Some(state) = app.try_state::<BackendState>() else {
+        return;
+    };
+
+    append_desktop_bootstrap_log(&state.data_dir, "desktop backend watchdog started");
+
+    loop {
+        std::thread::sleep(BACKEND_WATCHDOG_POLL_INTERVAL);
+
+        let Some(state) = app.try_state::<BackendState>() else {
+            return;
+        };
+
+        if state.shutdown_started.load(Ordering::SeqCst) || state.force_exit.load(Ordering::SeqCst)
+        {
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                "desktop backend watchdog stopped because desktop shutdown is in progress",
+            );
+            return;
+        }
+
+        if let Some(reason) = poll_managed_backend_exit(&state) {
+            attempt_backend_recovery(app, &reason);
+            continue;
+        }
+
+        let current_port = match state.port.lock() {
+            Ok(port) => *port,
+            Err(_) => continue,
+        };
+
+        if current_port == 0 || probe_backend_health(current_port) {
+            continue;
+        }
+
+        attempt_backend_recovery(
+            app,
+            &format!("backend health probe failed on port {current_port}"),
+        );
+    }
+}
+
+fn poll_managed_backend_exit(state: &BackendState) -> Option<String> {
+    let mut child_guard = state.child.lock().ok()?;
+    let child = child_guard.as_mut()?;
+
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let pid = child.id();
+            let _ = child_guard.take();
+            Some(format!(
+                "managed backend child pid={pid} exited with status {status}"
+            ))
+        }
+        Ok(None) => None,
+        Err(error) => {
+            let pid = child.id();
+            let _ = child_guard.take();
+            Some(format!(
+                "failed to poll managed backend child pid={pid}: {error}"
+            ))
+        }
+    }
+}
+
+fn attempt_backend_recovery(app: &AppHandle, reason: &str) {
+    let Some(state) = app.try_state::<BackendState>() else {
+        return;
+    };
+
+    if state.shutdown_started.load(Ordering::SeqCst) || state.force_exit.load(Ordering::SeqCst) {
+        return;
+    }
+
+    let Some(_recovery_guard) = begin_backend_recovery(&state) else {
+        return;
+    };
+
+    append_desktop_bootstrap_log(
+        &state.data_dir,
+        format!("desktop backend watchdog triggering recovery; reason={reason}"),
+    );
+    state.startup_ready.store(false, Ordering::SeqCst);
+
+    if let Ok(mut startup_error) = state.startup_error.lock() {
+        *startup_error = None;
+    }
+
+    if let Ok(mut child_guard) = state.child.lock() {
+        if let Some(child) = child_guard.take() {
+            if let Err(error) = terminate_child(child) {
+                append_desktop_bootstrap_log(
+                    &state.data_dir,
+                    format!("failed to terminate managed backend child during recovery: {error}"),
+                );
+            }
+        }
+    }
+
+    let preferred_port = match state.expected_port.lock() {
+        Ok(port) => *port,
+        Err(_) => {
+            record_startup_error(
+                &state,
+                "failed to read desktop expected proxy port during watchdog recovery".to_string(),
+            );
+            return;
+        }
+    };
+
+    match ensure_backend_running(&state.binary_path, &state.data_dir, preferred_port) {
+        Ok((child, port)) => {
+            if let Ok(mut child_guard) = state.child.lock() {
+                *child_guard = child;
+            }
+
+            if let Ok(mut current_port) = state.port.lock() {
+                *current_port = port;
+            }
+
+            if let Ok(mut startup_error) = state.startup_error.lock() {
+                *startup_error = None;
+            }
+
+            state.startup_ready.store(true, Ordering::SeqCst);
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                format!("desktop backend watchdog recovery succeeded; active_port={port}"),
+            );
+            try_start_native_handoff(app, "backend watchdog recovery");
+        }
+        Err(error) => {
+            record_startup_error(&state, format!("desktop watchdog recovery failed: {error}"));
+            append_desktop_bootstrap_log(
+                &state.data_dir,
+                format!(
+                    "desktop backend watchdog recovery failed; will retry after {:?}",
+                    BACKEND_WATCHDOG_RECOVERY_RETRY_DELAY
+                ),
+            );
+            std::thread::sleep(BACKEND_WATCHDOG_RECOVERY_RETRY_DELAY);
         }
     }
 }
@@ -1243,6 +1422,9 @@ fn restart_backend_on_port(
     current_port: u16,
     expected_port: u16,
 ) -> tauri::Result<DesktopPortUpdateResponse> {
+    let _recovery_guard = begin_backend_recovery(state)
+        .ok_or_else(|| anyhow("desktop backend recovery is already in progress".to_string()))?;
+
     append_desktop_bootstrap_log(
         &state.data_dir,
         format!(
@@ -1417,12 +1599,15 @@ fn is_server_config_response(response_body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        host_window_close_behavior_for_platform, is_server_config_response,
-        parse_port_update_response, resolve_desktop_config_path, resolve_desktop_data_dir,
-        HostWindowCloseBehavior,
+        begin_backend_recovery, host_window_close_behavior_for_platform, is_server_config_response,
+        parse_port_update_response, poll_managed_backend_exit, resolve_desktop_config_path,
+        resolve_desktop_data_dir, BackendState, HostWindowCloseBehavior,
     };
     use bifrost_storage::data_dir as shared_bifrost_data_dir;
     use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
     #[test]
     fn desktop_config_uses_shared_data_dir() {
@@ -1478,5 +1663,87 @@ mod tests {
             host_window_close_behavior_for_platform(false),
             HostWindowCloseBehavior::ShutdownApp
         );
+    }
+
+    #[test]
+    fn backend_recovery_guard_prevents_parallel_recovery() {
+        let flag = AtomicBool::new(false);
+        let state = BackendState {
+            binary_path: PathBuf::new(),
+            data_dir: PathBuf::new(),
+            config_path: PathBuf::new(),
+            launcher_only: false,
+            expected_port: Mutex::new(0),
+            port: Mutex::new(0),
+            child: Mutex::new(None),
+            shutdown_started: AtomicBool::new(false),
+            force_exit: AtomicBool::new(false),
+            backend_recovery_in_progress: flag,
+            startup_ready: AtomicBool::new(false),
+            startup_error: Mutex::new(None),
+            main_webview_loaded: AtomicBool::new(false),
+            main_window_ready: AtomicBool::new(false),
+            handoff_started: AtomicBool::new(false),
+            handoff_completed: AtomicBool::new(false),
+            launcher_overlay: Mutex::new(None),
+        };
+
+        let guard = begin_backend_recovery(&state).expect("first recovery guard");
+        assert!(
+            begin_backend_recovery(&state).is_none(),
+            "second recovery must be rejected while the first one is active"
+        );
+        drop(guard);
+        assert!(
+            begin_backend_recovery(&state).is_some(),
+            "recovery flag should be released after guard drop"
+        );
+    }
+
+    #[test]
+    fn poll_managed_backend_exit_reports_exited_child() {
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn test child");
+        let _ = child.wait_with_output();
+
+        let state = BackendState {
+            binary_path: PathBuf::new(),
+            data_dir: PathBuf::new(),
+            config_path: PathBuf::new(),
+            launcher_only: false,
+            expected_port: Mutex::new(0),
+            port: Mutex::new(0),
+            child: Mutex::new(Some(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg("exit 0")
+                    .spawn()
+                    .expect("spawn managed child"),
+            )),
+            shutdown_started: AtomicBool::new(false),
+            force_exit: AtomicBool::new(false),
+            backend_recovery_in_progress: AtomicBool::new(false),
+            startup_ready: AtomicBool::new(false),
+            startup_error: Mutex::new(None),
+            main_webview_loaded: AtomicBool::new(false),
+            main_window_ready: AtomicBool::new(false),
+            handoff_started: AtomicBool::new(false),
+            handoff_completed: AtomicBool::new(false),
+            launcher_overlay: Mutex::new(None),
+        };
+
+        {
+            let mut child_guard = state.child.lock().expect("child lock");
+            let child = child_guard.as_mut().expect("child");
+            let _ = child.wait();
+        }
+
+        let reason = poll_managed_backend_exit(&state).expect("exited child reason");
+        assert!(reason.contains("exited with status"));
+        assert!(state.child.lock().expect("child lock").is_none());
+        assert!(!state.backend_recovery_in_progress.load(Ordering::SeqCst));
     }
 }

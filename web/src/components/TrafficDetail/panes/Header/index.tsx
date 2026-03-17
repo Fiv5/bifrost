@@ -5,6 +5,10 @@ import type { ColumnsType } from "antd/es/table";
 import type { SessionTargetSearchState } from "../../../../types";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from "../../../../api/config";
+import {
+  showTlsWhitelistChangeSuccess,
+  TLS_RECONNECT_NOTICE,
+} from "../../../../utils/tlsInterceptionNotice";
 
 const { Text } = Typography;
 
@@ -130,7 +134,7 @@ export const HeaderView = ({
           const newIncludeList = [...currentConfig.app_intercept_include, clientApp];
           await updateTlsConfig({ app_intercept_include: newIncludeList });
 
-          message.success(`Added "${clientApp}" to app intercept list`);
+          showTlsWhitelistChangeSuccess(`Added "${clientApp}" to app intercept list`);
         } catch (error) {
           message.error("Failed to add app to intercept list");
           console.error(error);
@@ -209,32 +213,41 @@ export const HeaderView = ({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            gap: 12,
+            flexDirection: "column",
+            gap: 16,
             minHeight: 200,
             backgroundColor: token.colorBgLayout,
             borderRadius: 4,
           }}
         >
-          {showInterceptButton && (
-            <Button
-              type="primary"
-              icon={<LockOutlined />}
-              onClick={handleAddToInterceptList}
-              size="large"
-            >
-              Intercept this domain
-            </Button>
-          )}
-          {showAppInterceptButton && (
-            <Button
-              type="primary"
-              icon={<AppstoreOutlined />}
-              onClick={handleAddAppToInterceptList}
-              size="large"
-            >
-              Intercept this app
-            </Button>
-          )}
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", justifyContent: "center" }}>
+            {showInterceptButton && (
+              <Button
+                type="primary"
+                icon={<LockOutlined />}
+                onClick={handleAddToInterceptList}
+                size="large"
+              >
+                Intercept this domain
+              </Button>
+            )}
+            {showAppInterceptButton && (
+              <Button
+                type="primary"
+                icon={<AppstoreOutlined />}
+                onClick={handleAddAppToInterceptList}
+                size="large"
+              >
+                Intercept this app
+              </Button>
+            )}
+          </div>
+          <Text
+            type="secondary"
+            style={{ maxWidth: 520, textAlign: "center", padding: "0 16px" }}
+          >
+            {TLS_RECONNECT_NOTICE}
+          </Text>
         </div>
       );
     }

@@ -186,6 +186,25 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
   await server.close();
 });
 
+test("左侧 Filters 展示基础请求数量", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}/filter-count-a-${token}`);
+    await sendProxyRequest(`http://127.0.0.1:${server.port}/filter-count-b-${token}`);
+
+    await expect(page.getByLabel("Local (127.0.0.1) count")).toHaveText("2");
+    await expect(page.getByLabel("127.0.0.1 count").first()).toHaveText("2");
+  } finally {
+    await server.close();
+  }
+});
+
 test("切换页面后保留已加载流量并持续接收 push", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startMockServer();

@@ -1,4 +1,4 @@
-import { Card, Col, Row, Space, Typography, Slider, Divider, Button, Popconfirm, Switch, theme } from "antd";
+import { Alert, Badge, Button, Card, Col, Divider, Popconfirm, Row, Slider, Space, Switch, Typography, theme } from "antd";
 import {
   ThunderboltOutlined,
   FolderOutlined,
@@ -6,9 +6,55 @@ import {
   FileOutlined,
   SwapOutlined,
 } from "@ant-design/icons";
-import type { PerformanceConfig, TrafficConfig } from "../../../api/config";
+import type {
+  PerformanceConfig,
+  ResourceAlertLevel,
+  ResourceAlertStatus,
+  TrafficConfig,
+} from "../../../api/config";
 
 const { Text } = Typography;
+
+const resourceAlertBadgeStatus: Record<ResourceAlertLevel, "success" | "warning" | "error"> = {
+  ok: "success",
+  warn: "warning",
+  critical: "error",
+};
+
+const resourceAlertType: Record<ResourceAlertLevel, "success" | "warning" | "error"> = {
+  ok: "success",
+  warn: "warning",
+  critical: "error",
+};
+
+function alertTitle(level: ResourceAlertLevel): string {
+  switch (level) {
+    case "critical":
+      return "Open-file pressure is critically high";
+    case "warn":
+      return "Open-file usage is approaching the limit";
+    case "ok":
+      return "Open-file usage is healthy";
+  }
+}
+
+function resourceTextColor(
+  level: ResourceAlertLevel,
+  warningColor: string,
+  errorColor: string,
+): string | undefined {
+  if (level === "critical") {
+    return errorColor;
+  }
+  if (level === "warn") {
+    return warningColor;
+  }
+  return undefined;
+}
+
+function statusMessage(status: ResourceAlertStatus | null | undefined): string | null {
+  return status?.level && status.level !== "ok" ? status.message : null;
+}
 
 export interface PerformanceTabProps {
   perfLoading: boolean;
@@ -58,6 +104,13 @@ export default function PerformanceTab({
   formatBytes,
 }: PerformanceTabProps) {
   const { token } = theme.useToken();
+  const resourceAlerts = performanceConfig?.resource_alerts;
+  const overallAlertLevel = resourceAlerts?.overall_level ?? "ok";
+  const bodyAlert = resourceAlerts?.body_stream_writers;
+  const wsAlert = resourceAlerts?.ws_payload_writers;
+  const alertMessages = [statusMessage(bodyAlert), statusMessage(wsAlert)].filter(
+    (message): message is string => Boolean(message),
+  );
 
   return (
     <Row gutter={[16, 16]} data-testid="settings-performance-tab">
@@ -74,6 +127,21 @@ export default function PerformanceTab({
         >
           <div style={{ paddingLeft: 24,paddingRight:12 }}>
             <Space direction="vertical" style={{ width: "100%" }} size="middle">
+              {overallAlertLevel !== "ok" && (
+                <Alert
+                  type={resourceAlertType[overallAlertLevel]}
+                  showIcon
+                  message={alertTitle(overallAlertLevel)}
+                  description={
+                    <Space direction="vertical" size={4}>
+                      {alertMessages.map((message) => (
+                        <Text key={message}>{message}</Text>
+                      ))}
+                    </Space>
+                  }
+                />
+              )}
+
               <Row justify="space-between" align="middle">
                 <Col flex="1" style={{ marginRight: 16 }}>
                   <Space direction="vertical" size={0} style={{ width: "100%" }}>
@@ -326,11 +394,14 @@ export default function PerformanceTab({
                       </Col>
                     </Row>
                     <Row gutter={[16, 8]} style={{ marginTop: 12 }}>
-                      <Col xs={6}>
+                      <Col xs={24} md={8}>
                         <Space direction="vertical" size={0}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            Body Cache
-                          </Text>
+                          <Space size={6}>
+                            <Badge status={resourceAlertBadgeStatus[bodyAlert?.level ?? "ok"]} />
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              Body Cache
+                            </Text>
+                          </Space>
                           <Space>
                             <FileOutlined />
                             <Text>
@@ -345,9 +416,26 @@ export default function PerformanceTab({
                                 0,
                             )}
                           </Text>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              color: resourceTextColor(
+                                bodyAlert?.level ?? "ok",
+                                token.colorWarning,
+                                token.colorError,
+                              ),
+                            }}
+                          >
+                            Active streams{" "}
+                            {performanceConfig.body_store_stats
+                              ?.active_stream_writers ?? 0}
+                            /
+                            {performanceConfig.body_store_stats
+                              ?.max_open_stream_writers ?? 0}
+                          </Text>
                         </Space>
                       </Col>
-                      <Col xs={6}>
+                      <Col xs={24} md={8}>
                         <Space direction="vertical" size={0}>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             WebSocket Frames
@@ -368,11 +456,14 @@ export default function PerformanceTab({
                           </Text>
                         </Space>
                       </Col>
-                      <Col xs={6}>
+                      <Col xs={24} md={8}>
                         <Space direction="vertical" size={0}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            WebSocket Payloads
-                          </Text>
+                          <Space size={6}>
+                            <Badge status={resourceAlertBadgeStatus[wsAlert?.level ?? "ok"]} />
+                            <Text type="secondary" style={{ fontSize: 12 }}>
+                              WebSocket Payloads
+                            </Text>
+                          </Space>
                           <Space>
                             <SwapOutlined />
                             <Text>
@@ -386,6 +477,23 @@ export default function PerformanceTab({
                               performanceConfig.ws_payload_store_stats
                                 ?.total_size ?? 0,
                             )}
+                          </Text>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              color: resourceTextColor(
+                                wsAlert?.level ?? "ok",
+                                token.colorWarning,
+                                token.colorError,
+                              ),
+                            }}
+                          >
+                            Open writers{" "}
+                            {performanceConfig.ws_payload_store_stats
+                              ?.active_writers ?? 0}
+                            /
+                            {performanceConfig.ws_payload_store_stats
+                              ?.max_open_files ?? 0}
                           </Text>
                         </Space>
                       </Col>
