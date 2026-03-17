@@ -838,10 +838,7 @@ fn attempt_backend_recovery(app: &AppHandle, reason: &str) {
             try_start_native_handoff(app, "backend watchdog recovery");
         }
         Err(error) => {
-            record_startup_error(
-                &state,
-                format!("desktop watchdog recovery failed: {error}"),
-            );
+            record_startup_error(&state, format!("desktop watchdog recovery failed: {error}"));
             append_desktop_bootstrap_log(
                 &state.data_dir,
                 format!(

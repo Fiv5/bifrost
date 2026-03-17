@@ -59,11 +59,13 @@ lint:
 # Format code
 fmt:
 	cargo fmt --all
+	cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all
 	cd web && npm run format 2>/dev/null || true
 
 # Check formatting without making changes
 fmt-check:
 	cargo fmt --all -- --check
+	cargo fmt --manifest-path desktop/src-tauri/Cargo.toml --all -- --check
 
 # Install development dependencies
 install-deps:
@@ -74,7 +76,7 @@ setup:
 	@echo "Setting up git hooks..."
 	@git config core.hooksPath .githooks
 	@echo "Git hooks configured successfully!"
-	@echo "Pre-commit hook will run 'cargo fmt --all -- --check' before each commit."
+	@echo "Pre-commit hook should cover both workspace and desktop Tauri fmt checks before each commit."
 
 # Create release artifacts
 release: build-release
