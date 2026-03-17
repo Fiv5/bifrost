@@ -4,6 +4,7 @@ use tracing::warn;
 
 use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::metrics::SystemInfo;
+use crate::resource_alerts::build_resource_alerts;
 use crate::state::SharedAdminState;
 
 pub async fn handle_system(
@@ -116,17 +117,20 @@ async fn get_memory_diagnostics(state: SharedAdminState) -> Response<BoxBody> {
             "memory": s.memory_stats(),
         })
     });
+    let ws_payload_store = state.ws_payload_store.as_ref().map(|s| s.stats());
     let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|s| {
         serde_json::json!({
             "disk": s.stats(),
             "memory": s.memory_stats(),
         })
     });
+    let resource_alerts = build_resource_alerts(body_store.as_ref(), ws_payload_store.as_ref());
 
     let stores = serde_json::json!({
         "body_store": body_store,
         "frame_store": frame_store_stats,
         "ws_payload_store": ws_payload_store_stats,
+        "resource_alerts": resource_alerts,
         "max_body_buffer_size": state.get_max_body_buffer_size(),
         "max_body_probe_size": state.get_max_body_probe_size(),
     });

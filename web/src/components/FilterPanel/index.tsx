@@ -12,12 +12,18 @@ interface FilterPanelProps {
   availableClientIps: string[];
   availableClientApps: string[];
   availableDomains: string[];
+  clientIpCounts: Map<string, number>;
+  clientAppCounts: Map<string, number>;
+  domainCounts: Map<string, number>;
 }
 
 export default function FilterPanel({
   availableClientIps,
   availableClientApps,
   availableDomains,
+  clientIpCounts,
+  clientAppCounts,
+  domainCounts,
 }: FilterPanelProps) {
   const { token } = theme.useToken();
   const { fetchConfig } = useTlsConfigStore();
@@ -182,7 +188,11 @@ export default function FilterPanel({
             collapsed={collapsedSections.pinned}
             onToggle={() => setCollapsedSection("pinned", !collapsedSections.pinned)}
           >
-            <PinnedFilters />
+            <PinnedFilters
+              clientIpCounts={clientIpCounts}
+              clientAppCounts={clientAppCounts}
+              domainCounts={domainCounts}
+            />
           </FilterSection>
         )}
 
@@ -223,6 +233,7 @@ export default function FilterPanel({
                       label: getIpLabel(ip),
                     })
                   }
+                  count={clientIpCounts.get(ip) ?? 0}
                   searchKeyword={searchKeyword}
                 />
               ))
@@ -259,6 +270,7 @@ export default function FilterPanel({
                       label: app,
                     })
                   }
+                  count={clientAppCounts.get(app) ?? 0}
                   icon={<AppIcon appName={app} size={16} />}
                   searchKeyword={searchKeyword}
                 />
@@ -296,6 +308,7 @@ export default function FilterPanel({
                       label: domain,
                     })
                   }
+                  count={domainCounts.get(domain) ?? 0}
                   searchKeyword={searchKeyword}
                 />
               ))

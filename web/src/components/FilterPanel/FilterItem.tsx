@@ -25,6 +25,7 @@ interface FilterItemProps {
   onSelect: () => void;
   onPin: () => void;
   icon?: ReactNode;
+  count?: number;
   searchKeyword?: string;
 }
 
@@ -72,6 +73,7 @@ export default function FilterItem({
   onSelect,
   onPin,
   icon,
+  count,
   searchKeyword,
 }: FilterItemProps) {
   const { token } = theme.useToken();
@@ -216,6 +218,14 @@ export default function FilterItem({
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap" as const,
+      },
+      count: {
+        fontSize: 11,
+        color: selected ? token.colorPrimary : token.colorTextSecondary,
+        flexShrink: 0,
+        minWidth: 24,
+        textAlign: "right" as const,
+        fontVariantNumeric: "tabular-nums",
       },
       checkIcon: {
         fontSize: 12,
@@ -371,6 +381,15 @@ export default function FilterItem({
         </span>
       </Tooltip>
       {tlsIndicator}
+      {typeof count === "number" && (
+        <span
+          style={styles.count}
+          data-testid={`filter-item-count-${type}`}
+          aria-label={`${label} count`}
+        >
+          {count.toLocaleString()}
+        </span>
+      )}
       {selected && <CheckOutlined style={styles.checkIcon} />}
       <Dropdown
         menu={{ items: menuItems, onClick: handleMenuClick }}

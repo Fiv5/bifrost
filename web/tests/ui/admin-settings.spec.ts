@@ -110,6 +110,10 @@ test("Settings TLS 与证书页支持开关、模式和只读展示", async ({
 
     await page.getByTestId("settings-tls-include-input").fill("*.ui-e2e.local");
     await page.getByTestId("settings-tls-include-add-button").click();
+    await waitForToast(
+      page,
+      "Restart the target app and reopen the target domain to establish a new connection.",
+    );
     await expect(page.locator("body")).toContainText("*.ui-e2e.local");
 
     await page.getByTestId("settings-tls-exclude-input").fill("*.ui-e2e-skip.local");

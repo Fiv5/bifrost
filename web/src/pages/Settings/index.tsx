@@ -77,6 +77,7 @@ import {
 } from "../../runtime";
 import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
 import pushService from "../../services/pushService";
+import { showTlsWhitelistChangeSuccess } from "../../utils/tlsInterceptionNotice";
 
 const { Text } = Typography;
 
@@ -448,7 +449,7 @@ export default function Settings() {
       const result = await updateTlsConfig({ intercept_include: newList });
       setTlsConfig(result);
       setNewIncludePattern("");
-      message.success(`Added ${pattern} to include list`);
+      showTlsWhitelistChangeSuccess(`Added ${pattern} to include list`);
     } catch {
       message.error("Failed to add pattern");
     } finally {
@@ -464,7 +465,7 @@ export default function Settings() {
       );
       const result = await updateTlsConfig({ intercept_include: newList });
       setTlsConfig(result);
-      message.success(`Removed ${pattern} from include list`);
+      showTlsWhitelistChangeSuccess(`Removed ${pattern} from include list`);
     } catch {
       message.error("Failed to remove pattern");
     } finally {
@@ -532,7 +533,7 @@ export default function Settings() {
       const result = await updateTlsConfig({ app_intercept_include: newList });
       setTlsConfig(result);
       setNewAppIncludePattern("");
-      message.success(`Added ${pattern} to app include list`);
+      showTlsWhitelistChangeSuccess(`Added ${pattern} to app include list`);
     } catch {
       message.error("Failed to add pattern");
     } finally {
@@ -548,7 +549,7 @@ export default function Settings() {
       );
       const result = await updateTlsConfig({ app_intercept_include: newList });
       setTlsConfig(result);
-      message.success(`Removed ${pattern} from app include list`);
+      showTlsWhitelistChangeSuccess(`Removed ${pattern} from app include list`);
     } catch {
       message.error("Failed to remove pattern");
     } finally {

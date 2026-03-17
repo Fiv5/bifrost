@@ -54,6 +54,8 @@ export interface BodyStoreStats {
   temp_dir: string;
   max_memory_size: number;
   retention_days: number;
+  active_stream_writers: number;
+  max_open_stream_writers: number;
 }
 
 export interface FrameStoreStats {
@@ -68,6 +70,24 @@ export interface WsPayloadStoreStats {
   total_size: number;
   payload_dir: string;
   retention_days: number;
+  active_writers: number;
+  max_open_files: number;
+}
+
+export type ResourceAlertLevel = 'ok' | 'warn' | 'critical';
+
+export interface ResourceAlertStatus {
+  level: ResourceAlertLevel;
+  current: number;
+  limit: number;
+  usage_ratio: number;
+  message: string;
+}
+
+export interface ResourceAlerts {
+  overall_level: ResourceAlertLevel;
+  body_stream_writers: ResourceAlertStatus | null;
+  ws_payload_writers: ResourceAlertStatus | null;
 }
 
 export interface PerformanceConfig {
@@ -75,6 +95,7 @@ export interface PerformanceConfig {
   body_store_stats: BodyStoreStats | null;
   frame_store_stats: FrameStoreStats | null;
   ws_payload_store_stats: WsPayloadStoreStats | null;
+  resource_alerts: ResourceAlerts;
 }
 
 export interface SandboxFileConfig {

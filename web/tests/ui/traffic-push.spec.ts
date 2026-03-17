@@ -15,6 +15,7 @@ import {
   startMockHttpServer,
   uniqueName,
 } from "./helpers/admin-helpers";
+import { TLS_RECONNECT_NOTICE } from "../../src/utils/tlsInterceptionNotice";
 
 const BASE_PROXY_URL = process.env.PROXY_URL || `http://127.0.0.1:${backendPort}`;
 const PUSH_RECORDER_KEY = "__bifrostPushRecorder";
@@ -165,6 +166,7 @@ async function fetchTrafficDetail(request: APIRequestContext, id: string) {
   return (await response.json()) as {
     id: string;
     response_size: number;
+    client_app?: string | null;
     socket_status?: { is_open?: boolean };
   };
 }
@@ -513,6 +515,85 @@ test.describe.serial("traffic push regressions", () => {
       if (!serverClosed) {
         await server.close();
       }
+    }
+  });
+
+  test("CONNECT 详情的 Response 面板加入应用解包白名单后提示需要重连", async ({
+    page,
+    request,
+  }) => {
+    await clearTraffic(request);
+    const tlsConfigRes = await request.get(`${apiBase}/config/tls`);
+    const originalTlsConfig = await tlsConfigRes.json();
+    const server = await startTunnelEchoServer();
+    let serverClosed = false;
+    let tunnel: Awaited<ReturnType<typeof openConnectTunnel>> | null = null;
+
+    try {
+      await openTrafficPageAndWaitForPush(page);
+
+      tunnel = await openConnectTunnel(server.port);
+
+      const connectId = await waitForTrafficRecordId(
+        request,
+        (item) => item.m === "CONNECT" && item.h === "127.0.0.1",
+      );
+      const row = page.locator(`[data-testid="traffic-row"][data-record-id="${connectId}"]`);
+      await expect(row).toBeVisible();
+      await row.click();
+
+      let clientApp: string | null = null;
+      await expect
+        .poll(async () => {
+          const detail = await fetchTrafficDetail(request, connectId);
+          clientApp =
+            typeof detail.client_app === "string" && detail.client_app.length > 0
+              ? detail.client_app
+              : null;
+          return clientApp;
+        })
+        .not.toBeNull();
+
+      expect(clientApp).toBeTruthy();
+
+      await expect(page.getByTestId("response-tab-header")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Intercept this app" })).toBeVisible();
+      await expect(page.locator("body")).toContainText(TLS_RECONNECT_NOTICE);
+      await page.getByRole("button", { name: "Intercept this app" }).click();
+      const confirmDialog = page.getByRole("dialog", {
+        name: "Add App to Intercept List",
+      });
+      await expect(confirmDialog).toBeVisible();
+      await confirmDialog.getByRole("button", { name: "Add" }).click();
+
+      await expect(
+        page.locator(".ant-message-notice").filter({
+          hasText: TLS_RECONNECT_NOTICE,
+        }).last(),
+      ).toBeVisible();
+
+      await expect
+        .poll(async () => {
+          const response = await request.get(`${apiBase}/config/tls`);
+          const body = (await response.json()) as {
+            app_intercept_include?: string[];
+          };
+          return body.app_intercept_include?.includes(clientApp as string) ?? false;
+        })
+        .toBe(true);
+
+      await tunnel.close();
+      tunnel = null;
+      await server.close();
+      serverClosed = true;
+    } finally {
+      if (tunnel) {
+        await tunnel.close();
+      }
+      if (!serverClosed) {
+        await server.close();
+      }
+      await request.put(`${apiBase}/config/tls`, { data: originalTlsConfig });
     }
   });
 

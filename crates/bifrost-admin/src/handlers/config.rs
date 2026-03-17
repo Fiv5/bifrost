@@ -12,6 +12,7 @@ use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::body_store::{BodyStoreConfigUpdate, BodyStoreStats};
 use crate::frame_store::FrameStoreStats;
 use crate::port_rebind::PortRebindResponse;
+use crate::resource_alerts::{build_resource_alerts, ResourceAlerts};
 use crate::state::SharedAdminState;
 use crate::status_printer::TlsStatusInfo;
 use crate::ws_payload_store::{WsPayloadStoreConfigUpdate, WsPayloadStoreStats};
@@ -91,6 +92,7 @@ pub struct PerformanceConfigResponse {
     pub body_store_stats: Option<BodyStoreStats>,
     pub frame_store_stats: Option<FrameStoreStats>,
     pub ws_payload_store_stats: Option<WsPayloadStoreStats>,
+    pub resource_alerts: ResourceAlerts,
 }
 
 #[derive(Deserialize)]
@@ -710,6 +712,8 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
     let body_store_stats = state.body_store.as_ref().map(|bs| bs.read().stats());
     let frame_store_stats = state.frame_store.as_ref().map(|fs| fs.stats());
     let ws_payload_store_stats = state.ws_payload_store.as_ref().map(|ws| ws.stats());
+    let resource_alerts =
+        build_resource_alerts(body_store_stats.as_ref(), ws_payload_store_stats.as_ref());
 
     let traffic_config = if let Some(ref config_manager) = state.config_manager {
         let config = config_manager.config().await;
@@ -749,6 +753,7 @@ async fn get_performance_config(state: SharedAdminState) -> Response<BoxBody> {
         body_store_stats,
         frame_store_stats,
         ws_payload_store_stats,
+        resource_alerts,
     };
 
     json_response(&response)

@@ -4,7 +4,17 @@ import { CloseOutlined, CheckOutlined } from "@ant-design/icons";
 import { useFilterPanelStore, isFilterSelected } from "../../stores/useFilterPanelStore";
 import AppIcon from "../AppIcon";
 
-export default function PinnedFilters() {
+interface PinnedFiltersProps {
+  clientIpCounts: Map<string, number>;
+  clientAppCounts: Map<string, number>;
+  domainCounts: Map<string, number>;
+}
+
+export default function PinnedFilters({
+  clientIpCounts,
+  clientAppCounts,
+  domainCounts,
+}: PinnedFiltersProps) {
   const {
     pinnedFilters,
     removePinnedFilter,
@@ -40,6 +50,13 @@ export default function PinnedFilters() {
             selected={isSelected}
             onToggle={() => togglePinnedFilter(filter.id)}
             onRemove={() => removePinnedFilter(filter.id)}
+            count={
+              filter.type === "client_ip"
+                ? (clientIpCounts.get(filter.value) ?? 0)
+                : filter.type === "client_app"
+                  ? (clientAppCounts.get(filter.value) ?? 0)
+                  : (domainCounts.get(filter.value) ?? 0)
+            }
           />
         );
       })}
@@ -54,6 +71,7 @@ interface PinnedFilterItemProps {
   selected: boolean;
   onToggle: () => void;
   onRemove: () => void;
+  count: number;
 }
 
 function PinnedFilterItem({
@@ -63,6 +81,7 @@ function PinnedFilterItem({
   selected,
   onToggle,
   onRemove,
+  count,
 }: PinnedFilterItemProps) {
   const { token } = theme.useToken();
   const [isHovering, setIsHovering] = useState(false);
@@ -97,6 +116,14 @@ function PinnedFilterItem({
         overflow: "hidden",
         textOverflow: "ellipsis",
         whiteSpace: "nowrap" as const,
+      },
+      count: {
+        fontSize: 11,
+        color: selected ? token.colorPrimary : token.colorTextSecondary,
+        flexShrink: 0,
+        minWidth: 24,
+        textAlign: "right" as const,
+        fontVariantNumeric: "tabular-nums",
       },
       typeTag: {
         fontSize: 10,
@@ -159,6 +186,13 @@ function PinnedFilterItem({
       <Tooltip title={label} placement="right" mouseEnterDelay={0.5}>
         <span style={styles.label}>{label}</span>
       </Tooltip>
+      <span
+        style={styles.count}
+        data-testid={`pinned-filter-count-${type}`}
+        aria-label={`${label} count`}
+      >
+        {count.toLocaleString()}
+      </span>
       <span style={styles.typeTag}>{getTypeLabel(type)}</span>
       {selected && <CheckOutlined style={styles.checkIcon} />}
       <Tooltip title="Unpin">

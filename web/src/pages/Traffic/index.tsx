@@ -110,6 +110,9 @@ export default function Traffic() {
       apps: state.availableClientApps,
       ips: state.availableClientIps,
       domains: state.availableDomains,
+      appCounts: state.clientAppCounts,
+      ipCounts: state.clientIpCounts,
+      domainCounts: state.domainCounts,
     })),
   );
   const { currentRecord, requestBody, responseBody, detailLoading, detailError } =
@@ -690,6 +693,9 @@ export default function Traffic() {
       availableClientIps={clientInfo.ips}
       availableClientApps={clientInfo.apps}
       availableDomains={clientInfo.domains}
+      clientIpCounts={clientInfo.ipCounts}
+      clientAppCounts={clientInfo.appCounts}
+      domainCounts={clientInfo.domainCounts}
     />
   );
 

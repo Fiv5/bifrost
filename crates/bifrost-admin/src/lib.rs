@@ -11,6 +11,7 @@ pub mod push;
 pub mod replay_db;
 pub mod replay_executor;
 pub mod request_rules;
+mod resource_alerts;
 mod router;
 pub mod search;
 mod security;
