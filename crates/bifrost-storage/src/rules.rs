@@ -140,6 +140,10 @@ pub struct RulesStorage {
 }
 
 impl RulesStorage {
+    fn encode_rule_name(name: &str) -> String {
+        urlencoding::encode(name).into_owned()
+    }
+
     pub fn new() -> Result<Self> {
         let base_dir = crate::data_dir().join("rules");
         Self::with_dir(base_dir)
@@ -155,19 +159,36 @@ impl RulesStorage {
     }
 
     fn rule_path(&self, name: &str) -> PathBuf {
-        self.base_dir.join(format!("{}.bifrost", name))
+        self.base_dir
+            .join(format!("{}.bifrost", Self::encode_rule_name(name)))
     }
 
     fn legacy_rule_path(&self, name: &str) -> PathBuf {
+        self.base_dir
+            .join(format!("{}.json", Self::encode_rule_name(name)))
+    }
+
+    fn raw_rule_path(&self, name: &str) -> PathBuf {
+        self.base_dir.join(format!("{}.bifrost", name))
+    }
+
+    fn raw_legacy_rule_path(&self, name: &str) -> PathBuf {
         self.base_dir.join(format!("{}.json", name))
     }
 
     pub fn load(&self, name: &str) -> Result<RuleFile> {
         let bifrost_path = self.rule_path(name);
         let legacy_path = self.legacy_rule_path(name);
+        let raw_bifrost_path = self.raw_rule_path(name);
+        let raw_legacy_path = self.raw_legacy_rule_path(name);
 
         if bifrost_path.exists() {
             let content = fs::read_to_string(&bifrost_path)?;
+            let file = BifrostFileParser::parse_rules(&content)
+                .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
+            Ok(RuleFile::from_bifrost(file.meta, file.content))
+        } else if raw_bifrost_path.exists() {
+            let content = fs::read_to_string(&raw_bifrost_path)?;
             let file = BifrostFileParser::parse_rules(&content)
                 .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
             Ok(RuleFile::from_bifrost(file.meta, file.content))
@@ -186,6 +207,22 @@ impl RulesStorage {
             let rule = RuleFile::new(legacy.name, legacy.content).with_enabled(legacy.enabled);
             self.save(&rule)?;
             fs::remove_file(&legacy_path)?;
+            Ok(rule)
+        } else if raw_legacy_path.exists() {
+            #[derive(Deserialize)]
+            struct LegacyRuleFile {
+                name: String,
+                content: String,
+                enabled: bool,
+            }
+            let content = fs::read_to_string(&raw_legacy_path)?;
+            let legacy: LegacyRuleFile = serde_json::from_str(&content).map_err(|e| {
+                BifrostError::Parse(format!("Failed to parse legacy rule file: {}", e))
+            })?;
+
+            let rule = RuleFile::new(legacy.name, legacy.content).with_enabled(legacy.enabled);
+            self.save(&rule)?;
+            fs::remove_file(&raw_legacy_path)?;
             Ok(rule)
         } else {
             Err(BifrostError::NotFound(format!("Rule '{}' not found", name)))
@@ -208,8 +245,11 @@ impl RulesStorage {
             let ext = path.extension().and_then(|s| s.to_str());
             if ext == Some("bifrost") || ext == Some("json") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if !names.contains(&stem.to_string()) {
-                        names.push(stem.to_string());
+                    let decoded = urlencoding::decode(stem)
+                        .map(|value| value.into_owned())
+                        .unwrap_or_else(|_| stem.to_string());
+                    if !names.contains(&decoded) {
+                        names.push(decoded);
                     }
                 }
             }
@@ -221,8 +261,13 @@ impl RulesStorage {
     pub fn delete(&self, name: &str) -> Result<()> {
         let bifrost_path = self.rule_path(name);
         let legacy_path = self.legacy_rule_path(name);
+        let raw_bifrost_path = self.raw_rule_path(name);
+        let raw_legacy_path = self.raw_legacy_rule_path(name);
 
-        let exists = bifrost_path.exists() || legacy_path.exists();
+        let exists = bifrost_path.exists()
+            || legacy_path.exists()
+            || raw_bifrost_path.exists()
+            || raw_legacy_path.exists();
         if !exists {
             return Err(BifrostError::NotFound(format!("Rule '{}' not found", name)));
         }
@@ -232,6 +277,12 @@ impl RulesStorage {
         }
         if legacy_path.exists() {
             fs::remove_file(&legacy_path)?;
+        }
+        if raw_bifrost_path.exists() {
+            fs::remove_file(&raw_bifrost_path)?;
+        }
+        if raw_legacy_path.exists() {
+            fs::remove_file(&raw_legacy_path)?;
         }
         Ok(())
     }
@@ -256,7 +307,10 @@ impl RulesStorage {
     }
 
     pub fn exists(&self, name: &str) -> bool {
-        self.rule_path(name).exists() || self.legacy_rule_path(name).exists()
+        self.rule_path(name).exists()
+            || self.legacy_rule_path(name).exists()
+            || self.raw_rule_path(name).exists()
+            || self.raw_legacy_rule_path(name).exists()
     }
 
     pub fn load_all(&self) -> Result<Vec<RuleFile>> {

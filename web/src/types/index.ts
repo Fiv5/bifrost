@@ -1,6 +1,7 @@
 export interface RuleFile {
   name: string;
   enabled: boolean;
+  sort_order: number;
   rule_count: number;
   created_at: string;
   updated_at: string;
@@ -10,6 +11,7 @@ export interface RuleFileDetail {
   name: string;
   content: string;
   enabled: boolean;
+  sort_order: number;
 }
 
 export interface MatchedRule {

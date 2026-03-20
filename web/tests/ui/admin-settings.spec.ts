@@ -1,10 +1,13 @@
 import { test, expect } from "@playwright/test";
 import {
   apiBase,
+  backendPort,
   openPage,
   resetAccessControl,
+  startMockSyncServer,
   setSelectValue,
   waitForToast,
+  uniqueName,
 } from "./helpers/admin-helpers";
 
 test.describe.configure({ mode: "serial" });
@@ -126,5 +129,410 @@ test("Settings TLS 与证书页支持开关、模式和只读展示", async ({
     await expect(page.getByTestId("settings-certificate-qrcode")).toBeVisible();
   } finally {
     await request.put(`${apiBase}/config/tls`, { data: originalTls });
+  }
+});
+
+test("Settings Sync 状态信息支持 connected、syncing 与 unreachable", async ({
+  page,
+  request,
+}) => {
+  const remoteServer = await startMockSyncServer([
+    {
+      id: uniqueName("remote-id"),
+      user_id: "ui-sync-user",
+      name: uniqueName("status-rule"),
+      rule: "status.example.com host://127.0.0.1:3010",
+      create_time: "2026-03-20T09:00:00Z",
+      update_time: "2026-03-20T09:00:00Z",
+    },
+  ], undefined, { responseDelayMs: 2500 });
+
+  try {
+    await request.post(`${apiBase}/sync/logout`).catch(() => undefined);
+    await request.put(`${apiBase}/sync/config`, {
+      data: {
+        enabled: true,
+        auto_sync: true,
+        remote_base_url: remoteServer.baseUrl,
+        probe_interval_secs: 2,
+        connect_timeout_ms: 1000,
+      },
+    });
+
+    await openPage(page, "settings");
+    await page.getByRole("tab", { name: /Sync/ }).click({ force: true });
+    await expect
+      .poll(async () => page.getByTestId("statusbar-sync").getAttribute("data-sync-state"))
+      .toBe("unauthorized");
+    await expect(page.getByTestId("settings-sync-last-action")).toHaveText("No sync result yet");
+
+    const loginUrlResponse = await request.get(
+      `${apiBase}/sync/login-url?callback_url=${encodeURIComponent(
+        `http://127.0.0.1:${backendPort}/login.html`,
+      )}`,
+    );
+    const { login_url: loginUrl } = (await loginUrlResponse.json()) as {
+      login_url: string;
+    };
+    await page.goto(loginUrl);
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { authorized: boolean; reachable: boolean };
+        return body.authorized && body.reachable;
+      })
+      .toBe(true);
+
+    await openPage(page, "settings");
+    await page.getByRole("tab", { name: /Sync/ }).click({ force: true });
+
+    await expect
+      .poll(async () => {
+        const value = await page.getByTestId("statusbar-sync").getAttribute("data-sync-state");
+        return value === "connected" || value === "ready" || value === "syncing";
+      })
+      .toBe(true);
+
+    await request.post(`${apiBase}/sync/run`);
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { syncing: boolean; reason: string };
+        return body.syncing && body.reason;
+      })
+      .toBe("syncing");
+
+    await request.put(`${apiBase}/sync/config`, {
+      data: {
+        enabled: true,
+        auto_sync: true,
+        remote_base_url: "http://127.0.0.1:9",
+        probe_interval_secs: 2,
+        connect_timeout_ms: 1000,
+      },
+    });
+
+    await expect
+      .poll(async () => page.getByTestId("statusbar-sync").getAttribute("data-sync-state"))
+      .toBe("unreachable");
+  } finally {
+    try {
+      await request.put(`${apiBase}/sync/config`, {
+        data: {
+          enabled: false,
+          remote_base_url: "https://bifrost.bytedance.net",
+        },
+      });
+    } catch {
+      // Ignore cleanup errors.
+    }
+    await remoteServer.close();
+  }
+});
+
+test("Settings Sync 支持登录、同步、更新覆盖与断网重连", async ({
+  page,
+  request,
+}) => {
+  await resetAccessControl(request);
+  const remoteName = uniqueName("remote-rule");
+  const remoteServer = await startMockSyncServer([
+    {
+      id: uniqueName("remote-id"),
+      user_id: "ui-sync-user",
+      name: remoteName,
+      rule: "remote.example.com host://127.0.0.1:3010",
+      create_time: "2026-03-20T09:00:00Z",
+      update_time: "2026-03-20T09:00:00Z",
+    },
+  ], undefined, { responseDelayMs: 1200 });
+
+  try {
+    await request.post(`${apiBase}/sync/logout`).catch(() => undefined);
+    await request.put(`${apiBase}/sync/config`, {
+      data: {
+        enabled: true,
+        auto_sync: true,
+        remote_base_url: remoteServer.baseUrl,
+        probe_interval_secs: 2,
+        connect_timeout_ms: 1000,
+      },
+    });
+
+    const localRuleName = uniqueName("local-rule");
+    await request.post(`${apiBase}/rules`, {
+      data: {
+        name: localRuleName,
+        content: "local.example.com host://127.0.0.1:3000",
+      },
+    });
+
+    await openPage(page, "settings");
+    await page.getByRole("tab", { name: /Sync/ }).click({ force: true });
+    await expect
+      .poll(async () => page.getByTestId("statusbar-sync").getAttribute("data-sync-state"))
+      .toBe("unauthorized");
+    const loginUrlResponse = await request.get(
+      `${apiBase}/sync/login-url?callback_url=${encodeURIComponent(
+        `http://127.0.0.1:${backendPort}/login.html`,
+      )}`,
+    );
+    const { login_url: loginUrl } = (await loginUrlResponse.json()) as {
+      login_url: string;
+    };
+    await page.goto(loginUrl);
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as {
+          authorized: boolean;
+          reachable: boolean;
+          user?: { user_id: string };
+        };
+        return body.authorized && body.reachable && body.user?.user_id;
+      })
+      .toBe("ui-sync-user");
+
+    await openPage(page, "settings");
+    await page.getByRole("tab", { name: /Sync/ }).click({ force: true });
+
+    await expect
+      .poll(async () => {
+        const value = await page.getByTestId("statusbar-sync").getAttribute("data-sync-state");
+        return value === "connected" || value === "ready" || value === "syncing";
+      })
+      .toBe(true);
+
+    const syncingRuleName = uniqueName("syncing-rule");
+    await request.post(`${apiBase}/rules`, {
+      data: {
+        name: syncingRuleName,
+        content: "syncing.example.com host://127.0.0.1:3333",
+      },
+    });
+
+    await expect
+      .poll(
+        async () =>
+          remoteServer.listEnvs().find((env) => env.name === syncingRuleName)?.rule || "",
+        { timeout: 10000 },
+      )
+      .toContain("127.0.0.1:3333");
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { last_sync_action?: string | null };
+        return body.last_sync_action ?? null;
+      })
+      .toBe("bidirectional");
+    await expect(page.getByTestId("settings-sync-last-action")).toHaveText(
+      "Local and remote changes exchanged",
+    );
+
+    await expect
+      .poll(
+        async () =>
+          remoteServer.listEnvs().find((env) => env.name === localRuleName)?.rule || "",
+        { timeout: 10000 },
+      )
+      .toContain("127.0.0.1:3000");
+
+    await expect
+      .poll(async () => remoteServer.listEnvs().some((env) => env.name === localRuleName))
+      .toBe(true);
+
+    const localRuleRes = await request.get(`${apiBase}/rules/${encodeURIComponent(remoteName)}`);
+    expect(localRuleRes.ok()).toBeTruthy();
+    const importedRemoteRule = (await localRuleRes.json()) as { enabled: boolean; content: string };
+    expect(importedRemoteRule.enabled).toBe(false);
+
+    const existingRemote = remoteServer.listEnvs().find((env) => env.name === localRuleName);
+    expect(existingRemote).toBeTruthy();
+    remoteServer.upsertEnv({
+      ...existingRemote!,
+      rule: "local.example.com host://127.0.0.1:3100",
+      update_time: "2026-03-20T12:00:00Z",
+    });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`);
+        const body = (await response.json()) as { content: string; enabled: boolean };
+        return body;
+      }, { timeout: 10000 })
+      .toMatchObject({
+        content: expect.stringContaining("127.0.0.1:3100"),
+        enabled: true,
+      });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { last_sync_action?: string | null };
+        return body.last_sync_action ?? null;
+      })
+      .toBe("remote_pulled");
+    await expect(page.getByTestId("settings-sync-last-action")).toHaveText(
+      "Newer remote changes pulled into local",
+    );
+
+    await request.put(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`, {
+      data: {
+        enabled: false,
+      },
+    });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`);
+        const body = (await response.json()) as { enabled: boolean };
+        return body.enabled;
+      })
+      .toBe(false);
+
+    const remoteOverwriteTime = new Date(Date.now() + 1000).toISOString();
+    remoteServer.upsertEnv({
+      ...existingRemote!,
+      rule: "local.example.com host://127.0.0.1:3150",
+      update_time: remoteOverwriteTime,
+    });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`);
+        const body = (await response.json()) as { content: string; enabled: boolean };
+        return body;
+      }, { timeout: 10000 })
+      .toMatchObject({
+        content: expect.stringContaining("127.0.0.1:3150"),
+        enabled: false,
+      });
+
+    await page.waitForTimeout(1500);
+
+    await request.put(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`, {
+      data: {
+        content: "local.example.com host://127.0.0.1:3200",
+      },
+    });
+
+    await expect
+      .poll(
+        async () =>
+          remoteServer
+            .listEnvs()
+            .find((env) => env.name === localRuleName)
+            ?.rule || "",
+        { timeout: 10000 },
+      )
+      .toContain("127.0.0.1:3200");
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { last_sync_action?: string | null };
+        return body.last_sync_action ?? null;
+      })
+      .toBe("local_pushed");
+    await expect(page.getByTestId("settings-sync-last-action")).toHaveText(
+      "Local changes pushed to remote",
+    );
+
+    await request.put(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`, {
+      data: {
+        enabled: true,
+      },
+    });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`);
+        const body = (await response.json()) as { enabled: boolean };
+        return body.enabled;
+      })
+      .toBe(true);
+
+    await request.put(`${apiBase}/sync/config`, {
+      data: {
+        enabled: true,
+        auto_sync: true,
+        remote_base_url: "http://127.0.0.1:9",
+        probe_interval_secs: 2,
+        connect_timeout_ms: 1000,
+      },
+    });
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { reason: string };
+        return body.reason;
+      }, { timeout: 10000 })
+      .toBe("unreachable");
+
+    await expect
+      .poll(async () => page.getByTestId("statusbar-sync").getAttribute("data-sync-state"))
+      .toBe("unreachable");
+
+    await request.put(`${apiBase}/rules/${encodeURIComponent(localRuleName)}`, {
+      data: {
+        content: "local.example.com host://127.0.0.1:3250",
+      },
+    });
+
+    const remoteBeforeReconnect = remoteServer
+      .listEnvs()
+      .find((env) => env.name === localRuleName);
+    expect(remoteBeforeReconnect).toBeTruthy();
+    remoteServer.upsertEnv({
+      ...remoteBeforeReconnect!,
+      update_time: "2026-03-20T00:00:00Z",
+    });
+
+    await request.put(`${apiBase}/sync/config`, {
+      data: {
+        enabled: true,
+        auto_sync: true,
+        remote_base_url: remoteServer.baseUrl,
+        probe_interval_secs: 2,
+        connect_timeout_ms: 1000,
+      },
+    });
+
+    await expect
+      .poll(
+        async () =>
+          remoteServer
+            .listEnvs()
+            .find((env) => env.name === localRuleName)
+            ?.rule || "",
+        { timeout: 10000 },
+      )
+      .toContain("127.0.0.1:3250");
+
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${apiBase}/sync/status`);
+        const body = (await response.json()) as { last_sync_action?: string | null };
+        return body.last_sync_action ?? null;
+      })
+      .toBe("local_pushed");
+
+  } finally {
+    try {
+      await request.put(`${apiBase}/sync/config`, {
+        data: {
+          enabled: false,
+          remote_base_url: "https://bifrost.bytedance.net",
+        },
+      });
+    } catch {
+      // Ignore cleanup errors when the test intentionally stops the mock remote.
+    }
+    await remoteServer.close();
   }
 });

@@ -6,4 +6,5 @@ export * from './whitelist';
 export * from './proxy';
 export * from './config';
 export * from './cert';
+export * from './sync';
 export * from './ui';

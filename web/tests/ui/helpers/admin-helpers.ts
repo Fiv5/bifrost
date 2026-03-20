@@ -210,6 +210,36 @@ export interface MockHttpServer {
   close: () => Promise<void>;
 }
 
+export interface MockSyncUser {
+  user_id: string;
+  nickname: string;
+  avatar?: string;
+  email?: string;
+}
+
+export interface MockSyncServerOptions {
+  responseDelayMs?: number;
+}
+
+export interface MockSyncEnv {
+  id: string;
+  user_id: string;
+  name: string;
+  rule: string;
+  create_time: string;
+  update_time: string;
+}
+
+export interface MockSyncServer {
+  port: number;
+  baseUrl: string;
+  user: MockSyncUser;
+  token: string;
+  listEnvs: () => MockSyncEnv[];
+  upsertEnv: (env: MockSyncEnv) => void;
+  close: () => Promise<void>;
+}
+
 async function readBody(req: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -243,6 +273,172 @@ export async function startMockHttpServer(
   return {
     port,
     requests,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      ),
+  };
+}
+
+export async function startMockSyncServer(
+  seedEnvs: MockSyncEnv[] = [],
+  seedUser: MockSyncUser = {
+    user_id: "ui-sync-user",
+    nickname: "UI Sync User",
+    email: "ui-sync@example.com",
+  },
+  options: MockSyncServerOptions = {},
+): Promise<MockSyncServer> {
+  const envs = new Map<string, MockSyncEnv>();
+  for (const env of seedEnvs) {
+    envs.set(env.id, { ...env });
+  }
+
+  const token = "mock-sync-token";
+  const responseDelayMs = options.responseDelayMs ?? 0;
+
+  const sendJson = (res: ServerResponse, statusCode: number, body: unknown) => {
+    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  };
+
+  const unauthorized = (res: ServerResponse) => {
+    sendJson(res, 401, { code: -10001, message: "unauthorized" });
+  };
+
+  const requireAuth = (req: IncomingMessage, res: ServerResponse) => {
+    const provided = req.headers["x-bifrost-token"];
+    if (provided !== token) {
+      unauthorized(res);
+      return false;
+    }
+    return true;
+  };
+
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url || "/", "http://127.0.0.1");
+    const body = await readBody(req);
+    if (responseDelayMs > 0 && url.pathname.startsWith("/v4/env")) {
+      await new Promise((resolve) => setTimeout(resolve, responseDelayMs));
+    }
+
+    if (url.pathname === "/v4/sso/check") {
+      if (req.headers["x-bifrost-token"] === token) {
+        sendJson(res, 200, {
+          code: 0,
+          message: "ok",
+          data: { user_id: seedUser.user_id, token },
+        });
+      } else {
+        unauthorized(res);
+      }
+      return;
+    }
+
+    if (url.pathname === "/v4/sso/info") {
+      if (!requireAuth(req, res)) return;
+      sendJson(res, 200, {
+        code: 0,
+        message: "ok",
+        data: seedUser,
+      });
+      return;
+    }
+
+    if (url.pathname === "/v4/sso/logout") {
+      sendJson(res, 200, { code: 0, message: "ok", data: 1 });
+      return;
+    }
+
+    if (url.pathname === "/v4/sso/login") {
+      const next = url.searchParams.get("next");
+      res.writeHead(302, {
+        Location: `${next}${next?.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`,
+      });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === "/v4/env" && req.method === "GET") {
+      if (!requireAuth(req, res)) return;
+      const userIds = url.searchParams.getAll("user_id");
+      const list = [...envs.values()].filter((env) =>
+        userIds.length === 0 ? true : userIds.includes(env.user_id),
+      );
+      sendJson(res, 200, {
+        code: 0,
+        message: "ok",
+        data: { list },
+      });
+      return;
+    }
+
+    if (url.pathname === "/v4/env" && req.method === "POST") {
+      if (!requireAuth(req, res)) return;
+      const payload = JSON.parse(body || "{}") as {
+        user_id: string;
+        name: string;
+        rule: string;
+      };
+      const now = new Date().toISOString();
+      const env: MockSyncEnv = {
+        id: uniqueName("remote-env"),
+        user_id: payload.user_id,
+        name: payload.name,
+        rule: payload.rule,
+        create_time: now,
+        update_time: now,
+      };
+      envs.set(env.id, env);
+      sendJson(res, 200, { code: 0, message: "ok", data: env });
+      return;
+    }
+
+    if (url.pathname.startsWith("/v4/env/") && req.method === "PATCH") {
+      if (!requireAuth(req, res)) return;
+      const envId = url.pathname.split("/").pop() || "";
+      const current = envs.get(envId);
+      if (!current) {
+        sendJson(res, 404, { code: -1, message: "not found" });
+        return;
+      }
+      const payload = JSON.parse(body || "{}") as {
+        name?: string;
+        rule?: string;
+      };
+      const updated: MockSyncEnv = {
+        ...current,
+        name: payload.name ?? current.name,
+        rule: payload.rule ?? current.rule,
+        update_time: new Date().toISOString(),
+      };
+      envs.set(envId, updated);
+      sendJson(res, 200, { code: 0, message: "ok", data: updated });
+      return;
+    }
+
+    if (url.pathname.startsWith("/v4/env/") && req.method === "DELETE") {
+      if (!requireAuth(req, res)) return;
+      const envId = url.pathname.split("/").pop() || "";
+      envs.delete(envId);
+      sendJson(res, 200, { code: 0, message: "ok", data: 1 });
+      return;
+    }
+
+    sendJson(res, 404, { code: -1, message: "not found" });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    baseUrl: `http://127.0.0.1:${port}`,
+    user: seedUser,
+    token,
+    listEnvs: () => [...envs.values()].map((env) => ({ ...env })),
+    upsertEnv: (env) => {
+      envs.set(env.id, { ...env });
+    },
     close: () =>
       new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),

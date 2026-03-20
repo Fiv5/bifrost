@@ -10,8 +10,8 @@ use futures_util::FutureExt;
 use regex::Regex;
 
 use bifrost_admin::{
-    is_cert_public_request, is_valid_admin_request, AdminRouter, AdminSecurityConfig, AdminState,
-    SharedPushManager, ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
+    handle_sync_login_callback, is_cert_public_request, is_valid_admin_request, AdminRouter,
+    AdminSecurityConfig, AdminState, SharedPushManager, ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
 };
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::Bytes;
@@ -1114,6 +1114,18 @@ async fn handle_request(
         } else {
             return Ok(error_response(503, "Admin interface not enabled"));
         }
+    }
+
+    if path == "/login.html" {
+        if let Some(state) = admin_state {
+            if is_loopback {
+                return Ok(convert_admin_response(
+                    handle_sync_login_callback(req, state).await,
+                ));
+            }
+            return Ok(error_response(403, "Forbidden"));
+        }
+        return Ok(error_response(503, "Admin interface not enabled"));
     }
 
     if is_direct_browser_access(&req, &proxy_config) && admin_state.is_some() {

@@ -149,8 +149,21 @@
 }
 
 .itemExtra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
   margin-left: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.item:hover .itemExtra,
+.item.selected .itemExtra,
+.item.multiSelected .itemExtra {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .empty {

@@ -250,6 +250,7 @@ dependencies = [
  "bifrost-core",
  "bifrost-script",
  "bifrost-storage",
+ "bifrost-sync",
  "bifrost-tls",
  "bincode",
  "brotli 7.0.0",
@@ -308,6 +309,7 @@ dependencies = [
  "bifrost-core",
  "bifrost-proxy",
  "bifrost-storage",
+ "bifrost-sync",
  "bifrost-tls",
  "bytes",
  "chrono",
@@ -481,6 +483,25 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "urlencoding",
+]
+
+[[package]]
+name = "bifrost-sync"
+version = "0.0.21-beta"
+dependencies = [
+ "bifrost-core",
+ "bifrost-storage",
+ "chrono",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]

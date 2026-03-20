@@ -3,11 +3,9 @@ import type { RuleFile, RuleFileDetail } from '../types';
 import * as api from '../api';
 import { isConnectionIssueError } from '../api/client';
 
-function sortRulesByCreatedAt(rules: RuleFile[]): RuleFile[] {
+function sortRulesByManualOrder(rules: RuleFile[]): RuleFile[] {
   return [...rules].sort((left, right) => {
-    const leftTime = Date.parse(left.created_at);
-    const rightTime = Date.parse(right.created_at);
-    return rightTime - leftTime || left.name.localeCompare(right.name);
+    return left.sort_order - right.sort_order || left.name.localeCompare(right.name);
   });
 }
 
@@ -29,6 +27,7 @@ interface RulesState {
   deleteRule: (name: string) => Promise<boolean>;
   toggleRule: (name: string, enabled: boolean) => Promise<boolean>;
   renameRule: (oldName: string, newName: string) => Promise<boolean>;
+  reorderRules: (order: string[]) => Promise<boolean>;
   setEditingContent: (name: string, content: string) => void;
   setSearchKeyword: (keyword: string) => void;
   hasUnsavedChanges: (name: string) => boolean;
@@ -49,7 +48,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const rules = await api.getRules();
-      set({ rules: sortRulesByCreatedAt(rules), loading: false });
+      set({ rules: sortRulesByManualOrder(rules), loading: false });
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
@@ -207,6 +206,18 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       } else {
         set({ editingContent: newEditingContent });
       }
+      return true;
+    } catch (e) {
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      return false;
+    }
+  },
+
+  reorderRules: async (order: string[]) => {
+    set({ loading: true, error: null });
+    try {
+      await api.reorderRules(order);
+      await get().fetchRules();
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });

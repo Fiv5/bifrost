@@ -7,6 +7,7 @@ import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
+import SyncLogin from "./pages/SyncLogin";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
 import {
@@ -226,6 +227,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         <HashRouter>
           <BifrostFileDropZone>
             <Routes>
+              <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/" element={<AppLayout />}>
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
@@ -242,6 +244,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         <BrowserRouter basename={getAdminPrefix()}>
           <BifrostFileDropZone>
             <Routes>
+              <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/" element={<AppLayout />}>
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />

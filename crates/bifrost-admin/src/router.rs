@@ -13,6 +13,7 @@ use crate::handlers::{
     rules::handle_rules,
     scripts::handle_scripts_request,
     search::handle_search,
+    sync::{handle_sync, handle_sync_public},
     syntax::handle_syntax,
     system::handle_system,
     traffic::handle_traffic,
@@ -51,6 +52,10 @@ impl AdminRouter {
 
         if admin_path.starts_with("/public/proxy") {
             return handle_proxy_public(req, state, &admin_path).await;
+        }
+
+        if admin_path.starts_with("/public/sync-login") {
+            return handle_sync_public(req, state, &admin_path).await;
         }
 
         if admin_path.starts_with("/api/") {
@@ -115,6 +120,8 @@ impl AdminRouter {
             handle_app_icon(req, state, path).await
         } else if path.starts_with("/api/search") {
             handle_search(req, state, path).await
+        } else if path.starts_with("/api/sync") {
+            handle_sync(req, state, path).await
         } else if path.starts_with("/api/scripts") {
             if let Some(script_manager) = &state.script_manager {
                 handle_scripts_request(

@@ -18,6 +18,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   ClearOutlined,
+  CloudOutlined,
   WarningOutlined,
   GlobalOutlined,
   SafetyCertificateOutlined,
@@ -50,6 +51,14 @@ import {
   type TrafficConfig,
   type UpdateTrafficConfigRequest,
 } from "../../api/config";
+import {
+  getSyncStatus,
+  logoutSyncSession,
+  openSyncLogin,
+  runSyncNow,
+  updateSyncConfig,
+  type SyncStatus,
+} from "../../api/sync";
 import { isConnectionIssueError } from "../../api/client";
 import {
   getCertInfo,
@@ -67,6 +76,7 @@ import CertificateTab from "./tabs/CertificateTab";
 import MetricsTab from "./tabs/MetricsTab";
 import AccessControlTab from "./tabs/AccessControlTab";
 import PerformanceTab from "./tabs/PerformanceTab";
+import SyncTab from "./tabs/SyncTab";
 import { updateDesktopProxyPort } from "../../desktop/tauri";
 import {
   getDesktopPlatform,
@@ -90,6 +100,7 @@ const VALID_TABS = [
   "metrics",
   "access",
   "performance",
+  "sync",
 ];
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -184,6 +195,9 @@ export default function Settings() {
   );
   const [desktopPortDraft, setDesktopPortDraft] = useState(9900);
   const [desktopPortSaving, setDesktopPortSaving] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncRemoteBaseUrlDraft, setSyncRemoteBaseUrlDraft] = useState("");
   const beginDesktopCoreRestart = useDesktopCoreStore(
     (state) => state.beginRestart,
   );
@@ -256,6 +270,21 @@ export default function Settings() {
       }
     } finally {
       setPerfLoading(false);
+    }
+  }, [suppressRestartErrors]);
+
+  const fetchSyncStatusData = useCallback(async () => {
+    setSyncLoading(true);
+    try {
+      const status = await getSyncStatus();
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+    } catch (error) {
+      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
+        console.error("Failed to fetch sync status");
+      }
+    } finally {
+      setSyncLoading(false);
     }
   }, [suppressRestartErrors]);
 
@@ -713,6 +742,9 @@ export default function Settings() {
       case "performance":
         void fetchPerformanceConfig();
         break;
+      case "sync":
+        void fetchSyncStatusData();
+        break;
       default:
         break;
     }
@@ -728,6 +760,7 @@ export default function Settings() {
     fetchPerformanceConfig,
     fetchProxyAddressInfo,
     fetchProxySettings,
+    fetchSyncStatusData,
     fetchSystemProxy,
     fetchTlsConfigData,
     fetchWhitelistStatus,
@@ -778,6 +811,92 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     navigator.clipboard.writeText(config);
     message.success("Proxy config copied to clipboard");
   };
+
+  const handleSyncToggle = useCallback(async (enabled: boolean) => {
+    setSyncLoading(true);
+    try {
+      const status = await updateSyncConfig({ enabled });
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success(enabled ? "Remote sync enabled" : "Remote sync disabled");
+    } catch {
+      message.error("Failed to update sync setting");
+    } finally {
+      setSyncLoading(false);
+    }
+  }, []);
+
+  const handleSyncAutoToggle = useCallback(async (autoSync: boolean) => {
+    setSyncLoading(true);
+    try {
+      const status = await updateSyncConfig({ auto_sync: autoSync });
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success(autoSync ? "Auto sync enabled" : "Auto sync disabled");
+    } catch {
+      message.error("Failed to update auto sync");
+    } finally {
+      setSyncLoading(false);
+    }
+  }, []);
+
+  const handleSyncRemoteBaseUrlSave = useCallback(async () => {
+    const remoteBaseUrl = syncRemoteBaseUrlDraft.trim();
+    if (!remoteBaseUrl) {
+      message.warning("Please enter the remote Bifrost URL");
+      return;
+    }
+    setSyncLoading(true);
+    try {
+      const status = await updateSyncConfig({ remote_base_url: remoteBaseUrl });
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success("Remote sync URL updated");
+    } catch {
+      message.error("Failed to update remote sync URL");
+    } finally {
+      setSyncLoading(false);
+    }
+  }, [syncRemoteBaseUrlDraft]);
+
+  const handleSyncSignIn = useCallback(async () => {
+    try {
+      const status = await openSyncLogin();
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success("Remote sign-in window opened");
+    } catch {
+      message.error("Failed to open remote sign-in page");
+    }
+  }, []);
+
+  const handleSyncSignOut = useCallback(async () => {
+    setSyncLoading(true);
+    try {
+      const status = await logoutSyncSession();
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success("Sync session cleared");
+    } catch {
+      message.error("Failed to sign out from remote sync");
+    } finally {
+      setSyncLoading(false);
+    }
+  }, []);
+
+  const handleSyncRunNow = useCallback(async () => {
+    setSyncLoading(true);
+    try {
+      const status = await runSyncNow();
+      setSyncStatus(status);
+      setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      message.success("Sync requested");
+    } catch {
+      message.error("Failed to trigger sync");
+    } finally {
+      setSyncLoading(false);
+    }
+  }, []);
 
   const handleDesktopProxyPortApply = useCallback(async () => {
     if (!isDesktopShell()) {
@@ -1109,6 +1228,28 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
               handleFileRetentionDaysChange={handleFileRetentionDaysChange}
               handleClearBodyCache={handleClearBodyCache}
               formatBytes={formatBytes}
+        />
+      ),
+    },
+    {
+      key: "sync",
+      label: (
+        <span>
+          <CloudOutlined /> Sync
+        </span>
+      ),
+      children: (
+        <SyncTab
+          syncStatus={syncStatus}
+          syncLoading={syncLoading}
+          remoteBaseUrlDraft={syncRemoteBaseUrlDraft}
+          setRemoteBaseUrlDraft={setSyncRemoteBaseUrlDraft}
+          onToggleEnabled={handleSyncToggle}
+          onToggleAutoSync={handleSyncAutoToggle}
+          onSaveRemoteBaseUrl={handleSyncRemoteBaseUrlSave}
+          onSignIn={handleSyncSignIn}
+          onSignOut={handleSyncSignOut}
+          onRunSync={handleSyncRunNow}
         />
       ),
     },

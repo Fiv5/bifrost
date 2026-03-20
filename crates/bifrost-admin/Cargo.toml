@@ -8,6 +8,7 @@ description = "Admin API and web interface for Bifrost proxy"
 bifrost-core = { path = "../bifrost-core" }
 bifrost-tls = { path = "../bifrost-tls" }
 bifrost-storage = { path = "../bifrost-storage" }
+bifrost-sync = { path = "../bifrost-sync" }
 bifrost-script = { path = "../bifrost-script" }
 
 tokio = { version = "1", features = ["full", "sync"] }

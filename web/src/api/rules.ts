@@ -17,6 +17,10 @@ export async function updateRule(name: string, content?: string, enabled?: boole
   return put<ApiResponse>(`/rules/${encodeURIComponent(name)}`, { content, enabled });
 }
 
+export async function reorderRules(order: string[]): Promise<ApiResponse> {
+  return put<ApiResponse>('/rules/reorder', { order });
+}
+
 export async function deleteRule(name: string): Promise<ApiResponse> {
   return del<ApiResponse>(`/rules/${encodeURIComponent(name)}`);
 }

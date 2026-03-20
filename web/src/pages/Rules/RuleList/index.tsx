@@ -20,16 +20,18 @@ import {
   DeleteOutlined,
   PoweroffOutlined,
   ExportOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
 } from '@ant-design/icons';
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
 import styles from './index.module.css';
 
-type RuleSortMode = 'created_desc' | 'updated_desc' | 'name_asc';
+type RuleSortMode = 'manual' | 'updated_desc' | 'name_asc';
 
 const ruleSortOptions = [
-  { label: 'Newest', value: 'created_desc' },
+  { label: 'Manual', value: 'manual' },
   { label: 'Updated', value: 'updated_desc' },
   { label: 'Name', value: 'name_asc' },
 ];
@@ -47,6 +49,7 @@ export default function RuleList() {
     deleteRule,
     toggleRule,
     renameRule,
+    reorderRules,
     setSearchKeyword,
     hasUnsavedChanges,
   } = useRulesStore();
@@ -57,7 +60,7 @@ export default function RuleList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
-  const [sortMode, setSortMode] = useState<RuleSortMode>('created_desc');
+  const [sortMode, setSortMode] = useState<RuleSortMode>('manual');
   const { exportFile } = useExportBifrost();
 
   const filteredRules = useMemo(() => {
@@ -71,10 +74,7 @@ export default function RuleList() {
       if (sortMode === 'name_asc') {
         return left.name.localeCompare(right.name);
       }
-      return (
-        Date.parse(right.created_at) - Date.parse(left.created_at) ||
-        left.name.localeCompare(right.name)
-      );
+      return left.sort_order - right.sort_order || left.name.localeCompare(right.name);
     });
     if (!searchKeyword) return sortedRules;
     const keyword = searchKeyword.toLowerCase();
@@ -205,6 +205,25 @@ export default function RuleList() {
     ];
   };
 
+  const handleMoveRule = useCallback(
+    async (name: string, direction: -1 | 1) => {
+      const currentIndex = rules.findIndex((rule) => rule.name === name);
+      const nextIndex = currentIndex + direction;
+      if (currentIndex === -1 || nextIndex < 0 || nextIndex >= rules.length) {
+        return;
+      }
+
+      const reordered = [...rules];
+      const [moved] = reordered.splice(currentIndex, 1);
+      reordered.splice(nextIndex, 0, moved);
+      const success = await reorderRules(reordered.map((rule) => rule.name));
+      if (success) {
+        message.success(direction < 0 ? 'Rule moved up' : 'Rule moved down');
+      }
+    },
+    [reorderRules, rules],
+  );
+
   return (
     <div className={styles.container} data-testid="rules-list">
       <div className={styles.header}>
@@ -300,7 +319,42 @@ export default function RuleList() {
                         )}
                       </div>
                     </div>
-                    <div className={styles.itemExtra}>
+                    <div
+                      className={styles.itemExtra}
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <Tooltip title="Move up">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ArrowUpOutlined />}
+                          disabled={sortMode !== 'manual' || rule === filteredRules[0]}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void handleMoveRule(rule.name, -1);
+                          }}
+                          data-testid="rule-move-up"
+                        />
+                      </Tooltip>
+                      <Tooltip title="Move down">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ArrowDownOutlined />}
+                          disabled={
+                            sortMode !== 'manual' || rule === filteredRules[filteredRules.length - 1]
+                          }
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void handleMoveRule(rule.name, 1);
+                          }}
+                          data-testid="rule-move-down"
+                        />
+                      </Tooltip>
                       <Switch
                         size="small"
                         checked={rule.enabled}

@@ -15,6 +15,7 @@ pub struct UnifiedConfig {
     pub access: AccessConfig,
     pub proxy: ProxySettings,
     pub system_proxy: SystemProxyConfig,
+    pub sync: SyncConfig,
     pub traffic: TrafficConfig,
     pub sandbox: SandboxConfig,
     #[serde(skip)]
@@ -30,6 +31,7 @@ impl UnifiedConfig {
             access: AccessConfig::default(),
             proxy: ProxySettings::default(),
             system_proxy: SystemProxyConfig::default(),
+            sync: SyncConfig::default(),
             traffic: TrafficConfig::default_for_data_dir(data_dir),
             sandbox: SandboxConfig::default(),
             paths: PathsConfig::for_data_dir(data_dir),
@@ -256,6 +258,37 @@ impl Default for SystemProxyConfig {
             auto_enable: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    pub enabled: bool,
+    pub auto_sync: bool,
+    pub remote_base_url: String,
+    pub probe_interval_secs: u64,
+    pub connect_timeout_ms: u64,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_sync: true,
+            remote_base_url: "https://bifrost.bytedance.net".to_string(),
+            probe_interval_secs: 5,
+            connect_timeout_ms: 3_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SyncConfigUpdate {
+    pub enabled: Option<bool>,
+    pub auto_sync: Option<bool>,
+    pub remote_base_url: Option<String>,
+    pub probe_interval_secs: Option<u64>,
+    pub connect_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

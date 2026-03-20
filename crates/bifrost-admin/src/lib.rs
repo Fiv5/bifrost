@@ -42,6 +42,7 @@ pub use connection_registry::{
 };
 pub use frame_store::{start_frame_cleanup_task, FrameStore, FrameStoreStats, SharedFrameStore};
 pub use handlers::scripts::ScriptManager;
+pub use handlers::sync::handle_sync_login_callback;
 pub use metrics::{
     start_metrics_collector_task, MetricsCollector, MetricsSnapshot, TrafficType,
     TrafficTypeMetrics,
