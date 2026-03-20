@@ -23,12 +23,14 @@
 - `Settings` 页面内的配置类展示统一变为 pull-on-tab-open。
 - `systemProxy` 不再受 settings push 影响，继续走独立接口。
 - Access 页顶部 pending 列表改为主动拉取，不再消费 settings push。
+- Sync 登录成功后会强制把 `auto_sync` 恢复为开启，避免历史本地配置把“登录即同步”的默认体验保留下来为关闭状态。
 
 ## 测试方案
 
 - 打开每个 Settings tab，确认都会触发对应的拉取请求并能展示最新数据。
 - 修改 Proxy / TLS / Access / Performance 配置后，切走再切回对应 tab，确认能重新拉到最新状态。
 - 刷新 Settings 页面，确认不需要 settings push 也能正常恢复各 tab 数据。
+- 先把 `auto_sync` 手动关闭，再完成一次 Sync 登录，确认登录完成后 `auto_sync` 会自动恢复为开启。
 
 ## 校验要求
 

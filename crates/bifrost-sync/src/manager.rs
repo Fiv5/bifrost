@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bifrost_core::{BifrostError, Result};
-use bifrost_storage::{ConfigChangeEvent, ConfigManager, RuleFile, RulesStorage, SyncConfig};
+use bifrost_storage::{
+    ConfigChangeEvent, ConfigManager, RuleFile, RulesStorage, SyncConfig, SyncConfigUpdate,
+};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -188,6 +190,12 @@ impl SyncManager {
     }
 
     pub async fn save_token(&self, token: String) -> Result<()> {
+        self.config_manager
+            .update_sync_config(SyncConfigUpdate {
+                auto_sync: Some(true),
+                ..Default::default()
+            })
+            .await?;
         {
             let mut state = self.state.lock();
             state.token = Some(token);
@@ -709,6 +717,7 @@ fn parse_timestamp(value: &str) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn compare_timestamp_prefers_latest_value() {
@@ -844,5 +853,26 @@ mod tests {
         assert_eq!(action(false, true), SyncAction::RemotePulled);
         assert_eq!(action(true, true), SyncAction::Bidirectional);
         assert_eq!(action(false, false), SyncAction::NoChange);
+    }
+
+    #[tokio::test]
+    async fn save_token_reenables_auto_sync_after_login() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_manager = Arc::new(ConfigManager::new(temp_dir.path().to_path_buf()).unwrap());
+        config_manager
+            .update_sync_config(SyncConfigUpdate {
+                enabled: Some(true),
+                auto_sync: Some(false),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let manager = SyncManager::new(config_manager.clone(), 9900).unwrap();
+
+        manager.save_token("login-token".to_string()).await.unwrap();
+
+        let config = config_manager.config().await;
+        assert!(config.sync.auto_sync);
+        assert_eq!(manager.state.lock().token.as_deref(), Some("login-token"));
     }
 }
