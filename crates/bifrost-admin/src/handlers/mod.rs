@@ -10,6 +10,7 @@ mod replay_ws;
 pub mod rules;
 pub mod scripts;
 pub mod search;
+pub mod sync;
 pub mod syntax;
 pub mod system;
 pub mod traffic;

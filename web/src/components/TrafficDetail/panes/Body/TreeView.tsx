@@ -2,6 +2,7 @@ import { useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } fr
 import { Tree, Typography, theme, ConfigProvider } from 'antd';
 import type { DataNode } from 'antd/es/tree';
 import type { SessionTargetSearchState } from '../../../../types';
+import { MAX_JSON_FORMAT_HIGHLIGHT_LENGTH } from '../../helper/contentType';
 
 const { Text } = Typography;
 
@@ -325,6 +326,14 @@ export const TreeView = ({ data, searchValue, onSearch }: TreeViewProps) => {
 
   if (!data) {
     return null;
+  }
+
+  if (data.length > MAX_JSON_FORMAT_HIGHLIGHT_LENGTH) {
+    return (
+      <div style={{ padding: 12, color: token.colorTextSecondary }}>
+        JSON view is disabled for large bodies. Switched to text mode to keep the page responsive.
+      </div>
+    );
   }
 
   if (parsedData.error || treeData.length === 0) {

@@ -18,6 +18,7 @@ use bifrost_admin::{
 use bifrost_core::Rule;
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
 use bifrost_storage::{set_data_dir, ConfigChangeEvent, ConfigManager};
+use bifrost_sync::SyncManager;
 use bifrost_tls::{get_platform_name, CertInstaller, CertStatus};
 use parking_lot::RwLock as ParkingRwLock;
 use tracing::info;
@@ -843,6 +844,8 @@ pub fn run_foreground(
             let access_control = ProxyServer::new(config.clone()).access_control().clone();
             let (port_rebind_manager, mut port_rebind_rx) = PortRebindManager::channel(8);
 
+            let shared_config_manager = Arc::new(config_manager);
+
             let phase_started_at = Instant::now();
             let admin_state = AdminState::new(config.port)
                 .with_access_control(access_control.clone())
@@ -857,7 +860,7 @@ pub fn run_foreground(
                 .with_rules_storage(rules_storage)
                 .with_ca_cert_path(ca_cert_path)
                 .with_system_proxy_manager_shared(system_proxy_manager.clone())
-                .with_config_manager(config_manager)
+                .with_config_manager_shared(shared_config_manager.clone())
                 .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
                 .with_max_body_probe_size(stored_config.traffic.max_body_probe_size)
                 .with_binary_traffic_performance_mode(
@@ -868,6 +871,13 @@ pub fn run_foreground(
                 .with_replay_db_store_shared_opt(replay_db_store)
                 .with_port_rebind_manager_shared(port_rebind_manager);
             log_startup_phase("admin_state.build", phase_started_at);
+
+            let sync_manager = Arc::new(
+                SyncManager::new(shared_config_manager.clone(), config.port)
+                    .expect("Failed to create sync manager"),
+            );
+            let _sync_task = sync_manager.clone().start();
+            let admin_state = admin_state.with_sync_manager_shared(sync_manager);
 
             let db_cleanup_task = bifrost_admin::start_db_cleanup_task(traffic_db_store);
             let connection_cleanup_task =
@@ -1376,6 +1386,8 @@ pub fn run_daemon(
                         }
                     };
 
+                    let shared_config_manager = Arc::new(config_manager);
+
                     let admin_state = AdminState::new(config.port)
                         .with_body_store(body_store)
                         .with_ws_payload_store(ws_payload_store)
@@ -1388,11 +1400,18 @@ pub fn run_daemon(
                         .with_rules_storage(rules_storage)
                         .with_ca_cert_path(ca_cert_path)
                         .with_system_proxy_manager_shared(system_proxy_manager.clone())
-                        .with_config_manager(config_manager)
+                        .with_config_manager_shared(shared_config_manager.clone())
                         .with_max_body_buffer_size(stored_config.traffic.max_body_buffer_size)
                         .with_app_icon_cache(app_icon_cache)
                         .with_script_manager(script_manager)
                         .with_replay_db_store_shared_opt(replay_db_store);
+
+                    let sync_manager = Arc::new(
+                        SyncManager::new(shared_config_manager.clone(), config.port)
+                            .expect("Failed to create sync manager"),
+                    );
+                    let _sync_task = sync_manager.clone().start();
+                    let admin_state = admin_state.with_sync_manager_shared(sync_manager);
 
                     std::mem::drop(bifrost_admin::start_db_cleanup_task(traffic_db_store));
                     std::mem::drop(bifrost_admin::start_connection_cleanup_task(
@@ -1797,7 +1816,9 @@ fn spawn_admin_push_watcher_task(
                     ConfigChangeEvent::ValuesChanged(_) => {
                         push_manager.broadcast_values_snapshot().await;
                     }
-                    ConfigChangeEvent::RulesChanged | ConfigChangeEvent::StateChanged => {}
+                    ConfigChangeEvent::RulesChanged
+                    | ConfigChangeEvent::StateChanged
+                    | ConfigChangeEvent::SyncConfigChanged => {}
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     tracing::warn!(

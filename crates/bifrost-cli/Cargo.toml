@@ -18,6 +18,7 @@ path = "src/main.rs"
 bifrost-admin = { path = "../bifrost-admin" }
 bifrost-core = { path = "../bifrost-core" }
 bifrost-proxy = { path = "../bifrost-proxy" }
+bifrost-sync = { path = "../bifrost-sync" }
 bifrost-tls = { path = "../bifrost-tls" }
 bifrost-storage = { path = "../bifrost-storage" }
 parking_lot.workspace = true

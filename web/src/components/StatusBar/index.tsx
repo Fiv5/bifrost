@@ -1,11 +1,28 @@
-import { useEffect, useMemo, memo, useCallback, type CSSProperties } from "react";
+import { useEffect, useMemo, memo, useCallback, useState, type CSSProperties } from "react";
 import { theme, Tooltip } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import { useShallow } from "zustand/react/shallow";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useVersionStore } from "../../stores/useVersionStore";
+import { getSyncStatus, type SyncStatus } from "../../api/sync";
+import { isConnectionIssueError } from "../../api/client";
 import VersionModal from "../VersionModal";
+
+function formatSyncAction(action?: SyncStatus["last_sync_action"]): string | null {
+  switch (action) {
+    case "local_pushed":
+      return "Last sync pushed local changes to remote";
+    case "remote_pulled":
+      return "Last sync pulled newer remote changes";
+    case "bidirectional":
+      return "Last sync exchanged local and remote changes";
+    case "no_change":
+      return "Last sync found no changes";
+    default:
+      return null;
+  }
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -44,6 +61,7 @@ const StatusBar = memo(function StatusBar() {
   );
   const systemProxy = useProxyStore((state) => state.systemProxy);
   const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   
   const hasUpdate = useVersionStore((state) => state.hasUpdate);
   const latestVersion = useVersionStore((state) => state.latestVersion);
@@ -57,6 +75,33 @@ const StatusBar = memo(function StatusBar() {
       disablePush();
     };
   }, [fetchSystemProxy, enablePush, disablePush]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSyncStatus = async () => {
+      try {
+        const status = await getSyncStatus();
+        if (!cancelled) {
+          setSyncStatus(status);
+        }
+      } catch (error) {
+        if (!cancelled && !isConnectionIssueError(error)) {
+          setSyncStatus(null);
+        }
+      }
+    };
+
+    void loadSyncStatus();
+    const timer = window.setInterval(() => {
+      void loadSyncStatus();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const metrics = current || overview?.metrics;
 
@@ -97,6 +142,58 @@ const StatusBar = memo(function StatusBar() {
       running: systemProxy.enabled,
     };
   }, [systemProxy]);
+
+  const syncIndicator = useMemo(() => {
+    if (!syncStatus || !syncStatus.enabled) {
+      return {
+        text: "Off",
+        detail: "Sync disabled",
+        color: token.colorTextQuaternary,
+        pulse: false,
+        state: "disabled",
+      };
+    }
+
+    if (syncStatus.syncing) {
+      return {
+        text: "Syncing",
+        detail: "Connected and syncing rules",
+        color: token.colorWarning,
+        pulse: true,
+        state: "syncing",
+      };
+    }
+
+    if (!syncStatus.reachable) {
+      return {
+        text: "Local",
+        detail: "Remote service unreachable, using local rules only",
+        color: token.colorWarning,
+        pulse: false,
+        state: "unreachable",
+      };
+    }
+
+    if (!syncStatus.authorized) {
+      return {
+        text: "Sign in",
+        detail: "Remote reachable but login required",
+        color: token.colorInfo,
+        pulse: false,
+        state: "unauthorized",
+      };
+    }
+
+    return {
+      text: syncStatus.last_sync_at ? "Synced" : "Connected",
+      detail: syncStatus.last_sync_at
+        ? `${formatSyncAction(syncStatus.last_sync_action) ?? "Last sync completed"} at ${new Date(syncStatus.last_sync_at).toLocaleString()}`
+        : "Connected to remote service",
+      color: token.colorSuccess,
+      pulse: false,
+      state: syncStatus.last_sync_at ? "ready" : "connected",
+    };
+  }, [syncStatus, token.colorInfo, token.colorSuccess, token.colorTextQuaternary, token.colorWarning]);
 
   const handleVersionClick = useCallback(() => {
     checkVersion({ forceRefresh: true });
@@ -171,6 +268,13 @@ const StatusBar = memo(function StatusBar() {
         ? token.colorSuccess
         : token.colorTextQuaternary,
     },
+    syncDot: {
+      width: 6,
+      height: 6,
+      borderRadius: "50%",
+      backgroundColor: syncIndicator.color,
+      boxShadow: syncIndicator.pulse ? `0 0 0 3px ${token.colorWarningBg}` : "none",
+    },
     rateUp: {
       color: token.colorTextTertiary,
     },
@@ -218,6 +322,19 @@ const StatusBar = memo(function StatusBar() {
           <span style={styles.label}>Proxy:</span>
           <span style={styles.valueStatus}>{proxyStatus.text}</span>
         </div>
+
+        <Tooltip title={syncIndicator.detail}>
+          <div
+            style={styles.item}
+            data-testid="statusbar-sync"
+            data-sync-state={syncIndicator.state}
+            data-sync-action={syncStatus?.last_sync_action ?? "unknown"}
+          >
+            <div style={styles.syncDot} />
+            <span style={styles.label}>Sync:</span>
+            <span style={styles.valueStatus}>{syncIndicator.text}</span>
+          </div>
+        </Tooltip>
 
         <div style={styles.separator} />
 

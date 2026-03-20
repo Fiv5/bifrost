@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useRef } from 'react';
 import {
   Input,
   Button,
@@ -20,16 +20,17 @@ import {
   DeleteOutlined,
   PoweroffOutlined,
   ExportOutlined,
+  HolderOutlined,
 } from '@ant-design/icons';
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
 import styles from './index.module.css';
 
-type RuleSortMode = 'created_desc' | 'updated_desc' | 'name_asc';
+type RuleSortMode = 'manual' | 'updated_desc' | 'name_asc';
 
 const ruleSortOptions = [
-  { label: 'Newest', value: 'created_desc' },
+  { label: 'Manual', value: 'manual' },
   { label: 'Updated', value: 'updated_desc' },
   { label: 'Name', value: 'name_asc' },
 ];
@@ -47,6 +48,7 @@ export default function RuleList() {
     deleteRule,
     toggleRule,
     renameRule,
+    reorderRules,
     setSearchKeyword,
     hasUnsavedChanges,
   } = useRulesStore();
@@ -57,8 +59,90 @@ export default function RuleList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
-  const [sortMode, setSortMode] = useState<RuleSortMode>('created_desc');
+  const [sortMode, setSortMode] = useState<RuleSortMode>('manual');
+  const [draggedRuleName, setDraggedRuleName] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    name: string;
+    position: 'before' | 'after';
+  } | null>(null);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollFrameRef = useRef<number | null>(null);
+  const autoScrollVelocityRef = useRef(0);
   const { exportFile } = useExportBifrost();
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoScrollFrameRef.current !== null) {
+      cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
+    autoScrollVelocityRef.current = 0;
+  }, []);
+
+  const startAutoScroll = useCallback(
+    (velocity: number) => {
+      autoScrollVelocityRef.current = velocity;
+      if (autoScrollFrameRef.current !== null) {
+        return;
+      }
+
+      const tick = () => {
+        const container = listContainerRef.current;
+        if (!container || autoScrollVelocityRef.current === 0) {
+          autoScrollFrameRef.current = null;
+          return;
+        }
+
+        const maxScrollTop = container.scrollHeight - container.clientHeight;
+        const nextScrollTop = Math.max(
+          0,
+          Math.min(maxScrollTop, container.scrollTop + autoScrollVelocityRef.current)
+        );
+        container.scrollTop = nextScrollTop;
+
+        if (
+          nextScrollTop === 0 ||
+          nextScrollTop === maxScrollTop
+        ) {
+          autoScrollFrameRef.current = null;
+          return;
+        }
+
+        autoScrollFrameRef.current = requestAnimationFrame(tick);
+      };
+
+      autoScrollFrameRef.current = requestAnimationFrame(tick);
+    },
+    []
+  );
+
+  const updateAutoScroll = useCallback(
+    (clientY: number) => {
+      const container = listContainerRef.current;
+      if (!container) return;
+
+      const rect = container.getBoundingClientRect();
+      const edgeThreshold = 40;
+      const maxVelocity = 12;
+
+      const distanceToTop = clientY - rect.top;
+      const distanceToBottom = rect.bottom - clientY;
+
+      if (distanceToTop >= 0 && distanceToTop < edgeThreshold) {
+        const ratio = (edgeThreshold - distanceToTop) / edgeThreshold;
+        startAutoScroll(-Math.max(4, Math.round(maxVelocity * ratio)));
+        return;
+      }
+
+      if (distanceToBottom >= 0 && distanceToBottom < edgeThreshold) {
+        const ratio = (edgeThreshold - distanceToBottom) / edgeThreshold;
+        startAutoScroll(Math.max(4, Math.round(maxVelocity * ratio)));
+        return;
+      }
+
+      stopAutoScroll();
+    },
+    [startAutoScroll, stopAutoScroll]
+  );
 
   const filteredRules = useMemo(() => {
     const sortedRules = [...rules].sort((left, right) => {
@@ -71,10 +155,7 @@ export default function RuleList() {
       if (sortMode === 'name_asc') {
         return left.name.localeCompare(right.name);
       }
-      return (
-        Date.parse(right.created_at) - Date.parse(left.created_at) ||
-        left.name.localeCompare(right.name)
-      );
+      return left.sort_order - right.sort_order || left.name.localeCompare(right.name);
     });
     if (!searchKeyword) return sortedRules;
     const keyword = searchKeyword.toLowerCase();
@@ -205,6 +286,44 @@ export default function RuleList() {
     ];
   };
 
+  const handleRuleDrop = useCallback(
+    async (targetName: string, position: 'before' | 'after') => {
+      if (!draggedRuleName || draggedRuleName === targetName) {
+        setDraggedRuleName(null);
+        setDropTarget(null);
+        stopAutoScroll();
+        return;
+      }
+
+      const reordered = [...rules];
+      const fromIndex = reordered.findIndex((rule) => rule.name === draggedRuleName);
+      const targetIndex = reordered.findIndex((rule) => rule.name === targetName);
+      if (fromIndex === -1 || targetIndex === -1) {
+        setDraggedRuleName(null);
+        setDropTarget(null);
+        stopAutoScroll();
+        return;
+      }
+
+      const [moved] = reordered.splice(fromIndex, 1);
+      const adjustedTargetIndex =
+        fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+      const insertIndex =
+        position === 'before' ? adjustedTargetIndex : adjustedTargetIndex + 1;
+      reordered.splice(insertIndex, 0, moved);
+
+      setDraggedRuleName(null);
+      setDropTarget(null);
+      stopAutoScroll();
+
+      const success = await reorderRules(reordered.map((rule) => rule.name));
+      if (success) {
+        message.success('Rule order updated');
+      }
+    },
+    [draggedRuleName, reorderRules, rules, stopAutoScroll]
+  );
+
   return (
     <div className={styles.container} data-testid="rules-list">
       <div className={styles.header}>
@@ -258,7 +377,30 @@ export default function RuleList() {
         />
       </div>
 
-      <div className={styles.listContainer}>
+      <div
+        ref={listContainerRef}
+        className={styles.listContainer}
+        onDragOver={(e) => {
+          if (sortMode !== 'manual' || !draggedRuleName) {
+            stopAutoScroll();
+            return;
+          }
+          updateAutoScroll(e.clientY);
+        }}
+        onDragLeave={(e) => {
+          const nextTarget = e.relatedTarget;
+          if (
+            nextTarget instanceof Node &&
+            listContainerRef.current?.contains(nextTarget)
+          ) {
+            return;
+          }
+          stopAutoScroll();
+        }}
+        onDrop={() => {
+          stopAutoScroll();
+        }}
+      >
         {loading && rules.length === 0 ? (
           <div className={styles.loading}>
             <Spin size="small" />
@@ -277,13 +419,57 @@ export default function RuleList() {
                 >
                   <div
                     className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
+                    draggable={sortMode === 'manual'}
                     onClick={(e) => handleSelect(rule.name, e.ctrlKey || e.metaKey)}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
+                    onDragStart={() => {
+                      if (sortMode !== 'manual') return;
+                      setDraggedRuleName(rule.name);
+                    }}
+                    onDragEnd={() => {
+                      setDraggedRuleName(null);
+                      setDropTarget(null);
+                      stopAutoScroll();
+                    }}
+                    onDragOver={(e) => {
+                      if (sortMode !== 'manual' || !draggedRuleName || draggedRuleName === rule.name) {
+                        return;
+                      }
+                      e.preventDefault();
+                      updateAutoScroll(e.clientY);
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const position =
+                        e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+                      if (
+                        dropTarget?.name !== rule.name ||
+                        dropTarget.position !== position
+                      ) {
+                        setDropTarget({ name: rule.name, position });
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (sortMode !== 'manual') return;
+                      e.preventDefault();
+                      stopAutoScroll();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const position =
+                        e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+                      void handleRuleDrop(rule.name, position);
+                    }}
                     data-testid="rule-item"
                     data-rule-name={rule.name}
-                    data-rule-enabled={rule.enabled ? "true" : "false"}
+                    data-rule-enabled={rule.enabled ? 'true' : 'false'}
+                    data-dragging={draggedRuleName === rule.name ? 'true' : 'false'}
+                    data-drop-position={
+                      dropTarget?.name === rule.name ? dropTarget.position : undefined
+                    }
                   >
                     <div className={styles.itemContent}>
+                      {sortMode === 'manual' && (
+                        <Tooltip title="Drag to reorder">
+                          <HolderOutlined className={styles.dragHandle} />
+                        </Tooltip>
+                      )}
                       <span className={styles.itemName} title={rule.name}>
                         {rule.name}
                       </span>
@@ -300,7 +486,12 @@ export default function RuleList() {
                         )}
                       </div>
                     </div>
-                    <div className={styles.itemExtra}>
+                    <div
+                      className={styles.itemExtra}
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
                       <Switch
                         size="small"
                         checked={rule.enabled}

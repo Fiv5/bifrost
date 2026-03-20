@@ -48,6 +48,8 @@ hljs.registerLanguage("plaintext", plaintext);
 const { Text } = Typography;
 
 const MAX_SSE_EVENTS = 20_000;
+const SSE_PARSE_CHAR_BUDGET = 128 * 1024;
+const SSE_PARSE_EVENT_BATCH_SIZE = 200;
 
 interface MessagesProps {
   recordId: string;
@@ -379,27 +381,36 @@ const parseSseChunkToEvent = (
   index: number,
   timestamp: number,
 ): SSEEvent | null => {
-  const lines = chunk.split("\n");
   const dataLines: string[] = [];
   let eventId: string | undefined;
   let eventType: string | undefined;
+  let lineStart = 0;
+  const readLine = (raw: string) => raw.endsWith("\r") ? raw.slice(0, -1) : raw;
 
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (!line) continue;
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).replace(/^ /, ""));
-      continue;
+  while (lineStart <= chunk.length) {
+    const lineEnd = chunk.indexOf("\n", lineStart);
+    const isLastLine = lineEnd === -1;
+    const rawLine = isLastLine
+      ? chunk.slice(lineStart)
+      : chunk.slice(lineStart, lineEnd);
+    const line = readLine(rawLine);
+
+    if (line) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      } else if (line.startsWith("event:")) {
+        const v = line.slice(6).replace(/^ /, "");
+        if (v) eventType = v;
+      } else if (line.startsWith("id:")) {
+        const v = line.slice(3).replace(/^ /, "");
+        if (v) eventId = v;
+      }
     }
-    if (line.startsWith("event:")) {
-      const v = line.slice(6).replace(/^ /, "");
-      if (v) eventType = v;
-      continue;
+
+    if (isLastLine) {
+      break;
     }
-    if (line.startsWith("id:")) {
-      const v = line.slice(3).replace(/^ /, "");
-      if (v) eventId = v;
-    }
+    lineStart = lineEnd + 1;
   }
 
   const data = dataLines.length > 0 ? dataLines.join("\n") : chunk;
@@ -410,6 +421,51 @@ const parseSseChunkToEvent = (
     data,
     timestamp,
   };
+};
+
+const findNextSseEventBoundary = (text: string, start: number): number => {
+  for (let i = start; i < text.length - 1; i += 1) {
+    const current = text.charCodeAt(i);
+    const next = text.charCodeAt(i + 1);
+
+    if (current === 10 && next === 10) {
+      return i;
+    }
+    if (current === 13 && next === 10) {
+      const after = i + 2;
+      if (after < text.length && text.charCodeAt(after) === 13) {
+        if (after + 1 < text.length && text.charCodeAt(after + 1) === 10) {
+          return i;
+        }
+      } else if (after < text.length && text.charCodeAt(after) === 10) {
+        return i;
+      }
+    }
+  }
+  return -1;
+};
+
+const getBoundaryAdvance = (text: string, boundaryIndex: number): number => {
+  if (
+    text.charCodeAt(boundaryIndex) === 13 &&
+    boundaryIndex + 3 < text.length &&
+    text.charCodeAt(boundaryIndex + 1) === 10 &&
+    text.charCodeAt(boundaryIndex + 2) === 13 &&
+    text.charCodeAt(boundaryIndex + 3) === 10
+  ) {
+    return 4;
+  }
+
+  if (
+    text.charCodeAt(boundaryIndex) === 13 &&
+    boundaryIndex + 2 < text.length &&
+    text.charCodeAt(boundaryIndex + 1) === 10 &&
+    text.charCodeAt(boundaryIndex + 2) === 10
+  ) {
+    return 3;
+  }
+
+  return 2;
 };
 
 export const Messages = ({
@@ -453,9 +509,6 @@ export const Messages = ({
   const inflightWsPayloadIdsRef = useRef<Set<number>>(new Set());
   const responseBody = useTrafficStore((state) => state.responseBody);
   const setResponseBody = useTrafficStore((state) => state.setResponseBody);
-  const appendSseResponseBody = useTrafficStore(
-    (state) => state.appendSseResponseBody,
-  );
 
   const mergeWsFrames = useCallback((base: WebSocketFrame[], incoming: WebSocketFrame[]) => {
     if (incoming.length === 0) return base;
@@ -614,7 +667,6 @@ export const Messages = ({
     sseClosedByUsRef.current = false;
     setSseConnectionState("connecting");
     setSseLoading(true);
-    setResponseBody(recordId, "");
     lastSseSeqRef.current = 0;
     setSseEvents([]);
 
@@ -663,7 +715,6 @@ export const Messages = ({
         if (payloadObj.batch && Array.isArray(payloadObj.events)) {
           const batch = payloadObj.events as Array<Record<string, unknown>>;
           const parsed: SSEEvent[] = [];
-          const raws: string[] = [];
           let maxSeq = lastSseSeqRef.current;
           for (let i = 0; i < batch.length; i++) {
             const e = batch[i];
@@ -681,18 +732,11 @@ export const Messages = ({
               data: typeof e.data === "string" ? e.data : "",
               timestamp: ts,
             });
-            if (typeof e.raw === "string") {
-              const raw = e.raw.replace(/\n+$/, "");
-              if (raw.length > 0) raws.push(raw);
-            }
           }
           if (maxSeq > lastSseSeqRef.current) {
             lastSseSeqRef.current = maxSeq;
           }
           enqueueEvents(parsed);
-          if (raws.length > 0) {
-            appendSseResponseBody(recordId, raws.join("\n\n"));
-          }
           return;
         }
 
@@ -710,12 +754,6 @@ export const Messages = ({
           data: typeof payloadObj.data === "string" ? payloadObj.data : "",
           timestamp: ts,
         });
-        if (typeof payloadObj.raw === "string") {
-          const raw = payloadObj.raw.replace(/\n+$/, "");
-          if (raw.length > 0) {
-            appendSseResponseBody(recordId, raw);
-          }
-        }
       } catch (e) {
         console.error("Failed to parse SSE event:", e);
       }
@@ -741,7 +779,6 @@ export const Messages = ({
       setSseLoading(false);
     };
   }, [
-    appendSseResponseBody,
     isConnectionOpen,
     isWebSocket,
     recordId,
@@ -761,23 +798,37 @@ export const Messages = ({
     setSseConnectionState("closed");
     setSseLoading(true);
     setSseEvents([]);
-    const normalized = responseBody.replace(/\r\n/g, "\n");
     let index = 0;
     let eventIndex = 0;
-    const batchSize = 200;
+    let rafId: number | null = null;
 
     const run = () => {
       if (sseParseTokenRef.current !== token) return;
       const batch: SSEEvent[] = [];
-      let processed = 0;
-      while (processed < batchSize && index < normalized.length) {
-        const next = normalized.indexOf("\n\n", index);
+      let processedChars = 0;
+
+      while (
+        batch.length < SSE_PARSE_EVENT_BATCH_SIZE &&
+        processedChars < SSE_PARSE_CHAR_BUDGET &&
+        index < responseBody.length
+      ) {
+        const next = findNextSseEventBoundary(responseBody, index);
         if (next === -1) {
-          index = normalized.length;
+          const tailChunk = responseBody.slice(index).replace(/[\r\n]+$/, "");
+          if (tailChunk.trim().length > 0) {
+            const ev = parseSseChunkToEvent(tailChunk, eventIndex, Date.now());
+            if (ev) {
+              batch.push(ev);
+              eventIndex += 1;
+            }
+          }
+          index = responseBody.length;
           break;
         }
-        const chunk = normalized.slice(index, next).replace(/\n+$/, "");
-        index = next + 2;
+
+        const chunk = responseBody.slice(index, next).replace(/[\r\n]+$/, "");
+        processedChars += next - index;
+        index = next + getBoundaryAdvance(responseBody, next);
         if (chunk.trim().length > 0) {
           const ev = parseSseChunkToEvent(chunk, eventIndex, Date.now());
           if (ev) {
@@ -785,8 +836,8 @@ export const Messages = ({
             eventIndex += 1;
           }
         }
-        processed += 1;
       }
+
       if (batch.length > 0) {
         setSseEvents((prev) => {
           const next = prev.concat(batch);
@@ -794,15 +845,19 @@ export const Messages = ({
           return next.slice(next.length - MAX_SSE_EVENTS);
         });
       }
-      if (index < normalized.length) {
-        setTimeout(run, 0);
+
+      if (index < responseBody.length) {
+        rafId = requestAnimationFrame(run);
       } else {
         setSseLoading(false);
       }
     };
 
-    run();
+    rafId = requestAnimationFrame(run);
     return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
       if (sseParseTokenRef.current === token) {
         sseParseTokenRef.current += 1;
       }

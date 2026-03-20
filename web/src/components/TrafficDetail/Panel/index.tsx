@@ -29,6 +29,7 @@ interface PanelProps {
   displayFormat?: DisplayFormat;
   onDisplayFormatChange?: (format: string) => void;
   contentType?: RecordContentType;
+  bodyData?: string | null;
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
   keepAliveTabs?: string[];
@@ -46,6 +47,7 @@ export const Panel = ({
   displayFormat,
   onDisplayFormatChange,
   contentType,
+  bodyData,
   collapsed = false,
   onCollapsedChange,
   keepAliveTabs,
@@ -117,6 +119,7 @@ export const Panel = ({
                   value={displayFormat}
                   onChange={onDisplayFormatChange}
                   contentType={contentType}
+                  data={bodyData}
                 />
               )}
             <FilterOutlined

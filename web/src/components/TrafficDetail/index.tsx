@@ -7,7 +7,11 @@ import type {
   RecordContentType,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
-import { getContentTypeFromHeader, isImageContentType } from "./helper/contentType";
+import {
+  getContentTypeFromHeader,
+  isImageContentType,
+  shouldDisableJsonStructuredView,
+} from "./helper/contentType";
 import { Header } from "./Header";
 import { Panel } from "./Panel";
 import { Overview } from "./panes/Overview";
@@ -142,6 +146,34 @@ export default function TrafficDetail({
   const requestContentType = useMemo<RecordContentType>(() => {
     return getContentTypeFromHeader(record?.request_content_type);
   }, [record?.request_content_type]);
+
+  useEffect(() => {
+    if (
+      requestDisplayFormat === "Tree" &&
+      shouldDisableJsonStructuredView(requestContentType, requestBody)
+    ) {
+      setRequestDisplayFormat("HighLight");
+    }
+  }, [
+    requestBody,
+    requestContentType,
+    requestDisplayFormat,
+    setRequestDisplayFormat,
+  ]);
+
+  useEffect(() => {
+    if (
+      responseDisplayFormat === "Tree" &&
+      shouldDisableJsonStructuredView(responseContentType, responseBody)
+    ) {
+      setResponseDisplayFormat("HighLight");
+    }
+  }, [
+    responseBody,
+    responseContentType,
+    responseDisplayFormat,
+    setResponseDisplayFormat,
+  ]);
 
   const handleRequestTabChange = useCallback(
     (tab: string) => {
@@ -511,6 +543,7 @@ export default function TrafficDetail({
                 displayFormat={requestDisplayFormat}
                 onDisplayFormatChange={handleRequestDisplayFormatChange}
                 contentType={requestContentType}
+                bodyData={requestBody}
                 collapsed={requestCollapsed}
                 onCollapsedChange={handleRequestCollapsedChange}
               />
@@ -528,9 +561,9 @@ export default function TrafficDetail({
                 displayFormat={responseDisplayFormat}
                 onDisplayFormatChange={handleResponseDisplayFormatChange}
                 contentType={responseContentType}
+                bodyData={responseBody}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
-                keepAliveTabs={["Messages"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>

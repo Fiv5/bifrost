@@ -15,6 +15,7 @@ use crate::state::SharedAdminState;
 struct RuleFileInfo {
     name: String,
     enabled: bool,
+    sort_order: i32,
     rule_count: usize,
     created_at: String,
     updated_at: String,
@@ -25,6 +26,7 @@ struct RuleFileDetail {
     name: String,
     content: String,
     enabled: bool,
+    sort_order: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +40,11 @@ struct CreateRuleRequest {
 struct UpdateRuleRequest {
     content: Option<String>,
     enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReorderRulesRequest {
+    order: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +81,11 @@ pub async fn handle_rules(
         match method {
             Method::GET => list_rules(state).await,
             Method::POST => create_rule(req, state, push_manager).await,
+            _ => method_not_allowed(),
+        }
+    } else if path == "/api/rules/reorder" {
+        match method {
+            Method::PUT => reorder_rules(req, state, push_manager).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/rules/validate" {
@@ -121,6 +133,7 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
                 .map(|r: RuleSummary| RuleFileInfo {
                     name: r.name,
                     enabled: r.enabled,
+                    sort_order: r.sort_order,
                     rule_count: r.rule_count,
                     created_at: r.created_at,
                     updated_at: r.updated_at,
@@ -277,8 +290,17 @@ async fn create_rule(
         return error_response(StatusCode::CONFLICT, "Rule with this name already exists");
     }
 
+    let highest_priority_sort_order = state
+        .rules_storage
+        .list_summaries()
+        .ok()
+        .and_then(|rules| rules.into_iter().map(|rule| rule.sort_order).min())
+        .map(|value| value - 1)
+        .unwrap_or(0);
+
     let rule = RuleFile::new(&request.name, &request.content)
-        .with_enabled(request.enabled.unwrap_or(true));
+        .with_enabled(request.enabled.unwrap_or(true))
+        .with_sort_order(highest_priority_sort_order);
 
     match state.rules_storage.save(&rule) {
         Ok(_) => {
@@ -300,6 +322,7 @@ async fn get_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
                 name: rule.name,
                 content: rule.content,
                 enabled: rule.enabled,
+                sort_order: rule.sort_order,
             };
             json_response(&detail)
         }
@@ -335,10 +358,16 @@ async fn update_rule(
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
     };
 
-    let content = request.content.unwrap_or(existing.content);
-    let enabled = request.enabled.unwrap_or(existing.enabled);
-
-    let rule = RuleFile::new(name, content).with_enabled(enabled);
+    let rule = RuleFile {
+        name: existing.name,
+        content: request.content.unwrap_or(existing.content),
+        enabled: request.enabled.unwrap_or(existing.enabled),
+        sort_order: existing.sort_order,
+        description: existing.description,
+        version: existing.version,
+        created_at: existing.created_at,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    };
 
     match state.rules_storage.save(&rule) {
         Ok(_) => {
@@ -349,6 +378,39 @@ async fn update_rule(
         Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             &format!("Failed to update rule: {}", e),
+        ),
+    }
+}
+
+async fn reorder_rules(
+    req: Request<Incoming>,
+    state: SharedAdminState,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            )
+        }
+    };
+
+    let request: ReorderRulesRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    match state.rules_storage.reorder(&request.order) {
+        Ok(_) => {
+            notify_rules_changed(&state);
+            invalidate_overview_cache(&push_manager);
+            success_response("Rules reordered successfully")
+        }
+        Err(e) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("Failed to reorder rules: {}", e),
         ),
     }
 }

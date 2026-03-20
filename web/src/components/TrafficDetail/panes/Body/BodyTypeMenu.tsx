@@ -4,18 +4,23 @@ import { DownOutlined, CheckOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
 import { DisplayFormat } from '../../../../types';
 import type { RecordContentType } from '../../../../types';
+import { shouldDisableJsonStructuredView } from '../../helper/contentType';
 
 interface BodyTypeMenuProps {
   value: string;
   onChange: (v: string) => void;
   contentType: RecordContentType;
+  data?: string | null;
 }
 
 export const BodyTypeMenu = ({
   value,
   onChange,
   contentType,
+  data,
 }: BodyTypeMenuProps) => {
+  const disableJsonStructuredView = shouldDisableJsonStructuredView(contentType, data);
+
   const menuItems = useMemo<MenuProps['items']>(() => {
     const items: MenuProps['items'] = [];
 
@@ -37,13 +42,17 @@ export const BodyTypeMenu = ({
         label: (
           <Space>
             {value === DisplayFormat.HighLight && <CheckOutlined />}
-            {contentType === 'JSON' ? 'JSON' : contentType}
+            {contentType === 'JSON'
+              ? disableJsonStructuredView
+                ? 'Text'
+                : 'JSON'
+              : contentType}
           </Space>
         ),
       });
     }
 
-    if (contentType === 'JSON') {
+    if (contentType === 'JSON' && !disableJsonStructuredView) {
       items.push({
         key: DisplayFormat.Tree,
         label: (
@@ -66,22 +75,26 @@ export const BodyTypeMenu = ({
     });
 
     return items;
-  }, [contentType, value]);
+  }, [contentType, disableJsonStructuredView, value]);
 
   const activeLabel = useMemo(() => {
     switch (value) {
       case DisplayFormat.HighLight:
-        return contentType === 'JSON' ? 'JSON' : contentType;
+        return contentType === 'JSON'
+          ? disableJsonStructuredView
+            ? 'Text'
+            : 'JSON'
+          : contentType;
       case DisplayFormat.Hex:
         return 'Hex';
       case DisplayFormat.Tree:
-        return 'Tree';
+        return disableJsonStructuredView ? 'Text' : 'Tree';
       case DisplayFormat.Media:
         return 'Media';
       default:
         return 'View';
     }
-  }, [value, contentType]);
+  }, [value, contentType, disableJsonStructuredView]);
 
   const handleClick: MenuProps['onClick'] = ({ key }) => {
     onChange(key);

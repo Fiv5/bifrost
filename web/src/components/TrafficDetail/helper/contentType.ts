@@ -48,3 +48,15 @@ export const isImageContentType = (
 };
 
 export const DEFAULT_SHOW_MAX_SIZE = 600 * 1024;
+export const MAX_JSON_FORMAT_HIGHLIGHT_LENGTH = 200 * 1024;
+
+export const shouldDisableJsonStructuredView = (
+  contentType: RecordContentType,
+  data: string | null | undefined
+): boolean => {
+  if (contentType !== 'JSON' || !data) {
+    return false;
+  }
+
+  return data.length > MAX_JSON_FORMAT_HIGHLIGHT_LENGTH;
+};

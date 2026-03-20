@@ -32,6 +32,9 @@ lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
     static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_.\-]*)\}").unwrap();
     static ref HOST_PORT_REGEX: Regex = Regex::new(r"^(localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[:0-9a-fA-F]+\]):(\d+)(/.*)?$").unwrap();
+    static ref BARE_HOST_PATH_TARGET_REGEX: Regex = Regex::new(
+        r"^((localhost)|(\d{1,3}(?:\.\d{1,3}){3})|(\[[0-9A-Fa-f:]+\])|(([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+))(?::\d+)?([/?#].*)$"
+    ).unwrap();
 }
 
 pub struct RuleParser {
@@ -1276,6 +1279,24 @@ fn check_passthrough_without_protocol(part: &str, patterns: &[String]) -> bool {
     false
 }
 
+fn is_bare_host_target_with_path(part: &str) -> bool {
+    if part.contains("://") {
+        return false;
+    }
+
+    if part.starts_with('!')
+        || part.starts_with('*')
+        || part.starts_with('$')
+        || part.starts_with('^')
+        || (part.starts_with('/') && part.ends_with('/'))
+        || (part.starts_with('/') && part.ends_with("/i"))
+    {
+        return false;
+    }
+
+    BARE_HOST_PATH_TARGET_REGEX.is_match(part)
+}
+
 fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult> {
     if parts.is_empty() {
         return Err(BifrostError::Parse("Empty rule".to_string()));
@@ -1363,6 +1384,11 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
             let is_passthrough = check_passthrough_without_protocol(part, &patterns);
             if is_passthrough {
                 protocol_values.push((Protocol::Passthrough, String::new()));
+            } else if !patterns.is_empty()
+                && protocol_values.is_empty()
+                && is_bare_host_target_with_path(part)
+            {
+                protocol_values.push((Protocol::Host, part.clone()));
             } else {
                 patterns.push(part.clone());
             }
@@ -1719,6 +1745,36 @@ reqHeaders://{test=1}"#;
         assert_eq!(rules[0].protocol, Protocol::Host);
         assert_eq!(rules[0].value, "127.0.0.1:3000/api");
         assert_eq!(rules[1].protocol, Protocol::ReqHeaders);
+    }
+
+    #[test]
+    fn test_parse_bare_domain_with_path_as_host_target() {
+        let rules =
+            parse_line("gamingpop-boe.byteintl.net/manager gamingpop-boe.byteintl.net/manager")
+                .unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "gamingpop-boe.byteintl.net/manager");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "gamingpop-boe.byteintl.net/manager");
+    }
+
+    #[test]
+    fn test_parse_bare_domain_with_path_and_query_as_host_target() {
+        let rules = parse_line("example.com/api target.example.com/api/v1?debug=1").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "example.com/api");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "target.example.com/api/v1?debug=1");
+    }
+
+    #[test]
+    fn test_parse_protocol_first_multiple_patterns_still_supported() {
+        let rules = parse_line("proxy://127.0.0.1:8080 www.example.com api.example.com").unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].pattern, "www.example.com");
+        assert_eq!(rules[0].protocol, Protocol::Proxy);
+        assert_eq!(rules[1].pattern, "api.example.com");
+        assert_eq!(rules[1].protocol, Protocol::Proxy);
     }
 
     #[test]
@@ -2121,11 +2177,11 @@ wss://example.com/ ws://localhost:8000/
 
     #[test]
     fn test_parse_not_passthrough_different_path() {
-        let result = parse_line("https://example.com/api/ example.com/other/");
-        assert!(
-            result.is_err(),
-            "Should fail because different paths without protocol is invalid syntax"
-        );
+        let rules = parse_line("https://example.com/api/ example.com/other/").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://example.com/api/");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "example.com/other/");
     }
 
     #[test]

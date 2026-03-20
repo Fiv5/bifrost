@@ -9,8 +9,8 @@ use crate::rules::{RuleFile, RulesStorage};
 use crate::state::StateManager;
 use crate::unified_config::{
     AccessConfigUpdate, SandboxConfig, SandboxConfigUpdate, ServerConfig, ServerConfigUpdate,
-    SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate, TrafficConfig, TrafficConfigUpdate,
-    UiConfig, UiConfigUpdate, UnifiedConfig,
+    SyncConfig, SyncConfigUpdate, SystemProxyConfigUpdate, TlsConfig, TlsConfigUpdate,
+    TrafficConfig, TrafficConfigUpdate, UiConfig, UiConfigUpdate, UnifiedConfig,
 };
 use crate::values::ValuesStorage;
 use crate::{LegacyBifrostConfig, MAX_TRAFFIC_MAX_RECORDS, MIN_TRAFFIC_MAX_RECORDS};
@@ -25,6 +25,7 @@ pub enum ConfigChangeEvent {
     SandboxConfigChanged,
     ServerConfigChanged,
     TrafficConfigChanged,
+    SyncConfigChanged,
     RulesChanged,
     ScriptsChanged,
     ValuesChanged(String),
@@ -333,6 +334,32 @@ impl ConfigManager {
         Ok(config.ui.clone())
     }
 
+    pub async fn update_sync_config(&self, update: SyncConfigUpdate) -> Result<SyncConfig> {
+        let mut config = self.config.write().await;
+
+        if let Some(enabled) = update.enabled {
+            config.sync.enabled = enabled;
+        }
+        if let Some(auto_sync) = update.auto_sync {
+            config.sync.auto_sync = auto_sync;
+        }
+        if let Some(remote_base_url) = update.remote_base_url {
+            config.sync.remote_base_url = remote_base_url;
+        }
+        if let Some(probe_interval_secs) = update.probe_interval_secs {
+            config.sync.probe_interval_secs = probe_interval_secs;
+        }
+        if let Some(connect_timeout_ms) = update.connect_timeout_ms {
+            config.sync.connect_timeout_ms = connect_timeout_ms;
+        }
+
+        self.save_config(&config)?;
+        let _ = self
+            .change_notifier
+            .send(ConfigChangeEvent::SyncConfigChanged);
+        Ok(config.sync.clone())
+    }
+
     pub async fn save_rule(&self, rule: &RuleFile) -> Result<()> {
         let storage = self.rules_storage.write().await;
         storage.save(rule)?;
@@ -370,6 +397,13 @@ impl ConfigManager {
     pub async fn set_rule_enabled(&self, name: &str, enabled: bool) -> Result<()> {
         let storage = self.rules_storage.write().await;
         storage.set_enabled(name, enabled)?;
+        let _ = self.change_notifier.send(ConfigChangeEvent::RulesChanged);
+        Ok(())
+    }
+
+    pub async fn reorder_rules(&self, order: &[String]) -> Result<()> {
+        let storage = self.rules_storage.write().await;
+        storage.reorder(order)?;
         let _ = self.change_notifier.send(ConfigChangeEvent::RulesChanged);
         Ok(())
     }
@@ -557,6 +591,7 @@ impl ConfigManager {
                 bypass: legacy.system_proxy.bypass.clone(),
                 auto_enable: false,
             },
+            sync: SyncConfig::default(),
             traffic: TrafficConfig {
                 max_records: legacy
                     .traffic

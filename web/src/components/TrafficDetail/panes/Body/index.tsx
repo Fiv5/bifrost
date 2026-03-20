@@ -9,6 +9,7 @@ import { DisplayFormat as DF } from '../../../../types';
 import { HighLightBody } from './HighLightBody';
 import { HexView } from './HexView';
 import { TreeView } from './TreeView';
+import { shouldDisableJsonStructuredView } from '../../helper/contentType';
 
 const { Text } = Typography;
 
@@ -51,6 +52,7 @@ export const Body = ({
   const { token } = theme.useToken();
   const normalizedRawContentType = rawContentType?.toLowerCase() ?? '';
   const isImageMedia = contentType === 'Media' && normalizedRawContentType.includes('image/');
+  const disableJsonStructuredView = shouldDisableJsonStructuredView(contentType, data);
 
   if (displayFormat === DF.Media) {
     if (contentType === 'Media') {
@@ -100,7 +102,7 @@ export const Body = ({
     return <HexView data={data} searchValue={searchValue} onSearch={onSearch} />;
   }
 
-  if (displayFormat === DF.Tree) {
+  if (displayFormat === DF.Tree && !disableJsonStructuredView) {
     return <TreeView data={data} searchValue={searchValue} onSearch={onSearch} />;
   }
 

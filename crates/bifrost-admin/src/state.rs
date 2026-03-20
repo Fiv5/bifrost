@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use bifrost_core::{ClientAccessControl, SystemProxyManager};
 use bifrost_storage::{ConfigManager, RulesStorage, SharedConfigManager, ValuesStorage};
+use bifrost_sync::SharedSyncManager;
 use parking_lot::RwLock as ParkingRwLock;
 use tokio::sync::RwLock;
 
@@ -101,6 +102,7 @@ pub struct AdminState {
     pub replay_executor: OnceCell<SharedReplayExecutor>,
     pub total_size_cleanup_counter: AtomicUsize,
     pub port_rebind_manager: Option<SharedPortRebindManager>,
+    pub sync_manager: Option<SharedSyncManager>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -137,6 +139,7 @@ impl AdminState {
             replay_executor: OnceCell::new(),
             total_size_cleanup_counter: AtomicUsize::new(0),
             port_rebind_manager: None,
+            sync_manager: None,
         }
     }
 
@@ -616,6 +619,11 @@ impl AdminState {
 
     pub fn with_port_rebind_manager_shared(mut self, manager: SharedPortRebindManager) -> Self {
         self.port_rebind_manager = Some(manager);
+        self
+    }
+
+    pub fn with_sync_manager_shared(mut self, manager: SharedSyncManager) -> Self {
+        self.sync_manager = Some(manager);
         self
     }
 

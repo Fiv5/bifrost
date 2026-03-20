@@ -25,6 +25,10 @@ const globalState: GlobalDataSyncState = {
   forceRefresh: false,
 };
 
+function shouldAutoOpenVersionModal(): boolean {
+  return !navigator.webdriver;
+}
+
 export function useGlobalDataSync() {
   const initRef = useRef(false);
 
@@ -131,7 +135,7 @@ export function useGlobalDataSync() {
       syncDynamicData();
 
       const currentVersionStore = useVersionStore.getState();
-      if (currentVersionStore.hasUpdate) {
+      if (shouldAutoOpenVersionModal() && currentVersionStore.hasUpdate) {
         currentVersionStore.setModalVisible(true);
       }
     };
