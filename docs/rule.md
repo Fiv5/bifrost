@@ -57,6 +57,14 @@ example.com 127.0.0.1:3000/api
 example.com host://127.0.0.1:3000/api
 ```
 
+当右侧已经出现 pattern，且目标值为不带协议的 `domain[/path]`、`domain:port[/path]`、`localhost[/path]`、IP/IPv6 带路径形式时，也会自动识别为 `host://`，下游协议按实际发起请求自动补偿：
+
+```txt
+gamingpop-boe.byteintl.net/manager gamingpop-boe.byteintl.net/manager
+# 等价于
+gamingpop-boe.byteintl.net/manager host://gamingpop-boe.byteintl.net/manager
+```
+
 ### 4. 多行配置
 
 **反斜杠续行**：行末 `\` 将下一行合并
