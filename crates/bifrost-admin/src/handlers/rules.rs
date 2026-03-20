@@ -290,17 +290,17 @@ async fn create_rule(
         return error_response(StatusCode::CONFLICT, "Rule with this name already exists");
     }
 
-    let next_sort_order = state
+    let highest_priority_sort_order = state
         .rules_storage
         .list_summaries()
         .ok()
-        .and_then(|rules| rules.into_iter().map(|rule| rule.sort_order).max())
-        .map(|value| value + 1)
+        .and_then(|rules| rules.into_iter().map(|rule| rule.sort_order).min())
+        .map(|value| value - 1)
         .unwrap_or(0);
 
     let rule = RuleFile::new(&request.name, &request.content)
         .with_enabled(request.enabled.unwrap_or(true))
-        .with_sort_order(next_sort_order);
+        .with_sort_order(highest_priority_sort_order);
 
     match state.rules_storage.save(&rule) {
         Ok(_) => {

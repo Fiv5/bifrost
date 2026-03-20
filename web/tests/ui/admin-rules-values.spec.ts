@@ -157,7 +157,12 @@ test("Rules 页面支持持久化排序，且解析顺序符合列表顺序", as
     });
 
     const ruleItem = page.getByTestId("rule-item").filter({ hasText: ruleName }).first();
+    const latestRuleItem = page
+      .getByTestId("rule-item")
+      .filter({ hasText: latestRuleName })
+      .first();
     await expect(ruleItem).toBeVisible();
+    await expect(latestRuleItem).toBeVisible();
 
     const updateRuleRes = await request.put(`${apiBase}/rules/${encodeURIComponent(ruleName)}`, {
       data: { content: "127.0.0.1 reqHeaders://X-UI-Rule=alpha" },
@@ -169,32 +174,34 @@ test("Rules 页面支持持久化排序，且解析顺序符合列表顺序", as
 
     await expect(page.getByTestId("rule-item").nth(0)).toHaveAttribute(
       "data-rule-name",
-      ruleName,
+      latestRuleName,
     );
     await expect(page.getByTestId("rule-item").nth(1)).toHaveAttribute(
       "data-rule-name",
-      latestRuleName,
+      ruleName,
     );
 
     await sendProxyRequest(`http://127.0.0.1:${server.port}/rules-check`);
     await expect.poll(() => server.requests.length).toBeGreaterThan(0);
-    expect(server.requests.at(-1)?.headers["x-ui-rule"]).toBe("alpha");
+    expect(server.requests.at(-1)?.headers["x-ui-rule"]).toBe("beta");
 
-    await ruleItem.getByTestId("rule-move-down").click();
+    await ruleItem.dragTo(latestRuleItem, {
+      targetPosition: { x: 20, y: 4 },
+    });
 
     await expect(page.getByTestId("rule-item").nth(0)).toHaveAttribute(
       "data-rule-name",
-      latestRuleName,
+      ruleName,
     );
     await expect(page.getByTestId("rule-item").nth(1)).toHaveAttribute(
       "data-rule-name",
-      ruleName,
+      latestRuleName,
     );
 
     const requestsAfterReorder = server.requests.length;
     await sendProxyRequest(`http://127.0.0.1:${server.port}/rules-reordered`);
     await expect.poll(() => server.requests.length).toBeGreaterThan(requestsAfterReorder);
-    expect(server.requests.at(-1)?.headers["x-ui-rule"]).toBe("beta");
+    expect(server.requests.at(-1)?.headers["x-ui-rule"]).toBe("alpha");
 
     await openPage(page, "traffic");
     const row = await waitForTrafficRow(page, "/rules-reordered");
@@ -216,7 +223,7 @@ test("Rules 页面支持持久化排序，且解析顺序符合列表顺序", as
     await page.locator(".ant-select-dropdown").getByText("Manual", { exact: true }).click();
     await expect(page.getByTestId("rule-item").first()).toHaveAttribute(
       "data-rule-name",
-      latestRuleName,
+      ruleName,
     );
 
     const requestsAfterManualRestore = server.requests.length;
