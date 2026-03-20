@@ -3347,6 +3347,14 @@ pub fn should_intercept_tls_for_client(
         && requires_client_app_for_tls_decision(tls_intercept_config)
         && !matches!(client_app, Some(app) if !app.is_empty())
     {
+        if is_domain_included(host, &tls_intercept_config.intercept_include) {
+            return true;
+        }
+
+        if is_domain_excluded(host, &tls_intercept_config.intercept_exclude) {
+            return false;
+        }
+
         return false;
     }
 
@@ -4065,8 +4073,7 @@ mod tests {
 
     #[test]
     fn test_should_not_intercept_when_app_policy_configured_but_client_app_unknown() {
-        let mut tls_intercept_config =
-            make_tls_intercept_config(true, vec![], vec!["example.com".to_string()]);
+        let mut tls_intercept_config = make_tls_intercept_config(true, vec![], vec![]);
         tls_intercept_config.app_intercept_exclude = vec!["Postman".to_string()];
         let tls_config = make_tls_config_with_ca();
         let resolved_rules = ResolvedRules::default();
@@ -4081,6 +4088,27 @@ mod tests {
         assert!(
             !result,
             "Should default to passthrough when app policy is configured but client app is unknown"
+        );
+    }
+
+    #[test]
+    fn test_should_intercept_domain_include_even_when_client_app_unknown() {
+        let mut tls_intercept_config =
+            make_tls_intercept_config(false, vec![], vec!["example.com".to_string()]);
+        tls_intercept_config.app_intercept_exclude = vec!["Postman".to_string()];
+        let tls_config = make_tls_config_with_ca();
+        let resolved_rules = ResolvedRules::default();
+
+        let result = should_intercept_tls(
+            "example.com",
+            None,
+            &tls_intercept_config,
+            &tls_config,
+            &resolved_rules,
+        );
+        assert!(
+            result,
+            "Explicit domain include should still force interception when client app is unknown"
         );
     }
 

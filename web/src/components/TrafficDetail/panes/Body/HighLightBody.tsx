@@ -15,6 +15,7 @@ import { useMarkSearch } from '../../hooks/useMarkSearch';
 import {
   getHighlightLanguage,
   DEFAULT_SHOW_MAX_SIZE,
+  shouldDisableJsonStructuredView,
 } from '../../helper/contentType';
 
 hljs.registerLanguage('json', json);
@@ -62,15 +63,18 @@ export const HighLightBody = ({
   const codeRef = useRef<HTMLElement>(null);
 
   const isJsonType = contentType === 'JSON';
+  const disableJsonStructuredView = useMemo(() => {
+    return shouldDisableJsonStructuredView(contentType, data);
+  }, [contentType, data]);
 
   const processedData = useMemo(() => {
     if (!data) return '';
-    if (isJsonType && isFormatted) {
+    if (isJsonType && isFormatted && !disableJsonStructuredView) {
       const { formatted, isJson } = formatJsonContent(data);
       return isJson ? formatted : data;
     }
     return data;
-  }, [data, isJsonType, isFormatted]);
+  }, [data, disableJsonStructuredView, isJsonType, isFormatted]);
 
   const truncated = useMemo(() => {
     if (!processedData) return '';
@@ -83,8 +87,10 @@ export const HighLightBody = ({
   const highlighted = useMemo(() => {
     if (!truncated) return '';
     try {
-      const lang = getHighlightLanguage(contentType);
-      if (lang === 'plaintext' || truncated.length > 200 * 1024) {
+      const lang = disableJsonStructuredView
+        ? 'plaintext'
+        : getHighlightLanguage(contentType);
+      if (lang === 'plaintext') {
         return truncated;
       }
       const result = hljs.highlight(truncated, { language: lang });
@@ -92,7 +98,7 @@ export const HighLightBody = ({
     } catch {
       return truncated;
     }
-  }, [truncated, contentType]);
+  }, [truncated, contentType, disableJsonStructuredView]);
 
   const shouldShowMore = !showAll && (processedData?.length ?? 0) > DEFAULT_SHOW_MAX_SIZE;
 
@@ -144,7 +150,7 @@ export const HighLightBody = ({
           gap: 4,
         }}
       >
-        {isJsonType && (
+        {isJsonType && !disableJsonStructuredView && (
           <Tooltip title={isFormatted ? 'Raw' : 'Format'}>
             <Button
               type="text"

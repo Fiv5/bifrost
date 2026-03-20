@@ -15,6 +15,9 @@ import type { SSEEvent } from '../../../../types';
 hljs.registerLanguage('json', json);
 
 const { Text } = Typography;
+const MAX_SSE_EVENT_JSON_PRETTY_LENGTH = 8 * 1024;
+const MAX_SSE_EVENT_HIGHLIGHT_LENGTH = 16 * 1024;
+const MAX_SSE_EVENT_EXPANDABLE_LINES = 8;
 
 const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
   try {
@@ -101,9 +104,15 @@ export const SseEventCard = ({
     };
   }, [event]);
 
+  const canUseStructuredJson = eventData.data.length <= MAX_SSE_EVENT_JSON_PRETTY_LENGTH;
+  const canHighlightJson = eventData.data.length <= MAX_SSE_EVENT_HIGHLIGHT_LENGTH;
+
   const { parsed, isJson } = useMemo(() => {
+    if (!canUseStructuredJson) {
+      return { parsed: null, isJson: false };
+    }
     return parseJson(eventData.data);
-  }, [eventData.data]);
+  }, [canUseStructuredJson, eventData.data]);
 
   const formattedContent = useMemo(() => {
     if (isJson && parsed !== null) {
@@ -113,9 +122,9 @@ export const SseEventCard = ({
   }, [isJson, parsed, eventData.data]);
 
   const highlightedContent = useMemo(() => {
-    if (!isJson) return null;
+    if (!isJson || !canHighlightJson) return null;
     return highlightJson(formattedContent);
-  }, [isJson, formattedContent]);
+  }, [canHighlightJson, formattedContent, isJson]);
 
   const handleCopy = async () => {
     const success = await copyToClipboard(formattedContent);
@@ -125,9 +134,19 @@ export const SseEventCard = ({
     }
   };
 
-  const shouldTruncate = !expanded && formattedContent.split('\n').length > 8;
+  const lineCount = useMemo(() => {
+    let count = 1;
+    for (let i = 0; i < formattedContent.length; i += 1) {
+      if (formattedContent.charCodeAt(i) === 10) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [formattedContent]);
+
+  const shouldTruncate = !expanded && lineCount > MAX_SSE_EVENT_EXPANDABLE_LINES;
   const displayContent = shouldTruncate
-    ? formattedContent.split('\n').slice(0, 8).join('\n') + '\n...'
+    ? formattedContent.split('\n').slice(0, MAX_SSE_EVENT_EXPANDABLE_LINES).join('\n') + '\n...'
     : formattedContent;
 
   const eventName = eventData.event || 'message';
@@ -201,7 +220,7 @@ export const SseEventCard = ({
               style={{ width: 24, height: 24 }}
             />
           </Tooltip>
-          {formattedContent.split('\n').length > 8 && (
+          {lineCount > MAX_SSE_EVENT_EXPANDABLE_LINES && (
             <Tooltip title={expanded ? 'Collapse' : 'Expand'}>
               <Button
                 type="text"

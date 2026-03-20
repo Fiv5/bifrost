@@ -16,6 +16,7 @@ import { SseEventCard } from './SseEventCard';
 
 const { Text } = Typography;
 const { Search } = Input;
+const MAX_SSE_SEARCHABLE_TEXT_LENGTH = 4 * 1024;
 
 interface SseMessageListProps {
   events: SSEEvent[];
@@ -89,25 +90,34 @@ export const SseMessageList = ({
     }),
     [token],
   );
+
+  const getSearchableText = useCallback((event: SSEEvent) => {
+    const data = event.data || '';
+    const limitedData = data.length > MAX_SSE_SEARCHABLE_TEXT_LENGTH
+      ? data.slice(0, MAX_SSE_SEARCHABLE_TEXT_LENGTH)
+      : data;
+    return `${event.event || 'message'} ${event.id || ''} ${limitedData}`.toLowerCase();
+  }, []);
+
   const displayEvents = useMemo(() => {
     if (searchMode !== 'filter' || !normalizedQuery) return events;
     return events.filter((event) => {
-      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      const text = getSearchableText(event);
       return text.includes(normalizedQuery);
     });
-  }, [events, normalizedQuery, searchMode]);
+  }, [events, getSearchableText, normalizedQuery, searchMode]);
 
   const matchedIndices = useMemo(() => {
     if (!normalizedQuery) return [];
     const indices: number[] = [];
     displayEvents.forEach((event, index) => {
-      const text = `${event.event || 'message'} ${event.id || ''} ${event.data || ''}`.toLowerCase();
+      const text = getSearchableText(event);
       if (text.includes(normalizedQuery)) {
         indices.push(index);
       }
     });
     return indices;
-  }, [displayEvents, normalizedQuery]);
+  }, [displayEvents, getSearchableText, normalizedQuery]);
 
   const getEventKey = useCallback((event: SSEEvent, index: number) => {
     if (event.id) return String(event.id);

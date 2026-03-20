@@ -193,7 +193,6 @@ impl SyncManager {
             state.token = Some(token);
             self.persist_state(&state)?;
         }
-        self.login_prompt.lock().last_opened_at = None;
         self.wake.notify_one();
         Ok(())
     }
@@ -234,6 +233,7 @@ impl SyncManager {
             state.user = None;
             self.persist_state(&state)?;
         }
+        self.login_prompt.lock().last_opened_at = None;
         {
             let mut runtime = self.runtime.write().await;
             runtime.authorized = false;
