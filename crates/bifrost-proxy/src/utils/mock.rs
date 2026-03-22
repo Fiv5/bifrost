@@ -11,6 +11,7 @@ use crate::ensure_crypto_provider;
 use crate::server::{full_body, BoxBody, ResolvedRules};
 use crate::utils::logging::RequestContext;
 use crate::utils::url::build_redirect_uri;
+use bifrost_core::TemplateEngine;
 
 type HttpClient =
     Client<hyper_util::client::legacy::connect::HttpConnector, http_body_util::Empty<Bytes>>;
@@ -59,7 +60,12 @@ pub async fn generate_mock_response(
     }
 
     if let Some(status) = rules.status_code {
-        if rules.host.is_none() {
+        if rules.host.is_none()
+            && rules.mock_file.is_none()
+            && rules.mock_rawfile.is_none()
+            && rules.mock_template.is_none()
+            && rules.location_href.is_none()
+        {
             if verbose_logging {
                 debug!("[{}] [MOCK] status code: {}", ctx.id_str(), status);
             }
@@ -81,8 +87,17 @@ pub async fn generate_mock_response(
         if verbose_logging {
             debug!("[{}] [LOCATION_HREF] -> {}", ctx.id_str(), location);
         }
-        let status = rules.redirect_status.unwrap_or(302);
-        return Some(build_redirect_response(status, location));
+        let body = format!(
+            r#"<!doctype html><html><head><meta charset="utf-8"></head><body><script>location.href = "{}";</script></body></html>"#,
+            location
+        );
+        return Some(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .body(full_body(body))
+                .unwrap(),
+        );
     }
 
     if let Some(file_path) = &rules.mock_file {
@@ -116,6 +131,13 @@ pub async fn generate_mock_response(
     }
 
     if let Some(file_path) = &rules.mock_rawfile {
+        if file_path.starts_with('(') && file_path.ends_with(')') {
+            return Some(build_inline_rawfile_response(
+                &file_path[1..file_path.len() - 1],
+                verbose_logging,
+                ctx,
+            ));
+        }
         return load_rawfile_response(file_path, verbose_logging, ctx).await;
     }
 
@@ -123,6 +145,7 @@ pub async fn generate_mock_response(
         return Some(build_template_response(
             template,
             rules,
+            request_uri,
             verbose_logging,
             ctx,
         ));
@@ -385,10 +408,76 @@ async fn load_rawfile_response(
 fn build_template_response(
     template: &str,
     rules: &ResolvedRules,
+    request_uri: &hyper::Uri,
     verbose_logging: bool,
     ctx: &RequestContext,
 ) -> Response<BoxBody> {
-    let rendered = template.to_string();
+    let host_string = request_uri
+        .host()
+        .map(str::to_string)
+        .or_else(|| {
+            url::Url::parse(&ctx.url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_string))
+        })
+        .unwrap_or_default();
+    let host = if ctx.host.is_empty() {
+        host_string.as_str()
+    } else {
+        ctx.host.as_str()
+    };
+    let path = if ctx.pathname.is_empty() {
+        request_uri.path()
+    } else {
+        ctx.pathname.as_str()
+    };
+    let url_string = if ctx.url.is_empty() {
+        if let Some(authority) = request_uri.authority() {
+            format!(
+                "http://{}{}",
+                authority,
+                request_uri
+                    .path_and_query()
+                    .map(|path| path.as_str())
+                    .unwrap_or("/")
+            )
+        } else {
+            request_uri.to_string()
+        }
+    } else {
+        ctx.url.clone()
+    };
+
+    let template = if template.starts_with('(') && template.ends_with(')') {
+        &template[1..template.len() - 1]
+    } else {
+        template
+    };
+    let rendered = TemplateEngine::expand_with_context(
+        template,
+        &bifrost_core::RequestContext::builder()
+            .url(&url_string)
+            .host(host)
+            .hostname(host)
+            .path(path)
+            .pathname(path)
+            .method(&ctx.method)
+            .client_ip(&ctx.client_ip)
+            .build(),
+        None,
+        &rules.values,
+    )
+    .replace("{{host}}", host)
+    .replace("{{url}}", &url_string)
+    .replace("{{path}}", path)
+    .replace("{{method}}", &ctx.method)
+    .replace(
+        "{{now}}",
+        &std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis().to_string())
+            .unwrap_or_default(),
+    );
 
     if verbose_logging {
         debug!(
@@ -412,6 +501,47 @@ fn build_template_response(
     }
 
     builder.body(full_body(rendered)).unwrap()
+}
+
+fn build_inline_rawfile_response(
+    raw: &str,
+    verbose_logging: bool,
+    ctx: &RequestContext,
+) -> Response<BoxBody> {
+    let decoded = raw.replace("\\r\\n", "\r\n");
+    if verbose_logging {
+        debug!(
+            "[{}] [RAWFILE] inline response ({} bytes)",
+            ctx.id_str(),
+            decoded.len()
+        );
+    }
+
+    if !decoded.starts_with("HTTP/") && !decoded.contains("\r\n\r\n") {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(full_body(decoded))
+            .unwrap();
+    }
+
+    let (head, body) = decoded.split_once("\r\n\r\n").unwrap_or((&decoded, ""));
+    let mut lines = head.lines();
+    let status_line = lines.next().unwrap_or("HTTP/1.1 200 OK");
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .and_then(|value| StatusCode::from_u16(value).ok())
+        .unwrap_or(StatusCode::OK);
+
+    let mut builder = Response::builder().status(status);
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            builder = builder.header(name.trim(), value.trim());
+        }
+    }
+
+    builder.body(full_body(body.to_string())).unwrap()
 }
 
 fn build_error_response(status: u16, message: &str) -> Response<BoxBody> {

@@ -66,6 +66,7 @@ impl From<Result<(), String>> for TestResult {
     fn from(result: Result<(), String>) -> Self {
         match result {
             Ok(()) => TestResult::passed(),
+            Err(e) if e.starts_with("SKIPPED:") => TestResult::skipped(&e),
             Err(e) => TestResult::failed(&e),
         }
     }
@@ -224,15 +225,16 @@ impl TestRunner {
 
                 let result = (test_fn)(client).await;
                 let duration = start.elapsed();
+                let status = match &result {
+                    Ok(()) => TestStatus::Passed,
+                    Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
+                    Err(_) => TestStatus::Failed,
+                };
 
                 TestResult {
                     name: test.name.clone(),
                     category: test.category.clone(),
-                    status: if result.is_ok() {
-                        TestStatus::Passed
-                    } else {
-                        TestStatus::Failed
-                    },
+                    status,
                     duration,
                     error: result.err(),
                 }
@@ -240,14 +242,15 @@ impl TestRunner {
             TestCaseType::Standalone { test_fn } => {
                 let result = (test_fn)().await;
                 let duration = start.elapsed();
+                let status = match &result {
+                    Ok(()) => TestStatus::Passed,
+                    Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
+                    Err(_) => TestStatus::Failed,
+                };
                 TestResult {
                     name: test.name.clone(),
                     category: test.category.clone(),
-                    status: if result.is_ok() {
-                        TestStatus::Passed
-                    } else {
-                        TestStatus::Failed
-                    },
+                    status,
                     duration,
                     error: result.err(),
                 }

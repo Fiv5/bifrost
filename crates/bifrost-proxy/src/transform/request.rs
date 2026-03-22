@@ -4,6 +4,7 @@ use hyper::http::request::Parts;
 use tracing::info;
 
 use crate::server::{CorsConfig, HeaderReplaceTarget, ResolvedRules};
+use crate::transform::response::expand_content_type_shortcut;
 use crate::utils::logging::RequestContext;
 
 pub fn apply_req_rules(
@@ -341,7 +342,8 @@ fn apply_req_type(
     ctx: &RequestContext,
 ) {
     if let Some(ref content_type) = rules.req_type {
-        if let Ok(value) = content_type.parse::<HeaderValue>() {
+        let expanded = expand_content_type_shortcut(content_type);
+        if let Ok(value) = expanded.parse::<HeaderValue>() {
             if verbose_logging {
                 let old_value = parts
                     .headers
@@ -353,7 +355,7 @@ fn apply_req_type(
                     "[{}] [REQ_TYPE] Content-Type : {} -> \"{}\"",
                     ctx.id_str(),
                     old_value,
-                    content_type
+                    expanded
                 );
             }
             parts.headers.insert(hyper::header::CONTENT_TYPE, value);

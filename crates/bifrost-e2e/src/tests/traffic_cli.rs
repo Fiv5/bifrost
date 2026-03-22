@@ -42,7 +42,8 @@ pub fn get_all_tests() -> Vec<TestCase> {
             }
 
             let seq = records[0]
-                .get("sequence")
+                .get("seq")
+                .or_else(|| records[0].get("sequence"))
                 .and_then(|v| v.as_u64())
                 .ok_or("Expected sequence in traffic record")?;
 

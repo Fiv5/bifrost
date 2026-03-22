@@ -9,6 +9,14 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_async, client_async};
 
+fn admin_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("Failed to create admin HTTP client: {}", e))
+}
+
 pub fn get_all_tests() -> Vec<TestCase> {
     vec![
         TestCase::standalone(
@@ -76,9 +84,14 @@ async fn start_ws_echo_server() -> Result<(u16, tokio::task::JoinHandle<()>), St
 
 async fn wait_for_websocket_record_id(admin_base: &str) -> Result<String, String> {
     const IS_WEBSOCKET_FLAG: u64 = 1 << 1;
+    let client = admin_http_client()?;
 
     for _ in 0..20 {
-        if let Ok(resp) = reqwest::get(format!("{}/traffic?limit=20", admin_base)).await {
+        if let Ok(resp) = client
+            .get(format!("{}/traffic?limit=20", admin_base))
+            .send()
+            .await
+        {
             if let Ok(json) = resp.json::<Value>().await {
                 if let Some(records) = json["records"].as_array() {
                     if let Some(record) = records.iter().find(|item| {
@@ -107,12 +120,15 @@ async fn wait_for_binary_frame(
     admin_base: &str,
     connection_id: &str,
 ) -> Result<(u64, Value), String> {
+    let client = admin_http_client()?;
     for _ in 0..20 {
-        if let Ok(resp) = reqwest::get(format!(
-            "{}/traffic/{}/frames?limit=20",
-            admin_base, connection_id
-        ))
-        .await
+        if let Ok(resp) = client
+            .get(format!(
+                "{}/traffic/{}/frames?limit=20",
+                admin_base, connection_id
+            ))
+            .send()
+            .await
         {
             if let Ok(json) = resp.json::<Value>().await {
                 if let Some(frames) = json["frames"].as_array() {
@@ -135,12 +151,15 @@ async fn wait_for_binary_frames(
     connection_id: &str,
     expected: usize,
 ) -> Result<Vec<Value>, String> {
+    let client = admin_http_client()?;
     for _ in 0..30 {
-        if let Ok(resp) = reqwest::get(format!(
-            "{}/traffic/{}/frames?limit=50",
-            admin_base, connection_id
-        ))
-        .await
+        if let Ok(resp) = client
+            .get(format!(
+                "{}/traffic/{}/frames?limit=50",
+                admin_base, connection_id
+            ))
+            .send()
+            .await
         {
             if let Ok(json) = resp.json::<Value>().await {
                 if let Some(frames) = json["frames"].as_array() {
@@ -241,7 +260,9 @@ async fn test_ws_payload_persistence_binary() -> Result<(), String> {
         "{}/traffic/{}/frames/{}",
         admin_base, connection_id, frame_id
     );
-    let detail: Value = reqwest::get(detail_url)
+    let detail: Value = admin_http_client()?
+        .get(detail_url)
+        .send()
         .await
         .map_err(|e| format!("Failed to get frame detail: {}", e))?
         .json()
@@ -394,7 +415,9 @@ async fn test_ws_payload_clear_closed_connection() -> Result<(), String> {
         "{}/traffic/{}/frames/{}",
         admin_base, connection_id, frame_id
     );
-    let detail: Value = reqwest::get(&detail_url)
+    let detail: Value = admin_http_client()?
+        .get(&detail_url)
+        .send()
         .await
         .map_err(|e| format!("Failed to get frame detail: {}", e))?
         .json()
@@ -407,7 +430,7 @@ async fn test_ws_payload_clear_closed_connection() -> Result<(), String> {
     let _ = ws_stream.close(None).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let client = reqwest::Client::new();
+    let client = admin_http_client()?;
     let clear_resp: Value = client
         .delete(format!("{}/traffic", admin_base))
         .json(&serde_json::json!({ "ids": [connection_id.clone()] }))
@@ -428,7 +451,9 @@ async fn test_ws_payload_clear_closed_connection() -> Result<(), String> {
         ));
     }
 
-    let detail_after: Value = reqwest::get(&detail_url)
+    let detail_after: Value = admin_http_client()?
+        .get(&detail_url)
+        .send()
         .await
         .map_err(|e| format!("Failed to get frame detail after clear: {}", e))?
         .json()
@@ -486,7 +511,9 @@ async fn test_ws_payload_clear_active_connection() -> Result<(), String> {
         "{}/traffic/{}/frames/{}",
         admin_base, connection_id, frame_id
     );
-    let detail: Value = reqwest::get(&detail_url)
+    let detail: Value = admin_http_client()?
+        .get(&detail_url)
+        .send()
         .await
         .map_err(|e| format!("Failed to get frame detail: {}", e))?
         .json()
@@ -496,7 +523,7 @@ async fn test_ws_payload_clear_active_connection() -> Result<(), String> {
         return Err("Expected full_payload before clear".to_string());
     }
 
-    let client = reqwest::Client::new();
+    let client = admin_http_client()?;
     let clear_resp: Value = client
         .delete(format!("{}/traffic", admin_base))
         .json(&serde_json::json!({ "ids": [connection_id.clone()] }))
@@ -517,7 +544,9 @@ async fn test_ws_payload_clear_active_connection() -> Result<(), String> {
         ));
     }
 
-    let detail_after: Value = reqwest::get(&detail_url)
+    let detail_after: Value = admin_http_client()?
+        .get(&detail_url)
+        .send()
         .await
         .map_err(|e| format!("Failed to get frame detail after clear: {}", e))?
         .json()

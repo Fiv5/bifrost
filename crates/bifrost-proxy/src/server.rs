@@ -36,8 +36,9 @@ use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::{
-    resolve_client_process_async, resolve_client_process_async_with_retry,
-    spawn_async_process_resolver, ClientProcess,
+    resolve_client_process_async_for_connection,
+    resolve_client_process_async_for_connection_with_retry, spawn_async_process_resolver,
+    ClientProcess,
 };
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
 
@@ -377,6 +378,7 @@ pub struct ResolvedRules {
 
     pub url_params: Vec<(String, String)>,
     pub url_replace: Vec<(String, String)>,
+    pub url_replace_regex: Vec<RegexReplace>,
 
     pub req_type: Option<String>,
     pub req_charset: Option<String>,
@@ -421,6 +423,7 @@ pub struct ResolvedRules {
     pub auth: Option<String>,
     pub delete_req_headers: Vec<String>,
     pub delete_res_headers: Vec<String>,
+    pub delete_url_params: Vec<String>,
     pub header_replace: Vec<HeaderReplaceRule>,
 
     pub values: std::collections::HashMap<String, String>,
@@ -882,6 +885,17 @@ async fn handle_http_connection(
     access_control: Arc<tokio::sync::RwLock<ClientAccessControl>>,
     initial_generation: u64,
 ) {
+    let local_addr = match stream.local_addr() {
+        Ok(addr) => addr,
+        Err(err) => {
+            warn!(
+                peer_addr = %peer_addr,
+                error = %err,
+                "Failed to get local socket address for client process resolution"
+            );
+            peer_addr
+        }
+    };
     let io = TokioIo::new(stream);
     let client_process_cache = Arc::new(Mutex::new(None::<ClientProcess>));
     let client_process_resolution_started = Arc::new(AtomicBool::new(false));
@@ -910,6 +924,7 @@ async fn handle_http_connection(
             handle_request(
                 req,
                 peer_addr,
+                local_addr,
                 rules,
                 tls_config,
                 proxy_config,
@@ -941,6 +956,7 @@ async fn handle_http_connection(
 async fn handle_request(
     req: Request<Incoming>,
     peer_addr: SocketAddr,
+    local_addr: SocketAddr,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     proxy_config: ProxyConfig,
@@ -993,12 +1009,14 @@ async fn handle_request(
     let client_process = if let Some(client_process) = cached_client_process {
         Some(client_process)
     } else if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
-        let client_process =
-            if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
-                resolve_client_process_async_with_retry(&peer_addr, 10, 20).await
-            } else {
-                resolve_client_process_async(&peer_addr).await
-            };
+        let client_process = if is_local_client
+            && requires_client_app_for_tls_decision(tls_intercept_config)
+        {
+            resolve_client_process_async_for_connection_with_retry(&peer_addr, &local_addr, 10, 20)
+                .await
+        } else {
+            resolve_client_process_async_for_connection(&peer_addr, &local_addr).await
+        };
         if let Some(ref client_process) = client_process {
             if let Ok(mut cache) = client_process_cache.lock() {
                 *cache = Some(client_process.clone());
@@ -1013,6 +1031,7 @@ async fn handle_request(
                 let client_process_cache = Arc::clone(&client_process_cache);
                 spawn_async_process_resolver(
                     peer_addr,
+                    local_addr,
                     record_id.to_string(),
                     move |id, process| {
                         if let Ok(mut cache) = client_process_cache.lock() {
@@ -1025,7 +1044,8 @@ async fn handle_request(
         }
         None
     } else {
-        let client_process = resolve_client_process_async(&peer_addr).await;
+        let client_process =
+            resolve_client_process_async_for_connection(&peer_addr, &local_addr).await;
         if let Some(ref client_process) = client_process {
             if let Ok(mut cache) = client_process_cache.lock() {
                 *cache = Some(client_process.clone());
@@ -1088,9 +1108,25 @@ async fn handle_request(
 
     if path.starts_with(ADMIN_PATH_PREFIX) {
         if let Some(state) = admin_state {
-            if path.starts_with(CERT_PUBLIC_PATH_PREFIX) && is_cert_public_request(&req) {
+            if is_loopback && !req.uri().path().is_empty() {
+                debug!(
+                    "Loopback admin request from {}: {} {}",
+                    peer_addr, method, path
+                );
+                return Ok(convert_admin_response(
+                    AdminRouter::handle(req, state, push_manager).await,
+                ));
+            } else if path.starts_with(CERT_PUBLIC_PATH_PREFIX) && is_cert_public_request(&req) {
                 debug!(
                     "Public cert request from {}: {} {}",
+                    peer_addr, method, path
+                );
+                return Ok(convert_admin_response(
+                    AdminRouter::handle(req, state, push_manager).await,
+                ));
+            } else if path.starts_with(&format!("{ADMIN_PATH_PREFIX}/public/")) && is_loopback {
+                debug!(
+                    "Public admin request from {}: {} {}",
                     peer_addr, method, path
                 );
                 return Ok(convert_admin_response(

@@ -1221,7 +1221,36 @@ fn split_rule_parts(line: &str) -> Vec<String> {
         parts.push(current);
     }
 
-    parts
+    let mut merged = Vec::new();
+    for part in parts {
+        let should_merge = merged.last().is_some_and(|previous: &String| {
+            previous.contains("://") && !looks_like_rule_part(&part)
+        });
+
+        if should_merge {
+            if let Some(previous) = merged.last_mut() {
+                previous.push(' ');
+                previous.push_str(&part);
+            }
+        } else {
+            merged.push(part);
+        }
+    }
+
+    merged
+}
+
+fn looks_like_rule_part(part: &str) -> bool {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.starts_with('/') {
+        return true;
+    }
+
+    trimmed.contains("://")
 }
 
 fn is_target_address(value: &str) -> bool {

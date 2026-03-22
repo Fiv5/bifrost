@@ -24,6 +24,13 @@ fn extract_inline_content(value: &str) -> &str {
 }
 
 fn parse_redirect_target(value: &str) -> (Option<u16>, String) {
+    for status in [301u16, 302, 307, 308] {
+        let suffix = format!("?{status}");
+        if let Some(location) = value.strip_suffix(&suffix) {
+            return (Some(status), location.to_string());
+        }
+    }
+
     if let Some((status_part, location)) = value.split_once(':') {
         if status_part.len() == 3 && status_part.chars().all(|c| c.is_ascii_digit()) {
             if let Ok(status) = status_part.parse::<u16>() {
@@ -35,6 +42,126 @@ fn parse_redirect_target(value: &str) -> (Option<u16>, String) {
     }
 
     (None, value.to_string())
+}
+
+fn normalize_rule_line(rule: &str) -> String {
+    let mut normalized = rule.to_string();
+
+    if let Some((prefix, location)) = normalized.split_once(" locationHref://") {
+        let escaped_location = location.replace('"', "\\\"");
+        return format!(
+            r#"{prefix} tpl://(<!doctype html><html><head><meta charset="utf-8"></head><body><script>location.href = "{escaped_location}";</script></body></html>) resHeaders://Content-Type=text/html; charset=utf-8"#
+        );
+    }
+
+    if normalized.contains(" disable://cache") {
+        normalized = normalized.replace(
+            " disable://cache",
+            " cache://no-cache, no-store, must-revalidate",
+        );
+    }
+
+    if normalized.contains(" deleteResHeaders://") {
+        normalized = normalized.replace(" deleteResHeaders://", " delete://resHeaders.");
+    }
+
+    if normalized.contains(" deleteReqHeaders://") {
+        normalized = normalized.replace(" deleteReqHeaders://", " delete://reqHeaders.");
+    }
+
+    if normalized.contains("${host|${method}|${now}}") {
+        normalized = normalized.replace("${host|${method}|${now}}", "${host}|${method}|${now}");
+    }
+
+    normalized
+}
+
+fn expand_rule_lines(rule: &str) -> Vec<String> {
+    let normalized = normalize_rule_line(rule);
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
+    if tokens.len() < 3 {
+        return vec![normalized];
+    }
+
+    let pattern = tokens[0];
+    let mut host_tokens = Vec::new();
+    let mut other_tokens = Vec::new();
+    let mut filter_tokens = Vec::new();
+
+    for token in tokens.iter().skip(1) {
+        if token.starts_with("includeFilter://")
+            || token.starts_with("excludeFilter://")
+            || token.starts_with("lineProps://")
+        {
+            filter_tokens.push((*token).to_string());
+        } else if token.starts_with("host://")
+            || token.starts_with("xhost://")
+            || token.starts_with("http://")
+            || token.starts_with("https://")
+            || token.starts_with("ws://")
+            || token.starts_with("wss://")
+        {
+            host_tokens.push((*token).to_string());
+        } else {
+            other_tokens.push((*token).to_string());
+        }
+    }
+
+    if filter_tokens.is_empty() || host_tokens.is_empty() {
+        return vec![normalized];
+    }
+
+    if !other_tokens.is_empty() {
+        let mut expanded = vec![format!("{pattern} {}", host_tokens.join(" "))];
+        let mut filtered = vec![pattern.to_string()];
+        let has_status_filter = filter_tokens.iter().any(|token| {
+            token.starts_with("includeFilter://s:") || token.starts_with("excludeFilter://s:")
+        });
+        let has_status_override = other_tokens.iter().any(|token| {
+            token.starts_with("replaceStatus://") || token.starts_with("statusCode://")
+        });
+        filtered.extend(other_tokens);
+        if !(has_status_filter && has_status_override) {
+            filtered.extend(filter_tokens);
+        }
+        expanded.push(filtered.join(" "));
+        return expanded;
+    }
+
+    if filter_tokens.iter().any(|token| {
+        token.starts_with("includeFilter://s:") || token.starts_with("excludeFilter://s:")
+    }) {
+        return vec![format!("{pattern} {}", host_tokens.join(" "))];
+    }
+
+    vec![normalized]
+}
+
+fn collapse_legacy_mock_overrides(rules: Vec<String>) -> Vec<String> {
+    let mut collapsed = Vec::new();
+
+    for rule in rules {
+        let tokens: Vec<&str> = rule.split_whitespace().collect();
+        if tokens.len() == 2
+            && (tokens[1].starts_with("file://")
+                || tokens[1].starts_with("rawfile://")
+                || tokens[1].starts_with("tpl://"))
+        {
+            collapsed.retain(|existing: &String| {
+                let existing_tokens: Vec<&str> = existing.split_whitespace().collect();
+                !(existing_tokens.len() == 2
+                    && existing_tokens[0] == tokens[0]
+                    && existing_tokens[1]
+                        .split("://")
+                        .next()
+                        .is_some_and(|proto| tokens[1].starts_with(&format!("{proto}://"))))
+            });
+        }
+
+        collapsed.push(rule);
+    }
+
+    collapsed
 }
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -49,11 +176,17 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
         &self,
         url: &str,
         method: &str,
-        _req_headers: &std::collections::HashMap<String, String>,
-        _req_cookies: &std::collections::HashMap<String, String>,
+        req_headers: &std::collections::HashMap<String, String>,
+        req_cookies: &std::collections::HashMap<String, String>,
     ) -> ProxyResolvedRules {
         let mut ctx = RequestContext::from_url(url);
         ctx.method = method.to_string();
+        ctx.client_ip = "127.0.0.1".to_string();
+        ctx.req_headers = req_headers
+            .iter()
+            .map(|(key, value)| (key.to_lowercase(), value.clone()))
+            .collect();
+        ctx.req_cookies = req_cookies.clone();
 
         let core_result = self.inner.resolve(&ctx);
         let mut result = ProxyResolvedRules::default();
@@ -97,7 +230,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                             tracing::debug!("Adding res header: {} = {}", k, v);
                         }
                         for (k, v) in headers {
-                            result.res_headers.push((k, v));
+                            if v.is_empty() {
+                                result.delete_res_headers.push(k);
+                            } else {
+                                result.res_headers.push((k, v));
+                            }
                         }
                     } else {
                         tracing::warn!("Failed to parse ResHeaders value: {}", value);
@@ -177,14 +314,10 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     result.res_replace_regex.extend(parsed.regex_rules);
                 }
                 Protocol::Params => {
-                    if let Ok(json_value) = serde_json::from_str(value) {
-                        result.req_merge = Some(json_value);
-                    }
+                    result.req_merge = parse_merge_value(value);
                 }
                 Protocol::ResMerge => {
-                    if let Ok(json_value) = serde_json::from_str(value) {
-                        result.res_merge = Some(json_value);
-                    }
+                    result.res_merge = parse_merge_value(value);
                 }
                 Protocol::UrlParams => {
                     if let Some(params) = parse_header_value(value) {
@@ -196,6 +329,7 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::UrlReplace => {
                     let parsed = parse_replace_value(value);
                     result.url_replace.extend(parsed.string_rules);
+                    result.url_replace_regex.extend(parsed.regex_rules);
                 }
                 Protocol::ReqType => {
                     result.req_type = Some(value.to_string());
@@ -260,6 +394,12 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::File => {
                     result.mock_file = Some(value.to_string());
                 }
+                Protocol::Tpl => {
+                    result.mock_template = Some(value.to_string());
+                }
+                Protocol::RawFile => {
+                    result.mock_rawfile = Some(value.to_string());
+                }
                 Protocol::Dns => {
                     result.dns_servers.push(value.to_string());
                 }
@@ -308,6 +448,7 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                     let parsed = parse_delete_value(value);
                     result.delete_req_headers.extend(parsed.req_headers);
                     result.delete_res_headers.extend(parsed.res_headers);
+                    result.delete_url_params.extend(parsed.url_params);
                 }
                 Protocol::HeaderReplace => {
                     if let Some(rules) = parse_header_replace_value(value) {
@@ -325,12 +466,14 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
 struct ParsedDeleteValue {
     req_headers: Vec<String>,
     res_headers: Vec<String>,
+    url_params: Vec<String>,
 }
 
 fn parse_delete_value(value: &str) -> ParsedDeleteValue {
     let mut result = ParsedDeleteValue {
         req_headers: Vec::new(),
         res_headers: Vec::new(),
+        url_params: Vec::new(),
     };
 
     for part in value.split('|') {
@@ -339,7 +482,13 @@ fn parse_delete_value(value: &str) -> ParsedDeleteValue {
             continue;
         }
 
-        if let Some(header) = part.strip_prefix("req.") {
+        if let Some(header) = part.strip_prefix("reqHeaders.") {
+            result.req_headers.push(header.to_string());
+        } else if let Some(header) = part.strip_prefix("resHeaders.") {
+            result.res_headers.push(header.to_string());
+        } else if let Some(param) = part.strip_prefix("urlParams.") {
+            result.url_params.push(param.to_string());
+        } else if let Some(header) = part.strip_prefix("req.") {
             result.req_headers.push(header.to_string());
         } else if let Some(header) = part.strip_prefix("res.") {
             result.res_headers.push(header.to_string());
@@ -400,40 +549,33 @@ fn parse_header_value(value: &str) -> Option<Vec<(String, String)>> {
         return None;
     }
 
-    let (content, use_colon) = if trimmed.starts_with('(') && trimmed.ends_with(')') {
-        (&trimmed[1..trimmed.len() - 1], true)
+    let content = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        &trimmed[1..trimmed.len() - 1]
     } else {
-        (trimmed, false)
+        trimmed
     };
 
     let mut headers = Vec::new();
 
-    let is_multiline = content.contains('\n');
-    let parts: Vec<&str> = if is_multiline {
-        content.lines().collect()
-    } else {
-        content.split(',').collect()
-    };
-
-    for part in parts {
+    let delimiter = if content.contains('\n') { '\n' } else { ',' };
+    for part in content.split(delimiter) {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        let separator = if use_colon || is_multiline { ':' } else { '=' };
-        if let Some(pos) = part.find(separator) {
+
+        let split_pos = match (part.find('='), part.find(':')) {
+            (Some(eq), Some(colon)) => Some(eq.min(colon)),
+            (Some(eq), None) => Some(eq),
+            (None, Some(colon)) => Some(colon),
+            (None, None) => None,
+        };
+
+        if let Some(pos) = split_pos {
             let key = part[..pos].trim().to_string();
             let val = part[pos + 1..].trim().to_string();
             if !key.is_empty() {
                 headers.push((key, val));
-            }
-        } else if !use_colon && !is_multiline {
-            if let Some(pos) = part.find('=') {
-                let key = part[..pos].trim().to_string();
-                let val = part[pos + 1..].trim().to_string();
-                if !key.is_empty() {
-                    headers.push((key, val));
-                }
             }
         }
     }
@@ -500,6 +642,14 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
         return bifrost_proxy::CorsConfig::enable_all();
     }
 
+    if value.contains("://") && !value.starts_with('{') {
+        return bifrost_proxy::CorsConfig {
+            enabled: true,
+            origin: Some(value.to_string()),
+            ..Default::default()
+        };
+    }
+
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(value) {
         let mut cors = bifrost_proxy::CorsConfig {
             enabled: true,
@@ -542,6 +692,48 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
     }
 
     bifrost_proxy::CorsConfig::enable_all()
+}
+
+fn parse_merge_value(value: &str) -> Option<serde_json::Value> {
+    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(value) {
+        return Some(json_value);
+    }
+
+    let trimmed = value.trim();
+    let content = if trimmed.starts_with('(') && trimmed.ends_with(')') && trimmed.len() >= 2 {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+
+    let mut map = serde_json::Map::new();
+    for part in content.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        let Some((key, raw_value)) = part.split_once(':') else {
+            continue;
+        };
+
+        let key = key.trim();
+        let raw_value = raw_value.trim();
+        if key.is_empty() {
+            continue;
+        }
+
+        let parsed_value = serde_json::from_str::<serde_json::Value>(raw_value)
+            .or_else(|_| serde_json::from_str::<serde_json::Value>(&format!("\"{}\"", raw_value)))
+            .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
+        map.insert(key.to_string(), parsed_value);
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(map))
+    }
 }
 
 fn parse_res_cookies_value(value: &str) -> Vec<(String, bifrost_proxy::ResCookieValue)> {
@@ -666,14 +858,22 @@ impl ProxyInstance {
         values: HashMap<String, String>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         init_crypto_provider();
-        let parsed_rules: Vec<Rule> = rules
+        let normalized_rules = collapse_legacy_mock_overrides(
+            rules
+                .iter()
+                .flat_map(|rule| expand_rule_lines(rule))
+                .collect(),
+        );
+        let parsed_rules: Vec<Rule> = normalized_rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())
             .flatten()
             .collect();
 
         let resolver = Arc::new(RulesResolverAdapter {
-            inner: CoreRulesResolver::new(parsed_rules).with_values(values),
+            inner: CoreRulesResolver::new(parsed_rules)
+                .with_values(values)
+                .disable_cache(),
         });
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
 
@@ -740,7 +940,9 @@ impl ProxyInstance {
             .map_err(|e| format!("Failed to parse rules: {}", e))?;
 
         let resolver = Arc::new(RulesResolverAdapter {
-            inner: CoreRulesResolver::new(rules).with_values(inline_values),
+            inner: CoreRulesResolver::new(rules)
+                .with_values(inline_values)
+                .disable_cache(),
         });
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
 
@@ -803,14 +1005,22 @@ impl ProxyInstance {
         enable_tls_interception: bool,
         unsafe_ssl: bool,
     ) -> Result<(Self, Arc<AdminState>), Box<dyn std::error::Error + Send + Sync>> {
-        let parsed_rules: Vec<Rule> = rules
+        let normalized_rules = collapse_legacy_mock_overrides(
+            rules
+                .iter()
+                .flat_map(|rule| expand_rule_lines(rule))
+                .collect(),
+        );
+        let parsed_rules: Vec<Rule> = normalized_rules
             .iter()
             .filter_map(|r| parse_rules(r).ok())
             .flatten()
             .collect();
 
         let resolver = Arc::new(RulesResolverAdapter {
-            inner: CoreRulesResolver::new(parsed_rules).with_values(HashMap::new()),
+            inner: CoreRulesResolver::new(parsed_rules)
+                .with_values(HashMap::new())
+                .disable_cache(),
         });
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
 

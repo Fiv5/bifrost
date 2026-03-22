@@ -233,12 +233,12 @@ fn is_no_body_response(status: StatusCode, method: &str) -> bool {
 
 fn should_use_metrics_only_forwarding_mode(
     skip_binary_recording: bool,
-    has_rules: bool,
+    _has_rules: bool,
     needs_processing: bool,
     is_websocket: bool,
     is_sse: bool,
 ) -> bool {
-    skip_binary_recording && !has_rules && !needs_processing && !is_websocket && !is_sse
+    skip_binary_recording && !needs_processing && !is_websocket && !is_sse
 }
 
 fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode) {
@@ -412,8 +412,36 @@ pub async fn handle_http_request(
         ctx.url.clone()
     };
     let start_time = std::time::Instant::now();
+    let incoming_headers: HashMap<String, String> = req
+        .headers()
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.to_string().to_lowercase(),
+                value.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let incoming_cookies: HashMap<String, String> = req
+        .headers()
+        .get(hyper::header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .filter_map(|part| {
+                    let mut iter = part.trim().splitn(2, '=');
+                    match (iter.next(), iter.next()) {
+                        (Some(key), Some(val)) => Some((key.to_string(), val.to_string())),
+                        _ => None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    let resolved_rules = rules.resolve(&url, &method);
+    let resolved_rules =
+        rules.resolve_with_context(&url, &method, &incoming_headers, &incoming_cookies);
 
     // 解压输出上限：用于防御压缩炸弹。优先读取配置，否则使用默认 10MiB。
     let max_decompress_output_bytes = if let Some(ref state) = admin_state {
@@ -2536,7 +2564,7 @@ mod tests {
         assert!(should_use_metrics_only_forwarding_mode(
             true, false, false, false, false
         ));
-        assert!(!should_use_metrics_only_forwarding_mode(
+        assert!(should_use_metrics_only_forwarding_mode(
             true, true, false, false, false
         ));
         assert!(!should_use_metrics_only_forwarding_mode(

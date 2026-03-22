@@ -6,7 +6,7 @@ use crate::server::ResolvedRules;
 use crate::utils::logging::RequestContext;
 
 pub fn apply_url_params(uri: &Uri, rules: &ResolvedRules) -> Uri {
-    if rules.url_params.is_empty() {
+    if rules.url_params.is_empty() && rules.delete_url_params.is_empty() {
         return uri.clone();
     }
 
@@ -23,15 +23,42 @@ pub fn apply_url_params(uri: &Uri, rules: &ResolvedRules) -> Uri {
         return uri.clone();
     };
 
-    {
-        let mut query_pairs = url.query_pairs_mut();
-        for (key, value) in &rules.url_params {
-            query_pairs.append_pair(key, value);
-        }
+    let mut query_pairs: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+
+    if !rules.delete_url_params.is_empty() {
+        query_pairs.retain(|(key, _)| !rules.delete_url_params.iter().any(|delete| delete == key));
+    }
+
+    for (key, value) in &rules.url_params {
+        query_pairs.retain(|(existing_key, _)| existing_key != key);
+        query_pairs.push((key.clone(), value.clone()));
+    }
+
+    if query_pairs.is_empty() {
+        url.set_query(None);
+    } else {
+        let query = query_pairs
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}={}",
+                    urlencoding::encode(&key),
+                    urlencoding::encode(&value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("&");
+        url.set_query(Some(&query));
     }
 
     let new_uri_str = if uri.to_string().starts_with('/') {
-        format!("{}?{}", url.path(), url.query().unwrap_or(""))
+        match url.query() {
+            Some(query) if !query.is_empty() => format!("{}?{}", url.path(), query),
+            _ => url.path().to_string(),
+        }
     } else {
         url.to_string()
     };
@@ -45,7 +72,7 @@ pub fn apply_url_replace(
     verbose_logging: bool,
     ctx: &RequestContext,
 ) -> Uri {
-    if rules.url_replace.is_empty() {
+    if rules.url_replace.is_empty() && rules.url_replace_regex.is_empty() {
         return uri.clone();
     }
 
@@ -58,6 +85,30 @@ pub fn apply_url_replace(
             if verbose_logging {
                 debug!("[{}] [URL_REPLACE] {} -> {}", ctx.id_str(), from, to);
             }
+        }
+    }
+
+    for rule in &rules.url_replace_regex {
+        let updated = if rule.global {
+            rule.pattern
+                .replace_all(&path, rule.replacement.as_str())
+                .to_string()
+        } else {
+            rule.pattern
+                .replace(&path, rule.replacement.as_str())
+                .to_string()
+        };
+
+        if updated != path {
+            if verbose_logging {
+                debug!(
+                    "[{}] [URL_REPLACE_REGEX] {} -> {}",
+                    ctx.id_str(),
+                    rule.pattern.as_str(),
+                    rule.replacement
+                );
+            }
+            path = updated;
         }
     }
 

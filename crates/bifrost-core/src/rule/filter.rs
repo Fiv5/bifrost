@@ -136,8 +136,15 @@ pub fn parse_filter(filter_str: &str) -> Option<Filter> {
     }
 
     if filter_str.starts_with("h:") || filter_str.starts_with("H:") {
-        let header_name = filter_str[2..].trim().to_string();
-        return Some(Filter::HeaderExists(header_name));
+        let header_filter = filter_str[2..].trim();
+        if let Some((name, pattern)) = parse_header_match(header_filter) {
+            return Some(Filter::HeaderMatch {
+                name,
+                pattern,
+                is_request: true,
+            });
+        }
+        return Some(Filter::HeaderExists(header_filter.to_string()));
     }
 
     if filter_str.starts_with("reqH:") || filter_str.starts_with("reqh:") {

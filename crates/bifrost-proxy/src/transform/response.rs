@@ -340,7 +340,7 @@ fn apply_res_cache(
     }
 }
 
-fn expand_content_type_shortcut(input: &str) -> &str {
+pub(crate) fn expand_content_type_shortcut(input: &str) -> &str {
     match input.to_lowercase().as_str() {
         "html" | "htm" => "text/html",
         "css" => "text/css",

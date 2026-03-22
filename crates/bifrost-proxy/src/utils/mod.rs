@@ -17,8 +17,12 @@ pub use logging::{
 pub use mock::{generate_mock_response, should_intercept_response};
 pub use process_info::{
     format_client_info, resolve_client_process, resolve_client_process_async,
-    resolve_client_process_async_with_retry, resolve_client_process_cached, ClientProcess,
-    ProcessResolver, PROCESS_RESOLVER,
+    resolve_client_process_async_for_connection,
+    resolve_client_process_async_for_connection_with_retry,
+    resolve_client_process_async_with_retry, resolve_client_process_cached,
+    resolve_client_process_cached_for_connection, resolve_client_process_for_connection,
+    resolve_client_process_for_connection_with_retry, ClientProcess, ProcessResolver,
+    PROCESS_RESOLVER,
 };
 pub use tee::{
     create_request_tee_body, create_sse_tee_body, create_tee_body_with_store, store_request_body,
