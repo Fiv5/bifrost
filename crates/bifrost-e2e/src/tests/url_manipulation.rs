@@ -54,6 +54,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "url",
             test_combined_path_and_params,
         ),
+        TestCase::standalone(
+            "url_full_url_pattern_with_regex_path_replace",
+            "Full URL pattern + regex pathReplace",
+            "url",
+            test_full_url_pattern_with_regex_path_replace,
+        ),
     ]
 }
 
@@ -348,6 +354,43 @@ async fn test_combined_path_and_params() -> Result<(), String> {
         }
     } else {
         return Err("Query string missing".to_string());
+    }
+
+    Ok(())
+}
+
+async fn test_full_url_pattern_with_regex_path_replace() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![&format!(
+            "http://regex-op.test/api host://127.0.0.1:{} pathReplace://(/api/=/rewritten/)",
+            mock.port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://regex-op.test/api/users",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+
+    let req = mock.last_request().ok_or("No request received")?;
+    if req.path != "/rewritten/users" {
+        return Err(format!(
+            "Expected rewritten path /rewritten/users, got: {}",
+            req.path
+        ));
     }
 
     Ok(())

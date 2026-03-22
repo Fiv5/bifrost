@@ -20,7 +20,6 @@ log/
 .bifrost-*/
 target-e2e-*/
 .bifrost_test/
-e2e-tests/
 desktop/src-tauri/resources/bin/
 .pnpm-store/
 .codex-target/
