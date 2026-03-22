@@ -54,6 +54,7 @@ pub struct SyncStatus {
     pub enabled: bool,
     pub auto_sync: bool,
     pub remote_base_url: String,
+    pub has_session: bool,
     pub reachable: bool,
     pub authorized: bool,
     pub syncing: bool,
@@ -163,10 +164,15 @@ impl SyncManager {
         let config = self.config_manager.config().await;
         let runtime = self.runtime.read().await.clone();
         let state = self.state.lock().clone();
+        let has_session = state
+            .token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty());
         SyncStatus {
             enabled: config.sync.enabled,
             auto_sync: config.sync.auto_sync,
             remote_base_url: config.sync.remote_base_url,
+            has_session,
             reachable: runtime.reachable,
             authorized: runtime.authorized,
             syncing: runtime.syncing,
@@ -872,7 +878,9 @@ mod tests {
         manager.save_token("login-token".to_string()).await.unwrap();
 
         let config = config_manager.config().await;
+        let status = manager.status().await;
         assert!(config.sync.auto_sync);
+        assert!(status.has_session);
         assert_eq!(manager.state.lock().token.as_deref(), Some("login-token"));
     }
 }
