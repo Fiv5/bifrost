@@ -1,6 +1,7 @@
 pub mod admin_api;
 pub mod body_cache;
 pub mod body_manipulation;
+pub mod client_process;
 pub mod curl_mock;
 pub mod dns;
 pub mod filters;
@@ -49,6 +50,7 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(tls_config_disconnect::get_all_tests());
     tests.extend(tls_switch_test::get_all_tests());
     tests.extend(body_cache::get_all_tests());
+    tests.extend(client_process::get_all_tests());
     tests.extend(traffic_cli::get_all_tests());
     tests.extend(ws_payload_persistence::get_all_tests());
     tests

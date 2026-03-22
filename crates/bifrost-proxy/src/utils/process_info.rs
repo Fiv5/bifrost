@@ -191,11 +191,21 @@ impl ProcessResolver {
 
             let process = self.lookup_process(&key);
             if process.is_some() {
+                debug!(?key, attempt, "Resolved client process");
                 self.update_cache(key, process.clone());
                 return process;
             }
+
+            debug!(
+                ?key,
+                attempt, max_retries, "Client process lookup attempt missed"
+            );
         }
 
+        warn!(
+            ?key,
+            max_retries, delay_ms, "Failed to resolve client process after retries"
+        );
         self.update_cache(key, None);
         None
     }
@@ -386,6 +396,7 @@ mod macos {
     use super::ConnKey;
     use std::mem::size_of;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use tracing::{debug, trace};
 
     const PROC_ALL_PIDS: u32 = 1;
     const PROC_PIDLISTFDS: i32 = 1;
@@ -395,6 +406,20 @@ mod macos {
     const INI_IPV4: u8 = 0x1;
     const INI_IPV6: u8 = 0x2;
     const TCP_STATES_OF_INTEREST: [i32; 7] = [2, 3, 4, 5, 6, 8, 9];
+    const SOCKET_FDINFO_SIZE: usize = 792;
+    const SOCKET_FDINFO_PSI_OFFSET: usize = 24;
+    #[cfg(test)]
+    const SOCKET_INFO_PROTOCOL_OFFSET: usize = SOCKET_FDINFO_PSI_OFFSET + 156;
+    #[cfg(test)]
+    const SOCKET_INFO_FAMILY_OFFSET: usize = SOCKET_FDINFO_PSI_OFFSET + 160;
+    const SOCKET_INFO_KIND_OFFSET: usize = SOCKET_FDINFO_PSI_OFFSET + 232;
+    const SOCKET_INFO_PROTO_OFFSET: usize = SOCKET_FDINFO_PSI_OFFSET + 240;
+    const TCP_SOCKINFO_STATE_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET + 80;
+    const IN_SOCKINFO_FPORT_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET;
+    const IN_SOCKINFO_LPORT_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET + 4;
+    const IN_SOCKINFO_VFLAG_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET + 24;
+    const IN_SOCKINFO_FADDR_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET + 32;
+    const IN_SOCKINFO_LADDR_OFFSET: usize = SOCKET_INFO_PROTO_OFFSET + 48;
 
     unsafe extern "C" {
         fn proc_listpids(
@@ -421,166 +446,47 @@ mod macos {
 
     #[repr(C)]
     #[derive(Clone, Copy)]
-    struct ProcFileInfo {
-        fi_openflags: u32,
-        fi_status: u32,
-        fi_offset: libc::off_t,
-        fi_type: i32,
-        fi_guardflags: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
     struct ProcFdInfo {
         proc_fd: i32,
         proc_fdtype: u32,
     }
 
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct VInfoStat {
-        vst_dev: u32,
-        vst_mode: u16,
-        vst_nlink: u16,
-        vst_ino: u64,
-        vst_uid: libc::uid_t,
-        vst_gid: libc::gid_t,
-        vst_atime: i64,
-        vst_atimensec: i64,
-        vst_mtime: i64,
-        vst_mtimensec: i64,
-        vst_ctime: i64,
-        vst_ctimensec: i64,
-        vst_birthtime: i64,
-        vst_birthtimensec: i64,
-        vst_size: libc::off_t,
-        vst_blocks: i64,
-        vst_blksize: i32,
-        vst_flags: u32,
-        vst_gen: u32,
-        vst_rdev: u32,
-        vst_qspare: [i64; 2],
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct SockBufInfo {
-        sbi_cc: u32,
-        sbi_hiwat: u32,
-        sbi_mbcnt: u32,
-        sbi_mbmax: u32,
-        sbi_lowat: u32,
-        sbi_flags: i16,
-        sbi_timeo: i16,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct In4In6Addr {
-        i46a_pad32: [u32; 3],
-        i46a_addr4: libc::in_addr,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    union InAddrUnion {
-        ina_46: In4In6Addr,
-        ina_6: libc::in6_addr,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct InSockInfoV4 {
-        in4_tos: u8,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct InSockInfoV6 {
-        in6_hlim: u8,
-        in6_cksum: i32,
-        in6_ifindex: u16,
-        in6_hops: i16,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    union InSockInfoProto {
-        insi_v4: InSockInfoV4,
-        insi_v6: InSockInfoV6,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct InSockInfo {
-        insi_fport: i32,
-        insi_lport: i32,
-        insi_gencnt: u64,
-        insi_flags: u32,
-        insi_flow: u32,
-        insi_vflag: u8,
-        insi_ip_ttl: u8,
-        rfu_1: u32,
-        insi_faddr: InAddrUnion,
-        insi_laddr: InAddrUnion,
-        insi_proto: InSockInfoProto,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct TcpSockInfo {
-        tcpsi_ini: InSockInfo,
-        tcpsi_state: i32,
-        tcpsi_timer: [i32; 4],
-        tcpsi_mss: i32,
-        tcpsi_flags: u32,
-        rfu_1: u32,
-        tcpsi_tp: u64,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    union SocketInfoProto {
-        pri_in: InSockInfo,
-        pri_tcp: TcpSockInfo,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct SocketInfo {
-        soi_stat: VInfoStat,
-        soi_so: u64,
-        soi_pcb: u64,
-        soi_type: i32,
-        soi_protocol: i32,
-        soi_family: i32,
-        soi_options: i16,
-        soi_linger: i16,
-        soi_state: i16,
-        soi_qlen: i16,
-        soi_incqlen: i16,
-        soi_qlimit: i16,
-        soi_timeo: i16,
-        soi_error: u16,
-        soi_oobmark: u32,
-        soi_rcv: SockBufInfo,
-        soi_snd: SockBufInfo,
-        soi_kind: i32,
-        rfu_1: u32,
-        soi_proto: SocketInfoProto,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct SocketFdInfo {
-        pfi: ProcFileInfo,
-        psi: SocketInfo,
+    struct ParsedTcpSocket {
+        kind: i32,
+        state: i32,
+        vflag: u8,
+        local_port_raw: i32,
+        remote_port_raw: i32,
+        local_addr_raw: [u8; 16],
+        remote_addr_raw: [u8; 16],
     }
 
     pub(super) fn lookup_socket_pid_macos(key: &ConnKey) -> Option<u32> {
-        list_all_pids()
-            .into_iter()
-            .find(|&pid| process_has_matching_socket(pid, key))
+        let pids = list_all_pids();
+        let pid = pids
+            .iter()
+            .copied()
+            .find(|&pid| process_has_matching_socket(pid, key));
+
+        match pid {
+            Some(pid) => {
+                debug!(
+                    ?key,
+                    pid,
+                    pid_count = pids.len(),
+                    "Matched macOS client socket to process"
+                );
+                Some(pid)
+            }
+            None => {
+                debug!(
+                    ?key,
+                    pid_count = pids.len(),
+                    "No macOS process matched accepted connection"
+                );
+                None
+            }
+        }
     }
 
     fn list_all_pids() -> Vec<u32> {
@@ -657,38 +563,160 @@ mod macos {
     }
 
     fn socket_fd_matches(pid: u32, fd: i32, key: &ConnKey) -> bool {
-        let mut socket_fdinfo: SocketFdInfo = unsafe { std::mem::zeroed() };
+        let mut socket_fdinfo = [0u8; SOCKET_FDINFO_SIZE];
         let bytes_filled = unsafe {
             proc_pidfdinfo(
                 pid as i32,
                 fd,
                 PROC_PIDFDSOCKETINFO,
-                (&mut socket_fdinfo as *mut SocketFdInfo).cast(),
-                size_of::<SocketFdInfo>() as i32,
+                socket_fdinfo.as_mut_ptr().cast(),
+                SOCKET_FDINFO_SIZE as i32,
             )
         };
-        if bytes_filled != size_of::<SocketFdInfo>() as i32 {
+        if bytes_filled != SOCKET_FDINFO_SIZE as i32 {
+            trace!(
+                pid,
+                fd,
+                bytes_filled,
+                expected = SOCKET_FDINFO_SIZE as i32,
+                error = %std::io::Error::last_os_error(),
+                "proc_pidfdinfo(PROC_PIDFDSOCKETINFO) did not return socket info"
+            );
             return false;
         }
 
-        if socket_fdinfo.psi.soi_kind != SOCKINFO_TCP {
+        let Some(tcp) = parse_tcp_socket(&socket_fdinfo) else {
+            return false;
+        };
+        if tcp.kind != SOCKINFO_TCP || !TCP_STATES_OF_INTEREST.contains(&tcp.state) {
             return false;
         }
 
-        let tcp = unsafe { socket_fdinfo.psi.soi_proto.pri_tcp };
-        if !TCP_STATES_OF_INTEREST.contains(&tcp.tcpsi_state) {
-            return false;
-        }
-
-        match_connection(key, &tcp.tcpsi_ini)
+        match_connection_raw(key, &tcp)
     }
 
-    fn match_connection(key: &ConnKey, socket: &InSockInfo) -> bool {
-        let client_ip = match extract_ip(socket.insi_vflag, socket.insi_laddr) {
+    #[cfg(test)]
+    pub(super) fn describe_process_tcp_sockets(pid: u32) -> Vec<String> {
+        let mut capacity = 64usize;
+        loop {
+            let mut fds = vec![
+                ProcFdInfo {
+                    proc_fd: 0,
+                    proc_fdtype: 0
+                };
+                capacity
+            ];
+            let buffer_size = (capacity * size_of::<ProcFdInfo>()) as i32;
+            let bytes_filled = unsafe {
+                proc_pidinfo(
+                    pid as i32,
+                    PROC_PIDLISTFDS,
+                    0,
+                    fds.as_mut_ptr().cast(),
+                    buffer_size,
+                )
+            };
+
+            if bytes_filled <= 0 {
+                return vec![format!(
+                    "pid={pid}: proc_pidinfo(PROC_PIDLISTFDS) returned {bytes_filled}"
+                )];
+            }
+
+            if bytes_filled as usize == buffer_size as usize && capacity < 4096 {
+                capacity *= 2;
+                continue;
+            }
+
+            fds.truncate(bytes_filled as usize / size_of::<ProcFdInfo>());
+            let mut out = Vec::new();
+            for fd in fds {
+                if fd.proc_fdtype != PROX_FDTYPE_SOCKET {
+                    continue;
+                }
+
+                let mut socket_fdinfo = [0u8; SOCKET_FDINFO_SIZE];
+                let bytes_filled = unsafe {
+                    proc_pidfdinfo(
+                        pid as i32,
+                        fd.proc_fd,
+                        PROC_PIDFDSOCKETINFO,
+                        socket_fdinfo.as_mut_ptr().cast(),
+                        SOCKET_FDINFO_SIZE as i32,
+                    )
+                };
+                if bytes_filled != SOCKET_FDINFO_SIZE as i32 {
+                    out.push(format!(
+                        "fd={} kind=? proc_pidfdinfo_bytes={} errno={}",
+                        fd.proc_fd,
+                        bytes_filled,
+                        std::io::Error::last_os_error()
+                    ));
+                    continue;
+                }
+
+                let Some(info) = parse_tcp_socket(&socket_fdinfo) else {
+                    out.push(format!("fd={} parse_failed", fd.proc_fd));
+                    continue;
+                };
+                if info.kind != SOCKINFO_TCP {
+                    out.push(format!("fd={} kind={} non_tcp", fd.proc_fd, info.kind));
+                    continue;
+                }
+
+                let local_ip = extract_ip_bytes(info.vflag, &info.local_addr_raw);
+                let local_port = decode_port(info.local_port_raw);
+                let remote_ip = extract_ip_bytes(info.vflag, &info.remote_addr_raw);
+                let remote_port = decode_port(info.remote_port_raw);
+                let family =
+                    read_i32(&socket_fdinfo, SOCKET_INFO_FAMILY_OFFSET).unwrap_or_default();
+                let protocol =
+                    read_i32(&socket_fdinfo, SOCKET_INFO_PROTOCOL_OFFSET).unwrap_or_default();
+                out.push(format!(
+                    "fd={} state={} local={:?}:{:?} remote={:?}:{:?} vflag={} family={} protocol={}",
+                    fd.proc_fd,
+                    info.state,
+                    local_ip,
+                    local_port,
+                    remote_ip,
+                    remote_port,
+                    info.vflag,
+                    family,
+                    protocol
+                ));
+            }
+
+            return out;
+        }
+    }
+
+    fn parse_tcp_socket(buffer: &[u8; SOCKET_FDINFO_SIZE]) -> Option<ParsedTcpSocket> {
+        Some(ParsedTcpSocket {
+            kind: read_i32(buffer, SOCKET_INFO_KIND_OFFSET)?,
+            state: read_i32(buffer, TCP_SOCKINFO_STATE_OFFSET)?,
+            vflag: *buffer.get(IN_SOCKINFO_VFLAG_OFFSET)?,
+            local_port_raw: read_i32(buffer, IN_SOCKINFO_LPORT_OFFSET)?,
+            remote_port_raw: read_i32(buffer, IN_SOCKINFO_FPORT_OFFSET)?,
+            local_addr_raw: read_fixed_16(buffer, IN_SOCKINFO_LADDR_OFFSET)?,
+            remote_addr_raw: read_fixed_16(buffer, IN_SOCKINFO_FADDR_OFFSET)?,
+        })
+    }
+
+    fn read_i32(buffer: &[u8], offset: usize) -> Option<i32> {
+        let bytes: [u8; 4] = buffer.get(offset..offset + 4)?.try_into().ok()?;
+        Some(i32::from_ne_bytes(bytes))
+    }
+
+    fn read_fixed_16(buffer: &[u8], offset: usize) -> Option<[u8; 16]> {
+        buffer.get(offset..offset + 16)?.try_into().ok()
+    }
+
+    fn match_connection_raw(key: &ConnKey, socket: &ParsedTcpSocket) -> bool {
+        let client_ip = match extract_ip_bytes(socket.vflag, &socket.local_addr_raw) {
             Some(ip) => ip,
             None => return false,
         };
-        let client_port = match decode_port(socket.insi_lport) {
+        let client_port = match decode_port(socket.local_port_raw) {
             Some(port) => port,
             None => return false,
         };
@@ -698,11 +726,11 @@ mod macos {
         }
 
         if let Some(proxy_addr) = key.proxy_addr {
-            let proxy_ip = match extract_ip(socket.insi_vflag, socket.insi_faddr) {
+            let proxy_ip = match extract_ip_bytes(socket.vflag, &socket.remote_addr_raw) {
                 Some(ip) => ip,
                 None => return false,
             };
-            let proxy_port = match decode_port(socket.insi_fport) {
+            let proxy_port = match decode_port(socket.remote_port_raw) {
                 Some(port) => port,
                 None => return false,
             };
@@ -718,17 +746,15 @@ mod macos {
         Some(u16::from_be(raw_port))
     }
 
-    fn extract_ip(vflag: u8, raw_addr: InAddrUnion) -> Option<IpAddr> {
+    fn extract_ip_bytes(vflag: u8, raw_addr: &[u8; 16]) -> Option<IpAddr> {
         match vflag {
-            INI_IPV4 => {
-                let addr = unsafe { raw_addr.ina_46.i46a_addr4 };
-                Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(addr.s_addr))))
-            }
-            INI_IPV6 => {
-                let addr = unsafe { raw_addr.ina_6 };
-                let octets: [u8; 16] = unsafe { std::mem::transmute(addr) };
-                Some(IpAddr::V6(Ipv6Addr::from(octets)))
-            }
+            INI_IPV4 => Some(IpAddr::V4(Ipv4Addr::new(
+                raw_addr[12],
+                raw_addr[13],
+                raw_addr[14],
+                raw_addr[15],
+            ))),
+            INI_IPV6 => Some(IpAddr::V6(Ipv6Addr::from(*raw_addr))),
             _ => None,
         }
     }
@@ -1039,8 +1065,19 @@ pub fn format_client_info(peer_addr: &SocketAddr, process: Option<&ClientProcess
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::macos::describe_process_tcp_sockets;
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[cfg(target_os = "macos")]
+    use std::process::Stdio;
+
+    #[cfg(target_os = "macos")]
+    use tokio::io::AsyncWriteExt;
+
+    #[cfg(target_os = "macos")]
+    use tokio::process::Command;
 
     #[test]
     fn test_format_client_info_with_process() {
@@ -1124,5 +1161,128 @@ mod tests {
             ConnKey::from_connection(&peer_addr, &proxy_a),
             ConnKey::from_connection(&peer_addr, &proxy_b)
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn resolve_process_from_external_client(
+        program: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<ClientProcess, String> {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|error| format!("bind listener: {error}"))?;
+        let local_addr = listener
+            .local_addr()
+            .map_err(|error| format!("listener local_addr: {error}"))?;
+        let url = format!("http://{local_addr}/resolver-test");
+
+        let mut command = Command::new(program);
+        command.args(args.iter().map(|arg| arg.replace("{url}", &url)));
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::piped());
+        for (key, value) in envs {
+            command.env(key, value.replace("{url}", &url));
+        }
+
+        let child = command
+            .spawn()
+            .map_err(|error| format!("spawn {program}: {error}"))?;
+        let child_pid = child.id();
+
+        let (mut stream, peer_addr) = listener
+            .accept()
+            .await
+            .map_err(|error| format!("accept connection from {program}: {error}"))?;
+
+        let resolved =
+            resolve_client_process_async_for_connection_with_retry(&peer_addr, &local_addr, 20, 50)
+                .await
+                .ok_or_else(|| {
+                    let socket_dump = child_pid
+                        .map(|pid| describe_process_tcp_sockets(pid).join(" | "))
+                        .unwrap_or_else(|| "child pid unavailable".to_string());
+                    format!(
+                        "resolver returned None for {program} peer={peer_addr} local={local_addr}; sockets={socket_dump}"
+                    )
+                })?;
+
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .map_err(|error| format!("write response to {program}: {error}"))?;
+
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|error| format!("wait for {program}: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{program} exited with {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(resolved)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_process_name_matches(process: &ClientProcess, expected_tokens: &[&str]) {
+        let process_name = process.name.to_lowercase();
+        let process_path = process.path.as_deref().unwrap_or_default().to_lowercase();
+        assert!(
+            expected_tokens
+                .iter()
+                .any(|token| process_name.contains(token) || process_path.contains(token)),
+            "expected process {:?} / {:?} to match one of {:?}",
+            process.name,
+            process.path,
+            expected_tokens
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_process_resolver_detects_curl_client() {
+        let process = resolve_process_from_external_client("curl", &["-sS", "{url}"], &[])
+            .await
+            .expect("resolve curl client process");
+
+        assert_process_name_matches(&process, &["curl"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_process_resolver_detects_node_client() {
+        let process = resolve_process_from_external_client(
+            "node",
+            &[
+                "-e",
+                "const http = require('http'); const url = process.env.TEST_URL; http.get(url, (res) => { res.resume(); res.on('end', () => process.exit(0)); }).on('error', (err) => { console.error(err); process.exit(1); });",
+            ],
+            &[("TEST_URL", "{url}")],
+        )
+        .await
+        .expect("resolve node client process");
+
+        assert_process_name_matches(&process, &["node"]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn test_process_resolver_detects_python_client() {
+        let process = resolve_process_from_external_client(
+            "python3",
+            &[
+                "-c",
+                "import os, sys, urllib.request; urllib.request.urlopen(os.environ['TEST_URL']).read(); sys.exit(0)",
+            ],
+            &[("TEST_URL", "{url}")],
+        )
+        .await
+        .expect("resolve python client process");
+
+        assert_process_name_matches(&process, &["python"]);
     }
 }
