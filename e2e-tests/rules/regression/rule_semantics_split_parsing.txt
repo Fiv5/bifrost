@@ -1,0 +1,10 @@
+# 测试目标: 验证包含 host target、完整 URL、正则和 value 引用的复杂规则在分词与解析时不会串行错位。
+rewrite-chain.local 127.0.0.1:__ECHO_HTTP_PORT__ urlParams://keep=rewritten&remove_me= pathReplace://(/legacy/v\d+/=/api/v99)
+http://full-url-space.local/api 127.0.0.1:__ECHO_HTTP_PORT__ reqHeaders://(X-Split-Trace: note.example.com:8443 stays text)
+http://full-url-value.local/api 127.0.0.1:__ECHO_HTTP_PORT__ reqHeaders://{splitValueHeaders}
+http://full-url-regex-op.local/api 127.0.0.1:__ECHO_HTTP_PORT__ pathReplace://(/api/=/edge/)
+host://127.0.0.1:__ECHO_HTTP_PORT__ /^http:\/\/proto-regex\.local\/api\/v\d+/ resHeaders://X-Regex-Split=matched
+
+``` splitValueHeaders
+X-Upstream: api.example.com:9443
+```

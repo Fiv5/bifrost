@@ -9,33 +9,29 @@
 ## 目录结构
 
 ```
-scripts/
-├── test_rules.sh           # 单个规则文件测试运行器
-├── run_all_tests.sh        # 批量测试运行器
-├── check_rules.py          # 规则文件语法检查工具
-├── rule.txt                # 示例规则配置文件
-│
-├── mock_servers/           # Echo 服务器 (返回请求详情用于验证)
-│   ├── http_echo_server.py     # HTTP Echo 服务器
-│   ├── https_echo_server.py    # HTTPS Echo 服务器 (自签名证书)
-│   ├── ws_echo_server.py       # WebSocket Echo 服务器
-│   └── start_servers.sh        # 服务器管理脚本
-│
-├── test_utils/             # 测试工具库
-│   ├── assert.sh               # 断言库
-│   ├── http_client.sh          # HTTP 请求封装
-│   └── admin_client.sh         # Admin API 客户端封装
-│
-├── tests/                  # Admin API 测试脚本
+tests/                      # E2E / Admin API / 回归测试脚本
 │   ├── test_frames_admin_api.sh    # Frames API 测试 (11 tests)
 │   ├── test_rules_admin_api.sh     # Rules API 测试 (10 tests)
 │   ├── test_values_admin_api.sh    # Values API 测试 (9 tests)
 │   ├── test_whitelist_admin_api.sh # Whitelist API 测试 (14 tests)
 │   ├── test_cert_admin_api.sh      # Cert API 测试 (7 tests)
 │   ├── test_proxy_admin_api.sh     # Proxy API 测试 (6 tests)
-│   └── test_system_admin_api.sh    # System API 测试 (10 tests)
-│
-└── rules/                  # 规则测试用例 (按类别组织)
+│   ├── test_system_admin_api.sh    # System API 测试 (10 tests)
+│   ├── test_tls_logic_simple.sh    # TLS 逻辑测试脚本
+│   └── test_tls_intercept_e2e.sh   # TLS 拦截 E2E 测试脚本
+
+mock_servers/               # Echo 服务器 (返回请求详情用于验证)
+│   ├── http_echo_server.py     # HTTP Echo 服务器
+│   ├── https_echo_server.py    # HTTPS Echo 服务器 (自签名证书)
+│   ├── ws_echo_server.py       # WebSocket Echo 服务器
+│   └── start_servers.sh        # 服务器管理脚本
+
+test_utils/                 # 测试工具库
+│   ├── assert.sh               # 断言库
+│   ├── http_client.sh          # HTTP 请求封装
+│   └── admin_client.sh         # Admin API 客户端封装
+
+rules/                      # 规则测试用例 (按类别组织)
     ├── forwarding/             # 转发测试
     │   ├── http_to_http.txt        # HTTP→HTTP 转发
     │   ├── https_to_http.txt       # HTTPS→HTTP (TLS 终止)
@@ -225,7 +221,8 @@ delete_rule "$rule_id"
 
 ## 规则文件约定
 
-- 规则行为相关的测试规则必须存放在 `rules/` 下，不能直接写死在 `tests/`中
+- 规则行为相关的测试规则必须存放在 `rules/` 下，不能直接写死在 `tests/` 中
+- 所有 shell 测试脚本统一放在 `tests/`；`e2e-tests/scripts/` 已移除
 - `rules/` 下按模块功能分目录，再按测试目标拆分 `.txt` 文件
 - 每个规则文件顶部先写测试目标说明，再写规则内容
 - 若脚本需要按运行时端口渲染规则，可在规则文件中使用占位符，由脚本读取后替换，但规则本体仍应保存在 `rules/`

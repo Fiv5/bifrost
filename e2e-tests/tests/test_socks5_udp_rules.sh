@@ -10,6 +10,8 @@ PROXY_PORT=${PROXY_PORT:-19080}
 SOCKS5_PORT=${SOCKS5_PORT:-12080}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
 DATA_DIR="${PROJECT_ROOT}/.bifrost-socks5-udp-rules-test"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
+RULES_DIR="$E2E_DIR/rules/socks5_udp"
 
 cleanup() {
     echo "Cleaning up..."
@@ -52,6 +54,12 @@ add_rule() {
     "$BIFROST_BIN" rule add "$name" -c "$content"
 }
 
+add_rule_from_fixture() {
+    local name="$1"
+    local fixture_name="$2"
+    add_rule "$name" "$(rule_fixture_content "$RULES_DIR/$fixture_name")"
+}
+
 restart_proxy() {
     echo "Restarting proxy to load rules..."
     pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true
@@ -80,8 +88,8 @@ start_proxy
 
 echo ""
 echo "=== Adding Rules ==="
-add_rule "dns-redirect" "8.8.8.8 host://1.1.1.1"
-add_rule "domain-redirect" "dns.google host://8.8.4.4"
+add_rule_from_fixture "dns-redirect" "dns_redirect_ip.txt"
+add_rule_from_fixture "domain-redirect" "dns_redirect_domain.txt"
 
 restart_proxy
 

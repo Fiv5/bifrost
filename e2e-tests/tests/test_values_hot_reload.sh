@@ -15,11 +15,13 @@ export ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 PROXY_PID=""
+RULE_FIXTURE="$SCRIPT_DIR/../rules/values/status_code_value.txt"
 
 cleanup() {
     echo ""
@@ -100,7 +102,8 @@ start_proxy() {
 setup_rule_with_value() {
     log_info "Creating rule that uses a value variable..."
     
-    local rule_content="httpbin.org/status/200 statusCode://{status_code}"
+    local rule_content
+    rule_content=$(rule_fixture_content "$RULE_FIXTURE")
     local response
     response=$(create_rule "value-test-rule" "$rule_content" "true")
     

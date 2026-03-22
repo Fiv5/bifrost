@@ -5,11 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 PROXY_PORT="${PROXY_PORT:-19999}"
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 DATA_DIR="${ROOT_DIR}/.bifrost-http3-test"
 RULES_FILE="${DATA_DIR}/rules.txt"
+RULES_TEMPLATE="${ROOT_DIR}/e2e-tests/rules/http3/http3_e2e.txt"
 PROXY_LOG="${DATA_DIR}/proxy.log"
 PROXY_PID=""
 
@@ -29,27 +31,7 @@ cleanup() {
 trap cleanup EXIT
 
 create_test_rules() {
-    cat > "$RULES_FILE" << 'EOF'
-# HTTP/3 E2E Test Rules
-
-# Rule 1: Header modification for HTTP/3 requests
-httpbin.org reqHeaders://X-H3-Test:enabled
-
-# Rule 2: Response header modification
-httpbin.org resHeaders://X-Proxy-Protocol:h3-test
-
-# Rule 3: User-Agent override
-httpbin.org ua://BifrostH3Test/1.0
-
-# Rule 4: Host forwarding (for testing rules with different hosts)
-h3-forward-test.local http://httpbin.org/
-
-# Rule 5: Response body modification (append)
-h3-body-test.local http://httpbin.org/ resAppend://`<--H3-APPENDED-->`
-
-# Rule 6: Request path rewrite
-h3-path-test.local http://httpbin.org/anything
-EOF
+    render_rule_fixture_to_file "$RULES_TEMPLATE" "$RULES_FILE"
     echo "Test rules created at $RULES_FILE"
 }
 

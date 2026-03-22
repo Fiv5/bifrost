@@ -1,0 +1,2 @@
+# 测试目标: 验证 Rules Admin API 更新规则内容时，文件型规则内容可以完整保存。
+*.example.com file:///mock.json

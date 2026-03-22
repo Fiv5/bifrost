@@ -1,0 +1,2 @@
+# 测试目标: 验证 SOCKS5 TLS 拦截场景下的响应头改写规则。
+httpbin.org/headers resHeaders://X-Bifrost-Test=socks5-tls-intercept

@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay WebSocket 场景可以通过规则注入握手请求头。
+127.0.0.1 reqHeaders://X-WS-Rule=from-replay

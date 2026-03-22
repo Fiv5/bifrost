@@ -1,0 +1,4 @@
+# 测试目标: 验证多行规则内容在列表接口中能正确计算 rule_count，并保留注释行。
+line1.com proxy://a
+line2.com proxy://b
+# comment

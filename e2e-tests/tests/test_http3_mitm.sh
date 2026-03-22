@@ -12,6 +12,8 @@ ADMIN_PORT=${ADMIN_PORT:-18083}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
 DATA_DIR="${PROJECT_ROOT}/.bifrost-http3-mitm-test"
 GO_CLIENT="$SCRIPT_DIR/quic_socks5_client/quic_socks5_test"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
+RULES_DIR="$E2E_DIR/rules/http3"
 
 cleanup() {
     echo "Cleaning up..."
@@ -52,6 +54,12 @@ add_rule() {
     local content=$2
     export BIFROST_DATA_DIR="$DATA_DIR"
     "$BIFROST_BIN" rule add "$name" -c "$content"
+}
+
+add_rule_from_fixture() {
+    local name="$1"
+    local fixture_name="$2"
+    add_rule "$name" "$(rule_fixture_content "$RULES_DIR/$fixture_name")"
 }
 
 test_quic_mitm_module_exists() {
@@ -172,7 +180,7 @@ test_socks5_tcp_tls_intercept() {
     echo "=== Test 7: SOCKS5 TCP TLS Interception with Rules ==="
     
     echo "Adding test rule for response header..."
-    add_rule "test-header" "edith.xiaohongshu.com resHeaders://{x-bifrost-test: http3-mitm-test}"
+    add_rule_from_fixture "test-header" "http3_mitm_tls_header.txt"
     
     echo "Restarting proxy to load rules..."
     pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true

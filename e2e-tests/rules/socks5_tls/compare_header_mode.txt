@@ -1,0 +1,2 @@
+# 测试目标: 验证 HTTP 代理与 SOCKS5 代理两种模式都能应用同一条响应头规则。
+httpbin.org/anything resHeaders://X-Proxy-Mode=test-header

@@ -7,12 +7,19 @@ PROJECT_ROOT="$(dirname "$E2E_DIR")"
 
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
 
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-18081}
 SOCKS5_PORT=${SOCKS5_PORT:-18082}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
 DATA_DIR="${PROJECT_ROOT}/.bifrost-socks5-tls-rules-test"
+RULES_DIR="$E2E_DIR/rules/socks5_tls"
+
+rules_from_fixture() {
+    local fixture_name="$1"
+    rule_fixture_content "$RULES_DIR/$fixture_name"
+}
 
 cleanup() {
     echo "Cleaning up..."
@@ -91,7 +98,7 @@ test_https_header_rule_via_socks5() {
     echo ""
     echo "=== Test 2: HTTPS Header Rule via SOCKS5 ==="
     
-    restart_proxy_with_rules "httpbin.org/headers resHeaders://X-Bifrost-Test=socks5-tls-intercept"
+    restart_proxy_with_rules "$(rules_from_fixture res_header.txt)"
     
     PROXY_MODE="socks5"
     https_request "https://httpbin.org/headers"
@@ -118,7 +125,7 @@ test_https_host_redirect_via_socks5() {
     echo ""
     echo "=== Test 3: HTTPS Host Redirect via SOCKS5 ==="
     
-    restart_proxy_with_rules "example-redirect.test host://httpbin.org"
+    restart_proxy_with_rules "$(rules_from_fixture host_redirect.txt)"
     
     PROXY_MODE="socks5"
     https_request "https://httpbin.org/get"
@@ -136,7 +143,7 @@ test_https_mock_response_via_socks5() {
     echo ""
     echo "=== Test 4: HTTPS Mock Response via SOCKS5 ==="
     
-    restart_proxy_with_rules 'httpbin.org/mock-test file://({"mocked":true,"source":"socks5"})'
+    restart_proxy_with_rules "$(rules_from_fixture mock_response.txt)"
     
     PROXY_MODE="socks5"
     https_request "https://httpbin.org/mock-test"
@@ -155,7 +162,7 @@ test_compare_http_vs_socks5() {
     echo ""
     echo "=== Test 5: Compare HTTP Proxy vs SOCKS5 Proxy ==="
     
-    restart_proxy_with_rules "httpbin.org/anything resHeaders://X-Proxy-Mode=test-header"
+    restart_proxy_with_rules "$(rules_from_fixture compare_header_mode.txt)"
     
     echo "  --- HTTP Proxy Mode ---"
     PROXY_MODE="http"

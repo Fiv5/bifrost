@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-$((18880 + ($$ % 500)))}"
@@ -19,6 +20,7 @@ ECHO_PROXY_PORT="${ECHO_PROXY_PORT:-$((13999 + ($$ % 200)))}"
 BIFROST_BIN="$ROOT_DIR/target/release/bifrost"
 TEST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-rule-semantics-${PROXY_PORT}-$$"
 RULES_FILE="$TEST_DATA_DIR/rules.txt"
+RULES_TEMPLATE="$ROOT_DIR/e2e-tests/rules/regression/rule_semantics_split_parsing.txt"
 PROXY_PID=""
 
 HTTP_STATUS=""
@@ -125,18 +127,8 @@ build_bifrost() {
 }
 
 write_rules() {
-    mkdir -p "$TEST_DATA_DIR"
-    cat > "$RULES_FILE" <<EOF
-rewrite-chain.local 127.0.0.1:${ECHO_HTTP_PORT} urlParams://keep=rewritten&remove_me= pathReplace://(/legacy/v\\d+/=/api/v99)
-http://full-url-space.local/api 127.0.0.1:${ECHO_HTTP_PORT} reqHeaders://(X-Split-Trace: note.example.com:8443 stays text)
-http://full-url-value.local/api 127.0.0.1:${ECHO_HTTP_PORT} reqHeaders://{splitValueHeaders}
-http://full-url-regex-op.local/api 127.0.0.1:${ECHO_HTTP_PORT} pathReplace://(/api/=/edge/)
-host://127.0.0.1:${ECHO_HTTP_PORT} /^http:\\/\\/proto-regex\\.local\\/api\\/v\\d+/ resHeaders://X-Regex-Split=matched
-
-\`\`\` splitValueHeaders
-X-Upstream: api.example.com:9443
-\`\`\`
-EOF
+    render_rule_fixture_to_file "$RULES_TEMPLATE" "$RULES_FILE" \
+        "ECHO_HTTP_PORT=${ECHO_HTTP_PORT}"
 }
 
 start_proxy() {

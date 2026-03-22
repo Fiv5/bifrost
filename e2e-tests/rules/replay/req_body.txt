@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay custom rules 模式可以替换请求体。
+127.0.0.1 reqBody://{replaced_body_content}

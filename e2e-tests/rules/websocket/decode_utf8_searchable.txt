@@ -1,0 +1,2 @@
+# 测试目标: 验证 WebSocket 二进制帧在 decode://utf8 规则下可被解码并参与搜索。
+* decode://utf8

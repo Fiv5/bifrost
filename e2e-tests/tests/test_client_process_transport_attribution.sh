@@ -21,12 +21,14 @@ export ADMIN_HOST ADMIN_PORT ADMIN_PATH_PREFIX="/_bifrost"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 export ADMIN_BASE_URL
 
 BIFROST_BIN="$ROOT_DIR/target/release/bifrost"
 TEST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-client-attribution-${PROXY_PORT}-$$"
 RULES_FILE="$TEST_DATA_DIR/rules.txt"
+RULES_TEMPLATE="$ROOT_DIR/e2e-tests/rules/runtime/client_process_transport_attribution.txt"
 PROXY_PID=""
 
 cleanup() {
@@ -121,12 +123,9 @@ build_bifrost() {
 }
 
 write_rules() {
-    mkdir -p "$TEST_DATA_DIR"
-cat > "$RULES_FILE" <<EOF
-http-attr.local http://127.0.0.1:${ECHO_HTTP_PORT}
-ws-attr.local ws://127.0.0.1:${ECHO_WS_PORT}
-httpbin.org/headers resHeaders://X-Socks5-Rule=applied
-EOF
+    render_rule_fixture_to_file "$RULES_TEMPLATE" "$RULES_FILE" \
+        "ECHO_HTTP_PORT=${ECHO_HTTP_PORT}" \
+        "ECHO_WS_PORT=${ECHO_WS_PORT}"
 }
 
 start_proxy() {

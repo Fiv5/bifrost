@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay custom rules 模式可以通过 host 规则重定向请求。
+fake-host.local host://127.0.0.1:__MOCK_HTTP_PORT__

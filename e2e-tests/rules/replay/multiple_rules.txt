@@ -1,0 +1,4 @@
+# 测试目标: 验证 replay custom rules 模式支持多条规则组合生效。
+127.0.0.1 reqHeaders://X-Multi-1=value1
+127.0.0.1 reqHeaders://X-Multi-2=value2
+127.0.0.1 ua://MultiTestUA/2.0

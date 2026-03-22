@@ -15,7 +15,12 @@ TEST_ID=""
 
 python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$HTTP_PORT" >/tmp/bifrost_echo.log 2>&1 &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+trap 'kill "$server_pid" 2>/dev/null || true; admin_cleanup_bifrost' EXIT
+
+if ! admin_ensure_bifrost; then
+  echo "Failed to start admin server"
+  exit 1
+fi
 
 admin_delete "/api/config/performance/clear-cache" >/dev/null
 

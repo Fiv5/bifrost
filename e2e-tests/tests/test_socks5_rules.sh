@@ -7,12 +7,14 @@ PROJECT_ROOT="$(dirname "$E2E_DIR")"
 
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
 
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-18080}
 SOCKS5_PORT=${SOCKS5_PORT:-11080}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
 DATA_DIR="${PROJECT_ROOT}/.bifrost-socks5-rules-test"
+RULES_DIR="$E2E_DIR/rules/socks5"
 
 cleanup() {
     echo "Cleaning up..."
@@ -53,6 +55,12 @@ add_rule() {
     local content=$2
     export BIFROST_DATA_DIR="$DATA_DIR"
     "$BIFROST_BIN" rule add "$name" -c "$content"
+}
+
+add_rule_from_fixture() {
+    local name="$1"
+    local fixture_name="$2"
+    add_rule "$name" "$(rule_fixture_content "$RULES_DIR/$fixture_name")"
 }
 
 run_test_both_modes() {
@@ -146,8 +154,8 @@ start_proxy
 
 echo ""
 echo "=== Adding test rules ==="
-add_rule "host-redirect" "httpbin.org host://example.com"
-add_rule "block-domain" "blocked-domain.test block://"
+add_rule_from_fixture "host-redirect" "host_redirect.txt"
+add_rule_from_fixture "block-domain" "block_domain.txt"
 
 echo ""
 echo "=== Restarting proxy to load rules ==="

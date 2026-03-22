@@ -356,14 +356,20 @@ create_rule() {
     local name="$1"
     local content="$2"
     local enabled="${3:-true}"
-    admin_post "/api/rules" "{\"name\":\"${name}\",\"content\":\"${content}\",\"enabled\":${enabled}}"
+    local payload
+    payload=$(jq -cn --arg name "$name" --arg content "$content" --argjson enabled "$enabled" \
+        '{name:$name, content:$content, enabled:$enabled}')
+    admin_post "/api/rules" "$payload"
 }
 
 update_rule() {
     local name="$1"
     local content="$2"
     local enabled="${3:-true}"
-    admin_put "/api/rules/${name}" "{\"content\":\"${content}\",\"enabled\":${enabled}}"
+    local payload
+    payload=$(jq -cn --arg content "$content" --argjson enabled "$enabled" \
+        '{content:$content, enabled:$enabled}')
+    admin_put "/api/rules/${name}" "$payload"
 }
 
 delete_rule() {
