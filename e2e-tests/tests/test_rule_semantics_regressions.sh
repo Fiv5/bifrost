@@ -123,7 +123,7 @@ start_mock_servers() {
 
 build_bifrost() {
     log_section "Building bifrost"
-    (cd "$ROOT_DIR" && cargo build --bin bifrost)
+    (cd "$ROOT_DIR" && cargo build --release --bin bifrost)
 }
 
 write_rules() {
@@ -177,7 +177,7 @@ test_full_url_pattern_with_spaced_header() {
     perform_request "http://full-url-space.local/api/v1/users"
 
     assert_status_2xx "$HTTP_STATUS" "full URL spaced-header request should succeed" || return 1
-    assert_json_equals '.request.headers["X-Split-Trace"]' 'note.example.com:8443 stays text' "$HTTP_BODY" "spaced header value should not be merged into host target" || return 1
+    assert_json_equals '.request.headers["x-split-trace"]' 'note.example.com:8443 stays text' "$HTTP_BODY" "spaced header value should not be merged into host target" || return 1
 }
 
 test_full_url_pattern_with_value_ref() {
@@ -185,7 +185,7 @@ test_full_url_pattern_with_value_ref() {
     perform_request "http://full-url-value.local/api/users"
 
     assert_status_2xx "$HTTP_STATUS" "full URL value-ref request should succeed" || return 1
-    assert_json_equals '.request.headers["X-Upstream"]' 'api.example.com:9443' "$HTTP_BODY" "value-ref header should still apply after host target" || return 1
+    assert_json_equals '.request.headers["x-upstream"]' 'api.example.com:9443' "$HTTP_BODY" "value-ref header should still apply after host target" || return 1
 }
 
 test_full_url_pattern_with_regex_path_replace() {

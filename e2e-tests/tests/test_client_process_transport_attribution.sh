@@ -119,7 +119,7 @@ start_mock_servers() {
 
 build_bifrost() {
     log_section "Building bifrost"
-    (cd "$ROOT_DIR" && cargo build --bin bifrost)
+    (cd "$ROOT_DIR" && cargo build --release --bin bifrost)
 }
 
 write_rules() {

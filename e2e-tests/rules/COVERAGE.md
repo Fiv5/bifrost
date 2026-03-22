@@ -12,9 +12,9 @@
 
 ## 最新测试执行结果
 
-**执行时间**: 2026-03-08
-**回归范围**: 新增/补齐协议用例
-**结果**: 相关新增用例通过
+**执行时间**: 2026-03-23
+**回归范围**: 补充 split_rule_parts / full-URL / bare-target 高风险语义回归用例
+**结果**: `reqHeaders` 相关回归用例通过；`regex pathReplace` 在 bare target / full URL 组合下仍存在回归
 
 ## 1. 基础路由协议 (Basic Routing)
 
@@ -38,7 +38,7 @@
 
 | 协议         | 状态 | 测试文件                   | 说明           |
 | ------------ | ---- | -------------------------- | -------------- |
-| `reqHeaders` | ⚠️   | request_modify/headers.txt | 请求头修改     |
+| `reqHeaders` | ⚠️   | request_modify/headers.txt, regression/rule_semantics_split_parsing.txt | 请求头修改     |
 | `reqBody`    | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体替换 |
 | `reqPrepend` | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体前置 |
 | `reqAppend`  | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体追加 |
@@ -103,7 +103,7 @@
 | 协议          | 状态 | 测试文件                      | 说明            |
 | ------------- | ---- | ----------------------------- | --------------- |
 | `urlReplace`  | ✅   | request_modify/url_params.txt | URL 替换        |
-| `pathReplace` | ✅   | request_modify/url_params.txt | urlReplace 别名 |
+| `pathReplace` | ⚠️   | request_modify/url_params.txt, regression/rule_semantics_split_parsing.txt | urlReplace 别名；regex pathReplace 在高风险组合下仍待修复 |
 
 ## 6. 控制协议 (Control)
 
@@ -120,7 +120,6 @@
 
 | 变量               | 状态 | 测试文件                   | 说明         |
 | ------------------ | ---- | -------------------------- | ------------ |
-| `${reqId}`         | 🔄   | template/template_vars.txt | 请求 ID      |
 | `${now}`           | 🔄   | template/template_vars.txt | 当前时间戳   |
 | `${random}`        | 🔄   | template/template_vars.txt | 随机数       |
 | `${randomInt(N)}`  | 🔄   | template/template_vars.txt | 随机整数     |
@@ -213,7 +212,7 @@
 | ^前缀路径单星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/*` (不含/?) |
 | ^前缀路径双星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/**` (不含?) |
 | ^前缀路径三星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/***` (含?)  |
-| 正则匹配      | ✅   | combination/pattern_match.txt | `/regex/`                     |
+| 正则匹配      | ✅   | combination/pattern_match.txt, regression/rule_semantics_split_parsing.txt | `/regex/`                     |
 | 正则 i 标志   | ✅   | combination/pattern_match.txt | `/regex/i`                    |
 | 正则 u 标志   | ✅   | combination/pattern_match.txt | `/regex/u` (Unicode)          |
 | 正则捕获      | ✅   | combination/pattern_match.txt | `/(\w+)/` → `$1`              |
@@ -267,7 +266,7 @@
 
 ### 高优先级 (当前失败的测试)
 
-1. `filter` / `ignore` / `includeFilter` - 控制协议测试失败
+1. `includeFilter` - 控制协议测试失败
 2. `path_wildcard` / `port_wildcard` / `protocol_wildcard` - 通配符匹配问题
 3. `priority/*` - 优先级测试失败
 4. `template_vars` - 部分模板变量不工作 (reqHeaders, reqCookies, 转义符号)

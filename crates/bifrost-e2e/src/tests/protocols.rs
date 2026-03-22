@@ -98,10 +98,22 @@ pub fn get_all_tests() -> Vec<TestCase> {
             test_protocol_full_url_reqheaders_spaces,
         ),
         TestCase::standalone(
+            "protocol_full_url_bare_target_reqheaders_spaces",
+            "Full URL pattern + bare target: spaced reqHeaders value stays active",
+            "protocols",
+            test_protocol_full_url_bare_target_reqheaders_spaces,
+        ),
+        TestCase::standalone(
             "protocol_full_url_reqheaders_value_ref",
             "Full URL pattern: value-ref reqHeaders still applies after host target",
             "protocols",
             test_protocol_full_url_reqheaders_value_ref,
+        ),
+        TestCase::standalone(
+            "protocol_full_url_bare_target_reqheaders_value_ref",
+            "Full URL pattern + bare target: value-ref reqHeaders still applies",
+            "protocols",
+            test_protocol_full_url_bare_target_reqheaders_value_ref,
         ),
         TestCase::standalone(
             "protocol_combined_pipeline",
@@ -541,6 +553,37 @@ async fn test_protocol_full_url_reqheaders_spaces() -> Result<(), String> {
     Ok(())
 }
 
+async fn test_protocol_full_url_bare_target_reqheaders_spaces() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start_with_rules_text(
+        port,
+        &format!(
+            "http://space-bare.rule.test/api 127.0.0.1:{} reqHeaders://(X-Trace: note.example.com:8443 stays text)",
+            mock.port
+        ),
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://space-bare.rule.test/api/v1/users",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_path("/api/v1/users")?;
+    mock.assert_header_received("x-trace", "note.example.com:8443 stays text")?;
+
+    Ok(())
+}
+
 async fn test_protocol_full_url_reqheaders_value_ref() -> Result<(), String> {
     let mock = EnhancedMockServer::start().await;
 
@@ -570,6 +613,39 @@ async fn test_protocol_full_url_reqheaders_value_ref() -> Result<(), String> {
     let result = CurlCommand::with_proxy(
         &format!("http://127.0.0.1:{}", port),
         "http://value-ref.rule.test/api/users",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    mock.assert_path("/api/users")?;
+    mock.assert_header_received("x-upstream", "api.example.com:9443")?;
+
+    Ok(())
+}
+
+async fn test_protocol_full_url_bare_target_reqheaders_value_ref() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let rules_text = format!(
+        r#"http://value-ref-bare.rule.test/api 127.0.0.1:{} reqHeaders://{{customHeaders}}
+
+``` customHeaders
+X-Upstream: api.example.com:9443
+```"#,
+        mock.port
+    );
+    let _proxy = ProxyInstance::start_with_rules_text(port, &rules_text)
+        .await
+        .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://value-ref-bare.rule.test/api/users",
     )
     .execute()
     .await
