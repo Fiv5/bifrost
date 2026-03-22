@@ -26,6 +26,7 @@ export interface SyncStatus {
   enabled: boolean;
   auto_sync: boolean;
   remote_base_url: string;
+  has_session: boolean;
   reachable: boolean;
   authorized: boolean;
   syncing: boolean;

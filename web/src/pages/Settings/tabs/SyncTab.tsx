@@ -116,8 +116,8 @@ export default function SyncTab({
               {
                 key: "session",
                 label: "Session",
-                children: syncStatus?.authorized
-                  ? syncStatus.user?.user_id || "Signed in"
+                children: syncStatus?.has_session
+                  ? syncStatus.user?.user_id || "Signed in on this device"
                   : "Not signed in",
               },
               {
@@ -201,7 +201,7 @@ export default function SyncTab({
             <Button
               icon={<LogoutOutlined />}
               onClick={onSignOut}
-              disabled={!syncStatus?.authorized}
+              disabled={!syncStatus?.has_session}
               loading={syncLoading}
               data-testid="settings-sync-sign-out"
             >
