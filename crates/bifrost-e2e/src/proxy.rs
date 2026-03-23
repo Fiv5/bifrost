@@ -322,7 +322,11 @@ impl ProxyRulesResolverTrait for RulesResolverAdapter {
                 Protocol::UrlParams => {
                     if let Some(params) = parse_header_value(value) {
                         for (k, v) in params {
-                            result.url_params.push((k, v));
+                            if v.is_empty() {
+                                result.delete_url_params.push(k);
+                            } else {
+                                result.url_params.push((k, v));
+                            }
                         }
                     }
                 }
