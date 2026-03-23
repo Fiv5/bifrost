@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-e2e"
-version = "0.0.24-beta"
+version = "0.0.25-beta"
 edition = "2021"
 description = "End-to-end testing framework for Bifrost proxy"
 authors = ["Bifrost Team"]
