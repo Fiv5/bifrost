@@ -3,6 +3,7 @@ import { Typography, Tooltip, Dropdown, message } from "antd";
 import type { MenuProps } from "antd";
 import {
   CopyOutlined,
+  ExportOutlined,
   ExpandAltOutlined,
   ShrinkOutlined,
 } from "@ant-design/icons";
@@ -12,6 +13,7 @@ const { Text } = Typography;
 
 interface HeaderProps {
   record: TrafficRecord;
+  onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -44,8 +46,10 @@ const getStatusColor = (status: number): string => {
 
 const HeaderContent = memo(function HeaderContent({
   record,
+  onOpenInNewWindow,
 }: {
   record: TrafficRecord;
+  onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
 }) {
   const { method, status, url } = record;
   const statusText = STATUS_CODES[status] || "";
@@ -90,6 +94,10 @@ const HeaderContent = memo(function HeaderContent({
   const toggleExpand = useCallback(() => {
     setExpanded((prev) => !prev);
   }, []);
+
+  const handleOpenInNewWindow = useCallback(() => {
+    onOpenInNewWindow?.(record);
+  }, [onOpenInNewWindow, record]);
 
   return (
     <div
@@ -176,6 +184,20 @@ const HeaderContent = memo(function HeaderContent({
             )}
           </Tooltip>
         )}
+        {onOpenInNewWindow ? (
+          <Tooltip title="Open in new window">
+            <ExportOutlined
+              onClick={handleOpenInNewWindow}
+              data-testid="traffic-detail-open-window"
+              style={{
+                fontSize: 14,
+                padding: 4,
+                cursor: "pointer",
+                color: "#666",
+              }}
+            />
+          </Tooltip>
+        ) : null}
         <Dropdown menu={{ items: copyMenuItems }} trigger={["click"]}>
           <Tooltip title="Copy">
             <CopyOutlined
@@ -193,6 +215,12 @@ const HeaderContent = memo(function HeaderContent({
   );
 });
 
-export const Header = ({ record }: HeaderProps) => {
-  return <HeaderContent key={record.id} record={record} />;
+export const Header = ({ record, onOpenInNewWindow }: HeaderProps) => {
+  return (
+    <HeaderContent
+      key={record.id}
+      record={record}
+      onOpenInNewWindow={onOpenInNewWindow}
+    />
+  );
 };

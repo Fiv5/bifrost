@@ -107,6 +107,12 @@ let historyBackfillGeneration = 0;
 let historyRetryTimerId: number | null = null;
 let historyRetryDelayMs = 1000;
 let recordsMutationVersion = 0;
+const TRAFFIC_SELECTION_STORAGE_KEY = 'bifrost-traffic-ui';
+const TRAFFIC_SELECTION_SYNC_CHANNEL = 'bifrost-traffic-selection-sync';
+const trafficSelectionSyncChannel =
+  typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(TRAFFIC_SELECTION_SYNC_CHANNEL)
+    : null;
 
 function capPendingIds(ids: Set<string>) {
   while (ids.size > MAX_PENDING_IDS) {
@@ -1917,3 +1923,70 @@ export const useTrafficStore = create<TrafficState>()(
     },
   ),
 );
+
+type PersistedTrafficSelectionState = {
+  selectedId?: string;
+};
+
+function isPersistedTrafficSelectionState(
+  value: unknown,
+): value is { state: PersistedTrafficSelectionState } {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as { state?: PersistedTrafficSelectionState };
+  return !!candidate.state && typeof candidate.state === 'object';
+}
+
+let isApplyingExternalSelectedId = false;
+let trafficSelectionSyncInitialized = false;
+
+function applyExternalSelectedId(id: string | undefined) {
+  isApplyingExternalSelectedId = true;
+  useTrafficStore.setState({ selectedId: id });
+  isApplyingExternalSelectedId = false;
+}
+
+function initializeTrafficSelectionSync() {
+  if (trafficSelectionSyncInitialized || typeof window === 'undefined') {
+    return;
+  }
+  trafficSelectionSyncInitialized = true;
+
+  useTrafficStore.subscribe((state, prevState) => {
+    if (isApplyingExternalSelectedId || state.selectedId === prevState.selectedId) {
+      return;
+    }
+
+    trafficSelectionSyncChannel?.postMessage({
+      type: 'selected-id',
+      id: state.selectedId,
+    });
+  });
+
+  trafficSelectionSyncChannel?.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data as { type?: string; id?: string } | undefined;
+    if (data?.type !== 'selected-id') {
+      return;
+    }
+    applyExternalSelectedId(data.id);
+  });
+
+  window.addEventListener('storage', (event: StorageEvent) => {
+    if (event.key !== TRAFFIC_SELECTION_STORAGE_KEY || !event.newValue) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(event.newValue) as unknown;
+      if (!isPersistedTrafficSelectionState(parsed)) {
+        return;
+      }
+      applyExternalSelectedId(parsed.state.selectedId);
+    } catch {
+      // Ignore malformed persisted state.
+    }
+  });
+}
+
+initializeTrafficSelectionSync();

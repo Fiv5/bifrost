@@ -5,6 +5,7 @@ import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
+import TrafficDetailPage from "./pages/TrafficDetailPage";
 import Replay from "./pages/Replay";
 import Settings from "./pages/Settings";
 import SyncLogin from "./pages/SyncLogin";
@@ -228,6 +229,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
           <BifrostFileDropZone>
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
+              <Route path="/traffic/detail" element={<TrafficDetailPage />} />
               <Route path="/" element={<AppLayout />}>
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />
@@ -245,6 +247,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
           <BifrostFileDropZone>
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
+              <Route path="/traffic/detail" element={<TrafficDetailPage />} />
               <Route path="/" element={<AppLayout />}>
                 <Route index element={<Navigate to="/traffic" replace />} />
                 <Route path="traffic" element={<Traffic />} />

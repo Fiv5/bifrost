@@ -59,6 +59,8 @@ interface MessagesProps {
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   onSseCountChange?: (count: number) => void;
+  responseBodyOverride?: string | null;
+  onResponseBodyChange?: (body: string | null, recordId: string) => void;
 }
 
 const formatSize = (bytes: number) => {
@@ -476,6 +478,8 @@ export const Messages = ({
   searchValue,
   onSearch,
   onSseCountChange,
+  responseBodyOverride,
+  onResponseBodyChange,
 }: MessagesProps) => {
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
@@ -507,8 +511,18 @@ export const Messages = ({
     {},
   );
   const inflightWsPayloadIdsRef = useRef<Set<number>>(new Set());
-  const responseBody = useTrafficStore((state) => state.responseBody);
+  const responseBodyFromStore = useTrafficStore((state) => state.responseBody);
   const setResponseBody = useTrafficStore((state) => state.setResponseBody);
+  const responseBody =
+    responseBodyOverride !== undefined ? responseBodyOverride : responseBodyFromStore;
+
+  const commitResponseBody = useCallback(
+    (body: string | null) => {
+      setResponseBody(recordId, body);
+      onResponseBodyChange?.(body, recordId);
+    },
+    [onResponseBodyChange, recordId, setResponseBody],
+  );
 
   const mergeWsFrames = useCallback((base: WebSocketFrame[], incoming: WebSocketFrame[]) => {
     if (incoming.length === 0) return base;
@@ -767,7 +781,7 @@ export const Messages = ({
       setSseLoading(false);
       setSseForceClosed(true);
       getResponseBody(recordId)
-        .then((body) => setResponseBody(recordId, body))
+        .then((body) => commitResponseBody(body))
         .catch(() => {});
     };
 
@@ -782,7 +796,7 @@ export const Messages = ({
     isConnectionOpen,
     isWebSocket,
     recordId,
-    setResponseBody,
+    commitResponseBody,
     sseReloadToken,
     sseForceClosed,
   ]);

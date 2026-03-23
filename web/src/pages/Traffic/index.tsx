@@ -18,6 +18,7 @@ import {
 } from "../../stores/useTrafficStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useFilterPanelStore } from "../../stores/useFilterPanelStore";
+import { useTrafficDetailWindowStore } from "../../stores/useTrafficDetailWindowStore";
 import { useSearchStore } from "../../stores/useSearchStore";
 import VirtualTrafficTable from "../../components/TrafficTable/VirtualTrafficTable";
 import TrafficDetail from "../../components/TrafficDetail";
@@ -30,6 +31,7 @@ import {
   decodeJsonFromQueryParam,
   encodeJsonForQueryParam,
 } from "../../utils/urlState";
+import { buildAppRouteUrl } from "../../runtime";
 import type {
   TrafficSummary,
   FilterCondition,
@@ -95,6 +97,7 @@ export default function Traffic() {
   const { token } = theme.useToken();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const detachedPopupRef = useRef<Window | null>(null);
 
   const records = useTrafficStore((state) => state.records);
   const recordsMutation = useTrafficStore((state) => state.recordsMutation);
@@ -190,6 +193,9 @@ export default function Traffic() {
   const filterPanelInitialized = useFilterPanelStore(
     (state) => state.initialized,
   );
+  const detailDetached = useTrafficDetailWindowStore((state) => state.detached);
+  const detachDetailWindow = useTrafficDetailWindowStore((state) => state.detach);
+  const attachDetailWindow = useTrafficDetailWindowStore((state) => state.attach);
 
   const searchMode = useSearchStore((state) => state.mode);
   const setSearchMode = useSearchStore((state) => state.setMode);
@@ -436,6 +442,7 @@ export default function Traffic() {
   ]);
 
   const lastAutoFetchSelectedIdRef = useRef<string | null>(null);
+  const previousDetachedRef = useRef(detailDetached);
 
   useEffect(() => {
     if (!selectedId) {
@@ -452,6 +459,36 @@ export default function Traffic() {
     lastAutoFetchSelectedIdRef.current = selectedId;
     fetchTrafficDetail(selectedId);
   }, [currentRecord?.id, fetchTrafficDetail, selectedId]);
+
+  useEffect(() => {
+    if (detailDetached) {
+      if (!detailPanelCollapsed) {
+        setDetailPanelCollapsed(true);
+      }
+    } else if (previousDetachedRef.current) {
+      setDetailPanelCollapsed(false);
+    }
+
+    previousDetachedRef.current = detailDetached;
+  }, [detailDetached, detailPanelCollapsed, setDetailPanelCollapsed]);
+
+  useEffect(() => {
+    if (!detailDetached) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const popup = detachedPopupRef.current;
+      if (!popup || popup.closed) {
+        detachedPopupRef.current = null;
+        attachDetailWindow();
+      }
+    }, 400);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [attachDetailWindow, detailDetached]);
 
   const handleSelect = useCallback(
     (record: TrafficSummary) => {
@@ -492,6 +529,46 @@ export default function Traffic() {
     },
     [detailPanelCollapsed, setDetailPanelCollapsed, setSelectedId],
   );
+
+  const handleOpenDetailInNewWindow = useCallback((record: TrafficSummary) => {
+    setSelectedId(record.id);
+
+    const popupId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `traffic-detail-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const url = buildAppRouteUrl(
+      `/traffic/detail?detached=1&popupId=${encodeURIComponent(popupId)}&id=${encodeURIComponent(record.id)}`,
+    );
+
+    const existingPopup = detachedPopupRef.current;
+    if (existingPopup && !existingPopup.closed) {
+      detachDetailWindow(popupId);
+      existingPopup.location.href = url;
+      existingPopup.focus();
+      return;
+    }
+
+    const popup = window.open(
+      url,
+      "_blank",
+      "popup=yes,width=1440,height=900",
+    );
+    if (!popup) {
+      message.error("Failed to open detail window");
+      return;
+    }
+
+    detachedPopupRef.current = popup;
+    detachDetailWindow(popupId);
+    popup.focus();
+  }, [detachDetailWindow, setSelectedId]);
+
+  const handleAttachDetailWindow = useCallback(() => {
+    attachDetailWindow();
+    detachedPopupRef.current?.close();
+    detachedPopupRef.current = null;
+  }, [attachDetailWindow]);
 
   const handleScrollPositionChange = useCallback(
     (isAtBottom: boolean) => {
@@ -684,6 +761,7 @@ export default function Traffic() {
         responseBody={responseBody}
         loading={detailLoading}
         error={detailError}
+        onOpenInNewWindow={handleOpenDetailInNewWindow}
       />
     </div>
   );
@@ -715,6 +793,8 @@ export default function Traffic() {
         onFilterPanelToggle={handleFilterPanelToggle}
         detailPanelCollapsed={detailPanelCollapsed}
         onDetailPanelToggle={handleDetailPanelToggle}
+        detailDetached={detailDetached}
+        onAttachDetailWindow={handleAttachDetailWindow}
       />
 
       <div style={styles.mainContent}>

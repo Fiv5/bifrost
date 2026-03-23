@@ -30,6 +30,8 @@ interface TrafficDetailProps {
   responseBody: string | null;
   loading?: boolean;
   error?: string | null;
+  onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
+  onResponseBodyChange?: ((body: string | null, recordId: string) => void) | undefined;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -51,7 +53,7 @@ const hasSetCookies = (headers: [string, string][] | null): boolean => {
   return headers.some(([name]) => name.toLowerCase() === "set-cookie");
 };
 
-const COLLAPSED_HEIGHT = 32;
+const COLLAPSED_HEIGHT = 28;
 
 const styles: Record<string, CSSProperties> = {
   container: {
@@ -83,7 +85,12 @@ export default function TrafficDetail({
   responseBody,
   loading,
   error,
+  onOpenInNewWindow,
+  onResponseBodyChange,
 }: TrafficDetailProps) {
+  const [expandedRequestPanelSize, setExpandedRequestPanelSize] = useState<
+    number | string
+  >("50%");
   const {
     requestSearch,
     responseSearch,
@@ -383,6 +390,8 @@ export default function TrafficDetail({
             searchValue={responseSearch}
             onSearch={setResponseSearch}
             onSseCountChange={record.is_sse ? setLiveSseCount : undefined}
+            responseBodyOverride={responseBody}
+            onResponseBodyChange={onResponseBodyChange}
           />
         ),
       },
@@ -517,20 +526,39 @@ export default function TrafficDetail({
   }
 
   const hasCollapsed = requestCollapsed || responseCollapsed;
+  const splitterModeKey = requestCollapsed
+    ? "request-collapsed"
+    : responseCollapsed
+      ? "response-collapsed"
+      : "expanded";
   const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
   const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
   const requestPanelProps = hasCollapsed
     ? { size: requestPanelSize, resizable: false }
-    : { min: "20%", max: "80%", defaultSize: "50%" };
+    : { min: "20%", max: "80%", defaultSize: expandedRequestPanelSize };
   const responsePanelProps = hasCollapsed
     ? { size: responsePanelSize, resizable: false }
     : {};
 
+  const handleResizeEnd = useCallback(
+    (sizes: number[]) => {
+      if (hasCollapsed || sizes.length < 2) {
+        return;
+      }
+      setExpandedRequestPanelSize(sizes[0]);
+    },
+    [hasCollapsed],
+  );
+
   return (
     <div style={styles.container} data-testid="traffic-detail">
-      <Header record={record} />
+      <Header record={record} onOpenInNewWindow={onOpenInNewWindow} />
       <div style={styles.splitterWrapper}>
-        <Splitter layout="vertical">
+        <Splitter
+          key={splitterModeKey}
+          layout="vertical"
+          onResizeEnd={handleResizeEnd}
+        >
           <Splitter.Panel {...requestPanelProps}>
             <div style={styles.panelWrapper}>
               <Panel

@@ -420,6 +420,35 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
   await server.close();
 });
 
+test("独立详情路由加载单条请求", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/detail-route-${token}`;
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+    await page.reload();
+
+    const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
+    await expect(row).toBeVisible();
+    const recordId = await row.getAttribute("data-record-id");
+    expect(recordId).toBeTruthy();
+
+    await page.goto(`/_bifrost/traffic/detail?id=${recordId}`);
+    await expect(page).toHaveURL(new RegExp(`/traffic/detail\\?id=${recordId}$`));
+    await expect(page.getByText(`Request ID: ${recordId}`)).toBeVisible();
+    await expect(page.getByTestId("traffic-detail")).toBeVisible();
+    await expect(page.getByTestId("traffic-detail-header")).toContainText(path);
+  } finally {
+    await server.close();
+  }
+});
+
+
 test("左侧 Filters 展示基础请求数量", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startMockServer();
