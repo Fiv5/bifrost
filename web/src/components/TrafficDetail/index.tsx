@@ -442,6 +442,7 @@ export default function TrafficDetail({
     record,
     liveSseCount,
     responseBody,
+    onResponseBodyChange,
     canPreviewResponseImage,
     responseSearch,
     setResponseSearch,
@@ -503,6 +504,26 @@ export default function TrafficDetail({
     setResponseTab,
   ]);
 
+  const hasCollapsed = requestCollapsed || responseCollapsed;
+  const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const requestPanelProps = hasCollapsed
+    ? { size: requestPanelSize, resizable: false }
+    : { min: "20%", max: "80%", defaultSize: expandedRequestPanelSize };
+  const responsePanelProps = hasCollapsed
+    ? { size: responsePanelSize, resizable: false }
+    : {};
+
+  const handleResizeEnd = useCallback(
+    (sizes: number[]) => {
+      if (hasCollapsed || sizes.length < 2) {
+        return;
+      }
+      setExpandedRequestPanelSize(sizes[0]);
+    },
+    [hasCollapsed],
+  );
+
   if (!record) {
     if (loading) {
       return (
@@ -525,37 +546,11 @@ export default function TrafficDetail({
     );
   }
 
-  const hasCollapsed = requestCollapsed || responseCollapsed;
-  const splitterModeKey = requestCollapsed
-    ? "request-collapsed"
-    : responseCollapsed
-      ? "response-collapsed"
-      : "expanded";
-  const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
-  const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
-  const requestPanelProps = hasCollapsed
-    ? { size: requestPanelSize, resizable: false }
-    : { min: "20%", max: "80%", defaultSize: expandedRequestPanelSize };
-  const responsePanelProps = hasCollapsed
-    ? { size: responsePanelSize, resizable: false }
-    : {};
-
-  const handleResizeEnd = useCallback(
-    (sizes: number[]) => {
-      if (hasCollapsed || sizes.length < 2) {
-        return;
-      }
-      setExpandedRequestPanelSize(sizes[0]);
-    },
-    [hasCollapsed],
-  );
-
   return (
     <div style={styles.container} data-testid="traffic-detail">
       <Header record={record} onOpenInNewWindow={onOpenInNewWindow} />
       <div style={styles.splitterWrapper}>
         <Splitter
-          key={splitterModeKey}
           layout="vertical"
           onResizeEnd={handleResizeEnd}
         >
@@ -574,6 +569,7 @@ export default function TrafficDetail({
                 bodyData={requestBody}
                 collapsed={requestCollapsed}
                 onCollapsedChange={handleRequestCollapsedChange}
+                keepAliveTabs={["Body"]}
               />
             </div>
           </Splitter.Panel>
@@ -592,6 +588,7 @@ export default function TrafficDetail({
                 bodyData={responseBody}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
+                keepAliveTabs={["Body", "Messages"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>

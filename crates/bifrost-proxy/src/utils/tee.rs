@@ -528,6 +528,20 @@ impl SseTeeBodyDropGuard {
             let response_body_ref = self.file_writer.take().map(|w| w.finish());
             state.sse_hub.set_closed(&self.record_id);
             state.update_traffic_by_id(&self.record_id, move |record| {
+                let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+                let total_ms = now_ms.saturating_sub(record.timestamp);
+                record.duration_ms = record.duration_ms.max(total_ms);
+                if let Some(ref mut timing) = record.timing {
+                    let first_response_ms = timing
+                        .dns_ms
+                        .unwrap_or(0)
+                        .saturating_add(timing.connect_ms.unwrap_or(0))
+                        .saturating_add(timing.tls_ms.unwrap_or(0))
+                        .saturating_add(timing.send_ms.unwrap_or(0))
+                        .saturating_add(timing.wait_ms.unwrap_or(0));
+                    timing.receive_ms = Some(record.duration_ms.saturating_sub(first_response_ms));
+                    timing.total_ms = record.duration_ms;
+                }
                 record.response_body_ref = response_body_ref.clone();
             });
             persist_socket_summary(state, &self.record_id, self.total_bytes);

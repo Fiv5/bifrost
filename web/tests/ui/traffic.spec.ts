@@ -1278,3 +1278,89 @@ test("SSE 详情 Messages 面板打开后可实时收到新事件", async ({ pag
     await waitForClose;
   }
 });
+
+test("SSE 详情切换 Response tab 后消息列表不应丢失", async ({ page, request }) => {
+  await clearTraffic(request);
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-tab-switch-${token}`;
+  const server = createServer((req, res) => {
+    if (req.url !== ssePath) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`id: 1\ndata: seed-${token}\n\n`);
+    let counter = 0;
+    const timer = setInterval(() => {
+      counter += 1;
+      res.write(`id: ${counter + 1}\ndata: after-tab-${token}-${counter}\n\n`);
+      if (counter >= 8) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 300);
+    req.on("close", () => {
+      clearInterval(timer);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "8",
+      "-x",
+      proxyUrl,
+      `http://127.0.0.1:${port}${ssePath}`,
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const sseRow = page.getByTestId("traffic-row").filter({ hasText: ssePath }).first();
+    await expect(sseRow).toBeVisible();
+    await sseRow.click();
+    await page.getByTestId("response-tab-messages").click();
+
+    const messages = page.getByTestId("sse-message-list");
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-tab-${token}-1`);
+
+    await page.getByTestId("response-tab-header").click();
+    await expect(page.getByTestId("response-header-view-mode-tabs")).toBeVisible();
+    await page.waitForTimeout(700);
+
+    await page.getByTestId("response-tab-messages").click();
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-tab-${token}-1`);
+    await expect(messages).toContainText(`after-tab-${token}-2`);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err?: Error) => (err ? reject(err) : resolve())),
+    );
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
+});

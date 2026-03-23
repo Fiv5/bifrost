@@ -15,7 +15,12 @@ import type {
   RequestTiming,
   SocketStatus,
 } from "../../../../types";
-import { formatDurationDetailed } from "../../../../utils/duration";
+import {
+  formatDurationDetailed,
+  getEffectiveDurationMs,
+  isLiveStreamingTraffic,
+} from "../../../../utils/duration";
+import { useLiveNow } from "../../../../hooks/useLiveNow";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
 import AppIcon from "../../../AppIcon";
 
@@ -305,8 +310,264 @@ const SocketStatusCard = ({
   );
 };
 
+type TimelineSegment = {
+  key: string;
+  label: string;
+  value: number;
+  color: string;
+};
+
+type TimelineMoment = {
+  key: string;
+  label: string;
+  timestamp: number;
+  offsetMs: number;
+  active?: boolean;
+};
+
+const buildTimelineData = (
+  record: TrafficRecord,
+  durationMs: number,
+): { segments: TimelineSegment[]; moments: TimelineMoment[] } => {
+  const timing = record.timing;
+  const isOpen = record.socket_status?.is_open === true;
+  const transferLabel =
+    record.is_sse || record.is_websocket || record.is_tunnel
+      ? isOpen
+        ? "Streaming"
+        : "Streaming until close"
+      : "Receiving response body";
+
+  const stageCandidates: Array<{
+    key: string;
+    label: string;
+    value?: number;
+    color: string;
+    momentLabel?: string;
+  }> = [
+    {
+      key: "dns",
+      label: "DNS lookup",
+      value: timing?.dns_ms,
+      color: "#8884d8",
+      momentLabel: "DNS resolved",
+    },
+    {
+      key: "connect",
+      label: "Connection established",
+      value: timing?.connect_ms,
+      color: "#82ca9d",
+      momentLabel: "Connected",
+    },
+    {
+      key: "tls",
+      label: "TLS handshake",
+      value: timing?.tls_ms,
+      color: "#ffc658",
+      momentLabel: "TLS ready",
+    },
+    {
+      key: "send",
+      label: "Request sent",
+      value: timing?.send_ms,
+      color: "#ff7300",
+      momentLabel: "Request sent",
+    },
+    {
+      key: "wait",
+      label: "Waiting for first response",
+      value: timing?.wait_ms,
+      color: "#00C49F",
+      momentLabel: "First response",
+    },
+  ];
+
+  const segments: TimelineSegment[] = [];
+  const moments: TimelineMoment[] = [
+    {
+      key: "started",
+      label: "Started",
+      timestamp: record.timestamp,
+      offsetMs: 0,
+    },
+  ];
+
+  let cumulativeMs = 0;
+  for (const stage of stageCandidates) {
+    const value = stage.value ?? 0;
+    if (value <= 0) {
+      continue;
+    }
+    segments.push({
+      key: stage.key,
+      label: stage.label,
+      value,
+      color: stage.color,
+    });
+    cumulativeMs += value;
+    if (stage.momentLabel) {
+      moments.push({
+        key: `${stage.key}-moment`,
+        label: stage.momentLabel,
+        timestamp: record.timestamp + cumulativeMs,
+        offsetMs: cumulativeMs,
+      });
+    }
+  }
+
+  const transferMs = Math.max(durationMs - cumulativeMs, 0);
+  if (transferMs > 0) {
+    segments.push({
+      key: "transfer",
+      label: transferLabel,
+      value: transferMs,
+      color: "#1677ff",
+    });
+  }
+  if (segments.length === 0 && durationMs > 0) {
+    segments.push({
+      key: "total",
+      label: "Request processing",
+      value: durationMs,
+      color: "#722ed1",
+    });
+  }
+
+  if (transferMs > 0) {
+    moments.push({
+      key: "transfer-start",
+      label:
+        record.is_sse || record.is_websocket || record.is_tunnel
+          ? "Stream active"
+          : "Receiving body",
+      timestamp: record.timestamp + cumulativeMs,
+      offsetMs: cumulativeMs,
+    });
+  }
+  moments.push({
+    key: isOpen ? "current" : "closed",
+    label: isOpen ? "Current" : "Closed",
+    timestamp: record.timestamp + durationMs,
+    offsetMs: durationMs,
+    active: isOpen,
+  });
+
+  return { segments, moments };
+};
+
+const TimelineBreakdown = ({
+  record,
+  durationMs,
+}: {
+  record: TrafficRecord;
+  durationMs: number;
+}) => {
+  const { token } = theme.useToken();
+  const { segments, moments } = useMemo(
+    () => buildTimelineData(record, durationMs),
+    [record, durationMs],
+  );
+  const total = Math.max(durationMs, 1);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div
+        style={{
+          display: "flex",
+          height: 12,
+          borderRadius: 999,
+          overflow: "hidden",
+          backgroundColor: token.colorBgLayout,
+        }}
+      >
+        {segments.map((segment) => (
+          <div
+            key={segment.key}
+            style={{
+              width: `${(segment.value / total) * 100}%`,
+              backgroundColor: segment.color,
+              minWidth: segment.value > 0 ? 4 : 0,
+            }}
+            title={`${segment.label}: ${formatDurationDetailed(segment.value)}`}
+          />
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {segments.map((segment) => (
+          <div
+            key={segment.key}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "4px 8px",
+              borderRadius: 999,
+              backgroundColor: token.colorBgLayout,
+            }}
+          >
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "50%",
+                backgroundColor: segment.color,
+              }}
+            />
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {segment.label}: {formatDurationDetailed(segment.value)}
+            </Text>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {moments.map((moment) => (
+          <div
+            key={moment.key}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "20px minmax(120px, 160px) 1fr",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                backgroundColor: moment.active ? token.colorPrimary : "#52c41a",
+              }}
+            />
+            <Text strong style={{ fontSize: 12 }}>
+              {moment.label}
+            </Text>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {dayjs(moment.timestamp).format("YYYY-MM-DD HH:mm:ss.SSS")}
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                +{formatDurationDetailed(moment.offsetMs)}
+              </Text>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const isLiveDuration = isLiveStreamingTraffic(record);
+  const liveNow = useLiveNow(isLiveDuration);
+  const durationMs = getEffectiveDurationMs(record, liveNow);
 
   useMarkSearch(searchValue, () => wrapperRef.current, onSearch);
 
@@ -529,56 +790,32 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
               : formatSize(record.request_size + record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Duration">
-            {formatDurationDetailed(record.duration_ms)}
+            {formatDurationDetailed(durationMs)}
           </Descriptions.Item>
         </Descriptions>
 
         <Descriptions
           title="Timeline"
-          column={2}
+          column={1}
           size="small"
           bordered
           style={{ marginBottom: 4 }}
           labelStyle={{ width: 120, fontWeight: 500, fontSize: 12 }}
           contentStyle={{ fontSize: 12 }}
         >
-          <Descriptions.Item label="Timestamp" span={2}>
+          <Descriptions.Item label="Phases">
+            <TimelineBreakdown record={record} durationMs={durationMs} />
+          </Descriptions.Item>
+          <Descriptions.Item label="Started At">
             {dayjs(record.timestamp).format("YYYY-MM-DD HH:mm:ss.SSS")}
           </Descriptions.Item>
-          {record.timing && (
-            <>
-              {record.timing.dns_ms !== undefined && (
-                <Descriptions.Item label="DNS">
-                  {formatDurationDetailed(record.timing.dns_ms)}
-                </Descriptions.Item>
-              )}
-              {record.timing.connect_ms !== undefined && (
-                <Descriptions.Item label="Connect">
-                  {formatDurationDetailed(record.timing.connect_ms)}
-                </Descriptions.Item>
-              )}
-              {record.timing.tls_ms !== undefined && (
-                <Descriptions.Item label="TLS">
-                  {formatDurationDetailed(record.timing.tls_ms)}
-                </Descriptions.Item>
-              )}
-              {record.timing.send_ms !== undefined && (
-                <Descriptions.Item label="Send">
-                  {formatDurationDetailed(record.timing.send_ms)}
-                </Descriptions.Item>
-              )}
-              {record.timing.wait_ms !== undefined && (
-                <Descriptions.Item label="Wait (TTFB)">
-                  {formatDurationDetailed(record.timing.wait_ms)}
-                </Descriptions.Item>
-              )}
-              {record.timing.receive_ms !== undefined && (
-                <Descriptions.Item label="Receive">
-                  {formatDurationDetailed(record.timing.receive_ms)}
-                </Descriptions.Item>
-              )}
-            </>
-          )}
+          <Descriptions.Item label="Ended At">
+            {record.socket_status?.is_open
+              ? "In progress"
+              : dayjs(record.timestamp + durationMs).format(
+                  "YYYY-MM-DD HH:mm:ss.SSS",
+                )}
+          </Descriptions.Item>
         </Descriptions>
 
         {collapseItems.length > 0 && (

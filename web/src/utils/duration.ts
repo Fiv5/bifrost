@@ -1,3 +1,5 @@
+import type { TrafficRecord, TrafficSummary } from "../types";
+
 const SECOND_IN_MS = 1000;
 const MINUTE_IN_MS = 60 * SECOND_IN_MS;
 const HOUR_IN_MS = 60 * MINUTE_IN_MS;
@@ -32,4 +34,26 @@ export function formatDurationDetailed(ms?: number | null): string {
   if (remaining > 0) parts.push(`${remaining}ms`);
 
   return parts.join(" ");
+}
+
+type TrafficLike = Pick<
+  TrafficSummary | TrafficRecord,
+  "timestamp" | "duration_ms" | "socket_status" | "is_websocket" | "is_sse" | "is_tunnel"
+>;
+
+export function isLiveStreamingTraffic(record?: TrafficLike | null): boolean {
+  if (!record) return false;
+  if (!(record.is_websocket || record.is_sse || record.is_tunnel)) return false;
+  return record.socket_status?.is_open === true;
+}
+
+export function getEffectiveDurationMs(
+  record?: TrafficLike | null,
+  now = Date.now(),
+): number {
+  if (!record) return 0;
+  if (!isLiveStreamingTraffic(record)) {
+    return record.duration_ms || 0;
+  }
+  return Math.max(record.duration_ms || 0, now - record.timestamp);
 }

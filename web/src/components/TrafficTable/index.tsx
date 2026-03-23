@@ -5,7 +5,10 @@ import type { TrafficSummary } from "../../types";
 import {
   formatDurationCompact,
   formatDurationDetailed,
+  getEffectiveDurationMs,
+  isLiveStreamingTraffic,
 } from "../../utils/duration";
+import { useLiveNow } from "../../hooks/useLiveNow";
 
 const { Text } = Typography;
 
@@ -22,6 +25,9 @@ export default function TrafficTable({
   onSelect,
   selectedId,
 }: TrafficTableProps) {
+  const hasLiveDuration = data.some((record) => isLiveStreamingTraffic(record));
+  const liveNow = useLiveNow(hasLiveDuration);
+
   const getStatusColor = (status: number) => {
     if (status >= 500) return "error";
     if (status >= 400) return "warning";
@@ -195,12 +201,13 @@ export default function TrafficTable({
       key: "duration_ms",
       width: 55,
       align: "right",
-      render: (ms: number) => {
-        const compact = formatDurationCompact(ms);
+      render: (_: number, record: TrafficSummary) => {
+        const durationMs = getEffectiveDurationMs(record, liveNow);
+        const compact = formatDurationCompact(durationMs);
         return (
-          <Tooltip title={formatDurationDetailed(ms)}>
+          <Tooltip title={formatDurationDetailed(durationMs)}>
             <Text
-              type={ms > 1000 ? "warning" : "secondary"}
+              type={durationMs > 1000 ? "warning" : "secondary"}
               style={{ fontSize: 11 }}
             >
               {compact}
