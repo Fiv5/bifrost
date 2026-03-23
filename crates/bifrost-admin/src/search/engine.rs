@@ -9,7 +9,7 @@ use crate::body_store::{BodyRef, SharedBodyStore};
 use crate::connection_monitor::SharedConnectionMonitor;
 use crate::frame_store::SharedFrameStore;
 use crate::traffic_db::{
-    QueryParams, SharedTrafficDbStore, TrafficSearchFields, TrafficSummaryCompact,
+    QueryParams, SharedTrafficDbStore, TextMatchMode, TrafficSearchFields, TrafficSummaryCompact,
 };
 
 const MAX_PREVIEW_CONTEXT: usize = 50;
@@ -75,19 +75,20 @@ impl SearchEngine {
         let search_id = generate_search_id();
         let batch_size = request.limit.unwrap_or(DEFAULT_BATCH_SIZE);
         let keyword_lower = request.keyword.to_lowercase();
+        let has_keyword = !keyword_lower.trim().is_empty();
 
         // search scope / filters 计算一次，避免循环里反复判断
         let scope = &request.scope;
-        let need_url = scope.should_search_url()
+        let need_url = (has_keyword && scope.should_search_url())
             || request
                 .filters
                 .conditions
                 .iter()
                 .any(|c| c.field.as_str() == "url");
-        let need_request_headers = scope.should_search_request_headers();
-        let need_response_headers = scope.should_search_response_headers();
-        let need_request_body_ref = scope.should_search_request_body();
-        let need_response_body_ref = scope.should_search_response_body();
+        let need_request_headers = has_keyword && scope.should_search_request_headers();
+        let need_response_headers = has_keyword && scope.should_search_response_headers();
+        let need_request_body_ref = has_keyword && scope.should_search_request_body();
+        let need_response_body_ref = has_keyword && scope.should_search_response_body();
 
         debug!(
             keyword = %request.keyword,
@@ -227,6 +228,13 @@ impl SearchEngine {
         compact: &TrafficSummaryCompact,
         fields: Option<&TrafficSearchFields>,
     ) -> Option<SearchResultItem> {
+        if keyword.trim().is_empty() {
+            return Some(SearchResultItem {
+                record: compact.clone(),
+                matches: Vec::new(),
+            });
+        }
+
         // 搜索目标是尽快返回结果：一条 record 只要命中一次就足够展示。
         // 因此这里按“便宜 -> 昂贵”的顺序，并在首次命中后立即返回。
 
@@ -372,12 +380,30 @@ impl SearchEngine {
                         params.method = Some(condition.value.clone());
                     }
                 }
-                "client_app" => {
-                    params.client_app = Some(condition.value.clone());
-                }
-                "client_ip" => {
-                    params.client_ip = Some(condition.value.clone());
-                }
+                "client_app" => match condition.operator.as_str() {
+                    "equals" => {
+                        params.client_app = Some(condition.value.clone());
+                        params.client_app_match = TextMatchMode::Equals;
+                    }
+                    "is_empty" => params.client_app_empty = Some(true),
+                    "is_not_empty" => params.client_app_empty = Some(false),
+                    "contains" => {
+                        params.client_app = Some(condition.value.clone());
+                    }
+                    _ => {}
+                },
+                "client_ip" => match condition.operator.as_str() {
+                    "equals" => {
+                        params.client_ip = Some(condition.value.clone());
+                        params.client_ip_match = TextMatchMode::Equals;
+                    }
+                    "is_empty" => params.client_ip_empty = Some(true),
+                    "is_not_empty" => params.client_ip_empty = Some(false),
+                    "contains" => {
+                        params.client_ip = Some(condition.value.clone());
+                    }
+                    _ => {}
+                },
                 "content_type" => {
                     params.content_type = Some(condition.value.clone());
                 }
@@ -434,6 +460,8 @@ impl SearchEngine {
             "contains" => field_lower.contains(&value_lower),
             "equals" => field_lower == value_lower,
             "not_contains" => !field_lower.contains(&value_lower),
+            "is_empty" => field_value.trim().is_empty(),
+            "is_not_empty" => !field_value.trim().is_empty(),
             "regex" => Regex::new(&condition.value)
                 .map(|re| re.is_match(field_value))
                 .unwrap_or(false),

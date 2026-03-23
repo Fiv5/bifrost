@@ -56,8 +56,11 @@ async fn execute_search(req: Request<Incoming>, state: SharedAdminState) -> Resp
         }
     };
 
-    if search_request.keyword.trim().is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "Search keyword cannot be empty");
+    if search_request.keyword.trim().is_empty() && !search_request.filters.has_constraints() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Search keyword cannot be empty without any filters",
+        );
     }
 
     let traffic_db = match &state.traffic_db_store {
@@ -143,8 +146,11 @@ async fn execute_search_stream(
         }
     };
 
-    if search_request.keyword.trim().is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "Search keyword cannot be empty");
+    if search_request.keyword.trim().is_empty() && !search_request.filters.has_constraints() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Search keyword cannot be empty without any filters",
+        );
     }
 
     let traffic_db = match &state.traffic_db_store {

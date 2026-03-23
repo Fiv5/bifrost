@@ -4,7 +4,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use tokio::sync::Semaphore;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct ClientProcess {
@@ -863,6 +863,24 @@ static BACKGROUND_PROCESS_RESOLUTION_CONCURRENCY: std::sync::LazyLock<usize> =
 static BACKGROUND_PROCESS_RESOLUTION_SEMAPHORE: std::sync::LazyLock<Semaphore> =
     std::sync::LazyLock::new(|| Semaphore::new(*BACKGROUND_PROCESS_RESOLUTION_CONCURRENCY));
 
+static APP_POLICY_PROCESS_RESOLUTION_RETRIES: std::sync::LazyLock<u32> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("BIFROST_APP_POLICY_PROCESS_RESOLUTION_RETRIES")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(20)
+    });
+
+static APP_POLICY_PROCESS_RESOLUTION_DELAY_MS: std::sync::LazyLock<u64> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("BIFROST_APP_POLICY_PROCESS_RESOLUTION_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(50)
+    });
+
 #[cfg(not(target_os = "macos"))]
 fn lookup_socket_pid_map() -> HashMap<ConnKey, u32> {
     use netstat2::{
@@ -995,12 +1013,27 @@ pub async fn resolve_client_process_async_for_connection_with_retry(
     delay_ms: u64,
 ) -> Option<ClientProcess> {
     if let Some(cached) = PROCESS_RESOLVER.resolve_cached_for_connection(peer_addr, local_addr) {
+        debug!(
+            peer_addr = %peer_addr,
+            local_addr = %local_addr,
+            client_app = %cached.name,
+            client_pid = cached.pid,
+            "Client process resolution cache hit for connection"
+        );
         return Some(cached);
     }
 
     if !peer_addr.ip().is_loopback() {
         return None;
     }
+
+    debug!(
+        peer_addr = %peer_addr,
+        local_addr = %local_addr,
+        max_retries,
+        delay_ms,
+        "Starting async client process resolution for connection"
+    );
 
     let peer_addr = *peer_addr;
     let local_addr = *local_addr;
@@ -1014,7 +1047,26 @@ pub async fn resolve_client_process_async_for_connection_with_retry(
     })
     .await
     {
-        Ok(process) => process,
+        Ok(Some(process)) => {
+            debug!(
+                peer_addr = %peer_addr,
+                local_addr = %local_addr,
+                client_app = %process.name,
+                client_pid = process.pid,
+                "Async client process resolution completed"
+            );
+            Some(process)
+        }
+        Ok(None) => {
+            warn!(
+                peer_addr = %peer_addr,
+                local_addr = %local_addr,
+                max_retries,
+                delay_ms,
+                "Async client process resolution completed without a match"
+            );
+            None
+        }
         Err(err) => {
             warn!(
                 peer_addr = %peer_addr,
@@ -1036,24 +1088,72 @@ pub fn spawn_async_process_resolver<F>(
     F: FnOnce(String, ClientProcess) + Send + 'static,
 {
     tokio::spawn(async move {
+        debug!(
+            record_id,
+            peer_addr = %peer_addr,
+            local_addr = %local_addr,
+            "Scheduling background client process backfill"
+        );
         let permit = match BACKGROUND_PROCESS_RESOLUTION_SEMAPHORE.acquire().await {
             Ok(permit) => permit,
-            Err(_) => return,
+            Err(_) => {
+                warn!(
+                    record_id,
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    "Background client process backfill skipped because semaphore is closed"
+                );
+                return;
+            }
         };
 
         #[cfg(not(target_os = "macos"))]
         tokio::time::sleep(Duration::from_millis(25)).await;
 
         let result = tokio::task::spawn_blocking(move || {
-            PROCESS_RESOLVER.resolve_for_connection(&peer_addr, &local_addr)
+            PROCESS_RESOLVER.resolve_for_connection_with_retry(&peer_addr, &local_addr, 20, 50)
         })
         .await;
         drop(permit);
 
-        if let Ok(Some(process)) = result {
-            callback(record_id, process);
+        match result {
+            Ok(Some(process)) => {
+                info!(
+                    record_id,
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    client_app = %process.name,
+                    client_pid = process.pid,
+                    "Background client process backfill resolved client"
+                );
+                callback(record_id, process);
+            }
+            Ok(None) => {
+                warn!(
+                    record_id,
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    "Background client process backfill finished without a match"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    record_id,
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    error = %err,
+                    "Background client process backfill task failed"
+                );
+            }
         }
     });
+}
+
+pub fn app_policy_process_resolution_retry_config() -> (u32, u64) {
+    (
+        *APP_POLICY_PROCESS_RESOLUTION_RETRIES,
+        *APP_POLICY_PROCESS_RESOLUTION_DELAY_MS,
+    )
 }
 
 pub fn format_client_info(peer_addr: &SocketAddr, process: Option<&ClientProcess>) -> String {

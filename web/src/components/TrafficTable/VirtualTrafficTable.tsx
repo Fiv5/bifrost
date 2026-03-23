@@ -17,6 +17,10 @@ import {
   ArrowUpOutlined,
 } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
+import {
+  formatDurationCompact,
+  formatDurationDetailed,
+} from "../../utils/duration";
 import AppIcon from "../AppIcon";
 import TrafficContextMenu from "./TrafficContextMenu";
 
@@ -260,14 +264,16 @@ const columns: ColumnDef[] = [
     width: 55,
     align: "right",
     render: (record, textSecondary) => (
-      <span
-        style={{
-          fontSize: 11,
-          color: record.duration_ms > 1000 ? "#faad14" : textSecondary,
-        }}
-      >
-        {record.duration_ms > 0 ? `${record.duration_ms}ms` : "-"}
-      </span>
+      <Tooltip title={formatDurationDetailed(record.duration_ms)}>
+        <span
+          style={{
+            fontSize: 11,
+            color: record.duration_ms > 1000 ? "#faad14" : textSecondary,
+          }}
+        >
+          {formatDurationCompact(record.duration_ms)}
+        </span>
+      </Tooltip>
     ),
   },
   {

@@ -111,6 +111,12 @@ impl ConnectionRegistry {
         }
     }
 
+    pub fn update_client_app(&self, req_id: &str, client_app: String) {
+        if let Some(mut entry) = self.connections.get_mut(req_id) {
+            entry.client_app = Some(client_app);
+        }
+    }
+
     pub fn active_count(&self) -> usize {
         self.connections.len()
     }

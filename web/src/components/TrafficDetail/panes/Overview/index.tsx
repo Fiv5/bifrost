@@ -15,6 +15,7 @@ import type {
   RequestTiming,
   SocketStatus,
 } from "../../../../types";
+import { formatDurationDetailed } from "../../../../utils/duration";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
 import AppIcon from "../../../AppIcon";
 
@@ -63,6 +64,18 @@ const formatSize = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+};
+
+const shouldUseSocketSize = (record: TrafficRecord): boolean => {
+  if (!(record.is_websocket || record.is_sse || record.is_tunnel)) {
+    return false;
+  }
+  if (!record.socket_status) {
+    return false;
+  }
+  const totalSocketBytes =
+    record.socket_status.send_bytes + record.socket_status.receive_bytes;
+  return record.socket_status.is_open || totalSocketBytes > 0;
 };
 
 const RuleCard = ({ rule, index }: { rule: MatchedRule; index: number }) => {
@@ -368,6 +381,8 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
   }, [record.is_websocket, record.is_sse, record.is_tunnel]);
 
   const isH3 = record.is_h3 || record.protocol === "h3";
+  const useSocketSize = shouldUseSocketSize(record);
+  const socketStatus = record.socket_status ?? undefined;
 
   return (
     <div ref={wrapperRef} style={{ fontSize: 12 }}>
@@ -497,28 +512,24 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
           contentStyle={{ fontSize: 12 }}
         >
           <Descriptions.Item label="Request Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
-            record.socket_status
-              ? formatSize(record.socket_status.send_bytes)
+            {useSocketSize && socketStatus
+              ? formatSize(socketStatus.send_bytes)
               : formatSize(record.request_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Response Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
-            record.socket_status
-              ? formatSize(record.socket_status.receive_bytes)
+            {useSocketSize && socketStatus
+              ? formatSize(socketStatus.receive_bytes)
               : formatSize(record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Total Size">
-            {(record.is_websocket || record.is_sse || record.is_tunnel) &&
-            record.socket_status
+            {useSocketSize && socketStatus
               ? formatSize(
-                  record.socket_status.send_bytes +
-                    record.socket_status.receive_bytes,
+                  socketStatus.send_bytes + socketStatus.receive_bytes,
                 )
               : formatSize(record.request_size + record.response_size)}
           </Descriptions.Item>
           <Descriptions.Item label="Duration">
-            {record.duration_ms ? `${record.duration_ms}ms` : "-"}
+            {formatDurationDetailed(record.duration_ms)}
           </Descriptions.Item>
         </Descriptions>
 
@@ -538,32 +549,32 @@ export const Overview = ({ record, searchValue, onSearch }: OverviewProps) => {
             <>
               {record.timing.dns_ms !== undefined && (
                 <Descriptions.Item label="DNS">
-                  {record.timing.dns_ms}ms
+                  {formatDurationDetailed(record.timing.dns_ms)}
                 </Descriptions.Item>
               )}
               {record.timing.connect_ms !== undefined && (
                 <Descriptions.Item label="Connect">
-                  {record.timing.connect_ms}ms
+                  {formatDurationDetailed(record.timing.connect_ms)}
                 </Descriptions.Item>
               )}
               {record.timing.tls_ms !== undefined && (
                 <Descriptions.Item label="TLS">
-                  {record.timing.tls_ms}ms
+                  {formatDurationDetailed(record.timing.tls_ms)}
                 </Descriptions.Item>
               )}
               {record.timing.send_ms !== undefined && (
                 <Descriptions.Item label="Send">
-                  {record.timing.send_ms}ms
+                  {formatDurationDetailed(record.timing.send_ms)}
                 </Descriptions.Item>
               )}
               {record.timing.wait_ms !== undefined && (
                 <Descriptions.Item label="Wait (TTFB)">
-                  {record.timing.wait_ms}ms
+                  {formatDurationDetailed(record.timing.wait_ms)}
                 </Descriptions.Item>
               )}
               {record.timing.receive_ms !== undefined && (
                 <Descriptions.Item label="Receive">
-                  {record.timing.receive_ms}ms
+                  {formatDurationDetailed(record.timing.receive_ms)}
                 </Descriptions.Item>
               )}
             </>

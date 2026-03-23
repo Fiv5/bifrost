@@ -44,6 +44,8 @@ pub struct MetricsSnapshot {
     pub max_qps: f32,
     pub max_bytes_sent_rate: f32,
     pub max_bytes_received_rate: f32,
+    pub client_process_resolution_failures: u64,
+    pub client_process_policy_unknown_decisions: u64,
     pub http: TrafficTypeMetrics,
     pub https: TrafficTypeMetrics,
     pub tunnel: TrafficTypeMetrics,
@@ -133,6 +135,8 @@ pub struct MetricsCollector {
     max_qps: RwLock<f32>,
     max_bytes_sent_rate: RwLock<f32>,
     max_bytes_received_rate: RwLock<f32>,
+    client_process_resolution_failures: AtomicU64,
+    client_process_policy_unknown_decisions: AtomicU64,
     cached_cpu: CachedCpuMetrics,
     cached_snapshot: CachedMetricsSnapshot,
     http: TrafficTypeCounters,
@@ -173,6 +177,8 @@ impl MetricsCollector {
             max_qps: RwLock::new(0.0),
             max_bytes_sent_rate: RwLock::new(0.0),
             max_bytes_received_rate: RwLock::new(0.0),
+            client_process_resolution_failures: AtomicU64::new(0),
+            client_process_policy_unknown_decisions: AtomicU64::new(0),
             cached_cpu: CachedCpuMetrics {
                 memory_total: AtomicU64::new(memory_total),
                 ..Default::default()
@@ -269,6 +275,18 @@ impl MetricsCollector {
         self.get_counters(traffic_type)
             .bytes_received
             .fetch_add(bytes, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
+    }
+
+    pub fn increment_client_process_resolution_failure(&self) {
+        self.client_process_resolution_failures
+            .fetch_add(1, Ordering::Relaxed);
+        self.invalidate_cached_snapshot();
+    }
+
+    pub fn increment_client_process_policy_unknown_decision(&self) {
+        self.client_process_policy_unknown_decisions
+            .fetch_add(1, Ordering::Relaxed);
         self.invalidate_cached_snapshot();
     }
 
@@ -422,6 +440,12 @@ impl MetricsCollector {
             max_qps,
             max_bytes_sent_rate,
             max_bytes_received_rate,
+            client_process_resolution_failures: self
+                .client_process_resolution_failures
+                .load(Ordering::Relaxed),
+            client_process_policy_unknown_decisions: self
+                .client_process_policy_unknown_decisions
+                .load(Ordering::Relaxed),
             http: self.http.to_metrics(),
             https: self.https.to_metrics(),
             tunnel: self.tunnel.to_metrics(),

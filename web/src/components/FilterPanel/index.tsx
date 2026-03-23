@@ -53,6 +53,20 @@ export default function FilterPanel({
     selectedClientApps.length > 0 ||
     selectedDomains.length > 0;
 
+  const selectionSummary = useMemo(() => {
+    const parts: string[] = [];
+    if (selectedClientApps.length > 0) {
+      parts.push(`App ${selectedClientApps.length}`);
+    }
+    if (selectedDomains.length > 0) {
+      parts.push(`Domain ${selectedDomains.length}`);
+    }
+    if (selectedClientIps.length > 0) {
+      parts.push(`IP ${selectedClientIps.length}`);
+    }
+    return parts.join(" · ");
+  }, [selectedClientApps.length, selectedClientIps.length, selectedDomains.length]);
+
   const styles = useMemo<Record<string, CSSProperties>>(
     () => ({
       container: {
@@ -84,6 +98,20 @@ export default function FilterPanel({
         fontWeight: 600,
         color: token.colorText,
         margin: 0,
+      },
+      titleGroup: {
+        display: "flex",
+        alignItems: "baseline",
+        gap: 8,
+        minWidth: 0,
+        flex: 1,
+      },
+      summary: {
+        fontSize: 11,
+        color: token.colorTextSecondary,
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
       },
       content: {
         flex: 1,
@@ -148,7 +176,10 @@ export default function FilterPanel({
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.title}>Filters</span>
+        <div style={styles.titleGroup}>
+          <span style={styles.title}>Filters</span>
+          {selectionSummary && <span style={styles.summary}>{selectionSummary}</span>}
+        </div>
         <Tooltip title="Clear all selections">
           <Button
             type="text"

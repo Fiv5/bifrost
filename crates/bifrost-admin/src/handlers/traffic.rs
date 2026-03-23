@@ -916,7 +916,23 @@ fn parse_query_params_from_query_string(query: &str) -> QueryParams {
                 "url" | "url_contains" => params.url_contains = Some(value),
                 "path" | "path_contains" => params.path_contains = Some(value),
                 "client_app" => params.client_app = Some(value),
+                "client_app_match" => {
+                    params.client_app_match = if value.eq_ignore_ascii_case("equals") {
+                        crate::traffic_db::TextMatchMode::Equals
+                    } else {
+                        crate::traffic_db::TextMatchMode::Contains
+                    };
+                }
+                "client_app_empty" => params.client_app_empty = value.parse().ok(),
                 "client_ip" => params.client_ip = Some(value),
+                "client_ip_match" => {
+                    params.client_ip_match = if value.eq_ignore_ascii_case("equals") {
+                        crate::traffic_db::TextMatchMode::Equals
+                    } else {
+                        crate::traffic_db::TextMatchMode::Contains
+                    };
+                }
+                "client_ip_empty" => params.client_ip_empty = value.parse().ok(),
                 "content_type" => params.content_type = Some(value),
                 _ => {}
             }

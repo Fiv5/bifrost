@@ -4,6 +4,7 @@ import { HistoryOutlined, SearchOutlined } from "@ant-design/icons";
 import { useReplayStore } from "../../../stores/useReplayStore";
 import TrafficDetail from "../../../components/TrafficDetail";
 import type { ReplayHistory } from "../../../types";
+import { formatDurationCompact } from "../../../utils/duration";
 
 const { useToken } = theme;
 const { Text } = Typography;
@@ -39,12 +40,6 @@ const formatTime = (timestamp: number) => {
   if (hours < 24) return `${hours}h ago`;
   if (days < 7) return `${days}d ago`;
   return date.toLocaleDateString();
-};
-
-const formatDuration = (ms?: number) => {
-  if (ms === undefined || ms === null) return "-";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(2)}s`;
 };
 
 const extractPath = (url: string) => {
@@ -135,7 +130,7 @@ const HistoryItem = ({ item, isSelected, onClick }: HistoryItemProps) => {
           {item.status || "Pending"}
         </Tag>
         <Text type="secondary" style={{ fontSize: 10 }}>
-          {formatDuration(item.duration_ms)}
+          {formatDurationCompact(item.duration_ms)}
         </Text>
         <Text
           type="secondary"

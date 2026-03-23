@@ -636,7 +636,7 @@ export default function Traffic() {
 
   const renderCenter = () => (
     <div style={styles.centerWrapper}>
-      {showFilterBar && searchMode === "normal" && (
+      {showFilterBar && (
         <div style={styles.filterBarWrapper}>
           <FilterBar
             filters={filterConditions}
@@ -644,7 +644,7 @@ export default function Traffic() {
             availableClientApps={clientInfo.apps}
             availableClientIps={clientInfo.ips}
             onSearchModeToggle={handleSearchModeToggle}
-            isSearchMode={false}
+            isSearchMode={searchMode === "search"}
           />
         </div>
       )}

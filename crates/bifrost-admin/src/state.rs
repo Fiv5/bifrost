@@ -459,6 +459,13 @@ impl AdminState {
         client_pid: u32,
         client_path: Option<String>,
     ) {
+        tracing::info!(
+            req_id = id,
+            client_app = %client_app,
+            client_pid,
+            client_path = ?client_path,
+            "Updating traffic record with resolved client process"
+        );
         self.update_traffic_by_id(id, move |record| {
             record.client_app = Some(client_app.clone());
             record.client_pid = Some(client_pid);

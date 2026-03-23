@@ -1,4 +1,5 @@
 # 测试目标: 验证 HTTP、WebSocket 与 SOCKS5/TLS 场景下的规则路由是否正确生效，并为客户端归因测试提供稳定上游。
 http-attr.local http://127.0.0.1:__ECHO_HTTP_PORT__
 ws-attr.local ws://127.0.0.1:__ECHO_WS_PORT__
+tunnel-attr.local tlsPassthrough:// https://127.0.0.1:__ECHO_HTTPS_PORT__
 httpbin.org/headers resHeaders://X-Socks5-Rule=applied

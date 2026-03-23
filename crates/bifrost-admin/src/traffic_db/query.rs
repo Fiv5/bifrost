@@ -10,6 +10,14 @@ pub enum Direction {
     Forward,
 }
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextMatchMode {
+    #[default]
+    Contains,
+    Equals,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct QueryParams {
     pub cursor: Option<u64>,
@@ -32,7 +40,13 @@ pub struct QueryParams {
     pub url_contains: Option<String>,
     pub path_contains: Option<String>,
     pub client_app: Option<String>,
+    #[serde(default)]
+    pub client_app_match: TextMatchMode,
+    pub client_app_empty: Option<bool>,
     pub client_ip: Option<String>,
+    #[serde(default)]
+    pub client_ip_match: TextMatchMode,
+    pub client_ip_empty: Option<bool>,
     pub content_type: Option<String>,
 
     pub pending_ids: Option<Vec<String>>,
@@ -54,7 +68,9 @@ impl QueryParams {
             || self.url_contains.is_some()
             || self.path_contains.is_some()
             || self.client_app.is_some()
+            || self.client_app_empty.is_some()
             || self.client_ip.is_some()
+            || self.client_ip_empty.is_some()
             || self.content_type.is_some()
     }
 
@@ -138,14 +154,42 @@ impl QueryParams {
             params.push(QueryValue::Text(format!("%{}%", path)));
         }
 
-        if let Some(ref app) = self.client_app {
-            conditions.push("client_app LIKE ?".to_string());
-            params.push(QueryValue::Text(format!("%{}%", app)));
+        if let Some(is_empty) = self.client_app_empty {
+            conditions.push(if is_empty {
+                "COALESCE(client_app, '') = ''".to_string()
+            } else {
+                "COALESCE(client_app, '') != ''".to_string()
+            });
+        } else if let Some(ref app) = self.client_app {
+            match self.client_app_match {
+                TextMatchMode::Contains => {
+                    conditions.push("client_app LIKE ?".to_string());
+                    params.push(QueryValue::Text(format!("%{}%", app)));
+                }
+                TextMatchMode::Equals => {
+                    conditions.push("client_app = ?".to_string());
+                    params.push(QueryValue::Text(app.clone()));
+                }
+            }
         }
 
-        if let Some(ref ip) = self.client_ip {
-            conditions.push("client_ip LIKE ?".to_string());
-            params.push(QueryValue::Text(format!("%{}%", ip)));
+        if let Some(is_empty) = self.client_ip_empty {
+            conditions.push(if is_empty {
+                "COALESCE(client_ip, '') = ''".to_string()
+            } else {
+                "COALESCE(client_ip, '') != ''".to_string()
+            });
+        } else if let Some(ref ip) = self.client_ip {
+            match self.client_ip_match {
+                TextMatchMode::Contains => {
+                    conditions.push("client_ip LIKE ?".to_string());
+                    params.push(QueryValue::Text(format!("%{}%", ip)));
+                }
+                TextMatchMode::Equals => {
+                    conditions.push("client_ip = ?".to_string());
+                    params.push(QueryValue::Text(ip.clone()));
+                }
+            }
         }
 
         if let Some(ref ct) = self.content_type {
@@ -216,4 +260,34 @@ pub struct QueryResult {
     pub has_more: bool,
     pub total: usize,
     pub server_sequence: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QueryParams, QueryValue, TextMatchMode};
+
+    #[test]
+    fn build_where_clause_supports_empty_client_app_filter() {
+        let params = QueryParams {
+            client_app_empty: Some(true),
+            ..Default::default()
+        };
+
+        let (where_clause, values) = params.build_where_clause();
+        assert!(where_clause.contains("COALESCE(client_app, '') = ''"));
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn build_where_clause_supports_exact_client_app_filter() {
+        let params = QueryParams {
+            client_app: Some("Safari".to_string()),
+            client_app_match: TextMatchMode::Equals,
+            ..Default::default()
+        };
+
+        let (where_clause, values) = params.build_where_clause();
+        assert!(where_clause.contains("client_app = ?"));
+        assert!(matches!(values.first(), Some(QueryValue::Text(v)) if v == "Safari"));
+    }
 }

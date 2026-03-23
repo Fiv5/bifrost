@@ -2,8 +2,14 @@ import { test, expect } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import { HttpProxyAgent } from "http-proxy-agent";
 
@@ -14,6 +20,7 @@ const proxyUrl =
 const proxyHost = new URL(proxyUrl);
 const apiBase =
   process.env.ADMIN_API_BASE || `${proxyUrl.replace(/\/$/, "")}/_bifrost/api`;
+const currentFilePath = fileURLToPath(import.meta.url);
 
 const startMockServer = async () => {
   const server = createServer((req, res) => {
@@ -105,16 +112,243 @@ const startWsServer = async () => {
   };
 };
 
-const sendProxyRequest = async (url: string) => {
+const sendProxyRequest = async (url: string, targetProxyUrl = proxyUrl) => {
   await execFileAsync(
     "curl",
-    ["-sS", "--fail", "-x", proxyUrl, url],
+    ["-sS", "--fail", "-x", targetProxyUrl, url],
     { timeout: 10000 },
   );
 };
 
 const clearTraffic = async (request: APIRequestContext) => {
   await request.delete(`${apiBase}/traffic`);
+};
+
+const findFreePort = async () => {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate a free port")));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+};
+
+const waitForBackendReady = async (baseApi: string) => {
+  await expect
+    .poll(
+      async () => {
+        try {
+          const response = await fetch(`${baseApi}/proxy/address`);
+          return response.ok;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30000 },
+    )
+    .toBe(true);
+};
+
+const startIsolatedBackend = async () => {
+  const repoRoot = path.resolve(path.dirname(currentFilePath), "../../..");
+  const port = await findFreePort();
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bifrost-ui-traffic-"));
+  const dataDir = path.join(runtimeDir, "data");
+  const logPath = path.join(runtimeDir, "backend.log");
+  const binPath = path.join(repoRoot, ".bifrost-ui-target", "debug", "bifrost");
+  await fs.mkdir(dataDir, { recursive: true });
+  const logStream = createWriteStream(logPath, { flags: "a" });
+
+  const child = spawn(
+    binPath,
+    ["start", "--host", "127.0.0.1", "-p", String(port), "--unsafe-ssl", "--access-mode", "allow_all"],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        BIFROST_DATA_DIR: dataDir,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  child.stdout?.pipe(logStream);
+  child.stderr?.pipe(logStream);
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseApi = `${baseUrl}/_bifrost/api`;
+  await waitForBackendReady(baseApi);
+
+  return {
+    port,
+    proxyUrl: baseUrl,
+    baseUrl,
+    baseApi,
+    dataDir,
+    close: async () => {
+      logStream.end();
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+        await new Promise<void>((resolve) => {
+          child.once("exit", () => resolve());
+          setTimeout(() => {
+            if (child.exitCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, 5000);
+        });
+      }
+      await fs.rm(runtimeDir, { recursive: true, force: true });
+    },
+  };
+};
+
+const getTrafficRecords = async (request: APIRequestContext) => {
+  const response = await request.get(`${apiBase}/traffic?limit=100`);
+  return (await response.json()) as {
+    records?: Array<{ id: string; p?: string; capp?: string | null }>;
+  };
+};
+
+const waitForTrafficRecord = async (request: APIRequestContext, targetPath: string) => {
+  let found: { id: string; p?: string; capp?: string | null } | undefined;
+  await expect
+    .poll(
+      async () => {
+        const payload = await getTrafficRecords(request);
+        found = payload.records?.find((record) => record.p === targetPath);
+        return found?.id ?? null;
+      },
+      { timeout: 15000 },
+    )
+    .toMatch(/^REQ-/);
+  return found as { id: string; p?: string; capp?: string | null };
+};
+
+const getTrafficRecordsByApi = async (baseApiUrl: string) => {
+  const response = await fetch(`${baseApiUrl}/traffic?limit=100`);
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    records?: Array<{ id: string; p?: string; capp?: string | null }>;
+  };
+};
+
+const waitForTrafficRecordByApi = async (baseApiUrl: string, targetPath: string) => {
+  let found: { id: string; p?: string; capp?: string | null } | undefined;
+  await expect
+    .poll(
+      async () => {
+        const payload = await getTrafficRecordsByApi(baseApiUrl);
+        found = payload.records?.find((record) => record.p === targetPath);
+        return found?.id ?? null;
+      },
+      { timeout: 15000 },
+    )
+    .toMatch(/^REQ-/);
+  return found as { id: string; p?: string; capp?: string | null };
+};
+
+const updateTrafficClientApp = async (dataDir: string, recordId: string, clientApp: string) => {
+  const dbPath = path.join(dataDir, "traffic", "traffic.db");
+  const script = `
+import sqlite3
+import sys
+
+db_path, record_id, client_app = sys.argv[1:4]
+conn = sqlite3.connect(db_path)
+try:
+    conn.execute("UPDATE traffic_records SET client_app = ? WHERE id = ?", (client_app, record_id))
+    conn.commit()
+finally:
+    conn.close()
+`;
+
+  await execFileAsync("python3", ["-c", script, dbPath, recordId, clientApp], {
+    timeout: 10000,
+  });
+};
+
+const waitForClientApp = async (
+  baseApiUrl: string,
+  recordId: string,
+  expectedClientApp: string,
+) => {
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(`${baseApiUrl}/traffic/${recordId}`);
+        if (!response.ok) {
+          return null;
+        }
+        const payload = (await response.json()) as { client_app?: string | null };
+        return payload.client_app ?? "";
+      },
+      { timeout: 15000 },
+    )
+    .toBe(expectedClientApp);
+};
+
+const searchTraffic = async (
+  baseApiUrl: string,
+  conditions: Array<{ field: string; operator: string; value: string }>,
+) => {
+  const response = await fetch(`${baseApiUrl}/search`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      keyword: "",
+      scope: {
+        request_body: false,
+        response_body: false,
+        request_headers: false,
+        response_headers: false,
+        url: false,
+        websocket_messages: false,
+        sse_events: false,
+        all: true,
+      },
+      filters: {
+        protocols: [],
+        status_ranges: [],
+        content_types: [],
+        conditions,
+        client_ips: [],
+        client_apps: [],
+        domains: [],
+      },
+      limit: 50,
+    }),
+  });
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    results: Array<{ record: { p?: string } }>;
+    total_matched: number;
+  };
+};
+
+const queryTraffic = async (baseApiUrl: string, params: Record<string, string>) => {
+  const searchParams = new URLSearchParams(params);
+  const response = await fetch(`${baseApiUrl}/traffic?${searchParams.toString()}`);
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    records: Array<{ p?: string; capp?: string | null }>;
+    total: number;
+  };
 };
 
 const streamSseViaProxy = async (url: string) => {
@@ -304,43 +538,55 @@ test("清空流量时前端立即清理", async ({ page, request }) => {
   await server.close();
 });
 
-test("Add Filter 不影响 Fuzzy Search", async ({ page, request }) => {
-  await clearTraffic(request);
+test("Client App 空值与模糊匹配会同步作用于列表查询和 Fuzzy Search", async () => {
   const server = await startMockServer();
+  const backend = await startIsolatedBackend();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const path = `/fuzzy-filter-${token}`;
-  const impossibleKeyword = `missing-${token}`;
+  const emptyClientPath = `/client-empty-${token}`;
+  const fuzzyClientPath = `/client-fuzzy-${token}`;
+  const fuzzyClientApp = `Client Search ${token}`;
+  const fuzzyKeyword = token.slice(0, 6);
 
   try {
-    await page.goto("/_bifrost/traffic");
-    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${emptyClientPath}`, backend.proxyUrl);
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${fuzzyClientPath}`, backend.proxyUrl);
 
-    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
-    await expect(page.getByTestId("traffic-row").filter({ hasText: path }).first()).toBeVisible();
+    const emptyRecord = await waitForTrafficRecordByApi(backend.baseApi, emptyClientPath);
+    const fuzzyRecord = await waitForTrafficRecordByApi(backend.baseApi, fuzzyClientPath);
 
-    await page.getByRole("button", { name: "Add Filter" }).click();
-    await page.locator(".ant-select").nth(0).click();
-    await page.locator(".ant-select-dropdown").getByText("Path", { exact: true }).click();
-    await page.locator(".ant-select").nth(1).click();
-    await page.locator(".ant-select-dropdown").getByText("Contains", { exact: true }).click();
-    await page.getByPlaceholder("Enter value...").fill(impossibleKeyword);
+    await updateTrafficClientApp(backend.dataDir, emptyRecord.id, "");
+    await updateTrafficClientApp(backend.dataDir, fuzzyRecord.id, fuzzyClientApp);
+    await waitForClientApp(backend.baseApi, emptyRecord.id, "");
+    await waitForClientApp(backend.baseApi, fuzzyRecord.id, fuzzyClientApp);
 
-    const searchRequestPromise = page.waitForRequest((req) => {
-      return req.url().includes("/_bifrost/api/search/stream") && req.method() === "POST";
+    const emptyTraffic = await queryTraffic(backend.baseApi, {
+      client_app_empty: "true",
+      limit: "50",
     });
+    expect(emptyTraffic.records.map((item) => item.p)).toContain(emptyClientPath);
+    expect(emptyTraffic.records.map((item) => item.p)).not.toContain(fuzzyClientPath);
 
-    await page.getByRole("button", { name: "Fuzzy Search" }).click();
-    await page.getByPlaceholder("Enter keyword to search all content...").fill(token);
-    await page.getByRole("button", { name: "Search" }).click();
+    const emptySearch = await searchTraffic(backend.baseApi, [
+      { field: "client_app", operator: "is_empty", value: "" },
+    ]);
+    expect(emptySearch.results.map((item) => item.record.p)).toContain(emptyClientPath);
+    expect(emptySearch.results.map((item) => item.record.p)).not.toContain(fuzzyClientPath);
 
-    const searchRequest = await searchRequestPromise;
-    const payload = searchRequest.postDataJSON() as {
-      filters?: { conditions?: Array<{ field: string; operator: string; value: string }> };
-    };
-    expect(payload.filters?.conditions ?? []).toEqual([]);
+    const fuzzyTraffic = await queryTraffic(backend.baseApi, {
+      client_app: fuzzyKeyword,
+      client_app_match: "contains",
+      limit: "50",
+    });
+    expect(fuzzyTraffic.records.map((item) => item.p)).toContain(fuzzyClientPath);
+    expect(fuzzyTraffic.records.map((item) => item.p)).not.toContain(emptyClientPath);
 
-    await expect(page.locator("span").filter({ hasText: path }).first()).toBeVisible();
+    const fuzzySearch = await searchTraffic(backend.baseApi, [
+      { field: "client_app", operator: "contains", value: fuzzyKeyword },
+    ]);
+    expect(fuzzySearch.results.map((item) => item.record.p)).toContain(fuzzyClientPath);
+    expect(fuzzySearch.results.map((item) => item.record.p)).not.toContain(emptyClientPath);
   } finally {
+    await backend.close();
     await server.close();
   }
 });

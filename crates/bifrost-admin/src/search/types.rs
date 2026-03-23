@@ -106,6 +106,19 @@ pub struct SearchFilters {
     pub domains: Vec<String>,
 }
 
+impl SearchFilters {
+    pub fn has_constraints(&self) -> bool {
+        !self.protocols.is_empty()
+            || !self.status_ranges.is_empty()
+            || !self.content_types.is_empty()
+            || self.has_rule_hit.is_some()
+            || !self.conditions.is_empty()
+            || !self.client_ips.is_empty()
+            || !self.client_apps.is_empty()
+            || !self.domains.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterCondition {
     pub field: String,

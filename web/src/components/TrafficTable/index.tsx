@@ -2,6 +2,10 @@ import { Table, Tag, Typography, Tooltip, Badge } from "antd";
 import { ThunderboltOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { TrafficSummary } from "../../types";
+import {
+  formatDurationCompact,
+  formatDurationDetailed,
+} from "../../utils/duration";
 
 const { Text } = Typography;
 
@@ -191,14 +195,19 @@ export default function TrafficTable({
       key: "duration_ms",
       width: 55,
       align: "right",
-      render: (ms: number) => (
-        <Text
-          type={ms > 1000 ? "warning" : "secondary"}
-          style={{ fontSize: 11 }}
-        >
-          {ms > 0 ? `${ms}ms` : "-"}
-        </Text>
-      ),
+      render: (ms: number) => {
+        const compact = formatDurationCompact(ms);
+        return (
+          <Tooltip title={formatDurationDetailed(ms)}>
+            <Text
+              type={ms > 1000 ? "warning" : "secondary"}
+              style={{ fontSize: 11 }}
+            >
+              {compact}
+            </Text>
+          </Tooltip>
+        );
+      },
     },
     {
       title: "Start Time",
