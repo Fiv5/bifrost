@@ -1,0 +1,20 @@
+# 测试目标: 验证 tlsOptions 的多种取值方式，包括 inline ciphers、证书参数和 value 引用。
+
+# TLSO-01: inline ciphers
+tls-cipher.local tlsOptions://ciphers=ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256
+
+# TLSO-02: 证书参数
+tls-cert.local tlsOptions://key=/tmp/client.key&cert=/tmp/client.crt
+
+# TLSO-03: value 引用
+tls-ref.local tlsOptions://{tls_options_ref}
+
+# 测试用例:
+# 1. tls-cipher.local 应使用指定 ciphers 建链
+# 2. tls-cert.local 应把 key/cert 参数传入 TLS 上下文
+# 3. tls-ref.local 应从 value 中加载 minVersion / maxVersion 配置
+
+```tls_options_ref
+minVersion: TLSv1.2
+maxVersion: TLSv1.3
+```

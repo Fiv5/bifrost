@@ -24,3 +24,5 @@ desktop/src-tauri/resources/bin/
 .pnpm-store/
 .codex-target/
 .codex-target*/
+old_doc/
+.tmp-*/

@@ -213,14 +213,6 @@ export const PROTOCOL_DOCS: Record<string, ProtocolDoc> = {
     examples: ['enable://'],
     category: 'other',
   },
-  ignore: {
-    name: 'ignore',
-    description: 'Ignore matching requests (no proxy)',
-    valueType: 'none',
-    valueDescription: 'No value needed',
-    examples: ['ignore://'],
-    category: 'other',
-  },
   proxy: {
     name: 'proxy',
     description: 'Route request through another proxy',
@@ -301,14 +293,6 @@ export const PROTOCOL_DOCS: Record<string, ProtocolDoc> = {
     valueSyntax: 'Use {key:value} or {key:value,key2:value2} for multiple trailers',
     examples: ['trailers://({X-Checksum:abc123})', 'trailers://({Server-Timing:total;dur=123})'],
     category: 'header',
-  },
-  rulesFile: {
-    name: 'rulesFile',
-    description: 'Include rules from external file',
-    valueType: 'file path',
-    valueDescription: 'Path to rules file',
-    examples: ['rulesFile:///path/to/rules.bifrost', 'rulesFile://./extra-rules.txt'],
-    category: 'other',
   },
   urlParams: {
     name: 'urlParams',
@@ -489,11 +473,6 @@ export const CONTENT_TYPES = [
 ];
 
 const PROTOCOL_ALIASES: Record<string, string> = {
-  ruleFile: 'rulesFile',
-  ruleScript: 'rulesFile',
-  rulesScript: 'rulesFile',
-  reqRules: 'rulesFile',
-  resRules: 'resScript',
   pathReplace: 'urlReplace',
   download: 'attachment',
   'http-proxy': 'proxy',

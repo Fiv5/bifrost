@@ -1,0 +1,11 @@
+# 测试目标: 验证 tunnel 协议支持显式端口和默认端口两种隧道重定向写法。
+
+# TN-01: 显式端口
+tunnel://origin-tunnel.local tunnel://127.0.0.1:9443
+
+# TN-02: 默认端口 443
+tunnel://origin-default.local:8080 tunnel://127.0.0.1
+
+# 测试用例:
+# 1. origin-tunnel.local 的隧道请求应被改写到 127.0.0.1:9443
+# 2. origin-default.local:8080 的隧道请求应被改写到 127.0.0.1:443

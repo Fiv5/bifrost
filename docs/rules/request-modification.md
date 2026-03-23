@@ -256,6 +256,65 @@ user_id: 12345
 
 ---
 
+## reqCors
+
+给上游请求补充 CORS 预检相关请求头。
+
+### 语法
+
+```txt
+pattern reqCors://*
+pattern reqCors://https://frontend.example.com
+pattern reqCors://{cors-config}
+```
+
+### 行为说明
+
+- `reqCors://*`：设置 `Origin: *`
+- `reqCors://https://frontend.example.com`：仅设置 `Origin`
+- `reqCors://{cors-config}`：支持完整预检头配置
+
+内嵌值定义：
+
+````
+``` cors-config
+origin: https://frontend.example.com
+method: POST
+headers: x-trace-id,x-auth-token
+```
+````
+
+对应请求头：
+
+| 配置项 | 请求头 |
+| --- | --- |
+| `origin` | `Origin` |
+| `method` / `methods` | `Access-Control-Request-Method` |
+| `headers` | `Access-Control-Request-Headers` |
+
+### 示例
+
+```bash
+# 只设置 Origin
+www.example.com reqCors://*
+
+# 设置固定 Origin
+www.example.com reqCors://https://frontend.example.com
+
+# 设置完整预检头
+www.example.com reqCors://{cors-config}
+```
+
+### 测试用例
+
+| 测试场景 | 规则 | 预期 |
+| --- | --- | --- |
+| 快捷模式 | `test.com reqCors://*` | 上游收到 `Origin: *` |
+| 固定来源 | `test.com reqCors://https://frontend.example.com` | 上游收到指定 `Origin` |
+| 详细模式 | `test.com reqCors://{cors-config}` | 上游同时收到 `Origin` / `Access-Control-Request-Method` / `Access-Control-Request-Headers` |
+
+---
+
 ## reqType
 
 设置请求的 Content-Type 头部。

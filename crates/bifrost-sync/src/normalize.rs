@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use bifrost_core::normalize_rule_content;
+
 use crate::types::RemoteEnv;
 
 pub fn normalize_remote_rule(env: &RemoteEnv, remote_envs: &[RemoteEnv]) -> String {
@@ -261,11 +263,7 @@ fn normalize_legacy_rule_line(line: &str) -> Option<String> {
         .replace(" enable://https", " tlsIntercept://")
         .replace(" disable://https", " tlsPassthrough://");
 
-    if normalized.contains("ignore://") {
-        return Some(format!("# unsupported legacy rule: {}", trimmed));
-    }
-
-    Some(normalized)
+    Some(normalize_rule_content(&normalized))
 }
 
 #[cfg(test)]
@@ -332,12 +330,9 @@ ${unknown} http://example.com:3000
     }
 
     #[test]
-    fn comments_out_unsupported_ignore_rules() {
+    fn converts_unsupported_ignore_rules_to_passthrough() {
         let env = remote_env("jlcj", "verify.zijieapi.com ignore://htmlAppend\n");
         let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));
-        assert_eq!(
-            actual.trim(),
-            "# unsupported legacy rule: verify.zijieapi.com ignore://htmlAppend"
-        );
+        assert_eq!(actual.trim(), "verify.zijieapi.com passthrough://");
     }
 }

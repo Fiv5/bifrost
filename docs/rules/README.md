@@ -32,11 +32,12 @@
 ### 1) 路由与转发
 
 - `host` / `xhost`
+- `http` / `https`
+- `ws` / `wss`
 - `http3` / `h3`
-- `proxy` / `xproxy`
-- `socks` / `xsocks`
-- `tunnel`
+- `proxy` / `pac`
 - `redirect`
+- `file` / `tpl` / `rawfile`
 
 详见：[routing.md](./routing.md)、[status-redirect.md](./status-redirect.md)
 
@@ -44,7 +45,8 @@
 
 - 头部/Cookie：`reqHeaders`、`reqCookies`
 - 方法与常用字段：`method`、`ua`、`referer`
-- Body：`reqBody`、`reqReplace`、`reqMerge`
+- CORS：`reqCors`
+- Body：`reqBody`、`reqReplace`、`params`（兼容别名 `reqMerge`）
 
 详见：[request-modification.md](./request-modification.md)、[body-manipulation.md](./body-manipulation.md)
 

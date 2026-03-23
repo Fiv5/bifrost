@@ -1,284 +1,142 @@
-# 协议覆盖清单
+# `old_doc/rules` 对照覆盖清单
 
-本文档记录 Bifrost 代理支持的所有协议类型及其测试覆盖状态。
+本文档只按 `old_doc/rules/*.md` 逐个核对 `e2e-tests/rules` 的规则夹具设计是否有落点。
 
 ## 覆盖状态说明
 
-- ✅ 已覆盖 - 有对应测试用例且通过
-- ⚠️ 部分覆盖 - 有基本测试但部分用例失败
-- ❌ 未覆盖 - 需要添加测试
-- 🔄 待验证 - 测试已添加但未运行验证
-- ➖ 不适用 - 当前版本不支持或不需要测试
+- `✅` 已覆盖: 有明确规则夹具，且当前仓库已有对应脚本或稳定回归场景
+- `⚠️` 部分覆盖: 有夹具，但仍混合在大场景中，或存在已知缺口/回归
+- `🔄` 已补夹具待验证: 本轮已补到 `e2e-tests/rules`，但还缺专门断言或专项执行
+- `➖` 非叶子协议: 这是语法/索引/概念文档，不单独作为协议用例统计
 
-## 最新测试执行结果
+## 本轮 review 结论
 
-**执行时间**: 2026-03-23
-**回归范围**: 补充 split_rule_parts / full-URL / bare-target 高风险语义回归用例
-**结果**: `reqHeaders` 相关回归用例通过；`regex pathReplace` 在 bare target / full URL 组合下仍存在回归
+- 本次对 `old_doc/rules` 中的条目做了逐个检查。
+- 对真正可测试但原来没有独立夹具的协议，已补充到 `e2e-tests/rules/`。
+- 对 `rule`、`pattern`、`operation`、`protocols`、`filters` 这类元文档，改为单独标记为 `➖`，不再和叶子协议混算覆盖率。
+- `cipher.md` 实际描述的是 `tlsOptions`，这里按 `tlsOptions` 语义归档。
 
-## 1. 基础路由协议 (Basic Routing)
+## 1. 路由与传输
 
-| 协议               | 状态 | 测试文件                     | 说明                 |
-| ------------------ | ---- | ---------------------------- | -------------------- |
-| `host`             | ✅   | forwarding/http_to_http.txt  | 主机重定向           |
-| `xhost`            | ✅   | forwarding/http_to_http.txt  | 扩展主机重定向       |
-| `http`             | ✅   | forwarding/http_to_http.txt  | HTTP 转发            |
-| `https`            | ✅   | forwarding/http_to_https.txt | HTTPS 转发           |
-| `ws`               | ✅   | forwarding/ws_forward.txt    | WebSocket            |
-| `wss`              | ✅   | forwarding/ws_forward.txt    | WebSocket Secure     |
-| `proxy`            | ✅   | advanced/proxy.txt           | 二级代理             |
-| `pac`              | ✅   | forwarding/pac.txt           | PAC 自动配置         |
-| `redirect`         | ✅   | redirect/redirect.txt        | 302 重定向           |
-| `locationHref`     | ✅   | redirect/redirect.txt        | location.href 重定向 |
-| `file`             | ✅   | template/values.txt          | 本地文件             |
-| `tpl`              | 🔄   | template/tpl_file.txt        | 模板文件             |
-| `rawfile`          | 🔄   | template/tpl_file.txt        | 原始文件             |
+| `old_doc` 条目          | 状态 | 规则夹具                       | 说明                                                 |
+| ----------------------- | ---- | ------------------------------ | ---------------------------------------------------- |
+| `host`                  | ✅   | `forwarding/http_to_http.txt`  | 基础 host 转发已覆盖                                 |
+| `http`                  | ✅   | `forwarding/http_to_http.txt`  | HTTP 转发已覆盖                                      |
+| `https`                 | ✅   | `forwarding/http_to_https.txt` | HTTP 到 HTTPS 已覆盖                                 |
+| `ws`                    | ✅   | `forwarding/ws_forward.txt`    | WebSocket 已覆盖                                     |
+| `wss`                   | ✅   | `forwarding/ws_forward.txt`    | WSS 已覆盖                                           |
+| `proxy`                 | ✅   | `advanced/proxy.txt`           | 二级代理已覆盖                                       |
+| `pac`                   | ✅   | `forwarding/pac.txt`           | PAC 已覆盖                                           |
+| `redirect`              | ✅   | `redirect/redirect.txt`        | 301/302 与相对路径已覆盖                             |
+| `locationHref`          | ✅   | `redirect/redirect.txt`        | 与 redirect 同组维护                                 |
+| `file`                  | ✅   | `template/values.txt`          | 文件型值来源已覆盖                                   |
+| `tunnel`                | 🔄   | `forwarding/tunnel.txt`        | 本轮新增隧道转发与默认端口场景                       |
+| `cipher` (`tlsOptions`) | 🔄   | `tls/tls_options.txt`          | 本轮补 `tlsOptions` 多种取值方式                     |
+| `sniCallback`           | 🔄   | `tls/sni_callback.txt`         | 本轮补插件型 TLS 证书回调场景                        |
 
-## 2. 请求修改协议 (Request Modification)
+## 2. 请求修改
 
-| 协议         | 状态 | 测试文件                   | 说明           |
-| ------------ | ---- | -------------------------- | -------------- |
-| `reqHeaders` | ⚠️   | request_modify/headers.txt, regression/rule_semantics_split_parsing.txt | 请求头修改     |
-| `reqBody`    | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体替换 |
-| `reqPrepend` | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体前置 |
-| `reqAppend`  | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体追加 |
-| `reqReplace` | ✅   | request_modify/body.txt, advanced/body_size_strategy.txt | 请求体内容替换 |
-| `reqCookies` | ⚠️   | request_modify/cookies.txt | 请求 Cookie    |
-| `reqCors`    | ⚠️   | response_modify/cors.txt   | 请求 CORS      |
-| `reqDelay`   | ✅   | response_modify/delay.txt  | 请求延迟       |
-| `reqSpeed`   | ✅   | advanced/speed.txt         | 请求速度限制   |
-| `reqType`    | ✅   | advanced/content_type.txt  | 请求内容类型   |
-| `reqCharset` | ✅   | advanced/content_type.txt  | 请求字符集     |
+| `old_doc` 条目 | 状态 | 规则夹具                                                                       | 说明                                           |
+| -------------- | ---- | ------------------------------------------------------------------------------ | ---------------------------------------------- |
+| `reqHeaders`   | ⚠️   | `request_modify/headers.txt`, `regression/rule_semantics_split_parsing.txt`    | 头部增删改已覆盖，但分词/复杂 value 仍属高风险 |
+| `reqBody`      | ✅   | `request_modify/body.txt`, `advanced/body_size_strategy.txt`                   | 已覆盖                                         |
+| `reqPrepend`   | ✅   | `request_modify/body.txt`, `advanced/body_size_strategy.txt`                   | 已覆盖                                         |
+| `reqAppend`    | ✅   | `request_modify/body.txt`, `advanced/body_size_strategy.txt`                   | 已覆盖                                         |
+| `reqReplace`   | ✅   | `request_modify/body.txt`, `advanced/body_size_strategy.txt`                   | 已覆盖                                         |
+| `reqCookies`   | ⚠️   | `request_modify/cookies.txt`                                                   | 已有基础夹具，边界断言仍偏少                   |
+| `reqCors`      | 🔄   | `request_modify/req_cors.txt`                                                  | 本轮新增快捷模式与详细模式                     |
+| `reqDelay`     | ✅   | `response_modify/delay.txt`                                                    | 与响应延迟共用场景                             |
+| `reqSpeed`     | ✅   | `advanced/speed.txt`                                                           | 已覆盖                                         |
+| `reqType`      | ✅   | `advanced/content_type.txt`                                                    | 已覆盖                                         |
+| `reqCharset`   | ✅   | `advanced/content_type.txt`                                                    | 已覆盖                                         |
+| `reqMerge`     | 🔄   | `request_modify/req_merge.txt`                                                 | 本轮新增 form/json 合并设计                    |
+| `reqScript`    | ✅   | `request_modify/req_res_script.txt`                                            | 已有专项脚本驱动                               |
+| `forwardedFor` | 🔄   | `request_modify/forwarded_for.txt`                                             | 本轮补固定 IP 与模板变量透传                   |
+| `method`       | ✅   | `request_modify/method.txt`                                                    | 已覆盖                                         |
+| `auth`         | ✅   | `advanced/auth.txt`                                                            | 已覆盖                                         |
+| `ua`           | ⚠️   | `request_modify/ua.txt`                                                        | 已有基础覆盖，复杂 UA 字符串仍需更强断言       |
+| `referer`      | ✅   | `request_modify/referer.txt`                                                   | 已覆盖                                         |
+| `urlParams`    | ✅   | `request_modify/url_params.txt`                                                | 已覆盖                                         |
+| `pathReplace`  | ⚠️   | `request_modify/url_params.txt`, `regression/rule_semantics_split_parsing.txt` | 有回归保护，但 full URL + regex 组合仍有风险   |
 
-| `method` | ✅ | request_modify/method.txt | HTTP 方法 |
-| `auth` | ✅ | advanced/auth.txt | 基本认证 |
-| `ua` | ⚠️ | request_modify/ua.txt | User-Agent |
-| `referer` | ✅ | request_modify/referer.txt | Referer |
-| `urlParams` | ✅ | request_modify/url_params.txt | URL 参数 |
-| `params` | ✅ | request_modify/url_params.txt | 参数合并 |
+## 3. 响应修改
 
-## 3. 响应修改协议 (Response Modification)
+| `old_doc` 条目  | 状态 | 规则夹具                                                                                            | 说明                                     |
+| --------------- | ---- | --------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `resHeaders`    | ⚠️   | `response_modify/headers.txt`                                                                       | 基础增删改已覆盖，复杂组合仍偏少         |
+| `resBody`       | ✅   | `response_modify/body.txt`, `response_modify/res_body_large.txt`, `advanced/body_size_strategy.txt` | 已覆盖                                   |
+| `resPrepend`    | ✅   | `response_modify/body.txt`, `advanced/body_size_strategy.txt`                                       | 已覆盖                                   |
+| `resAppend`     | ✅   | `response_modify/body.txt`, `advanced/body_size_strategy.txt`                                       | 已覆盖                                   |
+| `resReplace`    | ✅   | `response_modify/body.txt`, `advanced/body_size_strategy.txt`                                       | 已覆盖                                   |
+| `resCookies`    | ⚠️   | `response_modify/cookies.txt`                                                                       | 基础覆盖已有，组合断言仍偏少             |
+| `resCors`       | ⚠️   | `response_modify/cors.txt`                                                                          | 已有基础夹具，详细字段与预检场景仍可加强 |
+| `resDelay`      | ✅   | `response_modify/delay.txt`                                                                         | 已覆盖                                   |
+| `resSpeed`      | ✅   | `advanced/speed.txt`                                                                                | 已覆盖                                   |
+| `resType`       | ✅   | `advanced/content_type.txt`                                                                         | 已覆盖                                   |
+| `resCharset`    | ✅   | `advanced/content_type.txt`                                                                         | 已覆盖                                   |
+| `resMerge`      | ✅   | `advanced/body_size_strategy.txt`                                                                   | 已覆盖                                   |
+| `resScript`     | ✅   | `request_modify/req_res_script.txt`                                                                 | 已有专项脚本驱动                         |
+| `responseFor`   | 🔄   | `response_modify/response_for.txt`                                                                  | 本轮补 `x-whistle-response-for` 语义     |
+| `statusCode`    | ✅   | `response_modify/status.txt`                                                                        | 已覆盖                                   |
+| `replaceStatus` | ✅   | `response_modify/status.txt`                                                                        | 已覆盖                                   |
+| `trailers`      | ✅   | `response_modify/trailers.txt`                                                                      | 已覆盖                                   |
+| `headerReplace` | ✅   | `advanced/header_replace.txt`                                                                       | 已覆盖                                   |
+| `cache`         | ✅   | `advanced/cache.txt`                                                                                | 已覆盖                                   |
+| `attachment`    | ✅   | `advanced/cache.txt`                                                                                | 已覆盖                                   |
 
-| 协议         | 状态 | 测试文件                    | 说明           |
-| ------------ | ---- | --------------------------- | -------------- |
-| `resHeaders` | ⚠️   | response_modify/headers.txt | 响应头修改     |
-| `resBody`    | ✅   | response_modify/body.txt, response_modify/res_body_large.txt, advanced/body_size_strategy.txt | 响应体替换 |
-| `resPrepend` | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体前置 |
-| `resAppend`  | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体追加 |
-| `resReplace` | ✅   | response_modify/body.txt, advanced/body_size_strategy.txt | 响应体内容替换 |
-| `resCookies` | ⚠️   | response_modify/cookies.txt | 响应 Cookie    |
-| `resCors`    | ⚠️   | response_modify/cors.txt    | 响应 CORS      |
-| `resDelay`   | ✅   | response_modify/delay.txt   | 响应延迟       |
-| `resSpeed`   | ✅   | advanced/speed.txt          | 响应速度限制   |
-| `resType`    | ✅   | advanced/content_type.txt   | 响应内容类型   |
-| `resCharset` | ✅   | advanced/content_type.txt   | 响应字符集     |
+## 4. 内容注入与静态内容
 
-| `statusCode` | ✅ | response_modify/status.txt | 状态码设置 |
-| `replaceStatus` | ✅ | response_modify/status.txt | 状态码替换 |
-| `cache` | ✅ | advanced/cache.txt | 缓存控制 |
-| `attachment` | ✅ | advanced/cache.txt | 附件下载 |
-| `trailers` | ✅ | response_modify/trailers.txt | HTTP Trailers |
-| `resMerge` | ✅ | advanced/body_size_strategy.txt | 响应合并 |
-| `headerReplace` | ✅ | advanced/header_replace.txt | 头部替换 |
+| `old_doc` 条目 | 状态 | 规则夹具                                                     | 说明   |
+| -------------- | ---- | ------------------------------------------------------------ | ------ |
+| `htmlAppend`   | ✅   | `content_inject/html.txt`, `advanced/body_size_strategy.txt` | 已覆盖 |
+| `htmlPrepend`  | ✅   | `content_inject/html.txt`, `advanced/body_size_strategy.txt` | 已覆盖 |
+| `htmlBody`     | ✅   | `content_inject/html.txt`, `advanced/body_size_strategy.txt` | 已覆盖 |
+| `jsAppend`     | ✅   | `content_inject/js.txt`, `advanced/body_size_strategy.txt`   | 已覆盖 |
+| `jsPrepend`    | ✅   | `content_inject/js.txt`, `advanced/body_size_strategy.txt`   | 已覆盖 |
+| `jsBody`       | ✅   | `content_inject/js.txt`, `advanced/body_size_strategy.txt`   | 已覆盖 |
+| `cssAppend`    | ✅   | `content_inject/css.txt`, `advanced/body_size_strategy.txt`  | 已覆盖 |
+| `cssPrepend`   | ✅   | `content_inject/css.txt`, `advanced/body_size_strategy.txt`  | 已覆盖 |
+| `cssBody`      | ✅   | `content_inject/css.txt`, `advanced/body_size_strategy.txt`  | 已覆盖 |
 
-## 4. 内容注入协议 (Content Injection)
+## 5. 控制与匹配
 
-| 协议          | 状态 | 测试文件                | 说明            |
-| ------------- | ---- | ----------------------- | --------------- |
-| `htmlAppend`  | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML 追加 |
-| `htmlPrepend` | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML 前置 |
-| `htmlBody`    | ✅   | content_inject/html.txt, advanced/body_size_strategy.txt | HTML Body 替换 |
-| `jsAppend`    | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS 追加 |
-| `jsPrepend`   | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS 前置 |
-| `jsBody`      | ✅   | content_inject/js.txt, advanced/body_size_strategy.txt | JS Body 替换 |
-| `cssAppend`   | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS 追加 |
-| `cssPrepend`  | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS 前置 |
-| `cssBody`     | ✅   | content_inject/css.txt, advanced/body_size_strategy.txt | CSS Body 替换 |
-| `html`        | 🔄   | content_inject/html.txt | htmlAppend 别名 |
-| `js`          | 🔄   | content_inject/js.txt   | jsAppend 别名   |
-| `css`         | 🔄   | content_inject/css.txt  | cssAppend 别名  |
+| `old_doc` 条目  | 状态 | 规则夹具                     | 说明                                                        |
+| --------------- | ---- | ---------------------------- | ----------------------------------------------------------- |
+| `enable`        | ⚠️   | `control/enable_disable.txt` | 当前主要覆盖“规则启停”能力，不等于穷举所有 `enable://` 开关 |
+| `disable`       | ⚠️   | `control/enable_disable.txt` | 同上                                                        |
+| `delete`        | 🔄   | `control/delete.txt`         | 本轮新增请求头/响应头删除夹具                               |
+| `ignore` (`passthrough`) | ✅   | `control/ignore.txt`         | 已覆盖；旧 `ignore://` 输入会自动归一化为 `passthrough://` |
+| `skip`          | 🔄   | `control/skip.txt`           | 本轮新增按 pattern / operation 跳过规则                     |
+| `includeFilter` | ⚠️   | `control/include_filter.txt` | 已有基础场景，但仍以条件组合为主                            |
+| `excludeFilter` | ⚠️   | `control/exclude_filter.txt` | 已有基础场景，但尚缺更多响应期断言                          |
+| `lineProps`     | ✅   | `control/line_props.txt`     | 已覆盖                                                      |
 
-## 5. URL 处理协议 (URL Processing)
+## 6. 非叶子文档
 
-| 协议          | 状态 | 测试文件                      | 说明            |
-| ------------- | ---- | ----------------------------- | --------------- |
-| `urlReplace`  | ✅   | request_modify/url_params.txt | URL 替换        |
-| `pathReplace` | ⚠️   | request_modify/url_params.txt, regression/rule_semantics_split_parsing.txt | urlReplace 别名；regex pathReplace 在高风险组合下仍待修复 |
+这些条目在 `old_doc/rules` 中属于语法说明、概念说明或索引页，不单独要求 `e2e-tests/rules` 为其创建协议级规则文件。
 
-## 6. 控制协议 (Control)
+| `old_doc` 条目 | 状态 | 说明                                                          |
+| -------------- | ---- | ------------------------------------------------------------- |
+| `rule`         | ➖   | 总体规则语法说明                                              |
+| `pattern`      | ➖   | 匹配模式总览；其细分语义由 `pattern/` 与 `combination/` 覆盖  |
+| `operation`    | ➖   | `protocol://value` 结构说明                                   |
+| `protocols`    | ➖   | 协议索引页                                                    |
+| `filters`      | ➖   | 过滤器总览；具体由 `includeFilter` / `excludeFilter` 夹具承接 |
 
-| 协议            | 状态 | 测试文件                   | 说明        |
-| --------------- | ---- | -------------------------- | ----------- |
-| `enable`        | 🔄   | control/enable_disable.txt | 启用规则    |
-| `disable`       | 🔄   | control/enable_disable.txt | 禁用规则    |
-| `delete`        | 🔄   | control/enable_disable.txt | 删除规则    |
-| `lineProps`     | ✅   | control/line_props.txt     | 行属性配置  |
-| `includeFilter` | ⚠️   | control/include_filter.txt | 包含过滤器  |
-| `excludeFilter` | 🔄   | control/exclude_filter.txt | 排除过滤器  |
+## 7. 本轮新增夹具
 
-## 8. 模板变量 (Template Variables)
+- `forwarding/tunnel.txt`
+- `request_modify/forwarded_for.txt`
+- `request_modify/req_cors.txt`
+- `request_modify/req_merge.txt`
+- `response_modify/response_for.txt`
+- `control/delete.txt`
+- `control/skip.txt`
+- `tls/tls_options.txt`
+- `tls/sni_callback.txt`
 
-| 变量               | 状态 | 测试文件                   | 说明         |
-| ------------------ | ---- | -------------------------- | ------------ |
-| `${now}`           | 🔄   | template/template_vars.txt | 当前时间戳   |
-| `${random}`        | 🔄   | template/template_vars.txt | 随机数       |
-| `${randomInt(N)}`  | 🔄   | template/template_vars.txt | 随机整数     |
-| `${randomUUID}`    | 🔄   | template/template_vars.txt | 随机 UUID    |
-| `${url}`           | ✅   | template/template_vars.txt | 完整 URL     |
-| `${host}`          | ✅   | template/template_vars.txt | 主机名:端口  |
-| `${hostname}`      | ✅   | template/template_vars.txt | 主机名       |
-| `${port}`          | ✅   | template/template_vars.txt | 端口         |
-| `${path}`          | ✅   | template/template_vars.txt | 路径         |
-| `${pathname}`      | ✅   | template/template_vars.txt | 路径(无查询) |
-| `${search}`        | ✅   | template/template_vars.txt | 查询字符串   |
-| `${query.key}`     | ⚠️   | template/template_vars.txt | 查询参数     |
-| `${method}`        | ✅   | template/template_vars.txt | HTTP 方法    |
-| `${reqH.key}`      | ⚠️   | template/template_vars.txt | 请求头       |
-| `${reqCookie.key}` | ⚠️   | template/template_vars.txt | 请求 Cookie  |
-| `${clientIp}`      | 🔄   | template/template_vars.txt | 客户端 IP    |
-| `${env.VAR}`       | 🔄   | template/template_vars.txt | 环境变量     |
-| `${{var}}`         | 🔄   | template/template_vars.txt | URL 编码     |
-| `$${var}`          | ⚠️   | template/template_vars.txt | 转义         |
-| `${var.replace()}` | 🔄   | template/template_vars.txt | 替换操作     |
+## 8. 仍需后续专项执行的高风险项
 
-## 10. 值来源 (Value Sources)
-
-| 类型     | 状态 | 测试文件                      | 说明                      |
-| -------- | ---- | ----------------------------- | ------------------------- |
-| 内联值   | ✅   | 多个文件                      | `127.0.0.1:8080`          |
-| 内联参数 | ✅   | request_modify/url_params.txt | `key=value&k2=v2`         |
-| 括号内容 | ✅   | template/values.txt           | `({"ok":true})`           |
-| 值引用   | ✅   | template/values.txt           | `{valueName}`             |
-| 文件路径 | ✅   | template/values.txt           | `/path/to/file`           |
-| 远程 URL | ✅   | template/values.txt           | `http://example.com/data` |
-
-## 10.1 Values 系统测试 (Values System)
-
-**端到端测试脚本**: `test_values_e2e.sh` (Mock Server + Proxy + Client)
-**CLI 测试脚本**: `test_values_cli.sh` (CLI 命令测试)
-**测试值文件**: `scripts/values/`
-
-### CLI 测试 (test_values_cli.sh)
-
-| 测试类型         | 状态 | 说明             |
-| ---------------- | ---- | ---------------- |
-| CLI set/get      | ✅   | 值设置和获取     |
-| CLI list         | ✅   | 列出所有值       |
-| CLI delete       | ✅   | 删除值           |
-| CLI import .txt  | ✅   | 导入 txt 格式    |
-| CLI import .json | ✅   | 导入 json 格式   |
-| CLI import .kv   | ✅   | 导入 kv 格式     |
-| 多行值           | ✅   | 多行内容处理     |
-| 特殊字符         | ✅   | 特殊字符处理     |
-| Unicode 值       | ✅   | Unicode 字符支持 |
-| 空值             | ✅   | 空值处理         |
-| 值覆盖           | ✅   | 同名值覆盖       |
-
-### 端到端测试 (test_values_e2e.sh)
-
-测试架构: `Client (curl) → Proxy (bifrost) → Mock Server (echo)`
-
-| 测试类型     | 状态 | 规则示例                          | 说明           |
-| ------------ | ---- | --------------------------------- | -------------- |
-| 内联响应体   | ✅   | resBody://\`{...}\`               | backticks 内联 |
-| 内联请求头   | ✅   | reqHeaders://\`X-Header:value\`   | 请求头内联     |
-| 内联响应头   | ✅   | resHeaders://\`X-Header:value\`   | 响应头内联     |
-| 值引用响应体 | ✅   | resBody://{mockResponse}          | 值文件引用     |
-| 值引用请求头 | ✅   | reqHeaders://{authHeaders}        | 请求头值引用   |
-| 值引用响应头 | ✅   | resHeaders://{customHeaders}      | 响应头值引用   |
-| 多值引用组合 | ✅   | reqHeaders://{a} resHeaders://{b} | 多值组合       |
-| JSON 格式值  | ✅   | resBody://{jsonResponse}          | JSON 响应体    |
-| 多行头部值   | ✅   | reqHeaders://{multiHeaders}       | 多行请求头     |
-
-**Values 测试文件清单** (`scripts/values/`):
-
-- `authHeaders.txt` - 认证头部测试值
-- `customHeaders.txt` - 自定义头部测试值
-- `mockResponse.txt` - Mock 响应体测试值
-- `jsonResponse.txt` - JSON 格式响应测试值
-- `multiHeaders.txt` - 多行头部测试值
-- `emptyValue.txt` - 空值测试
-- `specialChars.txt` - 特殊字符测试值
-
-## 11. 模式匹配 (Pattern Matching)
-
-| 模式          | 状态 | 测试文件                      | 说明                          |
-| ------------- | ---- | ----------------------------- | ----------------------------- |
-| 精确域名      | ✅   | combination/pattern_match.txt | `example.com`                 |
-| 单层通配符    | ✅   | pattern/domain_wildcard.txt   | `*.example.com` (不含点)      |
-| 多层通配符    | ✅   | pattern/domain_wildcard.txt   | `**.example.com` (可含点)     |
-| 路径前缀      | ✅   | combination/pattern_match.txt | `example.com/api`             |
-| 路径通配符    | ⚠️   | combination/pattern_match.txt | `example.com/*`               |
-| ^前缀路径单星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/*` (不含/?) |
-| ^前缀路径双星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/**` (不含?) |
-| ^前缀路径三星 | ⚠️   | pattern/path_wildcard.txt     | `^example.com/api/***` (含?)  |
-| 正则匹配      | ✅   | combination/pattern_match.txt, regression/rule_semantics_split_parsing.txt | `/regex/`                     |
-| 正则 i 标志   | ✅   | combination/pattern_match.txt | `/regex/i`                    |
-| 正则 u 标志   | ✅   | combination/pattern_match.txt | `/regex/u` (Unicode)          |
-| 正则捕获      | ✅   | combination/pattern_match.txt | `/(\w+)/` → `$1`              |
-| 通配符捕获    | ✅   | pattern/domain_wildcard.txt   | `*.example.com` → `$1`        |
-| IP 匹配       | ⚠️   | combination/pattern_match.txt | `127.0.0.1`                   |
-| CIDR 匹配     | ⚠️   | priority/ip_vs_cidr.txt       | `192.168.0.0/16`              |
-| 端口匹配      | ✅   | combination/pattern_match.txt | `example.com:8080`            |
-| 端口通配符    | ⚠️   | pattern/port_wildcard.txt     | `example.com:8*8`             |
-| http\* 协议   | ⚠️   | pattern/protocol_wildcard.txt | `http*://` 匹配 http/https    |
-| ws\* 协议     | ⚠️   | pattern/protocol_wildcard.txt | `ws*://` 匹配 ws/wss          |
-| // 协议       | ⚠️   | pattern/protocol_wildcard.txt | `//` 匹配所有协议             |
-| ws/wss 协议   | ⚠️   | pattern/protocol_wildcard.txt | `ws://`, `wss://`             |
-| tunnel 协议   | ⚠️   | pattern/protocol_wildcard.txt | `tunnel://`                   |
-
-## 12. 规则优先级 (Priority)
-
-| 场景             | 状态 | 测试文件                       | 说明           |
-| ---------------- | ---- | ------------------------------ | -------------- |
-| 精确 vs 通配符   | ⚠️   | priority/exact_vs_wildcard.txt | 精确优先       |
-| 通配符层级       | ⚠️   | priority/wildcard_level.txt    | 更具体优先     |
-| 规则顺序         | ⚠️   | priority/order.txt             | 先定义优先     |
-| IP vs CIDR       | ⚠️   | priority/ip_vs_cidr.txt        | 精确 IP 优先   |
-| important 优先级 | ✅   | control/line_props.txt         | important 属性 |
-
-## 13. 规则组合 (Combination)
-
-| 场景                   | 状态 | 测试文件                    | 说明         |
-| ---------------------- | ---- | --------------------------- | ------------ |
-| 转发 + 请求头          | ⚠️   | combination/multi_rules.txt | 组合规则     |
-| 转发 + 响应头 + 状态码 | ⚠️   | combination/multi_rules.txt | 多规则       |
-| 多重请求头             | ⚠️   | combination/multi_rules.txt | 同类型多规则 |
-| 完整修改链             | ⚠️   | combination/multi_rules.txt | 全方位修改   |
-
-## 14. 高级语法 (Advanced Syntax)
-
-| 语法          | 状态 | 测试文件                | 说明         |
-| ------------- | ---- | ----------------------- | ------------ |
-| `line\`...\`` | ⚠️   | advanced/line_block.txt | 换行配置语法 |
-
----
-
-## 统计
-
-覆盖统计待统一回归更新。本次变更已覆盖基础路由、请求修改、响应修改、URL 处理与值来源相关新增用例。
-
----
-
-## 优先补充清单
-
-以下功能需要优先修复或添加测试用例:
-
-### 高优先级 (当前失败的测试)
-
-1. `includeFilter` - 控制协议测试失败
-2. `path_wildcard` / `port_wildcard` / `protocol_wildcard` - 通配符匹配问题
-3. `priority/*` - 优先级测试失败
-4. `template_vars` - 部分模板变量不工作 (reqHeaders, reqCookies, 转义符号)
-5. `request_modify/cookies.txt` / `headers.txt` - 请求修改问题
-6. `response_modify/*` - 响应修改问题
-7. `combination/*` - 组合规则问题
-
-### 中优先级 (扩展功能)
-
-无
-
-### 低优先级 (特殊场景)
-
-1. `rulesFile` - 规则文件引用
-2. `resScript` - 响应脚本
+- `pathReplace`: full URL + regex 组合仍需继续回归
+- `reqHeaders`: 复杂 value、引用值和 host target 连写仍是高风险解析点
+- `tlsOptions` / `sniCallback`: 需要结合真实 TLS 证书或插件环境执行

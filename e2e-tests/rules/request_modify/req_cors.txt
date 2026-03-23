@@ -1,0 +1,17 @@
+# 测试目标: 验证 reqCors 能快捷设置 Origin，并支持完整的预检请求头组合。
+
+# RC-01: 快捷模式，直接设置 Origin
+req-cors-simple.local http://127.0.0.1:3000 reqCors://*
+
+# RC-02: 详细模式，设置 Origin / Method / Headers
+req-cors-detail.local http://127.0.0.1:3000 reqCors://{req_cors_detail}
+
+# 测试用例:
+# 1. 请求 http://req-cors-simple.local/ 时，上游应收到 origin: *
+# 2. 请求 http://req-cors-detail.local/ 时，上游应收到 origin / access-control-request-method / access-control-request-headers
+
+```req_cors_detail
+origin: https://frontend.test
+method: POST
+headers: x-trace-id,x-auth-token
+```

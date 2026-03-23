@@ -1,0 +1,16 @@
+# 测试目标: 验证 reqMerge 能对表单与 JSON 请求体做增量合并，而不是整体覆盖原始 body。
+
+# RM-01: 表单请求体合并
+req-merge-form.local http://127.0.0.1:3000 method://POST reqType://application/x-www-form-urlencoded reqBody://(name=alice) reqMerge://(role=admin&enabled=true)
+
+# RM-02: JSON 请求体合并
+req-merge-json.local http://127.0.0.1:3000 method://POST reqType://application/json reqBody://({"name":"alice"}) reqMerge://{req_merge_json}
+
+# 测试用例:
+# 1. form 场景应保留原始字段 name，并追加 role / enabled
+# 2. json 场景应保留 name，并新增嵌套字段 profile.city 与 profile.level
+
+```req_merge_json
+profile.city: shanghai
+profile.level: 3
+```

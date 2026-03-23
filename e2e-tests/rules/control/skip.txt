@@ -1,0 +1,15 @@
+# 测试目标: 验证 skip 能按 operation 或 pattern 跳过已命中的规则，并继续匹配后续规则。
+
+# SK-01: 按 operation 跳过第一条响应头规则
+skip-operation.local http://127.0.0.1:3000 resHeaders://`X-Skip-Op:first`
+skip-operation.local http://127.0.0.1:3000 resHeaders://`X-Skip-Op:second`
+skip-operation.local skip://operation=resHeaders://`X-Skip-Op:first`
+
+# SK-02: 按 pattern 跳过更具体的规则，回落到父级规则
+skip-pattern.local/api/blocked http://127.0.0.1:3000 resHeaders://`X-Skip-Pattern:blocked`
+skip-pattern.local/api http://127.0.0.1:3000 resHeaders://`X-Skip-Pattern:fallback`
+skip-pattern.local/api/blocked skip://pattern=skip-pattern.local/api/blocked
+
+# 测试用例:
+# 1. skip-operation.local 最终只应返回 X-Skip-Op: second
+# 2. 请求 http://skip-pattern.local/api/blocked 时，应命中 fallback 而不是 blocked

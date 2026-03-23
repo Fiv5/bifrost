@@ -156,38 +156,33 @@ www.example.com host://default.local excludeFilter://h:X-Special
 
 ---
 
-## ignore
+## passthrough
 
-忽略规则，使匹配的请求跳过后续规则处理。
+`passthrough://` 用于忽略后续规则并直接透传请求。旧的 `ignore://` 写法会在导入、同步或保存时自动转换为 `passthrough://`。
 
 ### 语法
 
-```
-ignore://pattern
+```txt
+pattern passthrough://
 ```
 
 ### 示例
 
 ```bash
-# 忽略静态资源
-ignore://*.js
-ignore://*.css
-ignore://*.png
+# 透传特定域名
+internal.example.com passthrough://
 
-# 忽略特定路径
-ignore://www.example.com/health
-ignore://www.example.com/metrics
-
-# 忽略特定域名
-ignore://internal.example.com
+# 透传健康检查路径
+*.local/health passthrough://
+*.local/metrics passthrough://
 ```
 
 ### 测试用例
 
-| 测试场景 | 规则                     | 请求     | 预期         |
-| -------- | ------------------------ | -------- | ------------ |
-| 忽略路径 | `ignore://test.com/skip` | `/skip`  | 请求直接通过 |
-| 忽略路径 | `ignore://test.com/skip` | `/other` | 继续匹配规则 |
+| 测试场景 | 规则 | 请求 | 预期 |
+| --- | --- | --- | --- |
+| 透传域名 | `ignore-this.local passthrough://` | `ignore-this.local` | 请求直接透传 |
+| 透传路径 | `*.local/health passthrough://` | `/health` | 请求直接透传 |
 
 ---
 
@@ -330,20 +325,37 @@ www.example.com delete://reqCookies.a delete://reqCookies.b
 
 ## skip
 
-跳过后续规则匹配。
+跳过指定的已命中规则，并继续尝试匹配剩余规则。
 
 ### 语法
 
-```
-pattern skip://
+```txt
+pattern skip://pattern=patternString
+pattern skip://operation=protocol://value
 ```
 
 ### 示例
 
 ```bash
-# 匹配后跳过
-www.example.com/api skip://
+# 跳过更具体的 pattern，回落到父级规则
+www.example.com/api/blocked skip://pattern=www.example.com/api/blocked
+
+# 跳过某条已经命中的操作
+www.example.com/api skip://operation=resHeaders://X-Debug:first
 ```
+
+### 行为说明
+
+- `pattern=...`：按规则左侧的 pattern 跳过
+- `operation=...`：按 `protocol://value` 跳过
+- 跳过后不会终止匹配；后续规则仍会继续尝试
+
+### 测试用例
+
+| 测试场景 | 规则 | 预期 |
+| --- | --- | --- |
+| 跳过 operation | `test.com skip://operation=resHeaders://X-A:first` | 后续同类规则仍可继续生效 |
+| 跳过 pattern | `test.com/api/blocked skip://pattern=test.com/api/blocked` | 请求回落到更通用的规则 |
 
 ---
 
@@ -361,8 +373,8 @@ www.example.com resHeaders://{X-Debug: true} includeFilter://h:X-Debug
 # 删除 + 过滤器
 www.example.com delete://reqHeaders.X-Internal includeFilter://m:GET
 
-# 条件忽略
-www.example.com ignore://pattern includeFilter://p:/static/
+# 条件透传
+www.example.com passthrough:// includeFilter://p:/static/
 ```
 
 ---

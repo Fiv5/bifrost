@@ -294,15 +294,16 @@ www.example.com resReplace://(/\d{4}-\d{4}-\d{4}-\d{4}/g=****-****-****-****)
 
 ---
 
-## reqMerge
+## params（兼容别名 reqMerge）
 
 合并 JSON 到请求 Body。
 
 ### 语法
 
-```
-pattern reqMerge://(key:value)          # 小括号格式（无空格）
-pattern reqMerge://{varName}            # 引用内嵌值（推荐）
+```txt
+pattern params://(key:value)            # 小括号格式（无空格）
+pattern params://{varName}              # 引用内嵌值（推荐）
+pattern reqMerge://{varName}            # 兼容旧别名
 ```
 
 > ⚠️ **注意**：
@@ -314,13 +315,13 @@ pattern reqMerge://{varName}            # 引用内嵌值（推荐）
 
 ```bash
 # 小括号格式添加字段（无空格）
-www.example.com reqMerge://(version:"2.0")
+www.example.com params://(version:"2.0")
 
 # 使用模板变量（需要反引号）
-www.example.com reqMerge://`(timestamp:${now})`
+www.example.com params://`(timestamp:${now})`
 
 # 使用内嵌值（推荐，支持空格）
-www.example.com reqMerge://{merge-data}
+www.example.com params://{merge-data}
 ```
 
 内嵌值定义：
@@ -334,10 +335,10 @@ meta.source: proxy
 
 ### 测试用例
 
-| 测试场景 | 规则                         | 原始 Body  | 预期 Body          |
-| -------- | ---------------------------- | ---------- | ------------------ |
-| 添加字段 | `test.com reqMerge://(b:2)`  | `{"a": 1}` | `{"a": 1, "b": 2}` |
-| 覆盖字段 | `test.com reqMerge://(a:99)` | `{"a": 1}` | `{"a": 99}`        |
+| 测试场景 | 规则 | 原始 Body | 预期 Body |
+| --- | --- | --- | --- |
+| 添加字段 | `test.com params://(b:2)` | `{"a": 1}` | `{"a": 1, "b": 2}` |
+| 覆盖字段 | `test.com params://(a:99)` | `{"a": 1}` | `{"a": 99}` |
 
 ---
 
@@ -483,7 +484,7 @@ www.example.com resAppend://{tracking} includeFilter://resH:content-type=text/ht
 ## 注意事项
 
 1. **编码**：内联内容会自动进行适当的编码处理
-2. **JSON 合并**：`reqMerge`/`resMerge` 只对 JSON 格式的 Body 有效
+2. **JSON 合并**：`params`（兼容别名 `reqMerge`）/`resMerge` 只对 JSON 格式的 Body 有效
 3. **替换顺序**：多个替换规则按定义顺序执行
 4. **文件路径**：本地文件路径建议使用绝对路径（以 `/` 开头）；相对路径的行为会受运行目录影响
 5. **CORS**：使用 `file` 协议时，可能需要配合 `resCors` 处理跨域

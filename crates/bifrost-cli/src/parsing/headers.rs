@@ -47,6 +47,14 @@ pub fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
         return bifrost_proxy::CorsConfig::enable_all();
     }
 
+    if !value.contains('\n') && value.contains("://") && !value.starts_with('{') {
+        return bifrost_proxy::CorsConfig {
+            enabled: true,
+            origin: Some(value.to_string()),
+            ..Default::default()
+        };
+    }
+
     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(value) {
         let mut cors = bifrost_proxy::CorsConfig {
             enabled: true,
@@ -88,5 +96,65 @@ pub fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
         return cors;
     }
 
+    if let Some(entries) = parse_header_value(value) {
+        let mut cors = bifrost_proxy::CorsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        for (key, raw_value) in entries {
+            match key.to_ascii_lowercase().as_str() {
+                "origin" => cors.origin = Some(raw_value),
+                "method" | "methods" => cors.methods = Some(raw_value),
+                "headers" => cors.headers = Some(raw_value),
+                "expose" | "exposeheaders" => cors.expose_headers = Some(raw_value),
+                "credentials" => {
+                    if let Ok(enabled) = raw_value.parse::<bool>() {
+                        cors.credentials = Some(enabled);
+                    }
+                }
+                "maxage" | "max_age" => {
+                    if let Ok(age) = raw_value.parse::<u64>() {
+                        cors.max_age = Some(age);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        return cors;
+    }
+
     bifrost_proxy::CorsConfig::enable_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cors_config;
+
+    #[test]
+    fn parse_cors_config_supports_multiline_legacy_format() {
+        let config = parse_cors_config(
+            "origin: https://frontend.test\nmethod: POST\nheaders: x-trace-id,x-auth-token",
+        );
+
+        assert!(config.enabled);
+        assert_eq!(config.origin.as_deref(), Some("https://frontend.test"));
+        assert_eq!(config.methods.as_deref(), Some("POST"));
+        assert_eq!(config.headers.as_deref(), Some("x-trace-id,x-auth-token"));
+    }
+
+    #[test]
+    fn parse_cors_config_supports_plural_keys_in_multiline_format() {
+        let config = parse_cors_config(
+            "origin: https://app.example.com\nmethods: GET, POST\nheaders: Content-Type\ncredentials: true\nmaxAge: 86400",
+        );
+
+        assert!(config.enabled);
+        assert_eq!(config.origin.as_deref(), Some("https://app.example.com"));
+        assert_eq!(config.methods.as_deref(), Some("GET, POST"));
+        assert_eq!(config.headers.as_deref(), Some("Content-Type"));
+        assert_eq!(config.credentials, Some(true));
+        assert_eq!(config.max_age, Some(86400));
+    }
 }

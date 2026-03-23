@@ -3,6 +3,7 @@ use bifrost_core::bifrost_file::{
     NetworkRecord, ReplayBodyExport, ReplayGroupExport, ReplayRequestExport, ScriptItem,
     TemplateContent, ValuesContent,
 };
+use bifrost_core::normalize_rule_content;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -194,14 +195,20 @@ async fn import_rules(content: &str, state: &SharedAdminState) -> Response<BoxBo
     };
 
     let result = BifrostFileParser::parse_rules_tolerant(content);
-    let warnings: Vec<String> = result
+    let mut warnings: Vec<String> = result
         .warnings
         .iter()
         .map(|w| format!("[{}] {}", w.level, w.message))
         .collect();
     let file = result.data;
+    let normalized_content = normalize_rule_content(&file.content);
 
-    let rule = bifrost_storage::RuleFile::new(file.meta.name.clone(), file.content)
+    if normalized_content != file.content {
+        warnings
+            .push("Converted legacy ignore:// rules to passthrough:// during import".to_string());
+    }
+
+    let rule = bifrost_storage::RuleFile::new(file.meta.name.clone(), normalized_content)
         .with_enabled(file.meta.enabled)
         .with_sort_order(file.meta.sort_order)
         .with_description(file.meta.description);

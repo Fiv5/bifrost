@@ -224,6 +224,7 @@ impl RulesResolver {
         }
         let mut result = ResolvedRules::new();
         let mut matched_protocols: HashMap<Protocol, bool> = HashMap::new();
+        let active_skips = self.collect_active_skips(ctx);
 
         for rule in &self.rules {
             if rule.is_disabled() {
@@ -289,6 +290,22 @@ impl RulesResolver {
                     path = %ctx.path,
                     "rule excluded by excludeFilter"
                 );
+                continue;
+            }
+
+            if rule.protocol != Protocol::Skip
+                && Self::should_skip_rule(rule, &active_skips, &self.values, ctx)
+            {
+                tracing::debug!(
+                    target: "bifrost_core::rules",
+                    pattern = %rule.pattern,
+                    protocol = %rule.protocol.to_str(),
+                    "rule skipped by skip directive"
+                );
+                continue;
+            }
+
+            if rule.protocol == Protocol::Skip {
                 continue;
             }
 
@@ -361,6 +378,53 @@ impl RulesResolver {
         }
     }
 
+    fn should_skip_rule(
+        rule: &Rule,
+        active_skips: &[SkipRule],
+        values: &HashMap<String, String>,
+        ctx: &RequestContext,
+    ) -> bool {
+        if active_skips.is_empty() {
+            return false;
+        }
+
+        let resolved_value = ResolvedRule::new(rule.clone(), None, ctx, values).resolved_value;
+        active_skips
+            .iter()
+            .any(|skip| skip.matches(rule, &resolved_value))
+    }
+
+    fn collect_active_skips(&self, ctx: &RequestContext) -> Vec<SkipRule> {
+        let mut active_skips = Vec::new();
+
+        for rule in &self.rules {
+            if rule.protocol != Protocol::Skip || rule.is_disabled() || rule.is_negated() {
+                continue;
+            }
+
+            let match_result = rule.matcher.matches(&ctx.url, &ctx.host, &ctx.path);
+            if !match_result.matched {
+                continue;
+            }
+
+            if !rule.include_filters.is_empty()
+                && !Self::matches_all_filters(&rule.include_filters, ctx)
+            {
+                continue;
+            }
+
+            if Self::matches_any_filter(&rule.exclude_filters, ctx) {
+                continue;
+            }
+
+            if let Some(skip_rule) = SkipRule::parse(&rule.value) {
+                active_skips.push(skip_rule);
+            }
+        }
+
+        active_skips
+    }
+
     pub fn rules(&self) -> &[Rule] {
         &self.rules
     }
@@ -368,6 +432,70 @@ impl RulesResolver {
     pub fn rule_count(&self) -> usize {
         self.rules.len()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SkipRule {
+    Pattern(String),
+    Operation(String),
+}
+
+impl SkipRule {
+    fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if let Some(pattern) = value.strip_prefix("pattern=") {
+            let pattern = pattern.trim();
+            if pattern.is_empty() {
+                None
+            } else {
+                Some(Self::Pattern(pattern.to_string()))
+            }
+        } else if let Some(operation) = value.strip_prefix("operation=") {
+            let operation = normalize_skip_operation(operation);
+            if operation.is_empty() {
+                None
+            } else {
+                Some(Self::Operation(operation))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn matches(&self, rule: &Rule, resolved_value: &str) -> bool {
+        match self {
+            Self::Pattern(pattern) => &rule.pattern == pattern,
+            Self::Operation(operation) => {
+                let raw_operation = normalize_skip_operation(&format!(
+                    "{}://{}",
+                    rule.protocol.to_str(),
+                    rule.value
+                ));
+                let resolved_operation = normalize_skip_operation(&format!(
+                    "{}://{}",
+                    rule.protocol.to_str(),
+                    resolved_value
+                ));
+                operation == &raw_operation || operation == &resolved_operation
+            }
+        }
+    }
+}
+
+fn normalize_skip_operation(operation: &str) -> String {
+    let operation = operation.trim();
+    let Some((protocol, value)) = operation.split_once("://") else {
+        return operation.to_string();
+    };
+
+    let value = value.trim();
+    let normalized_value = if value.starts_with('`') && value.ends_with('`') && value.len() >= 2 {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    };
+
+    format!("{}://{}", protocol.trim(), normalized_value)
 }
 
 #[cfg(test)]
@@ -1231,5 +1359,55 @@ mod tests {
         assert_eq!(result.len(), 2, "Both Http and ResBody rules should match");
         assert!(result.has_protocol(Protocol::Http));
         assert!(result.has_protocol(Protocol::ResBody));
+    }
+
+    #[test]
+    fn test_rules_resolver_skip_by_operation_allows_fallback_rule() {
+        use crate::rule::parser::RuleParser;
+
+        let parser = RuleParser::new();
+        let rules = parser
+            .parse_line(
+                "skip-operation.local http://127.0.0.1:3000 resHeaders://`X-Skip-Op:first` resHeaders://`X-Skip-Op:second` skip://operation=resHeaders://`X-Skip-Op:first`",
+            )
+            .unwrap();
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = RequestContext::from_url("http://skip-operation.local/test");
+        let result = resolver.resolve(&ctx);
+        let header_rules = result.get_by_protocol(Protocol::ResHeaders);
+
+        assert_eq!(header_rules.len(), 1);
+        assert_eq!(header_rules[0].resolved_value, "X-Skip-Op:second");
+    }
+
+    #[test]
+    fn test_rules_resolver_skip_by_pattern_allows_fallback_rule() {
+        use crate::rule::parser::RuleParser;
+
+        let parser = RuleParser::new();
+        let mut rules = parser
+            .parse_line("skip-pattern.local/api/blocked http://127.0.0.1:3000 resHeaders://`X-Skip-Pattern:blocked`")
+            .unwrap();
+        rules.extend(
+            parser
+                .parse_line("skip-pattern.local/api http://127.0.0.1:3000 resHeaders://`X-Skip-Pattern:fallback`")
+                .unwrap(),
+        );
+        rules.extend(
+            parser
+                .parse_line(
+                    "skip-pattern.local/api/blocked skip://pattern=skip-pattern.local/api/blocked",
+                )
+                .unwrap(),
+        );
+        let resolver = RulesResolver::new(rules);
+
+        let ctx = RequestContext::from_url("http://skip-pattern.local/api/blocked");
+        let result = resolver.resolve(&ctx);
+        let header_rules = result.get_by_protocol(Protocol::ResHeaders);
+
+        assert_eq!(header_rules.len(), 1);
+        assert_eq!(header_rules[0].resolved_value, "X-Skip-Pattern:fallback");
     }
 }

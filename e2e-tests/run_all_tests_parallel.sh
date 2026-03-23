@@ -217,6 +217,10 @@ cleanup() {
     "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 }
 
+is_http_echo_ready() {
+    curl -sf "http://127.0.0.1:3000/health" >/dev/null 2>&1
+}
+
 JOBS=$(detect_cpu_count)
 CATEGORY=""
 SKIP_BUILD="false"
@@ -312,7 +316,7 @@ main() {
     "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
     sleep 2
 
-    if curl -s "http://127.0.0.1:3000/health" >/dev/null 2>&1; then
+    if is_http_echo_ready; then
         echo -e "${GREEN}✓${NC} Mock 服务器已启动 (所有测试共享)"
     else
         echo -e "${RED}✗${NC} Mock 服务器启动失败"

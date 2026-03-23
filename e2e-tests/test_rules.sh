@@ -36,6 +36,47 @@ warn() { echo -e "${YELLOW}⚠${NC} $1"; }
 PROXY_PID=""
 RULE_FILE=""
 
+SUPPORTED_PROTOCOL_NAMES=(
+    host xhost http https ws wss proxy http3 pac redirect file tpl rawfile delete skip
+    reqHeaders reqBody reqPrepend reqAppend reqCookies reqCors reqDelay reqSpeed reqType
+    reqCharset reqReplace method auth ua referer urlParams params
+    resHeaders resBody resPrepend resAppend resCookies resCors resDelay resSpeed resType
+    resCharset resReplace replaceStatus statusCode cache attachment trailers resMerge
+    headerReplace htmlAppend htmlPrepend htmlBody jsAppend jsPrepend jsBody cssAppend
+    cssPrepend cssBody urlReplace reqScript resScript decode dns tlsIntercept
+    tlsPassthrough passthrough
+)
+
+SUPPORTED_PROTOCOL_ALIASES=(
+    pathReplace download http-proxy h3
+    status hosts html js reqMerge css
+)
+
+RULE_CAPABILITY_ERRORS=()
+
+abs_path() {
+    local path="$1"
+    if [[ "$path" = /* ]]; then
+        printf '%s\n' "$path"
+    else
+        printf '%s/%s\n' "$(pwd -P)" "$path"
+    fi
+}
+
+array_contains() {
+    local needle="$1"
+    shift
+
+    local item
+    for item in "$@"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 usage() {
     echo "用法: $0 [选项] <规则文件>"
     echo ""
@@ -185,9 +226,13 @@ setup_data_dir() {
     fi
 }
 
+is_http_echo_ready() {
+    curl -sf "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1
+}
+
 start_echo_servers() {
     if [[ "$SKIP_MOCK_SERVERS" == "true" ]]; then
-        if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+        if is_http_echo_ready; then
             return 0
         else
             echo -e "${RED}✗${NC} Mock 服务器未运行，但指定了 --skip-mock-servers"
@@ -197,7 +242,7 @@ start_echo_servers() {
 
     header "启动 Echo 服务器"
 
-    if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+    if is_http_echo_ready; then
         echo -e "${GREEN}✓${NC} HTTP Echo 服务器已在运行 (端口: ${ECHO_HTTP_PORT})"
         return 0
     fi
@@ -215,7 +260,7 @@ start_echo_servers() {
 
     sleep 2
 
-    if curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; then
+    if is_http_echo_ready; then
         echo -e "${GREEN}✓${NC} HTTP Echo 服务器已启动 (端口: ${ECHO_HTTP_PORT})"
     else
         echo -e "${RED}✗${NC} HTTP Echo 服务器启动失败"
@@ -226,10 +271,84 @@ start_echo_servers() {
 preprocess_rules_file() {
     local original_file="$1"
     local processed_file="${TEST_DATA_DIR}/processed_rules.txt"
-    
-    sed "s|__SCRIPT_DIR__|${SCRIPT_DIR}|g" "$original_file" > "$processed_file"
-    
+
+    mkdir -p "${TEST_DATA_DIR}"
+
+    sed \
+        -e "s|__SCRIPT_DIR__|${SCRIPT_DIR}|g" \
+        -e "s|127.0.0.1:3000|127.0.0.1:${ECHO_HTTP_PORT}|g" \
+        -e "s|localhost:3000|localhost:${ECHO_HTTP_PORT}|g" \
+        -e "s|127.0.0.1:3443|127.0.0.1:${ECHO_HTTPS_PORT}|g" \
+        -e "s|localhost:3443|localhost:${ECHO_HTTPS_PORT}|g" \
+        -e "s|127.0.0.1:3020|127.0.0.1:${ECHO_WS_PORT}|g" \
+        -e "s|localhost:3020|localhost:${ECHO_WS_PORT}|g" \
+        -e "s|127.0.0.1:3021|127.0.0.1:${ECHO_WSS_PORT}|g" \
+        -e "s|localhost:3021|localhost:${ECHO_WSS_PORT}|g" \
+        -e "s|127.0.0.1:3003|127.0.0.1:${ECHO_SSE_PORT}|g" \
+        -e "s|localhost:3003|localhost:${ECHO_SSE_PORT}|g" \
+        -e "s|127.0.0.1:9999|127.0.0.1:${ECHO_PROXY_PORT}|g" \
+        -e "s|localhost:9999|localhost:${ECHO_PROXY_PORT}|g" \
+        "$original_file" > "$processed_file"
+
     echo "$processed_file"
+}
+
+validate_rule_file_capabilities() {
+    RULE_CAPABILITY_ERRORS=()
+
+    local line_number=0
+    local in_code_block=false
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line_number=$((line_number + 1))
+
+        [[ "$line" =~ ^#.*$ ]] && continue
+        [[ -z "${line// }" ]] && continue
+
+        if [[ "$line" == '```'* ]]; then
+            if [[ "$in_code_block" == false ]]; then
+                in_code_block=true
+            else
+                in_code_block=false
+            fi
+            continue
+        fi
+
+        [[ "$in_code_block" == true ]] && continue
+
+        local index=0
+        local token
+        for token in $line; do
+            index=$((index + 1))
+
+            if [[ $index -eq 1 ]]; then
+                continue
+            fi
+
+            if [[ "$token" == //* ]]; then
+                RULE_CAPABILITY_ERRORS+=("第 ${line_number} 行使用了当前实现未支持的 //target 继承写法: ${token}")
+                continue
+            fi
+
+            if [[ "$token" =~ ^([a-zA-Z][a-zA-Z0-9-]*):// ]]; then
+                local proto_name="${BASH_REMATCH[1]}"
+                if ! array_contains "$proto_name" "${SUPPORTED_PROTOCOL_NAMES[@]}" \
+                    && ! array_contains "$proto_name" "${SUPPORTED_PROTOCOL_ALIASES[@]}"; then
+                    RULE_CAPABILITY_ERRORS+=("第 ${line_number} 行使用了当前实现未支持的协议: ${proto_name}://")
+                fi
+            fi
+        done
+    done < "$RULE_FILE"
+
+    if [[ ${#RULE_CAPABILITY_ERRORS[@]} -gt 0 ]]; then
+        echo -e "${RED}✗${NC} 规则文件包含当前实现未支持或无法有效验证的能力:"
+        local err
+        for err in "${RULE_CAPABILITY_ERRORS[@]}"; do
+            echo "  - $err"
+        done
+        return 1
+    fi
+
+    echo -e "${GREEN}✓${NC} 规则能力检查通过"
 }
 
 start_proxy() {
@@ -357,6 +476,38 @@ pattern_to_test_host() {
     host="${host//\*\*/sub.deep}"
     host="${host//\*/test}"
     echo "$host"
+}
+
+build_test_url() {
+    local scheme="$1"
+    local pattern="$2"
+    local default_path="${3:-/test}"
+    local base="$pattern"
+
+    if [[ "$pattern" != http://* && "$pattern" != https://* && "$pattern" != ws://* && "$pattern" != wss://* ]]; then
+        base="${scheme}://${pattern}"
+    fi
+
+    if [[ "$base" =~ ^([a-z]+://[^/]+)(/.*)?$ ]]; then
+        local origin="${BASH_REMATCH[1]}"
+        local path="${BASH_REMATCH[2]}"
+
+        if [[ -z "$path" ]]; then
+            echo "${origin}${default_path}"
+            return
+        fi
+
+        path="${path//\*\*/sub/deep}"
+        path="${path//\*/test}"
+        if [[ "$path" == */ ]]; then
+            path="${path}test"
+        fi
+
+        echo "${origin}${path}"
+        return
+    fi
+
+    echo "${base}${default_path}"
 }
 
 test_http_to_http_forward() {
@@ -493,6 +644,7 @@ test_req_headers_add() {
 test_req_headers_delete() {
     local pattern="$1"
     local header_name="$2"
+    local header_value="${3:-should-be-deleted}"
     local test_url="http://${pattern}/test"
 
     echo ""
@@ -500,7 +652,7 @@ test_req_headers_delete() {
     echo "    请求: $test_url"
     echo "    期望删除: $header_name"
 
-    https_request "$test_url" "GET" "" "X-Custom-Test: should-be-deleted"
+    https_request "$test_url" "GET" "" "${header_name}: ${header_value}"
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
 
@@ -510,6 +662,22 @@ test_req_headers_delete() {
 
         assert_equals "null" "$actual_value" "后端不应收到被删除的请求头 $header_name"
     fi
+}
+
+test_res_headers_delete() {
+    local pattern="$1"
+    local header_name="$2"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】删除响应头${NC}"
+    echo "    请求: $test_url"
+    echo "    期望删除: $header_name"
+
+    https_request "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_not_exists "$header_name" "$HTTP_HEADERS" "响应不应包含被删除的头 $header_name"
 }
 
 test_res_headers_add() {
@@ -689,6 +857,48 @@ test_cors() {
 
     assert_status_2xx "$HTTP_STATUS" "请求应成功"
     assert_header_exists "Access-Control-Allow-Origin" "$HTTP_HEADERS" "响应应包含 CORS 头"
+}
+
+test_req_cors() {
+    local pattern="$1"
+    local req_cors_raw="$2"
+    local test_url="http://${pattern}/test"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】请求侧 CORS 头${NC}"
+    echo "    请求: $test_url"
+
+    http_get "$test_url"
+
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+
+    if command -v jq &> /dev/null && [[ -n "$HTTP_BODY" ]]; then
+        local expected_origin="*"
+        local expected_method=""
+        local expected_headers=""
+
+        if [[ -n "$req_cors_raw" && "$req_cors_raw" != "*" ]]; then
+            expected_origin=$(echo "$req_cors_raw" | awk -F': ' '/^origin: /{print $2}' | head -1)
+            expected_method=$(echo "$req_cors_raw" | awk -F': ' '/^method: /{print $2}' | head -1)
+            expected_headers=$(echo "$req_cors_raw" | awk -F': ' '/^headers: /{print $2}' | head -1)
+        fi
+
+        local actual_origin
+        actual_origin=$(echo "$HTTP_BODY" | jq -r '.request.headers["Origin"] // .request.headers["origin"] // empty' 2>/dev/null)
+        assert_equals "${expected_origin:-*}" "$actual_origin" "上游应收到 Origin 请求头"
+
+        if [[ -n "$expected_method" ]]; then
+            local actual_method
+            actual_method=$(echo "$HTTP_BODY" | jq -r '.request.headers["Access-Control-Request-Method"] // .request.headers["access-control-request-method"] // empty' 2>/dev/null)
+            assert_equals "$expected_method" "$actual_method" "上游应收到 Access-Control-Request-Method"
+        fi
+
+        if [[ -n "$expected_headers" ]]; then
+            local actual_headers
+            actual_headers=$(echo "$HTTP_BODY" | jq -r '.request.headers["Access-Control-Request-Headers"] // .request.headers["access-control-request-headers"] // empty' 2>/dev/null)
+            assert_equals "$expected_headers" "$actual_headers" "上游应收到 Access-Control-Request-Headers"
+        fi
+    fi
 }
 
 test_req_cookies() {
@@ -1096,7 +1306,8 @@ test_ignore_rule() {
     echo -e "  ${CYAN}【测试】Ignore 规则${NC}"
     echo "    忽略模式: $ignore_pattern"
 
-    local test_url="https://${ignore_pattern}/test"
+    local test_url
+    test_url=$(build_test_url "https" "$ignore_pattern")
 
     https_request "$test_url"
 
@@ -1980,8 +2191,10 @@ detect_rule_type() {
         echo "cssAppend"
     elif [[ "$line" == *"filter://"* ]]; then
         echo "filter"
-    elif [[ "$line" == *"ignore://"* ]] || [[ "$line" == *"skip://"* ]]; then
-        echo "ignore"
+    elif [[ "$line" == *"passthrough://"* ]] || [[ "$line" == *"ignore://"* ]]; then
+        echo "passthrough"
+    elif [[ "$line" == *"skip://"* ]]; then
+        echo "skip"
     elif [[ "$line" == *"reqType://"* ]]; then
         echo "reqType"
     elif [[ "$line" == *"reqCharset://"* ]]; then
@@ -2018,7 +2231,9 @@ detect_rule_type() {
         echo "reqSpeed"
     elif [[ "$line" == *"resSpeed://"* ]]; then
         echo "resSpeed"
-    elif [[ "$line" == *"resCors://"* ]] || [[ "$line" == *"reqCors://"* ]]; then
+    elif [[ "$line" == *"reqCors://"* ]]; then
+        echo "reqCors"
+    elif [[ "$line" == *"resCors://"* ]]; then
         echo "cors"
     elif [[ "$line" == *"reqCookies://"* ]]; then
         echo "reqCookies"
@@ -2180,7 +2395,8 @@ extract_header_from_value() {
 test_res_headers_template() {
     local pattern="$1"
     local header_info="$2"
-    local test_url="https://${pattern}/test"
+    local test_url
+    test_url=$(build_test_url "https" "$pattern")
     local extra_headers=""
 
     local header_name=$(echo "$header_info" | cut -d'|' -f1)
@@ -2232,7 +2448,8 @@ test_res_headers_template() {
 test_req_headers_template() {
     local pattern="$1"
     local header_info="$2"
-    local test_url="https://${pattern}/test"
+    local test_url
+    test_url=$(build_test_url "https" "$pattern")
 
     local header_name=$(echo "$header_info" | cut -d'|' -f1)
     local header_template=$(echo "$header_info" | cut -d'|' -f2)
@@ -2586,6 +2803,63 @@ run_line_block_tests() {
     assert_status_2xx "$HTTP_STATUS" "lb-multi-3.local 应被转发"
 }
 
+run_skip_rule_tests() {
+    echo ""
+    echo -e "  ${CYAN}【测试】SK-01 按 operation 跳过已命中规则${NC}"
+    local test_url
+    test_url=$(build_test_url "https" "skip-operation.local")
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "X-Skip-Op" "$HTTP_HEADERS" "响应应包含 X-Skip-Op"
+    assert_header_value "X-Skip-Op" "second" "$HTTP_HEADERS" "skip://operation 应回落到后续规则"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】SK-02 按 pattern 跳过更具体规则${NC}"
+    test_url=$(build_test_url "https" "skip-pattern.local/api/blocked")
+    echo "    请求: $test_url"
+
+    https_request "$test_url"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_header_exists "X-Skip-Pattern" "$HTTP_HEADERS" "响应应包含 X-Skip-Pattern"
+    assert_header_value "X-Skip-Pattern" "fallback" "$HTTP_HEADERS" "skip://pattern 应命中回落规则"
+}
+
+run_delete_rule_tests() {
+    echo ""
+    echo -e "  ${CYAN}【测试】DEL-01 删除请求头${NC}"
+    test_req_headers_delete "delete-req.local" "X-Debug" "should-be-deleted"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】DEL-02 删除响应头${NC}"
+    test_res_headers_delete "delete-res.local" "X-Echo-Server"
+}
+
+run_req_merge_tests() {
+    echo ""
+    echo -e "  ${CYAN}【测试】RM-01 表单请求体合并${NC}"
+    http_post "http://req-merge-form.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_json_field ".request.method" "POST" "$HTTP_BODY" "reqMerge form 应改写为 POST"
+    local form_body
+    form_body=$(echo "$HTTP_BODY" | jq -r '.request.body // ""' 2>/dev/null)
+    assert_body_contains "name=alice" "$form_body" "form body 应保留原始字段"
+    assert_body_contains "role=admin" "$form_body" "form body 应追加 role"
+    assert_body_contains "enabled=true" "$form_body" "form body 应追加 enabled"
+
+    echo ""
+    echo -e "  ${CYAN}【测试】RM-02 JSON 请求体合并${NC}"
+    http_post "http://req-merge-json.local/test"
+    assert_status_2xx "$HTTP_STATUS" "请求应成功"
+    assert_json_field ".request.method" "POST" "$HTTP_BODY" "reqMerge json 应改写为 POST"
+    local json_body
+    json_body=$(echo "$HTTP_BODY" | jq -r '.request.body // ""' 2>/dev/null)
+    assert_body_contains "\"name\":\"alice\"" "$json_body" "json body 应保留 name"
+    assert_body_contains "\"profile.city\":\"shanghai\"" "$json_body" "json body 应包含 profile.city"
+    assert_body_contains "\"profile.level\":\"3\"" "$json_body" "json body 应包含 profile.level"
+}
+
 is_pattern_rule_file() {
     local file="$1"
     [[ "$file" == *"/pattern/"* ]] && return 0
@@ -2639,6 +2913,14 @@ run_specialized_tests() {
             ;;
         control)
             case "$basename" in
+                delete.txt)
+                    run_delete_rule_tests
+                    return 0
+                    ;;
+                skip.txt)
+                    run_skip_rule_tests
+                    return 0
+                    ;;
                 include_filter.txt)
                     run_include_filter_tests
                     return 0
@@ -2649,6 +2931,14 @@ run_specialized_tests() {
                     ;;
                 line_props.txt)
                     run_line_props_tests
+                    return 0
+                    ;;
+            esac
+            ;;
+        request_modify)
+            case "$basename" in
+                req_merge.txt)
+                    run_req_merge_tests
                     return 0
                     ;;
             esac
@@ -2815,6 +3105,11 @@ run_tests() {
                 local delay=$(extract_value "$protocols" "resDelay")
                 test_delay "$pattern" "${delay:-500}" "响应"
                 ;;
+            reqCors)
+                local req_cors_raw=$(extract_value "$protocols" "reqCors")
+                req_cors_raw=$(resolve_code_block_var "$req_cors_raw" "$RULE_FILE")
+                test_req_cors "$pattern" "$req_cors_raw"
+                ;;
             cors)
                 test_cors "$pattern"
                 ;;
@@ -2885,9 +3180,10 @@ run_tests() {
                 local filter_value=$(extract_value "$protocols" "filter")
                 test_filter_rule "$filter_value"
                 ;;
-            ignore)
-                local ignore_value=$(extract_value "$protocols" "ignore")
-                [[ -z "$ignore_value" ]] && ignore_value=$(extract_value "$protocols" "skip")
+            passthrough)
+                test_ignore_rule "$pattern"
+                ;;
+            skip)
                 test_ignore_rule "$pattern"
                 ;;
             lineProps)
@@ -2970,6 +3266,18 @@ run_tests() {
     set -e
 }
 
+ensure_assertions_executed() {
+    local total_assertions
+    total_assertions=$(get_total_count)
+
+    if [[ "${total_assertions:-0}" -gt 0 ]]; then
+        return 0
+    fi
+
+    _log_fail "测试未执行任何有效断言" "至少 1 条断言" "0 条断言"
+    return 1
+}
+
 SKIP_BUILD="false"
 KEEP_PROXY="false"
 SKIP_MOCK_SERVERS="false"
@@ -3037,6 +3345,7 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    TEST_DATA_DIR="$(abs_path "$TEST_DATA_DIR")"
 
     header "Bifrost 规则端到端测试 v2"
     echo "代理端口: $PROXY_PORT"
@@ -3052,6 +3361,9 @@ main() {
     if ! check_rule_syntax; then
         exit 1
     fi
+    if ! validate_rule_file_capabilities; then
+        exit 1
+    fi
 
     build_proxy
     setup_data_dir
@@ -3059,6 +3371,7 @@ main() {
     show_rules
     start_proxy
     run_tests
+    ensure_assertions_executed
 
     print_test_summary
     exit $?
