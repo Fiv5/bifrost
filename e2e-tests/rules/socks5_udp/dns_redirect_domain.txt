@@ -1,0 +1,2 @@
+# 测试目标: 验证 SOCKS5 UDP 场景下的域名到 IP host 重定向规则。
+dns.google host://8.8.4.4

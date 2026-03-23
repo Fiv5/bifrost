@@ -1,0 +1,4 @@
+# 测试目标: 验证 replay custom rules 模式可以组合修改状态码、响应头和响应体。
+127.0.0.1 replaceStatus://201
+127.0.0.1 resHeaders://(X-Replay-Res:ok)
+127.0.0.1 resBody://(replaced)

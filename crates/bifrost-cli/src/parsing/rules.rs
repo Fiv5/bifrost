@@ -429,13 +429,18 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
             Protocol::UrlParams => {
                 if let Some(params) = parse_header_value(value) {
                     for (k, v) in params {
-                        result.url_params.push((k, v));
+                        if v.is_empty() {
+                            result.delete_url_params.push(k);
+                        } else {
+                            result.url_params.push((k, v));
+                        }
                     }
                 }
             }
             Protocol::UrlReplace => {
                 let parsed = parse_replace_value(value);
                 result.url_replace.extend(parsed.string_rules);
+                result.url_replace_regex.extend(parsed.regex_rules);
             }
             Protocol::ReqType => {
                 result.req_type = Some(value.to_string());
@@ -527,6 +532,7 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
                 let parsed = parse_delete_value(value);
                 result.delete_req_headers.extend(parsed.req_headers);
                 result.delete_res_headers.extend(parsed.res_headers);
+                result.delete_url_params.extend(parsed.url_params);
             }
             Protocol::HeaderReplace => {
                 if let Some(rules) = parse_header_replace_value(value) {
@@ -543,12 +549,14 @@ fn convert_core_result_to_proxy(core_result: &bifrost_core::ResolvedRules) -> Pr
 struct ParsedDeleteValue {
     req_headers: Vec<String>,
     res_headers: Vec<String>,
+    url_params: Vec<String>,
 }
 
 fn parse_delete_value(value: &str) -> ParsedDeleteValue {
     let mut result = ParsedDeleteValue {
         req_headers: Vec::new(),
         res_headers: Vec::new(),
+        url_params: Vec::new(),
     };
 
     for part in value.split('|') {
@@ -561,6 +569,8 @@ fn parse_delete_value(value: &str) -> ParsedDeleteValue {
             result.req_headers.push(header.to_string());
         } else if let Some(header) = part.strip_prefix("res.") {
             result.res_headers.push(header.to_string());
+        } else if let Some(param) = part.strip_prefix("urlParams.") {
+            result.url_params.push(param.to_string());
         } else {
             result.req_headers.push(part.to_string());
             result.res_headers.push(part.to_string());

@@ -14,13 +14,14 @@ use super::super::ws_handshake::{
 };
 use crate::server::{empty_body, BoxBody, RulesResolver};
 use crate::utils::logging::RequestContext;
-use crate::utils::process_info::resolve_client_process_async;
+use crate::utils::process_info::resolve_client_process_async_for_connection;
 
 pub async fn handle_websocket_upgrade(
     req: Request<Incoming>,
     rules: Arc<dyn RulesResolver>,
     admin_state: Option<Arc<AdminState>>,
     peer_addr: std::net::SocketAddr,
+    local_addr: std::net::SocketAddr,
 ) -> Result<Response<BoxBody>> {
     let ctx = RequestContext::new();
     let start_time = Instant::now();
@@ -144,7 +145,8 @@ pub async fn handle_websocket_upgrade(
             uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/")
         );
 
-        let client_process = resolve_client_process_async(&peer_addr).await;
+        let client_process =
+            resolve_client_process_async_for_connection(&peer_addr, &local_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))

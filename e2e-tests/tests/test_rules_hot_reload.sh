@@ -17,6 +17,7 @@ export ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -121,8 +122,14 @@ start_proxy() {
 }
 
 TEST_RULE_NAME="hotreload-test-rule-$$"
+RULE_FIXTURES_DIR="$SCRIPT_DIR/../rules/hot_reload"
 TEST_TARGET_HOST="127.0.0.1:${ECHO_PORT}"
 TEST_URL="http://${TEST_TARGET_HOST}/status/200"
+
+rule_content_from_fixture() {
+    local name="$1"
+    rule_fixture_content "$RULE_FIXTURES_DIR/$name"
+}
 
 test_initial_no_rule() {
     http_get "$TEST_URL"
@@ -137,7 +144,8 @@ test_initial_no_rule() {
 }
 
 test_create_rule_via_api() {
-    local rule_content="127.0.0.1 statusCode://201"
+    local rule_content
+    rule_content=$(rule_content_from_fixture status_201.txt)
 
     local response
     response=$(create_rule "$TEST_RULE_NAME" "$rule_content" "true")
@@ -268,7 +276,8 @@ test_enabled_rule_applied_again() {
 }
 
 test_update_rule_content() {
-    local new_content="127.0.0.1 statusCode://202"
+    local new_content
+    new_content=$(rule_content_from_fixture status_202.txt)
 
     local response
     response=$(update_rule "$TEST_RULE_NAME" "$new_content" "true")

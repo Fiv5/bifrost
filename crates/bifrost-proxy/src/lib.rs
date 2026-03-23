@@ -28,8 +28,12 @@ pub use unified::*;
 pub use utils::logging::*;
 pub use utils::process_info::{
     format_client_info, resolve_client_process, resolve_client_process_async,
-    resolve_client_process_async_with_retry, resolve_client_process_cached, ClientProcess,
-    ProcessResolver, PROCESS_RESOLVER,
+    resolve_client_process_async_for_connection,
+    resolve_client_process_async_for_connection_with_retry,
+    resolve_client_process_async_with_retry, resolve_client_process_cached,
+    resolve_client_process_cached_for_connection, resolve_client_process_for_connection,
+    resolve_client_process_for_connection_with_retry, ClientProcess, ProcessResolver,
+    PROCESS_RESOLVER,
 };
 
 static CRYPTO_PROVIDER_INIT: Once = Once::new();

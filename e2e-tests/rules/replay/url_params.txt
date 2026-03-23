@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay custom rules 模式可以追加 URL 参数。
+127.0.0.1 urlParams://added_param=new_value

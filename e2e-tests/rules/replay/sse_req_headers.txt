@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay unified SSE 场景下可以应用请求头规则且长连接保持稳定。
+127.0.0.1 reqHeaders://X-SSE-Test=sse-rule-applied

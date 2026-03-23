@@ -1,0 +1,2 @@
+# 测试目标: 验证 SOCKS5 TLS 拦截场景下的 mock 文件响应规则。
+httpbin.org/mock-test file://({"mocked":true,"source":"socks5"})

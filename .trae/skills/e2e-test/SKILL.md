@@ -26,6 +26,14 @@ description: "创建和执行 Bifrost 代理的端到端测试；在添加新功
 
 - 启动代理服务时，必须显式设置临时数据目录，避免覆盖本机已有数据；目录前缀统一使用 `./.bifrost-e2e`
 - 若需要手动启动服务，优先使用“先编译、再启动”的方式，而不是直接假设 `cargo run` 或旧进程已生效
+- 新增或修改“规则行为”相关测试时，规则定义必须存放在 `e2e-tests/rules/` 下，不能散落到根目录、临时文件或其他测试目录
+- `e2e-tests/rules/` 下的规则文件必须按“模块功能 + 测试目标”组织：
+  - 先按模块功能拆分子目录，例如 `forwarding/`、`request_modify/`、`response_modify/`
+  - 再按单一测试目标拆分 `.txt` 文件；一个文件只表达一组紧密相关的规则语义，避免把多个无关目标塞进同一个文件
+- 规则文件命名要直接表达测试目标，使用小写下划线风格，例如 `headers.txt`、`wildcard_level.txt`、`tls_intercept_rule.txt`
+- 每个规则文件顶部必须先写清楚测试目标，再写测试规则本体；顶部说明至少应回答“这个文件验证什么语义/行为”
+- 与规则文件配套的测试脚本必须存放在 `e2e-tests/tests/`，不能继续放在 `scripts/`、根目录或其他位置；脚本命名建议与测试目标对应，例如 `test_header_replace.sh`
+- 如果某个测试需要额外样例数据、模板或 mock 文件，分别放到现有的 `e2e-tests/test_data/`、`e2e-tests/mock_servers/` 等目录，不要和规则文件混放
 - 对涉及前端静态资源或管理端推送逻辑的改动，优先执行：
 
 ```bash
@@ -42,6 +50,7 @@ BIFROST_DATA_DIR=./.bifrost-e2e-test ./.bifrost-ui-target/debug/bifrost start -p
   - 先确认当前测试页面连到的是哪一个 `bifrost` 进程
   - 再确认 `/_bifrost/api/traffic`、`/_bifrost/api/traffic/{id}` 返回的真实状态
   - 最后抓浏览器 `/api/push` 的 `framesent/framereceived`，判断是“服务端没推”还是“页面没订阅/没消费”
+- 新建规则测试后，顺手检查对应的规则文件与脚本是否一一对应；若无法建立清晰对应关系，应继续拆分目录或文件
 - 测试结束后清理临时目录和残留进程
 
 ## 场景文档

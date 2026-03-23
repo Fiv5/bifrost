@@ -17,6 +17,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
 
                 let client = reqwest::Client::builder()
                     .danger_accept_invalid_certs(true)
+                    .no_proxy()
                     .build()
                     .map_err(|e| format!("Failed to create client: {}", e))?;
 
@@ -52,6 +53,7 @@ pub fn get_all_tests() -> Vec<TestCase> {
 
                 let client = reqwest::Client::builder()
                     .danger_accept_invalid_certs(true)
+                    .no_proxy()
                     .build()
                     .map_err(|e| format!("Failed to create client: {}", e))?;
 

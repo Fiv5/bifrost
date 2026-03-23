@@ -1,0 +1,2 @@
+# 测试目标: 验证 SOCKS5 TLS 拦截场景下的 host 重定向规则。
+example-redirect.test host://httpbin.org

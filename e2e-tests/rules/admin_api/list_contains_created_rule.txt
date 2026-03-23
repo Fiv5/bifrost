@@ -1,0 +1,2 @@
+# 测试目标: 验证新建规则后，列表接口能返回该规则。
+test.com proxy://localhost

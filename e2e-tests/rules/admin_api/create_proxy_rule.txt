@@ -1,0 +1,2 @@
+# 测试目标: 验证 Rules Admin API 创建单条代理规则的基础能力。
+example.com proxy://127.0.0.1:8080

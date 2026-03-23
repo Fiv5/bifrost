@@ -72,6 +72,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "matchers",
             test_matcher_no_match_passthrough,
         ),
+        TestCase::standalone(
+            "matcher_protocol_first_regex_pattern",
+            "Protocol-first host rule: regex pattern stays split correctly",
+            "matchers",
+            test_matcher_protocol_first_regex_pattern,
+        ),
     ]
 }
 
@@ -458,6 +464,38 @@ async fn test_matcher_no_match_passthrough() -> Result<(), String> {
     if mock.request_count() > 0 {
         return Err("Request should not have reached mock server".to_string());
     }
+
+    Ok(())
+}
+
+async fn test_matcher_protocol_first_regex_pattern() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "protocol_first_regex");
+
+    let port = portpicker::pick_unused_port().unwrap();
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![&format!(
+            r#"host://127.0.0.1:{} /^http:\/\/regex-merge\.test\/api\/v\d+/"#,
+            mock.port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", port),
+        "http://regex-merge.test/api/v2/users",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_body_contains("protocol_first_regex")?;
+    mock.assert_path("/api/v2/users")?;
 
     Ok(())
 }

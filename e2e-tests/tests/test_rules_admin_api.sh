@@ -2,6 +2,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
 ADMIN_PORT="${ADMIN_PORT:-9900}"
@@ -94,6 +95,12 @@ run_test() {
 }
 
 TEST_RULE_NAME="test-rule-$$"
+RULE_FIXTURES_DIR="$SCRIPT_DIR/../rules/admin_api"
+
+rule_content_from_fixture() {
+    local name="$1"
+    rule_fixture_content "$RULE_FIXTURES_DIR/$name"
+}
 
 cleanup_test_rule() {
     delete_rule "$TEST_RULE_NAME" > /dev/null 2>&1
@@ -127,7 +134,7 @@ test_rules_create_api() {
     cleanup_test_rule
 
     local response
-    response=$(create_rule "$TEST_RULE_NAME" "example.com proxy://127.0.0.1:8080" "true")
+    response=$(create_rule "$TEST_RULE_NAME" "$(rule_content_from_fixture create_proxy_rule.txt)" "true")
 
     if [[ $? -ne 0 ]]; then
         log_fail "Failed to call create rule API"
@@ -184,7 +191,8 @@ test_rules_get_api() {
 }
 
 test_rules_update_api() {
-    local new_content="*.example.com file:///mock.json"
+    local new_content
+    new_content=$(rule_content_from_fixture update_mock_file_rule.txt)
     local response
     response=$(update_rule "$TEST_RULE_NAME" "$new_content" "true")
 
@@ -295,7 +303,7 @@ test_rules_get_nonexistent() {
 
 test_rules_list_contains_created_rule() {
     cleanup_test_rule
-    create_rule "$TEST_RULE_NAME" "test.com proxy://localhost" "true" > /dev/null
+    create_rule "$TEST_RULE_NAME" "$(rule_content_from_fixture list_contains_created_rule.txt)" "true" > /dev/null
 
     local response
     response=$(list_rules)
@@ -315,7 +323,7 @@ test_rules_list_contains_created_rule() {
 
 test_rules_rule_count_field() {
     cleanup_test_rule
-    create_rule "$TEST_RULE_NAME" "line1.com proxy://a\\nline2.com proxy://b\\n# comment" "true" > /dev/null
+    create_rule "$TEST_RULE_NAME" "$(rule_content_from_fixture rule_count_multiline.txt)" "true" > /dev/null
 
     local response
     response=$(list_rules)

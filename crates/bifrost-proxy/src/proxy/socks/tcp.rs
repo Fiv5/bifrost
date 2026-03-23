@@ -28,7 +28,8 @@ use crate::server::{
 };
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::{
-    resolve_client_process_async, resolve_client_process_async_with_retry,
+    resolve_client_process_async_for_connection,
+    resolve_client_process_async_for_connection_with_retry,
 };
 use crate::utils::tee::store_request_body;
 use bifrost_core::{AccessControlConfig, AccessDecision, AccessMode, ClientAccessControl};
@@ -486,6 +487,7 @@ impl SocksServer {
 pub struct SocksHandler {
     stream: Option<TcpStream>,
     peer_addr: SocketAddr,
+    local_addr: SocketAddr,
     auth_required: bool,
     username: Option<String>,
     password: Option<String>,
@@ -510,9 +512,11 @@ impl SocksHandler {
         timeout_secs: u64,
         udp_relay_addr: Option<SocketAddr>,
     ) -> Self {
+        let local_addr = stream.local_addr().unwrap_or(peer_addr);
         Self {
             stream: Some(stream),
             peer_addr,
+            local_addr,
             auth_required,
             username,
             password,
@@ -971,10 +975,19 @@ impl SocksHandler {
                             let client_process = if is_local_client
                                 && requires_client_app_for_tls_decision(tls_intercept_config)
                             {
-                                resolve_client_process_async_with_retry(&self.peer_addr, 10, 20)
-                                    .await
+                                resolve_client_process_async_for_connection_with_retry(
+                                    &self.peer_addr,
+                                    &self.local_addr,
+                                    10,
+                                    20,
+                                )
+                                .await
                             } else {
-                                resolve_client_process_async(&self.peer_addr).await
+                                resolve_client_process_async_for_connection(
+                                    &self.peer_addr,
+                                    &self.local_addr,
+                                )
+                                .await
                             };
                             let client_app = client_process.as_ref().map(|p| p.name.as_str());
 
@@ -1056,7 +1069,8 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process_async(&peer_addr).await;
+        let client_process =
+            resolve_client_process_async_for_connection(&peer_addr, &self.local_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1269,7 +1283,8 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process_async(&self.peer_addr).await;
+        let client_process =
+            resolve_client_process_async_for_connection(&self.peer_addr, &self.local_addr).await;
         let client_app = client_process.as_ref().map(|p| p.name.clone());
 
         if let Some(ref state) = admin_state {
@@ -1322,6 +1337,7 @@ impl SocksHandler {
         } else {
             64 * 1024
         };
+        let local_addr = self.local_addr;
 
         let service = service_fn(move |req: Request<Incoming>| {
             let target_host = target_host.clone();
@@ -1343,6 +1359,7 @@ impl SocksHandler {
                     verbose_logging,
                     unsafe_ssl,
                     peer_addr,
+                    local_addr,
                 )
                 .await
             }
@@ -1453,7 +1470,8 @@ impl SocksHandler {
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
-        let client_process = resolve_client_process_async(&peer_addr).await;
+        let client_process =
+            resolve_client_process_async_for_connection(&peer_addr, &self.local_addr).await;
         let (client_app, client_pid, client_path) = client_process
             .as_ref()
             .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))
@@ -1670,6 +1688,7 @@ async fn handle_socks5_intercepted_request(
     verbose_logging: bool,
     unsafe_ssl: bool,
     peer_addr: SocketAddr,
+    local_addr: SocketAddr,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
     let method = req.method().to_string();
     let original_uri = req.uri().clone();
@@ -1744,7 +1763,7 @@ async fn handle_socks5_intercepted_request(
     let mut new_req = Request::from_parts(parts, body);
     *new_req.uri_mut() = new_uri;
 
-    let client_process = resolve_client_process_async(&peer_addr).await;
+    let client_process = resolve_client_process_async_for_connection(&peer_addr, &local_addr).await;
     let (client_app, client_pid, client_path) = client_process
         .as_ref()
         .map(|p| (Some(p.name.clone()), Some(p.pid), p.path.clone()))

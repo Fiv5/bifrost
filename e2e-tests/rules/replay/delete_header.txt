@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay custom rules 模式可以删除指定请求头。
+127.0.0.1 delete://X-Remove-Me

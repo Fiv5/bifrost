@@ -15,6 +15,7 @@ source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/ws_client.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 BIFROST_PID=""
 MOCK_HTTP_PID=""
@@ -22,6 +23,7 @@ MOCK_SSE_PID=""
 MOCK_WS_PID=""
 passed=0
 failed=0
+RULES_DIR="$SCRIPT_DIR/../rules/replay"
 
 cleanup() {
     echo ""
@@ -59,6 +61,12 @@ urlencode() {
 import sys, urllib.parse
 print(urllib.parse.quote(sys.argv[1], safe=''))
 PY
+}
+
+replay_rule_config_from_fixture() {
+    local fixture_name="$1"
+    shift || true
+    custom_rule_config_from_fixture "$RULES_DIR/$fixture_name" "$@"
 }
 
 trap cleanup EXIT
@@ -203,7 +211,8 @@ test_reqHeaders_rule() {
     echo "=== Test: reqHeaders Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-headers"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-Custom-Header=custom-value-123"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture req_headers.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -238,7 +247,8 @@ test_host_rule() {
     echo "=== Test: Host Rule ==="
     
     local url="http://fake-host.local:${MOCK_HTTP_PORT}/test-host"
-    local rule_config='{"mode":"custom","custom_rules":"fake-host.local host://127.0.0.1:'"${MOCK_HTTP_PORT}"'"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture host_redirect.txt "MOCK_HTTP_PORT=${MOCK_HTTP_PORT}")
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -263,7 +273,8 @@ test_method_rule() {
     echo "=== Test: Method Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-method"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 method://POST"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture method_post.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -288,7 +299,8 @@ test_ua_rule() {
     echo "=== Test: User-Agent Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-ua"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 ua://CustomUA/1.0-test"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture user_agent.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -313,7 +325,8 @@ test_referer_rule() {
     echo "=== Test: Referer Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-referer"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 referer://https://example.com/page"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture referer.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -338,7 +351,8 @@ test_urlParams_rule() {
     echo "=== Test: urlParams Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-params?existing=value"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 urlParams://added_param=new_value"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture url_params.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -366,7 +380,8 @@ test_reqCookies_rule() {
     echo "=== Test: reqCookies Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-cookies"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqCookies://session_id=abc123"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture req_cookies.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -391,7 +406,8 @@ test_reqBody_rule() {
     echo "=== Test: reqBody Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-body"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqBody://{replaced_body_content}"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture req_body.txt)
     
     local response
     response=$(replay_request "$url" "POST" '[["Content-Type", "text/plain"]]' "original_body" "$rule_config")
@@ -416,7 +432,8 @@ test_delete_header_rule() {
     echo "=== Test: Delete Header Rule ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-delete-header"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 delete://X-Remove-Me"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture delete_header.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"], ["X-Remove-Me", "should-be-removed"]]' "" "$rule_config")
@@ -441,7 +458,8 @@ test_multiple_rules() {
     echo "=== Test: Multiple Rules Combined ==="
     
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-multi"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-Multi-1=value1\n127.0.0.1 reqHeaders://X-Multi-2=value2\n127.0.0.1 ua://MultiTestUA/2.0"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture multiple_rules.txt)
     
     local response
     response=$(replay_request "$url" "GET" '[["Accept", "application/json"]]' "" "$rule_config")
@@ -511,7 +529,7 @@ test_sse_replay_with_rules() {
     local upstream_url="http://127.0.0.1:${MOCK_SSE_PORT}/sse/custom?count=30&interval=1"
     local payload
     payload=$(cat <<EOF
-{"url":"${upstream_url}","method":"GET","headers":[["Accept","text/event-stream"]],"rule_config":{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-SSE-Test=sse-rule-applied"},"timeout_ms":10000}
+{"url":"${upstream_url}","method":"GET","headers":[["Accept","text/event-stream"]],"rule_config":$(replay_rule_config_from_fixture sse_req_headers.txt),"timeout_ms":10000}
 EOF
 )
 
@@ -562,7 +580,8 @@ test_response_modification_rules() {
     echo "=== Test: Response Modification Rules ==="
 
     local url="http://127.0.0.1:${MOCK_HTTP_PORT}/test-res-mod?x=1"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 replaceStatus://201\n127.0.0.1 resHeaders://(X-Replay-Res:ok)\n127.0.0.1 resBody://(replaced)"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture response_modification.txt)
 
     local response
     response=$(replay_request "$url" "GET" '[ ["Accept", "application/json"] ]' "" "$rule_config")
@@ -590,7 +609,8 @@ test_websocket_replay_with_rules() {
     echo "=== Test: WebSocket Replay with Rules ==="
 
     local upstream_url="ws://127.0.0.1:${MOCK_WS_PORT}/ws"
-    local rule_config='{"mode":"custom","custom_rules":"127.0.0.1 reqHeaders://X-WS-Rule=from-replay"}'
+    local rule_config
+    rule_config=$(replay_rule_config_from_fixture websocket_req_headers.txt)
 
     local encoded_url encoded_rule
     encoded_url=$(urlencode "$upstream_url")

@@ -80,6 +80,7 @@ impl DirectClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .danger_accept_invalid_certs(true)
+            .no_proxy()
             .build()?;
 
         Ok(Self { client })

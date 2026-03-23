@@ -1,0 +1,2 @@
+# 测试目标: 验证 HTTPS 目标命中 tlsPassthrough 规则后，会保持直通模式。
+127.0.0.1:__MOCK_HTTPS_PORT__ tlsPassthrough://

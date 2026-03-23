@@ -12,6 +12,8 @@ ADMIN_PORT=${ADMIN_PORT:-18080}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
 DATA_DIR="${PROJECT_ROOT}/.bifrost-http3-rules-test"
 GO_CLIENT="$SCRIPT_DIR/quic_socks5_client/quic_socks5_test"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
+RULES_DIR="$E2E_DIR/rules/http3"
 
 cleanup() {
     echo "Cleaning up..."
@@ -52,6 +54,12 @@ add_rule() {
     local content=$2
     export BIFROST_DATA_DIR="$DATA_DIR"
     "$BIFROST_BIN" rule add "$name" -c "$content"
+}
+
+add_rule_from_fixture() {
+    local name="$1"
+    local fixture_name="$2"
+    add_rule "$name" "$(rule_fixture_content "$RULES_DIR/$fixture_name")"
 }
 
 check_admin_api() {
@@ -147,7 +155,7 @@ test_socks5_tcp_with_rules() {
     echo "=== Test 5: SOCKS5 TCP with Rules ==="
     
     echo "Adding test rule..."
-    add_rule "test-header" "edith.xiaohongshu.com resHeaders://{x-test-header: bifrost-test}"
+    add_rule_from_fixture "test-header" "http3_rules_header.txt"
     
     echo "Restarting proxy to load rules..."
     pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true

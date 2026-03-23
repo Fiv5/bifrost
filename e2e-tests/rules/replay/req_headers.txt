@@ -1,0 +1,2 @@
+# 测试目标: 验证 replay custom rules 模式可以注入请求头。
+127.0.0.1 reqHeaders://X-Custom-Header=custom-value-123

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 source "${SCRIPT_DIR}/../test_utils/assert.sh"
+source "${SCRIPT_DIR}/../test_utils/rule_fixture.sh"
 
 PROXY_PORT="${PROXY_PORT:-18889}"
 ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-19081}"
@@ -14,6 +15,7 @@ ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 
 BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
 TEST_DATA_DIR=""
+RULES_TEMPLATE="${PROJECT_DIR}/e2e-tests/rules/system_proxy/basic_forwarding.txt"
 PROXY_PID=""
 ECHO_PID=""
 
@@ -45,7 +47,8 @@ build_bifrost() {
 setup_env() {
     TEST_DATA_DIR=$(mktemp -d)
     mkdir -p "${TEST_DATA_DIR}/.bifrost/rules"
-    echo "*.test.local http://127.0.0.1:${ECHO_HTTP_PORT}" > "${TEST_DATA_DIR}/.bifrost/rules/test.txt"
+    render_rule_fixture_to_file "$RULES_TEMPLATE" "${TEST_DATA_DIR}/.bifrost/rules/test.txt" \
+        "ECHO_HTTP_PORT=${ECHO_HTTP_PORT}"
 }
 
 start_echo() {

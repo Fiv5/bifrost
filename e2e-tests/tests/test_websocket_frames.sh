@@ -27,6 +27,7 @@ WS_HOST_HEADER="${WS_HOST}:${WS_PORT}"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -34,6 +35,7 @@ TESTS_FAILED=0
 BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-}"
 BIFROST_PID=""
 WS_SERVER_PID=""
+RULE_FIXTURE="$SCRIPT_DIR/../rules/websocket/decode_utf8_searchable.txt"
 
 cleanup() {
     if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
@@ -269,7 +271,7 @@ test_ws_binary_payload_decode_and_search() {
     log_test "WebSocket binary payload decode://utf8 + searchable"
 
     delete_rule "ws_decode_test" >/dev/null 2>&1 || true
-    create_rule "ws_decode_test" "* decode://utf8" true >/dev/null 2>&1 || true
+    create_rule "ws_decode_test" "$(rule_fixture_content "$RULE_FIXTURE")" true >/dev/null 2>&1 || true
     enable_rule "ws_decode_test" >/dev/null 2>&1 || true
 
     clear_traffic >/dev/null 2>&1 || true

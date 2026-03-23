@@ -32,6 +32,8 @@ lazy_static::lazy_static! {
     static ref PROTOCOL_REGEX: Regex = Regex::new(r"^([a-zA-Z][a-zA-Z0-9\-]*)://(.*)$").unwrap();
     static ref INLINE_VALUES_REGEX: Regex = Regex::new(r"\{([a-zA-Z_][a-zA-Z0-9_.\-]*)\}").unwrap();
     static ref HOST_PORT_REGEX: Regex = Regex::new(r"^(localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[:0-9a-fA-F]+\]):(\d+)(/.*)?$").unwrap();
+    static ref DOMAIN_LIKE_PATTERN_REGEX: Regex =
+        Regex::new(r"^(?:\*\.)?(?:[A-Za-z0-9-]+\.)+[A-Za-z0-9-]+(?::\d+)?(?:/.*)?$").unwrap();
     static ref BARE_HOST_PATH_TARGET_REGEX: Regex = Regex::new(
         r"^((localhost)|(\d{1,3}(?:\.\d{1,3}){3})|(\[[0-9A-Fa-f:]+\])|(([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+))(?::\d+)?([/?#].*)$"
     ).unwrap();
@@ -1221,7 +1223,59 @@ fn split_rule_parts(line: &str) -> Vec<String> {
         parts.push(current);
     }
 
-    parts
+    let mut merged = Vec::new();
+    for part in parts {
+        let should_merge = merged.last().is_some_and(|previous: &String| {
+            previous.contains("://") && !looks_like_rule_part(&part)
+        });
+
+        if should_merge {
+            if let Some(previous) = merged.last_mut() {
+                previous.push(' ');
+                previous.push_str(&part);
+            }
+        } else {
+            merged.push(part);
+        }
+    }
+
+    merged
+}
+
+fn looks_like_rule_part(part: &str) -> bool {
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.starts_with('/') {
+        return true;
+    }
+
+    if trimmed.contains("://")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with('!')
+        || trimmed.starts_with('^')
+        || trimmed.starts_with('$')
+        || HOST_PORT_REGEX.is_match(trimmed)
+        || is_bare_host_target_with_path(trimmed)
+    {
+        return true;
+    }
+
+    looks_like_host_pattern(trimmed)
+}
+
+fn looks_like_host_pattern(part: &str) -> bool {
+    if part.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    if part.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+
+    DOMAIN_LIKE_PATTERN_REGEX.is_match(part)
 }
 
 fn is_target_address(value: &str) -> bool {
@@ -2090,6 +2144,25 @@ new_value
         assert_eq!(parts[0], "*.test");
         assert_eq!(parts[1], "tlsIntercept://");
         assert_eq!(parts[2], "reqHeaders://(Auth: Bearer token)");
+    }
+
+    #[test]
+    fn test_split_rule_parts_protocol_then_pattern() {
+        let parts = split_rule_parts("host://127.0.0.1 example.com");
+        assert_eq!(parts, vec!["host://127.0.0.1", "example.com"]);
+    }
+
+    #[test]
+    fn test_split_rule_parts_protocol_then_multiple_patterns() {
+        let parts = split_rule_parts("proxy://127.0.0.1:8080 www.example.com api.example.com");
+        assert_eq!(
+            parts,
+            vec![
+                "proxy://127.0.0.1:8080",
+                "www.example.com",
+                "api.example.com"
+            ]
+        );
     }
 
     #[test]
