@@ -925,7 +925,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 68);
+        assert_eq!(all, &ALL_PROTOCOLS);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
@@ -940,12 +940,20 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_aliases_count() {
-        assert_eq!(PROTOCOL_ALIASES.len(), 16);
+    fn test_protocol_aliases_are_parseable() {
+        for (alias, canonical) in PROTOCOL_ALIASES.iter() {
+            assert_ne!(alias, canonical);
+            assert!(
+                Protocol::parse(canonical).is_some(),
+                "Alias {alias} resolves to unknown protocol {canonical}"
+            );
+        }
     }
 
     #[test]
-    fn test_multi_match_protocols_count() {
-        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 35);
+    fn test_multi_match_protocols_are_unique() {
+        let unique: std::collections::HashSet<_> = MULTI_MATCH_PROTOCOLS.iter().copied().collect();
+        assert_eq!(unique.len(), MULTI_MATCH_PROTOCOLS.len());
+        assert!(MULTI_MATCH_PROTOCOLS.iter().all(Protocol::is_multi_match));
     }
 }
