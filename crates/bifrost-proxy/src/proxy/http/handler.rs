@@ -875,6 +875,7 @@ pub async fn handle_http_request(
                     tls_ms: err_tls_ms,
                     send_ms: None,
                     wait_ms: None,
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -1372,6 +1373,7 @@ pub async fn handle_http_request(
                     tls_ms: None,
                     send_ms: None,
                     wait_ms: Some(wait_ms),
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -1625,6 +1627,7 @@ pub async fn handle_http_request(
             tls_ms: None,
             send_ms: None,
             wait_ms: Some(wait_ms),
+            first_byte_ms: Some(total_ms),
             receive_ms: Some(receive_ms),
             total_ms,
         });
@@ -2127,6 +2130,7 @@ async fn handle_http_websocket(
             tls_ms: None,
             send_ms: None,
             wait_ms: Some(total_ms.saturating_sub(tcp_connect_ms)),
+            first_byte_ms: Some(total_ms),
             receive_ms: None,
             total_ms,
         });

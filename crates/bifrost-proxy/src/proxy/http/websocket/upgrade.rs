@@ -162,6 +162,7 @@ pub async fn handle_websocket_upgrade(
             tls_ms: None,
             send_ms: None,
             wait_ms: Some(total_ms.saturating_sub(tcp_connect_ms)),
+            first_byte_ms: Some(total_ms),
             receive_ms: None,
             total_ms,
         });

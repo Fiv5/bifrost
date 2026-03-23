@@ -160,28 +160,59 @@ const RuleCard = ({ rule, index }: { rule: MatchedRule; index: number }) => {
 const TimingBar = ({ timing }: { timing: RequestTiming }) => {
   const { token } = theme.useToken();
   const total = timing.total_ms || 1;
+  const firstByteWaitMs =
+    timing.first_byte_ms !== undefined
+      ? Math.max(
+          timing.first_byte_ms -
+            (timing.dns_ms ?? 0) -
+            (timing.connect_ms ?? 0) -
+            (timing.tls_ms ?? 0) -
+            (timing.send_ms ?? 0),
+          0,
+        )
+      : timing.wait_ms;
 
   const phases = [
-    { key: "dns", label: "DNS", value: timing.dns_ms, color: "#8884d8" },
+    { key: "dns", label: "DNS lookup", value: timing.dns_ms, color: "#8884d8" },
     {
       key: "connect",
-      label: "Connect",
+      label: "Connection established",
       value: timing.connect_ms,
       color: "#82ca9d",
     },
-    { key: "tls", label: "TLS", value: timing.tls_ms, color: "#ffc658" },
-    { key: "send", label: "Send", value: timing.send_ms, color: "#ff7300" },
-    { key: "wait", label: "Wait", value: timing.wait_ms, color: "#00C49F" },
+    { key: "tls", label: "TLS handshake", value: timing.tls_ms, color: "#ffc658" },
+    { key: "send", label: "Request sent", value: timing.send_ms, color: "#ff7300" },
+    {
+      key: "wait",
+      label: "Waiting for first byte",
+      value: firstByteWaitMs,
+      color: "#00C49F",
+    },
     {
       key: "receive",
-      label: "Receive",
+      label: "Receiving after first byte",
       value: timing.receive_ms,
       color: "#0088FE",
     },
   ].filter((p) => p.value !== undefined && p.value > 0);
 
+  const stageDetails = [
+    { key: "dns", label: "DNS lookup", value: timing.dns_ms },
+    { key: "connect", label: "Connection established", value: timing.connect_ms },
+    { key: "tls", label: "TLS handshake", value: timing.tls_ms },
+    { key: "send", label: "Request sent", value: timing.send_ms },
+    { key: "first-byte", label: "First byte to client", value: timing.first_byte_ms },
+    { key: "wait-byte", label: "Waiting for first byte", value: firstByteWaitMs },
+    {
+      key: "receive",
+      label: "Receiving after first byte",
+      value: timing.receive_ms,
+    },
+    { key: "total", label: "Total", value: timing.total_ms },
+  ].filter((stage) => stage.value !== undefined && stage.value > 0);
+
   return (
-    <div style={{ marginTop: 2 }}>
+    <div style={{ marginTop: 2, display: "flex", flexDirection: "column", gap: 8 }}>
       <div
         style={{
           display: "flex",
@@ -219,6 +250,29 @@ const TimingBar = ({ timing }: { timing: RequestTiming }) => {
             />
             <Text type="secondary" style={{ fontSize: 11 }}>
               {phase.label}: {phase.value}ms
+            </Text>
+          </div>
+        ))}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(170px, 220px) 1fr",
+          gap: "4px 12px",
+        }}
+      >
+        {stageDetails.map((stage) => (
+          <div
+            key={stage.key}
+            style={{
+              display: "contents",
+            }}
+          >
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {stage.label}
+            </Text>
+            <Text style={{ fontSize: 12 }}>
+              {formatDurationDetailed(stage.value)}
             </Text>
           </div>
         ))}
@@ -337,6 +391,7 @@ const buildTimelineData = (
         ? "Streaming"
         : "Streaming until close"
       : "Receiving response body";
+  const firstByteMs = timing?.first_byte_ms;
 
   const stageCandidates: Array<{
     key: string;
@@ -375,10 +430,20 @@ const buildTimelineData = (
     },
     {
       key: "wait",
-      label: "Waiting for first response",
-      value: timing?.wait_ms,
+      label: "Waiting for first byte",
+      value:
+        firstByteMs !== undefined
+          ? Math.max(
+              firstByteMs -
+                (timing?.dns_ms ?? 0) -
+                (timing?.connect_ms ?? 0) -
+                (timing?.tls_ms ?? 0) -
+                (timing?.send_ms ?? 0),
+              0,
+            )
+          : timing?.wait_ms,
       color: "#00C49F",
-      momentLabel: "First response",
+      momentLabel: "First byte",
     },
   ];
 
@@ -415,7 +480,8 @@ const buildTimelineData = (
     }
   }
 
-  const transferMs = Math.max(durationMs - cumulativeMs, 0);
+  const transferStartMs = firstByteMs ?? cumulativeMs;
+  const transferMs = Math.max(durationMs - transferStartMs, 0);
   if (transferMs > 0) {
     segments.push({
       key: "transfer",
@@ -440,8 +506,8 @@ const buildTimelineData = (
         record.is_sse || record.is_websocket || record.is_tunnel
           ? "Stream active"
           : "Receiving body",
-      timestamp: record.timestamp + cumulativeMs,
-      offsetMs: cumulativeMs,
+      timestamp: record.timestamp + transferStartMs,
+      offsetMs: transferStartMs,
     });
   }
   moments.push({

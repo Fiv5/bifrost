@@ -1938,6 +1938,7 @@ async fn handle_intercepted_request_with_protocol(
                     tls_ms,
                     send_ms: None,
                     wait_ms: None,
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -2367,6 +2368,7 @@ async fn handle_intercepted_request_with_protocol(
                     tls_ms,
                     send_ms: None,
                     wait_ms: Some(wait_ms),
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -2558,6 +2560,7 @@ async fn handle_intercepted_request_with_protocol(
             tls_ms,
             send_ms: None,
             wait_ms: Some(wait_ms),
+            first_byte_ms: Some(total_ms),
             receive_ms: Some(receive_ms),
             total_ms,
         });
@@ -2716,6 +2719,21 @@ async fn handle_intercepted_request_with_protocol(
                 });
             }
         }
+    }
+
+    let downstream_first_byte_ms = start_time.elapsed().as_millis() as u64;
+    if let Some(ref state) = admin_state {
+        state.update_traffic_by_id(req_id, move |record| {
+            record.duration_ms = record.duration_ms.max(downstream_first_byte_ms);
+            if let Some(ref mut timing) = record.timing {
+                timing.first_byte_ms = Some(downstream_first_byte_ms);
+                timing.total_ms = record.duration_ms;
+                if timing.receive_ms.is_some() {
+                    timing.receive_ms =
+                        Some(record.duration_ms.saturating_sub(downstream_first_byte_ms));
+                }
+            }
+        });
     }
 
     let response_body =
@@ -3074,6 +3092,7 @@ async fn handle_intercepted_websocket(
             },
             send_ms: None,
             wait_ms: None,
+            first_byte_ms: Some(total_ms),
             receive_ms: None,
             total_ms,
         });

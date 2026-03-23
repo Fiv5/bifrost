@@ -88,6 +88,8 @@ pub struct RequestTiming {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wait_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_byte_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub receive_ms: Option<u64>,
     pub total_ms: u64,
 }

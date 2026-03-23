@@ -491,7 +491,9 @@ export const Messages = ({
   const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(
     null,
   );
+  const [selectedSseEvent, setSelectedSseEvent] = useState<SSEEvent | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [sseDetailModalOpen, setSseDetailModalOpen] = useState(false);
   const [wsDetailLoading, setWsDetailLoading] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseEventSourceRef = useRef<EventSource | null>(null);
@@ -1040,6 +1042,16 @@ export const Messages = ({
     );
   }, [selectedFrame, wsPayloadById]);
 
+  const selectedSsePayload = useMemo(() => {
+    if (!selectedSseEvent) return "";
+    return formatJson(selectedSseEvent.data || "").formatted;
+  }, [selectedSseEvent]);
+
+  const openSseEventDetail = useCallback((event: SSEEvent) => {
+    setSelectedSseEvent(event);
+    setSseDetailModalOpen(true);
+  }, []);
+
 
   if (
     frameCount === 0 &&
@@ -1099,6 +1111,7 @@ export const Messages = ({
               onSearch({ next });
             }
           }}
+          onOpenDetail={openSseEventDetail}
         />
         <Modal
           open={sseFullscreenOpen}
@@ -1124,10 +1137,10 @@ export const Messages = ({
             }}
             onSearchModeChange={setSseSearchMode}
             onLoadMore={() => {}}
-          onRefresh={() => {
-            setSseForceClosed(false);
-            setSseReloadToken((n) => n + 1);
-          }}
+            onRefresh={() => {
+              setSseForceClosed(false);
+              setSseReloadToken((n) => n + 1);
+            }}
             connectionState={sseConnectionState}
             externalNext={searchValue.next}
             onMatchCountChange={(total) => {
@@ -1140,7 +1153,85 @@ export const Messages = ({
                 onSearch({ next });
               }
             }}
+            onOpenDetail={openSseEventDetail}
           />
+        </Modal>
+        <Modal
+          title={
+            <Space>
+              <Tag color="green">{selectedSseEvent?.event || "message"}</Tag>
+              {selectedSseEvent?.id && (
+                <Text type="secondary">id: {selectedSseEvent.id}</Text>
+              )}
+              {selectedSseEvent?.timestamp ? (
+                <Text type="secondary">
+                  {dayjs(selectedSseEvent.timestamp).format(
+                    "YYYY-MM-DD HH:mm:ss.SSS",
+                  )}
+                </Text>
+              ) : null}
+            </Space>
+          }
+          open={sseDetailModalOpen}
+          zIndex={3000}
+          onCancel={() => {
+            setSseDetailModalOpen(false);
+            setSelectedSseEvent(null);
+          }}
+          footer={
+            <Space>
+              <Button
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  if (selectedSsePayload) {
+                    copyToClipboard(selectedSsePayload);
+                  }
+                }}
+                disabled={!selectedSsePayload}
+              >
+                Copy
+              </Button>
+              <Button
+                onClick={() => {
+                  setSseDetailModalOpen(false);
+                  setSelectedSseEvent(null);
+                }}
+              >
+                Close
+              </Button>
+            </Space>
+          }
+          width={700}
+          styles={{
+            body: {
+              maxHeight: "60vh",
+              overflow: "auto",
+            },
+          }}
+        >
+          {!!selectedSsePayload && (
+            <pre
+              data-testid="sse-event-detail-content"
+              style={{
+                margin: 0,
+                padding: 12,
+                fontSize: 12,
+                fontFamily: "monospace",
+                backgroundColor: token.colorBgLayout,
+                borderRadius: 4,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                lineHeight: 1.5,
+              }}
+            >
+              <code
+                className="hljs"
+                dangerouslySetInnerHTML={{
+                  __html: highlightContent(selectedSsePayload),
+                }}
+              />
+            </pre>
+          )}
         </Modal>
       </div>
     );

@@ -1020,7 +1020,7 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await server.close();
 });
 
-test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, request }) => {
+test("SSE 详情通过弹窗展开且不改变列表项高度", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startSseServer();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -1055,64 +1055,27 @@ test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, req
   const search = container.getByPlaceholder("Search events...");
   await search.fill("target-long");
 
-  const expandedCard = container
+  const detailCard = container
     .getByTestId("sse-event-card")
     .filter({ hasText: "target-long" })
     .first();
 
-  await expect(expandedCard).toBeVisible();
-  const beforeBox = await expandedCard.boundingBox();
+  await expect(detailCard).toBeVisible();
+  const beforeBox = await detailCard.boundingBox();
   expect(beforeBox).not.toBeNull();
 
-  await expandedCard.getByTestId("sse-event-toggle").click();
+  await detailCard.getByTestId("sse-event-toggle").click();
 
   await expect
-    .poll(async () => (await expandedCard.boundingBox())?.height || 0)
-    .toBeGreaterThan((beforeBox?.height || 0) + 10);
-
-  const cards = container.getByTestId("sse-event-card");
-  const cardCount = await cards.count();
-  const boxes: Array<{ index: number; y: number; bottom: number }> = [];
-  for (let i = 0; i < cardCount; i += 1) {
-    const box = await cards.nth(i).boundingBox();
-    if (!box) continue;
-    boxes.push({ index: i, y: box.y, bottom: box.y + box.height });
-  }
-  boxes.sort((a, b) => a.y - b.y);
-
-  const expandedBox = await expandedCard.boundingBox();
-  expect(expandedBox).not.toBeNull();
-  const expandedBottom = (expandedBox?.y || 0) + (expandedBox?.height || 0);
-
-  const scroll = container.getByTestId("sse-message-scroll");
-  let next: { index: number; y: number; bottom: number } | undefined;
-  let currentExpandedBottom = expandedBottom;
-  for (let i = 0; i < 4; i += 1) {
-    const currentExpandedBox = await expandedCard.boundingBox();
-    expect(currentExpandedBox).not.toBeNull();
-    currentExpandedBottom =
-      (currentExpandedBox?.y || 0) + (currentExpandedBox?.height || 0);
-
-    boxes.length = 0;
-    const count = await cards.count();
-    for (let j = 0; j < count; j += 1) {
-      const box = await cards.nth(j).boundingBox();
-      if (!box) continue;
-      boxes.push({ index: j, y: box.y, bottom: box.y + box.height });
-    }
-    boxes.sort((a, b) => a.y - b.y);
-
-    next = boxes.find((b) => b.y > currentExpandedBottom);
-    if (next) break;
-
-    await scroll.evaluate((el) => {
-      el.scrollTop += 320;
-    });
-    await page.waitForTimeout(60);
-  }
-
-  expect(next).toBeTruthy();
-  expect((next?.y || 0) - currentExpandedBottom).toBeGreaterThanOrEqual(6);
+    .poll(async () => {
+      const currentHeight = (await detailCard.boundingBox())?.height || 0;
+      return Math.abs(currentHeight - (beforeBox?.height || 0));
+    })
+    .toBeLessThan(2);
+  await expect(page.getByTestId("sse-event-detail-content")).toBeVisible();
+  await expect(page.getByTestId("sse-event-detail-content")).toContainText("target-long");
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByTestId("sse-event-detail-content")).toHaveCount(0);
 
   await server.close();
 });
