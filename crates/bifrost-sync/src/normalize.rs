@@ -25,10 +25,14 @@ fn normalize_remote_rule_inner(
         return String::new();
     }
 
-    let values = collect_legacy_values(&env.rule);
-    let normalized = normalize_text(&env.rule, &env.user_id, &values, env_map, visiting);
+    let result = if needs_legacy_normalization(&env.rule) {
+        let values = collect_legacy_values(&env.rule);
+        normalize_text(&env.rule, &env.user_id, &values, env_map, visiting)
+    } else {
+        env.rule.clone()
+    };
     visiting.remove(&format!("{}/{}", env.user_id, env.name));
-    normalized
+    result
 }
 
 fn collect_legacy_values(rule: &str) -> HashMap<String, String> {
@@ -77,6 +81,64 @@ fn collect_legacy_values(rule: &str) -> HashMap<String, String> {
     values
 }
 
+fn needs_legacy_normalization(rule: &str) -> bool {
+    let mut in_code_block = false;
+    let mut in_line_block = false;
+
+    for line in rule.lines() {
+        let trimmed = line.trim();
+
+        if in_line_block {
+            if trimmed == "`" {
+                in_line_block = false;
+            }
+            continue;
+        }
+
+        if !in_code_block && trimmed == "line`" {
+            in_line_block = true;
+            continue;
+        }
+
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+
+        if in_code_block {
+            continue;
+        }
+
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.contains("${") {
+            return true;
+        }
+
+        if parse_legacy_import(trimmed).is_some() {
+            return true;
+        }
+
+        if parse_legacy_value_assignment(trimmed).is_some() {
+            return true;
+        }
+
+        if trimmed.contains(" ignore://")
+            || trimmed.starts_with("ignore://")
+            || trimmed.contains(" enable://intercept")
+            || trimmed.contains(" disable://intercept")
+            || trimmed.contains(" enable://https")
+            || trimmed.contains(" disable://https")
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn normalize_text(
     rule: &str,
     owner_user_id: &str,
@@ -121,6 +183,7 @@ fn normalize_text(
 
         let clean = strip_legacy_comment(line).trim().to_string();
         if clean.is_empty() {
+            output.push(String::new());
             continue;
         }
 
@@ -252,7 +315,7 @@ fn parse_legacy_import(line: &str) -> Option<String> {
 fn normalize_legacy_rule_line(line: &str) -> Option<String> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
-        return None;
+        return Some(String::new());
     }
 
     let normalized = trimmed
@@ -334,5 +397,32 @@ ${unknown} http://example.com:3000
         let env = remote_env("jlcj", "verify.zijieapi.com ignore://htmlAppend\n");
         let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));
         assert_eq!(actual.trim(), "verify.zijieapi.com passthrough://");
+    }
+
+    #[test]
+    fn preserves_blank_lines_in_normal_rules() {
+        let rule =
+            "example.com proxy://localhost:3000\n\n# section two\napi.test.com host://127.0.0.1\n";
+        let env = remote_env("my-rules", rule);
+        let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));
+        assert_eq!(actual, rule);
+    }
+
+    #[test]
+    fn preserves_blank_lines_in_legacy_rules() {
+        let rule =
+            "port=8080\n\nexample.com http://localhost:${port}\n\napi.test.com host://127.0.0.1\n";
+        let env = remote_env("legacy", rule);
+        let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));
+        assert!(actual.contains("\n\n"));
+        assert!(actual.contains("example.com http://localhost:8080"));
+    }
+
+    #[test]
+    fn skips_normalization_for_modern_rules() {
+        let rule = "  example.com   proxy://localhost:3000  \n\n# my comment\napi.test.com host://127.0.0.1";
+        let env = remote_env("modern", rule);
+        let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));
+        assert_eq!(actual, rule);
     }
 }

@@ -59,6 +59,7 @@ export default function RuleList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [selectedRules, setSelectedRules] = useState<string[]>([]);
+  const lastClickedIndexRef = useRef<number | null>(null);
   const [sortMode, setSortMode] = useState<RuleSortMode>('manual');
   const [draggedRuleName, setDraggedRuleName] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{
@@ -191,6 +192,32 @@ export default function RuleList() {
     });
   };
 
+  const handleBulkDelete = async (names: string[]) => {
+    if (names.length === 0) return;
+    if (names.length === 1) {
+      handleDelete(names[0]);
+      return;
+    }
+    Modal.confirm({
+      title: 'Delete Rules',
+      content: `Are you sure to delete ${names.length} rules?`,
+      okText: 'Delete',
+      okType: 'danger',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        let successCount = 0;
+        for (const name of names) {
+          const success = await deleteRule(name);
+          if (success) successCount++;
+        }
+        if (successCount > 0) {
+          message.success(`${successCount} rule${successCount > 1 ? 's' : ''} deleted`);
+          setSelectedRules([]);
+        }
+      },
+    });
+  };
+
   const handleToggle = async (name: string, enabled: boolean) => {
     const success = await toggleRule(name, enabled);
     if (success) {
@@ -230,22 +257,36 @@ export default function RuleList() {
   }, [fetchRules]);
 
   const handleSelect = useCallback(
-    (name: string, isMultiSelect: boolean) => {
-      if (isMultiSelect) {
+    (name: string, e: React.MouseEvent) => {
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      const currentIndex = filteredRules.findIndex((r) => r.name === name);
+
+      if (isShift && lastClickedIndexRef.current !== null) {
+        const start = Math.min(lastClickedIndexRef.current, currentIndex);
+        const end = Math.max(lastClickedIndexRef.current, currentIndex);
+        const rangeNames = filteredRules.slice(start, end + 1).map((r) => r.name);
+        setSelectedRules((prev) => {
+          const combined = new Set([...prev, ...rangeNames]);
+          return Array.from(combined);
+        });
+      } else if (isCtrl) {
         setSelectedRules((prev) =>
           prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]
         );
+        lastClickedIndexRef.current = currentIndex;
       } else {
         setSelectedRules([]);
+        lastClickedIndexRef.current = currentIndex;
         selectRule(name);
       }
     },
-    [selectRule]
+    [selectRule, filteredRules]
   );
 
   const getContextMenuItems = (name: string, enabled: boolean): MenuProps['items'] => {
     const isSelected = selectedRules.includes(name);
-    const exportNames = isSelected && selectedRules.length > 0 ? selectedRules : [name];
+    const bulkNames = isSelected && selectedRules.length > 0 ? selectedRules : [name];
 
     return [
       {
@@ -270,8 +311,8 @@ export default function RuleList() {
       {
         key: 'export',
         icon: <ExportOutlined />,
-        label: `Export${exportNames.length > 1 ? ` (${exportNames.length})` : ''}`,
-        onClick: () => handleExport(exportNames),
+        label: `Export${bulkNames.length > 1 ? ` (${bulkNames.length})` : ''}`,
+        onClick: () => handleExport(bulkNames),
       },
       {
         type: 'divider',
@@ -279,9 +320,9 @@ export default function RuleList() {
       {
         key: 'delete',
         icon: <DeleteOutlined />,
-        label: 'Delete',
+        label: `Delete${bulkNames.length > 1 ? ` (${bulkNames.length})` : ''}`,
         danger: true,
-        onClick: () => handleDelete(name),
+        onClick: () => handleBulkDelete(bulkNames),
       },
     ];
   };
@@ -420,7 +461,7 @@ export default function RuleList() {
                   <div
                     className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
                     draggable={sortMode === 'manual'}
-                    onClick={(e) => handleSelect(rule.name, e.ctrlKey || e.metaKey)}
+                    onClick={(e) => handleSelect(rule.name, e)}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
                     onDragStart={() => {
                       if (sortMode !== 'manual') return;
