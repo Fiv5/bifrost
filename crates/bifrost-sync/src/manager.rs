@@ -74,6 +74,16 @@ pub enum SyncAction {
     NoChange,
 }
 
+#[derive(Debug, Clone)]
+pub struct SyncOnceResult {
+    pub success: bool,
+    pub message: String,
+    pub action: Option<SyncAction>,
+    pub user: Option<RemoteUser>,
+    pub local_rules: usize,
+    pub remote_rules: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SyncRuntimeState {
     pub reachable: bool,
@@ -255,6 +265,89 @@ impl SyncManager {
             runtime.last_error = None;
         }
         Ok(())
+    }
+
+    pub async fn sync_once(&self) -> Result<SyncOnceResult> {
+        let config = self.config_manager.config().await;
+        if !config.sync.enabled {
+            return Ok(SyncOnceResult {
+                success: false,
+                message: "Sync is disabled in configuration".to_string(),
+                action: None,
+                user: None,
+                local_rules: 0,
+                remote_rules: 0,
+            });
+        }
+
+        let client = SyncHttpClient::new(&config.sync)?;
+        let reachable = client.probe_reachable(&config.sync).await;
+        if !reachable {
+            return Ok(SyncOnceResult {
+                success: false,
+                message: format!("Remote server unreachable: {}", config.sync.remote_base_url),
+                action: None,
+                user: None,
+                local_rules: 0,
+                remote_rules: 0,
+            });
+        }
+
+        let token = { self.state.lock().token.clone() };
+        if token.as_deref().unwrap_or("").is_empty() {
+            return Ok(SyncOnceResult {
+                success: false,
+                message: "No sync session token. Please login first via the admin UI.".to_string(),
+                action: None,
+                user: None,
+                local_rules: 0,
+                remote_rules: 0,
+            });
+        }
+
+        let token = token.unwrap_or_default();
+        let user = client.get_user_info(&config.sync, &token).await?;
+        let Some(user) = user else {
+            return Ok(SyncOnceResult {
+                success: false,
+                message: "Token expired or invalid. Please re-login via the admin UI.".to_string(),
+                action: None,
+                user: None,
+                local_rules: 0,
+                remote_rules: 0,
+            });
+        };
+
+        {
+            let mut state = self.state.lock();
+            state.user = Some(user.clone());
+            self.persist_state(&state)?;
+        }
+
+        let rules_storage = self.config_manager.rules_storage().await;
+        let local_count = rules_storage.load_all()?.len();
+
+        let result = self.sync_rules(&client, &config.sync, &token, &user).await;
+        let state = self.state.lock().clone();
+
+        match result {
+            Ok(()) => Ok(SyncOnceResult {
+                success: true,
+                message: "Sync completed successfully".to_string(),
+                action: state.last_sync_action,
+                user: Some(user),
+                local_rules: local_count,
+                remote_rules: state.rule_bindings.len(),
+            }),
+            Err(error) => Ok(SyncOnceResult {
+                success: false,
+                message: format!("Sync failed: {error}"),
+                action: None,
+                user: Some(user),
+                local_rules: local_count,
+                remote_rules: 0,
+            }),
+        }
     }
 
     async fn run(self: &Arc<Self>) {

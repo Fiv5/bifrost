@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef } from "react";
 import { Input, Button, Dropdown, Modal, message, Tooltip, Spin, Select } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -9,7 +9,6 @@ import {
   DeleteOutlined,
   CopyOutlined,
   ExportOutlined,
-  MoreOutlined,
 } from "@ant-design/icons";
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
@@ -46,6 +45,7 @@ export default function ValueList() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [selectedValues, setSelectedValues] = useState<string[]>([]);
+  const lastClickedIndexRef = useRef<number | null>(null);
   const [sortMode, setSortMode] = useState<ValueSortMode>("created_desc");
   const { exportFile } = useExportBifrost();
 
@@ -103,6 +103,34 @@ export default function ValueList() {
     });
   };
 
+  const handleBulkDelete = async (names: string[]) => {
+    if (names.length === 0) return;
+    if (names.length === 1) {
+      handleDelete(names[0]);
+      return;
+    }
+    Modal.confirm({
+      title: "Delete Values",
+      content: `Are you sure to delete ${names.length} values?`,
+      okText: "Delete",
+      okType: "danger",
+      cancelText: "Cancel",
+      onOk: async () => {
+        let successCount = 0;
+        for (const name of names) {
+          const success = await deleteValue(name);
+          if (success) successCount++;
+        }
+        if (successCount > 0) {
+          message.success(
+            `${successCount} value${successCount > 1 ? "s" : ""} deleted`,
+          );
+          setSelectedValues([]);
+        }
+      },
+    });
+  };
+
   const handleRename = async () => {
     if (!renameTarget || !newName.trim()) return;
     if (newName.trim() === renameTarget) {
@@ -144,19 +172,35 @@ export default function ValueList() {
   }, [fetchValues]);
 
   const handleSelect = useCallback(
-    (name: string, isMultiSelect: boolean) => {
-      if (isMultiSelect) {
+    (name: string, e: React.MouseEvent) => {
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      const currentIndex = filteredValues.findIndex((v) => v.name === name);
+
+      if (isShift && lastClickedIndexRef.current !== null) {
+        const start = Math.min(lastClickedIndexRef.current, currentIndex);
+        const end = Math.max(lastClickedIndexRef.current, currentIndex);
+        const rangeNames = filteredValues
+          .slice(start, end + 1)
+          .map((v) => v.name);
+        setSelectedValues((prev) => {
+          const combined = new Set([...prev, ...rangeNames]);
+          return Array.from(combined);
+        });
+      } else if (isCtrl) {
         setSelectedValues((prev) =>
           prev.includes(name)
             ? prev.filter((n) => n !== name)
             : [...prev, name],
         );
+        lastClickedIndexRef.current = currentIndex;
       } else {
         setSelectedValues([]);
+        lastClickedIndexRef.current = currentIndex;
         selectValue(name);
       }
     },
-    [selectValue],
+    [selectValue, filteredValues],
   );
 
   const getContextMenuItems = (
@@ -164,7 +208,7 @@ export default function ValueList() {
     value: string,
   ): MenuProps["items"] => {
     const isSelected = selectedValues.includes(name);
-    const exportNames =
+    const bulkNames =
       isSelected && selectedValues.length > 0 ? selectedValues : [name];
 
     return [
@@ -190,8 +234,8 @@ export default function ValueList() {
       {
         key: "export",
         icon: <ExportOutlined />,
-        label: `Export${exportNames.length > 1 ? ` (${exportNames.length})` : ""}`,
-        onClick: () => handleExport(exportNames),
+        label: `Export${bulkNames.length > 1 ? ` (${bulkNames.length})` : ""}`,
+        onClick: () => handleExport(bulkNames),
       },
       {
         type: "divider",
@@ -199,9 +243,9 @@ export default function ValueList() {
       {
         key: "delete",
         icon: <DeleteOutlined />,
-        label: "Delete",
+        label: `Delete${bulkNames.length > 1 ? ` (${bulkNames.length})` : ""}`,
         danger: true,
-        onClick: () => handleDelete(name),
+        onClick: () => handleBulkDelete(bulkNames),
       },
     ];
   };
@@ -282,48 +326,40 @@ export default function ValueList() {
                 editingContent[item.name] !== undefined;
 
               return (
-                <div
+                <Dropdown
                   key={item.name}
-                  className={`${styles.item} ${isSelected ? styles.selected : ""} ${selectedValues.includes(item.name) ? styles.multiSelected : ""}`}
-                  onClick={(e) =>
-                    handleSelect(item.name, e.ctrlKey || e.metaKey)
-                  }
-                  data-testid="value-item"
-                  data-value-name={item.name}
+                  menu={{
+                    items: getContextMenuItems(item.name, item.value),
+                  }}
+                  trigger={["contextMenu"]}
                 >
-                  <div className={styles.itemContent}>
-                    <span className={styles.itemName} title={item.name}>
-                      {item.name}
-                    </span>
-                    <div className={styles.itemMeta}>
-                      {hasChanges && (
-                        <Tooltip title="Unsaved changes">
-                          <span className={styles.unsavedDot} />
-                        </Tooltip>
-                      )}
-                      <Dropdown
-                        menu={{
-                          items: getContextMenuItems(item.name, item.value),
-                        }}
-                        trigger={["click"]}
-                      >
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<MoreOutlined />}
-                          onClick={(e) => e.stopPropagation()}
-                          className={styles.moreBtn}
-                          data-testid="value-item-menu"
-                        />
-                      </Dropdown>
+                  <div
+                    className={`${styles.item} ${isSelected ? styles.selected : ""} ${selectedValues.includes(item.name) ? styles.multiSelected : ""}`}
+                    onClick={(e) => handleSelect(item.name, e)}
+                    data-testid="value-item"
+                    data-value-name={item.name}
+                  >
+                    <div className={styles.itemContent}>
+                      <span className={styles.itemName} title={item.name}>
+                        {item.name}
+                      </span>
+                      <div className={styles.itemMeta}>
+                        {hasChanges && (
+                          <Tooltip title="Unsaved changes">
+                            <span className={styles.unsavedDot} />
+                          </Tooltip>
+                        )}
+                      </div>
+                    </div>
+                    <div className={styles.itemExtra}>
+                      <span className={styles.itemPreview} title={item.value}>
+                        {item.value.length > 30
+                          ? `${item.value.slice(0, 30).replace(/\n/g, "↵")}...`
+                          : item.value.replace(/\n/g, "↵")}
+                      </span>
                     </div>
                   </div>
-                  <div className={styles.itemPreview} title={item.value}>
-                    {item.value.length > 30
-                      ? `${item.value.slice(0, 30).replace(/\n/g, "↵")}...`
-                      : item.value.replace(/\n/g, "↵")}
-                  </div>
-                </div>
+                </Dropdown>
               );
             })}
             {filteredValues.length === 0 && !loading && (

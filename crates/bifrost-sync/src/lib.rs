@@ -5,6 +5,7 @@ mod types;
 
 pub use bifrost_storage::{SyncConfig, SyncConfigUpdate};
 pub use manager::{
-    SharedSyncManager, SyncManager, SyncManagerHandle, SyncRuntimeState, SyncStatus,
+    SharedSyncManager, SyncAction, SyncManager, SyncManagerHandle, SyncOnceResult,
+    SyncRuntimeState, SyncStatus,
 };
 pub use types::{RemoteEnv, RemoteUser, SyncReason};
