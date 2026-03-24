@@ -235,6 +235,73 @@ impl ScriptEngine {
         Ok(())
     }
 
+    pub async fn rename_script(
+        &self,
+        script_type: ScriptType,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        Self::validate_script_name(new_name)?;
+
+        let old_path = self.get_script_path(script_type, old_name);
+        let new_path = self.get_script_path(script_type, new_name);
+
+        if !old_path.exists() {
+            return Err(ScriptError::NotFound(format!(
+                "{} script '{}' not found",
+                script_type, old_name
+            )));
+        }
+
+        if new_path.exists() {
+            return Err(ScriptError::InvalidName(format!(
+                "{} script '{}' already exists",
+                script_type, new_name
+            )));
+        }
+
+        if let Some(parent) = new_path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
+        std::fs::rename(&old_path, &new_path)?;
+
+        let old_cache_key = format!("{}:{}", script_type, old_name);
+        let new_cache_key = format!("{}:{}", script_type, new_name);
+        let mut cache = self.script_cache.write().await;
+        let content = cache.remove(&old_cache_key);
+        if let Some(content) = content {
+            cache.insert(new_cache_key, content);
+        }
+        drop(cache);
+
+        let type_base_dir = match script_type {
+            ScriptType::Request => self.request_scripts_dir(),
+            ScriptType::Response => self.response_scripts_dir(),
+            ScriptType::Decode => self.decode_scripts_dir(),
+        };
+        let mut dir = old_path.parent().map(|p| p.to_path_buf());
+        while let Some(d) = dir {
+            if d == type_base_dir {
+                break;
+            }
+            if d.read_dir().map(|mut rd| rd.next().is_none()).unwrap_or(false) {
+                std::fs::remove_dir(&d)?;
+                dir = d.parent().map(|p| p.to_path_buf());
+            } else {
+                break;
+            }
+        }
+
+        info!(
+            "Renamed {} script '{}' to '{}'",
+            script_type, old_name, new_name
+        );
+        Ok(())
+    }
+
     pub async fn list_scripts(&self, script_type: ScriptType) -> Result<Vec<ScriptInfo>> {
         let dir = match script_type {
             ScriptType::Request => self.request_scripts_dir(),

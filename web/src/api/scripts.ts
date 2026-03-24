@@ -99,6 +99,10 @@ export const scriptsApi = {
     await client.delete(`/scripts/${type}/${name}`);
   },
 
+  rename: async (type: ScriptType, name: string, newName: string): Promise<void> => {
+    await client.post(`/scripts/rename/${type}/${name}`, { new_name: newName });
+  },
+
   test: async (data: TestScriptRequest): Promise<ScriptExecutionResult> => {
     const response = await client.post('/scripts/test', data);
     return response.data;

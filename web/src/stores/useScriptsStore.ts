@@ -299,6 +299,7 @@ interface ScriptsState {
   selectScript: (type: ScriptType, name: string) => Promise<void>;
   saveScript: (type: ScriptType, name: string, content: string) => Promise<void>;
   deleteScript: (type: ScriptType, name: string) => Promise<void>;
+  renameScript: (type: ScriptType, oldName: string, newName: string) => Promise<boolean>;
   testScript: (type: ScriptType, content: string) => Promise<void>;
   createNewScript: (type: ScriptType) => void;
   clearSelection: () => void;
@@ -411,13 +412,47 @@ export const useScriptsStore = create<ScriptsState>((set) => ({
             : state.decodeScripts,
         selectedScript:
           state.selectedScript?.name === name &&
-          state.selectedScript?.script_type === type
+            state.selectedScript?.script_type === type
             ? null
             : state.selectedScript,
         loading: false,
       }));
     } catch (e) {
       set({ error: String(e), loading: false });
+    }
+  },
+
+  renameScript: async (type: ScriptType, oldName: string, newName: string) => {
+    try {
+      await scriptsApi.rename(type, oldName, newName);
+      set((state) => {
+        const updateList = (items: ScriptInfo[]) => {
+          const next = items.filter((item) => item.name !== oldName);
+          const existing = items.find((item) => item.name === oldName);
+          if (existing) {
+            next.push({ ...existing, name: newName, updated_at: Date.now() });
+            next.sort((left, right) => left.name.localeCompare(right.name));
+          }
+          return next;
+        };
+
+        const wasSelected =
+          state.selectedScript?.name === oldName &&
+          state.selectedScript?.script_type === type;
+
+        return {
+          requestScripts: type === 'request' ? updateList(state.requestScripts) : state.requestScripts,
+          responseScripts: type === 'response' ? updateList(state.responseScripts) : state.responseScripts,
+          decodeScripts: type === 'decode' ? updateList(state.decodeScripts) : state.decodeScripts,
+          selectedScript: wasSelected && state.selectedScript
+            ? { ...state.selectedScript, name: newName }
+            : state.selectedScript,
+        };
+      });
+      return true;
+    } catch (e) {
+      set({ error: String(e) });
+      return false;
     }
   },
 

@@ -32,6 +32,7 @@ import {
   DownOutlined,
   ExportOutlined,
   SettingOutlined,
+  EditOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -435,6 +436,7 @@ function ScriptListPanel({
   onNewScript,
   onSelectScript,
   onDeleteScript,
+  onRenameScript,
   onDeleteFolder,
   onExport,
   onExportAll,
@@ -452,6 +454,7 @@ function ScriptListPanel({
   onNewScript: (type: ScriptType) => void;
   onSelectScript: (type: ScriptType, name: string) => void;
   onDeleteScript: (type: ScriptType, name: string) => void;
+  onRenameScript: (type: ScriptType, oldName: string, newName: string) => Promise<boolean>;
   onDeleteFolder: (folderPath: string) => void;
   onExport: (scriptNames: string[]) => void;
   onExportAll: () => void;
@@ -462,6 +465,9 @@ function ScriptListPanel({
 }) {
   const [selectedScripts, setSelectedScripts] = useState<string[]>([]);
   const lastClickedIndexRef = useRef<number | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{ type: ScriptType; name: string } | null>(null);
+  const [newName, setNewName] = useState("");
+  const [renameModalVisible, setRenameModalVisible] = useState(false);
 
   const flatNodes = useMemo<FlatNode[]>(() => {
     const filteredScripts = searchValue
@@ -674,6 +680,18 @@ function ScriptListPanel({
           : [node.key];
 
       return [
+        {
+          key: "rename",
+          icon: <EditOutlined />,
+          label: "Rename",
+          onClick: () => {
+            const [type, ...nameParts] = node.key.split("/");
+            setRenameTarget({ type: type as ScriptType, name: nameParts.join("/") });
+            setNewName(nameParts.join("/"));
+            setRenameModalVisible(true);
+          },
+        },
+        { type: "divider" },
         {
           key: "export",
           icon: <ExportOutlined />,
@@ -916,6 +934,49 @@ function ScriptListPanel({
       <div className={styles.footer}>
         <span className={styles.stats}>{allScripts.length} scripts</span>
       </div>
+
+      <Modal
+        title="Rename Script"
+        open={renameModalVisible}
+        onOk={async () => {
+          if (!renameTarget || !newName.trim()) return;
+          const success = await onRenameScript(renameTarget.type, renameTarget.name, newName.trim());
+          if (success) {
+            message.success("Script renamed");
+            setRenameModalVisible(false);
+            setRenameTarget(null);
+            setNewName("");
+          } else {
+            message.error("Failed to rename script");
+          }
+        }}
+        onCancel={() => {
+          setRenameModalVisible(false);
+          setRenameTarget(null);
+          setNewName("");
+        }}
+        okText="Rename"
+        cancelText="Cancel"
+      >
+        <Input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onPressEnter={async () => {
+            if (!renameTarget || !newName.trim()) return;
+            const success = await onRenameScript(renameTarget.type, renameTarget.name, newName.trim());
+            if (success) {
+              message.success("Script renamed");
+              setRenameModalVisible(false);
+              setRenameTarget(null);
+              setNewName("");
+            } else {
+              message.error("Failed to rename script");
+            }
+          }}
+          placeholder="Enter new name"
+          autoFocus
+        />
+      </Modal>
     </div>
   );
 }
@@ -1450,6 +1511,7 @@ export default function ScriptsPage() {
     selectScript,
     saveScript,
     deleteScript,
+    renameScript,
     testScript,
     createNewScript,
   } = useScriptsStore();
@@ -1648,6 +1710,13 @@ export default function ScriptsPage() {
     [deleteScript],
   );
 
+  const handleRenameScript = useCallback(
+    async (type: ScriptType, oldName: string, newName: string) => {
+      return await renameScript(type, oldName, newName);
+    },
+    [renameScript],
+  );
+
   const handleTest = useCallback(async () => {
     await testScript(selectedType, editorContent);
   }, [selectedType, editorContent, testScript]);
@@ -1843,6 +1912,7 @@ export default function ScriptsPage() {
       onNewScript={handleNewScript}
       onSelectScript={handleSelectScript}
       onDeleteScript={handleDeleteScript}
+      onRenameScript={handleRenameScript}
       onDeleteFolder={handleDeleteFolder}
       onExport={handleExport}
       onExportAll={handleExportAll}

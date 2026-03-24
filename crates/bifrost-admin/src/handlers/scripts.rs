@@ -216,6 +216,11 @@ pub struct SaveScriptRequest {
 }
 
 #[derive(Deserialize)]
+pub struct RenameScriptRequest {
+    pub new_name: String,
+}
+
+#[derive(Deserialize)]
 pub struct TestScriptRequest {
     #[serde(rename = "type")]
     pub script_type: ScriptType,
@@ -514,6 +519,10 @@ async fn handle_post(
     script_manager: Arc<RwLock<ScriptManager>>,
     config_manager: Option<SharedConfigManager>,
 ) -> Response<BoxBody> {
+    if path.starts_with("/api/scripts/rename/") {
+        return handle_rename(req, path, script_manager, config_manager).await;
+    }
+
     if path != "/api/scripts/test" && path != "/api/scripts/test/" {
         return error_response(StatusCode::NOT_FOUND, "Not found");
     }
@@ -610,4 +619,86 @@ async fn handle_post(
     };
 
     json_response(&result)
+}
+
+async fn handle_rename(
+    req: Request<hyper::body::Incoming>,
+    path: String,
+    script_manager: Arc<RwLock<ScriptManager>>,
+    config_manager: Option<SharedConfigManager>,
+) -> Response<BoxBody> {
+    let remaining = path.trim_start_matches("/api/scripts/rename/");
+    let first_slash = remaining.find('/');
+    if first_slash.is_none() {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid path: missing script name");
+    }
+
+    let (type_str, name) = remaining.split_at(first_slash.unwrap());
+    let name = name.trim_start_matches('/');
+
+    if name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid path: empty script name");
+    }
+
+    let script_type = match type_str {
+        "request" => ScriptType::Request,
+        "response" => ScriptType::Response,
+        "decode" => ScriptType::Decode,
+        _ => return error_response(StatusCode::BAD_REQUEST, "Invalid script type"),
+    };
+
+    if script_type == ScriptType::Decode && is_builtin_decode_script(name) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Built-in decode script is read-only",
+        );
+    }
+
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Failed to read body: {}", e),
+            );
+        }
+    };
+
+    let rename_req: RenameScriptRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e));
+        }
+    };
+
+    let manager = script_manager.read().await;
+    match manager
+        .engine()
+        .rename_script(script_type, name, &rename_req.new_name)
+        .await
+    {
+        Ok(()) => {
+            info!(
+                "Renamed {} script: {} -> {}",
+                script_type, name, rename_req.new_name
+            );
+            if let Some(ref cm) = config_manager {
+                let _ = cm.notify(ConfigChangeEvent::ScriptsChanged);
+            }
+            success_response(&format!(
+                "Script {} renamed to {}",
+                name, rename_req.new_name
+            ))
+        }
+        Err(e) => {
+            error!(
+                "Failed to rename script {}/{}: {}",
+                script_type, name, e
+            );
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("Failed to rename script: {}", e),
+            )
+        }
+    }
 }
