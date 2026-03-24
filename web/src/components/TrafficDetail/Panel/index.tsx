@@ -34,6 +34,7 @@ interface PanelProps {
   onCollapsedChange?: (collapsed: boolean) => void;
   keepAliveTabs?: string[];
   contentOverflow?: 'auto' | 'hidden';
+  bodyFormatTabs?: string[];
 }
 
 export const Panel = ({
@@ -52,6 +53,7 @@ export const Panel = ({
   onCollapsedChange,
   keepAliveTabs,
   contentOverflow = 'auto',
+  bodyFormatTabs = ['Body'],
 }: PanelProps) => {
   const { token } = theme.useToken();
 
@@ -83,35 +85,66 @@ export const Panel = ({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          padding: '4px 0',
+          gap: 12,
+          minHeight: 28,
+          padding: '2px 0',
           flexShrink: 0,
         }}
       >
-        <Space size="middle">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
           <Text strong style={{ fontSize: 14 }}>
             {name}
           </Text>
-          {enabledTabs.map((tab) => (
-            <Text
-              key={tab.key}
-              type={activeTab === tab.key ? undefined : 'secondary'}
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflowX: 'auto',
+              overflowY: 'hidden',
+              scrollbarWidth: 'thin',
+            }}
+          >
+            <div
               style={{
-                cursor: 'pointer',
-                fontWeight: activeTab === tab.key ? 500 : 400,
-                color: activeTab === tab.key ? token.colorPrimary : undefined,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 16,
+                minWidth: 'max-content',
+                whiteSpace: 'nowrap',
               }}
-              onClick={() => onTabChange(tab.key)}
-              data-testid={`${name.toLowerCase()}-tab-${tab.key.toLowerCase()}`}
             >
-              {tab.label}
-            </Text>
-          ))}
-        </Space>
+              {enabledTabs.map((tab) => (
+                <Text
+                  key={tab.key}
+                  type={activeTab === tab.key ? undefined : 'secondary'}
+                  style={{
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                    fontWeight: activeTab === tab.key ? 500 : 400,
+                    color: activeTab === tab.key ? token.colorPrimary : undefined,
+                  }}
+                  onClick={() => onTabChange(tab.key)}
+                  data-testid={`${name.toLowerCase()}-tab-${tab.key.toLowerCase()}`}
+                >
+                  {tab.label}
+                </Text>
+              ))}
+            </div>
+          </div>
+        </div>
 
-        <Space size="middle" align="center">
+        <Space size="middle" align="center" style={{ flexShrink: 0 }}>
           {tabBarExtra}
           <Space size="small" align="center">
-            {activeTab === 'Body' &&
+            {bodyFormatTabs.includes(activeTab) &&
               displayFormat &&
               onDisplayFormatChange &&
               contentType && (

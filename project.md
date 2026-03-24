@@ -638,7 +638,7 @@ rust/
 | 响应修改 | `resHeaders`, `resBody`, `resPrepend`, `resAppend`, `resCookies`, `resCors`, `resDelay`, `resSpeed`, `resType`, `resCharset`, `resReplace`, `replaceStatus`, `statusCode`, `cache`, `attachment`, `trailers`, `resMerge`, `headerReplace` |
 | 内容注入 | `htmlAppend`, `htmlPrepend`, `htmlBody`, `jsAppend`, `jsPrepend`, `jsBody`, `cssAppend`, `cssPrepend`, `cssBody`                                                                                                                                                                                    |
 | URL 处理 | `urlReplace`                                                                                                                                                                                                                                                                                        |
-| 脚本插件 | `rulesFile`, `resScript`                                                                                                                                                                                                                                                                            |
+| 脚本插件 | `reqScript`, `resScript`                                                                                                                                                                                                                                                                           |
 | DNS      | `dns`                                                                                                                                                                                                                                                                      |
 
 ### bifrost-proxy (代理服务器)
@@ -857,7 +857,7 @@ TLS 证书管理和动态证书生成。
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │ 4. 协议解析 (Protocol::parse)                                       │   │
 │  │    - "host" → Protocol::Host                                        │   │
-│  │    - 处理别名 (hosts → host, skip → ignore)                         │   │
+│  │    - 处理别名 (hosts → host, ignore → passthrough)                 │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                    │                                        │
 │                                    ▼                                        │

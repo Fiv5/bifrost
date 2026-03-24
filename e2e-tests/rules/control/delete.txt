@@ -1,0 +1,11 @@
+# 测试目标: 验证 delete 能删除请求头与响应头的指定字段。
+
+# DEL-01: 删除请求头
+delete-req.local http://127.0.0.1:3000 delete://reqHeaders.X-Debug
+
+# DEL-02: 删除响应头
+delete-res.local http://127.0.0.1:3000 delete://resHeaders.X-Echo-Server
+
+# 测试用例:
+# 1. delete-req.local 在客户端发送 X-Debug 时，上游不应收到该头
+# 2. delete-res.local 应从响应中移除 X-Echo-Server

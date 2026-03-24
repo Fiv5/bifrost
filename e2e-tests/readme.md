@@ -62,7 +62,7 @@ rules/                      # 规则测试用例 (按类别组织)
     │   └── ip_vs_cidr.txt          # IP vs CIDR 匹配
     │
     └── control/                # 控制规则测试
-        ├── ignore.txt              # 忽略规则
+        ├── ignore.txt              # passthrough 透传规则（兼容旧 ignore 命名）
         └── filter.txt              # 过滤规则
 ```
 

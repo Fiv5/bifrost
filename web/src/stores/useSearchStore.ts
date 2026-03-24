@@ -116,6 +116,19 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
+function hasSearchFilters(filters: SearchFilters): boolean {
+  return (
+    filters.protocols.length > 0 ||
+    filters.status_ranges.length > 0 ||
+    filters.content_types.length > 0 ||
+    filters.conditions.length > 0 ||
+    filters.client_ips.length > 0 ||
+    filters.client_apps.length > 0 ||
+    filters.domains.length > 0 ||
+    filters.has_rule_hit !== undefined
+  );
+}
+
 interface SearchState {
   mode: 'normal' | 'search';
   keyword: string;
@@ -220,7 +233,7 @@ export const useSearchStore = create<SearchState>()(
 
   search: async (filters) => {
     const { keyword, scope } = get();
-    if (!keyword.trim()) {
+    if (!keyword.trim() && !hasSearchFilters(filters)) {
       return;
     }
 
@@ -325,7 +338,12 @@ export const useSearchStore = create<SearchState>()(
 
   loadMore: async (filters) => {
     const { keyword, scope, nextCursor, hasMore, isLoadingMore, results } = get();
-    if (!keyword.trim() || !hasMore || isLoadingMore || nextCursor === null) {
+    if (
+      (!keyword.trim() && !hasSearchFilters(filters)) ||
+      !hasMore ||
+      isLoadingMore ||
+      nextCursor === null
+    ) {
       return;
     }
 

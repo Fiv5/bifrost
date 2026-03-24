@@ -126,7 +126,7 @@ auth: token123; path=/; httpOnly; secure
 ```
 
 pattern resCors://\*
-pattern resCors://origin
+pattern resCors://https://app.example.com
 pattern resCors://{options}
 
 ```
@@ -140,8 +140,8 @@ www.example.com resCors://*
 # 允许特定来源
 www.example.com resCors://https://app.example.com
 
-# 允许多个来源（使用 origin 头部动态匹配）
-www.example.com resCors://origin
+# 允许特定来源
+www.example.com resCors://https://app.example.com
 ```
 
 ### 高级选项
@@ -160,8 +160,15 @@ credentials: true
 methods: GET,POST,PUT
 headers: X-Custom
 maxAge: 86400
+expose: X-Trace-Id
 ```
 ````
+
+说明：
+
+- 支持 JSON 值，也支持上面的多行 `key: value` 格式
+- `origin` 为空时默认回退为 `*`
+- `credentials` 为 `true` 时会返回 `Access-Control-Allow-Credentials: true`
 
 ### CORS 头部映射
 
@@ -180,7 +187,7 @@ maxAge: 86400
 | ------------ | ------------------------------------ | -------------------------------------------- |
 | 允许所有来源 | `test.com resCors://*`               | Access-Control-Allow-Origin: \*              |
 | 特定来源     | `test.com resCors://https://app.com` | Access-Control-Allow-Origin: https://app.com |
-| 动态 Origin  | `test.com resCors://origin`          | 使用请求的 Origin 值                         |
+| 详细配置     | `test.com resCors://{cors-config}`   | 返回 methods / headers / max-age 等完整 CORS 头 |
 
 ---
 

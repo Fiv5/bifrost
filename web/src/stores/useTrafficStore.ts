@@ -107,6 +107,12 @@ let historyBackfillGeneration = 0;
 let historyRetryTimerId: number | null = null;
 let historyRetryDelayMs = 1000;
 let recordsMutationVersion = 0;
+const TRAFFIC_SELECTION_STORAGE_KEY = 'bifrost-traffic-ui';
+const TRAFFIC_SELECTION_SYNC_CHANNEL = 'bifrost-traffic-selection-sync';
+const trafficSelectionSyncChannel =
+  typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel(TRAFFIC_SELECTION_SYNC_CHANNEL)
+    : null;
 
 function capPendingIds(ids: Set<string>) {
   while (ids.size > MAX_PENDING_IDS) {
@@ -259,6 +265,23 @@ const preprocessRecords = (records: TrafficSummary[]): TrafficSummary[] => {
   return records;
 };
 
+const mergeDetailWithSummary = (
+  detail: TrafficRecord,
+  summary?: TrafficSummary,
+): TrafficRecord => {
+  if (!summary || summary.id !== detail.id) return detail;
+
+  return {
+    ...detail,
+    request_size: summary.request_size,
+    response_size: summary.response_size,
+    duration_ms: summary.duration_ms,
+    frame_count: summary.frame_count,
+    socket_status: summary.socket_status ?? detail.socket_status,
+    end_time: summary.end_time ?? detail.end_time,
+  };
+};
+
 export const compareTrafficRecordsBySequence = (left: TrafficSummary, right: TrafficSummary): number => {
   if (left.sequence !== right.sequence) {
     return left.sequence - right.sequence;
@@ -339,6 +362,19 @@ export const replaceUpdatedTrafficRecordsInList = (
   });
 
   return changed ? next : current;
+};
+
+const findLastRecordById = (
+  records: TrafficSummary[],
+  id: string,
+): TrafficSummary | undefined => {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i];
+    if (record?.id === id) {
+      return record;
+    }
+  }
+  return undefined;
 };
 
 const getBoundaryState = (records: TrafficSummary[]) => {
@@ -481,7 +517,12 @@ const hasActiveFilters = (toolbar: ToolbarFilters, conditions: FilterCondition[]
     toolbar.status.length > 0 ||
     toolbar.type.length > 0 ||
     toolbar.imported.length > 0 ||
-    conditions.some(c => c.value);
+    conditions.some(
+      (c) =>
+        c.operator === 'is_empty' ||
+        c.operator === 'is_not_empty' ||
+        c.value.trim().length > 0,
+    );
 };
 
 interface CompiledCondition {
@@ -493,7 +534,12 @@ interface CompiledCondition {
 
 const compileConditions = (conditions: FilterCondition[]): CompiledCondition[] => {
   return conditions
-    .filter(c => c.value)
+    .filter(
+      (c) =>
+        c.operator === 'is_empty' ||
+        c.operator === 'is_not_empty' ||
+        c.value.trim().length > 0,
+    )
     .map(c => {
       let regex: RegExp | null = null;
       if (c.operator === 'regex') {
@@ -612,6 +658,12 @@ const matchRecord = (
         break;
       case 'not_contains':
         matched = !fieldValueLower.includes(cond.valueLower);
+        break;
+      case 'is_empty':
+        matched = fieldValue.trim().length === 0;
+        break;
+      case 'is_not_empty':
+        matched = fieldValue.trim().length > 0;
         break;
       default:
         matched = fieldValueLower.includes(cond.valueLower);
@@ -1019,13 +1071,15 @@ export const useTrafficStore = create<TrafficState>()(
 
               let updatedCurrentRecord = prevState.currentRecord;
               if (updatedCurrentRecord) {
-                const updatedSummary = batch.updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
-                if (updatedSummary && updatedSummary.socket_status) {
-                  updatedCurrentRecord = {
-                    ...updatedCurrentRecord,
-                    socket_status: updatedSummary.socket_status,
-                    frame_count: updatedSummary.frame_count,
-                  };
+                const updatedSummary = findLastRecordById(
+                  batch.updatedRecords,
+                  updatedCurrentRecord.id,
+                );
+                if (updatedSummary) {
+                  updatedCurrentRecord = mergeDetailWithSummary(
+                    updatedCurrentRecord,
+                    updatedSummary,
+                  );
                 }
               }
 
@@ -1134,13 +1188,15 @@ export const useTrafficStore = create<TrafficState>()(
 
           let updatedCurrentRecord = prevState.currentRecord;
           if (updatedCurrentRecord) {
-            const updatedSummary = updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
-            if (updatedSummary && updatedSummary.socket_status) {
-              updatedCurrentRecord = {
-                ...updatedCurrentRecord,
-                socket_status: updatedSummary.socket_status,
-                frame_count: updatedSummary.frame_count,
-              };
+            const updatedSummary = findLastRecordById(
+              updatedRecords,
+              updatedCurrentRecord.id,
+            );
+            if (updatedSummary) {
+              updatedCurrentRecord = mergeDetailWithSummary(
+                updatedCurrentRecord,
+                updatedSummary,
+              );
             }
           }
 
@@ -1659,13 +1715,15 @@ export const useTrafficStore = create<TrafficState>()(
         set({ detailLoading: true, detailError: null, requestBody: null, responseBody: null });
         try {
           const record = await api.getTrafficDetail(id);
-          set({ currentRecord: record, detailLoading: false, detailError: null });
+          const summary = get().recordsMap.get(id);
+          const mergedRecord = mergeDetailWithSummary(record, summary);
+          set({ currentRecord: mergedRecord, detailLoading: false, detailError: null });
 
           api.getRequestBody(id).then(body => {
             set({ requestBody: body });
           }).catch(() => { });
 
-          const isOpenSse = !!record.is_sse && !!record.socket_status?.is_open;
+          const isOpenSse = !!mergedRecord.is_sse && !!mergedRecord.socket_status?.is_open;
           if (!isOpenSse) {
             api.getResponseBody(id).then(body => {
               set({ responseBody: body });
@@ -1884,3 +1942,70 @@ export const useTrafficStore = create<TrafficState>()(
     },
   ),
 );
+
+type PersistedTrafficSelectionState = {
+  selectedId?: string;
+};
+
+function isPersistedTrafficSelectionState(
+  value: unknown,
+): value is { state: PersistedTrafficSelectionState } {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as { state?: PersistedTrafficSelectionState };
+  return !!candidate.state && typeof candidate.state === 'object';
+}
+
+let isApplyingExternalSelectedId = false;
+let trafficSelectionSyncInitialized = false;
+
+function applyExternalSelectedId(id: string | undefined) {
+  isApplyingExternalSelectedId = true;
+  useTrafficStore.setState({ selectedId: id });
+  isApplyingExternalSelectedId = false;
+}
+
+function initializeTrafficSelectionSync() {
+  if (trafficSelectionSyncInitialized || typeof window === 'undefined') {
+    return;
+  }
+  trafficSelectionSyncInitialized = true;
+
+  useTrafficStore.subscribe((state, prevState) => {
+    if (isApplyingExternalSelectedId || state.selectedId === prevState.selectedId) {
+      return;
+    }
+
+    trafficSelectionSyncChannel?.postMessage({
+      type: 'selected-id',
+      id: state.selectedId,
+    });
+  });
+
+  trafficSelectionSyncChannel?.addEventListener('message', (event: MessageEvent) => {
+    const data = event.data as { type?: string; id?: string } | undefined;
+    if (data?.type !== 'selected-id') {
+      return;
+    }
+    applyExternalSelectedId(data.id);
+  });
+
+  window.addEventListener('storage', (event: StorageEvent) => {
+    if (event.key !== TRAFFIC_SELECTION_STORAGE_KEY || !event.newValue) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(event.newValue) as unknown;
+      if (!isPersistedTrafficSelectionState(parsed)) {
+        return;
+      }
+      applyExternalSelectedId(parsed.state.selectedId);
+    } catch {
+      // Ignore malformed persisted state.
+    }
+  });
+}
+
+initializeTrafficSelectionSync();

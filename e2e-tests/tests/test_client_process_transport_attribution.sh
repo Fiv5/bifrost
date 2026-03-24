@@ -125,6 +125,7 @@ build_bifrost() {
 write_rules() {
     render_rule_fixture_to_file "$RULES_TEMPLATE" "$RULES_FILE" \
         "ECHO_HTTP_PORT=${ECHO_HTTP_PORT}" \
+        "ECHO_HTTPS_PORT=${ECHO_HTTPS_PORT}" \
         "ECHO_WS_PORT=${ECHO_WS_PORT}"
 }
 
@@ -266,6 +267,34 @@ test_socks5_tls_attribution() {
     assert_json_equals '.is_websocket' 'false' "$traffic" "socks5 TLS traffic should not be marked as websocket" || return 1
 }
 
+test_https_tunnel_attribution() {
+    log_section "HTTPS CONNECT tunnel client attribution"
+    clear_traffic >/dev/null 2>&1 || true
+
+    local body_file
+    body_file=$(mktemp)
+    local status
+    status=$(curl -sS -o "$body_file" \
+        --proxy "http://${PROXY_HOST}:${PROXY_PORT}" \
+        --connect-timeout 5 \
+        --max-time 20 \
+        -k \
+        "https://tunnel-attr.local/health" \
+        -w '%{http_code}')
+    rm -f "$body_file"
+
+    assert_status_2xx "$status" "https CONNECT tunnel request should succeed" || return 1
+
+    local traffic_id
+    traffic_id=$(wait_for_traffic "tunnel-attr.local" 20) || return 1
+    local traffic
+    traffic=$(get_traffic_detail "$traffic_id")
+
+    assert_json_equals '.is_tunnel' 'true' "$traffic" "https passthrough traffic should be marked as tunnel" || return 1
+    assert_not_unknown_client "$traffic" "https tunnel traffic should record client_app" || return 1
+    assert_positive_pid "$traffic" "https tunnel traffic should record client_pid" || return 1
+}
+
 main() {
     start_mock_servers
     build_bifrost
@@ -274,6 +303,7 @@ main() {
 
     test_http_proxy_attribution
     test_websocket_attribution
+    test_https_tunnel_attribution
     test_socks5_tls_attribution
 
     echo ""

@@ -59,6 +59,9 @@ interface MessagesProps {
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   onSseCountChange?: (count: number) => void;
+  onSseEventsChange?: (events: SSEEvent[]) => void;
+  responseBodyOverride?: string | null;
+  onResponseBodyChange?: (body: string | null, recordId: string) => void;
 }
 
 const formatSize = (bytes: number) => {
@@ -415,9 +418,11 @@ const parseSseChunkToEvent = (
 
   const data = dataLines.length > 0 ? dataLines.join("\n") : chunk;
   if (!data && !eventId && !eventType) return null;
+  const normalizedEventType =
+    !eventType && data.trim() === "[DONE]" ? "finish" : eventType;
   return {
     id: eventId ?? String(index + 1),
-    event: eventType ?? "message",
+    event: normalizedEventType ?? "message",
     data,
     timestamp,
   };
@@ -476,6 +481,9 @@ export const Messages = ({
   searchValue,
   onSearch,
   onSseCountChange,
+  onSseEventsChange,
+  responseBodyOverride,
+  onResponseBodyChange,
 }: MessagesProps) => {
   const { token } = theme.useToken();
   const [frames, setFrames] = useState<WebSocketFrame[]>([]);
@@ -487,7 +495,9 @@ export const Messages = ({
   const [selectedFrame, setSelectedFrame] = useState<WebSocketFrame | null>(
     null,
   );
+  const [selectedSseEvent, setSelectedSseEvent] = useState<SSEEvent | null>(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [sseDetailModalOpen, setSseDetailModalOpen] = useState(false);
   const [wsDetailLoading, setWsDetailLoading] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const sseEventSourceRef = useRef<EventSource | null>(null);
@@ -502,13 +512,24 @@ export const Messages = ({
   const ssePendingRef = useRef<SSEEvent[]>([]);
   const sseFlushRef = useRef<number | null>(null);
   const sseClosedByUsRef = useRef(false);
+  const sseSessionKeyRef = useRef<string | null>(null);
   const [sseForceClosed, setSseForceClosed] = useState(false);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
   );
   const inflightWsPayloadIdsRef = useRef<Set<number>>(new Set());
-  const responseBody = useTrafficStore((state) => state.responseBody);
+  const responseBodyFromStore = useTrafficStore((state) => state.responseBody);
   const setResponseBody = useTrafficStore((state) => state.setResponseBody);
+  const responseBody =
+    responseBodyOverride !== undefined ? responseBodyOverride : responseBodyFromStore;
+
+  const commitResponseBody = useCallback(
+    (body: string | null) => {
+      setResponseBody(recordId, body);
+      onResponseBodyChange?.(body, recordId);
+    },
+    [onResponseBodyChange, recordId, setResponseBody],
+  );
 
   const mergeWsFrames = useCallback((base: WebSocketFrame[], incoming: WebSocketFrame[]) => {
     if (incoming.length === 0) return base;
@@ -591,6 +612,10 @@ export const Messages = ({
   }, [fetchFrames, frameCount, isWebSocket]);
 
   useEffect(() => {
+    sseClosedByUsRef.current = true;
+    sseEventSourceRef.current?.close();
+    sseEventSourceRef.current = null;
+    sseSessionKeyRef.current = null;
     setFrames([]);
     setLastFetchedFrameId(0);
     setLastSeenFrameId(0);
@@ -612,6 +637,10 @@ export const Messages = ({
 
   useEffect(() => {
     return () => {
+      sseClosedByUsRef.current = true;
+      sseEventSourceRef.current?.close();
+      sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
       if (sseFlushRef.current !== null) {
         cancelAnimationFrame(sseFlushRef.current);
         sseFlushRef.current = null;
@@ -657,13 +686,45 @@ export const Messages = ({
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
-    if (isWebSocket || !isConnectionOpen || sseForceClosed) {
+    const sessionKey = `${recordId}:${sseReloadToken}`;
+
+    if (isWebSocket || sseForceClosed) {
+      if (sseEventSourceRef.current) {
+        sseClosedByUsRef.current = true;
+        sseEventSourceRef.current.close();
+        sseEventSourceRef.current = null;
+        sseSessionKeyRef.current = null;
+        setSseConnectionState("closed");
+        setSseLoading(false);
+      }
       return;
     }
+
+    if (
+      sseEventSourceRef.current &&
+      sseSessionKeyRef.current === sessionKey
+    ) {
+      // 一旦 live SSE 详情订阅已经建立，不要因为 summary 先收到 closed
+      // 就立刻把 EventSource 关掉；否则尾部事件会在 close 边界被前端自己截断。
+      return;
+    }
+
+    if (sseEventSourceRef.current) {
+      sseClosedByUsRef.current = true;
+      sseEventSourceRef.current.close();
+      sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
+    }
+
+    if (!isConnectionOpen) {
+      return;
+    }
+
     const eventSource = new EventSource(
       `${buildApiUrl(`/traffic/${recordId}/sse/stream`)}?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
+    sseSessionKeyRef.current = sessionKey;
     sseClosedByUsRef.current = false;
     setSseConnectionState("connecting");
     setSseLoading(true);
@@ -681,6 +742,14 @@ export const Messages = ({
           return next.slice(next.length - MAX_SSE_EVENTS);
         });
       }
+    };
+
+    const flushPendingNow = () => {
+      if (sseFlushRef.current !== null) {
+        cancelAnimationFrame(sseFlushRef.current);
+        sseFlushRef.current = null;
+      }
+      flushPending();
     };
 
     const enqueueEvent = (ev: SSEEvent) => {
@@ -761,28 +830,22 @@ export const Messages = ({
 
     eventSource.onerror = () => {
       if (sseClosedByUsRef.current) return;
+      flushPendingNow();
       eventSource.close();
       sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
       setSseConnectionState("closed");
       setSseLoading(false);
       setSseForceClosed(true);
       getResponseBody(recordId)
-        .then((body) => setResponseBody(recordId, body))
+        .then((body) => commitResponseBody(body))
         .catch(() => {});
-    };
-
-    return () => {
-      sseClosedByUsRef.current = true;
-      eventSource.close();
-      sseEventSourceRef.current = null;
-      setSseConnectionState("closed");
-      setSseLoading(false);
     };
   }, [
     isConnectionOpen,
     isWebSocket,
     recordId,
-    setResponseBody,
+    commitResponseBody,
     sseReloadToken,
     sseForceClosed,
   ]);
@@ -867,6 +930,10 @@ export const Messages = ({
   useEffect(() => {
     onSseCountChange?.(sseEvents.length);
   }, [onSseCountChange, sseEvents.length]);
+
+  useEffect(() => {
+    onSseEventsChange?.(sseEvents);
+  }, [onSseEventsChange, sseEvents]);
 
   const [sseSearchQuery, setSseSearchQuery] = useState("");
   const [sseSearchMode, setSseSearchMode] = useState<"highlight" | "filter">(
@@ -1026,6 +1093,16 @@ export const Messages = ({
     );
   }, [selectedFrame, wsPayloadById]);
 
+  const selectedSsePayload = useMemo(() => {
+    if (!selectedSseEvent) return "";
+    return formatJson(selectedSseEvent.data || "").formatted;
+  }, [selectedSseEvent]);
+
+  const openSseEventDetail = useCallback((event: SSEEvent) => {
+    setSelectedSseEvent(event);
+    setSseDetailModalOpen(true);
+  }, []);
+
 
   if (
     frameCount === 0 &&
@@ -1085,6 +1162,7 @@ export const Messages = ({
               onSearch({ next });
             }
           }}
+          onOpenDetail={openSseEventDetail}
         />
         <Modal
           open={sseFullscreenOpen}
@@ -1110,10 +1188,10 @@ export const Messages = ({
             }}
             onSearchModeChange={setSseSearchMode}
             onLoadMore={() => {}}
-          onRefresh={() => {
-            setSseForceClosed(false);
-            setSseReloadToken((n) => n + 1);
-          }}
+            onRefresh={() => {
+              setSseForceClosed(false);
+              setSseReloadToken((n) => n + 1);
+            }}
             connectionState={sseConnectionState}
             externalNext={searchValue.next}
             onMatchCountChange={(total) => {
@@ -1126,7 +1204,85 @@ export const Messages = ({
                 onSearch({ next });
               }
             }}
+            onOpenDetail={openSseEventDetail}
           />
+        </Modal>
+        <Modal
+          title={
+            <Space>
+              <Tag color="green">{selectedSseEvent?.event || "message"}</Tag>
+              {selectedSseEvent?.id && (
+                <Text type="secondary">id: {selectedSseEvent.id}</Text>
+              )}
+              {selectedSseEvent?.timestamp ? (
+                <Text type="secondary">
+                  {dayjs(selectedSseEvent.timestamp).format(
+                    "YYYY-MM-DD HH:mm:ss.SSS",
+                  )}
+                </Text>
+              ) : null}
+            </Space>
+          }
+          open={sseDetailModalOpen}
+          zIndex={3000}
+          onCancel={() => {
+            setSseDetailModalOpen(false);
+            setSelectedSseEvent(null);
+          }}
+          footer={
+            <Space>
+              <Button
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  if (selectedSsePayload) {
+                    copyToClipboard(selectedSsePayload);
+                  }
+                }}
+                disabled={!selectedSsePayload}
+              >
+                Copy
+              </Button>
+              <Button
+                onClick={() => {
+                  setSseDetailModalOpen(false);
+                  setSelectedSseEvent(null);
+                }}
+              >
+                Close
+              </Button>
+            </Space>
+          }
+          width={700}
+          styles={{
+            body: {
+              maxHeight: "60vh",
+              overflow: "auto",
+            },
+          }}
+        >
+          {!!selectedSsePayload && (
+            <pre
+              data-testid="sse-event-detail-content"
+              style={{
+                margin: 0,
+                padding: 12,
+                fontSize: 12,
+                fontFamily: "monospace",
+                backgroundColor: token.colorBgLayout,
+                borderRadius: 4,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                lineHeight: 1.5,
+              }}
+            >
+              <code
+                className="hljs"
+                dangerouslySetInnerHTML={{
+                  __html: highlightContent(selectedSsePayload),
+                }}
+              />
+            </pre>
+          )}
         </Modal>
       </div>
     );

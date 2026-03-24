@@ -98,6 +98,19 @@ export function buildPublicUrl(path = ''): string {
   return buildBackendUrl(`/public${suffix === '/' ? '' : suffix}`);
 }
 
+export function buildAppRouteUrl(path = ''): string {
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+
+  if (isDesktopShell()) {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = `#${suffix}`;
+    return url.toString();
+  }
+
+  return new URL(`${getAdminPrefix()}${suffix}`, window.location.origin).toString();
+}
+
 export function buildWsUrl(path: string, params?: URLSearchParams): string {
   const url = new URL(buildBackendUrl(path));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

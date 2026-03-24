@@ -9,6 +9,7 @@ pub mod https;
 pub mod matchers;
 pub mod protocols;
 pub mod public;
+pub mod replay_sse;
 pub mod request;
 pub mod request_modification;
 pub mod response;
@@ -30,6 +31,7 @@ pub fn all_tests() -> Vec<TestCase> {
     let mut tests = Vec::new();
     tests.extend(routing::get_all_tests());
     tests.extend(admin_api::get_all_tests());
+    tests.extend(replay_sse::get_all_tests());
     tests.extend(request::tests());
     tests.extend(response::tests());
     tests.extend(template::tests());

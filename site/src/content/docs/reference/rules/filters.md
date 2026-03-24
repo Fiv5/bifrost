@@ -164,38 +164,38 @@ www.example.com host://default.local excludeFilter://h:X-Special
 
 ---
 
-## ignore
+## passthrough
 
-忽略规则，使匹配的请求跳过后续规则处理。
+`passthrough://` 使匹配的请求跳过后续规则处理并直接透传。旧的 `ignore://` 写法会自动转换为 `passthrough://`。
 
 ### 语法
 
-```
-ignore://pattern
+```txt
+pattern passthrough://
 ```
 
 ### 示例
 
 ```bash
-# 忽略静态资源
-ignore://*.js
-ignore://*.css
-ignore://*.png
+# 透传静态资源路径
+*.js passthrough://
+*.css passthrough://
+*.png passthrough://
 
-# 忽略特定路径
-ignore://www.example.com/health
-ignore://www.example.com/metrics
+# 透传特定路径
+www.example.com/health passthrough://
+www.example.com/metrics passthrough://
 
-# 忽略特定域名
-ignore://internal.example.com
+# 透传特定域名
+internal.example.com passthrough://
 ```
 
 ### 测试用例
 
 | 测试场景 | 规则                     | 请求     | 预期         |
 | -------- | ------------------------ | -------- | ------------ |
-| 忽略路径 | `ignore://test.com/skip` | `/skip`  | 请求直接通过 |
-| 忽略路径 | `ignore://test.com/skip` | `/other` | 继续匹配规则 |
+| 透传路径 | `test.com/skip passthrough://` | `/skip`  | 请求直接通过 |
+| 透传路径 | `test.com/skip passthrough://` | `/other` | 继续匹配规则 |
 
 ---
 
@@ -370,7 +370,7 @@ www.example.com resHeaders://{X-Debug: true} includeFilter://h:X-Debug
 www.example.com delete://reqHeaders.X-Internal includeFilter://m:GET
 
 # 条件忽略
-www.example.com ignore://pattern includeFilter://p:/static/
+www.example.com passthrough:// includeFilter://p:/static/
 ```
 
 ---

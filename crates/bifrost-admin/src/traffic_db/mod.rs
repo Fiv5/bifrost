@@ -3,7 +3,7 @@ mod schema;
 mod store;
 mod types;
 
-pub use query::{Direction, QueryParams, QueryResult};
+pub use query::{Direction, QueryParams, QueryResult, TextMatchMode};
 pub use store::TrafficSearchFields;
 pub use store::{
     start_db_cleanup_task, AppMetricsAggregate, HostMetricsAggregate, SharedTrafficDbStore,

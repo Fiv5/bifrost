@@ -4,7 +4,8 @@ use bifrost_admin::{
     RuntimeConfig, WsPayloadStore,
 };
 use bifrost_core::{
-    parse_rules, Protocol, RequestContext, Rule, RuleParser, RulesResolver as CoreRulesResolver,
+    normalize_rule_content, parse_rules, Protocol, RequestContext, Rule, RuleParser,
+    RulesResolver as CoreRulesResolver,
 };
 use bifrost_proxy::{
     ProxyConfig, ProxyServer, ResolvedRules as ProxyResolvedRules, RuleValue,
@@ -73,7 +74,7 @@ fn normalize_rule_line(rule: &str) -> String {
         normalized = normalized.replace("${host|${method}|${now}}", "${host}|${method}|${now}");
     }
 
-    normalized
+    normalize_rule_content(&normalized)
 }
 
 fn expand_rule_lines(rule: &str) -> Vec<String> {
@@ -646,7 +647,7 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
         return bifrost_proxy::CorsConfig::enable_all();
     }
 
-    if value.contains("://") && !value.starts_with('{') {
+    if !value.contains('\n') && value.contains("://") && !value.starts_with('{') {
         return bifrost_proxy::CorsConfig {
             enabled: true,
             origin: Some(value.to_string()),
@@ -689,6 +690,35 @@ fn parse_cors_config(value: &str) -> bifrost_proxy::CorsConfig {
                 if let Ok(age) = age_str.parse::<u64>() {
                     cors.max_age = Some(age);
                 }
+            }
+        }
+
+        return cors;
+    }
+
+    if let Some(entries) = parse_header_value(value) {
+        let mut cors = bifrost_proxy::CorsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+
+        for (key, raw_value) in entries {
+            match key.to_ascii_lowercase().as_str() {
+                "origin" => cors.origin = Some(raw_value),
+                "method" | "methods" => cors.methods = Some(raw_value),
+                "headers" => cors.headers = Some(raw_value),
+                "expose" | "exposeheaders" => cors.expose_headers = Some(raw_value),
+                "credentials" => {
+                    if let Ok(enabled) = raw_value.parse::<bool>() {
+                        cors.credentials = Some(enabled);
+                    }
+                }
+                "maxage" | "max_age" => {
+                    if let Ok(age) = raw_value.parse::<u64>() {
+                        cors.max_age = Some(age);
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1180,5 +1210,36 @@ impl ProxyInstance {
 impl Drop for ProxyInstance {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_cors_config;
+
+    #[test]
+    fn parse_cors_config_supports_multiline_legacy_format() {
+        let config = parse_cors_config(
+            "origin: https://frontend.test\nmethod: POST\nheaders: x-trace-id,x-auth-token",
+        );
+
+        assert!(config.enabled);
+        assert_eq!(config.origin.as_deref(), Some("https://frontend.test"));
+        assert_eq!(config.methods.as_deref(), Some("POST"));
+        assert_eq!(config.headers.as_deref(), Some("x-trace-id,x-auth-token"));
+    }
+
+    #[test]
+    fn parse_cors_config_supports_plural_keys_in_multiline_format() {
+        let config = parse_cors_config(
+            "origin: https://app.example.com\nmethods: GET, POST\nheaders: Content-Type\ncredentials: true\nmaxAge: 86400",
+        );
+
+        assert!(config.enabled);
+        assert_eq!(config.origin.as_deref(), Some("https://app.example.com"));
+        assert_eq!(config.methods.as_deref(), Some("GET, POST"));
+        assert_eq!(config.headers.as_deref(), Some("Content-Type"));
+        assert_eq!(config.credentials, Some(true));
+        assert_eq!(config.max_age, Some(86400));
     }
 }

@@ -2,8 +2,14 @@ import { test, expect } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
+import { createWriteStream } from "node:fs";
+import fs from "node:fs/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import { HttpProxyAgent } from "http-proxy-agent";
 
@@ -14,6 +20,7 @@ const proxyUrl =
 const proxyHost = new URL(proxyUrl);
 const apiBase =
   process.env.ADMIN_API_BASE || `${proxyUrl.replace(/\/$/, "")}/_bifrost/api`;
+const currentFilePath = fileURLToPath(import.meta.url);
 
 const startMockServer = async () => {
   const server = createServer((req, res) => {
@@ -82,6 +89,69 @@ const startSseServer = async () => {
   };
 };
 
+const startOpenAiLikeSseServer = async () => {
+  const server = createServer((req, res) => {
+    const url = req.url || "";
+    if (!url.startsWith("/openai-sse-test")) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    for (let i = 1; i <= 3; i += 1) {
+      res.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-ui-test",
+          object: "chat.completion.chunk",
+          created: 1710000000,
+          model: "gpt-4o-mini",
+          choices: [
+            {
+              index: 0,
+              delta: { role: i === 1 ? "assistant" : undefined, content: `token-${i}` },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+      );
+    }
+    res.write(
+      `data: ${JSON.stringify({
+        id: "chatcmpl-ui-test",
+        object: "chat.completion.chunk",
+        created: 1710000000,
+        model: "gpt-4o-mini",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+          },
+        ],
+      })}\n\n`,
+    );
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+        server.close((err?: Error) => (err ? reject(err) : resolve()));
+      }),
+  };
+};
+
 const startWsServer = async () => {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   wss.on("connection", (socket: WebSocket) => {
@@ -105,16 +175,221 @@ const startWsServer = async () => {
   };
 };
 
-const sendProxyRequest = async (url: string) => {
+const sendProxyRequest = async (url: string, targetProxyUrl = proxyUrl) => {
   await execFileAsync(
     "curl",
-    ["-sS", "--fail", "-x", proxyUrl, url],
+    ["-sS", "--fail", "-x", targetProxyUrl, url],
     { timeout: 10000 },
   );
 };
 
 const clearTraffic = async (request: APIRequestContext) => {
   await request.delete(`${apiBase}/traffic`);
+};
+
+const findFreePort = async () => {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate a free port")));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+  });
+};
+
+const waitForBackendReady = async (baseApi: string) => {
+  await expect
+    .poll(
+      async () => {
+        try {
+          const response = await fetch(`${baseApi}/proxy/address`);
+          return response.ok;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30000 },
+    )
+    .toBe(true);
+};
+
+const startIsolatedBackend = async () => {
+  const repoRoot = path.resolve(path.dirname(currentFilePath), "../../..");
+  const port = await findFreePort();
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "bifrost-ui-traffic-"));
+  const dataDir = path.join(runtimeDir, "data");
+  const logPath = path.join(runtimeDir, "backend.log");
+  const binPath = path.join(repoRoot, ".bifrost-ui-target", "debug", "bifrost");
+  await fs.mkdir(dataDir, { recursive: true });
+  const logStream = createWriteStream(logPath, { flags: "a" });
+
+  const child = spawn(
+    binPath,
+    ["start", "--host", "127.0.0.1", "-p", String(port), "--unsafe-ssl", "--access-mode", "allow_all"],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        BIFROST_DATA_DIR: dataDir,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  child.stdout?.pipe(logStream);
+  child.stderr?.pipe(logStream);
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const baseApi = `${baseUrl}/_bifrost/api`;
+  await waitForBackendReady(baseApi);
+
+  return {
+    port,
+    proxyUrl: baseUrl,
+    baseUrl,
+    baseApi,
+    dataDir,
+    close: async () => {
+      logStream.end();
+      if (child.exitCode === null) {
+        child.kill("SIGTERM");
+        await new Promise<void>((resolve) => {
+          child.once("exit", () => resolve());
+          setTimeout(() => {
+            if (child.exitCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, 5000);
+        });
+      }
+      await fs.rm(runtimeDir, { recursive: true, force: true });
+    },
+  };
+};
+
+const getTrafficRecordsByApi = async (baseApiUrl: string) => {
+  const response = await fetch(`${baseApiUrl}/traffic?limit=100`);
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    records?: Array<{ id: string; p?: string; capp?: string | null }>;
+  };
+};
+
+const waitForTrafficRecordByApi = async (baseApiUrl: string, targetPath: string) => {
+  let found: { id: string; p?: string; capp?: string | null } | undefined;
+  await expect
+    .poll(
+      async () => {
+        const payload = await getTrafficRecordsByApi(baseApiUrl);
+        found = payload.records?.find((record) => record.p === targetPath);
+        return found?.id ?? null;
+      },
+      { timeout: 15000 },
+    )
+    .toMatch(/^REQ-/);
+  return found as { id: string; p?: string; capp?: string | null };
+};
+
+const updateTrafficClientApp = async (dataDir: string, recordId: string, clientApp: string) => {
+  const dbPath = path.join(dataDir, "traffic", "traffic.db");
+  const script = `
+import sqlite3
+import sys
+
+db_path, record_id, client_app = sys.argv[1:4]
+conn = sqlite3.connect(db_path)
+try:
+    conn.execute("UPDATE traffic_records SET client_app = ? WHERE id = ?", (client_app, record_id))
+    conn.commit()
+finally:
+    conn.close()
+`;
+
+  await execFileAsync("python3", ["-c", script, dbPath, recordId, clientApp], {
+    timeout: 10000,
+  });
+};
+
+const waitForClientApp = async (
+  baseApiUrl: string,
+  recordId: string,
+  expectedClientApp: string,
+) => {
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(`${baseApiUrl}/traffic/${recordId}`);
+        if (!response.ok) {
+          return null;
+        }
+        const payload = (await response.json()) as { client_app?: string | null };
+        return payload.client_app ?? "";
+      },
+      { timeout: 15000 },
+    )
+    .toBe(expectedClientApp);
+};
+
+const searchTraffic = async (
+  baseApiUrl: string,
+  conditions: Array<{ field: string; operator: string; value: string }>,
+) => {
+  const response = await fetch(`${baseApiUrl}/search`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      keyword: "",
+      scope: {
+        request_body: false,
+        response_body: false,
+        request_headers: false,
+        response_headers: false,
+        url: false,
+        websocket_messages: false,
+        sse_events: false,
+        all: true,
+      },
+      filters: {
+        protocols: [],
+        status_ranges: [],
+        content_types: [],
+        conditions,
+        client_ips: [],
+        client_apps: [],
+        domains: [],
+      },
+      limit: 50,
+    }),
+  });
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    results: Array<{ record: { p?: string } }>;
+    total_matched: number;
+  };
+};
+
+const queryTraffic = async (baseApiUrl: string, params: Record<string, string>) => {
+  const searchParams = new URLSearchParams(params);
+  const response = await fetch(`${baseApiUrl}/traffic?${searchParams.toString()}`);
+  expect(response.ok).toBeTruthy();
+  return (await response.json()) as {
+    records: Array<{ p?: string; capp?: string | null }>;
+    total: number;
+  };
 };
 
 const streamSseViaProxy = async (url: string) => {
@@ -185,6 +460,35 @@ test("加载流量列表并显示详情", async ({ page, request }) => {
 
   await server.close();
 });
+
+test("独立详情路由加载单条请求", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/detail-route-${token}`;
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
+    await page.reload();
+
+    const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
+    await expect(row).toBeVisible();
+    const recordId = await row.getAttribute("data-record-id");
+    expect(recordId).toBeTruthy();
+
+    await page.goto(`/_bifrost/traffic/detail?id=${recordId}`);
+    await expect(page).toHaveURL(new RegExp(`/traffic/detail\\?id=${recordId}$`));
+    await expect(page.getByText(`Request ID: ${recordId}`)).toBeVisible();
+    await expect(page.getByTestId("traffic-detail")).toBeVisible();
+    await expect(page.getByTestId("traffic-detail-header")).toContainText(path);
+  } finally {
+    await server.close();
+  }
+});
+
 
 test("左侧 Filters 展示基础请求数量", async ({ page, request }) => {
   await clearTraffic(request);
@@ -304,43 +608,55 @@ test("清空流量时前端立即清理", async ({ page, request }) => {
   await server.close();
 });
 
-test("Add Filter 不影响 Fuzzy Search", async ({ page, request }) => {
-  await clearTraffic(request);
+test("Client App 空值与模糊匹配会同步作用于列表查询和 Fuzzy Search", async () => {
   const server = await startMockServer();
+  const backend = await startIsolatedBackend();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const path = `/fuzzy-filter-${token}`;
-  const impossibleKeyword = `missing-${token}`;
+  const emptyClientPath = `/client-empty-${token}`;
+  const fuzzyClientPath = `/client-fuzzy-${token}`;
+  const fuzzyClientApp = `Client Search ${token}`;
+  const fuzzyKeyword = token.slice(0, 6);
 
   try {
-    await page.goto("/_bifrost/traffic");
-    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${emptyClientPath}`, backend.proxyUrl);
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${fuzzyClientPath}`, backend.proxyUrl);
 
-    await sendProxyRequest(`http://127.0.0.1:${server.port}${path}`);
-    await expect(page.getByTestId("traffic-row").filter({ hasText: path }).first()).toBeVisible();
+    const emptyRecord = await waitForTrafficRecordByApi(backend.baseApi, emptyClientPath);
+    const fuzzyRecord = await waitForTrafficRecordByApi(backend.baseApi, fuzzyClientPath);
 
-    await page.getByRole("button", { name: "Add Filter" }).click();
-    await page.locator(".ant-select").nth(0).click();
-    await page.locator(".ant-select-dropdown").getByText("Path", { exact: true }).click();
-    await page.locator(".ant-select").nth(1).click();
-    await page.locator(".ant-select-dropdown").getByText("Contains", { exact: true }).click();
-    await page.getByPlaceholder("Enter value...").fill(impossibleKeyword);
+    await updateTrafficClientApp(backend.dataDir, emptyRecord.id, "");
+    await updateTrafficClientApp(backend.dataDir, fuzzyRecord.id, fuzzyClientApp);
+    await waitForClientApp(backend.baseApi, emptyRecord.id, "");
+    await waitForClientApp(backend.baseApi, fuzzyRecord.id, fuzzyClientApp);
 
-    const searchRequestPromise = page.waitForRequest((req) => {
-      return req.url().includes("/_bifrost/api/search/stream") && req.method() === "POST";
+    const emptyTraffic = await queryTraffic(backend.baseApi, {
+      client_app_empty: "true",
+      limit: "50",
     });
+    expect(emptyTraffic.records.map((item) => item.p)).toContain(emptyClientPath);
+    expect(emptyTraffic.records.map((item) => item.p)).not.toContain(fuzzyClientPath);
 
-    await page.getByRole("button", { name: "Fuzzy Search" }).click();
-    await page.getByPlaceholder("Enter keyword to search all content...").fill(token);
-    await page.getByRole("button", { name: "Search" }).click();
+    const emptySearch = await searchTraffic(backend.baseApi, [
+      { field: "client_app", operator: "is_empty", value: "" },
+    ]);
+    expect(emptySearch.results.map((item) => item.record.p)).toContain(emptyClientPath);
+    expect(emptySearch.results.map((item) => item.record.p)).not.toContain(fuzzyClientPath);
 
-    const searchRequest = await searchRequestPromise;
-    const payload = searchRequest.postDataJSON() as {
-      filters?: { conditions?: Array<{ field: string; operator: string; value: string }> };
-    };
-    expect(payload.filters?.conditions ?? []).toEqual([]);
+    const fuzzyTraffic = await queryTraffic(backend.baseApi, {
+      client_app: fuzzyKeyword,
+      client_app_match: "contains",
+      limit: "50",
+    });
+    expect(fuzzyTraffic.records.map((item) => item.p)).toContain(fuzzyClientPath);
+    expect(fuzzyTraffic.records.map((item) => item.p)).not.toContain(emptyClientPath);
 
-    await expect(page.locator("span").filter({ hasText: path }).first()).toBeVisible();
+    const fuzzySearch = await searchTraffic(backend.baseApi, [
+      { field: "client_app", operator: "contains", value: fuzzyKeyword },
+    ]);
+    expect(fuzzySearch.results.map((item) => item.record.p)).toContain(fuzzyClientPath);
+    expect(fuzzySearch.results.map((item) => item.record.p)).not.toContain(emptyClientPath);
   } finally {
+    await backend.close();
     await server.close();
   }
 });
@@ -745,7 +1061,7 @@ test("SSE 事件订阅与列表展示正确", async ({ page, request }) => {
   await server.close();
 });
 
-test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, request }) => {
+test("SSE 详情通过弹窗展开且不改变列表项高度", async ({ page, request }) => {
   await clearTraffic(request);
   const server = await startSseServer();
   const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -780,64 +1096,27 @@ test("SSE 展开/折叠后相邻项不应出现高度错位", async ({ page, req
   const search = container.getByPlaceholder("Search events...");
   await search.fill("target-long");
 
-  const expandedCard = container
+  const detailCard = container
     .getByTestId("sse-event-card")
     .filter({ hasText: "target-long" })
     .first();
 
-  await expect(expandedCard).toBeVisible();
-  const beforeBox = await expandedCard.boundingBox();
+  await expect(detailCard).toBeVisible();
+  const beforeBox = await detailCard.boundingBox();
   expect(beforeBox).not.toBeNull();
 
-  await expandedCard.getByTestId("sse-event-toggle").click();
+  await detailCard.getByTestId("sse-event-toggle").click();
 
   await expect
-    .poll(async () => (await expandedCard.boundingBox())?.height || 0)
-    .toBeGreaterThan((beforeBox?.height || 0) + 10);
-
-  const cards = container.getByTestId("sse-event-card");
-  const cardCount = await cards.count();
-  const boxes: Array<{ index: number; y: number; bottom: number }> = [];
-  for (let i = 0; i < cardCount; i += 1) {
-    const box = await cards.nth(i).boundingBox();
-    if (!box) continue;
-    boxes.push({ index: i, y: box.y, bottom: box.y + box.height });
-  }
-  boxes.sort((a, b) => a.y - b.y);
-
-  const expandedBox = await expandedCard.boundingBox();
-  expect(expandedBox).not.toBeNull();
-  const expandedBottom = (expandedBox?.y || 0) + (expandedBox?.height || 0);
-
-  const scroll = container.getByTestId("sse-message-scroll");
-  let next: { index: number; y: number; bottom: number } | undefined;
-  let currentExpandedBottom = expandedBottom;
-  for (let i = 0; i < 4; i += 1) {
-    const currentExpandedBox = await expandedCard.boundingBox();
-    expect(currentExpandedBox).not.toBeNull();
-    currentExpandedBottom =
-      (currentExpandedBox?.y || 0) + (currentExpandedBox?.height || 0);
-
-    boxes.length = 0;
-    const count = await cards.count();
-    for (let j = 0; j < count; j += 1) {
-      const box = await cards.nth(j).boundingBox();
-      if (!box) continue;
-      boxes.push({ index: j, y: box.y, bottom: box.y + box.height });
-    }
-    boxes.sort((a, b) => a.y - b.y);
-
-    next = boxes.find((b) => b.y > currentExpandedBottom);
-    if (next) break;
-
-    await scroll.evaluate((el) => {
-      el.scrollTop += 320;
-    });
-    await page.waitForTimeout(60);
-  }
-
-  expect(next).toBeTruthy();
-  expect((next?.y || 0) - currentExpandedBottom).toBeGreaterThanOrEqual(6);
+    .poll(async () => {
+      const currentHeight = (await detailCard.boundingBox())?.height || 0;
+      return Math.abs(currentHeight - (beforeBox?.height || 0));
+    })
+    .toBeLessThan(2);
+  await expect(page.getByTestId("sse-event-detail-content")).toBeVisible();
+  await expect(page.getByTestId("sse-event-detail-content")).toContainText("target-long");
+  await page.getByRole("button", { name: "Close" }).click();
+  await expect(page.getByTestId("sse-event-detail-content")).toHaveCount(0);
 
   await server.close();
 });
@@ -1002,4 +1281,217 @@ test("SSE 详情 Messages 面板打开后可实时收到新事件", async ({ pag
     }
     await waitForClose;
   }
+});
+
+test("SSE 详情切换 Response tab 后消息列表不应丢失", async ({ page, request }) => {
+  await clearTraffic(request);
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-tab-switch-${token}`;
+  const server = createServer((req, res) => {
+    if (req.url !== ssePath) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`id: 1\ndata: seed-${token}\n\n`);
+    let counter = 0;
+    const timer = setInterval(() => {
+      counter += 1;
+      res.write(`id: ${counter + 1}\ndata: after-tab-${token}-${counter}\n\n`);
+      if (counter >= 8) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 300);
+    req.on("close", () => {
+      clearInterval(timer);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "8",
+      "-x",
+      proxyUrl,
+      `http://127.0.0.1:${port}${ssePath}`,
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const sseRow = page.getByTestId("traffic-row").filter({ hasText: ssePath }).first();
+    await expect(sseRow).toBeVisible();
+    await sseRow.click();
+    await page.getByTestId("response-tab-messages").click();
+
+    const messages = page.getByTestId("sse-message-list");
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-tab-${token}-1`);
+
+    await page.getByTestId("response-tab-header").click();
+    await expect(page.getByTestId("response-header-view-mode-tabs")).toBeVisible();
+    await page.waitForTimeout(700);
+
+    await page.getByTestId("response-tab-messages").click();
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-tab-${token}-1`);
+    await expect(messages).toContainText(`after-tab-${token}-2`);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err?: Error) => (err ? reject(err) : resolve())),
+    );
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
+});
+
+test("SSE 详情切到弹窗再附回右侧面板后消息列表不应丢失", async ({ page, request }) => {
+  await clearTraffic(request);
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/sse-detach-${token}`;
+  const server = createServer((req, res) => {
+    if (req.url !== ssePath) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`id: 1\ndata: seed-${token}\n\n`);
+    let counter = 0;
+    const timer = setInterval(() => {
+      counter += 1;
+      res.write(`id: ${counter + 1}\ndata: after-detach-${token}-${counter}\n\n`);
+      if (counter >= 10) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, 300);
+    req.on("close", () => {
+      clearInterval(timer);
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const stream = spawn(
+    "curl",
+    [
+      "-sS",
+      "-N",
+      "--max-time",
+      "10",
+      "-x",
+      proxyUrl,
+      `http://127.0.0.1:${port}${ssePath}`,
+    ],
+    { stdio: "ignore" },
+  );
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const sseRow = page.getByTestId("traffic-row").filter({ hasText: ssePath }).first();
+    await expect(sseRow).toBeVisible();
+    await sseRow.click();
+    await page.getByTestId("response-tab-messages").click();
+
+    const messages = page.getByTestId("sse-message-list");
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-detach-${token}-1`);
+
+    const popupPromise = page.waitForEvent("popup");
+    await page.getByTestId("traffic-detail-open-window").click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState("domcontentloaded");
+    await expect(popup.getByTestId("traffic-detail-attach-back")).toBeVisible();
+
+    await popup.getByTestId("traffic-detail-attach-back").click();
+    await expect.poll(() => popup.isClosed()).toBe(true);
+
+    await expect(page.getByTestId("traffic-detail")).toBeVisible();
+    await page.getByTestId("response-tab-messages").click();
+    await expect(page.getByTestId("sse-message-container")).toBeVisible();
+    await expect(messages).toContainText(`seed-${token}`);
+    await expect(messages).toContainText(`after-detach-${token}-1`);
+    await expect(messages).toContainText(`after-detach-${token}-2`);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err?: Error) => (err ? reject(err) : resolve())),
+    );
+    const waitForClose = new Promise<void>((resolve) => {
+      if (stream.exitCode !== null) {
+        resolve();
+        return;
+      }
+      stream.once("close", () => resolve());
+    });
+    if (stream.exitCode === null) {
+      stream.kill("SIGTERM");
+    }
+    await waitForClose;
+  }
+});
+
+test("OpenAI 风格 SSE 会自动打开聚合后的 Response tab", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startOpenAiLikeSseServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/openai-sse-test?token=${token}`;
+
+  await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/openai-sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
+  await sseRow.click();
+
+  await expect(page.getByTestId("response-tab-openai")).toBeVisible();
+  await expect(page.getByTestId("traffic-detail")).toContainText('"object": "chat.completion"');
+  await expect(page.getByTestId("traffic-detail")).toContainText('"content": "token-1token-2token-3"');
+
+  await server.close();
 });

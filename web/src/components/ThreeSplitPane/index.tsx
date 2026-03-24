@@ -14,6 +14,7 @@ interface ThreeSplitPaneProps {
   minRightWidth?: number;
   leftCollapsed?: boolean;
   rightCollapsed?: boolean;
+  keepRightMountedWhenCollapsed?: boolean;
   onLeftWidthChange?: (width: number) => void;
   onRightWidthChange?: (width: string) => void;
 }
@@ -30,6 +31,7 @@ export default function ThreeSplitPane({
   minRightWidth = 350,
   leftCollapsed = false,
   rightCollapsed = false,
+  keepRightMountedWhenCollapsed = false,
   onLeftWidthChange,
   onRightWidthChange,
 }: ThreeSplitPaneProps) {
@@ -166,6 +168,8 @@ export default function ThreeSplitPane({
     ...styles.divider,
     ...(isHoveringRight || isDraggingRight ? styles.dividerHover : {}),
   };
+  const shouldRenderRightPane =
+    !!right && (!rightCollapsed || keepRightMountedWhenCollapsed);
 
   return (
     <div ref={containerRef} style={styles.container}>
@@ -191,8 +195,18 @@ export default function ThreeSplitPane({
             onMouseEnter={() => setIsHoveringRight(true)}
             onMouseLeave={() => setIsHoveringRight(false)}
           />
-          <div style={{ ...styles.rightPane, width: rightWidthPx }}>{right}</div>
         </>
+      )}
+      {shouldRenderRightPane && (
+        <div
+          style={{
+            ...styles.rightPane,
+            width: rightCollapsed ? 0 : rightWidthPx,
+            display: rightCollapsed ? "none" : "block",
+          }}
+        >
+          {right}
+        </div>
       )}
     </div>
   );

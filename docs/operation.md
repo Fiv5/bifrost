@@ -313,8 +313,8 @@ key1=value1&key2=value2&keyN=valueN
 | 别名                                                 | 实际协议     |
 | ---------------------------------------------------- | ------------ |
 | `hosts`                                              | `host`       |
+| `ignore`                                             | `passthrough` |
 | `status`                                             | `statusCode` |
-| `skip`                                               | `ignore`     |
 | `download`                                           | `attachment` |
 | `html`                                               | `htmlAppend` |
 | `js`                                                 | `jsAppend`   |
@@ -322,8 +322,6 @@ key1=value1&key2=value2&keyN=valueN
 | `http-proxy`                                         | `proxy`      |
 | `h3`                                                 | `http3`      |
 | `pathReplace`                                        | `urlReplace` |
-| `ruleFile` / `ruleScript` / `reqScript` / `reqRules` | `rulesFile`  |
-| `resRules`                                           | `resScript`  |
 | `reqMerge`                                           | `params`     |
 
 
@@ -333,7 +331,7 @@ key1=value1&key2=value2&keyN=valueN
 
 ### 控制类
 
-`tlsIntercept`、`tlsPassthrough`、`passthrough`、`delete`
+`tlsIntercept`、`tlsPassthrough`、`passthrough`、`delete`、`skip`
 
 ### 请求修改类
 

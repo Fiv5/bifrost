@@ -1,11 +1,11 @@
-# C-01: Ignore 规则测试
-# 需求: ignore 规则应使请求绕过代理处理
-# 注意: Bifrost 的 ignore:// 需要域名在前
+# C-01: Passthrough 规则测试
+# 需求: passthrough 规则应使请求绕过后续规则并直接透传
+# 兼容性: 旧的 ignore:// 写法会自动转换为 passthrough://
 
-# 忽略特定域名
+# 透传特定域名
 ignore-this.local passthrough://
 
-# 忽略特定路径
+# 透传特定路径
 *.local/health passthrough://
 *.local/metrics passthrough://
 
@@ -13,6 +13,6 @@ ignore-this.local passthrough://
 normal.local 127.0.0.1:3000
 
 # 测试用例:
-# 1. 请求 http://ignore-this.local/ 应直接透传，不经过规则处理
+# 1. 请求 http://ignore-this.local/ 应直接透传，不经过后续规则处理
 # 2. 请求任意域名的 /health 路径应直接透传
-# 3. 被忽略的请求不应有代理添加的响应头
+# 3. 透传请求不应有代理额外添加的响应头

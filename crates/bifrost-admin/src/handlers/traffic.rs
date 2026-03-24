@@ -378,6 +378,7 @@ async fn stream_sse_events_from_file(
     parser: &mut SseIncrementalParser,
     tx: tokio::sync::mpsc::Sender<bytes::Bytes>,
 ) -> Result<(), ()> {
+    use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
     use tokio::time::{sleep, Duration};
 
@@ -399,16 +400,33 @@ async fn stream_sse_events_from_file(
     }
 
     let mut buf = vec![0u8; 8192];
+    let mut last_force_flush_refresh = Instant::now();
+    let mut closed_eof_retries = 0u8;
+    let mut saw_closed = false;
+    let mut last_event_was_finish = false;
 
     let mut batch = Vec::new();
     let batch_size = cfg.batch_size.max(1);
 
     loop {
+        // 详情页 live SSE stream 打开期间，持续续租 force-flush 窗口。
+        // 否则长连接超过初始 30s 后，proxy 侧会回到普通缓冲策略，
+        // 导致尾部一批事件要等连接关闭 flush 后才在 response-body 里可见。
+        if cfg.fixed_end.is_none() && last_force_flush_refresh.elapsed() >= Duration::from_secs(5) {
+            cfg.state
+                .sse_hub
+                .request_force_flush(&cfg.connection_id, 30_000);
+            last_force_flush_refresh = Instant::now();
+        }
+
         let is_open = cfg
             .state
             .sse_hub
             .is_open(&cfg.connection_id)
             .unwrap_or(false);
+        if !is_open {
+            saw_closed = true;
+        }
         let end = cfg.fixed_end;
 
         if let Some(end_pos) = end {
@@ -433,12 +451,21 @@ async fn stream_sse_events_from_file(
 
         if n == 0 {
             if !is_open {
-                break;
+                // 连接关闭时，proxy 侧会在 drop/finish 阶段把最后一批 buffered 数据 flush 到文件。
+                // 这里若一看到 EOF + closed 就立即退出，会漏掉刚刚在 finish() 中落盘的尾数据。
+                closed_eof_retries = closed_eof_retries.saturating_add(1);
+                if closed_eof_retries >= 10 {
+                    break;
+                }
+                sleep(Duration::from_millis(50)).await;
+                continue;
             }
+            closed_eof_retries = 0;
             sleep(Duration::from_millis(200)).await;
             continue;
         }
 
+        closed_eof_retries = 0;
         offset = offset.saturating_add(n as u64);
 
         let mut produced = Vec::new();
@@ -446,6 +473,7 @@ async fn stream_sse_events_from_file(
         for raw in produced {
             *seq = seq.saturating_add(1);
             let event = sse_event_from_raw(*seq, now_ms(), raw);
+            last_event_was_finish = event.event.as_deref() == Some("finish");
             if batch_size <= 1 {
                 let s = sse_json_line(&event);
                 if tx.send(bytes::Bytes::from(s)).await.is_err() {
@@ -468,11 +496,34 @@ async fn stream_sse_events_from_file(
     if let Some(raw) = parser.finish() {
         *seq = seq.saturating_add(1);
         let event = sse_event_from_raw(*seq, now_ms(), raw);
+        last_event_was_finish = event.event.as_deref() == Some("finish");
         if batch_size <= 1 {
             let s = sse_json_line(&event);
             let _ = tx.send(bytes::Bytes::from(s)).await;
         } else {
             batch.push(event);
+        }
+    }
+
+    // live 详情流的完成边界应该由“连接真的关闭并且尾部追完”来决定，
+    // 而不是依赖 upstream 一定发送特定的 finish 事件。
+    if should_emit_synthetic_finish(cfg.fixed_end, saw_closed, last_event_was_finish) {
+        *seq = seq.saturating_add(1);
+        let finish_event = crate::sse::SseEvent {
+            seq: *seq,
+            ts: now_ms(),
+            id: None,
+            event: Some("finish".to_string()),
+            retry: None,
+            data: String::new(),
+            raw: None,
+            parse_error: false,
+        };
+        if batch_size <= 1 {
+            let s = sse_json_line(&finish_event);
+            let _ = tx.send(bytes::Bytes::from(s)).await;
+        } else {
+            batch.push(finish_event);
         }
     }
 
@@ -592,11 +643,19 @@ fn now_ms() -> u64 {
     chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
+fn should_emit_synthetic_finish(
+    fixed_end: Option<u64>,
+    saw_closed: bool,
+    last_event_was_finish: bool,
+) -> bool {
+    fixed_end.is_none() && saw_closed && !last_event_was_finish
+}
+
 #[cfg(test)]
 mod sse_stream_tests {
     use super::{
-        parse_sse_stream_from, parse_sse_stream_options, split_sse_events_text,
-        SseIncrementalParser, SseStreamFrom,
+        parse_sse_stream_from, parse_sse_stream_options, should_emit_synthetic_finish,
+        split_sse_events_text, SseIncrementalParser, SseStreamFrom,
     };
 
     #[test]
@@ -663,6 +722,14 @@ mod sse_stream_tests {
         assert!(out2.is_empty());
         let tail = p.finish().unwrap();
         assert!(tail.contains("data: b"));
+    }
+
+    #[test]
+    fn test_synthetic_finish_policy() {
+        assert!(should_emit_synthetic_finish(None, true, false));
+        assert!(!should_emit_synthetic_finish(None, true, true));
+        assert!(!should_emit_synthetic_finish(None, false, false));
+        assert!(!should_emit_synthetic_finish(Some(123), true, false));
     }
 }
 
@@ -916,7 +983,23 @@ fn parse_query_params_from_query_string(query: &str) -> QueryParams {
                 "url" | "url_contains" => params.url_contains = Some(value),
                 "path" | "path_contains" => params.path_contains = Some(value),
                 "client_app" => params.client_app = Some(value),
+                "client_app_match" => {
+                    params.client_app_match = if value.eq_ignore_ascii_case("equals") {
+                        crate::traffic_db::TextMatchMode::Equals
+                    } else {
+                        crate::traffic_db::TextMatchMode::Contains
+                    };
+                }
+                "client_app_empty" => params.client_app_empty = value.parse().ok(),
                 "client_ip" => params.client_ip = Some(value),
+                "client_ip_match" => {
+                    params.client_ip_match = if value.eq_ignore_ascii_case("equals") {
+                        crate::traffic_db::TextMatchMode::Equals
+                    } else {
+                        crate::traffic_db::TextMatchMode::Contains
+                    };
+                }
+                "client_ip_empty" => params.client_ip_empty = value.parse().ok(),
                 "content_type" => params.content_type = Some(value),
                 _ => {}
             }

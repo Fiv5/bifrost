@@ -555,53 +555,69 @@ export const useReplayStore = create<ReplayState>()(
             let buffer = '';
             let isRunning = true;
 
+            const appendSseEvent = (sseEvent: SSEEvent) => {
+              set((state) => ({ sseEvents: [...state.sseEvents, sseEvent] }));
+            };
+
+            const processSseLine = (rawLine: string) => {
+              const line = rawLine.trimEnd();
+              if (!line || !line.startsWith('data: ')) {
+                return;
+              }
+
+              const data = line.substring(6);
+              try {
+                const eventData = JSON.parse(data);
+                if (eventData.type_ === 'connection') {
+                  const { streamingConnection } = get();
+                  if (streamingConnection) {
+                    set({
+                      streamingConnection: {
+                        ...streamingConnection,
+                        trafficId: eventData.traffic_id,
+                        appliedUrl: eventData.applied_url,
+                        appliedRules: eventData.applied_rules,
+                      },
+                    });
+                  }
+                  return;
+                }
+
+                appendSseEvent({
+                  id: eventData.id,
+                  event: eventData.event || eventData.type_,
+                  data:
+                    typeof eventData.data === 'string'
+                      ? eventData.data
+                      : JSON.stringify(eventData.data),
+                  timestamp: Date.now(),
+                });
+              } catch {
+                appendSseEvent({
+                  data,
+                  timestamp: Date.now(),
+                });
+              }
+            };
+
             const processStream = async () => {
               try {
                 while (isRunning) {
                   const { done, value } = await reader.read();
-                  if (done) break;
+                  if (done) {
+                    if (buffer.trim().length > 0) {
+                      processSseLine(buffer);
+                      buffer = '';
+                    }
+                    break;
+                  }
 
                   buffer += new TextDecoder().decode(value);
                   const lines = buffer.split('\n');
                   buffer = lines.pop() || '';
 
                   for (const line of lines) {
-                    if (line === '') continue;
-                    if (line.startsWith('data: ')) {
-                      const data = line.substring(6);
-                      try {
-                        const eventData = JSON.parse(data);
-                        if (eventData.type_ === 'connection') {
-                          const { streamingConnection } = get();
-                          if (streamingConnection) {
-                            set({
-                              streamingConnection: {
-                                ...streamingConnection,
-                                trafficId: eventData.traffic_id,
-                                appliedUrl: eventData.applied_url,
-                                appliedRules: eventData.applied_rules,
-                              },
-                            });
-                          }
-                          continue;
-                        }
-                        const sseEvent: SSEEvent = {
-                          id: eventData.id,
-                          event: eventData.event || eventData.type_,
-                          data: typeof eventData.data === 'string' ? eventData.data : JSON.stringify(eventData.data),
-                          timestamp: Date.now(),
-                        };
-                        const { sseEvents } = get();
-                        set({ sseEvents: [...sseEvents, sseEvent] });
-                      } catch {
-                        const sseEvent: SSEEvent = {
-                          data: data,
-                          timestamp: Date.now(),
-                        };
-                        const { sseEvents } = get();
-                        set({ sseEvents: [...sseEvents, sseEvent] });
-                      }
-                    }
+                    processSseLine(line);
                   }
                 }
               } catch (e) {
@@ -1211,8 +1227,7 @@ export const useReplayStore = create<ReplayState>()(
               data: typeof event.data === 'string' ? event.data : '[Binary Data]',
               timestamp: Date.now(),
             };
-            const { wsMessages } = get();
-            set({ wsMessages: [...wsMessages, wsMessage] });
+            set((state) => ({ wsMessages: [...state.wsMessages, wsMessage] }));
           };
 
           ws.onclose = (event) => {
@@ -1272,7 +1287,7 @@ export const useReplayStore = create<ReplayState>()(
       },
 
       sendWebSocketMessage: (data: string, type: 'text' | 'binary' = 'text') => {
-        const { webSocketRef, wsMessages, streamingConnection } = get();
+        const { webSocketRef, streamingConnection } = get();
         if (!webSocketRef || streamingConnection?.status !== 'connected') {
           return;
         }
@@ -1286,7 +1301,7 @@ export const useReplayStore = create<ReplayState>()(
             data,
             timestamp: Date.now(),
           };
-          set({ wsMessages: [...wsMessages, wsMessage] });
+          set((state) => ({ wsMessages: [...state.wsMessages, wsMessage] }));
         } catch (e) {
           if (streamingConnection) {
             set({

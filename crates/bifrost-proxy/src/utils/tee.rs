@@ -17,6 +17,18 @@ use crate::transform::decompress::decompress_body_with_limit;
 // not burn CPU on bookkeeping.
 const BODY_TRAFFIC_FLUSH_BYTES: usize = 1024 * 1024;
 
+fn record_first_downstream_byte(state: &AdminState, record_id: &str) {
+    state.update_traffic_by_id(record_id, move |record| {
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let first_byte_ms = now_ms.saturating_sub(record.timestamp);
+        if let Some(ref mut timing) = record.timing {
+            if timing.first_byte_ms.is_none() {
+                timing.first_byte_ms = Some(first_byte_ms);
+            }
+        }
+    });
+}
+
 fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usize) {
     let status = state.sse_hub.get_socket_status(record_id).map(|mut s| {
         s.is_open = false;
@@ -115,6 +127,11 @@ impl TeeBodyDropGuard {
             let total_bytes = self.total_bytes + self.response_headers_size;
             state.update_traffic_by_id(&self.record_id, move |record| {
                 record.response_size = total_bytes;
+                if let Some(ref mut timing) = record.timing {
+                    if timing.first_byte_ms.is_none() {
+                        timing.first_byte_ms = Some(record.duration_ms);
+                    }
+                }
                 if response_body_ref.is_some() {
                     record.response_body_ref = response_body_ref.clone();
                 }
@@ -193,10 +210,16 @@ where
         match self.inner.as_mut().poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
+                    let had_body_bytes = self.guard.total_bytes > 0;
                     let len = data.len();
                     self.guard.total_bytes += len;
                     self.guard.pending_traffic_bytes =
                         self.guard.pending_traffic_bytes.saturating_add(len);
+                    if !had_body_bytes && len > 0 {
+                        if let Some(ref state) = self.guard.admin_state {
+                            record_first_downstream_byte(state, &self.guard.record_id);
+                        }
+                    }
 
                     let mut new_writer: Option<BodyStreamWriter> = None;
                     if self.guard.file_writer.is_none()
@@ -526,8 +549,26 @@ impl SseTeeBodyDropGuard {
     fn store_body_and_update_record(&mut self) {
         if let Some(ref state) = self.admin_state {
             let response_body_ref = self.file_writer.take().map(|w| w.finish());
+            let had_body_bytes = self.total_bytes > 0;
             state.sse_hub.set_closed(&self.record_id);
             state.update_traffic_by_id(&self.record_id, move |record| {
+                let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+                let total_ms = now_ms.saturating_sub(record.timestamp);
+                record.duration_ms = record.duration_ms.max(total_ms);
+                if let Some(ref mut timing) = record.timing {
+                    if timing.first_byte_ms.is_none() && had_body_bytes {
+                        timing.first_byte_ms = Some(record.duration_ms);
+                    }
+                    let first_response_ms = timing
+                        .dns_ms
+                        .unwrap_or(0)
+                        .saturating_add(timing.connect_ms.unwrap_or(0))
+                        .saturating_add(timing.tls_ms.unwrap_or(0))
+                        .saturating_add(timing.send_ms.unwrap_or(0))
+                        .saturating_add(timing.wait_ms.unwrap_or(0));
+                    timing.receive_ms = Some(record.duration_ms.saturating_sub(first_response_ms));
+                    timing.total_ms = record.duration_ms;
+                }
                 record.response_body_ref = response_body_ref.clone();
             });
             persist_socket_summary(state, &self.record_id, self.total_bytes);
@@ -679,8 +720,14 @@ where
         match Pin::new(&mut self.inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
                 if let Some(data) = frame.data_ref() {
+                    let had_body_bytes = self.guard.total_bytes > 0;
                     let len = data.len();
                     self.guard.total_bytes += len;
+                    if !had_body_bytes && len > 0 {
+                        if let Some(ref state) = self.guard.admin_state {
+                            record_first_downstream_byte(state, &self.guard.record_id);
+                        }
+                    }
 
                     if let Some(ref state) = self.guard.admin_state {
                         state.sse_hub.add_receive_bytes(&self.guard.record_id, len);

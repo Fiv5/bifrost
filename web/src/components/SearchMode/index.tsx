@@ -58,6 +58,7 @@ export default function SearchMode({
   } = useSearchStore();
 
   const toolbarFilters = useTrafficStore((state) => state.toolbarFilters);
+  const filterConditions = useTrafficStore((state) => state.filterConditions);
   const selectedClientIps = useFilterPanelStore(
     (state) => state.selectedClientIps,
   );
@@ -78,14 +79,23 @@ export default function SearchMode({
       status_ranges: toolbarFilters.status,
       content_types: toolbarFilters.type,
       has_rule_hit: toolbarFilters.rule.length > 0 ? true : undefined,
-      // "Add Filter" only scopes the live traffic table. Fuzzy search should
-      // stay keyword-driven instead of inheriting those local conditions.
-      conditions: [],
+      conditions: filterConditions
+        .filter((condition) =>
+          condition.operator === "is_empty" ||
+          condition.operator === "is_not_empty" ||
+          condition.value.trim().length > 0,
+        )
+        .map(({ field, operator, value }) => ({
+          field,
+          operator,
+          value,
+        })),
       client_ips: selectedClientIps,
       client_apps: allClientApps,
       domains: selectedDomains,
     };
   }, [
+    filterConditions,
     toolbarFilters,
     selectedClientIps,
     selectedClientApps,
@@ -93,10 +103,52 @@ export default function SearchMode({
   ]);
 
   const handleSearch = useCallback(() => {
-    if (keyword.trim()) {
+    if (
+      keyword.trim() ||
+      filterConditions.some(
+        (condition) =>
+          condition.operator === "is_empty" ||
+          condition.operator === "is_not_empty" ||
+          condition.value.trim().length > 0,
+      ) ||
+      selectedClientIps.length > 0 ||
+      selectedClientApps.length > 0 ||
+      selectedDomains.length > 0 ||
+      toolbarFilters.protocol.length > 0 ||
+      toolbarFilters.status.length > 0 ||
+      toolbarFilters.type.length > 0 ||
+      toolbarFilters.rule.length > 0 ||
+      toolbarFilters.imported.length > 0
+    ) {
       search(buildFilters());
     }
-  }, [keyword, search, buildFilters]);
+  }, [
+    keyword,
+    filterConditions,
+    selectedClientIps,
+    selectedClientApps,
+    selectedDomains,
+    toolbarFilters,
+    search,
+    buildFilters,
+  ]);
+
+  const canSearch =
+    keyword.trim().length > 0 ||
+    filterConditions.some(
+      (condition) =>
+        condition.operator === "is_empty" ||
+        condition.operator === "is_not_empty" ||
+        condition.value.trim().length > 0,
+    ) ||
+    selectedClientIps.length > 0 ||
+    selectedClientApps.length > 0 ||
+    selectedDomains.length > 0 ||
+    toolbarFilters.protocol.length > 0 ||
+    toolbarFilters.status.length > 0 ||
+    toolbarFilters.type.length > 0 ||
+    toolbarFilters.rule.length > 0 ||
+    toolbarFilters.imported.length > 0;
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -223,7 +275,7 @@ export default function SearchMode({
             type="primary"
             onClick={handleSearch}
             icon={<SearchOutlined />}
-            disabled={!keyword.trim()}
+            disabled={!canSearch}
           >
             Search
           </Button>

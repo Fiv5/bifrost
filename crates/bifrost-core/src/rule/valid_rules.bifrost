@@ -238,19 +238,16 @@ url-replace.test urlReplace://old-path/new-path/
 # 7. 脚本协议 (Script Protocols)
 # -----------------------------------------------------------------------------
 
-# 7.1 rulesFile - 规则文件
-rules-file.test rulesFile:///path/to/rules.txt
-
-# 7.2 reqScript - 请求脚本 (引用脚本名称)
+# 7.1 reqScript - 请求脚本 (引用脚本名称)
 req-script.test reqScript://myRequestHandler
 
-# 7.3 resScript - 响应脚本 (引用脚本名称)
+# 7.2 resScript - 响应脚本 (引用脚本名称)
 res-script.test resScript://myResponseHandler
 
-# 7.4 reqScript - 文件路径方式
+# 7.3 reqScript - 文件路径方式
 req-script-path.test reqScript:///path/to/req_script.js
 
-# 7.5 resScript - 文件路径方式
+# 7.4 resScript - 文件路径方式
 res-script-path.test resScript:///path/to/res_script.js
 
 # -----------------------------------------------------------------------------

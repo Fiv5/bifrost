@@ -1,0 +1,12 @@
+# 测试目标: 验证 forwardedFor 能设置固定 x-forwarded-for，并支持通过模板变量透传客户端 IP。
+
+# FF-01: 固定 IP
+forwarded-fixed.local http://127.0.0.1:3000 forwardedFor://1.2.3.4
+
+# FF-02: 模板变量透传客户端 IP
+forwarded-template.local http://127.0.0.1:3000 forwardedFor://`${clientIp}`
+
+# 测试用例:
+# 1. 请求 http://forwarded-fixed.local/ 时，上游应收到 x-forwarded-for: 1.2.3.4
+# 2. 请求 http://forwarded-template.local/ 时，上游应收到非空的 x-forwarded-for
+# 3. forwardedFor 应只改写 x-forwarded-for，不影响其他请求头

@@ -36,7 +36,7 @@ use crate::proxy::socks::{SocksConfig, SocksHandler, SocksServer, UdpRelay};
 use crate::unified::{DetectedProtocol, PeekableStream};
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::{
-    resolve_client_process_async_for_connection,
+    app_policy_process_resolution_retry_config, resolve_client_process_async_for_connection,
     resolve_client_process_async_for_connection_with_retry, spawn_async_process_resolver,
     ClientProcess,
 };
@@ -1009,14 +1009,45 @@ async fn handle_request(
     let client_process = if let Some(client_process) = cached_client_process {
         Some(client_process)
     } else if let Some(ref tls_intercept_config) = connect_tls_intercept_config {
-        let client_process = if is_local_client
-            && requires_client_app_for_tls_decision(tls_intercept_config)
-        {
-            resolve_client_process_async_for_connection_with_retry(&peer_addr, &local_addr, 10, 20)
+        let client_process =
+            if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
+                let (max_retries, delay_ms) = app_policy_process_resolution_retry_config();
+                info!(
+                    req_id = ctx.id_str(),
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    max_retries,
+                    delay_ms,
+                    "CONNECT request requires synchronous client process resolution for app policy"
+                );
+                resolve_client_process_async_for_connection_with_retry(
+                    &peer_addr,
+                    &local_addr,
+                    max_retries,
+                    delay_ms,
+                )
                 .await
-        } else {
-            resolve_client_process_async_for_connection(&peer_addr, &local_addr).await
-        };
+            } else {
+                resolve_client_process_async_for_connection(&peer_addr, &local_addr).await
+            };
+        if is_local_client && requires_client_app_for_tls_decision(tls_intercept_config) {
+            match client_process.as_ref() {
+                Some(process) => info!(
+                    req_id = ctx.id_str(),
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    client_app = %process.name,
+                    client_pid = process.pid,
+                    "CONNECT synchronous client process resolution succeeded"
+                ),
+                None => warn!(
+                    req_id = ctx.id_str(),
+                    peer_addr = %peer_addr,
+                    local_addr = %local_addr,
+                    "CONNECT synchronous client process resolution returned unknown client"
+                ),
+            }
+        }
         if let Some(ref client_process) = client_process {
             if let Ok(mut cache) = client_process_cache.lock() {
                 *cache = Some(client_process.clone());
@@ -1183,6 +1214,8 @@ async fn handle_request(
 
         match handle_connect(
             req,
+            peer_addr,
+            local_addr,
             rules,
             tls_config,
             &tls_intercept_config,

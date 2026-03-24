@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -57,11 +58,70 @@ use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
 };
 use crate::utils::logging::{format_rules_summary, RequestContext};
+use crate::utils::process_info::spawn_async_process_resolver;
 use crate::utils::tee::{
     create_metrics_body, create_request_tee_body, create_sse_tee_body, create_tee_body_with_store,
     store_request_body, BodyCaptureHandle,
 };
 use crate::utils::throttle::wrap_throttled_body;
+
+fn maybe_backfill_tunnel_client_process(
+    state: &Arc<AdminState>,
+    req_id: &str,
+    client_app: Option<&str>,
+    client_pid: Option<u32>,
+    peer_addr: SocketAddr,
+    local_addr: SocketAddr,
+) {
+    if client_app.is_some() && client_pid.is_some() {
+        debug!(
+            req_id,
+            client_app = ?client_app,
+            client_pid = ?client_pid,
+            "Skipping tunnel client process backfill because client metadata is already present"
+        );
+        return;
+    }
+
+    if !peer_addr.ip().is_loopback() {
+        debug!(
+            req_id,
+            peer_addr = %peer_addr,
+            local_addr = %local_addr,
+            "Skipping tunnel client process backfill for non-loopback client"
+        );
+        return;
+    }
+
+    info!(
+        req_id,
+        peer_addr = %peer_addr,
+        local_addr = %local_addr,
+        existing_client_app = ?client_app,
+        existing_client_pid = ?client_pid,
+        "Scheduling tunnel client process backfill"
+    );
+
+    let state = Arc::clone(state);
+    spawn_async_process_resolver(
+        peer_addr,
+        local_addr,
+        req_id.to_string(),
+        move |id, process| {
+            info!(
+                req_id = %id,
+                client_app = %process.name,
+                client_pid = process.pid,
+                client_path = ?process.path,
+                "Applying tunnel client process backfill to traffic record"
+            );
+            state.update_client_process(&id, process.name.clone(), process.pid, process.path);
+            state
+                .connection_registry
+                .update_client_app(&id, process.name.clone());
+        },
+    );
+}
 
 fn finalize_tunnel_tracking(state: &Arc<AdminState>, req_id: &str) {
     state
@@ -214,6 +274,8 @@ fn build_tls_intercept_server_builder(
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_connect(
     req: Request<Incoming>,
+    peer_addr: SocketAddr,
+    local_addr: SocketAddr,
     rules: Arc<dyn RulesResolver>,
     tls_config: Arc<TlsConfig>,
     tls_intercept_config: &TlsInterceptConfig,
@@ -244,13 +306,36 @@ pub async fn handle_connect(
 
     let url = format!("https://{}:{}", host, port);
     let resolved_rules = rules.resolve(&url, "CONNECT");
+    let is_local_client = ctx
+        .client_ip
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback());
+    let requires_client_app =
+        is_local_client && requires_client_app_for_tls_decision(tls_intercept_config);
+
+    if requires_client_app && !matches!(ctx.client_app.as_deref(), Some(app) if !app.is_empty()) {
+        if let Some(ref state) = admin_state {
+            state
+                .metrics_collector
+                .increment_client_process_resolution_failure();
+            state
+                .metrics_collector
+                .increment_client_process_policy_unknown_decision();
+        }
+        warn!(
+            req_id = ctx.id_str(),
+            host,
+            port,
+            peer_addr = %peer_addr,
+            local_addr = %local_addr,
+            "CONNECT app-based TLS decision fell back because client process is unknown"
+        );
+    }
 
     let mut intercept = should_intercept_tls_for_client(
         &host,
         ctx.client_app.as_deref(),
-        ctx.client_ip
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback()),
+        is_local_client,
         tls_intercept_config,
         &tls_config,
         &resolved_rules,
@@ -483,6 +568,14 @@ pub async fn handle_connect(
         record.has_rule_hit = has_rules;
         record.matched_rules = crate::utils::build_matched_rules(&resolved_rules);
         state.record_traffic(record);
+        maybe_backfill_tunnel_client_process(
+            state,
+            &req_id,
+            client_app.as_deref(),
+            client_pid,
+            peer_addr,
+            local_addr,
+        );
 
         state.connection_monitor.register_tunnel_connection(&req_id);
     }
@@ -1845,6 +1938,7 @@ async fn handle_intercepted_request_with_protocol(
                     tls_ms,
                     send_ms: None,
                     wait_ms: None,
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -2274,6 +2368,7 @@ async fn handle_intercepted_request_with_protocol(
                     tls_ms,
                     send_ms: None,
                     wait_ms: Some(wait_ms),
+                    first_byte_ms: None,
                     receive_ms: None,
                     total_ms,
                 });
@@ -2465,6 +2560,7 @@ async fn handle_intercepted_request_with_protocol(
             tls_ms,
             send_ms: None,
             wait_ms: Some(wait_ms),
+            first_byte_ms: Some(total_ms),
             receive_ms: Some(receive_ms),
             total_ms,
         });
@@ -2623,6 +2719,21 @@ async fn handle_intercepted_request_with_protocol(
                 });
             }
         }
+    }
+
+    let downstream_first_byte_ms = start_time.elapsed().as_millis() as u64;
+    if let Some(ref state) = admin_state {
+        state.update_traffic_by_id(req_id, move |record| {
+            record.duration_ms = record.duration_ms.max(downstream_first_byte_ms);
+            if let Some(ref mut timing) = record.timing {
+                timing.first_byte_ms = Some(downstream_first_byte_ms);
+                timing.total_ms = record.duration_ms;
+                if timing.receive_ms.is_some() {
+                    timing.receive_ms =
+                        Some(record.duration_ms.saturating_sub(downstream_first_byte_ms));
+                }
+            }
+        });
     }
 
     let response_body =
@@ -2981,6 +3092,7 @@ async fn handle_intercepted_websocket(
             },
             send_ms: None,
             wait_ms: None,
+            first_byte_ms: Some(total_ms),
             receive_ms: None,
             total_ms,
         });

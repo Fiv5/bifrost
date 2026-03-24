@@ -20,6 +20,7 @@ import {
 } from "../../../components/TrafficDetail/helper/contentType";
 import MessagesPanel from "./MessagesPanel";
 import { getResponseBodyContentUrl } from "../../../api/traffic";
+import { formatDurationDetailed } from "../../../utils/duration";
 
 const { Text } = Typography;
 
@@ -542,9 +543,7 @@ export default function ResponsePanel() {
         </div>
         <div style={styles.statusItem}>
           <span style={styles.statusLabel}>Time:</span>
-          <span style={styles.statusValue}>
-            {duration < 1000 ? `${duration} ms` : `${(duration / 1000).toFixed(2)} s`}
-          </span>
+          <span style={styles.statusValue}>{formatDurationDetailed(duration)}</span>
         </div>
         {responseBody && (
           <div style={styles.statusItem}>

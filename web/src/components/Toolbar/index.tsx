@@ -2,6 +2,8 @@ import { Tag, Switch, Button, Space, theme, Tooltip, Dropdown, Modal } from "ant
 import type { MenuProps } from "antd";
 import {
   DeleteOutlined,
+  ExportOutlined,
+  ImportOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   FilterOutlined,
@@ -24,6 +26,8 @@ interface ToolbarProps {
   onFilterPanelToggle?: () => void;
   detailPanelCollapsed?: boolean;
   onDetailPanelToggle?: () => void;
+  detailDetached?: boolean;
+  onAttachDetailWindow?: () => void;
 }
 
 const filterGroups = {
@@ -48,6 +52,8 @@ export default function Toolbar({
   onFilterPanelToggle,
   detailPanelCollapsed,
   onDetailPanelToggle,
+  detailDetached,
+  onAttachDetailWindow,
 }: ToolbarProps) {
   const { token } = theme.useToken();
 
@@ -237,22 +243,36 @@ export default function Toolbar({
         />
         <Tooltip
           title={
-            detailPanelCollapsed ? "Show detail panel" : "Hide detail panel"
+            detailDetached
+              ? "Attach detail window"
+              : detailPanelCollapsed
+                ? "Show detail panel"
+                : "Hide detail panel"
           }
         >
           <Button
             type="text"
             size="small"
             icon={
-              detailPanelCollapsed ? (
+              detailDetached ? (
+                <ImportOutlined />
+              ) : detailPanelCollapsed ? (
                 <MenuUnfoldOutlined />
               ) : (
                 <MenuFoldOutlined />
               )
             }
-            onClick={onDetailPanelToggle}
+            onClick={detailDetached ? onAttachDetailWindow : onDetailPanelToggle}
+            data-testid="toolbar-detail-toggle"
           />
         </Tooltip>
+        {detailDetached ? (
+          <Tooltip title="Detail is detached to a separate window">
+            <ExportOutlined
+              style={{ color: token.colorPrimary, fontSize: 14 }}
+            />
+          </Tooltip>
+        ) : null}
       </Space>
     </div>
   );

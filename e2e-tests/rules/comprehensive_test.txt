@@ -213,13 +213,10 @@ test-dns.local dns://8.8.8.8
 # 8. 脚本协议 (Script)
 # ============================================
 
-# 8.1 rulesFile - 规则文件引用
-test-rules-file.local rulesFile:///tmp/extra-rules.txt
-
-# 8.2 reqScript - 请求脚本
+# 8.1 reqScript - 请求脚本
 test-req-script.local reqScript:///tmp/req-handler.js
 
-# 8.3 resScript - 响应脚本
+# 8.2 resScript - 响应脚本
 test-res-script.local resScript:///tmp/res-handler.js
 
 # ============================================

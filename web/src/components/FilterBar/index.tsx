@@ -27,6 +27,8 @@ const operatorOptions = [
   { value: "equals", label: "Equals" },
   { value: "regex", label: "Regex" },
   { value: "not_contains", label: "Not Contains" },
+  { value: "is_empty", label: "Is Empty" },
+  { value: "is_not_empty", label: "Is Not Empty" },
 ];
 
 const styles = {
@@ -102,6 +104,18 @@ export default function FilterBar({
   }, [availableClientIps]);
 
   const renderValueInput = (filter: FilterCondition) => {
+    if (filter.operator === "is_empty" || filter.operator === "is_not_empty") {
+      return (
+        <Input
+          value=""
+          disabled
+          style={styles.valueInput}
+          placeholder="No value needed"
+          size="small"
+        />
+      );
+    }
+
     if (filter.field === "client_app") {
       return (
         <AutoComplete

@@ -17,6 +17,13 @@ import {
   ArrowUpOutlined,
 } from "@ant-design/icons";
 import type { TrafficSummary } from "../../types";
+import {
+  formatDurationCompact,
+  formatDurationDetailed,
+  getEffectiveDurationMs,
+  isLiveStreamingTraffic,
+} from "../../utils/duration";
+import { useLiveNow } from "../../hooks/useLiveNow";
 import AppIcon from "../AppIcon";
 import TrafficContextMenu from "./TrafficContextMenu";
 
@@ -260,14 +267,16 @@ const columns: ColumnDef[] = [
     width: 55,
     align: "right",
     render: (record, textSecondary) => (
-      <span
-        style={{
-          fontSize: 11,
-          color: record.duration_ms > 1000 ? "#faad14" : textSecondary,
-        }}
-      >
-        {record.duration_ms > 0 ? `${record.duration_ms}ms` : "-"}
-      </span>
+      <Tooltip title={formatDurationDetailed(record.duration_ms)}>
+        <span
+          style={{
+            fontSize: 11,
+            color: record.duration_ms > 1000 ? "#faad14" : textSecondary,
+          }}
+        >
+          {formatDurationCompact(record.duration_ms)}
+        </span>
+      </Tooltip>
     ),
   },
   {
@@ -361,6 +370,7 @@ const baseCellStyle: CSSProperties = {
 
 interface TableRowProps {
   record: TrafficSummary;
+  liveNow: number;
   isSelected: boolean;
   isMultiSelected: boolean;
   isImported: boolean;
@@ -387,6 +397,7 @@ const areRowPropsEqual = (
   if (prev.isImported !== next.isImported) return false;
   if (prev.translateY !== next.translateY) return false;
   if (prev.rowIndex !== next.rowIndex) return false;
+  if (prev.liveNow !== next.liveNow) return false;
 
   const prevRecord = prev.record;
   const nextRecord = next.record;
@@ -412,6 +423,7 @@ const areRowPropsEqual = (
 
 const TableRow = memo(function TableRow({
   record,
+  liveNow,
   isSelected,
   isMultiSelected,
   isImported,
@@ -428,6 +440,7 @@ const TableRow = memo(function TableRow({
   onRowDoubleClick,
   onRowContextMenu,
 }: TableRowProps) {
+  const durationMs = getEffectiveDurationMs(record, liveNow);
   const rowStyle: CSSProperties = {
     ...baseRowStyle,
     borderBottom: `1px solid ${borderColor}`,
@@ -461,7 +474,20 @@ const TableRow = memo(function TableRow({
           key={col.key}
           style={{ ...baseCellStyle, ...columnStyles[colIndex] }}
         >
-          {col.render(record, textSecondary, rowIndex)}
+          {col.key === "duration_ms" ? (
+            <Tooltip title={formatDurationDetailed(durationMs)}>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: durationMs > 1000 ? "#faad14" : textSecondary,
+                }}
+              >
+                {formatDurationCompact(durationMs)}
+              </span>
+            </Tooltip>
+          ) : (
+            col.render(record, textSecondary, rowIndex)
+          )}
         </div>
       ))}
     </div>
@@ -537,6 +563,11 @@ export default function VirtualTrafficTable({
   onScrollTopChange,
 }: VirtualTrafficTableProps) {
   const { token } = theme.useToken();
+  const hasLiveDuration = useMemo(
+    () => data.some((record) => isLiveStreamingTraffic(record)),
+    [data],
+  );
+  const liveNow = useLiveNow(hasLiveDuration);
   const parentRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const prevDataLengthRef = useRef(data.length);
@@ -965,6 +996,7 @@ export default function VirtualTrafficTable({
                   <TableRow
                     key={virtualRow.key}
                     record={record}
+                    liveNow={liveNow}
                     isSelected={record.id === selectedId}
                     isMultiSelected={selectedIds.includes(record.id)}
                     isImported={record.id.startsWith("OUT-") || record.client_app === "Bifrost Import"}

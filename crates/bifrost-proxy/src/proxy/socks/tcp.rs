@@ -28,7 +28,7 @@ use crate::server::{
 };
 use crate::utils::logging::RequestContext;
 use crate::utils::process_info::{
-    resolve_client_process_async_for_connection,
+    app_policy_process_resolution_retry_config, resolve_client_process_async_for_connection,
     resolve_client_process_async_for_connection_with_retry,
 };
 use crate::utils::tee::store_request_body;
@@ -972,14 +972,25 @@ impl SocksHandler {
                             };
                         if let Some(ref tls_intercept_config) = tls_intercept_config {
                             let is_local_client = self.peer_addr.ip().is_loopback();
-                            let client_process = if is_local_client
-                                && requires_client_app_for_tls_decision(tls_intercept_config)
-                            {
+                            let requires_client_app = is_local_client
+                                && requires_client_app_for_tls_decision(tls_intercept_config);
+                            let client_process = if requires_client_app {
+                                let (max_retries, delay_ms) =
+                                    app_policy_process_resolution_retry_config();
+                                info!(
+                                    target_host,
+                                    target_port,
+                                    peer_addr = %self.peer_addr,
+                                    local_addr = %self.local_addr,
+                                    max_retries,
+                                    delay_ms,
+                                    "SOCKS5 request requires synchronous client process resolution for app policy"
+                                );
                                 resolve_client_process_async_for_connection_with_retry(
                                     &self.peer_addr,
                                     &self.local_addr,
-                                    10,
-                                    20,
+                                    max_retries,
+                                    delay_ms,
                                 )
                                 .await
                             } else {
@@ -995,6 +1006,37 @@ impl SocksHandler {
                                 "SOCKS5: Client process for {}:{} - app={:?}",
                                 target_host, target_port, client_app
                             );
+
+                            if requires_client_app {
+                                match client_process.as_ref() {
+                                    Some(process) => info!(
+                                        target_host,
+                                        target_port,
+                                        peer_addr = %self.peer_addr,
+                                        local_addr = %self.local_addr,
+                                        client_app = %process.name,
+                                        client_pid = process.pid,
+                                        "SOCKS5 synchronous client process resolution succeeded"
+                                    ),
+                                    None => {
+                                        if let Some(ref state) = self.admin_state {
+                                            state
+                                                .metrics_collector
+                                                .increment_client_process_resolution_failure();
+                                            state
+                                                .metrics_collector
+                                                .increment_client_process_policy_unknown_decision();
+                                        }
+                                        warn!(
+                                            target_host,
+                                            target_port,
+                                            peer_addr = %self.peer_addr,
+                                            local_addr = %self.local_addr,
+                                            "SOCKS5 app-based TLS decision fell back because client process is unknown"
+                                        );
+                                    }
+                                }
+                            }
 
                             let do_intercept = crate::proxy::http::should_intercept_tls_for_client(
                                 target_host,

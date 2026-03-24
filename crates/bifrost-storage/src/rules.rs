@@ -5,7 +5,7 @@ use bifrost_core::bifrost_file::{
     BifrostFileParser, BifrostFileWriter, RuleFileMeta as BifrostRuleFileMeta,
     RuleFileOptions as BifrostRuleFileOptions,
 };
-use bifrost_core::{BifrostError, Result};
+use bifrost_core::{normalize_rule_content, BifrostError, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,12 +186,22 @@ impl RulesStorage {
             let content = fs::read_to_string(&bifrost_path)?;
             let file = BifrostFileParser::parse_rules(&content)
                 .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
-            Ok(RuleFile::from_bifrost(file.meta, file.content))
+            let normalized_content = normalize_rule_content(&file.content);
+            let rule = RuleFile::from_bifrost(file.meta, normalized_content);
+            if rule.content != file.content {
+                self.save(&rule)?;
+            }
+            Ok(rule)
         } else if raw_bifrost_path.exists() {
             let content = fs::read_to_string(&raw_bifrost_path)?;
             let file = BifrostFileParser::parse_rules(&content)
                 .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
-            Ok(RuleFile::from_bifrost(file.meta, file.content))
+            let normalized_content = normalize_rule_content(&file.content);
+            let rule = RuleFile::from_bifrost(file.meta, normalized_content);
+            if rule.content != file.content {
+                self.save(&rule)?;
+            }
+            Ok(rule)
         } else if legacy_path.exists() {
             #[derive(Deserialize)]
             struct LegacyRuleFile {
@@ -232,7 +242,8 @@ impl RulesStorage {
     pub fn save(&self, rule: &RuleFile) -> Result<()> {
         let path = self.rule_path(&rule.name);
         let meta = rule.to_bifrost_meta();
-        let content = BifrostFileWriter::write_rules(&meta, &rule.content);
+        let normalized_content = normalize_rule_content(&rule.content);
+        let content = BifrostFileWriter::write_rules(&meta, &normalized_content);
         fs::write(&path, content)?;
         Ok(())
     }

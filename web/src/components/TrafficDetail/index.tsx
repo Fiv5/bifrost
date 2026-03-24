@@ -5,6 +5,7 @@ import type {
   TrafficRecord,
   DisplayFormat,
   RecordContentType,
+  SSEEvent,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
 import {
@@ -23,6 +24,8 @@ import { QueryView } from "./panes/Query";
 import { Messages } from "./panes/Messages";
 import ScriptLogsPane from "./panes/ScriptLogs";
 import { getResponseBodyContentUrl } from "../../api/traffic";
+import { parseSseTextToEvents } from "../VirtualMessageViewer";
+import { assembleOpenAiLikeSse } from "./helper/openAiLikeSse";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -30,6 +33,8 @@ interface TrafficDetailProps {
   responseBody: string | null;
   loading?: boolean;
   error?: string | null;
+  onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
+  onResponseBodyChange?: ((body: string | null, recordId: string) => void) | undefined;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -51,7 +56,7 @@ const hasSetCookies = (headers: [string, string][] | null): boolean => {
   return headers.some(([name]) => name.toLowerCase() === "set-cookie");
 };
 
-const COLLAPSED_HEIGHT = 32;
+const COLLAPSED_HEIGHT = 28;
 
 const styles: Record<string, CSSProperties> = {
   container: {
@@ -83,7 +88,14 @@ export default function TrafficDetail({
   responseBody,
   loading,
   error,
+  onOpenInNewWindow,
+  onResponseBodyChange,
 }: TrafficDetailProps) {
+  const [expandedRequestPanelSize, setExpandedRequestPanelSize] = useState<
+    number | string
+  >("50%");
+  const [liveSseEvents, setLiveSseEvents] = useState<SSEEvent[]>([]);
+  const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -115,6 +127,8 @@ export default function TrafficDetail({
 
   useEffect(() => {
     setLiveSseCount(null);
+    setLiveSseEvents([]);
+    setHasAutoOpenedOpenAiTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -159,20 +173,6 @@ export default function TrafficDetail({
     requestContentType,
     requestDisplayFormat,
     setRequestDisplayFormat,
-  ]);
-
-  useEffect(() => {
-    if (
-      responseDisplayFormat === "Tree" &&
-      shouldDisableJsonStructuredView(responseContentType, responseBody)
-    ) {
-      setResponseDisplayFormat("HighLight");
-    }
-  }, [
-    responseBody,
-    responseContentType,
-    responseDisplayFormat,
-    setResponseDisplayFormat,
   ]);
 
   const handleRequestTabChange = useCallback(
@@ -330,9 +330,42 @@ export default function TrafficDetail({
     requestDisplayFormat,
   ]);
 
+  const openAiLikeAssembly = useMemo(() => {
+    if (!record?.is_sse) {
+      return null;
+    }
+
+    const responseSseEvents = liveSseEvents.length > 0
+      ? liveSseEvents
+      : responseBody
+        ? parseSseTextToEvents(responseBody)
+        : [];
+    return assembleOpenAiLikeSse(responseSseEvents);
+  }, [liveSseEvents, record?.is_sse, responseBody]);
+
+  const responsePanelContentType = responseTab === "OpenAI"
+    ? openAiLikeAssembly?.contentType ?? "Other"
+    : responseContentType;
+  const responsePanelBodyData = responseTab === "OpenAI"
+    ? openAiLikeAssembly?.body ?? null
+    : responseBody;
+
+  useEffect(() => {
+    if (
+      responseDisplayFormat === "Tree" &&
+      shouldDisableJsonStructuredView(responsePanelContentType, responsePanelBodyData)
+    ) {
+      setResponseDisplayFormat("HighLight");
+    }
+  }, [
+    responseDisplayFormat,
+    responsePanelBodyData,
+    responsePanelContentType,
+    setResponseDisplayFormat,
+  ]);
+
   const responseTabs = useMemo(() => {
     if (!record) return [];
-
     const hasMessages = record.is_websocket || record.is_sse;
     const socketCount = record.socket_status?.frame_count ?? record.frame_count ?? 0;
     const messageCount = record.is_sse ? liveSseCount ?? socketCount : socketCount;
@@ -383,6 +416,23 @@ export default function TrafficDetail({
             searchValue={responseSearch}
             onSearch={setResponseSearch}
             onSseCountChange={record.is_sse ? setLiveSseCount : undefined}
+            onSseEventsChange={record.is_sse ? setLiveSseEvents : undefined}
+            responseBodyOverride={responseBody}
+            onResponseBodyChange={onResponseBodyChange}
+          />
+        ),
+      },
+      {
+        key: "OpenAI",
+        label: "OpenAI",
+        enable: !!openAiLikeAssembly,
+        children: (
+          <Body
+            data={openAiLikeAssembly?.body}
+            contentType={openAiLikeAssembly?.contentType ?? "Other"}
+            searchValue={responseSearch}
+            displayFormat={responseDisplayFormat}
+            onSearch={setResponseSearch}
           />
         ),
       },
@@ -432,12 +482,33 @@ export default function TrafficDetail({
   }, [
     record,
     liveSseCount,
+    openAiLikeAssembly,
     responseBody,
+    onResponseBodyChange,
     canPreviewResponseImage,
     responseSearch,
     setResponseSearch,
     responseContentType,
     responseDisplayFormat,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!openAiLikeAssembly) return;
+    if (hasAutoOpenedOpenAiTab) return;
+    if (responseTab === "OpenAI") {
+      setHasAutoOpenedOpenAiTab(true);
+      return;
+    }
+
+    setResponseTab("OpenAI");
+    setHasAutoOpenedOpenAiTab(true);
+  }, [
+    hasAutoOpenedOpenAiTab,
+    openAiLikeAssembly,
+    record?.is_sse,
+    responseTab,
+    setResponseTab,
   ]);
 
   useEffect(() => {
@@ -494,6 +565,26 @@ export default function TrafficDetail({
     setResponseTab,
   ]);
 
+  const hasCollapsed = requestCollapsed || responseCollapsed;
+  const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
+  const requestPanelProps = hasCollapsed
+    ? { size: requestPanelSize, resizable: false }
+    : { min: "20%", max: "80%", defaultSize: expandedRequestPanelSize };
+  const responsePanelProps = hasCollapsed
+    ? { size: responsePanelSize, resizable: false }
+    : {};
+
+  const handleResizeEnd = useCallback(
+    (sizes: number[]) => {
+      if (hasCollapsed || sizes.length < 2) {
+        return;
+      }
+      setExpandedRequestPanelSize(sizes[0]);
+    },
+    [hasCollapsed],
+  );
+
   if (!record) {
     if (loading) {
       return (
@@ -516,21 +607,14 @@ export default function TrafficDetail({
     );
   }
 
-  const hasCollapsed = requestCollapsed || responseCollapsed;
-  const requestPanelSize = requestCollapsed ? COLLAPSED_HEIGHT : undefined;
-  const responsePanelSize = responseCollapsed ? COLLAPSED_HEIGHT : undefined;
-  const requestPanelProps = hasCollapsed
-    ? { size: requestPanelSize, resizable: false }
-    : { min: "20%", max: "80%", defaultSize: "50%" };
-  const responsePanelProps = hasCollapsed
-    ? { size: responsePanelSize, resizable: false }
-    : {};
-
   return (
     <div style={styles.container} data-testid="traffic-detail">
-      <Header record={record} />
+      <Header record={record} onOpenInNewWindow={onOpenInNewWindow} />
       <div style={styles.splitterWrapper}>
-        <Splitter layout="vertical">
+        <Splitter
+          layout="vertical"
+          onResizeEnd={handleResizeEnd}
+        >
           <Splitter.Panel {...requestPanelProps}>
             <div style={styles.panelWrapper}>
               <Panel
@@ -546,6 +630,7 @@ export default function TrafficDetail({
                 bodyData={requestBody}
                 collapsed={requestCollapsed}
                 onCollapsedChange={handleRequestCollapsedChange}
+                keepAliveTabs={["Body"]}
               />
             </div>
           </Splitter.Panel>
@@ -560,10 +645,12 @@ export default function TrafficDetail({
                 onSearch={setResponseSearch}
                 displayFormat={responseDisplayFormat}
                 onDisplayFormatChange={handleResponseDisplayFormatChange}
-                contentType={responseContentType}
-                bodyData={responseBody}
+                contentType={responsePanelContentType}
+                bodyData={responsePanelBodyData}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
+                keepAliveTabs={["Body", "Messages", "OpenAI"]}
+                bodyFormatTabs={["Body", "OpenAI"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>

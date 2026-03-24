@@ -45,6 +45,26 @@ fn is_pending_traffic_record(record: &TrafficSummaryCompact) -> bool {
             && record.ss.as_ref().map(|s| s.is_open).unwrap_or(false))
 }
 
+fn dedupe_compact_records_keep_latest(
+    records: Vec<TrafficSummaryCompact>,
+) -> Vec<TrafficSummaryCompact> {
+    if records.len() <= 1 {
+        return records;
+    }
+
+    let mut seen = HashSet::with_capacity(records.len());
+    let mut deduped_reversed = Vec::with_capacity(records.len());
+
+    for record in records.into_iter().rev() {
+        if seen.insert(record.id.clone()) {
+            deduped_reversed.push(record);
+        }
+    }
+
+    deduped_reversed.reverse();
+    deduped_reversed
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum PushMessage {
@@ -543,6 +563,9 @@ impl PushManager {
         server_total: usize,
         server_sequence: u64,
     ) -> bool {
+        let inserts = dedupe_compact_records_keep_latest(inserts);
+        let updates = dedupe_compact_records_keep_latest(updates);
+
         if inserts.is_empty() && updates.is_empty() {
             return true;
         }
@@ -1904,5 +1927,46 @@ mod tests {
         ));
 
         assert_eq!(client.get_subscription().last_sequence, Some(200));
+    }
+
+    #[test]
+    fn send_traffic_delta_dedupes_updates_by_id_keep_latest() {
+        let state = Arc::new(AdminState::new(9916));
+        let manager = PushManager::new(state);
+        let (client, mut receiver) = PushClient::new(
+            "push-client-dedupe".to_string(),
+            ClientSubscription {
+                need_traffic: true,
+                ..Default::default()
+            },
+        );
+        let client = Arc::new(client);
+
+        let mut stale = compact(10, "same-id");
+        stale.res_sz = 0;
+        stale.fc = 0;
+
+        let mut latest = compact(10, "same-id");
+        latest.res_sz = 1234;
+        latest.fc = 42;
+
+        assert!(manager.send_traffic_delta_to_client(
+            &client,
+            vec![],
+            vec![stale, latest.clone()],
+            false,
+            1,
+            10,
+        ));
+
+        let message = receiver.try_recv().expect("expected traffic delta");
+        let PushMessage::TrafficDelta(data) = message else {
+            panic!("expected traffic delta");
+        };
+
+        assert_eq!(data.updates.len(), 1);
+        assert_eq!(data.updates[0].id, "same-id");
+        assert_eq!(data.updates[0].res_sz, latest.res_sz);
+        assert_eq!(data.updates[0].fc, latest.fc);
     }
 }

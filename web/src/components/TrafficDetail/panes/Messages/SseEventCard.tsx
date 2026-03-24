@@ -3,7 +3,6 @@ import { Typography, Tag, Button, Space, Tooltip, theme } from 'antd';
 import {
   CopyOutlined,
   ExpandOutlined,
-  CompressOutlined,
   CheckOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -17,7 +16,7 @@ hljs.registerLanguage('json', json);
 const { Text } = Typography;
 const MAX_SSE_EVENT_JSON_PRETTY_LENGTH = 8 * 1024;
 const MAX_SSE_EVENT_HIGHLIGHT_LENGTH = 16 * 1024;
-const MAX_SSE_EVENT_EXPANDABLE_LINES = 8;
+const MAX_SSE_EVENT_EXPANDABLE_LINES = 20;
 
 const parseJson = (text: string): { parsed: unknown; isJson: boolean } => {
   try {
@@ -82,16 +81,14 @@ interface SseEventCardProps {
   event: SSEEvent;
   index: number;
   searchValue?: string;
-  expanded: boolean;
-  onToggle: () => void;
+  onOpenDetail: () => void;
 }
 
 export const SseEventCard = ({
   event,
   index,
   searchValue,
-  expanded,
-  onToggle,
+  onOpenDetail,
 }: SseEventCardProps) => {
   const { token } = theme.useToken();
   const [copied, setCopied] = useState(false);
@@ -144,7 +141,7 @@ export const SseEventCard = ({
     return count;
   }, [formattedContent]);
 
-  const shouldTruncate = !expanded && lineCount > MAX_SSE_EVENT_EXPANDABLE_LINES;
+  const shouldTruncate = lineCount > MAX_SSE_EVENT_EXPANDABLE_LINES;
   const displayContent = shouldTruncate
     ? formattedContent.split('\n').slice(0, MAX_SSE_EVENT_EXPANDABLE_LINES).join('\n') + '\n...'
     : formattedContent;
@@ -220,68 +217,78 @@ export const SseEventCard = ({
               style={{ width: 24, height: 24 }}
             />
           </Tooltip>
-          {lineCount > MAX_SSE_EVENT_EXPANDABLE_LINES && (
-            <Tooltip title={expanded ? 'Collapse' : 'Expand'}>
-              <Button
-                type="text"
-                size="small"
-                icon={expanded ? <CompressOutlined /> : <ExpandOutlined />}
-                onClick={onToggle}
-                data-testid="sse-event-toggle"
-                style={{ width: 24, height: 24 }}
-              />
-            </Tooltip>
-          )}
         </Space>
       </div>
       <div style={{ padding: 0 }}>
         {eventData.data ? (
-          isJson && highlightedContent ? (
-            <pre
-              style={{
-                margin: 0,
-                fontSize: 12,
-                fontFamily: 'monospace',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-                lineHeight: 1.5,
-                backgroundColor: token.colorFillQuaternary,
-                padding: 8,
-                borderRadius: 4,
-              }}
-            >
-              <code
-                className="hljs"
-                dangerouslySetInnerHTML={{
-                  __html: searchValue
-                    ? shouldTruncate
+          <div>
+            {isJson && highlightedContent ? (
+              <pre
+                style={{
+                  margin: 0,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                  lineHeight: 1.5,
+                  backgroundColor: token.colorFillQuaternary,
+                  padding: 8,
+                  borderRadius: 4,
+                }}
+              >
+                <code
+                  className="hljs"
+                  dangerouslySetInnerHTML={{
+                    __html: searchValue
                       ? highlightText(displayContent, searchValue)
-                      : highlightText(formattedContent, searchValue)
-                    : shouldTruncate
-                      ? highlightJson(displayContent)
-                      : highlightedContent,
+                      : shouldTruncate
+                        ? highlightJson(displayContent)
+                        : highlightedContent,
+                  }}
+                />
+              </pre>
+            ) : (
+              <pre
+                style={{
+                  margin: 0,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                  lineHeight: 1.5,
+                  color: token.colorText,
                 }}
-              />
-            </pre>
-          ) : (
-            <pre
-              style={{
-                margin: 0,
-                fontSize: 12,
-                fontFamily: 'monospace',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-                lineHeight: 1.5,
-                color: token.colorText,
-              }}
-            >
-              <code
-                dangerouslySetInnerHTML={{
-                  __html: highlightText(displayContent, searchValue),
+              >
+                <code
+                  dangerouslySetInnerHTML={{
+                    __html: highlightText(displayContent, searchValue),
+                  }}
+                />
+              </pre>
+            )}
+            {shouldTruncate && (
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-start',
+                  padding: '0 8px 8px',
                 }}
-              />
-            </pre>
-          )
+              >
+                <Button
+                  type="text"
+                  size="small"
+                  onClick={onOpenDetail}
+                  icon={<ExpandOutlined />}
+                  data-testid="sse-event-toggle"
+                  style={{
+                    height: 20,
+                    width: 24,
+                    padding: 0,
+                  }}
+                />
+              </div>
+            )}
+          </div>
         ) : (
           <Text type="secondary" style={{ fontSize: 12, fontStyle: 'italic' }}>
             (empty data)

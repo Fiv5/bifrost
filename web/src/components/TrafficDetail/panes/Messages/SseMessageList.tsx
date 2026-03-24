@@ -33,6 +33,7 @@ interface SseMessageListProps {
   externalNext?: number;
   onMatchCountChange?: (total: number) => void;
   onMatchNavigate?: (next: number) => void;
+  onOpenDetail?: (event: SSEEvent) => void;
 }
 
 export const SseMessageList = ({
@@ -50,11 +51,11 @@ export const SseMessageList = ({
   externalNext,
   onMatchCountChange,
   onMatchNavigate,
+  onOpenDetail,
 }: SseMessageListProps) => {
   const { token } = theme.useToken();
   const parentRef = useRef<HTMLDivElement>(null);
   const [currentMatch, setCurrentMatch] = useState<number>(-1);
-  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const [isAtTop, setIsAtTop] = useState(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -225,17 +226,6 @@ export const SseMessageList = ({
   const matchInfo = matchedIndices.length > 0
     ? `${currentMatch >= 0 ? currentMatch + 1 : 0}/${matchedIndices.length}`
     : null;
-
-  useEffect(() => {
-    rowVirtualizer.measure();
-  }, [expandedMap, rowVirtualizer]);
-
-  const toggleExpanded = useCallback((key: string) => {
-    setExpandedMap((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
-  }, []);
 
   const stateLabel = (() => {
     if (connectionState === 'open') return 'Live';
@@ -413,8 +403,7 @@ export const SseMessageList = ({
                       event={event}
                       index={virtualRow.index}
                       searchValue={searchMode === 'highlight' ? searchQuery : undefined}
-                      expanded={!!expandedMap[key]}
-                      onToggle={() => toggleExpanded(key)}
+                      onOpenDetail={() => onOpenDetail?.(event)}
                     />
                   </div>
                 );

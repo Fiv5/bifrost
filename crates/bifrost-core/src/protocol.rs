@@ -18,6 +18,7 @@ pub enum Protocol {
     Tpl,
     RawFile,
     Delete,
+    Skip,
 
     // 请求修改
     ReqHeaders,
@@ -73,7 +74,6 @@ pub enum Protocol {
     UrlReplace,
 
     // 脚本插件
-    RulesFile,
     ReqScript,
     ResScript,
     Decode,
@@ -127,20 +127,16 @@ pub const MULTI_MATCH_PROTOCOLS: &[Protocol] = &[
     Protocol::HtmlPrepend,
     Protocol::JsPrepend,
     Protocol::CssPrepend,
-    Protocol::RulesFile,
     Protocol::ReqScript,
     Protocol::ResScript,
     Protocol::Decode,
     Protocol::Delete,
+    Protocol::Skip,
 ];
 
 pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
-    map.insert("ruleFile", "rulesFile");
-    map.insert("ruleScript", "rulesFile");
-    map.insert("rulesScript", "rulesFile");
-    map.insert("reqRules", "rulesFile");
-    map.insert("resRules", "resScript");
+    map.insert("ignore", "passthrough");
     map.insert("pathReplace", "urlReplace");
     map.insert("download", "attachment");
     map.insert("http-proxy", "proxy");
@@ -152,6 +148,94 @@ pub fn protocol_aliases() -> HashMap<&'static str, &'static str> {
     map.insert("reqMerge", "params");
     map.insert("css", "cssAppend");
     map
+}
+
+fn normalize_legacy_rule_line(line: &str) -> String {
+    let comment_start = line.find('#').unwrap_or(line.len());
+    let (body, comment) = line.split_at(comment_start);
+    let trimmed = body.trim();
+
+    if trimmed.is_empty() {
+        return line.to_string();
+    }
+
+    if let Some(pattern) = trimmed.strip_prefix("ignore://") {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return line.to_string();
+        }
+        let mut normalized = format!("{pattern} passthrough://");
+        if !comment.is_empty() {
+            normalized.push_str(comment);
+        }
+        return normalized;
+    }
+
+    let mut changed = false;
+    let tokens: Vec<String> = body
+        .split_whitespace()
+        .map(|token| {
+            if token.starts_with("ignore://") {
+                changed = true;
+                "passthrough://".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect();
+
+    if !changed {
+        return line.to_string();
+    }
+
+    let mut normalized = tokens.join(" ");
+    if !comment.is_empty() {
+        normalized.push_str(comment);
+    }
+    normalized
+}
+
+pub fn normalize_rule_content(content: &str) -> String {
+    let mut normalized = Vec::new();
+    let mut in_fenced_block = false;
+    let mut in_line_block = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if in_line_block {
+            normalized.push(line.to_string());
+            if trimmed == "`" {
+                in_line_block = false;
+            }
+            continue;
+        }
+
+        if !in_fenced_block && trimmed == "line`" {
+            in_line_block = true;
+            normalized.push(line.to_string());
+            continue;
+        }
+
+        if trimmed.starts_with("```") {
+            in_fenced_block = !in_fenced_block;
+            normalized.push(line.to_string());
+            continue;
+        }
+
+        if in_fenced_block {
+            normalized.push(line.to_string());
+            continue;
+        }
+
+        normalized.push(normalize_legacy_rule_line(line));
+    }
+
+    let mut result = normalized.join("\n");
+    if content.ends_with('\n') {
+        result.push('\n');
+    }
+    result
 }
 
 lazy_static::lazy_static! {
@@ -205,6 +289,7 @@ impl Protocol {
             "tpl" => Some(Protocol::Tpl),
             "rawfile" => Some(Protocol::RawFile),
             "delete" => Some(Protocol::Delete),
+            "skip" => Some(Protocol::Skip),
             "referer" => Some(Protocol::Referer),
             "auth" => Some(Protocol::Auth),
             "ua" => Some(Protocol::Ua),
@@ -216,7 +301,6 @@ impl Protocol {
             "method" => Some(Protocol::Method),
             "cache" => Some(Protocol::Cache),
             "attachment" => Some(Protocol::Attachment),
-            "rulesFile" => Some(Protocol::RulesFile),
             "reqScript" => Some(Protocol::ReqScript),
             "resScript" => Some(Protocol::ResScript),
             "decode" => Some(Protocol::Decode),
@@ -278,6 +362,7 @@ impl Protocol {
             Protocol::Tpl => "tpl",
             Protocol::RawFile => "rawfile",
             Protocol::Delete => "delete",
+            Protocol::Skip => "skip",
             Protocol::Referer => "referer",
             Protocol::Auth => "auth",
             Protocol::Ua => "ua",
@@ -289,7 +374,6 @@ impl Protocol {
             Protocol::Method => "method",
             Protocol::Cache => "cache",
             Protocol::Attachment => "attachment",
-            Protocol::RulesFile => "rulesFile",
             Protocol::ReqScript => "reqScript",
             Protocol::ResScript => "resScript",
             Protocol::Decode => "decode",
@@ -336,9 +420,10 @@ impl Protocol {
 
     pub fn category(&self) -> ProtocolCategory {
         match self {
-            Protocol::TlsIntercept | Protocol::TlsPassthrough | Protocol::Passthrough => {
-                ProtocolCategory::Control
-            }
+            Protocol::TlsIntercept
+            | Protocol::TlsPassthrough
+            | Protocol::Passthrough
+            | Protocol::Skip => ProtocolCategory::Control,
 
             Protocol::ReplaceStatus
             | Protocol::StatusCode
@@ -385,7 +470,6 @@ impl Protocol {
             | Protocol::Referer
             | Protocol::UrlParams
             | Protocol::Params
-            | Protocol::RulesFile
             | Protocol::ReqScript
             | Protocol::Dns
             | Protocol::Http3 => ProtocolCategory::Request,
@@ -459,6 +543,7 @@ pub const ALL_PROTOCOLS: [Protocol; 67] = [
     Protocol::Tpl,
     Protocol::RawFile,
     Protocol::Delete,
+    Protocol::Skip,
     Protocol::Referer,
     Protocol::Auth,
     Protocol::Ua,
@@ -470,7 +555,6 @@ pub const ALL_PROTOCOLS: [Protocol; 67] = [
     Protocol::Method,
     Protocol::Cache,
     Protocol::Attachment,
-    Protocol::RulesFile,
     Protocol::ReqScript,
     Protocol::ResScript,
     Protocol::Decode,
@@ -540,6 +624,7 @@ mod tests {
             "tpl",
             "rawfile",
             "delete",
+            "skip",
             "referer",
             "auth",
             "ua",
@@ -551,7 +636,6 @@ mod tests {
             "method",
             "cache",
             "attachment",
-            "rulesFile",
             "reqScript",
             "resScript",
             "decode",
@@ -614,11 +698,7 @@ mod tests {
 
     #[test]
     fn test_alias_resolution() {
-        assert_eq!(Protocol::resolve_alias("ruleFile"), "rulesFile");
-        assert_eq!(Protocol::resolve_alias("ruleScript"), "rulesFile");
-        assert_eq!(Protocol::resolve_alias("rulesScript"), "rulesFile");
-        assert_eq!(Protocol::resolve_alias("reqRules"), "rulesFile");
-        assert_eq!(Protocol::resolve_alias("resRules"), "resScript");
+        assert_eq!(Protocol::resolve_alias("ignore"), "passthrough");
         assert_eq!(Protocol::resolve_alias("pathReplace"), "urlReplace");
         assert_eq!(Protocol::resolve_alias("download"), "attachment");
         assert_eq!(Protocol::resolve_alias("http-proxy"), "proxy");
@@ -652,6 +732,29 @@ mod tests {
 
         let resolved = Protocol::resolve_alias("h3");
         assert_eq!(Protocol::parse(resolved), Some(Protocol::Http3));
+
+        let resolved = Protocol::resolve_alias("ignore");
+        assert_eq!(Protocol::parse(resolved), Some(Protocol::Passthrough));
+    }
+
+    #[test]
+    fn test_normalize_rule_content_converts_ignore_operations() {
+        let content = "example.com ignore://host|rule\nignore://*.png\n";
+        let normalized = normalize_rule_content(content);
+        assert_eq!(
+            normalized,
+            "example.com passthrough://\n*.png passthrough://\n"
+        );
+    }
+
+    #[test]
+    fn test_normalize_rule_content_keeps_blocks_unchanged() {
+        let content = "``` example\nignore://*.png\n```\nexample.com ignore://*\n";
+        let normalized = normalize_rule_content(content);
+        assert_eq!(
+            normalized,
+            "``` example\nignore://*.png\n```\nexample.com passthrough://\n"
+        );
     }
 
     #[test]
@@ -685,7 +788,6 @@ mod tests {
         assert!(Protocol::HtmlPrepend.is_multi_match());
         assert!(Protocol::JsPrepend.is_multi_match());
         assert!(Protocol::CssPrepend.is_multi_match());
-        assert!(Protocol::RulesFile.is_multi_match());
         assert!(Protocol::ReqScript.is_multi_match());
         assert!(Protocol::ResScript.is_multi_match());
         assert!(Protocol::Delete.is_multi_match());
@@ -724,7 +826,6 @@ mod tests {
         assert_eq!(Protocol::Referer.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::UrlParams.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Params.category(), ProtocolCategory::Request);
-        assert_eq!(Protocol::RulesFile.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::ReqScript.category(), ProtocolCategory::Request);
         assert_eq!(Protocol::Http3.category(), ProtocolCategory::Request);
     }
@@ -824,7 +925,7 @@ mod tests {
     #[test]
     fn test_all_protocols_function() {
         let all = Protocol::all();
-        assert_eq!(all.len(), 67);
+        assert_eq!(all, &ALL_PROTOCOLS);
         assert!(all.contains(&Protocol::Host));
         assert!(all.contains(&Protocol::Http));
         assert!(all.contains(&Protocol::Https));
@@ -839,12 +940,20 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_aliases_count() {
-        assert_eq!(PROTOCOL_ALIASES.len(), 15);
+    fn test_protocol_aliases_are_parseable() {
+        for (alias, canonical) in PROTOCOL_ALIASES.iter() {
+            assert_ne!(alias, canonical);
+            assert!(
+                Protocol::parse(canonical).is_some(),
+                "Alias {alias} resolves to unknown protocol {canonical}"
+            );
+        }
     }
 
     #[test]
-    fn test_multi_match_protocols_count() {
-        assert_eq!(MULTI_MATCH_PROTOCOLS.len(), 34);
+    fn test_multi_match_protocols_are_unique() {
+        let unique: std::collections::HashSet<_> = MULTI_MATCH_PROTOCOLS.iter().copied().collect();
+        assert_eq!(unique.len(), MULTI_MATCH_PROTOCOLS.len());
+        assert!(MULTI_MATCH_PROTOCOLS.iter().all(Protocol::is_multi_match));
     }
 }

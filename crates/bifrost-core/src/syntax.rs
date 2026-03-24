@@ -83,6 +83,7 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
         Protocol::Tpl => "Template response with variable substitution",
         Protocol::RawFile => "Return raw file content",
         Protocol::Delete => "Delete/block the request",
+        Protocol::Skip => "Skip matched rules by pattern or operation and continue matching",
         Protocol::ReqHeaders => "Modify request headers",
         Protocol::ReqBody => "Set request body",
         Protocol::ReqPrepend => "Prepend content to request body",
@@ -128,7 +129,6 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
         Protocol::CssPrepend => "Prepend content to CSS",
         Protocol::CssBody => "Replace CSS body",
         Protocol::UrlReplace => "Replace URL path",
-        Protocol::RulesFile => "Load rules from file",
         Protocol::ReqScript => "Execute request script",
         Protocol::ResScript => "Execute response script",
         Protocol::Decode => "Execute decode script (for request/response decode)",
@@ -146,7 +146,7 @@ fn get_protocol_value_type(protocol: Protocol) -> &'static str {
         Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss | Protocol::Redirect => {
             "url"
         }
-        Protocol::File | Protocol::Tpl | Protocol::RawFile | Protocol::RulesFile => "file_path",
+        Protocol::File | Protocol::Tpl | Protocol::RawFile => "file_path",
         Protocol::ReqScript | Protocol::ResScript | Protocol::Decode => "script_name",
         Protocol::ReqHeaders
         | Protocol::ResHeaders
@@ -171,6 +171,7 @@ fn get_protocol_value_type(protocol: Protocol) -> &'static str {
         Protocol::Attachment => "filename",
         Protocol::Dns => "dns_server",
         Protocol::Delete
+        | Protocol::Skip
         | Protocol::ReqCors
         | Protocol::ResCors
         | Protocol::Http3
@@ -208,6 +209,7 @@ fn get_protocol_example(protocol: Protocol) -> &'static str {
         Protocol::Tpl => "tpl:///path/to/template.tpl",
         Protocol::RawFile => "rawfile:///path/to/raw.txt",
         Protocol::Delete => "delete://",
+        Protocol::Skip => "skip://pattern=example.com/api",
         Protocol::ReqHeaders => "reqHeaders://(X-Custom: value)",
         Protocol::ReqBody => "reqBody://{\"key\": \"value\"}",
         Protocol::ReqPrepend => "reqPrepend://prefix-",
@@ -253,7 +255,6 @@ fn get_protocol_example(protocol: Protocol) -> &'static str {
         Protocol::CssPrepend => "cssPrepend:///* prepended */",
         Protocol::CssBody => "cssBody://* { margin: 0; }",
         Protocol::UrlReplace => "urlReplace://old-path/new-path/",
-        Protocol::RulesFile => "rulesFile:///path/to/rules.txt",
         Protocol::ReqScript => "reqScript:///path/to/script.js",
         Protocol::ResScript => "resScript:///path/to/script.js",
         Protocol::Decode => "decode://my-decode-script",
@@ -288,6 +289,7 @@ pub fn get_all_protocols() -> Vec<ProtocolInfo> {
         Protocol::Tpl,
         Protocol::RawFile,
         Protocol::Delete,
+        Protocol::Skip,
         Protocol::ReqHeaders,
         Protocol::ReqBody,
         Protocol::ReqPrepend,
@@ -333,7 +335,6 @@ pub fn get_all_protocols() -> Vec<ProtocolInfo> {
         Protocol::CssPrepend,
         Protocol::CssBody,
         Protocol::UrlReplace,
-        Protocol::RulesFile,
         Protocol::ReqScript,
         Protocol::ResScript,
         Protocol::Dns,

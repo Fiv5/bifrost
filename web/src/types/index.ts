@@ -29,6 +29,7 @@ export interface RequestTiming {
   tls_ms?: number;
   send_ms?: number;
   wait_ms?: number;
+  first_byte_ms?: number;
   receive_ms?: number;
   total_ms: number;
 }

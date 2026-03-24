@@ -1,0 +1,11 @@
+# 测试目标: 验证 sniCallback 支持无参插件名和带 sniValue 参数的插件调用形式。
+
+# SNI-01: 无参插件
+sni-basic.local sniCallback://test-plugin
+
+# SNI-02: 带 sniValue 参数
+sni-arg.local sniCallback://test-plugin(custom-sni)
+
+# 测试用例:
+# 1. sni-basic.local 应触发 test-plugin 的证书回调
+# 2. sni-arg.local 应把 custom-sni 透传给插件侧 originalReq.sniValue
