@@ -1,9 +1,13 @@
 use std::future::Future;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use bifrost_admin::{AdminState, BodyRef, BodyStreamWriter, FrameDirection, TrafficType};
+use bifrost_admin::{
+    assemble_openai_like_response_body_from_text, AdminState, BodyRef, BodyStreamWriter,
+    FrameDirection, TrafficType, MAX_OPENAI_LIKE_SSE_ASSEMBLY_INPUT_BYTES,
+};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming};
@@ -16,6 +20,7 @@ use crate::transform::decompress::decompress_body_with_limit;
 // Keep hot-path metrics updates coarse-grained so high-throughput relays do
 // not burn CPU on bookkeeping.
 const BODY_TRAFFIC_FLUSH_BYTES: usize = 1024 * 1024;
+const MAX_DERIVED_OPENAI_LIKE_SSE_BODY_BYTES: usize = MAX_OPENAI_LIKE_SSE_ASSEMBLY_INPUT_BYTES;
 
 fn record_first_downstream_byte(state: &AdminState, record_id: &str) {
     state.update_traffic_by_id(record_id, move |record| {
@@ -48,6 +53,41 @@ fn persist_socket_summary(state: &AdminState, record_id: &str, total_bytes: usiz
             record.socket_status = Some(s.clone());
         }
     });
+}
+
+fn derive_openai_like_sse_body_ref(
+    state: &AdminState,
+    record_id: &str,
+    response_body_ref: &Option<BodyRef>,
+) -> Option<BodyRef> {
+    let body_ref = response_body_ref.as_ref()?;
+    if body_ref.size() > MAX_DERIVED_OPENAI_LIKE_SSE_BODY_BYTES {
+        tracing::debug!(
+            record_id,
+            body_size = body_ref.size(),
+            max_size = MAX_DERIVED_OPENAI_LIKE_SSE_BODY_BYTES,
+            "Skipping OpenAI-like SSE body derivation because payload exceeded limit"
+        );
+        return None;
+    }
+    let body_store = state.body_store.as_ref()?;
+    let raw_body = body_store.read().load(body_ref)?;
+    let assembled = match catch_unwind(AssertUnwindSafe(|| {
+        assemble_openai_like_response_body_from_text(&raw_body)
+    })) {
+        Ok(Some(body)) => body,
+        Ok(None) => return None,
+        Err(_) => {
+            tracing::warn!(
+                record_id,
+                "OpenAI-like SSE body derivation panicked; falling back to raw body only"
+            );
+            return None;
+        }
+    };
+    body_store
+        .read()
+        .store(record_id, "res_openai_like", assembled.as_bytes())
 }
 
 struct TeeBodyDropGuard {
@@ -549,6 +589,8 @@ impl SseTeeBodyDropGuard {
     fn store_body_and_update_record(&mut self) {
         if let Some(ref state) = self.admin_state {
             let response_body_ref = self.file_writer.take().map(|w| w.finish());
+            let derived_response_body_ref =
+                derive_openai_like_sse_body_ref(state, &self.record_id, &response_body_ref);
             let had_body_bytes = self.total_bytes > 0;
             state.sse_hub.set_closed(&self.record_id);
             state.update_traffic_by_id(&self.record_id, move |record| {
@@ -570,6 +612,7 @@ impl SseTeeBodyDropGuard {
                     timing.total_ms = record.duration_ms;
                 }
                 record.response_body_ref = response_body_ref.clone();
+                record.derived_response_body_ref = derived_response_body_ref.clone();
             });
             persist_socket_summary(state, &self.record_id, self.total_bytes);
             state.sse_hub.unregister(&self.record_id);

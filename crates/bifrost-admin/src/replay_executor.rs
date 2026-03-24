@@ -1065,6 +1065,7 @@ impl ReplayExecutor {
             socket_status: None,
             request_body_ref,
             response_body_ref,
+            derived_response_body_ref: None,
             raw_request_body_ref: None,
             raw_response_body_ref: None,
             actual_url: if has_changes {

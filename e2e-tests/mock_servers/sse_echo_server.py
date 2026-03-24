@@ -101,6 +101,14 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.handle_json_sse()
             return
 
+        if path == "/sse/openai":
+            self.handle_openai_like_sse()
+            return
+
+        if path == "/sse/openai-invalid":
+            self.handle_invalid_openai_like_sse()
+            return
+
         if path == "/sse/chunked":
             count = int(query.get("count", [3])[0])
             interval = float(query.get("interval", [0.05])[0])
@@ -204,6 +212,97 @@ class SSEHandler(BaseHTTPRequestHandler):
             ):
                 return
             time.sleep(0.2)
+
+    def handle_openai_like_sse(self):
+        self.send_sse_headers()
+
+        chunks = [
+            {
+                "id": "chatcmpl-e2e",
+                "object": "chat.completion.chunk",
+                "model": "kimi-k2.5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "reason",
+                            "content": "search"
+                        },
+                        "finish_reason": None
+                    }
+                ]
+            },
+            {
+                "id": "chatcmpl-e2e",
+                "object": "chat.completion.chunk",
+                "model": "kimi-k2.5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "ing-e2e",
+                            "content": "able-",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "name": "read_file",
+                                        "arguments": "{\"path\":\"/tmp/search-e2e\""
+                                    }
+                                }
+                            ]
+                        },
+                        "finish_reason": None
+                    }
+                ],
+                "usage": {"total_tokens": 12}
+            },
+            {
+                "id": "chatcmpl-e2e",
+                "object": "chat.completion.chunk",
+                "model": "kimi-k2.5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": "content",
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": "}"
+                                    }
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls"
+                    }
+                ]
+            }
+        ]
+
+        for i, chunk in enumerate(chunks):
+            if not self.send_sse_event(data=json.dumps(chunk), event="message", id=str(i + 1)):
+                return
+            time.sleep(0.05)
+
+        self.send_sse_event(data="[DONE]", event="done", id=str(len(chunks) + 1))
+
+    def handle_invalid_openai_like_sse(self):
+        self.send_sse_headers()
+
+        invalid_events = [
+            "data: {\"id\":\"chatcmpl-bad\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"zq\"}}]}\n\n",
+            "data: {this-is-not-json}\n\n",
+            "data: {\"id\":\"chatcmpl-bad\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"xinvalid-merge\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        ]
+
+        for payload in invalid_events:
+            if not self.send_bytes_chunked(payload.encode("utf-8"), chunk=len(payload), interval=0):
+                return
+            time.sleep(0.05)
 
     def build_sse_event_bytes(self, data, event=None, id=None, retry=None, crlf=False):
         lines = []

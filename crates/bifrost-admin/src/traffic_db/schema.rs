@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 #[derive(Debug)]
 pub enum InitError {
@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS traffic_record_details (
     matched_rules_blob BLOB,
     request_body_ref_blob BLOB,
     response_body_ref_blob BLOB,
+    derived_response_body_ref_blob BLOB,
     raw_request_body_ref_blob BLOB,
     raw_response_body_ref_blob BLOB,
     actual_url TEXT,
@@ -176,7 +177,7 @@ pub fn get_insert_detail_sql() -> &'static str {
     INSERT INTO traffic_record_details (
         id, timing_blob, request_headers_blob, response_headers_blob,
         matched_rules_blob, request_body_ref_blob, response_body_ref_blob,
-        raw_request_body_ref_blob, raw_response_body_ref_blob,
+        derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
         actual_response_headers_blob, socket_status_blob, req_script_results_blob,
         res_script_results_blob, decode_req_script_results_blob,
@@ -184,11 +185,11 @@ pub fn get_insert_detail_sql() -> &'static str {
     ) VALUES (
         ?1, ?2, ?3, ?4,
         ?5, ?6, ?7,
-        ?8, ?9,
-        ?10, ?11, ?12,
-        ?13, ?14, ?15,
-        ?16, ?17,
-        ?18, ?19
+        ?8, ?9, ?10,
+        ?11, ?12, ?13,
+        ?14, ?15, ?16,
+        ?17, ?18,
+        ?19, ?20
     )
     "#
 }
@@ -225,7 +226,7 @@ pub fn get_update_detail_sql() -> &'static str {
     INSERT INTO traffic_record_details (
         id, timing_blob, request_headers_blob, response_headers_blob,
         matched_rules_blob, request_body_ref_blob, response_body_ref_blob,
-        raw_request_body_ref_blob, raw_response_body_ref_blob,
+        derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob,
         actual_url, actual_host, original_request_headers_blob,
         actual_response_headers_blob, socket_status_blob, req_script_results_blob,
         res_script_results_blob, decode_req_script_results_blob,
@@ -233,11 +234,11 @@ pub fn get_update_detail_sql() -> &'static str {
     ) VALUES (
         ?1, ?2, ?3, ?4,
         ?5, ?6, ?7,
-        ?8, ?9,
-        ?10, ?11, ?12,
-        ?13, ?14, ?15,
-        ?16, ?17,
-        ?18, ?19
+        ?8, ?9, ?10,
+        ?11, ?12, ?13,
+        ?14, ?15, ?16,
+        ?17, ?18,
+        ?19, ?20
     )
     ON CONFLICT(id) DO UPDATE SET
         timing_blob = excluded.timing_blob,
@@ -246,6 +247,7 @@ pub fn get_update_detail_sql() -> &'static str {
         matched_rules_blob = excluded.matched_rules_blob,
         request_body_ref_blob = excluded.request_body_ref_blob,
         response_body_ref_blob = excluded.response_body_ref_blob,
+        derived_response_body_ref_blob = excluded.derived_response_body_ref_blob,
         raw_request_body_ref_blob = excluded.raw_request_body_ref_blob,
         raw_response_body_ref_blob = excluded.raw_response_body_ref_blob,
         actual_url = excluded.actual_url,
