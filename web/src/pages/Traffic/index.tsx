@@ -811,6 +811,7 @@ export default function Traffic() {
             leftCollapsed={filterPanelCollapsed}
             rightCollapsed={detailPanelCollapsed}
             onLeftWidthChange={setFilterPanelWidth}
+            keepRightMountedWhenCollapsed
           />
         ) : (
           <div style={{ flex: 1 }} />
