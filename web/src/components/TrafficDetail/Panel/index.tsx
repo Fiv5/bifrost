@@ -34,6 +34,7 @@ interface PanelProps {
   onCollapsedChange?: (collapsed: boolean) => void;
   keepAliveTabs?: string[];
   contentOverflow?: 'auto' | 'hidden';
+  bodyFormatTabs?: string[];
 }
 
 export const Panel = ({
@@ -52,6 +53,7 @@ export const Panel = ({
   onCollapsedChange,
   keepAliveTabs,
   contentOverflow = 'auto',
+  bodyFormatTabs = ['Body'],
 }: PanelProps) => {
   const { token } = theme.useToken();
 
@@ -142,7 +144,7 @@ export const Panel = ({
         <Space size="middle" align="center" style={{ flexShrink: 0 }}>
           {tabBarExtra}
           <Space size="small" align="center">
-            {activeTab === 'Body' &&
+            {bodyFormatTabs.includes(activeTab) &&
               displayFormat &&
               onDisplayFormatChange &&
               contentType && (

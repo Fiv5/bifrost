@@ -89,6 +89,69 @@ const startSseServer = async () => {
   };
 };
 
+const startOpenAiLikeSseServer = async () => {
+  const server = createServer((req, res) => {
+    const url = req.url || "";
+    if (!url.startsWith("/openai-sse-test")) {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    for (let i = 1; i <= 3; i += 1) {
+      res.write(
+        `data: ${JSON.stringify({
+          id: "chatcmpl-ui-test",
+          object: "chat.completion.chunk",
+          created: 1710000000,
+          model: "gpt-4o-mini",
+          choices: [
+            {
+              index: 0,
+              delta: { role: i === 1 ? "assistant" : undefined, content: `token-${i}` },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+      );
+    }
+    res.write(
+      `data: ${JSON.stringify({
+        id: "chatcmpl-ui-test",
+        object: "chat.completion.chunk",
+        created: 1710000000,
+        model: "gpt-4o-mini",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+          },
+        ],
+      })}\n\n`,
+    );
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    port,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
+        server.close((err?: Error) => (err ? reject(err) : resolve()));
+      }),
+  };
+};
+
 const startWsServer = async () => {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   wss.on("connection", (socket: WebSocket) => {
@@ -214,28 +277,6 @@ const startIsolatedBackend = async () => {
       await fs.rm(runtimeDir, { recursive: true, force: true });
     },
   };
-};
-
-const getTrafficRecords = async (request: APIRequestContext) => {
-  const response = await request.get(`${apiBase}/traffic?limit=100`);
-  return (await response.json()) as {
-    records?: Array<{ id: string; p?: string; capp?: string | null }>;
-  };
-};
-
-const waitForTrafficRecord = async (request: APIRequestContext, targetPath: string) => {
-  let found: { id: string; p?: string; capp?: string | null } | undefined;
-  await expect
-    .poll(
-      async () => {
-        const payload = await getTrafficRecords(request);
-        found = payload.records?.find((record) => record.p === targetPath);
-        return found?.id ?? null;
-      },
-      { timeout: 15000 },
-    )
-    .toMatch(/^REQ-/);
-  return found as { id: string; p?: string; capp?: string | null };
 };
 
 const getTrafficRecordsByApi = async (baseApiUrl: string) => {
@@ -1418,4 +1459,39 @@ test("SSE 详情切到弹窗再附回右侧面板后消息列表不应丢失", a
     }
     await waitForClose;
   }
+});
+
+test("OpenAI 风格 SSE 会自动打开聚合后的 Response tab", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startOpenAiLikeSseServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const ssePath = `/openai-sse-test?token=${token}`;
+
+  await streamSseViaProxy(`http://127.0.0.1:${server.port}${ssePath}`);
+
+  await page.goto("/_bifrost/traffic");
+  await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+  let recordId: string | null = null;
+  await expect
+    .poll(async () => {
+      const row = page
+        .getByTestId("traffic-row")
+        .filter({ hasText: "/openai-sse-test" })
+        .last();
+      recordId = await row.getAttribute("data-record-id");
+      return recordId;
+    })
+    .toMatch(/^REQ-/);
+
+  const sseRow = page.locator(
+    `[data-testid="traffic-row"][data-record-id="${recordId}"]`,
+  );
+  await sseRow.click();
+
+  await expect(page.getByTestId("response-tab-openai")).toBeVisible();
+  await expect(page.getByTestId("traffic-detail")).toContainText('"object": "chat.completion"');
+  await expect(page.getByTestId("traffic-detail")).toContainText('"content": "token-1token-2token-3"');
+
+  await server.close();
 });

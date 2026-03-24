@@ -59,6 +59,7 @@ interface MessagesProps {
   searchValue: SessionTargetSearchState;
   onSearch: (v: Partial<SessionTargetSearchState>) => void;
   onSseCountChange?: (count: number) => void;
+  onSseEventsChange?: (events: SSEEvent[]) => void;
   responseBodyOverride?: string | null;
   onResponseBodyChange?: (body: string | null, recordId: string) => void;
 }
@@ -480,6 +481,7 @@ export const Messages = ({
   searchValue,
   onSearch,
   onSseCountChange,
+  onSseEventsChange,
   responseBodyOverride,
   onResponseBodyChange,
 }: MessagesProps) => {
@@ -928,6 +930,10 @@ export const Messages = ({
   useEffect(() => {
     onSseCountChange?.(sseEvents.length);
   }, [onSseCountChange, sseEvents.length]);
+
+  useEffect(() => {
+    onSseEventsChange?.(sseEvents);
+  }, [onSseEventsChange, sseEvents]);
 
   const [sseSearchQuery, setSseSearchQuery] = useState("");
   const [sseSearchMode, setSseSearchMode] = useState<"highlight" | "filter">(

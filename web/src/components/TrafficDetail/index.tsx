@@ -5,6 +5,7 @@ import type {
   TrafficRecord,
   DisplayFormat,
   RecordContentType,
+  SSEEvent,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
 import {
@@ -23,6 +24,8 @@ import { QueryView } from "./panes/Query";
 import { Messages } from "./panes/Messages";
 import ScriptLogsPane from "./panes/ScriptLogs";
 import { getResponseBodyContentUrl } from "../../api/traffic";
+import { parseSseTextToEvents } from "../VirtualMessageViewer";
+import { assembleOpenAiLikeSse } from "./helper/openAiLikeSse";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -91,6 +94,8 @@ export default function TrafficDetail({
   const [expandedRequestPanelSize, setExpandedRequestPanelSize] = useState<
     number | string
   >("50%");
+  const [liveSseEvents, setLiveSseEvents] = useState<SSEEvent[]>([]);
+  const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -122,6 +127,8 @@ export default function TrafficDetail({
 
   useEffect(() => {
     setLiveSseCount(null);
+    setLiveSseEvents([]);
+    setHasAutoOpenedOpenAiTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -166,20 +173,6 @@ export default function TrafficDetail({
     requestContentType,
     requestDisplayFormat,
     setRequestDisplayFormat,
-  ]);
-
-  useEffect(() => {
-    if (
-      responseDisplayFormat === "Tree" &&
-      shouldDisableJsonStructuredView(responseContentType, responseBody)
-    ) {
-      setResponseDisplayFormat("HighLight");
-    }
-  }, [
-    responseBody,
-    responseContentType,
-    responseDisplayFormat,
-    setResponseDisplayFormat,
   ]);
 
   const handleRequestTabChange = useCallback(
@@ -337,9 +330,42 @@ export default function TrafficDetail({
     requestDisplayFormat,
   ]);
 
+  const openAiLikeAssembly = useMemo(() => {
+    if (!record?.is_sse) {
+      return null;
+    }
+
+    const responseSseEvents = liveSseEvents.length > 0
+      ? liveSseEvents
+      : responseBody
+        ? parseSseTextToEvents(responseBody)
+        : [];
+    return assembleOpenAiLikeSse(responseSseEvents);
+  }, [liveSseEvents, record?.is_sse, responseBody]);
+
+  const responsePanelContentType = responseTab === "OpenAI"
+    ? openAiLikeAssembly?.contentType ?? "Other"
+    : responseContentType;
+  const responsePanelBodyData = responseTab === "OpenAI"
+    ? openAiLikeAssembly?.body ?? null
+    : responseBody;
+
+  useEffect(() => {
+    if (
+      responseDisplayFormat === "Tree" &&
+      shouldDisableJsonStructuredView(responsePanelContentType, responsePanelBodyData)
+    ) {
+      setResponseDisplayFormat("HighLight");
+    }
+  }, [
+    responseDisplayFormat,
+    responsePanelBodyData,
+    responsePanelContentType,
+    setResponseDisplayFormat,
+  ]);
+
   const responseTabs = useMemo(() => {
     if (!record) return [];
-
     const hasMessages = record.is_websocket || record.is_sse;
     const socketCount = record.socket_status?.frame_count ?? record.frame_count ?? 0;
     const messageCount = record.is_sse ? liveSseCount ?? socketCount : socketCount;
@@ -390,8 +416,23 @@ export default function TrafficDetail({
             searchValue={responseSearch}
             onSearch={setResponseSearch}
             onSseCountChange={record.is_sse ? setLiveSseCount : undefined}
+            onSseEventsChange={record.is_sse ? setLiveSseEvents : undefined}
             responseBodyOverride={responseBody}
             onResponseBodyChange={onResponseBodyChange}
+          />
+        ),
+      },
+      {
+        key: "OpenAI",
+        label: "OpenAI",
+        enable: !!openAiLikeAssembly,
+        children: (
+          <Body
+            data={openAiLikeAssembly?.body}
+            contentType={openAiLikeAssembly?.contentType ?? "Other"}
+            searchValue={responseSearch}
+            displayFormat={responseDisplayFormat}
+            onSearch={setResponseSearch}
           />
         ),
       },
@@ -441,6 +482,7 @@ export default function TrafficDetail({
   }, [
     record,
     liveSseCount,
+    openAiLikeAssembly,
     responseBody,
     onResponseBodyChange,
     canPreviewResponseImage,
@@ -448,6 +490,25 @@ export default function TrafficDetail({
     setResponseSearch,
     responseContentType,
     responseDisplayFormat,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!openAiLikeAssembly) return;
+    if (hasAutoOpenedOpenAiTab) return;
+    if (responseTab === "OpenAI") {
+      setHasAutoOpenedOpenAiTab(true);
+      return;
+    }
+
+    setResponseTab("OpenAI");
+    setHasAutoOpenedOpenAiTab(true);
+  }, [
+    hasAutoOpenedOpenAiTab,
+    openAiLikeAssembly,
+    record?.is_sse,
+    responseTab,
+    setResponseTab,
   ]);
 
   useEffect(() => {
@@ -584,11 +645,12 @@ export default function TrafficDetail({
                 onSearch={setResponseSearch}
                 displayFormat={responseDisplayFormat}
                 onDisplayFormatChange={handleResponseDisplayFormatChange}
-                contentType={responseContentType}
-                bodyData={responseBody}
+                contentType={responsePanelContentType}
+                bodyData={responsePanelBodyData}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
-                keepAliveTabs={["Body", "Messages"]}
+                keepAliveTabs={["Body", "Messages", "OpenAI"]}
+                bodyFormatTabs={["Body", "OpenAI"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>
