@@ -8,12 +8,12 @@ export function useLiveNow(active: boolean, intervalMs = 500): number {
       return;
     }
 
-    setNow(Date.now());
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-    }, intervalMs);
+    const update = () => setNow(Date.now());
+    const timer = window.setInterval(update, intervalMs);
+    const immediate = window.setTimeout(update, 0);
 
     return () => {
+      window.clearTimeout(immediate);
       window.clearInterval(timer);
     };
   }, [active, intervalMs]);

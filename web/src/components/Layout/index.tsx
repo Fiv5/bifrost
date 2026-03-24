@@ -7,6 +7,8 @@ import {
   DatabaseOutlined,
   CodeOutlined,
   ThunderboltOutlined,
+  SunOutlined,
+  MoonOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
 import { useEffect } from "react";
@@ -45,6 +47,7 @@ export default function AppLayout() {
   const desktopEnabled = isDesktopShell();
   const desktopPlatform = getDesktopPlatform();
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
+  const setThemeMode = useThemeStore((state) => state.setMode);
   const isDark = resolvedTheme === "dark";
 
   useEffect(() => {
@@ -67,6 +70,10 @@ export default function AppLayout() {
       setNavigateCallback(null);
     };
   }, [navigate]);
+
+  const handleThemeToggle = () => {
+    setThemeMode(isDark ? "light" : "dark");
+  };
 
   const styles: Record<string, CSSProperties> = {
     layout: {
@@ -265,6 +272,28 @@ export default function AppLayout() {
               </div>
             );
           })}
+          <div
+            style={{
+              marginTop: "auto",
+              marginBottom: 8,
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              fontSize: 16,
+              borderRadius: "50%",
+              color: isDark ? "#facc15" : "#64748b",
+              background: isDark
+                ? "rgba(250, 204, 21, 0.12)"
+                : "rgba(100, 116, 139, 0.1)",
+              transition: "all 0.3s",
+            }}
+            onClick={handleThemeToggle}
+          >
+            {isDark ? <SunOutlined /> : <MoonOutlined />}
+          </div>
         </div>
         <div style={styles.content}>
           <Outlet />

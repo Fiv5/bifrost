@@ -1,4 +1,4 @@
-import { Tag, Switch, Button, Space, theme, Tooltip, Dropdown, Modal } from "antd";
+import { Tag, Switch, Button, Space, theme, Tooltip, Dropdown } from "antd";
 import type { MenuProps } from "antd";
 import {
   DeleteOutlined,
@@ -11,6 +11,7 @@ import {
   ClearOutlined,
 } from "@ant-design/icons";
 import type { ToolbarFilters } from "../../types";
+import { useAppModal } from "../../hooks/useAppModal";
 
 interface ToolbarProps {
   filters: ToolbarFilters;
@@ -56,9 +57,10 @@ export default function Toolbar({
   onAttachDetailWindow,
 }: ToolbarProps) {
   const { token } = theme.useToken();
+  const modal = useAppModal();
 
   const handleClearAll = () => {
-    Modal.confirm({
+    modal.confirm({
       title: "Clear all traffic?",
       content: "This action cannot be undone.",
       okText: "Clear",
@@ -68,7 +70,7 @@ export default function Toolbar({
   };
 
   const handleClearFiltered = () => {
-    Modal.confirm({
+    modal.confirm({
       title: `Clear ${filteredCount} filtered requests?`,
       content: "This will only clear requests matching current filter conditions. This action cannot be undone.",
       okText: "Clear",

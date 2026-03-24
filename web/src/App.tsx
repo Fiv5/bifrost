@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import { ConfigProvider, Modal, Steps, message, theme, Typography } from "antd";
+import { ConfigProvider, Modal, Steps, App as AntApp, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
 import Rules from "./pages/Rules";
@@ -126,6 +126,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
         },
       }}
     >
+      <AntApp>
       {isDesktopShell() && desktopPlatform === "macos" ? (
         <DesktopTransitionMask resolvedTheme={resolvedTheme} />
       ) : null}
@@ -261,6 +262,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
           </BifrostFileDropZone>
         </BrowserRouter>
       )}
+      </AntApp>
     </ConfigProvider>
   );
 }

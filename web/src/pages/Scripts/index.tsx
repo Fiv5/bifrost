@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  Tree,
   Button,
   Space,
   Typography,
@@ -17,7 +16,7 @@ import {
   Switch,
   Form,
 } from "antd";
-import type { MenuProps, TreeDataNode } from "antd";
+import type { MenuProps } from "antd";
 import {
   FileOutlined,
   FolderOutlined,
@@ -32,8 +31,9 @@ import {
   UpOutlined,
   DownOutlined,
   ExportOutlined,
-  MoreOutlined,
   SettingOutlined,
+  EditOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -48,8 +48,10 @@ import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
 import { ImportBifrostButton } from "../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../hooks/useExportBifrost";
+import { useAppModal } from "../../hooks/useAppModal";
 import { getSandboxConfig, updateSandboxConfig } from "../../api/config";
 import pushService from "../../services/pushService";
+import styles from "./index.module.css";
 
 const { Text } = Typography;
 
@@ -415,76 +417,348 @@ function HighlightText({
   );
 }
 
+interface FlatNode {
+  key: string;
+  type: "folder" | "script";
+  depth: number;
+  label: string;
+  scriptType?: ScriptType;
+  scriptName?: string;
+  folderPath?: string;
+  scriptCount?: number;
+}
+
 function ScriptListPanel({
+  allScripts,
+  selectedScript,
+  selectedType,
+  loading,
   searchValue,
   onSearchChange,
   onNewScript,
-  loading,
-  treeData,
-  expandedKeys,
-  autoExpandParent,
-  onExpand,
-  onSelect,
-  renderTreeTitle,
-  selectedKeys,
-  onImportSuccess,
+  onSelectScript,
+  onDeleteScript,
+  onRenameScript,
+  onDeleteFolder,
+  onExport,
   onExportAll,
+  onImportSuccess,
   onOpenSandboxSettings,
-  hasScripts,
+  expandedKeys,
+  onToggleFolder,
 }: {
+  allScripts: ScriptInfo[];
+  selectedScript: ScriptInfo | null;
+  selectedType: ScriptType;
+  loading: boolean;
   searchValue: string;
   onSearchChange: (value: string) => void;
   onNewScript: (type: ScriptType) => void;
-  loading: boolean;
-  treeData: TreeDataNode[];
-  expandedKeys: React.Key[];
-  autoExpandParent: boolean;
-  onExpand: (keys: React.Key[]) => void;
-  onSelect: (
-    keys: React.Key[],
-    info: { node: { key: string; isLeaf?: boolean } },
-  ) => void;
-  renderTreeTitle: (nodeData: TreeDataNode) => React.ReactNode;
-  selectedKeys: string[];
-  onImportSuccess: () => void;
+  onSelectScript: (type: ScriptType, name: string) => void;
+  onDeleteScript: (type: ScriptType, name: string) => void;
+  onRenameScript: (type: ScriptType, oldName: string, newName: string) => Promise<boolean>;
+  onDeleteFolder: (folderPath: string) => void;
+  onExport: (scriptNames: string[]) => void;
   onExportAll: () => void;
+  onImportSuccess: () => void;
   onOpenSandboxSettings: () => void;
-  hasScripts: boolean;
+  expandedKeys: React.Key[];
+  onToggleFolder: (folderKey: string) => void;
 }) {
-  const { token } = theme.useToken();
-  const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+  const modal = useAppModal();
+  const [selectedScripts, setSelectedScripts] = useState<string[]>([]);
+  const lastClickedIndexRef = useRef<number | null>(null);
+  const [renameTarget, setRenameTarget] = useState<{ type: ScriptType; name: string } | null>(null);
+  const [newName, setNewName] = useState("");
+  const [renameModalVisible, setRenameModalVisible] = useState(false);
+
+  const flatNodes = useMemo<FlatNode[]>(() => {
+    const filteredScripts = searchValue
+      ? allScripts.filter((s) =>
+          s.name.toLowerCase().includes(searchValue.toLowerCase()),
+        )
+      : allScripts;
+
+    const sorted = [...filteredScripts].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+
+    interface TreeNode {
+      folderName: string;
+      folderPath: string;
+      children: TreeNode[];
+      scripts: ScriptInfo[];
+    }
+
+    const root: TreeNode = {
+      folderName: "",
+      folderPath: "",
+      children: [],
+      scripts: [],
+    };
+
+    for (const script of sorted) {
+      const parts = script.name.split("/");
+      const fileName = parts.pop()!;
+      let current = root;
+
+      for (const part of parts) {
+        const childPath = current.folderPath
+          ? `${current.folderPath}/${part}`
+          : part;
+        let child = current.children.find((c) => c.folderName === part);
+        if (!child) {
+          child = {
+            folderName: part,
+            folderPath: childPath,
+            children: [],
+            scripts: [],
+          };
+          current.children.push(child);
+        }
+        current = child;
+      }
+      current.scripts.push({ ...script, name: script.name } as ScriptInfo & {
+        _fileName: string;
+      });
+      void fileName;
+    }
+
+    const countScripts = (node: TreeNode): number => {
+      let count = node.scripts.length;
+      for (const child of node.children) {
+        count += countScripts(child);
+      }
+      return count;
+    };
+
+    const result: FlatNode[] = [];
+
+    const flatten = (node: TreeNode, depth: number) => {
+      const sortedChildren = [...node.children].sort((a, b) =>
+        a.folderName.localeCompare(b.folderName),
+      );
+      const sortedScripts = [...node.scripts].sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+
+      for (const child of sortedChildren) {
+        const folderKey = `folder:${child.folderPath}`;
+        result.push({
+          key: folderKey,
+          type: "folder",
+          depth,
+          label: child.folderName,
+          folderPath: child.folderPath,
+          scriptCount: countScripts(child),
+        });
+        if (expandedKeys.includes(folderKey)) {
+          flatten(child, depth + 1);
+        }
+      }
+
+      for (const script of sortedScripts) {
+        const fileName = script.name.split("/").pop()!;
+        result.push({
+          key: `${script.script_type}/${script.name}`,
+          type: "script",
+          depth,
+          label: fileName,
+          scriptType: script.script_type,
+          scriptName: script.name,
+        });
+      }
+    };
+
+    flatten(root, 0);
+    return result;
+  }, [allScripts, searchValue, expandedKeys]);
+
+  const scriptNodes = useMemo(
+    () => flatNodes.filter((n) => n.type === "script"),
+    [flatNodes],
+  );
+
+  const selectedKey = selectedScript
+    ? `${selectedType}/${selectedScript.name}`
+    : null;
+
+  const handleClick = useCallback(
+    (node: FlatNode, e: React.MouseEvent) => {
+      if (node.type === "folder") {
+        onToggleFolder(node.key);
+        return;
+      }
+
+      const isCtrl = e.ctrlKey || e.metaKey;
+      const isShift = e.shiftKey;
+      const currentIndex = scriptNodes.findIndex((n) => n.key === node.key);
+
+      if (isShift && lastClickedIndexRef.current !== null) {
+        const start = Math.min(lastClickedIndexRef.current, currentIndex);
+        const end = Math.max(lastClickedIndexRef.current, currentIndex);
+        const rangeKeys = scriptNodes.slice(start, end + 1).map((n) => n.key);
+        setSelectedScripts((prev) => {
+          const combined = new Set([...prev, ...rangeKeys]);
+          return Array.from(combined);
+        });
+      } else if (isCtrl) {
+        setSelectedScripts((prev) =>
+          prev.includes(node.key)
+            ? prev.filter((k) => k !== node.key)
+            : [...prev, node.key],
+        );
+        lastClickedIndexRef.current = currentIndex;
+      } else {
+        setSelectedScripts([]);
+        lastClickedIndexRef.current = currentIndex;
+        if (node.scriptType && node.scriptName !== undefined) {
+          onSelectScript(node.scriptType, node.scriptName);
+        }
+      }
+    },
+    [scriptNodes, onSelectScript, onToggleFolder],
+  );
+
+  const getScriptsInFolder = useCallback(
+    (folderPath: string): { type: ScriptType; name: string }[] => {
+      const result: { type: ScriptType; name: string }[] = [];
+      for (const script of allScripts) {
+        if (
+          script.name.startsWith(folderPath + "/") ||
+          script.name === folderPath
+        ) {
+          result.push({ type: script.script_type, name: script.name });
+        }
+      }
+      return result;
+    },
+    [allScripts],
+  );
+
+  const getContextMenuItems = useCallback(
+    (node: FlatNode): MenuProps["items"] => {
+      if (node.type === "folder") {
+        const folderPath = node.folderPath!;
+        const scriptsInFolder = getScriptsInFolder(folderPath);
+        const scriptNames = scriptsInFolder.map((s) => `${s.type}/${s.name}`);
+        return [
+          {
+            key: "new-request",
+            label: "New Request Script",
+            onClick: () => onNewScript("request"),
+          },
+          {
+            key: "new-response",
+            label: "New Response Script",
+            onClick: () => onNewScript("response"),
+          },
+          {
+            key: "new-decode",
+            label: "New Decode Script",
+            onClick: () => onNewScript("decode"),
+          },
+          { type: "divider" },
+          {
+            key: "export-folder",
+            icon: <ExportOutlined />,
+            label: `Export Folder (${scriptsInFolder.length})`,
+            onClick: () => onExport(scriptNames),
+            disabled: scriptsInFolder.length === 0,
+          },
+          { type: "divider" },
+          {
+            key: "delete-folder",
+            label: `Delete Folder (${scriptsInFolder.length})`,
+            danger: true,
+            onClick: () => onDeleteFolder(folderPath),
+          },
+        ];
+      }
+
+      const isInSelection = selectedScripts.includes(node.key);
+      const bulkKeys =
+        isInSelection && selectedScripts.length > 1
+          ? selectedScripts
+          : [node.key];
+
+      return [
+        {
+          key: "rename",
+          icon: <EditOutlined />,
+          label: "Rename",
+          onClick: () => {
+            const [type, ...nameParts] = node.key.split("/");
+            setRenameTarget({ type: type as ScriptType, name: nameParts.join("/") });
+            setNewName(nameParts.join("/"));
+            setRenameModalVisible(true);
+          },
+        },
+        { type: "divider" },
+        {
+          key: "export",
+          icon: <ExportOutlined />,
+          label: `Export${bulkKeys.length > 1 ? ` (${bulkKeys.length})` : ""}`,
+          onClick: () => onExport(bulkKeys),
+        },
+        { type: "divider" },
+        {
+          key: "delete",
+          icon: <DeleteOutlined />,
+          label: `Delete${bulkKeys.length > 1 ? ` (${bulkKeys.length})` : ""}`,
+          danger: true,
+          onClick: () => {
+            if (bulkKeys.length > 1) {
+              modal.confirm({
+                title: "Delete Scripts",
+                content: `Are you sure you want to delete ${bulkKeys.length} scripts?`,
+                okText: "Delete All",
+                okType: "danger",
+                onOk: async () => {
+                  for (const key of bulkKeys) {
+                    const [type, ...nameParts] = key.split("/");
+                    onDeleteScript(type as ScriptType, nameParts.join("/"));
+                  }
+                  setSelectedScripts([]);
+                  message.success(`Deleted ${bulkKeys.length} scripts`);
+                },
+              });
+            } else {
+              const [type, ...nameParts] = bulkKeys[0].split("/");
+              const scriptName = nameParts.join("/");
+              modal.confirm({
+                title: "Delete Script",
+                content: `Are you sure you want to delete "${scriptName}"?`,
+                okText: "Delete",
+                okType: "danger",
+                onOk: async () => {
+                  onDeleteScript(type as ScriptType, scriptName);
+                  message.success("Script deleted");
+                },
+              });
+            }
+          },
+        },
+      ];
+    },
+    [
+      selectedScripts,
+      getScriptsInFolder,
+      onNewScript,
+      onExport,
+      onDeleteFolder,
+      onDeleteScript,
+      modal,
+    ],
+  );
+
+  const hasScripts = allScripts.length > 0;
 
   return (
-    <div
-      style={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        background: resolvedTheme === "dark" ? "#141414" : "#fff",
-        borderRight: `1px solid ${token.colorBorderSecondary}`,
-      }}
-      data-testid="scripts-list-panel"
-    >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "8px 12px",
-          borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          flexShrink: 0,
-        }}
-      >
-        <span
-          style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: token.colorText,
-          }}
-        >
-          Scripts
-        </span>
-        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+    <div className={styles.container} data-testid="scripts-list-panel">
+      <div className={styles.header}>
+        <span className={styles.headerTitle}>Scripts</span>
+        <div className={styles.headerActions}>
           <Tooltip title="Sandbox Settings">
             <Button
               type="text"
@@ -494,35 +768,35 @@ function ScriptListPanel({
               data-testid="scripts-sandbox-button"
             />
           </Tooltip>
-          <Button
-            type="text"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => onNewScript("request")}
-            data-testid="scripts-new-request-button"
-          >
-            Req
-          </Button>
-          <Button
-            type="text"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => onNewScript("response")}
-            style={{ color: token.colorSuccess }}
-            data-testid="scripts-new-response-button"
-          >
-            Res
-          </Button>
-          <Button
-            type="text"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => onNewScript("decode")}
-            style={{ color: "#722ed1" }}
-            data-testid="scripts-new-decode-button"
-          >
-            Dec
-          </Button>
+          <Tooltip title="New Request">
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => onNewScript("request")}
+              data-testid="scripts-new-request-button"
+            />
+          </Tooltip>
+          <Tooltip title="New Response">
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => onNewScript("response")}
+              style={{ color: "#52c41a" }}
+              data-testid="scripts-new-response-button"
+            />
+          </Tooltip>
+          <Tooltip title="New Decode">
+            <Button
+              type="text"
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => onNewScript("decode")}
+              style={{ color: "#722ed1" }}
+              data-testid="scripts-new-decode-button"
+            />
+          </Tooltip>
           {hasScripts && (
             <Tooltip title="Export All">
               <Button
@@ -544,16 +818,10 @@ function ScriptListPanel({
         </div>
       </div>
 
-      <div
-        style={{
-          padding: "8px 12px",
-          borderBottom: `1px solid ${token.colorBorderSecondary}`,
-          flexShrink: 0,
-        }}
-      >
+      <div className={styles.searchBox}>
         <Input
           placeholder="Search scripts..."
-          prefix={<SearchOutlined />}
+          prefix={<SearchOutlined style={{ color: "#999" }} />}
           value={searchValue}
           onChange={(e) => onSearchChange(e.target.value)}
           allowClear
@@ -562,33 +830,171 @@ function ScriptListPanel({
         />
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "4px 0" }}>
-        <Spin spinning={loading}>
-          {treeData.length > 0 ? (
-            <Tree
-              blockNode
-              treeData={treeData}
-              expandedKeys={expandedKeys}
-              autoExpandParent={autoExpandParent}
-              onExpand={onExpand}
-              onSelect={onSelect as Parameters<typeof Tree>["0"]["onSelect"]}
-              titleRender={renderTreeTitle}
-              selectedKeys={selectedKeys}
-              data-testid="scripts-tree"
-            />
-          ) : searchValue ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="No matching scripts"
-            />
-          ) : (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="No scripts yet"
-            />
-          )}
-        </Spin>
+      <div className={styles.listContainer}>
+        {loading && allScripts.length === 0 ? (
+          <div className={styles.loading}>
+            <Spin size="small" />
+          </div>
+        ) : (
+          <div className={styles.list}>
+            {flatNodes.map((node) => {
+              if (node.type === "folder") {
+                const isExpanded = expandedKeys.includes(node.key);
+                return (
+                  <Dropdown
+                    key={node.key}
+                    menu={{ items: getContextMenuItems(node) }}
+                    trigger={["contextMenu"]}
+                  >
+                    <div
+                      className={styles.item}
+                      style={{ paddingLeft: 12 + node.depth * 16 }}
+                      onClick={(e) => handleClick(node, e)}
+                    >
+                      <div className={styles.itemContent}>
+                        <span className={styles.folderIcon}>
+                          {isExpanded ? (
+                            <FolderOpenOutlined />
+                          ) : (
+                            <FolderOutlined />
+                          )}
+                        </span>
+                        <span className={styles.itemName}>
+                          <HighlightText
+                            text={node.label}
+                            highlight={searchValue}
+                          />
+                        </span>
+                        <div className={styles.itemMeta}>
+                          <Tag style={{ fontSize: 10, padding: "0 2px", lineHeight: "16px", margin: 0, color: "#999", borderColor: "#d9d9d9" }}>
+                            {node.scriptCount}
+                          </Tag>
+                        </div>
+                      </div>
+                    </div>
+                  </Dropdown>
+                );
+              }
+
+              const isSelected = node.key === selectedKey;
+              const isMultiSelected = selectedScripts.includes(node.key);
+
+              return (
+                <Dropdown
+                  key={node.key}
+                  menu={{ items: getContextMenuItems(node) }}
+                  trigger={["contextMenu"]}
+                >
+                  <div
+                    className={`${styles.item} ${isSelected ? styles.selected : ""} ${isMultiSelected ? styles.multiSelected : ""}`}
+                    style={{ paddingLeft: 12 + node.depth * 16 }}
+                    onClick={(e) => handleClick(node, e)}
+                    data-testid="script-item"
+                    data-script-name={node.scriptName}
+                    data-script-type={node.scriptType}
+                  >
+                    <div className={styles.itemContent}>
+                      <span className={styles.folderIcon}>
+                        <FileOutlined />
+                      </span>
+                      <span className={styles.itemName}>
+                        <HighlightText
+                          text={node.label}
+                          highlight={searchValue}
+                        />
+                      </span>
+                      <div className={styles.itemMeta}>
+                        <Tag
+                          color={
+                            node.scriptType === "request"
+                              ? "blue"
+                              : node.scriptType === "response"
+                                ? "green"
+                                : "purple"
+                          }
+                          className={styles.scriptTag}
+                        >
+                          {node.scriptType === "request"
+                            ? "REQ"
+                            : node.scriptType === "response"
+                              ? "RES"
+                              : "DEC"}
+                        </Tag>
+                      </div>
+                    </div>
+                    <div className={styles.itemExtra}>
+                      <Dropdown
+                        menu={{ items: getContextMenuItems(node) }}
+                        trigger={["click"]}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MoreOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          className={styles.moreBtn}
+                        />
+                      </Dropdown>
+                    </div>
+                  </div>
+                </Dropdown>
+              );
+            })}
+            {flatNodes.length === 0 && !loading && (
+              <div className={styles.empty}>
+                {searchValue ? "No matching scripts" : "No scripts yet"}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      <div className={styles.footer}>
+        <span className={styles.stats}>{allScripts.length} scripts</span>
+      </div>
+
+      <Modal
+        title="Rename Script"
+        open={renameModalVisible}
+        onOk={async () => {
+          if (!renameTarget || !newName.trim()) return;
+          const success = await onRenameScript(renameTarget.type, renameTarget.name, newName.trim());
+          if (success) {
+            message.success("Script renamed");
+            setRenameModalVisible(false);
+            setRenameTarget(null);
+            setNewName("");
+          } else {
+            message.error("Failed to rename script");
+          }
+        }}
+        onCancel={() => {
+          setRenameModalVisible(false);
+          setRenameTarget(null);
+          setNewName("");
+        }}
+        okText="Rename"
+        cancelText="Cancel"
+      >
+        <Input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          onPressEnter={async () => {
+            if (!renameTarget || !newName.trim()) return;
+            const success = await onRenameScript(renameTarget.type, renameTarget.name, newName.trim());
+            if (success) {
+              message.success("Script renamed");
+              setRenameModalVisible(false);
+              setRenameTarget(null);
+              setNewName("");
+            } else {
+              message.error("Failed to rename script");
+            }
+          }}
+          placeholder="Enter new name"
+          autoFocus
+        />
+      </Modal>
     </div>
   );
 }
@@ -1123,10 +1529,12 @@ export default function ScriptsPage() {
     selectScript,
     saveScript,
     deleteScript,
+    renameScript,
     testScript,
     createNewScript,
   } = useScriptsStore();
   const { exportFile } = useExportBifrost();
+  const modal = useAppModal();
 
   const [editorContent, setEditorContent] = useState("");
   const [newScriptName, setNewScriptName] = useState("");
@@ -1134,7 +1542,6 @@ export default function ScriptsPage() {
   const [showNameModal, setShowNameModal] = useState(false);
   const [searchValue, setSearchValue] = useState("");
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
-  const [autoExpandParent, setAutoExpandParent] = useState(true);
   const [lastSelectedScriptId, setLastSelectedScriptId] = useState<
     string | null
   >(null);
@@ -1239,46 +1646,37 @@ export default function ScriptsPage() {
     setExpandedKeys(allFolderKeys);
   }
 
-  const getScriptsInFolder = useCallback(
-    (folderPath: string): { type: ScriptType; name: string }[] => {
-      const result: { type: ScriptType; name: string }[] = [];
+  const handleDeleteFolder = useCallback(
+    async (folderPath: string) => {
+      const scriptsToDelete: { type: ScriptType; name: string }[] = [];
       for (const script of allScripts) {
         if (
           script.name.startsWith(folderPath + "/") ||
           script.name === folderPath
         ) {
-          result.push({ type: script.script_type, name: script.name });
+          scriptsToDelete.push({ type: script.script_type, name: script.name });
         }
       }
-      return result;
-    },
-    [allScripts],
-  );
-
-  const handleSelectScript = useCallback(
-    (_keys: React.Key[], info: { node: { key: string; isLeaf?: boolean } }) => {
-      const key = info.node.key;
-      if (key.startsWith("folder:")) {
+      if (scriptsToDelete.length === 0) {
+        message.info("No scripts in this folder");
         return;
       }
-      if (
-        key.startsWith("request/") ||
-        key.startsWith("response/") ||
-        key.startsWith("decode/")
-      ) {
-        const [type, ...nameParts] = key.split("/");
-        const name = nameParts.join("/");
-        selectScript(type as ScriptType, name);
-        setIsNewScript(false);
-      }
-    },
-    [selectScript],
-  );
 
-  const handleExpand = useCallback((keys: React.Key[]) => {
-    setExpandedKeys(keys);
-    setAutoExpandParent(false);
-  }, []);
+      modal.confirm({
+        title: "Delete Folder",
+        content: `Are you sure you want to delete folder "${folderPath}" and all ${scriptsToDelete.length} script(s) inside?`,
+        okText: "Delete All",
+        okType: "danger",
+        onOk: async () => {
+          for (const script of scriptsToDelete) {
+            await deleteScript(script.type, script.name);
+          }
+          message.success(`Deleted ${scriptsToDelete.length} script(s)`);
+        },
+      });
+    },
+    [allScripts, deleteScript, modal],
+  );
 
   const handleSave = useCallback(async () => {
     if (isNewScript) {
@@ -1312,7 +1710,7 @@ export default function ScriptsPage() {
 
   const handleDelete = useCallback(async () => {
     if (!selectedScript?.name) return;
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Script",
       content: `Are you sure you want to delete "${selectedScript.name}"?`,
       okText: "Delete",
@@ -1322,30 +1720,20 @@ export default function ScriptsPage() {
         message.success("Script deleted");
       },
     });
-  }, [selectedScript, selectedType, deleteScript]);
+  }, [selectedScript, selectedType, deleteScript, modal]);
 
-  const handleDeleteFolder = useCallback(
-    async (folderPath: string) => {
-      const scriptsToDelete = getScriptsInFolder(folderPath);
-      if (scriptsToDelete.length === 0) {
-        message.info("No scripts in this folder");
-        return;
-      }
-
-      Modal.confirm({
-        title: "Delete Folder",
-        content: `Are you sure you want to delete folder "${folderPath}" and all ${scriptsToDelete.length} script(s) inside?`,
-        okText: "Delete All",
-        okType: "danger",
-        onOk: async () => {
-          for (const script of scriptsToDelete) {
-            await deleteScript(script.type, script.name);
-          }
-          message.success(`Deleted ${scriptsToDelete.length} script(s)`);
-        },
-      });
+  const handleDeleteScript = useCallback(
+    async (type: ScriptType, name: string) => {
+      await deleteScript(type, name);
     },
-    [getScriptsInFolder, deleteScript],
+    [deleteScript],
+  );
+
+  const handleRenameScript = useCallback(
+    async (type: ScriptType, oldName: string, newName: string) => {
+      return await renameScript(type, oldName, newName);
+    },
+    [renameScript],
   );
 
   const handleTest = useCallback(async () => {
@@ -1505,7 +1893,6 @@ export default function ScriptsPage() {
           }
         }
         setExpandedKeys(Array.from(matchedFolders));
-        setAutoExpandParent(true);
       } else {
         const allFolderKeys = getAllFolderKeys(allScripts);
         setExpandedKeys(allFolderKeys);
@@ -1514,275 +1901,44 @@ export default function ScriptsPage() {
     [allScripts, getAllFolderKeys],
   );
 
-  const buildTreeData = useCallback(
-    (scripts: ScriptInfo[], search: string): TreeDataNode[] => {
-      const folderMap = new Map<string, TreeDataNode>();
-      const rootItems: TreeDataNode[] = [];
+  const handleSelectScript = useCallback(
+    (type: ScriptType, name: string) => {
+      selectScript(type, name);
+      setIsNewScript(false);
+    },
+    [selectScript],
+  );
 
-      const filteredScripts = search
-        ? scripts.filter((s) =>
-            s.name.toLowerCase().includes(search.toLowerCase()),
-          )
-        : scripts;
-
-      const sortedScripts = [...filteredScripts].sort((a, b) =>
-        a.name.localeCompare(b.name),
+  const handleToggleFolder = useCallback(
+    (folderKey: string) => {
+      setExpandedKeys((prev) =>
+        prev.includes(folderKey)
+          ? prev.filter((k) => k !== folderKey)
+          : [...prev, folderKey],
       );
-
-      for (const script of sortedScripts) {
-        const parts = script.name.split("/");
-        const fileName = parts.pop()!;
-        const folderPath = parts.join("/");
-
-        const scriptNode: TreeDataNode = {
-          title: (
-            <Space size={4}>
-              <span
-                data-testid="script-tree-node"
-                data-script-name={script.name}
-                data-script-type={script.script_type}
-              >
-                <HighlightText text={fileName} highlight={search} />
-              </span>
-              <Tag
-                color={
-                  script.script_type === "request"
-                    ? "blue"
-                    : script.script_type === "response"
-                      ? "green"
-                      : "purple"
-                }
-                style={{
-                  fontSize: 10,
-                  padding: "0 2px",
-                  lineHeight: "16px",
-                  marginLeft: 4,
-                }}
-              >
-                {script.script_type === "request"
-                  ? "REQ"
-                  : script.script_type === "response"
-                    ? "RES"
-                    : "DEC"}
-              </Tag>
-            </Space>
-          ),
-          key: `${script.script_type}/${script.name}`,
-          isLeaf: true,
-        };
-
-        if (folderPath) {
-          let currentPath = "";
-          let parentChildren = rootItems;
-
-          for (const part of parts) {
-            currentPath = currentPath ? `${currentPath}/${part}` : part;
-
-            if (!folderMap.has(currentPath)) {
-              const folderNode: TreeDataNode = {
-                title: <HighlightText text={part} highlight={search} />,
-                key: `folder:${currentPath}`,
-                children: [],
-                selectable: false,
-              };
-              folderMap.set(currentPath, folderNode);
-              parentChildren.push(folderNode);
-            }
-
-            parentChildren = folderMap.get(currentPath)!
-              .children as TreeDataNode[];
-          }
-
-          parentChildren.push(scriptNode);
-        } else {
-          rootItems.push(scriptNode);
-        }
-      }
-
-      const sortNodes = (nodes: TreeDataNode[]): TreeDataNode[] => {
-        return nodes
-          .sort((a, b) => {
-            const aIsFolder = !a.isLeaf;
-            const bIsFolder = !b.isLeaf;
-            if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
-            const aKey = a.key as string;
-            const bKey = b.key as string;
-            const aName = aKey.split("/").pop() || aKey.replace("folder:", "");
-            const bName = bKey.split("/").pop() || bKey.replace("folder:", "");
-            return aName.localeCompare(bName);
-          })
-          .map((node) => {
-            if (node.children) {
-              return {
-                ...node,
-                children: sortNodes(node.children as TreeDataNode[]),
-              };
-            }
-            return node;
-          });
-      };
-
-      return sortNodes(rootItems);
     },
     [],
   );
 
-  const treeData = useMemo(
-    () => buildTreeData(allScripts, searchValue),
-    [allScripts, searchValue, buildTreeData],
-  );
-
-  const renderTreeTitle = useCallback(
-    (nodeData: TreeDataNode) => {
-      const key = nodeData.key as string;
-      let menuItems: MenuProps["items"] = [];
-
-      if (key.startsWith("folder:")) {
-        const folderPath = key.replace("folder:", "");
-        const scriptsInFolder = getScriptsInFolder(folderPath);
-        const scriptNames = scriptsInFolder.map((s) => `${s.type}/${s.name}`);
-        menuItems = [
-          {
-            key: "new-request",
-            label: "New Request Script",
-            onClick: () => handleNewScript("request"),
-          },
-          {
-            key: "new-response",
-            label: "New Response Script",
-            onClick: () => handleNewScript("response"),
-          },
-          {
-            key: "new-decode",
-            label: "New Decode Script",
-            onClick: () => handleNewScript("decode"),
-          },
-          { type: "divider" },
-          {
-            key: "export-folder",
-            icon: <ExportOutlined />,
-            label: `Export Folder (${scriptsInFolder.length} scripts)`,
-            onClick: () => handleExport(scriptNames),
-            disabled: scriptsInFolder.length === 0,
-          },
-          { type: "divider" },
-          {
-            key: "delete-folder",
-            label: `Delete Folder (${scriptsInFolder.length} scripts)`,
-            danger: true,
-            onClick: () => handleDeleteFolder(folderPath),
-          },
-        ];
-      } else if (
-        key.startsWith("request/") ||
-        key.startsWith("response/") ||
-        key.startsWith("decode/")
-      ) {
-        const [type, ...nameParts] = key.split("/");
-        const scriptType = type as ScriptType;
-        const scriptName = nameParts.join("/");
-        const fullName = `${scriptType}/${scriptName}`;
-        menuItems = [
-          {
-            key: "export",
-            icon: <ExportOutlined />,
-            label: "Export",
-            onClick: () => handleExport([fullName]),
-          },
-          { type: "divider" },
-          {
-            key: "delete",
-            label: "Delete",
-            danger: true,
-            onClick: () => {
-              Modal.confirm({
-                title: "Delete Script",
-                content: `Are you sure you want to delete "${scriptName}"?`,
-                okText: "Delete",
-                okType: "danger",
-                onOk: async () => {
-                  await deleteScript(scriptType, scriptName);
-                  message.success("Script deleted");
-                },
-              });
-            },
-          },
-        ];
-      }
-
-      const isFolder = key.startsWith("folder:");
-      const isExpanded = expandedKeys.includes(key);
-
-      return (
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            width: "100%",
-          }}
-        >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              minWidth: 0,
-              flex: 1,
-            }}
-          >
-            {isFolder ? (
-              isExpanded ? (
-                <FolderOpenOutlined />
-              ) : (
-                <FolderOutlined />
-              )
-            ) : (
-              <FileOutlined />
-            )}
-            {nodeData.title as React.ReactNode}
-          </span>
-          <Dropdown menu={{ items: menuItems }} trigger={["click"]}>
-            <Button
-              type="text"
-              size="small"
-              icon={<MoreOutlined />}
-              onClick={(e) => e.stopPropagation()}
-              style={{ flexShrink: 0 }}
-            />
-          </Dropdown>
-        </span>
-      );
-    },
-    [
-      expandedKeys,
-      getScriptsInFolder,
-      handleNewScript,
-      handleDeleteFolder,
-      handleExport,
-      deleteScript,
-    ],
-  );
-
   const leftPanel = (
     <ScriptListPanel
+      allScripts={allScripts}
+      selectedScript={selectedScript}
+      selectedType={selectedType}
+      loading={loading}
       searchValue={searchValue}
       onSearchChange={handleSearch}
       onNewScript={handleNewScript}
-      loading={loading}
-      treeData={treeData}
-      expandedKeys={expandedKeys}
-      autoExpandParent={autoExpandParent}
-      onExpand={handleExpand}
-      onSelect={handleSelectScript}
-      renderTreeTitle={renderTreeTitle}
-      selectedKeys={
-        selectedScript?.name ? [`${selectedType}/${selectedScript.name}`] : []
-      }
-      onImportSuccess={handleImportSuccess}
+      onSelectScript={handleSelectScript}
+      onDeleteScript={handleDeleteScript}
+      onRenameScript={handleRenameScript}
+      onDeleteFolder={handleDeleteFolder}
+      onExport={handleExport}
       onExportAll={handleExportAll}
+      onImportSuccess={handleImportSuccess}
       onOpenSandboxSettings={openSandboxSettings}
-      hasScripts={allScripts.length > 0}
+      expandedKeys={expandedKeys}
+      onToggleFolder={handleToggleFolder}
     />
   );
 

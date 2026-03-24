@@ -1,9 +1,10 @@
 import { useMemo, useRef, useCallback, useState } from "react";
-import { Table, Typography, theme, ConfigProvider, Button, Modal, message, Tag, Space, Radio } from "antd";
+import { Table, Typography, theme, ConfigProvider, Button, message, Tag, Space, Radio } from "antd";
 import { LockOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ColumnsType } from "antd/es/table";
 import type { SessionTargetSearchState } from "../../../../types";
 import { useMarkSearch } from "../../hooks/useMarkSearch";
+import { useAppModal } from "../../../../hooks/useAppModal";
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from "../../../../api/config";
 import {
   showTlsWhitelistChangeSuccess,
@@ -61,6 +62,7 @@ export const HeaderView = ({
   clientApp,
 }: HeaderViewProps) => {
   const { token } = theme.useToken();
+  const modal = useAppModal();
   const tableRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'current' | 'original' | 'actual'>('current');
 
@@ -83,7 +85,7 @@ export const HeaderView = ({
       return;
     }
 
-    Modal.confirm({
+    modal.confirm({
       title: "Add to Intercept List",
       content: `Add "${host}" to TLS intercept list? This will enable HTTPS inspection for this domain and disconnect existing tunnel connections.`,
       okText: "Add",
@@ -110,7 +112,7 @@ export const HeaderView = ({
         }
       },
     });
-  }, [host]);
+  }, [host, modal]);
 
   const handleAddAppToInterceptList = useCallback(() => {
     if (!clientApp) {
@@ -118,7 +120,7 @@ export const HeaderView = ({
       return;
     }
 
-    Modal.confirm({
+    modal.confirm({
       title: "Add App to Intercept List",
       content: `Add "${clientApp}" to app intercept list? This will enable HTTPS inspection for this app.`,
       okText: "Add",
@@ -141,7 +143,7 @@ export const HeaderView = ({
         }
       },
     });
-  }, [clientApp]);
+  }, [clientApp, modal]);
 
   const displayHeaders = useMemo(() => {
     if (resolvedViewMode === 'original' && originalHeaders) {

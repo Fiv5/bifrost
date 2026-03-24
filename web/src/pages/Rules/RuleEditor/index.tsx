@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
-import { Empty, Spin, message, Button, Modal, Space } from "antd";
+import { Empty, Spin, message, Button, Space } from "antd";
 import { SaveOutlined, CopyOutlined, DeleteOutlined } from "@ant-design/icons";
 import BifrostEditor, {
   THEME_DARK,
@@ -15,12 +15,14 @@ import BifrostEditor, {
   type ReferenceLocation,
 } from "../../../components/BifrostEditor";
 import { useRulesStore } from "../../../stores/useRulesStore";
+import { useAppModal } from "../../../hooks/useAppModal";
 import { useThemeStore } from "../../../stores/useThemeStore";
 import { useValuesStore } from "../../../stores/useValuesStore";
 import styles from "./index.module.css";
 
 export default function RuleEditor() {
   const navigate = useNavigate();
+  const modal = useAppModal();
   const {
     currentRule,
     selectedRuleName,
@@ -114,7 +116,7 @@ export default function RuleEditor() {
 
   const handleDelete = useCallback(() => {
     if (!currentRule?.name) return;
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Rule",
       content: `Are you sure to delete "${currentRule.name}"?`,
       okText: "Delete",
@@ -127,7 +129,7 @@ export default function RuleEditor() {
         }
       },
     });
-  }, [currentRule, deleteRule]);
+  }, [currentRule, deleteRule, modal]);
 
   const handleNavigate = useCallback(
     (location: ReferenceLocation) => {

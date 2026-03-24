@@ -6,6 +6,15 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::types::{RemoteEnv, RemoteUser};
 
+fn truncate_for_log(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_len).collect();
+        format!("{truncated}...(truncated, total {} bytes)", s.len())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiEnvelope<T> {
     code: i32,
@@ -254,6 +263,7 @@ impl SyncHttpClient {
         B: Serialize + ?Sized,
         T: DeserializeOwned,
     {
+        let method_str = method.to_string();
         let mut request = self
             .http
             .request(method, url)
@@ -274,10 +284,42 @@ impl SyncHttpClient {
         if status.as_u16() == 401 {
             return Err(BifrostError::Network("sync unauthorized".to_string()));
         }
-        let payload = response
-            .json::<T>()
-            .await
-            .map_err(|e| BifrostError::Network(format!("invalid sync response: {e}")))?;
-        Ok(payload)
+
+        let response_text = response.text().await.map_err(|e| {
+            BifrostError::Network(format!(
+                "sync response body read failed: {e} (method={method_str} url={url} status={status})"
+            ))
+        })?;
+
+        if !status.is_success() {
+            let preview = truncate_for_log(&response_text, 500);
+            tracing::error!(
+                target: "bifrost_sync::client",
+                %method_str,
+                %url,
+                status = status.as_u16(),
+                response_body = %preview,
+                "sync request returned non-success status"
+            );
+            return Err(BifrostError::Network(format!(
+                "sync request failed with status {status} (method={method_str} url={url}): {preview}"
+            )));
+        }
+
+        serde_json::from_str::<T>(&response_text).map_err(|e| {
+            let preview = truncate_for_log(&response_text, 500);
+            tracing::error!(
+                target: "bifrost_sync::client",
+                %method_str,
+                %url,
+                status = status.as_u16(),
+                error = %e,
+                response_body = %preview,
+                "failed to decode sync response JSON"
+            );
+            BifrostError::Network(format!(
+                "invalid sync response: {e} (method={method_str} url={url} status={status} body_preview={preview})"
+            ))
+        })
     }
 }

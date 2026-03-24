@@ -606,24 +606,13 @@ export default function Traffic() {
   const deferredPanelFilters = useDeferredValue(panelFilters);
   const [filteredRecords, setFilteredRecords] = useState<TrafficSummary[]>([]);
   const appliedMutationVersionRef = useRef(-1);
-  const filterSignature = useMemo(
-    () => JSON.stringify({
-      toolbar: deferredToolbarFilters,
-      conditions: deferredFilterConditions,
-      panel: deferredPanelFilters,
-    }),
-    [deferredFilterConditions, deferredPanelFilters, deferredToolbarFilters],
-  );
-  const previousFilterSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const filtersChanged = previousFilterSignatureRef.current !== filterSignature;
-    if (
-      filtersChanged ||
+    const needsFullRefilter =
       recordsMutation.reset ||
-      recordsMutation.version < appliedMutationVersionRef.current
-    ) {
-      previousFilterSignatureRef.current = filterSignature;
+      recordsMutation.version < appliedMutationVersionRef.current;
+
+    if (needsFullRefilter) {
       appliedMutationVersionRef.current = recordsMutation.version;
       setFilteredRecords(
         filterRecords(
@@ -650,14 +639,18 @@ export default function Traffic() {
         deferredPanelFilters,
       ),
     );
-  }, [
-    deferredFilterConditions,
-    deferredPanelFilters,
-    deferredToolbarFilters,
-    filterSignature,
-    records,
-    recordsMutation,
-  ]);
+  }, [recordsMutation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    setFilteredRecords(
+      filterRecords(
+        records,
+        deferredToolbarFilters,
+        deferredFilterConditions,
+        deferredPanelFilters,
+      ),
+    );
+  }, [deferredFilterConditions, deferredPanelFilters, deferredToolbarFilters, records]);
 
   const handleClearFiltered = useCallback(async () => {
     const success = await clearTraffic(filteredRecords.map((r) => r.id));

@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
-import { Empty, Spin, message, Button, Modal, Space } from "antd";
+import { Empty, Spin, message, Button, Space } from "antd";
 import {
   FormatPainterOutlined,
   CopyOutlined,
@@ -14,6 +14,7 @@ import {
   DeleteOutlined,
 } from "@ant-design/icons";
 import { useValuesStore } from "../../../stores/useValuesStore";
+import { useAppModal } from "../../../hooks/useAppModal";
 import { useThemeStore } from "../../../stores/useThemeStore";
 import styles from "./index.module.css";
 
@@ -72,6 +73,7 @@ function formatXML(content: string): string {
 }
 
 export default function ValueEditor() {
+  const modal = useAppModal();
   const {
     currentValue,
     selectedValueName,
@@ -252,7 +254,7 @@ export default function ValueEditor() {
 
   const handleDelete = useCallback(() => {
     if (!currentValue?.name) return;
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Value",
       content: `Are you sure to delete "${currentValue.name}"?`,
       okText: "Delete",
@@ -265,7 +267,7 @@ export default function ValueEditor() {
         }
       },
     });
-  }, [currentValue, deleteValue]);
+  }, [currentValue, deleteValue, modal]);
 
   if (!selectedValueName) {
     return (

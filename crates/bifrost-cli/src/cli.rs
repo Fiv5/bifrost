@@ -624,6 +624,8 @@ pub enum RuleCommands {
         #[arg(help = "Rule name")]
         name: String,
     },
+    #[command(about = "Sync rules with remote server")]
+    Sync,
 }
 
 #[derive(Subcommand, Clone)]

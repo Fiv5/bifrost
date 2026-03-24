@@ -7,8 +7,11 @@ import {
   SettingOutlined,
   CodeOutlined,
   ThunderboltOutlined,
+  SunOutlined,
+  MoonOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
+import { useThemeStore } from "../../stores/useThemeStore";
 
 interface MenuItem {
   key: string;
@@ -29,6 +32,13 @@ export default function IconSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const { token } = theme.useToken();
+  const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
+  const setThemeMode = useThemeStore((state) => state.setMode);
+  const isDark = resolvedTheme === "dark";
+
+  const handleThemeToggle = () => {
+    setThemeMode(isDark ? "light" : "dark");
+  };
 
   const styles: Record<string, CSSProperties> = {
     sidebar: {
@@ -91,6 +101,30 @@ export default function IconSidebar() {
           </Tooltip>
         );
       })}
+      <Tooltip title={isDark ? "Switch to Light" : "Switch to Dark"} placement="right">
+        <div
+          style={{
+            marginTop: "auto",
+            marginBottom: 8,
+            width: 34,
+            height: 34,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            fontSize: 16,
+            borderRadius: "50%",
+            color: isDark ? "#facc15" : "#64748b",
+            background: isDark
+              ? "rgba(250, 204, 21, 0.12)"
+              : "rgba(100, 116, 139, 0.1)",
+            transition: "all 0.3s",
+          }}
+          onClick={handleThemeToggle}
+        >
+          {isDark ? <SunOutlined /> : <MoonOutlined />}
+        </div>
+      </Tooltip>
     </div>
   );
 }
