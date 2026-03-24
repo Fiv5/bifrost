@@ -46,6 +46,7 @@ struct SerializedDetailFields {
     socket_status_blob: SerializedBlob,
     req_body_blob: SerializedBlob,
     res_body_blob: SerializedBlob,
+    derived_res_body_blob: SerializedBlob,
     raw_req_body_blob: SerializedBlob,
     raw_res_body_blob: SerializedBlob,
     orig_req_headers_blob: SerializedBlob,
@@ -106,6 +107,7 @@ pub struct TrafficSearchFields {
     pub response_headers: Option<Vec<(String, String)>>,
     pub request_body_ref: Option<BodyRef>,
     pub response_body_ref: Option<BodyRef>,
+    pub derived_response_body_ref: Option<BodyRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +331,10 @@ impl TrafficDbStore {
             .response_body_ref
             .as_ref()
             .and_then(|b| bincode::serialize(b).ok());
+        let derived_res_body_blob = record
+            .derived_response_body_ref
+            .as_ref()
+            .and_then(|b| bincode::serialize(b).ok());
         let raw_req_body_blob = record
             .raw_request_body_ref
             .as_ref()
@@ -370,6 +376,7 @@ impl TrafficDbStore {
             socket_status_blob,
             req_body_blob,
             res_body_blob,
+            derived_res_body_blob,
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
@@ -406,6 +413,7 @@ impl TrafficDbStore {
             socket_status_blob,
             req_body_blob,
             res_body_blob,
+            derived_res_body_blob,
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
@@ -460,6 +468,7 @@ impl TrafficDbStore {
                 rules_blob,
                 req_body_blob,
                 res_body_blob,
+                derived_res_body_blob,
                 raw_req_body_blob,
                 raw_res_body_blob,
                 &record.actual_url,
@@ -626,6 +635,7 @@ impl TrafficDbStore {
             socket_status_blob,
             req_body_blob,
             res_body_blob,
+            derived_res_body_blob,
             raw_req_body_blob,
             raw_res_body_blob,
             orig_req_headers_blob,
@@ -674,6 +684,7 @@ impl TrafficDbStore {
                     rules_blob,
                     req_body_blob,
                     res_body_blob,
+                    derived_res_body_blob,
                     raw_req_body_blob,
                     raw_res_body_blob,
                     &record.actual_url,
@@ -883,6 +894,7 @@ impl TrafficDbStore {
         }
         if need_response_body_ref {
             columns.push("td.response_body_ref_blob");
+            columns.push("td.derived_response_body_ref_blob");
         }
 
         // 全部不需要也就不查。
@@ -899,6 +911,7 @@ impl TrafficDbStore {
                             response_headers: None,
                             request_body_ref: None,
                             response_body_ref: None,
+                            derived_response_body_ref: None,
                         },
                     )
                 })
@@ -966,7 +979,14 @@ impl TrafficDbStore {
 
             let response_body_ref: Option<BodyRef> = if need_response_body_ref {
                 let blob: Option<Vec<u8>> = row.get(idx)?;
-                // idx += 1;
+                idx += 1;
+                blob.and_then(|b| bincode::deserialize(&b).ok())
+            } else {
+                None
+            };
+
+            let derived_response_body_ref: Option<BodyRef> = if need_response_body_ref {
+                let blob: Option<Vec<u8>> = row.get(idx)?;
                 blob.and_then(|b| bincode::deserialize(&b).ok())
             } else {
                 None
@@ -979,6 +999,7 @@ impl TrafficDbStore {
                 response_headers,
                 request_body_ref,
                 response_body_ref,
+                derived_response_body_ref,
             })
         }) {
             Ok(i) => i,
@@ -1160,6 +1181,7 @@ impl TrafficDbStore {
             ),
             request_body_ref: None,
             response_body_ref: None,
+            derived_response_body_ref: None,
             raw_request_body_ref: None,
             raw_response_body_ref: None,
             actual_url: None,
@@ -1179,7 +1201,7 @@ impl TrafficDbStore {
             .query_row(
                 "SELECT timing_blob, request_headers_blob, response_headers_blob, \
                  matched_rules_blob, request_body_ref_blob, response_body_ref_blob, \
-                 raw_request_body_ref_blob, raw_response_body_ref_blob, actual_url, actual_host, \
+                 derived_response_body_ref_blob, raw_request_body_ref_blob, raw_response_body_ref_blob, actual_url, actual_host, \
                  original_request_headers_blob, actual_response_headers_blob, \
                  socket_status_blob, req_script_results_blob, res_script_results_blob, \
                  decode_req_script_results_blob, decode_res_script_results_blob, error_message \
@@ -1192,15 +1214,16 @@ impl TrafficDbStore {
                     let rules_blob: Option<Vec<u8>> = row.get(3)?;
                     let req_body_blob: Option<Vec<u8>> = row.get(4)?;
                     let res_body_blob: Option<Vec<u8>> = row.get(5)?;
-                    let raw_req_body_blob: Option<Vec<u8>> = row.get(6)?;
-                    let raw_res_body_blob: Option<Vec<u8>> = row.get(7)?;
-                    let orig_req_headers_blob: Option<Vec<u8>> = row.get(10)?;
-                    let actual_res_headers_blob: Option<Vec<u8>> = row.get(11)?;
-                    let socket_status_blob: Option<Vec<u8>> = row.get(12)?;
-                    let req_script_results_blob: Option<Vec<u8>> = row.get(13)?;
-                    let res_script_results_blob: Option<Vec<u8>> = row.get(14)?;
-                    let decode_req_results_blob: Option<Vec<u8>> = row.get(15)?;
-                    let decode_res_results_blob: Option<Vec<u8>> = row.get(16)?;
+                    let derived_res_body_blob: Option<Vec<u8>> = row.get(6)?;
+                    let raw_req_body_blob: Option<Vec<u8>> = row.get(7)?;
+                    let raw_res_body_blob: Option<Vec<u8>> = row.get(8)?;
+                    let orig_req_headers_blob: Option<Vec<u8>> = row.get(11)?;
+                    let actual_res_headers_blob: Option<Vec<u8>> = row.get(12)?;
+                    let socket_status_blob: Option<Vec<u8>> = row.get(13)?;
+                    let req_script_results_blob: Option<Vec<u8>> = row.get(14)?;
+                    let res_script_results_blob: Option<Vec<u8>> = row.get(15)?;
+                    let decode_req_results_blob: Option<Vec<u8>> = row.get(16)?;
+                    let decode_res_results_blob: Option<Vec<u8>> = row.get(17)?;
 
                     record.timing = timing_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.request_headers =
@@ -1212,12 +1235,14 @@ impl TrafficDbStore {
                         req_body_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.response_body_ref =
                         res_body_blob.and_then(|b| bincode::deserialize(&b).ok());
+                    record.derived_response_body_ref =
+                        derived_res_body_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.raw_request_body_ref =
                         raw_req_body_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.raw_response_body_ref =
                         raw_res_body_blob.and_then(|b| bincode::deserialize(&b).ok());
-                    record.actual_url = row.get(8)?;
-                    record.actual_host = row.get(9)?;
+                    record.actual_url = row.get(9)?;
+                    record.actual_host = row.get(10)?;
                     record.original_request_headers =
                         orig_req_headers_blob.and_then(|b| bincode::deserialize(&b).ok());
                     record.actual_response_headers =
@@ -1233,7 +1258,7 @@ impl TrafficDbStore {
                         decode_req_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
                     record.decode_res_script_results =
                         decode_res_results_blob.and_then(|b| serde_json::from_slice(&b).ok());
-                    record.error_message = row.get(17)?;
+                    record.error_message = row.get(18)?;
                     Ok(())
                 },
             )

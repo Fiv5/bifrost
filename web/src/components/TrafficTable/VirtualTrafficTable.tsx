@@ -882,6 +882,19 @@ export default function VirtualTrafficTable({
         textOverflow: "ellipsis",
         whiteSpace: "nowrap" as const,
       },
+      sequenceHeader: {
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "flex-end",
+        gap: 4,
+        width: "100%",
+        fontFamily: "monospace",
+      },
+      sequenceHeaderCount: {
+        fontSize: 10,
+        fontWeight: 400,
+        color: token.colorTextTertiary,
+      },
       virtualList: {
         width: "100%",
         minWidth: TABLE_MIN_WIDTH,
@@ -953,10 +966,24 @@ export default function VirtualTrafficTable({
           key={col.key}
           style={{ ...styles.headerCell, ...columnStyles[index] }}
         >
-          {col.title}
+          {col.key === "sequence" ? (
+            <div style={styles.sequenceHeader}>
+              <span>{col.title}</span>
+              <span style={styles.sequenceHeaderCount}>
+                {data.length.toLocaleString()}
+              </span>
+            </div>
+          ) : (
+            col.title
+          )}
         </div>
       )),
-    [styles.headerCell],
+    [
+      data.length,
+      styles.headerCell,
+      styles.sequenceHeader,
+      styles.sequenceHeaderCount,
+    ],
   );
 
   const virtualItems = rowVirtualizer.getVirtualItems();

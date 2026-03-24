@@ -117,6 +117,8 @@ pub struct TrafficRecord {
     pub request_body_ref: Option<BodyRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_body_ref: Option<BodyRef>,
+    #[serde(default)]
+    pub derived_response_body_ref: Option<BodyRef>,
     /// 原始（未 decode）请求体引用：用于 decode 失败回溯或对比。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_request_body_ref: Option<BodyRef>,
@@ -212,6 +214,7 @@ impl TrafficRecord {
             response_headers: None,
             request_body_ref: None,
             response_body_ref: None,
+            derived_response_body_ref: None,
             raw_request_body_ref: None,
             raw_response_body_ref: None,
             client_ip: String::new(),
@@ -375,6 +378,7 @@ impl From<&TrafficRecord> for TrafficSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn test_traffic_record_new() {
@@ -401,5 +405,19 @@ mod tests {
         record.sequence = 42;
         let summary = TrafficSummary::from(&record);
         assert_eq!(summary.sequence, 42);
+    }
+
+    #[test]
+    fn derived_response_body_ref_is_present_in_serialized_detail() {
+        let record = TrafficRecord::new(
+            "REQ-test".to_string(),
+            "GET".to_string(),
+            "http://example.com/sse".to_string(),
+        );
+
+        let value = serde_json::to_value(&record).expect("serialize traffic record");
+        assert!(matches!(value, Value::Object(_)));
+        assert!(value.get("derived_response_body_ref").is_some());
+        assert!(value["derived_response_body_ref"].is_null());
     }
 }

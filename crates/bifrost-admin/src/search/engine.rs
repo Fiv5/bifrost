@@ -291,7 +291,11 @@ impl SearchEngine {
         }
 
         if scope.should_search_response_body() {
-            if let Some(body_ref) = fields.and_then(|f| f.response_body_ref.as_ref()) {
+            if let Some(body_ref) = fields.and_then(|f| {
+                f.derived_response_body_ref
+                    .as_ref()
+                    .or(f.response_body_ref.as_ref())
+            }) {
                 if let Some(m) = self.search_body(body_ref, keyword, "response_body") {
                     return Some(SearchResultItem {
                         record: compact.clone(),
@@ -829,5 +833,76 @@ fn find_char_boundary(s: &str, byte_index: usize, search_forward: bool) -> usize
             }
         }
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use super::SearchEngine;
+    use crate::body_store::BodyRef;
+    use crate::search::{SearchFilters, SearchRequest, SearchScope};
+    use crate::traffic::TrafficRecord;
+    use crate::traffic_db::TrafficDbStore;
+
+    #[test]
+    fn response_body_search_prefers_derived_sse_body() {
+        let dir = TempDir::new().expect("temp dir");
+        let db = Arc::new(
+            TrafficDbStore::new(dir.path().join("traffic"), 1024, 64 * 1024 * 1024, Some(24))
+                .expect("traffic db"),
+        );
+
+        let mut record = TrafficRecord::new(
+            "REQ-search-derived".to_string(),
+            "GET".to_string(),
+            "https://example.com/v1/chat/completions".to_string(),
+        );
+        record.set_sse();
+        record.response_body_ref = Some(BodyRef::Inline {
+            data: concat!(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello \"}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .to_string(),
+        });
+        record.derived_response_body_ref = Some(BodyRef::Inline {
+            data: serde_json::json!({
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello world"
+                    },
+                    "finish_reason": "stop"
+                }]
+            })
+            .to_string(),
+        });
+        db.record(record);
+
+        let engine = SearchEngine::new(db, None);
+        let response = engine.search(&SearchRequest {
+            keyword: "hello world".to_string(),
+            scope: SearchScope {
+                all: false,
+                response_body: true,
+                ..Default::default()
+            },
+            filters: SearchFilters::default(),
+            cursor: None,
+            limit: Some(20),
+        });
+
+        assert_eq!(response.total_matched, 1);
+        assert_eq!(response.results[0].matches[0].field, "response_body");
+        assert!(response.results[0].matches[0]
+            .preview
+            .contains("hello world"));
     }
 }

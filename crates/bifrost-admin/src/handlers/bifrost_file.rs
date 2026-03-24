@@ -338,6 +338,7 @@ fn network_record_to_traffic_record(record: &NetworkRecord) -> TrafficRecord {
         response_headers: record.response_headers.clone(),
         request_body_ref: None,
         response_body_ref: None,
+        derived_response_body_ref: None,
         raw_request_body_ref: None,
         raw_response_body_ref: None,
         client_ip: "imported".to_string(),

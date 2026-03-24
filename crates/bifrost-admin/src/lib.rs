@@ -53,7 +53,10 @@ pub use port_rebind::{
 pub use push::{start_push_tasks, PushManager, SharedPushManager};
 pub use router::AdminRouter;
 pub use security::{is_cert_public_request, is_valid_admin_request, AdminSecurityConfig};
-pub use sse::{parse_sse_event, parse_sse_events_from_text, SseEvent, SseHub};
+pub use sse::{
+    assemble_openai_like_response_body_from_text, parse_sse_event, parse_sse_events_from_text,
+    SseEvent, SseHub, MAX_OPENAI_LIKE_SSE_ASSEMBLY_INPUT_BYTES,
+};
 pub use state::{
     AdminState, RuntimeConfig, SharedAccessControl, SharedRuntimeConfig, SharedScriptManager,
     SharedSystemProxyManager, SharedValuesStorage,
