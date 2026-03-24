@@ -199,6 +199,12 @@ fn parse_sse_event_with_error(raw: &str, parse_error: bool) -> SseEvent {
         raw.to_string()
     };
 
+    let event = if event.is_none() && data.trim() == "[DONE]" {
+        Some("finish".to_string())
+    } else {
+        event
+    };
+
     SseEvent {
         seq: 0,
         ts: 0,
@@ -242,4 +248,16 @@ pub fn parse_sse_events_from_text(input: &str) -> (Vec<SseEvent>, String) {
         buffer.push(ch);
     }
     (events, buffer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sse_event;
+
+    #[test]
+    fn done_message_is_normalized_to_finish_event() {
+        let event = parse_sse_event("data: [DONE]");
+        assert_eq!(event.event.as_deref(), Some("finish"));
+        assert_eq!(event.data, "[DONE]");
+    }
 }

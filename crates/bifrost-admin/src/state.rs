@@ -253,18 +253,66 @@ impl AdminState {
         }
     }
 
+    fn socket_status_has_traffic(socket_status: &SocketStatus) -> bool {
+        socket_status.send_count > 0
+            || socket_status.receive_count > 0
+            || socket_status.send_bytes > 0
+            || socket_status.receive_bytes > 0
+            || socket_status.frame_count > 0
+    }
+
+    fn merge_closed_socket_status_from_summary(
+        is_sse: bool,
+        summary_frame_count: usize,
+        summary_response_size: usize,
+        socket_status: &SocketStatus,
+    ) -> SocketStatus {
+        let mut merged = socket_status.clone();
+        merged.is_open = false;
+
+        let merged_frame_count = summary_frame_count.max(merged.frame_count);
+        merged.frame_count = merged_frame_count;
+
+        if is_sse {
+            if merged.receive_count == 0 && merged_frame_count > 0 {
+                merged.receive_count = merged_frame_count as u64;
+            }
+            if merged.receive_bytes == 0 && summary_response_size > 0 {
+                merged.receive_bytes = summary_response_size as u64;
+            }
+        }
+
+        merged
+    }
+
     pub fn reconcile_socket_summary(&self, summary: &mut TrafficSummaryCompact) {
         if !summary.is_sse() && !summary.is_websocket() && !summary.is_tunnel() {
             return;
         }
 
-        if let Some(status) = self.runtime_socket_status(&summary.id, summary.is_sse()) {
+        let summary_is_sse = summary.is_sse();
+        let summary_frame_count = summary.fc;
+        let summary_response_size = summary.res_sz;
+
+        if let Some(status) = self.runtime_socket_status(&summary.id, summary_is_sse) {
             summary.fc = status.frame_count;
             summary.ss = Some(status);
         } else if let Some(socket_status) = summary.ss.as_mut() {
             if socket_status.is_open {
-                socket_status.is_open = false;
-                let status = socket_status.clone();
+                let has_summary_traffic = summary_frame_count > 0 || summary_response_size > 0;
+                let has_socket_traffic = Self::socket_status_has_traffic(socket_status);
+                if summary_is_sse && !has_summary_traffic && !has_socket_traffic {
+                    socket_status.is_open = false;
+                    return;
+                }
+
+                let status = Self::merge_closed_socket_status_from_summary(
+                    summary_is_sse,
+                    summary_frame_count,
+                    summary_response_size,
+                    socket_status,
+                );
+                *socket_status = status.clone();
                 let frame_count = summary.fc.max(status.frame_count);
                 let response_size = if summary.is_sse() {
                     Some(
@@ -757,6 +805,126 @@ mod tests {
         state.reconcile_socket_summary(&mut summary);
 
         assert_eq!(summary.ss.as_ref().map(|s| s.is_open), Some(false));
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn reconcile_socket_summary_preserves_sse_counts_when_closing_stale_open_status() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap());
+        let mut state = AdminState::new(9900);
+        state.traffic_db_store = Some(store.clone());
+
+        let mut record = TrafficRecord::new(
+            "stale-sse-open-1".to_string(),
+            "GET".to_string(),
+            "https://example.com/stream".to_string(),
+        );
+        record.status = 200;
+        record.is_sse = true;
+        record.content_type = Some("text/event-stream".to_string());
+        record.response_size = 4096;
+        record.frame_count = 12;
+        record.last_frame_id = 12;
+        record.socket_status = Some(SocketStatus {
+            is_open: true,
+            send_count: 0,
+            receive_count: 0,
+            send_bytes: 0,
+            receive_bytes: 0,
+            frame_count: 0,
+            close_code: None,
+            close_reason: None,
+        });
+        store.record(record);
+
+        let mut summary = store
+            .query(&crate::traffic_db::QueryParams {
+                limit: Some(10),
+                direction: crate::traffic_db::Direction::Forward,
+                ..Default::default()
+            })
+            .records
+            .into_iter()
+            .find(|item| item.id == "stale-sse-open-1")
+            .expect("summary should exist");
+
+        summary.fc = 12;
+        summary.res_sz = 4096;
+
+        state.reconcile_socket_summary(&mut summary);
+
+        let socket_status = summary.ss.expect("socket status should exist");
+        assert!(!socket_status.is_open);
+        assert_eq!(socket_status.frame_count, 12);
+        assert_eq!(socket_status.receive_count, 12);
+        assert_eq!(socket_status.receive_bytes, 4096);
+
+        let persisted = store
+            .get_by_id("stale-sse-open-1")
+            .expect("record should still exist");
+        let persisted_status = persisted.socket_status.expect("persisted socket status");
+        assert!(!persisted_status.is_open);
+        assert_eq!(persisted_status.frame_count, 12);
+        assert_eq!(persisted_status.receive_count, 12);
+        assert_eq!(persisted_status.receive_bytes, 4096);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn reconcile_socket_summary_does_not_persist_empty_sse_close_from_stale_snapshot() {
+        let dir = create_test_dir();
+        let store = Arc::new(TrafficDbStore::new(dir.clone(), 100, 0, None).unwrap());
+        let mut state = AdminState::new(9900);
+        state.traffic_db_store = Some(store.clone());
+
+        let mut record = TrafficRecord::new(
+            "stale-sse-empty-1".to_string(),
+            "GET".to_string(),
+            "https://example.com/stream".to_string(),
+        );
+        record.status = 200;
+        record.is_sse = true;
+        record.content_type = Some("text/event-stream".to_string());
+        record.socket_status = Some(SocketStatus {
+            is_open: true,
+            send_count: 0,
+            receive_count: 0,
+            send_bytes: 0,
+            receive_bytes: 0,
+            frame_count: 0,
+            close_code: None,
+            close_reason: None,
+        });
+        store.record(record);
+
+        let mut summary = store
+            .query(&crate::traffic_db::QueryParams {
+                limit: Some(10),
+                direction: crate::traffic_db::Direction::Forward,
+                ..Default::default()
+            })
+            .records
+            .into_iter()
+            .find(|item| item.id == "stale-sse-empty-1")
+            .expect("summary should exist");
+
+        state.reconcile_socket_summary(&mut summary);
+
+        let socket_status = summary.ss.expect("socket status should exist");
+        assert!(!socket_status.is_open);
+        assert_eq!(socket_status.receive_count, 0);
+        assert_eq!(socket_status.receive_bytes, 0);
+
+        let persisted = store
+            .get_by_id("stale-sse-empty-1")
+            .expect("record should still exist");
+        let persisted_status = persisted.socket_status.expect("persisted socket status");
+        assert!(persisted_status.is_open);
+        assert_eq!(persisted_status.receive_count, 0);
+        assert_eq!(persisted_status.receive_bytes, 0);
 
         cleanup_test_dir(&dir);
     }

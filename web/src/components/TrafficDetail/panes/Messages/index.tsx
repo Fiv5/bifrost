@@ -417,9 +417,11 @@ const parseSseChunkToEvent = (
 
   const data = dataLines.length > 0 ? dataLines.join("\n") : chunk;
   if (!data && !eventId && !eventType) return null;
+  const normalizedEventType =
+    !eventType && data.trim() === "[DONE]" ? "finish" : eventType;
   return {
     id: eventId ?? String(index + 1),
-    event: eventType ?? "message",
+    event: normalizedEventType ?? "message",
     data,
     timestamp,
   };
@@ -508,6 +510,7 @@ export const Messages = ({
   const ssePendingRef = useRef<SSEEvent[]>([]);
   const sseFlushRef = useRef<number | null>(null);
   const sseClosedByUsRef = useRef(false);
+  const sseSessionKeyRef = useRef<string | null>(null);
   const [sseForceClosed, setSseForceClosed] = useState(false);
   const [wsPayloadById, setWsPayloadById] = useState<Record<number, string>>(
     {},
@@ -607,6 +610,10 @@ export const Messages = ({
   }, [fetchFrames, frameCount, isWebSocket]);
 
   useEffect(() => {
+    sseClosedByUsRef.current = true;
+    sseEventSourceRef.current?.close();
+    sseEventSourceRef.current = null;
+    sseSessionKeyRef.current = null;
     setFrames([]);
     setLastFetchedFrameId(0);
     setLastSeenFrameId(0);
@@ -628,6 +635,10 @@ export const Messages = ({
 
   useEffect(() => {
     return () => {
+      sseClosedByUsRef.current = true;
+      sseEventSourceRef.current?.close();
+      sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
       if (sseFlushRef.current !== null) {
         cancelAnimationFrame(sseFlushRef.current);
         sseFlushRef.current = null;
@@ -673,13 +684,45 @@ export const Messages = ({
   /* eslint-enable react-hooks/exhaustive-deps */
 
   useEffect(() => {
-    if (isWebSocket || !isConnectionOpen || sseForceClosed) {
+    const sessionKey = `${recordId}:${sseReloadToken}`;
+
+    if (isWebSocket || sseForceClosed) {
+      if (sseEventSourceRef.current) {
+        sseClosedByUsRef.current = true;
+        sseEventSourceRef.current.close();
+        sseEventSourceRef.current = null;
+        sseSessionKeyRef.current = null;
+        setSseConnectionState("closed");
+        setSseLoading(false);
+      }
       return;
     }
+
+    if (
+      sseEventSourceRef.current &&
+      sseSessionKeyRef.current === sessionKey
+    ) {
+      // 一旦 live SSE 详情订阅已经建立，不要因为 summary 先收到 closed
+      // 就立刻把 EventSource 关掉；否则尾部事件会在 close 边界被前端自己截断。
+      return;
+    }
+
+    if (sseEventSourceRef.current) {
+      sseClosedByUsRef.current = true;
+      sseEventSourceRef.current.close();
+      sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
+    }
+
+    if (!isConnectionOpen) {
+      return;
+    }
+
     const eventSource = new EventSource(
       `${buildApiUrl(`/traffic/${recordId}/sse/stream`)}?from=begin&batch=1&x_client_id=${encodeURIComponent(getClientId())}`,
     );
     sseEventSourceRef.current = eventSource;
+    sseSessionKeyRef.current = sessionKey;
     sseClosedByUsRef.current = false;
     setSseConnectionState("connecting");
     setSseLoading(true);
@@ -697,6 +740,14 @@ export const Messages = ({
           return next.slice(next.length - MAX_SSE_EVENTS);
         });
       }
+    };
+
+    const flushPendingNow = () => {
+      if (sseFlushRef.current !== null) {
+        cancelAnimationFrame(sseFlushRef.current);
+        sseFlushRef.current = null;
+      }
+      flushPending();
     };
 
     const enqueueEvent = (ev: SSEEvent) => {
@@ -777,22 +828,16 @@ export const Messages = ({
 
     eventSource.onerror = () => {
       if (sseClosedByUsRef.current) return;
+      flushPendingNow();
       eventSource.close();
       sseEventSourceRef.current = null;
+      sseSessionKeyRef.current = null;
       setSseConnectionState("closed");
       setSseLoading(false);
       setSseForceClosed(true);
       getResponseBody(recordId)
         .then((body) => commitResponseBody(body))
         .catch(() => {});
-    };
-
-    return () => {
-      sseClosedByUsRef.current = true;
-      eventSource.close();
-      sseEventSourceRef.current = null;
-      setSseConnectionState("closed");
-      setSseLoading(false);
     };
   }, [
     isConnectionOpen,

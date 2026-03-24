@@ -337,6 +337,9 @@ export default function MessagesPanel() {
           overscan={3}
           followTail={followTail}
           onFollowTailChange={handleFollowTailChange}
+          showScrollControls
+          scrollTopTestId="replay-messages-scroll-top"
+          scrollBottomTestId="replay-messages-scroll-bottom"
           emptyContent={
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}

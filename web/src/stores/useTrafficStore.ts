@@ -364,6 +364,19 @@ export const replaceUpdatedTrafficRecordsInList = (
   return changed ? next : current;
 };
 
+const findLastRecordById = (
+  records: TrafficSummary[],
+  id: string,
+): TrafficSummary | undefined => {
+  for (let i = records.length - 1; i >= 0; i -= 1) {
+    const record = records[i];
+    if (record?.id === id) {
+      return record;
+    }
+  }
+  return undefined;
+};
+
 const getBoundaryState = (records: TrafficSummary[]) => {
   const oldestRecord = records[0];
   const latestRecord = records[records.length - 1];
@@ -1058,7 +1071,10 @@ export const useTrafficStore = create<TrafficState>()(
 
               let updatedCurrentRecord = prevState.currentRecord;
               if (updatedCurrentRecord) {
-                const updatedSummary = batch.updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+                const updatedSummary = findLastRecordById(
+                  batch.updatedRecords,
+                  updatedCurrentRecord.id,
+                );
                 if (updatedSummary) {
                   updatedCurrentRecord = mergeDetailWithSummary(
                     updatedCurrentRecord,
@@ -1172,7 +1188,10 @@ export const useTrafficStore = create<TrafficState>()(
 
           let updatedCurrentRecord = prevState.currentRecord;
           if (updatedCurrentRecord) {
-            const updatedSummary = updatedRecords.find(r => r.id === updatedCurrentRecord!.id);
+            const updatedSummary = findLastRecordById(
+              updatedRecords,
+              updatedCurrentRecord.id,
+            );
             if (updatedSummary) {
               updatedCurrentRecord = mergeDetailWithSummary(
                 updatedCurrentRecord,
