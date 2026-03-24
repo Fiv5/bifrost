@@ -9,10 +9,12 @@ import {
   DeleteOutlined,
   CopyOutlined,
   ExportOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../../hooks/useExportBifrost";
+import { useAppModal } from "../../../hooks/useAppModal";
 import styles from "./index.module.css";
 
 type ValueSortMode = "created_desc" | "updated_desc" | "name_asc";
@@ -39,6 +41,7 @@ export default function ValueList() {
     hasUnsavedChanges,
   } = useValuesStore();
 
+  const modal = useAppModal();
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newValueName, setNewValueName] = useState("");
   const [renameModalVisible, setRenameModalVisible] = useState(false);
@@ -88,7 +91,7 @@ export default function ValueList() {
   };
 
   const handleDelete = async (name: string) => {
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Value",
       content: `Are you sure to delete "${name}"?`,
       okText: "Delete",
@@ -109,7 +112,7 @@ export default function ValueList() {
       handleDelete(names[0]);
       return;
     }
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Values",
       content: `Are you sure to delete ${names.length} values?`,
       okText: "Delete",
@@ -352,11 +355,20 @@ export default function ValueList() {
                       </div>
                     </div>
                     <div className={styles.itemExtra}>
-                      <span className={styles.itemPreview} title={item.value}>
-                        {item.value.length > 30
-                          ? `${item.value.slice(0, 30).replace(/\n/g, "↵")}...`
-                          : item.value.replace(/\n/g, "↵")}
-                      </span>
+                      <Dropdown
+                        menu={{
+                          items: getContextMenuItems(item.name, item.value),
+                        }}
+                        trigger={["click"]}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MoreOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          className={styles.moreBtn}
+                        />
+                      </Dropdown>
                     </div>
                   </div>
                 </Dropdown>

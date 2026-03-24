@@ -22,7 +22,6 @@ import {
   WarningOutlined,
   GlobalOutlined,
   SafetyCertificateOutlined,
-  BgColorsOutlined,
   ThunderboltOutlined,
   SafetyOutlined,
 } from "@ant-design/icons";
@@ -68,10 +67,8 @@ import {
 } from "../../api/cert";
 import { getPendingAuthorizations } from "../../api/whitelist";
 import type { PendingAuth, AppMetrics, HostMetrics } from "../../types";
-import { useThemeStore } from "../../stores/useThemeStore";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import ProxyTab from "./tabs/ProxyTab";
-import AppearanceTab from "./tabs/AppearanceTab";
 import CertificateTab from "./tabs/CertificateTab";
 import MetricsTab from "./tabs/MetricsTab";
 import AccessControlTab from "./tabs/AccessControlTab";
@@ -95,7 +92,6 @@ const TAB_PARAM = "tab";
 const DEFAULT_TAB = "proxy";
 const VALID_TABS = [
   "proxy",
-  "appearance",
   "certificate",
   "metrics",
   "access",
@@ -137,7 +133,6 @@ export default function Settings() {
         fetchHistory: state.fetchHistory,
       })),
     );
-  const { mode: themeMode, setMode: setThemeMode } = useThemeStore();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const tabFromUrl = searchParams.get(TAB_PARAM);
@@ -1137,17 +1132,6 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
           handleRemoveAppExcludePattern={handleRemoveAppExcludePattern}
           appSuggestions={appSuggestions}
         />
-      ),
-    },
-    {
-      key: "appearance",
-      label: (
-        <span>
-          <BgColorsOutlined /> Appearance
-        </span>
-      ),
-      children: (
-        <AppearanceTab themeMode={themeMode} setThemeMode={setThemeMode} />
       ),
     },
     {

@@ -150,16 +150,15 @@
   gap: 4px;
   flex-shrink: 0;
   margin-left: 8px;
+}
+
+.moreBtn {
   opacity: 0;
-  pointer-events: none;
   transition: opacity 0.2s ease;
 }
 
-.item:hover .itemExtra,
-.item.selected .itemExtra,
-.item.multiSelected .itemExtra {
+.item:hover .moreBtn {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .itemPreview {

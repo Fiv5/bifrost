@@ -287,7 +287,10 @@ impl ScriptEngine {
             if d == type_base_dir {
                 break;
             }
-            if d.read_dir().map(|mut rd| rd.next().is_none()).unwrap_or(false) {
+            if d.read_dir()
+                .map(|mut rd| rd.next().is_none())
+                .unwrap_or(false)
+            {
                 std::fs::remove_dir(&d)?;
                 dir = d.parent().map(|p| p.to_path_buf());
             } else {

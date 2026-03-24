@@ -143,6 +143,23 @@
   margin-left: 2px;
 }
 
+.itemExtra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.moreBtn {
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.item:hover .moreBtn {
+  opacity: 1;
+}
+
 .loading {
   display: flex;
   justify-content: center;

@@ -691,10 +691,7 @@ async fn handle_rename(
             ))
         }
         Err(e) => {
-            error!(
-                "Failed to rename script {}/{}: {}",
-                script_type, name, e
-            );
+            error!("Failed to rename script {}/{}: {}", script_type, name, e);
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 &format!("Failed to rename script: {}", e),

@@ -33,6 +33,7 @@ import {
   ExportOutlined,
   SettingOutlined,
   EditOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import Editor from "@monaco-editor/react";
 import { useScriptsStore } from "../../stores/useScriptsStore";
@@ -47,6 +48,7 @@ import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
 import { ImportBifrostButton } from "../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../hooks/useExportBifrost";
+import { useAppModal } from "../../hooks/useAppModal";
 import { getSandboxConfig, updateSandboxConfig } from "../../api/config";
 import pushService from "../../services/pushService";
 import styles from "./index.module.css";
@@ -463,6 +465,7 @@ function ScriptListPanel({
   expandedKeys: React.Key[];
   onToggleFolder: (folderKey: string) => void;
 }) {
+  const modal = useAppModal();
   const [selectedScripts, setSelectedScripts] = useState<string[]>([]);
   const lastClickedIndexRef = useRef<number | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ type: ScriptType; name: string } | null>(null);
@@ -706,7 +709,7 @@ function ScriptListPanel({
           danger: true,
           onClick: () => {
             if (bulkKeys.length > 1) {
-              Modal.confirm({
+              modal.confirm({
                 title: "Delete Scripts",
                 content: `Are you sure you want to delete ${bulkKeys.length} scripts?`,
                 okText: "Delete All",
@@ -723,7 +726,7 @@ function ScriptListPanel({
             } else {
               const [type, ...nameParts] = bulkKeys[0].split("/");
               const scriptName = nameParts.join("/");
-              Modal.confirm({
+              modal.confirm({
                 title: "Delete Script",
                 content: `Are you sure you want to delete "${scriptName}"?`,
                 okText: "Delete",
@@ -745,6 +748,7 @@ function ScriptListPanel({
       onExport,
       onDeleteFolder,
       onDeleteScript,
+      modal,
     ],
   );
 
@@ -917,6 +921,20 @@ function ScriptListPanel({
                               : "DEC"}
                         </Tag>
                       </div>
+                    </div>
+                    <div className={styles.itemExtra}>
+                      <Dropdown
+                        menu={{ items: getContextMenuItems(node) }}
+                        trigger={["click"]}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<MoreOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          className={styles.moreBtn}
+                        />
+                      </Dropdown>
                     </div>
                   </div>
                 </Dropdown>
@@ -1516,6 +1534,7 @@ export default function ScriptsPage() {
     createNewScript,
   } = useScriptsStore();
   const { exportFile } = useExportBifrost();
+  const modal = useAppModal();
 
   const [editorContent, setEditorContent] = useState("");
   const [newScriptName, setNewScriptName] = useState("");
@@ -1643,7 +1662,7 @@ export default function ScriptsPage() {
         return;
       }
 
-      Modal.confirm({
+      modal.confirm({
         title: "Delete Folder",
         content: `Are you sure you want to delete folder "${folderPath}" and all ${scriptsToDelete.length} script(s) inside?`,
         okText: "Delete All",
@@ -1656,7 +1675,7 @@ export default function ScriptsPage() {
         },
       });
     },
-    [allScripts, deleteScript],
+    [allScripts, deleteScript, modal],
   );
 
   const handleSave = useCallback(async () => {
@@ -1691,7 +1710,7 @@ export default function ScriptsPage() {
 
   const handleDelete = useCallback(async () => {
     if (!selectedScript?.name) return;
-    Modal.confirm({
+    modal.confirm({
       title: "Delete Script",
       content: `Are you sure you want to delete "${selectedScript.name}"?`,
       okText: "Delete",
@@ -1701,7 +1720,7 @@ export default function ScriptsPage() {
         message.success("Script deleted");
       },
     });
-  }, [selectedScript, selectedType, deleteScript]);
+  }, [selectedScript, selectedType, deleteScript, modal]);
 
   const handleDeleteScript = useCallback(
     async (type: ScriptType, name: string) => {
