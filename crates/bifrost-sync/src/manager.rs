@@ -443,6 +443,7 @@ impl SyncManager {
             .map(|env| (env.name.clone(), env))
             .collect();
 
+        let mut just_deleted_names: HashSet<String> = HashSet::new();
         let deleted_rule_names: Vec<String> = state.deleted_rules.keys().cloned().collect();
         for deleted_name in deleted_rule_names {
             let Some(tombstone) = state.deleted_rules.get(&deleted_name).cloned() else {
@@ -452,10 +453,40 @@ impl SyncManager {
                 .iter()
                 .find(|env| env.id == tombstone.remote_id)
             {
-                client.delete_env(config, token, remote_env).await?;
+                match client.delete_env(config, token, remote_env).await {
+                    Ok(_) => {
+                        tracing::info!(
+                            target: "bifrost_sync::manager",
+                            name = %deleted_name,
+                            remote_id = %tombstone.remote_id,
+                            "deleted remote rule via tombstone"
+                        );
+                        state.deleted_rules.remove(&deleted_name);
+                        state.rule_bindings.remove(&deleted_name);
+                        just_deleted_names.insert(deleted_name);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "bifrost_sync::manager",
+                            name = %deleted_name,
+                            remote_id = %tombstone.remote_id,
+                            %error,
+                            "failed to delete remote rule, keeping tombstone for retry"
+                        );
+                        just_deleted_names.insert(deleted_name);
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    target: "bifrost_sync::manager",
+                    name = %deleted_name,
+                    remote_id = %tombstone.remote_id,
+                    "remote rule not found, clearing tombstone"
+                );
+                state.deleted_rules.remove(&deleted_name);
+                state.rule_bindings.remove(&deleted_name);
+                just_deleted_names.insert(deleted_name);
             }
-            state.deleted_rules.remove(&deleted_name);
-            state.rule_bindings.remove(&deleted_name);
         }
 
         let mut all_names: HashSet<String> = local_map.keys().cloned().collect();
@@ -539,6 +570,14 @@ impl SyncManager {
                     pushed_local = true;
                 }
                 (None, Some(remote_env)) => {
+                    if just_deleted_names.contains(&name) {
+                        tracing::debug!(
+                            target: "bifrost_sync::manager",
+                            name = %remote_env.name,
+                            "skipping recently deleted rule, not re-pulling from remote"
+                        );
+                        continue;
+                    }
                     tracing::info!(
                         target: "bifrost_sync::manager",
                         name = %remote_env.name,
