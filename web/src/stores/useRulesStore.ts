@@ -171,17 +171,27 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   },
 
   toggleRule: async (name: string, enabled: boolean) => {
-    set({ loading: true, error: null });
+    const previousRules = get().rules;
+    set({
+      rules: previousRules.map((r) =>
+        r.name === name ? { ...r, enabled } : r
+      ),
+    });
     try {
       if (enabled) {
         await api.enableRule(name);
       } else {
         await api.disableRule(name);
       }
-      await get().fetchRules();
+      const rules = await api.getRules();
+      set({ rules: sortRulesByManualOrder(rules) });
+      if (get().currentRule?.name === name) {
+        const rule = await api.getRule(name);
+        set({ currentRule: rule });
+      }
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ rules: previousRules, error: isConnectionIssueError(e) ? null : (e as Error).message });
       return false;
     }
   },

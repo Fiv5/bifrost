@@ -410,10 +410,13 @@ export default function RuleList() {
     [filteredRules, selectedRuleName, selectRule]
   );
 
+  const prevSelectedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedRuleName) {
+    if (!selectedRuleName || selectedRuleName === prevSelectedRef.current) {
+      prevSelectedRef.current = selectedRuleName;
       return;
     }
+    prevSelectedRef.current = selectedRuleName;
 
     const selectedItem = listContainerRef.current?.querySelector<HTMLElement>(
       `[data-rule-name="${CSS.escape(selectedRuleName)}"]`
