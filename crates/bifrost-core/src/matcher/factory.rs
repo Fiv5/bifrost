@@ -76,10 +76,15 @@ fn is_regex_pattern(pattern: &str) -> bool {
 }
 
 fn is_ip_pattern(pattern: &str) -> bool {
-    let clean = pattern
-        .strip_prefix("http://")
-        .or_else(|| pattern.strip_prefix("https://"))
-        .unwrap_or(pattern);
+    if pattern.starts_with("http://")
+        || pattern.starts_with("https://")
+        || pattern.starts_with("ws://")
+        || pattern.starts_with("wss://")
+    {
+        return false;
+    }
+
+    let clean = pattern;
 
     if clean.contains('/') && !clean.starts_with('/') {
         let parts: Vec<&str> = clean.splitn(2, '/').collect();
@@ -102,7 +107,11 @@ fn is_ip_pattern(pattern: &str) -> bool {
     let host_without_port = if host_part.contains(':') {
         let colon_count = host_part.matches(':').count();
         if colon_count == 1 {
-            host_part.split(':').next().unwrap_or(host_part)
+            let parts: Vec<&str> = host_part.splitn(2, ':').collect();
+            if parts[1].parse::<u16>().is_ok() {
+                return false;
+            }
+            parts[0]
         } else {
             host_part
         }

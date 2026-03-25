@@ -707,14 +707,25 @@ fn parse_line_with_values(line: &str, values: &HashMap<String, String>) -> Resul
         return Ok(vec![]);
     }
 
-    let (patterns, protocol_values, include_filters, exclude_filters, line_props) =
+    let (patterns, mut protocol_values, include_filters, exclude_filters, line_props) =
         extract_pattern_and_protocols(&parts)?;
 
     if protocol_values.is_empty() {
-        return Err(BifrostError::Parse(format!(
-            "No protocol found in rule: {}",
-            line
-        )));
+        let has_url_pattern = patterns.iter().any(|p| {
+            p.starts_with("http://")
+                || p.starts_with("https://")
+                || p.starts_with("ws://")
+                || p.starts_with("wss://")
+                || HOST_PORT_REGEX.is_match(p)
+        });
+        if has_url_pattern {
+            protocol_values.push((Protocol::Passthrough, String::new()));
+        } else {
+            return Err(BifrostError::Parse(format!(
+                "No protocol found in rule: {}",
+                line
+            )));
+        }
     }
 
     let mut rules = Vec::new();
@@ -1421,6 +1432,13 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                     } else {
                         patterns.push(part.clone());
                     }
+                } else if (protocol == Protocol::Http
+                    || protocol == Protocol::Https
+                    || protocol == Protocol::Ws
+                    || protocol == Protocol::Wss)
+                    && patterns.is_empty()
+                {
+                    patterns.push(part.clone());
                 } else {
                     protocol_values.push((protocol, value));
                 }
@@ -1433,7 +1451,11 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
                 }
             }
         } else if HOST_PORT_REGEX.is_match(part) {
-            protocol_values.push((Protocol::Host, part.clone()));
+            if patterns.is_empty() {
+                patterns.push(part.clone());
+            } else {
+                protocol_values.push((Protocol::Host, part.clone()));
+            }
         } else {
             let is_passthrough = check_passthrough_without_protocol(part, &patterns);
             if is_passthrough {
@@ -2748,5 +2770,50 @@ combined.test reqScript://reqHandler resScript://resHandler
         assert_eq!(rules[0].pattern, "https://a.com");
         assert_eq!(rules[0].protocol, Protocol::Https);
         assert_eq!(rules[0].value, "b.com");
+    }
+
+    #[test]
+    fn test_parse_single_http_localhost_url_as_pattern() {
+        let rules = parse_line("http://127.0.0.1:8889").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://127.0.0.1:8889");
+    }
+
+    #[test]
+    fn test_parse_single_http_ip_url_as_pattern() {
+        let rules = parse_line("http://192.168.1.1:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://192.168.1.1:3000");
+    }
+
+    #[test]
+    fn test_parse_single_https_localhost_url_as_pattern() {
+        let rules = parse_line("https://127.0.0.1:443").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://127.0.0.1:443");
+    }
+
+    #[test]
+    fn test_parse_single_http_localhost_name_as_pattern() {
+        let rules = parse_line("http://localhost:8080").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_parse_single_bare_ip_port_as_pattern() {
+        let rules = parse_line("127.0.0.1:8889").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "127.0.0.1:8889");
+    }
+
+    #[test]
+    fn test_parse_single_http_ip_url_with_target() {
+        let rules =
+            parse_line("http://127.0.0.1:8889 http://127.0.0.1:9999").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://127.0.0.1:8889");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "127.0.0.1:9999");
     }
 }
