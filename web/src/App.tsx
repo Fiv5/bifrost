@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, useCallback, type CSSProperties } from "react";
 import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ConfigProvider, Modal, Steps, App as AntApp, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
@@ -56,6 +56,30 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
     const cleanup = initThemeListener();
     return cleanup;
   }, []);
+
+  const holderRender = useCallback(
+    (children: React.ReactNode) => (
+      <ConfigProvider
+        theme={{
+          algorithm:
+            resolvedTheme === "dark"
+              ? theme.darkAlgorithm
+              : theme.defaultAlgorithm,
+          token: {
+            colorPrimary: "#1677ff",
+            borderRadius: 6,
+          },
+        }}
+      >
+        <AntApp>{children}</AntApp>
+      </ConfigProvider>
+    ),
+    [resolvedTheme],
+  );
+
+  useEffect(() => {
+    ConfigProvider.config({ holderRender });
+  }, [holderRender]);
 
   useEffect(() => {
     message.config({ maxCount: 1, top: 24 });

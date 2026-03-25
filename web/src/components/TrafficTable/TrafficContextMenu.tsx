@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Menu, message } from 'antd';
+import { Menu, message, Modal } from 'antd';
 import type { MenuProps } from 'antd';
 import {
   CopyOutlined,
@@ -17,7 +17,6 @@ import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/tra
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../api/config';
 import { useReplayStore } from '../../stores/useReplayStore';
 import { useExportBifrost } from '../../hooks/useExportBifrost';
-import { useAppModal } from '../../hooks/useAppModal';
 
 const MENU_WIDTH = 220;
 const MENU_ITEM_HEIGHT = 36;
@@ -40,7 +39,6 @@ export default function TrafficContextMenu({
 }: TrafficContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
-  const modal = useAppModal();
   const importFromTraffic = useReplayStore((state) => state.importFromTraffic);
   const { exportFile } = useExportBifrost();
 
@@ -168,7 +166,7 @@ export default function TrafficContextMenu({
 
     onClose();
 
-    modal.confirm({
+    Modal.confirm({
       title: 'Add to Intercept List',
       content: `Add "${host}" to TLS intercept list? This will enable HTTPS inspection for this domain and disconnect existing tunnel connections.`,
       okText: 'Add',
@@ -193,7 +191,7 @@ export default function TrafficContextMenu({
         }
       },
     });
-  }, [record, onClose, modal]);
+  }, [record, onClose]);
 
   const replayRequest = useCallback(async () => {
     if (!record) return;

@@ -1,11 +1,10 @@
 import { useMemo, useRef, useState, useCallback } from 'react';
-import { theme, Button, message } from 'antd';
+import { theme, Button, message, Modal } from 'antd';
 import { LockOutlined, AppstoreOutlined } from '@ant-design/icons';
 import type { SessionTargetSearchState } from '../../../../types';
 import { useTextSelection } from '../../hooks/useTextSelection';
 import { useMarkSearch } from '../../hooks/useMarkSearch';
 import { DEFAULT_SHOW_MAX_SIZE } from '../../helper/contentType';
-import { useAppModal } from '../../../../hooks/useAppModal';
 import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../../../api/config';
 import {
   showTlsWhitelistChangeSuccess,
@@ -68,7 +67,6 @@ export const Raw = ({
   clientApp,
 }: RawProps) => {
   const { token } = theme.useToken();
-  const modal = useAppModal();
   const [showAll, setShowAll] = useState(false);
   const wrapperRef = useTextSelection(true);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -79,7 +77,7 @@ export const Raw = ({
       return;
     }
 
-    modal.confirm({
+    Modal.confirm({
       title: 'Add to Intercept List',
       content: `Add "${host}" to TLS intercept list? This will enable HTTPS inspection for this domain and disconnect existing tunnel connections.`,
       okText: 'Add',
@@ -104,7 +102,7 @@ export const Raw = ({
         }
       },
     });
-  }, [host, modal]);
+  }, [host]);
 
   const handleAddAppToInterceptList = useCallback(() => {
     if (!clientApp) {
@@ -112,7 +110,7 @@ export const Raw = ({
       return;
     }
 
-    modal.confirm({
+    Modal.confirm({
       title: 'Add App to Intercept List',
       content: `Add "${clientApp}" to app intercept list? This will enable HTTPS inspection for this app.`,
       okText: 'Add',
@@ -135,7 +133,7 @@ export const Raw = ({
         }
       },
     });
-  }, [clientApp, modal]);
+  }, [clientApp]);
 
   const showInterceptButton = type === 'response' && isTunnel && host;
   const showAppInterceptButton = type === 'response' && isTunnel && clientApp;

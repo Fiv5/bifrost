@@ -48,7 +48,6 @@ import SplitPane from "../../components/SplitPane";
 import VerticalSplitPane from "../../components/VerticalSplitPane";
 import { ImportBifrostButton } from "../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../hooks/useExportBifrost";
-import { useAppModal } from "../../hooks/useAppModal";
 import { getSandboxConfig, updateSandboxConfig } from "../../api/config";
 import pushService from "../../services/pushService";
 import styles from "./index.module.css";
@@ -465,7 +464,6 @@ function ScriptListPanel({
   expandedKeys: React.Key[];
   onToggleFolder: (folderKey: string) => void;
 }) {
-  const modal = useAppModal();
   const [selectedScripts, setSelectedScripts] = useState<string[]>([]);
   const lastClickedIndexRef = useRef<number | null>(null);
   const [renameTarget, setRenameTarget] = useState<{ type: ScriptType; name: string } | null>(null);
@@ -709,7 +707,7 @@ function ScriptListPanel({
           danger: true,
           onClick: () => {
             if (bulkKeys.length > 1) {
-              modal.confirm({
+              Modal.confirm({
                 title: "Delete Scripts",
                 content: `Are you sure you want to delete ${bulkKeys.length} scripts?`,
                 okText: "Delete All",
@@ -726,7 +724,7 @@ function ScriptListPanel({
             } else {
               const [type, ...nameParts] = bulkKeys[0].split("/");
               const scriptName = nameParts.join("/");
-              modal.confirm({
+              Modal.confirm({
                 title: "Delete Script",
                 content: `Are you sure you want to delete "${scriptName}"?`,
                 okText: "Delete",
@@ -748,7 +746,6 @@ function ScriptListPanel({
       onExport,
       onDeleteFolder,
       onDeleteScript,
-      modal,
     ],
   );
 
@@ -1534,7 +1531,6 @@ export default function ScriptsPage() {
     createNewScript,
   } = useScriptsStore();
   const { exportFile } = useExportBifrost();
-  const modal = useAppModal();
 
   const [editorContent, setEditorContent] = useState("");
   const [newScriptName, setNewScriptName] = useState("");
@@ -1662,7 +1658,7 @@ export default function ScriptsPage() {
         return;
       }
 
-      modal.confirm({
+      Modal.confirm({
         title: "Delete Folder",
         content: `Are you sure you want to delete folder "${folderPath}" and all ${scriptsToDelete.length} script(s) inside?`,
         okText: "Delete All",
@@ -1675,7 +1671,7 @@ export default function ScriptsPage() {
         },
       });
     },
-    [allScripts, deleteScript, modal],
+    [allScripts, deleteScript],
   );
 
   const handleSave = useCallback(async () => {
@@ -1710,7 +1706,7 @@ export default function ScriptsPage() {
 
   const handleDelete = useCallback(async () => {
     if (!selectedScript?.name) return;
-    modal.confirm({
+    Modal.confirm({
       title: "Delete Script",
       content: `Are you sure you want to delete "${selectedScript.name}"?`,
       okText: "Delete",
@@ -1720,7 +1716,7 @@ export default function ScriptsPage() {
         message.success("Script deleted");
       },
     });
-  }, [selectedScript, selectedType, deleteScript, modal]);
+  }, [selectedScript, selectedType, deleteScript]);
 
   const handleDeleteScript = useCallback(
     async (type: ScriptType, name: string) => {
