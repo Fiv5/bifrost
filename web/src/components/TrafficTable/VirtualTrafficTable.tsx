@@ -403,9 +403,21 @@ const areRowPropsEqual = (
   const nextRecord = next.record;
   if (prevRecord.id !== nextRecord.id) return false;
   if (prevRecord.sequence !== nextRecord.sequence) return false;
+  if (prevRecord.method !== nextRecord.method) return false;
+  if (prevRecord.protocol !== nextRecord.protocol) return false;
   if (prevRecord.status !== nextRecord.status) return false;
+  if (prevRecord.client_ip !== nextRecord.client_ip) return false;
+  if (prevRecord.client_app !== nextRecord.client_app) return false;
+  if (prevRecord.host !== nextRecord.host) return false;
+  if (prevRecord.path !== nextRecord.path) return false;
+  if (prevRecord.request_size !== nextRecord.request_size) return false;
   if (prevRecord.duration_ms !== nextRecord.duration_ms) return false;
   if (prevRecord.response_size !== nextRecord.response_size) return false;
+  if (prevRecord.frame_count !== nextRecord.frame_count) return false;
+  if (prevRecord.content_type !== nextRecord.content_type) return false;
+  if (prevRecord.has_rule_hit !== nextRecord.has_rule_hit) return false;
+  if (prevRecord.matched_rule_count !== nextRecord.matched_rule_count) return false;
+  if (prevRecord.matched_protocols.join(",") !== nextRecord.matched_protocols.join(",")) return false;
   if (prevRecord.end_time !== nextRecord.end_time) return false;
   if (
     prevRecord.socket_status?.send_bytes !==

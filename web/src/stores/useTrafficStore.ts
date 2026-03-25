@@ -209,6 +209,11 @@ const shouldReplaceRecord = (
   if (!existing) return true;
 
   return (
+    existing.client_app !== next.client_app ||
+    existing.client_pid !== next.client_pid ||
+    existing.has_rule_hit !== next.has_rule_hit ||
+    existing.matched_rule_count !== next.matched_rule_count ||
+    existing.matched_protocols.join('|') !== next.matched_protocols.join('|') ||
     existing.status !== next.status ||
     existing.request_size !== next.request_size ||
     existing.response_size !== next.response_size ||
@@ -221,6 +226,30 @@ const shouldReplaceRecord = (
     existing.socket_status?.frame_count !== next.socket_status?.frame_count ||
     getDisplaySizeBytes(existing) !== getDisplaySizeBytes(next)
   );
+};
+
+const mergeIncrementalRecord = (
+  existing: TrafficSummary | undefined,
+  next: TrafficSummary,
+): TrafficSummary => {
+  if (!existing) {
+    return next;
+  }
+
+  // Keep sticky identity fields when incremental updates arrive without them.
+  // This avoids filtered rows disappearing until a full refresh reconstructs them.
+  const merged: TrafficSummary = {
+    ...next,
+    method: next.method || existing.method,
+    host: next.host || existing.host,
+    path: next.path || existing.path,
+    protocol: next.protocol || existing.protocol,
+    client_ip: next.client_ip || existing.client_ip,
+    client_app: next.client_app ?? existing.client_app,
+    client_pid: next.client_pid ?? existing.client_pid,
+  };
+
+  return preprocessRecord(merged);
 };
 
 const preprocessRecord = (record: TrafficSummary): TrafficSummary => {
@@ -375,6 +404,18 @@ const findLastRecordById = (
     }
   }
   return undefined;
+};
+
+const hasRecordInList = (
+  records: TrafficSummary[],
+  id: string,
+): boolean => {
+  for (let i = 0; i < records.length; i += 1) {
+    if (records[i]?.id === id) {
+      return true;
+    }
+  }
+  return false;
 };
 
 const getBoundaryState = (records: TrafficSummary[]) => {
@@ -1011,14 +1052,21 @@ export const useTrafficStore = create<TrafficState>()(
               let hasChanges = false;
               const uniqueNewRecords: TrafficSummary[] = [];
               const replacedRecords: TrafficSummary[] = [];
+              let promotedUpdateCount = 0;
 
               for (const r of batch.updatedRecords) {
                 const existing = recordsMap.get(r.id);
-                if (shouldReplaceRecord(existing, r)) {
-                  recordsMap.set(r.id, r);
-                  replaceRecordInClientCatalog(clientCatalog, existing, r);
+                const mergedRecord = mergeIncrementalRecord(existing, r);
+                if (shouldReplaceRecord(existing, mergedRecord)) {
+                  recordsMap.set(r.id, mergedRecord);
+                  replaceRecordInClientCatalog(clientCatalog, existing, mergedRecord);
                   hasChanges = true;
-                  replacedRecords.push(r);
+                  if (hasRecordInList(prevState.records, r.id)) {
+                    replacedRecords.push(mergedRecord);
+                  } else {
+                    uniqueNewRecords.push(mergedRecord);
+                    promotedUpdateCount += 1;
+                  }
                 }
               }
 
@@ -1061,7 +1109,7 @@ export const useTrafficStore = create<TrafficState>()(
 
               const updatedNewRecordsCount = prevState.autoScroll
                 ? 0
-                : prevState.newRecordsCount + actualNewCount;
+                : prevState.newRecordsCount + actualNewCount + promotedUpdateCount;
 
               pushService.updateSubscription({
                 last_traffic_id: boundaries.lastId || undefined,
@@ -1129,14 +1177,21 @@ export const useTrafficStore = create<TrafficState>()(
           let hasChanges = false;
           const uniqueNewRecords: TrafficSummary[] = [];
           const replacedRecords: TrafficSummary[] = [];
+          let promotedUpdateCount = 0;
 
           for (const r of updatedRecords) {
             const existing = recordsMap.get(r.id);
-            if (shouldReplaceRecord(existing, r)) {
-              recordsMap.set(r.id, r);
-              replaceRecordInClientCatalog(clientCatalog, existing, r);
+            const mergedRecord = mergeIncrementalRecord(existing, r);
+            if (shouldReplaceRecord(existing, mergedRecord)) {
+              recordsMap.set(r.id, mergedRecord);
+              replaceRecordInClientCatalog(clientCatalog, existing, mergedRecord);
               hasChanges = true;
-              replacedRecords.push(r);
+              if (hasRecordInList(prevState.records, r.id)) {
+                replacedRecords.push(mergedRecord);
+              } else {
+                uniqueNewRecords.push(mergedRecord);
+                promotedUpdateCount += 1;
+              }
             }
           }
 
@@ -1179,7 +1234,7 @@ export const useTrafficStore = create<TrafficState>()(
 
           const updatedNewRecordsCount = prevState.autoScroll
             ? 0
-            : prevState.newRecordsCount + actualNewCount;
+            : prevState.newRecordsCount + actualNewCount + promotedUpdateCount;
 
           pushService.updateSubscription({
             last_sequence: boundaries.lastSequence || undefined,
@@ -1409,10 +1464,15 @@ export const useTrafficStore = create<TrafficState>()(
                   continue;
                 }
 
-                if (shouldReplaceRecord(existing, record)) {
-                  recordsMap.set(record.id, record);
-                  replaceRecordInClientCatalog(clientCatalog, existing, record);
-                  replacedRecords.push(record);
+                const mergedRecord = mergeIncrementalRecord(existing, record);
+                if (shouldReplaceRecord(existing, mergedRecord)) {
+                  recordsMap.set(record.id, mergedRecord);
+                  replaceRecordInClientCatalog(clientCatalog, existing, mergedRecord);
+                  if (hasRecordInList(prevState.records, record.id)) {
+                    replacedRecords.push(mergedRecord);
+                  } else {
+                    uniqueOlderRecords.push(mergedRecord);
+                  }
                 }
               }
 
@@ -1505,14 +1565,21 @@ export const useTrafficStore = create<TrafficState>()(
               let hasChanges = false;
               const uniqueNewRecords: TrafficSummary[] = [];
               const replacedRecords: TrafficSummary[] = [];
+              let promotedUpdateCount = 0;
 
               for (const r of preprocessedUpdated) {
                 const existing = recordsMap.get(r.id);
-                if (shouldReplaceRecord(existing, r)) {
-                  recordsMap.set(r.id, r);
-                  replaceRecordInClientCatalog(clientCatalog, existing, r);
+                const mergedRecord = mergeIncrementalRecord(existing, r);
+                if (shouldReplaceRecord(existing, mergedRecord)) {
+                  recordsMap.set(r.id, mergedRecord);
+                  replaceRecordInClientCatalog(clientCatalog, existing, mergedRecord);
                   hasChanges = true;
-                  replacedRecords.push(r);
+                  if (hasRecordInList(prevState.records, r.id)) {
+                    replacedRecords.push(mergedRecord);
+                  } else {
+                    uniqueNewRecords.push(mergedRecord);
+                    promotedUpdateCount += 1;
+                  }
                 }
               }
 
@@ -1555,7 +1622,7 @@ export const useTrafficStore = create<TrafficState>()(
 
               const updatedNewRecordsCount = prevState.autoScroll
                 ? 0
-                : prevState.newRecordsCount + actualNewCount;
+                : prevState.newRecordsCount + actualNewCount + promotedUpdateCount;
 
               return {
                 records: allRecords,
@@ -1639,11 +1706,16 @@ export const useTrafficStore = create<TrafficState>()(
 
               for (const r of preprocessedUpdated) {
                 const existing = recordsMap.get(r.id);
-                if (shouldReplaceRecord(existing, r)) {
-                  recordsMap.set(r.id, r);
-                  replaceRecordInClientCatalog(clientCatalog, existing, r);
+                const mergedRecord = mergeIncrementalRecord(existing, r);
+                if (shouldReplaceRecord(existing, mergedRecord)) {
+                  recordsMap.set(r.id, mergedRecord);
+                  replaceRecordInClientCatalog(clientCatalog, existing, mergedRecord);
                   hasChanges = true;
-                  replacedRecords.push(r);
+                  if (hasRecordInList(prevState.records, r.id)) {
+                    replacedRecords.push(mergedRecord);
+                  } else {
+                    uniqueNewRecords.push(mergedRecord);
+                  }
                 }
               }
 

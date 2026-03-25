@@ -9,6 +9,8 @@ import { getSyncStatus, type SyncStatus } from "../../api/sync";
 import { isConnectionIssueError } from "../../api/client";
 import VersionModal from "../VersionModal";
 
+const SYNC_STATUS_POLL_INTERVAL_MS = 5000;
+
 function formatSyncAction(action?: SyncStatus["last_sync_action"]): string | null {
   switch (action) {
     case "local_pushed":
@@ -95,7 +97,7 @@ const StatusBar = memo(function StatusBar() {
     void loadSyncStatus();
     const timer = window.setInterval(() => {
       void loadSyncStatus();
-    }, 1000);
+    }, SYNC_STATUS_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
