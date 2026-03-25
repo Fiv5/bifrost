@@ -358,6 +358,26 @@ mod tests {
     }
 
     #[test]
+    fn test_update_existing_value() {
+        let (_temp_dir, mut storage) = setup();
+        storage.create("test_key", "value1").unwrap();
+
+        storage.update("test_key", "value2").unwrap();
+
+        let value = storage.get_value("test_key");
+        assert_eq!(value, Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_update_missing_value() {
+        let (_temp_dir, mut storage) = setup();
+
+        let result = storage.update("missing", "value");
+
+        assert!(matches!(result, Err(BifrostError::NotFound(_))));
+    }
+
+    #[test]
     fn test_cache_persistence() {
         let temp_dir = TempDir::new().unwrap();
         let dir = temp_dir.path().to_path_buf();

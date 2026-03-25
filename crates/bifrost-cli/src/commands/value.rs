@@ -3,7 +3,7 @@ use bifrost_storage::ValuesStorage;
 use crate::cli::ValueCommands;
 
 pub fn handle_value_command(action: ValueCommands) -> bifrost_core::Result<()> {
-    let values_dir = bifrost_storage::data_dir().join(".bifrost").join("values");
+    let values_dir = bifrost_storage::data_dir().join("values");
     let mut storage = ValuesStorage::with_dir(values_dir.clone())?;
 
     match action {
@@ -24,7 +24,7 @@ pub fn handle_value_command(action: ValueCommands) -> bifrost_core::Result<()> {
                 println!("Values directory: {}", values_dir.display());
             }
         }
-        ValueCommands::Get { name } => {
+        ValueCommands::Show { name } => {
             if let Some(value) = storage.get_value(&name) {
                 println!("{}", value);
             } else {
@@ -34,14 +34,18 @@ pub fn handle_value_command(action: ValueCommands) -> bifrost_core::Result<()> {
                 )));
             }
         }
-        ValueCommands::Set { name, value } => {
+        ValueCommands::Add { name, value } => {
             storage.set_value(&name, &value)?;
-            println!("Value '{}' has been set.", name);
+            println!("Value '{}' added successfully.", name);
+        }
+        ValueCommands::Update { name, value } => {
+            storage.update(&name, &value)?;
+            println!("Value '{}' updated successfully.", name);
         }
         ValueCommands::Delete { name } => {
             if storage.exists(&name) {
                 storage.remove_value(&name)?;
-                println!("Value '{}' has been deleted.", name);
+                println!("Value '{}' deleted successfully.", name);
             } else {
                 return Err(bifrost_core::BifrostError::NotFound(format!(
                     "Value '{}' not found",

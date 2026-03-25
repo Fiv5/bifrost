@@ -27,6 +27,25 @@ struct RuleFileDetail {
     content: String,
     enabled: bool,
     sort_order: i32,
+    created_at: String,
+    updated_at: String,
+    sync: RuleSyncInfo,
+}
+
+#[derive(Debug, Serialize)]
+struct RuleSyncInfo {
+    status: String,
+    last_synced_at: Option<String>,
+    remote_id: Option<String>,
+    remote_updated_at: Option<String>,
+}
+
+fn sync_status_label(status: bifrost_storage::RuleSyncStatus) -> &'static str {
+    match status {
+        bifrost_storage::RuleSyncStatus::LocalOnly => "local_only",
+        bifrost_storage::RuleSyncStatus::Synced => "synced",
+        bifrost_storage::RuleSyncStatus::Modified => "modified",
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -304,6 +323,14 @@ async fn create_rule(
 
     match state.rules_storage.save(&rule) {
         Ok(_) => {
+            if let Some(sync_manager) = state.sync_manager.clone() {
+                if let Err(error) = sync_manager.clear_deleted_rule(&request.name).await {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        &format!("Failed to clear deleted sync intent for rule: {}", error),
+                    );
+                }
+            }
             notify_rules_changed(&state);
             invalidate_overview_cache(&push_manager);
             success_response(&format!("Rule '{}' created successfully", request.name))
@@ -323,6 +350,14 @@ async fn get_rule(state: SharedAdminState, name: &str) -> Response<BoxBody> {
                 content: rule.content,
                 enabled: rule.enabled,
                 sort_order: rule.sort_order,
+                created_at: rule.created_at,
+                updated_at: rule.updated_at,
+                sync: RuleSyncInfo {
+                    status: sync_status_label(rule.sync.status).to_string(),
+                    last_synced_at: rule.sync.last_synced_at,
+                    remote_id: rule.sync.remote_id,
+                    remote_updated_at: rule.sync.remote_updated_at,
+                },
             };
             json_response(&detail)
         }
@@ -357,6 +392,8 @@ async fn update_rule(
         Ok(r) => r,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
     };
+    let content_changed = request.content.is_some();
+    let enabled_changed = request.enabled.is_some();
 
     let rule = RuleFile {
         name: existing.name,
@@ -367,7 +404,12 @@ async fn update_rule(
         version: existing.version,
         created_at: existing.created_at,
         updated_at: chrono::Utc::now().to_rfc3339(),
+        sync: existing.sync,
     };
+    let mut rule = rule;
+    if content_changed || enabled_changed {
+        rule.touch_local_change();
+    }
 
     match state.rules_storage.save(&rule) {
         Ok(_) => {
@@ -420,8 +462,36 @@ async fn delete_rule(
     name: &str,
     push_manager: Option<SharedPushManager>,
 ) -> Response<BoxBody> {
+    let rule = match state.rules_storage.load(name) {
+        Ok(rule) => rule,
+        Err(_) => {
+            return error_response(StatusCode::NOT_FOUND, &format!("Rule '{}' not found", name))
+        }
+    };
+
+    if rule.sync.remote_id.is_some() {
+        let Some(sync_manager) = state.sync_manager.clone() else {
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Sync manager not available; cannot record synced rule deletion safely",
+            );
+        };
+        if let Err(error) = sync_manager.record_deleted_rule(&rule).await {
+            return error_response(
+                StatusCode::CONFLICT,
+                &format!(
+                    "Failed to record synced rule deletion before local delete: {}",
+                    error
+                ),
+            );
+        }
+    }
+
     match state.rules_storage.delete(name) {
         Ok(_) => {
+            if let Some(sync_manager) = state.sync_manager.clone() {
+                sync_manager.trigger_sync();
+            }
             notify_rules_changed(&state);
             invalidate_overview_cache(&push_manager);
             success_response(&format!("Rule '{}' deleted successfully", name))

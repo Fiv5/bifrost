@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use bifrost_core::{BifrostError, Result};
 use bifrost_storage::{
-    ConfigChangeEvent, ConfigManager, RuleFile, RulesStorage, SyncConfig, SyncConfigUpdate,
+    content_hash, ConfigChangeEvent, ConfigManager, RuleFile, RuleSyncStatus, RulesStorage,
+    SyncConfig, SyncConfigUpdate,
 };
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, Notify, RwLock};
+use tokio::sync::{broadcast, Mutex as AsyncMutex, Notify, RwLock};
 
 use crate::client::SyncHttpClient;
 use crate::normalize::normalize_remote_rule;
@@ -21,16 +22,13 @@ use crate::types::{RemoteEnv, RemoteUser, SyncReason};
 pub type SharedSyncManager = Arc<SyncManager>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct SyncRuleBinding {
-    remote_id: String,
-    remote_user_id: String,
-    remote_updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct DeletedRuleTombstone {
+    rule_id: String,
+    rule_name: String,
     remote_id: String,
     remote_user_id: String,
+    base_remote_updated_at: Option<String>,
+    base_content_hash: Option<String>,
     deleted_at: String,
 }
 
@@ -40,8 +38,32 @@ struct SyncStateFile {
     user: Option<RemoteUser>,
     last_sync_at: Option<String>,
     last_sync_action: Option<SyncAction>,
-    rule_bindings: HashMap<String, SyncRuleBinding>,
     deleted_rules: HashMap<String, DeletedRuleTombstone>,
+}
+
+#[derive(Debug, Clone)]
+enum SyncPlanStep {
+    DeleteLocal {
+        tombstone: DeletedRuleTombstone,
+    },
+    DeleteRemote {
+        tombstone: DeletedRuleTombstone,
+        remote_env: RemoteEnv,
+    },
+    UpdateRemote {
+        local_rule: RuleFile,
+        remote_env: RemoteEnv,
+    },
+    CreateRemote {
+        local_rule: RuleFile,
+    },
+    UpdateLocal {
+        local_rule: RuleFile,
+        remote_env: RemoteEnv,
+    },
+    CreateLocal {
+        remote_env: RemoteEnv,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,7 +139,7 @@ impl SyncManagerHandle {
         Ok(self.inner.status().await)
     }
 
-    pub async fn trigger_sync(&self) {
+    pub fn trigger_sync(&self) {
         self.inner.trigger_sync();
     }
 
@@ -128,6 +150,14 @@ impl SyncManagerHandle {
     pub async fn remote_sample(&self, limit: usize) -> Result<Vec<RemoteEnv>> {
         self.inner.remote_sample(limit).await
     }
+
+    pub async fn record_deleted_rule(&self, rule: &RuleFile) -> Result<()> {
+        self.inner.record_deleted_rule(rule).await
+    }
+
+    pub async fn clear_deleted_rule(&self, rule_name: &str) -> Result<()> {
+        self.inner.clear_deleted_rule(rule_name).await
+    }
 }
 
 pub struct SyncManager {
@@ -135,6 +165,7 @@ pub struct SyncManager {
     local_callback_url: String,
     state_file: PathBuf,
     state: Mutex<SyncStateFile>,
+    sync_lock: AsyncMutex<()>,
     login_prompt: Mutex<LoginPromptState>,
     runtime: RwLock<SyncRuntimeState>,
     wake: Notify,
@@ -154,6 +185,7 @@ impl SyncManager {
             local_callback_url: format!("http://127.0.0.1:{admin_port}/login.html"),
             state_file,
             state: Mutex::new(state),
+            sync_lock: AsyncMutex::new(()),
             login_prompt: Mutex::new(LoginPromptState::default()),
             runtime: RwLock::new(SyncRuntimeState::default()),
             wake: Notify::new(),
@@ -244,6 +276,56 @@ impl SyncManager {
         Ok(envs)
     }
 
+    pub async fn record_deleted_rule(&self, rule: &RuleFile) -> Result<()> {
+        let Some(remote_id) = rule.sync.remote_id.clone() else {
+            return Ok(());
+        };
+        let remote_user_id = rule.sync.remote_user_id.clone().ok_or_else(|| {
+            BifrostError::Config(format!(
+                "rule '{}' is missing remote_user_id in sync metadata",
+                rule.name
+            ))
+        })?;
+
+        {
+            let mut state = self.state.lock();
+            state.deleted_rules.insert(
+                rule.sync.rule_id.clone(),
+                DeletedRuleTombstone {
+                    rule_id: rule.sync.rule_id.clone(),
+                    rule_name: rule.name.clone(),
+                    remote_id,
+                    remote_user_id,
+                    base_remote_updated_at: rule.sync.remote_updated_at.clone(),
+                    base_content_hash: rule.sync.last_synced_content_hash.clone(),
+                    deleted_at: Utc::now().to_rfc3339(),
+                },
+            );
+            tracing::info!(
+                target: "bifrost_sync::manager",
+                name = %rule.name,
+                rule_id = %rule.sync.rule_id,
+                deleted_rules = state.deleted_rules.len(),
+                "recorded delete tombstone"
+            );
+            self.persist_state(&state)?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn clear_deleted_rule(&self, rule_name: &str) -> Result<()> {
+        let mut state = self.state.lock();
+        let before = state.deleted_rules.len();
+        state
+            .deleted_rules
+            .retain(|_, tombstone| tombstone.rule_name != rule_name);
+        if state.deleted_rules.len() != before {
+            self.persist_state(&state)?;
+        }
+        Ok(())
+    }
+
     pub async fn logout(&self) -> Result<()> {
         let config = self.config_manager.config().await;
         let token = { self.state.lock().token.clone() };
@@ -268,6 +350,7 @@ impl SyncManager {
     }
 
     pub async fn sync_once(&self) -> Result<SyncOnceResult> {
+        let _sync_guard = self.sync_lock.lock().await;
         let config = self.config_manager.config().await;
         if !config.sync.enabled {
             return Ok(SyncOnceResult {
@@ -329,6 +412,11 @@ impl SyncManager {
 
         let result = self.sync_rules(&client, &config.sync, &token, &user).await;
         let state = self.state.lock().clone();
+        let synced_count = rules_storage
+            .load_all()?
+            .iter()
+            .filter(|rule| rule.sync.remote_id.is_some())
+            .count();
 
         match result {
             Ok(()) => Ok(SyncOnceResult {
@@ -337,7 +425,7 @@ impl SyncManager {
                 action: state.last_sync_action,
                 user: Some(user),
                 local_rules: local_count,
-                remote_rules: state.rule_bindings.len(),
+                remote_rules: synced_count,
             }),
             Err(error) => Ok(SyncOnceResult {
                 success: false,
@@ -377,6 +465,7 @@ impl SyncManager {
     }
 
     async fn tick(&self) -> Result<()> {
+        let _sync_guard = self.sync_lock.lock().await;
         let config = self.config_manager.config().await;
         if !config.sync.enabled {
             let mut runtime = self.runtime.write().await;
@@ -522,127 +611,205 @@ impl SyncManager {
             "starting rules sync"
         );
 
-        let mut state = self.state.lock().clone();
-        self.refresh_deleted_rules(&local_rules, &mut state);
-
-        let local_map: HashMap<String, RuleFile> = local_rules
+        let state_snapshot = self.state.lock().clone();
+        let remote_by_id: HashMap<&str, &RemoteEnv> = remote_rules
             .iter()
-            .cloned()
-            .map(|rule| (rule.name.clone(), rule))
+            .map(|env| (env.id.as_str(), env))
             .collect();
-        let remote_map: HashMap<String, RemoteEnv> = remote_rules
+        let remote_name_counts: HashMap<&str, usize> =
+            remote_rules.iter().fold(HashMap::new(), |mut counts, env| {
+                *counts.entry(env.name.as_str()).or_default() += 1;
+                counts
+            });
+        let remote_by_unique_name: HashMap<&str, &RemoteEnv> = remote_rules
             .iter()
-            .cloned()
-            .map(|env| (env.name.clone(), env))
+            .filter(|env| remote_name_counts.get(env.name.as_str()) == Some(&1))
+            .map(|env| (env.name.as_str(), env))
             .collect();
 
-        let mut just_deleted_names: HashSet<String> = HashSet::new();
-        let deleted_rule_names: Vec<String> = state.deleted_rules.keys().cloned().collect();
-        for deleted_name in deleted_rule_names {
-            let Some(tombstone) = state.deleted_rules.get(&deleted_name).cloned() else {
+        let mut plan = Vec::new();
+        let deleted_rule_ids: Vec<String> = state_snapshot.deleted_rules.keys().cloned().collect();
+        let mut blocked_remote_ids: HashSet<String> = HashSet::new();
+        let mut blocked_names: HashSet<String> = HashSet::new();
+        for deleted_rule_id in deleted_rule_ids {
+            let Some(tombstone) = state_snapshot.deleted_rules.get(&deleted_rule_id).cloned()
+            else {
                 continue;
             };
-            if let Some(remote_env) = remote_rules
+
+            blocked_remote_ids.insert(tombstone.remote_id.clone());
+            blocked_names.insert(tombstone.rule_name.clone());
+
+            if rules_storage.exists(&tombstone.rule_name) {
+                plan.push(SyncPlanStep::DeleteLocal {
+                    tombstone: tombstone.clone(),
+                });
+            }
+
+            let matching_remote_envs: Vec<RemoteEnv> = remote_rules
                 .iter()
-                .find(|env| env.id == tombstone.remote_id)
-            {
-                match client.delete_env(config, token, remote_env).await {
-                    Ok(_) => {
-                        tracing::info!(
-                            target: "bifrost_sync::manager",
-                            name = %deleted_name,
-                            remote_id = %tombstone.remote_id,
-                            "deleted remote rule via tombstone"
-                        );
-                        state.deleted_rules.remove(&deleted_name);
-                        state.rule_bindings.remove(&deleted_name);
-                        just_deleted_names.insert(deleted_name);
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "bifrost_sync::manager",
-                            name = %deleted_name,
-                            remote_id = %tombstone.remote_id,
-                            %error,
-                            "failed to delete remote rule, keeping tombstone for retry"
-                        );
-                        just_deleted_names.insert(deleted_name);
-                    }
-                }
-            } else {
-                tracing::debug!(
+                .filter(|env| env.name == tombstone.rule_name)
+                .cloned()
+                .collect();
+            if matching_remote_envs.is_empty() {
+                tracing::info!(
                     target: "bifrost_sync::manager",
-                    name = %deleted_name,
-                    remote_id = %tombstone.remote_id,
-                    "remote rule not found, clearing tombstone"
+                    name = %tombstone.rule_name,
+                    rule_id = %tombstone.rule_id,
+                    "keeping tombstone active because no local replacement exists"
                 );
-                state.deleted_rules.remove(&deleted_name);
-                state.rule_bindings.remove(&deleted_name);
-                just_deleted_names.insert(deleted_name);
+                continue;
+            }
+
+            for remote_env in matching_remote_envs {
+                blocked_remote_ids.insert(remote_env.id.clone());
+                plan.push(SyncPlanStep::DeleteRemote {
+                    tombstone: tombstone.clone(),
+                    remote_env,
+                });
             }
         }
 
-        let mut all_names: HashSet<String> = local_map.keys().cloned().collect();
-        all_names.extend(remote_map.keys().cloned());
+        let mut consumed_remote_ids = blocked_remote_ids.clone();
+        for local_rule in &local_rules {
+            if blocked_names.contains(&local_rule.name) {
+                continue;
+            }
 
-        let mut pulled_remote = false;
-        let mut pushed_local = false;
-        for name in all_names {
-            match (local_map.get(&name), remote_map.get(&name)) {
-                (Some(local_rule), Some(remote_env)) => {
-                    let normalized_remote_content =
-                        normalize_remote_rule(remote_env, &remote_rules);
-                    match resolve_rule_conflict(local_rule, remote_env, &normalized_remote_content)
-                    {
-                        ConflictResolution::PushLocal => {
-                            let updated_remote = client
-                                .update_env(config, token, remote_env, &local_rule.content)
-                                .await?;
-                            state.rule_bindings.insert(
-                                name.clone(),
-                                SyncRuleBinding {
-                                    remote_id: updated_remote.id,
-                                    remote_user_id: updated_remote.user_id,
-                                    remote_updated_at: updated_remote.update_time,
-                                },
-                            );
-                            pushed_local = true;
-                        }
-                        ConflictResolution::PullRemote => {
-                            self.save_remote_as_local(
-                                &rules_storage,
-                                local_rule,
-                                remote_env,
-                                &remote_rules,
-                            )?;
-                            state.rule_bindings.insert(
-                                name.clone(),
-                                SyncRuleBinding {
-                                    remote_id: remote_env.id.clone(),
-                                    remote_user_id: remote_env.user_id.clone(),
-                                    remote_updated_at: remote_env.update_time.clone(),
-                                },
-                            );
-                            pulled_remote = true;
-                        }
-                        ConflictResolution::KeepLocal => {
-                            state.rule_bindings.insert(
-                                name.clone(),
-                                SyncRuleBinding {
-                                    remote_id: remote_env.id.clone(),
-                                    remote_user_id: remote_env.user_id.clone(),
-                                    remote_updated_at: remote_env.update_time.clone(),
-                                },
-                            );
+            let remote_env = local_rule
+                .sync
+                .remote_id
+                .as_deref()
+                .and_then(|remote_id| remote_by_id.get(remote_id).copied())
+                .or_else(|| {
+                    if local_rule.sync.remote_id.is_some() {
+                        None
+                    } else {
+                        remote_by_unique_name.get(local_rule.name.as_str()).copied()
+                    }
+                });
+
+            if let Some(remote_env) = remote_env {
+                consumed_remote_ids.insert(remote_env.id.clone());
+                match local_rule.sync.status {
+                    RuleSyncStatus::Modified | RuleSyncStatus::LocalOnly => {
+                        plan.push(SyncPlanStep::UpdateRemote {
+                            local_rule: local_rule.clone(),
+                            remote_env: remote_env.clone(),
+                        });
+                    }
+                    RuleSyncStatus::Synced => {
+                        let normalized_remote_content =
+                            normalize_remote_rule(remote_env, &remote_rules);
+                        let remote_hash = content_hash(&normalized_remote_content);
+                        let remote_changed = local_rule.sync.remote_updated_at.as_deref()
+                            != Some(remote_env.update_time.as_str())
+                            || local_rule.sync.last_synced_content_hash.as_deref()
+                                != Some(remote_hash.as_str());
+                        if remote_changed {
+                            plan.push(SyncPlanStep::UpdateLocal {
+                                local_rule: local_rule.clone(),
+                                remote_env: remote_env.clone(),
+                            });
                         }
                     }
                 }
-                (Some(local_rule), None) => {
-                    tracing::info!(
-                        target: "bifrost_sync::manager",
-                        name = %local_rule.name,
-                        "creating remote rule from local"
+            } else {
+                plan.push(SyncPlanStep::CreateRemote {
+                    local_rule: local_rule.clone(),
+                });
+            }
+        }
+
+        for remote_env in &remote_rules {
+            if consumed_remote_ids.contains(&remote_env.id)
+                || blocked_names.contains(&remote_env.name)
+            {
+                continue;
+            }
+
+            tracing::info!(
+                target: "bifrost_sync::manager",
+                name = %remote_env.name,
+                remote_id = %remote_env.id,
+                "pulling remote rule into local storage"
+            );
+            plan.push(SyncPlanStep::CreateLocal {
+                remote_env: remote_env.clone(),
+            });
+        }
+
+        let mut pulled_remote = false;
+        let mut pushed_local = false;
+        let mut local_storage_changed = false;
+        let mut tombstones_to_remove: HashSet<String> = HashSet::new();
+        let mut tombstone_delete_success: HashMap<String, bool> = HashMap::new();
+        for step in plan {
+            match step {
+                SyncPlanStep::DeleteLocal { tombstone } => {
+                    if rules_storage.exists(&tombstone.rule_name) {
+                        rules_storage.delete(&tombstone.rule_name)?;
+                        tracing::info!(
+                            target: "bifrost_sync::manager",
+                            name = %tombstone.rule_name,
+                            rule_id = %tombstone.rule_id,
+                            "deleted local rule via tombstone"
+                        );
+                        local_storage_changed = true;
+                    }
+                }
+                SyncPlanStep::DeleteRemote {
+                    tombstone,
+                    remote_env,
+                } => match client
+                    .delete_env_by_id(config, token, &remote_env.id, &remote_env.user_id)
+                    .await
+                {
+                    Ok(()) => {
+                        tombstone_delete_success
+                            .entry(tombstone.rule_id.clone())
+                            .and_modify(|success| *success &= true)
+                            .or_insert(true);
+                        tracing::info!(
+                            target: "bifrost_sync::manager",
+                            name = %tombstone.rule_name,
+                            rule_id = %tombstone.rule_id,
+                            remote_id = %remote_env.id,
+                            "deleted remote rule via tombstone"
+                        );
+                        pushed_local = true;
+                    }
+                    Err(error) => {
+                        tombstone_delete_success.insert(tombstone.rule_id.clone(), false);
+                        tracing::warn!(
+                            target: "bifrost_sync::manager",
+                            name = %tombstone.rule_name,
+                            rule_id = %tombstone.rule_id,
+                            remote_id = %remote_env.id,
+                            error = %error,
+                            "failed to delete remote rule via tombstone, will retry later"
+                        );
+                    }
+                },
+                SyncPlanStep::UpdateRemote {
+                    local_rule,
+                    remote_env,
+                } => {
+                    let updated_remote = client
+                        .update_env(config, token, &remote_env, &local_rule.content)
+                        .await?;
+                    let mut synced_rule = local_rule.clone();
+                    synced_rule.mark_synced(
+                        updated_remote.id.clone(),
+                        updated_remote.user_id.clone(),
+                        updated_remote.create_time.clone(),
+                        updated_remote.update_time.clone(),
                     );
+                    rules_storage.save(&synced_rule)?;
+                    pushed_local = true;
+                    local_storage_changed = true;
+                }
+                SyncPlanStep::CreateRemote { local_rule } => {
                     let created = client
                         .create_env(
                             config,
@@ -652,66 +819,96 @@ impl SyncManager {
                             &local_rule.content,
                         )
                         .await?;
-                    state.rule_bindings.insert(
-                        name.clone(),
-                        SyncRuleBinding {
-                            remote_id: created.id,
-                            remote_user_id: created.user_id,
-                            remote_updated_at: created.update_time,
-                        },
+                    let mut synced_rule = local_rule.clone();
+                    synced_rule.mark_synced(
+                        created.id.clone(),
+                        created.user_id.clone(),
+                        created.create_time.clone(),
+                        created.update_time.clone(),
                     );
+                    rules_storage.save(&synced_rule)?;
                     pushed_local = true;
+                    local_storage_changed = true;
                 }
-                (None, Some(remote_env)) => {
-                    if just_deleted_names.contains(&name) {
-                        tracing::debug!(
-                            target: "bifrost_sync::manager",
-                            name = %remote_env.name,
-                            "skipping recently deleted rule, not re-pulling from remote"
-                        );
-                        continue;
-                    }
-                    tracing::info!(
-                        target: "bifrost_sync::manager",
-                        name = %remote_env.name,
-                        "pulling remote rule into local storage"
-                    );
-                    let remote_placeholder = RuleFile {
+                SyncPlanStep::UpdateLocal {
+                    local_rule,
+                    remote_env,
+                } => {
+                    self.save_remote_as_local(
+                        &rules_storage,
+                        &local_rule,
+                        &remote_env,
+                        &remote_rules,
+                    )?;
+                    pulled_remote = true;
+                    local_storage_changed = true;
+                }
+                SyncPlanStep::CreateLocal { remote_env } => {
+                    let remote_content = normalize_remote_rule(&remote_env, &remote_rules);
+                    let mut remote_placeholder = RuleFile {
                         name: remote_env.name.clone(),
-                        content: normalize_remote_rule(remote_env, &remote_rules),
+                        content: remote_content,
                         enabled: false,
                         sort_order: 0,
                         description: Some("Synced from remote".to_string()),
                         version: "1.0.0".to_string(),
                         created_at: remote_env.create_time.clone(),
                         updated_at: remote_env.update_time.clone(),
+                        sync: bifrost_storage::RuleSyncMetadata::default(),
                     };
-                    rules_storage.save(&remote_placeholder)?;
-                    state.rule_bindings.insert(
-                        name.clone(),
-                        SyncRuleBinding {
-                            remote_id: remote_env.id.clone(),
-                            remote_user_id: remote_env.user_id.clone(),
-                            remote_updated_at: remote_env.update_time.clone(),
-                        },
+                    remote_placeholder.mark_synced(
+                        remote_env.id.clone(),
+                        remote_env.user_id.clone(),
+                        remote_env.create_time.clone(),
+                        remote_env.update_time.clone(),
                     );
+                    rules_storage.save(&remote_placeholder)?;
                     pulled_remote = true;
+                    local_storage_changed = true;
                 }
-                (None, None) => {}
             }
         }
 
-        state.last_sync_at = Some(Utc::now().to_rfc3339());
-        state.last_sync_action = Some(match (pushed_local, pulled_remote) {
+        let mut current_state = self.state.lock();
+        for (deleted_rule_id, tombstone) in &current_state.deleted_rules {
+            if rules_storage.exists(&tombstone.rule_name) {
+                continue;
+            }
+
+            if let Some(success) = tombstone_delete_success.get(&tombstone.rule_id) {
+                if *success {
+                    tombstones_to_remove.insert(deleted_rule_id.clone());
+                }
+                continue;
+            }
+
+            if !remote_rules
+                .iter()
+                .any(|env| env.name == tombstone.rule_name)
+            {
+                tombstones_to_remove.insert(deleted_rule_id.clone());
+            }
+        }
+        for deleted_rule_id in tombstones_to_remove {
+            current_state.deleted_rules.remove(&deleted_rule_id);
+        }
+        current_state.last_sync_at = Some(Utc::now().to_rfc3339());
+        current_state.last_sync_action = Some(match (pushed_local, pulled_remote) {
             (true, true) => SyncAction::Bidirectional,
             (true, false) => SyncAction::LocalPushed,
             (false, true) => SyncAction::RemotePulled,
             (false, false) => SyncAction::NoChange,
         });
-        *self.state.lock() = state.clone();
-        self.persist_state(&state)?;
+        tracing::info!(
+            target: "bifrost_sync::manager",
+            deleted_rules = current_state.deleted_rules.len(),
+            last_sync_action = ?current_state.last_sync_action,
+            "persisting sync state after sync cycle"
+        );
+        self.persist_state(&current_state)?;
+        drop(current_state);
 
-        if pulled_remote {
+        if local_storage_changed {
             let _ = self.config_manager.notify(ConfigChangeEvent::RulesChanged);
         }
 
@@ -729,32 +926,6 @@ impl SyncManager {
         rules_storage.save(&rule)
     }
 
-    fn refresh_deleted_rules(&self, local_rules: &[RuleFile], state: &mut SyncStateFile) {
-        let live_names: HashSet<&str> = local_rules.iter().map(|rule| rule.name.as_str()).collect();
-        let missing_names: Vec<String> = state
-            .rule_bindings
-            .keys()
-            .filter(|name| !live_names.contains(name.as_str()))
-            .cloned()
-            .collect();
-
-        for missing_name in missing_names {
-            if state.deleted_rules.contains_key(&missing_name) {
-                continue;
-            }
-            if let Some(binding) = state.rule_bindings.get(&missing_name) {
-                state.deleted_rules.insert(
-                    missing_name.clone(),
-                    DeletedRuleTombstone {
-                        remote_id: binding.remote_id.clone(),
-                        remote_user_id: binding.remote_user_id.clone(),
-                        deleted_at: Utc::now().to_rfc3339(),
-                    },
-                );
-            }
-        }
-    }
-
     fn persist_state(&self, state: &SyncStateFile) -> Result<()> {
         let content = serde_json::to_string_pretty(state)
             .map_err(|e| BifrostError::Config(format!("failed to serialize sync state: {e}")))?;
@@ -763,17 +934,12 @@ impl SyncManager {
     }
 }
 
-fn should_refresh_synced_local_copy(local_rule: &RuleFile, remote_env: &RemoteEnv) -> bool {
-    local_rule.description.as_deref() == Some("Synced from remote")
-        || local_rule.content == remote_env.rule
-}
-
 fn merge_remote_into_local_rule(
     existing_rule: &RuleFile,
     remote_env: &RemoteEnv,
     remote_envs: &[RemoteEnv],
 ) -> RuleFile {
-    RuleFile {
+    let mut rule = RuleFile {
         name: existing_rule.name.clone(),
         content: normalize_remote_rule(remote_env, remote_envs),
         enabled: existing_rule.enabled,
@@ -782,7 +948,15 @@ fn merge_remote_into_local_rule(
         version: existing_rule.version.clone(),
         created_at: existing_rule.created_at.clone(),
         updated_at: remote_env.update_time.clone(),
-    }
+        sync: existing_rule.sync.clone(),
+    };
+    rule.mark_synced(
+        remote_env.id.clone(),
+        remote_env.user_id.clone(),
+        remote_env.create_time.clone(),
+        remote_env.update_time.clone(),
+    );
+    rule
 }
 
 fn open_url_in_browser(url: &str) -> Result<()> {
@@ -813,61 +987,10 @@ fn open_url_in_browser(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn compare_timestamps(left: &str, right: &str) -> std::cmp::Ordering {
-    let left_time = parse_timestamp(left);
-    let right_time = parse_timestamp(right);
-    left_time.cmp(&right_time)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConflictResolution {
-    PushLocal,
-    PullRemote,
-    KeepLocal,
-}
-
-fn resolve_rule_conflict(
-    local_rule: &RuleFile,
-    remote_env: &RemoteEnv,
-    normalized_remote_content: &str,
-) -> ConflictResolution {
-    match compare_timestamps(&local_rule.updated_at, &remote_env.update_time) {
-        std::cmp::Ordering::Greater => ConflictResolution::PushLocal,
-        std::cmp::Ordering::Less => ConflictResolution::PullRemote,
-        std::cmp::Ordering::Equal => {
-            if should_refresh_synced_local_copy(local_rule, remote_env)
-                && local_rule.content != normalized_remote_content
-            {
-                ConflictResolution::PullRemote
-            } else {
-                ConflictResolution::KeepLocal
-            }
-        }
-    }
-}
-
-fn parse_timestamp(value: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| Utc::now())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    #[test]
-    fn compare_timestamp_prefers_latest_value() {
-        assert_eq!(
-            compare_timestamps("2026-03-20T10:00:00Z", "2026-03-20T09:00:00Z"),
-            std::cmp::Ordering::Greater
-        );
-        assert_eq!(
-            compare_timestamps("2026-03-20T08:00:00Z", "2026-03-20T09:00:00Z"),
-            std::cmp::Ordering::Less
-        );
-    }
 
     #[test]
     fn merge_remote_into_local_preserves_local_metadata() {
@@ -901,84 +1024,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_rule_conflict_prefers_local_when_local_is_newer() {
-        let mut local_rule = RuleFile::new("demo", "local.example.com host://127.0.0.1:3000");
-        local_rule.updated_at = "2026-03-20T12:00:00Z".to_string();
-        let remote_env = RemoteEnv {
-            id: "remote-id".to_string(),
-            user_id: "user-1".to_string(),
-            name: "demo".to_string(),
-            rule: "remote.example.com host://127.0.0.1:3200".to_string(),
-            create_time: "2026-03-20T09:00:00Z".to_string(),
-            update_time: "2026-03-20T11:00:00Z".to_string(),
-        };
-
-        assert_eq!(
-            resolve_rule_conflict(&local_rule, &remote_env, &remote_env.rule),
-            ConflictResolution::PushLocal
-        );
-    }
-
-    #[test]
-    fn resolve_rule_conflict_prefers_remote_when_remote_is_newer() {
-        let mut local_rule = RuleFile::new("demo", "local.example.com host://127.0.0.1:3000");
-        local_rule.updated_at = "2026-03-20T10:00:00Z".to_string();
-        let remote_env = RemoteEnv {
-            id: "remote-id".to_string(),
-            user_id: "user-1".to_string(),
-            name: "demo".to_string(),
-            rule: "remote.example.com host://127.0.0.1:3200".to_string(),
-            create_time: "2026-03-20T09:00:00Z".to_string(),
-            update_time: "2026-03-20T11:00:00Z".to_string(),
-        };
-
-        assert_eq!(
-            resolve_rule_conflict(&local_rule, &remote_env, &remote_env.rule),
-            ConflictResolution::PullRemote
-        );
-    }
-
-    #[test]
-    fn resolve_rule_conflict_keeps_local_when_timestamps_match() {
-        let mut local_rule = RuleFile::new("demo", "local.example.com host://127.0.0.1:3000")
-            .with_description(Some("Pinned locally".to_string()));
-        local_rule.updated_at = "2026-03-20T11:00:00Z".to_string();
-        let remote_env = RemoteEnv {
-            id: "remote-id".to_string(),
-            user_id: "user-1".to_string(),
-            name: "demo".to_string(),
-            rule: "remote.example.com host://127.0.0.1:3200".to_string(),
-            create_time: "2026-03-20T09:00:00Z".to_string(),
-            update_time: "2026-03-20T11:00:00Z".to_string(),
-        };
-
-        assert_eq!(
-            resolve_rule_conflict(&local_rule, &remote_env, &remote_env.rule),
-            ConflictResolution::KeepLocal
-        );
-    }
-
-    #[test]
-    fn resolve_rule_conflict_refreshes_synced_copy_when_timestamps_match() {
-        let mut local_rule = RuleFile::new("demo", "stale.example.com host://127.0.0.1:3000")
-            .with_description(Some("Synced from remote".to_string()));
-        local_rule.updated_at = "2026-03-20T11:00:00Z".to_string();
-        let remote_env = RemoteEnv {
-            id: "remote-id".to_string(),
-            user_id: "user-1".to_string(),
-            name: "demo".to_string(),
-            rule: "fresh.example.com host://127.0.0.1:3200".to_string(),
-            create_time: "2026-03-20T09:00:00Z".to_string(),
-            update_time: "2026-03-20T11:00:00Z".to_string(),
-        };
-
-        assert_eq!(
-            resolve_rule_conflict(&local_rule, &remote_env, &remote_env.rule),
-            ConflictResolution::PullRemote
-        );
-    }
-
-    #[test]
     fn sync_action_summarizes_push_pull_and_idle_results() {
         let action = |pushed_local: bool, pulled_remote: bool| match (pushed_local, pulled_remote) {
             (true, true) => SyncAction::Bidirectional,
@@ -991,6 +1036,34 @@ mod tests {
         assert_eq!(action(false, true), SyncAction::RemotePulled);
         assert_eq!(action(true, true), SyncAction::Bidirectional);
         assert_eq!(action(false, false), SyncAction::NoChange);
+    }
+
+    #[test]
+    fn synced_rule_is_deleted_when_remote_disappears() {
+        let mut local_rule = RuleFile::new("demo", "local.example.com host://127.0.0.1:3000");
+        local_rule.mark_synced(
+            "remote-id",
+            "user-1",
+            "2026-03-20T09:00:00Z",
+            "2026-03-20T11:00:00Z",
+        );
+
+        assert_eq!(local_rule.sync.status, RuleSyncStatus::Synced);
+        assert!(local_rule.sync.remote_id.is_some());
+    }
+
+    #[test]
+    fn modified_rule_is_not_deleted_when_remote_disappears() {
+        let mut local_rule = RuleFile::new("demo", "local.example.com host://127.0.0.1:3000");
+        local_rule.mark_synced(
+            "remote-id",
+            "user-1",
+            "2026-03-20T09:00:00Z",
+            "2026-03-20T11:00:00Z",
+        );
+        local_rule.touch_local_change();
+
+        assert_eq!(local_rule.sync.status, RuleSyncStatus::Modified);
     }
 
     #[tokio::test]

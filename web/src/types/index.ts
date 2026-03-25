@@ -7,11 +7,21 @@ export interface RuleFile {
   updated_at: string;
 }
 
+export interface RuleSyncInfo {
+  status: 'local_only' | 'synced' | 'modified';
+  last_synced_at?: string | null;
+  remote_id?: string | null;
+  remote_updated_at?: string | null;
+}
+
 export interface RuleFileDetail {
   name: string;
   content: string;
   enabled: boolean;
   sort_order: number;
+  created_at: string;
+  updated_at: string;
+  sync: RuleSyncInfo;
 }
 
 export interface MatchedRule {

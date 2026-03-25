@@ -93,6 +93,7 @@ status                            Show proxy status
 rule <ACTION>                     Manage rules
   list                              List all rules
   add <name> [-c content|-f file]   Add a new rule
+  update <name> [-c content|-f file] Update an existing rule
   enable <name>                     Enable a rule
   disable <name>                    Disable a rule
   show <name>                       Show rule content
@@ -120,10 +121,18 @@ whitelist <ACTION>                Manage access control
 
 value <ACTION>                    Manage values for variable expansion
   list                              List all values
-  get <name>                        Get a value
-  set <name> <value>                Set a value
+  show|get <name>                   Show a value
+  add|set <name> <value>            Add a value
   delete <name>                     Delete a value
   import <file>                     Import from file (.txt/.kv/.json)
+
+script <ACTION>                   Manage scripts (request/response/decode)
+  list [-t type]                    List all scripts (optionally filter by type)
+  add <type> <name> [-c content|-f file]  Add or update a script
+  update <type> <name> [-c content|-f file] Update an existing script
+  show|get [type] <name>            Show script content; with one arg, fuzzy match by name
+  run [type] <name>                 Run a script test and print output + logs
+  delete <type> <name>              Delete a script
 
 upgrade [OPTIONS]                 Upgrade bifrost to the latest version
   -y, --yes                         Skip confirmation prompt
@@ -407,6 +416,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: ValueCommands,
     },
+    #[command(about = "Manage scripts (request/response/decode)")]
+    Script {
+        #[command(subcommand)]
+        action: ScriptCommands,
+    },
     #[command(about = "Upgrade bifrost to the latest version")]
     Upgrade {
         #[arg(short = 'y', long, help = "Skip confirmation prompt")]
@@ -604,6 +618,15 @@ pub enum RuleCommands {
         #[arg(short, long, help = "Rule file path")]
         file: Option<PathBuf>,
     },
+    #[command(about = "Update an existing rule")]
+    Update {
+        #[arg(help = "Rule name")]
+        name: String,
+        #[arg(short, long, help = "Rule content")]
+        content: Option<String>,
+        #[arg(short, long, help = "Rule file path")]
+        file: Option<PathBuf>,
+    },
     #[command(about = "Delete a rule")]
     Delete {
         #[arg(help = "Rule name")]
@@ -619,7 +642,7 @@ pub enum RuleCommands {
         #[arg(help = "Rule name")]
         name: String,
     },
-    #[command(about = "Show rule content")]
+    #[command(alias = "get", about = "Show rule content")]
     Show {
         #[arg(help = "Rule name")]
         name: String,
@@ -690,16 +713,23 @@ pub enum SystemProxyCommands {
 pub enum ValueCommands {
     #[command(about = "List all values")]
     List,
-    #[command(about = "Get a value by name")]
-    Get {
+    #[command(alias = "get", about = "Show a value by name")]
+    Show {
         #[arg(help = "Value name")]
         name: String,
     },
-    #[command(about = "Set a value")]
-    Set {
+    #[command(alias = "set", about = "Add a value")]
+    Add {
         #[arg(help = "Value name")]
         name: String,
         #[arg(help = "Value content")]
+        value: String,
+    },
+    #[command(about = "Update an existing value")]
+    Update {
+        #[arg(help = "Value name")]
+        name: String,
+        #[arg(help = "New value content")]
         value: String,
     },
     #[command(about = "Delete a value")]
@@ -711,6 +741,62 @@ pub enum ValueCommands {
     Import {
         #[arg(help = "File path (supports .txt, .kv, .json)")]
         file: PathBuf,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ScriptCommands {
+    #[command(about = "List all scripts")]
+    List {
+        #[arg(short, long, help = "Filter by type: request, response, decode")]
+        r#type: Option<String>,
+    },
+    #[command(about = "Add or update a script")]
+    Add {
+        #[arg(help = "Script type: request, response, decode")]
+        r#type: String,
+        #[arg(help = "Script name")]
+        name: String,
+        #[arg(short, long, help = "Script content (JavaScript)")]
+        content: Option<String>,
+        #[arg(short, long, help = "Script file path (.js)")]
+        file: Option<PathBuf>,
+    },
+    #[command(about = "Update an existing script")]
+    Update {
+        #[arg(help = "Script type: request, response, decode")]
+        r#type: String,
+        #[arg(help = "Script name")]
+        name: String,
+        #[arg(short, long, help = "Script content (JavaScript)")]
+        content: Option<String>,
+        #[arg(short, long, help = "Script file path (.js)")]
+        file: Option<PathBuf>,
+    },
+    #[command(about = "Delete a script")]
+    Delete {
+        #[arg(help = "Script type: request, response, decode")]
+        r#type: String,
+        #[arg(help = "Script name")]
+        name: String,
+    },
+    #[command(alias = "get", about = "Show script content")]
+    Show {
+        #[arg(
+            value_name = "TYPE_OR_NAME",
+            num_args = 1..=2,
+            help = "Script type + name, or just name for fuzzy match"
+        )]
+        args: Vec<String>,
+    },
+    #[command(about = "Run a script test using built-in mock input")]
+    Run {
+        #[arg(
+            value_name = "TYPE_OR_NAME",
+            num_args = 1..=2,
+            help = "Script type + name, or just name for fuzzy match"
+        )]
+        args: Vec<String>,
     },
 }
 

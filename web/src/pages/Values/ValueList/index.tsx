@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { Input, Button, Dropdown, Modal, message, Tooltip, Spin, Select } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -24,6 +24,10 @@ const valueSortOptions = [
   { label: "Name", value: "name_asc" },
 ];
 
+function getValueItemId(name: string) {
+  return `value-item-${encodeURIComponent(name)}`;
+}
+
 export default function ValueList() {
   const {
     values,
@@ -48,6 +52,7 @@ export default function ValueList() {
   const [selectedValues, setSelectedValues] = useState<string[]>([]);
   const lastClickedIndexRef = useRef<number | null>(null);
   const [sortMode, setSortMode] = useState<ValueSortMode>("created_desc");
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
   const { exportFile } = useExportBifrost();
 
   const filteredValues = useMemo(() => {
@@ -251,6 +256,59 @@ export default function ValueList() {
     ];
   };
 
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+
+      if (filteredValues.length === 0) {
+        return;
+      }
+
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+
+      event.preventDefault();
+
+      const currentIndex = selectedValueName
+        ? filteredValues.findIndex((value) => value.name === selectedValueName)
+        : -1;
+
+      const fallbackIndex =
+        event.key === "ArrowDown" ? 0 : filteredValues.length - 1;
+      const nextIndex =
+        currentIndex === -1
+          ? fallbackIndex
+          : Math.min(
+              filteredValues.length - 1,
+              Math.max(0, currentIndex + (event.key === "ArrowDown" ? 1 : -1)),
+            );
+
+      const nextValue = filteredValues[nextIndex];
+      if (!nextValue || nextValue.name === selectedValueName) {
+        return;
+      }
+
+      setSelectedValues([]);
+      lastClickedIndexRef.current = nextIndex;
+      selectValue(nextValue.name);
+    },
+    [filteredValues, selectedValueName, selectValue],
+  );
+
+  useEffect(() => {
+    if (!selectedValueName) {
+      return;
+    }
+
+    const selectedItem = listContainerRef.current?.querySelector<HTMLElement>(
+      `[data-value-name="${CSS.escape(selectedValueName)}"]`,
+    );
+    selectedItem?.scrollIntoView({ block: "nearest" });
+  }, [filteredValues, selectedValueName]);
+
   return (
     <div className={styles.container} data-testid="values-list">
       <div className={styles.header}>
@@ -313,7 +371,17 @@ export default function ValueList() {
         />
       </div>
 
-      <div className={styles.listContainer}>
+      <div
+        ref={listContainerRef}
+        className={styles.listContainer}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Values list"
+        aria-activedescendant={
+          selectedValueName ? getValueItemId(selectedValueName) : undefined
+        }
+        onKeyDown={handleListKeyDown}
+      >
         {loading && values.length === 0 ? (
           <div className={styles.loading}>
             <Spin size="small" />
@@ -335,8 +403,14 @@ export default function ValueList() {
                   trigger={["contextMenu"]}
                 >
                   <div
+                    id={getValueItemId(item.name)}
                     className={`${styles.item} ${isSelected ? styles.selected : ""} ${selectedValues.includes(item.name) ? styles.multiSelected : ""}`}
-                    onClick={(e) => handleSelect(item.name, e)}
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={(e) => {
+                      listContainerRef.current?.focus();
+                      handleSelect(item.name, e);
+                    }}
                     data-testid="value-item"
                     data-value-name={item.name}
                   >

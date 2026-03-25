@@ -473,6 +473,7 @@ impl BifrostFileParser {
             created_at: Option<String>,
             updated_at: Option<String>,
             description: Option<String>,
+            sync: RuleSyncMeta,
         }
 
         let parsed: MetaWrapper = match toml::from_str::<toml::Value>(meta_raw) {
@@ -509,6 +510,7 @@ impl BifrostFileParser {
             created_at: partial.created_at.unwrap_or_else(|| now.clone()),
             updated_at: partial.updated_at.unwrap_or(now),
             description: partial.description,
+            sync: partial.sync,
         }
     }
 

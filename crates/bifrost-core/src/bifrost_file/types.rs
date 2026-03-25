@@ -74,6 +74,8 @@ pub struct RuleFileMeta {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default)]
+    pub sync: RuleSyncMeta,
 }
 
 fn default_true() -> bool {
@@ -95,12 +97,42 @@ impl RuleFileMeta {
             created_at: now.clone(),
             updated_at: now,
             description: None,
+            sync: RuleSyncMeta::default(),
         }
     }
 
     pub fn touch(&mut self) {
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSyncStatus {
+    #[default]
+    LocalOnly,
+    Synced,
+    Modified,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuleSyncMeta {
+    #[serde(default)]
+    pub rule_id: String,
+    #[serde(default)]
+    pub status: RuleSyncStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

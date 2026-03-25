@@ -547,3 +547,34 @@ set_unsafe_ssl() {
 get_unsafe_ssl() {
     admin_get "/api/config/tls" | jq -r '.unsafe_ssl'
 }
+
+list_scripts() {
+    admin_get "/api/scripts"
+}
+
+get_script() {
+    local script_type="$1"
+    local name="$2"
+    admin_get "/api/scripts/${script_type}/${name}"
+}
+
+create_script() {
+    local script_type="$1"
+    local name="$2"
+    local content="$3"
+    local description="${4:-}"
+    local payload
+    if [[ -n "$description" ]]; then
+        payload=$(jq -cn --arg content "$content" --arg description "$description" \
+            '{content:$content, description:$description}')
+    else
+        payload=$(jq -cn --arg content "$content" '{content:$content}')
+    fi
+    admin_put "/api/scripts/${script_type}/${name}" "$payload"
+}
+
+delete_script() {
+    local script_type="$1"
+    local name="$2"
+    admin_delete "/api/scripts/${script_type}/${name}"
+}

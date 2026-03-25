@@ -18,6 +18,8 @@ tracing.workspace = true
 futures = "0.3"
 chrono = { workspace = true, features = ["serde"] }
 urlencoding.workspace = true
+uuid.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

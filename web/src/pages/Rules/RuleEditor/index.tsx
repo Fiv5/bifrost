@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { editor as MonacoEditor, KeyCode, KeyMod } from "monaco-editor";
 import { Empty, Spin, message, Button, Space, Modal } from "antd";
 import { SaveOutlined, CopyOutlined, DeleteOutlined } from "@ant-design/icons";
+import dayjs from "dayjs";
 import BifrostEditor, {
   THEME_DARK,
   THEME_LIGHT,
@@ -17,7 +18,25 @@ import BifrostEditor, {
 import { useRulesStore } from "../../../stores/useRulesStore";
 import { useThemeStore } from "../../../stores/useThemeStore";
 import { useValuesStore } from "../../../stores/useValuesStore";
+import type { RuleSyncInfo } from "../../../types";
 import styles from "./index.module.css";
+
+function formatRuleTime(value?: string | null): string {
+  if (!value) return "--";
+  const date = dayjs(value);
+  return date.isValid() ? date.format("YYYY-MM-DD HH:mm:ss") : value;
+}
+
+function formatSyncStatus(sync?: RuleSyncInfo | null): string {
+  switch (sync?.status) {
+    case "synced":
+      return "Synced";
+    case "modified":
+      return "Modified";
+    default:
+      return "Local only";
+  }
+}
 
 export default function RuleEditor() {
   const navigate = useNavigate();
@@ -262,12 +281,31 @@ export default function RuleEditor() {
 
   const hasChanges =
     selectedRuleName && editingContent[selectedRuleName] !== undefined;
+  const metaItems = currentRule
+    ? [
+        `Sync ${formatSyncStatus(currentRule.sync)}`,
+        `Created ${formatRuleTime(currentRule.created_at)}`,
+        `Updated ${formatRuleTime(currentRule.updated_at)}`,
+        `Last sync ${formatRuleTime(currentRule.sync?.last_synced_at)}`,
+      ]
+    : [];
 
   return (
     <div className={styles.container} data-testid="rule-editor">
       <div className={styles.header}>
         <div className={styles.titleSection}>
-          <span className={styles.title} data-testid="rule-editor-title">{currentRule?.name}</span>
+          <div className={styles.titleBlock}>
+            <span className={styles.title} data-testid="rule-editor-title">{currentRule?.name}</span>
+            {currentRule && (
+              <div className={styles.metaRow} data-testid="rule-editor-meta">
+                {metaItems.map((item) => (
+                  <span key={item} className={styles.metaItem}>
+                    {item}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
           {saving && <Spin size="small" style={{ marginLeft: 8 }} />}
         </div>
         <Space size={8}>

@@ -153,19 +153,48 @@ start_echo_server() {
 }
 
 test_cli_value_set_get() {
-    header "测试 CLI: value set/get"
+    header "测试 CLI: value add/show (兼容 set/get)"
 
     info "设置值 test_key=test_value"
-    BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value set test_key "test_value" 2>&1
+    BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value add test_key "test_value" 2>&1
 
     info "获取值 test_key"
     local result
-    result=$(BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value get test_key 2>&1 || true)
+    result=$(BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value show test_key 2>&1 || true)
 
     if echo "$result" | grep -q "test_value"; then
-        pass "value set/get 工作正常"
+        pass "value add/show 工作正常"
     else
-        fail "value get 未返回预期值: $result"
+        fail "value show 未返回预期值: $result"
+    fi
+}
+
+test_cli_value_update() {
+    header "测试 CLI: value update"
+
+    BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value set update_key "original" 2>&1
+    BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value update update_key "updated" 2>&1
+
+    local result
+    result=$(BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value get update_key 2>&1 || true)
+
+    if echo "$result" | grep -q "updated" && ! echo "$result" | grep -q "original"; then
+        pass "value update 正确更新了已有值"
+    else
+        fail "value update 未正确更新已有值: $result"
+    fi
+}
+
+test_cli_value_update_not_found() {
+    header "测试 CLI: value update 不存在的值"
+
+    local result
+    result=$(BIFROST_DATA_DIR="$TEST_VALUES_DIR" "$BIFROST_BIN" value update missing_key "updated" 2>&1 || true)
+
+    if echo "$result" | grep -qi "not found"; then
+        pass "value update 对不存在的值返回了明确错误"
+    else
+        fail "value update 缺少不存在场景的错误提示: $result"
     fi
 }
 
@@ -462,6 +491,8 @@ main() {
     setup_test_values_dir
 
     test_cli_value_set_get
+    test_cli_value_update
+    test_cli_value_update_not_found
     test_cli_value_list
     test_cli_value_delete
     test_cli_value_import_txt

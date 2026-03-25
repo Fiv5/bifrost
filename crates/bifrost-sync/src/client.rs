@@ -226,27 +226,55 @@ impl SyncHttpClient {
             .ok_or_else(|| BifrostError::Network("sync update env returned empty data".to_string()))
     }
 
-    pub async fn delete_env(
+    pub async fn delete_env_by_id(
         &self,
         config: &SyncConfig,
         token: &str,
-        env: &RemoteEnv,
+        remote_id: &str,
+        remote_user_id: &str,
     ) -> Result<()> {
         let url = format!(
             "{}/v4/env/{}?user_id={}",
             config.remote_base_url.trim_end_matches('/'),
-            env.id,
-            urlencoding::encode(&env.user_id)
+            remote_id,
+            urlencoding::encode(remote_user_id)
         );
-        let _: ApiEnvelope<i32> = self
-            .request_json(
-                reqwest::Method::DELETE,
-                &url,
-                token,
-                None::<&()>,
-                None::<&()>,
-            )
-            .await?;
+        let response = self
+            .http
+            .delete(&url)
+            .header("x-bifrost-token", token)
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .map_err(|e| BifrostError::Network(format!("sync request failed: {e}")))?;
+
+        let status = response.status();
+        if status.as_u16() == 401 {
+            return Err(BifrostError::Network("sync unauthorized".to_string()));
+        }
+        if status.as_u16() == 404 {
+            return Ok(());
+        }
+
+        let response_text = response.text().await.map_err(|e| {
+            BifrostError::Network(format!(
+                "sync response body read failed: {e} (method=DELETE url={url} status={status})"
+            ))
+        })?;
+
+        if !status.is_success() {
+            let preview = truncate_for_log(&response_text, 500);
+            return Err(BifrostError::Network(format!(
+                "sync delete failed with status {status} (url={url}): {preview}"
+            )));
+        }
+
+        let _: ApiEnvelope<serde_json::Value> = serde_json::from_str(&response_text).map_err(|e| {
+            let preview = truncate_for_log(&response_text, 500);
+            BifrostError::Network(format!(
+                "invalid sync response: {e} (method=DELETE url={url} status={status} body_preview={preview})"
+            ))
+        })?;
         Ok(())
     }
 

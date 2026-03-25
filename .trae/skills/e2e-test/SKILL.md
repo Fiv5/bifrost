@@ -53,6 +53,41 @@ BIFROST_DATA_DIR=./.bifrost-e2e-test ./.bifrost-ui-target/debug/bifrost start -p
 - 新建规则测试后，顺手检查对应的规则文件与脚本是否一一对应；若无法建立清晰对应关系，应继续拆分目录或文件
 - 测试结束后清理临时目录和残留进程
 
+## CLI 测试方法
+
+当本次变更涉及 `bifrost` CLI 子命令（例如 `bifrost value ...`、`bifrost rule ...`、`bifrost script ...`）时，推荐使用“黑盒 + 独立数据目录”的方式编写与执行测试：
+
+- 使用独立 `BIFROST_DATA_DIR`：用 `mktemp -d` 创建测试目录并导出，避免污染本机 `~/.bifrost`
+- 优先复用已编译二进制：默认使用 `target/release/bifrost`，不存在时再 `cargo build --release --bin bifrost`
+- 断言策略：
+  - 基于 CLI 输出：用 `grep`/`jq`（如有）做关键字段断言
+  - 基于落盘结果：检查 `BIFROST_DATA_DIR` 下对应文件/目录是否按预期创建与更新
+- 清理策略：用 `trap cleanup EXIT` 确保结束后停止残留进程并删除临时目录
+
+现有 CLI 测试用例可直接参考与复用：
+
+- `e2e-tests/test_values_cli.sh`：示例化展示了 build、`BIFROST_DATA_DIR` 隔离、以及 set/get/list/delete/import 的断言方式
+- `e2e-tests/tests/test_cli_proxy_start_e2e.sh`：启动相关 CLI 的端到端覆盖
+- `e2e-tests/tests/test_upgrade_cli.sh`：升级相关 CLI 覆盖
+
+### 针对新 CLI 子命令的脚本模板（示例）
+
+以 `bifrost script` 为例，核心验证点建议包括：add → show → list → delete 以及脚本文件落盘路径：
+
+```bash
+TEST_DIR="$(mktemp -d)"
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+export BIFROST_DATA_DIR="$TEST_DIR"
+BIFROST_BIN="./target/release/bifrost"
+
+"$BIFROST_BIN" script add request cli_test -c 'log.info("hello");'
+"$BIFROST_BIN" script show request cli_test | grep -q 'hello'
+"$BIFROST_BIN" script list -t request | grep -q 'cli_test'
+test -f "$BIFROST_DATA_DIR/scripts/request/cli_test.js"
+"$BIFROST_BIN" script delete request cli_test
+```
+
 ## 场景文档
 
 - [01-快速构建启动](01-快速构建启动.md)

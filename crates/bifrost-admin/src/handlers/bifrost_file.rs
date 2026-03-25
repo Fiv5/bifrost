@@ -669,6 +669,7 @@ async fn handle_export_rules(req: Request<Incoming>, state: SharedAdminState) ->
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         description: request.description,
+        sync: bifrost_core::bifrost_file::RuleSyncMeta::default(),
     };
 
     let output = BifrostFileWriter::write_rules(&meta, &all_content);

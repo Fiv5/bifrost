@@ -17,6 +17,7 @@ tests/                      # E2E / Admin API / 回归测试脚本
 │   ├── test_cert_admin_api.sh      # Cert API 测试 (7 tests)
 │   ├── test_proxy_admin_api.sh     # Proxy API 测试 (6 tests)
 │   ├── test_system_admin_api.sh    # System API 测试 (10 tests)
+│   ├── test_scripts_admin_api.sh   # Scripts API 测试 (12 tests)
 │   ├── test_tls_logic_simple.sh    # TLS 逻辑测试脚本
 │   └── test_tls_intercept_e2e.sh   # TLS 拦截 E2E 测试脚本
 
@@ -189,6 +190,7 @@ Admin API 测试脚本位于 `tests/` 目录，用于测试 Bifrost 的管理 AP
 | `test_cert_admin_api.sh`      | 7      | 证书信息、下载、二维码               |
 | `test_proxy_admin_api.sh`     | 6      | 系统代理状态、设置                   |
 | `test_system_admin_api.sh`    | 10     | 系统信息、概览、指标历史             |
+| `test_scripts_admin_api.sh`   | 12     | 脚本 CRUD、列表、内置脚本            |
 
 ### 运行 Admin API 测试
 
