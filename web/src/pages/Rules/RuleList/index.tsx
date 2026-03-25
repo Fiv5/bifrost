@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef } from 'react';
+import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
   Input,
   Button,
@@ -34,6 +34,10 @@ const ruleSortOptions = [
   { label: 'Updated', value: 'updated_desc' },
   { label: 'Name', value: 'name_asc' },
 ];
+
+function getRuleItemId(name: string) {
+  return `rule-item-${encodeURIComponent(name)}`;
+}
 
 export default function RuleList() {
   const {
@@ -365,6 +369,58 @@ export default function RuleList() {
     [draggedRuleName, reorderRules, rules, stopAutoScroll]
   );
 
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+
+      if (filteredRules.length === 0) {
+        return;
+      }
+
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+        return;
+      }
+
+      event.preventDefault();
+
+      const currentIndex = selectedRuleName
+        ? filteredRules.findIndex((rule) => rule.name === selectedRuleName)
+        : -1;
+
+      const fallbackIndex = event.key === 'ArrowDown' ? 0 : filteredRules.length - 1;
+      const nextIndex =
+        currentIndex === -1
+          ? fallbackIndex
+          : Math.min(
+              filteredRules.length - 1,
+              Math.max(0, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))
+            );
+
+      const nextRule = filteredRules[nextIndex];
+      if (!nextRule || nextRule.name === selectedRuleName) {
+        return;
+      }
+
+      setSelectedRules([]);
+      lastClickedIndexRef.current = nextIndex;
+      void selectRule(nextRule.name);
+    },
+    [filteredRules, selectedRuleName, selectRule]
+  );
+
+  useEffect(() => {
+    if (!selectedRuleName) {
+      return;
+    }
+
+    const selectedItem = listContainerRef.current?.querySelector<HTMLElement>(
+      `[data-rule-name="${CSS.escape(selectedRuleName)}"]`
+    );
+    selectedItem?.scrollIntoView({ block: 'nearest' });
+  }, [selectedRuleName, filteredRules]);
+
   return (
     <div className={styles.container} data-testid="rules-list">
       <div className={styles.header}>
@@ -421,6 +477,11 @@ export default function RuleList() {
       <div
         ref={listContainerRef}
         className={styles.listContainer}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Rules list"
+        aria-activedescendant={selectedRuleName ? getRuleItemId(selectedRuleName) : undefined}
+        onKeyDown={handleListKeyDown}
         onDragOver={(e) => {
           if (sortMode !== 'manual' || !draggedRuleName) {
             stopAutoScroll();
@@ -459,9 +520,15 @@ export default function RuleList() {
                   trigger={['contextMenu']}
                 >
                   <div
+                    id={getRuleItemId(rule.name)}
                     className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
+                    role="option"
+                    aria-selected={isSelected}
                     draggable={sortMode === 'manual'}
-                    onClick={(e) => handleSelect(rule.name, e)}
+                    onClick={(e) => {
+                      listContainerRef.current?.focus();
+                      handleSelect(rule.name, e);
+                    }}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
                     onDragStart={() => {
                       if (sortMode !== 'manual') return;

@@ -29,6 +29,51 @@ impl BifrostFileWriter {
         if let Some(ref desc) = meta.description {
             output.push_str(&format!("description = \"{}\"\n", escape_toml_string(desc)));
         }
+        output.push_str("\n[meta.sync]\n");
+        output.push_str(&format!(
+            "rule_id = \"{}\"\n",
+            escape_toml_string(&meta.sync.rule_id)
+        ));
+        output.push_str(&format!(
+            "status = \"{}\"\n",
+            sync_status_to_str(meta.sync.status)
+        ));
+        if let Some(ref last_synced_at) = meta.sync.last_synced_at {
+            output.push_str(&format!(
+                "last_synced_at = \"{}\"\n",
+                escape_toml_string(last_synced_at)
+            ));
+        }
+        if let Some(ref last_synced_content_hash) = meta.sync.last_synced_content_hash {
+            output.push_str(&format!(
+                "last_synced_content_hash = \"{}\"\n",
+                escape_toml_string(last_synced_content_hash)
+            ));
+        }
+        if let Some(ref remote_id) = meta.sync.remote_id {
+            output.push_str(&format!(
+                "remote_id = \"{}\"\n",
+                escape_toml_string(remote_id)
+            ));
+        }
+        if let Some(ref remote_user_id) = meta.sync.remote_user_id {
+            output.push_str(&format!(
+                "remote_user_id = \"{}\"\n",
+                escape_toml_string(remote_user_id)
+            ));
+        }
+        if let Some(ref remote_created_at) = meta.sync.remote_created_at {
+            output.push_str(&format!(
+                "remote_created_at = \"{}\"\n",
+                escape_toml_string(remote_created_at)
+            ));
+        }
+        if let Some(ref remote_updated_at) = meta.sync.remote_updated_at {
+            output.push_str(&format!(
+                "remote_updated_at = \"{}\"\n",
+                escape_toml_string(remote_updated_at)
+            ));
+        }
 
         output.push_str("\n[options]\n");
         output.push_str(&format!("rule_count = {}\n", rule_count));
@@ -144,6 +189,14 @@ impl BifrostFileWriter {
         output.push_str(&serde_json::to_string_pretty(template)?);
 
         Ok(output)
+    }
+}
+
+fn sync_status_to_str(status: RuleSyncStatus) -> &'static str {
+    match status {
+        RuleSyncStatus::LocalOnly => "local_only",
+        RuleSyncStatus::Synced => "synced",
+        RuleSyncStatus::Modified => "modified",
     }
 }
 

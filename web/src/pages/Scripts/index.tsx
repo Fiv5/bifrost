@@ -427,6 +427,10 @@ interface FlatNode {
   scriptCount?: number;
 }
 
+function getScriptItemId(key: string) {
+  return `script-item-${encodeURIComponent(key)}`;
+}
+
 function ScriptListPanel({
   allScripts,
   selectedScript,
@@ -469,6 +473,7 @@ function ScriptListPanel({
   const [renameTarget, setRenameTarget] = useState<{ type: ScriptType; name: string } | null>(null);
   const [newName, setNewName] = useState("");
   const [renameModalVisible, setRenameModalVisible] = useState(false);
+  const listContainerRef = useRef<HTMLDivElement | null>(null);
 
   const flatNodes = useMemo<FlatNode[]>(() => {
     const filteredScripts = searchValue
@@ -583,6 +588,7 @@ function ScriptListPanel({
 
   const handleClick = useCallback(
     (node: FlatNode, e: React.MouseEvent) => {
+      listContainerRef.current?.focus();
       if (node.type === "folder") {
         onToggleFolder(node.key);
         return;
@@ -617,6 +623,63 @@ function ScriptListPanel({
     },
     [scriptNodes, onSelectScript, onToggleFolder],
   );
+
+  const handleListKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) {
+        return;
+      }
+
+      if (scriptNodes.length === 0) {
+        return;
+      }
+
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+
+      event.preventDefault();
+
+      const currentIndex = selectedKey
+        ? scriptNodes.findIndex((node) => node.key === selectedKey)
+        : -1;
+
+      const fallbackIndex = event.key === "ArrowDown" ? 0 : scriptNodes.length - 1;
+      const nextIndex =
+        currentIndex === -1
+          ? fallbackIndex
+          : Math.min(
+              scriptNodes.length - 1,
+              Math.max(0, currentIndex + (event.key === "ArrowDown" ? 1 : -1)),
+            );
+
+      const nextNode = scriptNodes[nextIndex];
+      if (
+        !nextNode ||
+        !nextNode.scriptType ||
+        nextNode.scriptName === undefined ||
+        nextNode.key === selectedKey
+      ) {
+        return;
+      }
+
+      setSelectedScripts([]);
+      lastClickedIndexRef.current = nextIndex;
+      void onSelectScript(nextNode.scriptType, nextNode.scriptName);
+    },
+    [onSelectScript, scriptNodes, selectedKey],
+  );
+
+  useEffect(() => {
+    if (!selectedKey) {
+      return;
+    }
+
+    const selectedItem = listContainerRef.current?.querySelector<HTMLElement>(
+      `[data-script-key="${CSS.escape(selectedKey)}"]`,
+    );
+    selectedItem?.scrollIntoView({ block: "nearest" });
+  }, [flatNodes, selectedKey]);
 
   const getScriptsInFolder = useCallback(
     (folderPath: string): { type: ScriptType; name: string }[] => {
@@ -827,7 +890,15 @@ function ScriptListPanel({
         />
       </div>
 
-      <div className={styles.listContainer}>
+      <div
+        ref={listContainerRef}
+        className={styles.listContainer}
+        tabIndex={0}
+        role="listbox"
+        aria-label="Scripts list"
+        aria-activedescendant={selectedKey ? getScriptItemId(selectedKey) : undefined}
+        onKeyDown={handleListKeyDown}
+      >
         {loading && allScripts.length === 0 ? (
           <div className={styles.loading}>
             <Spin size="small" />
@@ -845,6 +916,7 @@ function ScriptListPanel({
                   >
                     <div
                       className={styles.item}
+                      role="presentation"
                       style={{ paddingLeft: 12 + node.depth * 16 }}
                       onClick={(e) => handleClick(node, e)}
                     >
@@ -883,10 +955,14 @@ function ScriptListPanel({
                   trigger={["contextMenu"]}
                 >
                   <div
+                    id={getScriptItemId(node.key)}
                     className={`${styles.item} ${isSelected ? styles.selected : ""} ${isMultiSelected ? styles.multiSelected : ""}`}
                     style={{ paddingLeft: 12 + node.depth * 16 }}
+                    role="option"
+                    aria-selected={isSelected}
                     onClick={(e) => handleClick(node, e)}
                     data-testid="script-item"
+                    data-script-key={node.key}
                     data-script-name={node.scriptName}
                     data-script-type={node.scriptType}
                   >

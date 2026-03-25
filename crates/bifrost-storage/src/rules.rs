@@ -3,10 +3,77 @@ use std::path::PathBuf;
 
 use bifrost_core::bifrost_file::{
     BifrostFileParser, BifrostFileWriter, RuleFileMeta as BifrostRuleFileMeta,
-    RuleFileOptions as BifrostRuleFileOptions,
+    RuleFileOptions as BifrostRuleFileOptions, RuleSyncMeta as BifrostRuleSyncMeta,
+    RuleSyncStatus as BifrostRuleSyncStatus,
 };
 use bifrost_core::{normalize_rule_content, BifrostError, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSyncStatus {
+    #[default]
+    LocalOnly,
+    Synced,
+    Modified,
+}
+
+impl From<RuleSyncStatus> for BifrostRuleSyncStatus {
+    fn from(value: RuleSyncStatus) -> Self {
+        match value {
+            RuleSyncStatus::LocalOnly => Self::LocalOnly,
+            RuleSyncStatus::Synced => Self::Synced,
+            RuleSyncStatus::Modified => Self::Modified,
+        }
+    }
+}
+
+impl From<BifrostRuleSyncStatus> for RuleSyncStatus {
+    fn from(value: BifrostRuleSyncStatus) -> Self {
+        match value {
+            BifrostRuleSyncStatus::LocalOnly => Self::LocalOnly,
+            BifrostRuleSyncStatus::Synced => Self::Synced,
+            BifrostRuleSyncStatus::Modified => Self::Modified,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleSyncMetadata {
+    #[serde(default)]
+    pub rule_id: String,
+    #[serde(default)]
+    pub status: RuleSyncStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_synced_content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_updated_at: Option<String>,
+}
+
+impl Default for RuleSyncMetadata {
+    fn default() -> Self {
+        Self {
+            rule_id: generate_rule_id(),
+            status: RuleSyncStatus::LocalOnly,
+            last_synced_at: None,
+            last_synced_content_hash: None,
+            remote_id: None,
+            remote_user_id: None,
+            remote_created_at: None,
+            remote_updated_at: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleFile {
@@ -23,6 +90,8 @@ pub struct RuleFile {
     pub created_at: String,
     #[serde(default = "default_timestamp")]
     pub updated_at: String,
+    #[serde(default)]
+    pub sync: RuleSyncMetadata,
 }
 
 fn default_version() -> String {
@@ -45,6 +114,7 @@ impl RuleFile {
             version: "1.0.0".to_string(),
             created_at: now.clone(),
             updated_at: now,
+            sync: RuleSyncMetadata::default(),
         }
     }
 
@@ -67,6 +137,40 @@ impl RuleFile {
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 
+    pub fn touch_local_change(&mut self) {
+        self.touch();
+        if self.sync.remote_id.is_some() {
+            self.sync.status = RuleSyncStatus::Modified;
+        } else {
+            self.sync.status = RuleSyncStatus::LocalOnly;
+            self.sync.last_synced_at = None;
+            self.sync.last_synced_content_hash = None;
+            self.sync.remote_id = None;
+            self.sync.remote_user_id = None;
+            self.sync.remote_created_at = None;
+            self.sync.remote_updated_at = None;
+        }
+    }
+
+    pub fn mark_synced(
+        &mut self,
+        remote_id: impl Into<String>,
+        remote_user_id: impl Into<String>,
+        remote_created_at: impl Into<String>,
+        remote_updated_at: impl Into<String>,
+    ) {
+        self.sync = RuleSyncMetadata {
+            rule_id: self.sync.rule_id.clone(),
+            status: RuleSyncStatus::Synced,
+            last_synced_at: Some(chrono::Utc::now().to_rfc3339()),
+            last_synced_content_hash: Some(content_hash(&self.content)),
+            remote_id: Some(remote_id.into()),
+            remote_user_id: Some(remote_user_id.into()),
+            remote_created_at: Some(remote_created_at.into()),
+            remote_updated_at: Some(remote_updated_at.into()),
+        };
+    }
+
     fn to_bifrost_meta(&self) -> BifrostRuleFileMeta {
         BifrostRuleFileMeta {
             name: self.name.clone(),
@@ -76,6 +180,16 @@ impl RuleFile {
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             description: self.description.clone(),
+            sync: BifrostRuleSyncMeta {
+                rule_id: self.sync.rule_id.clone(),
+                status: self.sync.status.into(),
+                last_synced_at: self.sync.last_synced_at.clone(),
+                last_synced_content_hash: self.sync.last_synced_content_hash.clone(),
+                remote_id: self.sync.remote_id.clone(),
+                remote_user_id: self.sync.remote_user_id.clone(),
+                remote_created_at: self.sync.remote_created_at.clone(),
+                remote_updated_at: self.sync.remote_updated_at.clone(),
+            },
         }
     }
 
@@ -89,8 +203,28 @@ impl RuleFile {
             version: meta.version,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
+            sync: RuleSyncMetadata {
+                rule_id: meta.sync.rule_id,
+                status: meta.sync.status.into(),
+                last_synced_at: meta.sync.last_synced_at,
+                last_synced_content_hash: meta.sync.last_synced_content_hash,
+                remote_id: meta.sync.remote_id,
+                remote_user_id: meta.sync.remote_user_id,
+                remote_created_at: meta.sync.remote_created_at,
+                remote_updated_at: meta.sync.remote_updated_at,
+            },
         }
     }
+}
+
+fn generate_rule_id() -> String {
+    format!("rl_{}", Uuid::new_v4().simple())
+}
+
+pub fn content_hash(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -187,8 +321,10 @@ impl RulesStorage {
             let file = BifrostFileParser::parse_rules(&content)
                 .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
             let normalized_content = normalize_rule_content(&file.content);
-            let rule = RuleFile::from_bifrost(file.meta, normalized_content);
-            if rule.content != file.content {
+            let mut rule = RuleFile::from_bifrost(file.meta, normalized_content);
+            let mut should_resave = rule.content != file.content;
+            should_resave |= ensure_sync_metadata(&mut rule);
+            if should_resave {
                 self.save(&rule)?;
             }
             Ok(rule)
@@ -197,8 +333,10 @@ impl RulesStorage {
             let file = BifrostFileParser::parse_rules(&content)
                 .map_err(|e| BifrostError::Parse(format!("Failed to parse rule file: {}", e)))?;
             let normalized_content = normalize_rule_content(&file.content);
-            let rule = RuleFile::from_bifrost(file.meta, normalized_content);
-            if rule.content != file.content {
+            let mut rule = RuleFile::from_bifrost(file.meta, normalized_content);
+            let mut should_resave = rule.content != file.content;
+            should_resave |= ensure_sync_metadata(&mut rule);
+            if should_resave {
                 self.save(&rule)?;
             }
             Ok(rule)
@@ -311,7 +449,7 @@ impl RulesStorage {
 
         let mut rule = self.load(old)?;
         rule.name = new.to_string();
-        rule.touch();
+        rule.touch_local_change();
         self.save(&rule)?;
         self.delete(old)?;
         Ok(())
@@ -347,21 +485,21 @@ impl RulesStorage {
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
         let mut rule = self.load(name)?;
         rule.enabled = enabled;
-        rule.touch();
+        rule.touch_local_change();
         self.save(&rule)
     }
 
     pub fn set_sort_order(&self, name: &str, sort_order: i32) -> Result<()> {
         let mut rule = self.load(name)?;
         rule.sort_order = sort_order;
-        rule.touch();
+        rule.touch_local_change();
         self.save(&rule)
     }
 
     pub fn update_content(&self, name: &str, content: String) -> Result<()> {
         let mut rule = self.load(name)?;
         rule.content = content;
-        rule.touch();
+        rule.touch_local_change();
         self.save(&rule)
     }
 
@@ -390,6 +528,22 @@ impl RulesStorage {
         }
         Ok(())
     }
+}
+
+fn ensure_sync_metadata(rule: &mut RuleFile) -> bool {
+    let mut changed = false;
+    if rule.sync.rule_id.trim().is_empty() {
+        rule.sync.rule_id = generate_rule_id();
+        changed = true;
+    }
+    if rule.sync.status == RuleSyncStatus::Synced
+        && rule.sync.last_synced_content_hash.is_none()
+        && rule.sync.remote_id.is_some()
+    {
+        rule.sync.last_synced_content_hash = Some(content_hash(&rule.content));
+        changed = true;
+    }
+    changed
 }
 
 impl RulesStorage {
@@ -656,5 +810,25 @@ mod tests {
         assert_eq!(summaries[0].name, "test");
         assert_eq!(summaries[0].rule_count, 2);
         assert_eq!(summaries[0].description, Some("Test rules".to_string()));
+    }
+
+    #[test]
+    fn test_synced_rule_becomes_modified_after_local_change() {
+        let (_temp_dir, storage) = setup();
+        let mut rule = RuleFile::new("demo", "example.com host://127.0.0.1:3000");
+        rule.mark_synced(
+            "remote-1",
+            "user-1",
+            "2026-03-20T09:00:00Z",
+            "2026-03-20T10:00:00Z",
+        );
+        storage.save(&rule).unwrap();
+
+        storage
+            .update_content("demo", "example.com host://127.0.0.1:4000".to_string())
+            .unwrap();
+
+        let updated = storage.load("demo").unwrap();
+        assert_eq!(updated.sync.status, RuleSyncStatus::Modified);
     }
 }

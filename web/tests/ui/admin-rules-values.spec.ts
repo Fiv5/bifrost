@@ -241,3 +241,116 @@ test("Rules 页面支持持久化排序，且解析顺序符合列表顺序", as
     await server.close();
   }
 });
+
+test("Rules 列表在获得焦点后支持上下键切换选中项", async ({
+  page,
+  request,
+}) => {
+  const firstRuleName = uniqueName("keyboard-rule-a");
+  const secondRuleName = uniqueName("keyboard-rule-b");
+
+  const createFirstRuleRes = await request.post(`${apiBase}/rules`, {
+    data: {
+      name: firstRuleName,
+      content: "127.0.0.1 reqHeaders://X-Keyboard-Rule=first",
+    },
+  });
+  if (!createFirstRuleRes.ok()) {
+    throw new Error(await createFirstRuleRes.text());
+  }
+
+  const createSecondRuleRes = await request.post(`${apiBase}/rules`, {
+    data: {
+      name: secondRuleName,
+      content: "127.0.0.1 reqHeaders://X-Keyboard-Rule=second",
+    },
+  });
+  if (!createSecondRuleRes.ok()) {
+    throw new Error(await createSecondRuleRes.text());
+  }
+
+  await openPage(page, "rules");
+  await expect(page.getByTestId("rules-list")).toBeVisible();
+
+  const firstRuleItem = page.getByTestId("rule-item").nth(0);
+  const secondRuleItem = page.getByTestId("rule-item").nth(1);
+
+  await expect(firstRuleItem).toBeVisible();
+  await expect(secondRuleItem).toBeVisible();
+  await expect(firstRuleItem).toHaveAttribute("data-rule-name", /keyboard-rule-[ab]-/);
+  await expect(secondRuleItem).toHaveAttribute("data-rule-name", /keyboard-rule-[ab]-/);
+
+  await firstRuleItem.click();
+  await expect(firstRuleItem).toHaveAttribute("aria-selected", "true");
+
+  const rulesListbox = page.getByRole("listbox", { name: "Rules list" });
+  await rulesListbox.focus();
+
+  await page.keyboard.press("ArrowDown");
+  await expect(secondRuleItem).toHaveAttribute("aria-selected", "true");
+  await expect(firstRuleItem).toHaveAttribute("aria-selected", "false");
+
+  await page.keyboard.press("ArrowUp");
+  await expect(firstRuleItem).toHaveAttribute("aria-selected", "true");
+  await expect(secondRuleItem).toHaveAttribute("aria-selected", "false");
+});
+
+test("Values 列表在获得焦点后支持上下键切换选中项", async ({
+  page,
+  request,
+}) => {
+  const firstValueName = uniqueName("aaa-keyboard-value-a");
+  const secondValueName = uniqueName("aab-keyboard-value-b");
+
+  const createFirstValueRes = await request.post(`${apiBase}/values`, {
+    data: {
+      name: firstValueName,
+      value: "first",
+    },
+  });
+  if (!createFirstValueRes.ok()) {
+    throw new Error(await createFirstValueRes.text());
+  }
+
+  const createSecondValueRes = await request.post(`${apiBase}/values`, {
+    data: {
+      name: secondValueName,
+      value: "second",
+    },
+  });
+  if (!createSecondValueRes.ok()) {
+    throw new Error(await createSecondValueRes.text());
+  }
+
+  await openPage(page, "values");
+  await expect(page.getByTestId("values-list")).toBeVisible();
+  await changeSort(page, "value-sort-select", "Name");
+
+  const firstValueItem = page
+    .getByTestId("value-item")
+    .filter({ hasText: firstValueName })
+    .first();
+  const secondValueItem = page
+    .getByTestId("value-item")
+    .filter({ hasText: secondValueName })
+    .first();
+
+  await expect(firstValueItem).toBeVisible();
+  await expect(secondValueItem).toBeVisible();
+  await expect(firstValueItem).toHaveAttribute("data-value-name", firstValueName);
+  await expect(secondValueItem).toHaveAttribute("data-value-name", secondValueName);
+
+  await firstValueItem.click();
+  await expect(firstValueItem).toHaveAttribute("aria-selected", "true");
+
+  const valuesListbox = page.getByRole("listbox", { name: "Values list" });
+  await valuesListbox.focus();
+
+  await page.keyboard.press("ArrowDown");
+  await expect(secondValueItem).toHaveAttribute("aria-selected", "true");
+  await expect(firstValueItem).toHaveAttribute("aria-selected", "false");
+
+  await page.keyboard.press("ArrowUp");
+  await expect(firstValueItem).toHaveAttribute("aria-selected", "true");
+  await expect(secondValueItem).toHaveAttribute("aria-selected", "false");
+});
