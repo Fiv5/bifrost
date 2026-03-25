@@ -19,6 +19,9 @@ use crate::client::SyncHttpClient;
 use crate::normalize::normalize_remote_rule;
 use crate::types::{RemoteEnv, RemoteUser, SyncReason};
 
+const TOMBSTONE_MAX_AGE_SECS: i64 = 7 * 24 * 3600;
+const TOMBSTONE_MIN_AGE_SECS: i64 = 120;
+
 pub type SharedSyncManager = Arc<SyncManager>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -603,6 +606,7 @@ impl SyncManager {
         let rules_storage = self.config_manager.rules_storage().await;
         let local_rules = rules_storage.load_all()?;
         let remote_rules = client.search_envs(config, token, &user.user_id).await?;
+        let now = Utc::now();
         tracing::info!(
             target: "bifrost_sync::manager",
             local_rules = local_rules.len(),
@@ -612,6 +616,7 @@ impl SyncManager {
         );
 
         let state_snapshot = self.state.lock().clone();
+
         let remote_by_id: HashMap<&str, &RemoteEnv> = remote_rules
             .iter()
             .map(|env| (env.id.as_str(), env))
@@ -627,16 +632,22 @@ impl SyncManager {
             .map(|env| (env.name.as_str(), env))
             .collect();
 
+        let tombstone_remote_ids: HashSet<String> = state_snapshot
+            .deleted_rules
+            .values()
+            .map(|t| t.remote_id.clone())
+            .collect();
+        let tombstone_names: HashSet<String> = state_snapshot
+            .deleted_rules
+            .values()
+            .map(|t| t.rule_name.clone())
+            .collect();
+
         let mut plan = Vec::new();
-        let deleted_rule_ids: Vec<String> = state_snapshot.deleted_rules.keys().cloned().collect();
         let mut blocked_remote_ids: HashSet<String> = HashSet::new();
         let mut blocked_names: HashSet<String> = HashSet::new();
-        for deleted_rule_id in deleted_rule_ids {
-            let Some(tombstone) = state_snapshot.deleted_rules.get(&deleted_rule_id).cloned()
-            else {
-                continue;
-            };
 
+        for tombstone in state_snapshot.deleted_rules.values() {
             blocked_remote_ids.insert(tombstone.remote_id.clone());
             blocked_names.insert(tombstone.rule_name.clone());
 
@@ -646,26 +657,16 @@ impl SyncManager {
                 });
             }
 
-            let matching_remote_envs: Vec<RemoteEnv> = remote_rules
+            let matching_remote_envs: Vec<&RemoteEnv> = remote_rules
                 .iter()
-                .filter(|env| env.name == tombstone.rule_name)
-                .cloned()
+                .filter(|env| env.id == tombstone.remote_id || env.name == tombstone.rule_name)
                 .collect();
-            if matching_remote_envs.is_empty() {
-                tracing::info!(
-                    target: "bifrost_sync::manager",
-                    name = %tombstone.rule_name,
-                    rule_id = %tombstone.rule_id,
-                    "keeping tombstone active because no local replacement exists"
-                );
-                continue;
-            }
 
             for remote_env in matching_remote_envs {
                 blocked_remote_ids.insert(remote_env.id.clone());
                 plan.push(SyncPlanStep::DeleteRemote {
                     tombstone: tombstone.clone(),
-                    remote_env,
+                    remote_env: remote_env.clone(),
                 });
             }
         }
@@ -714,6 +715,28 @@ impl SyncManager {
                         }
                     }
                 }
+            } else if local_rule.sync.remote_id.is_some()
+                && local_rule.sync.status == RuleSyncStatus::Synced
+            {
+                tracing::info!(
+                    target: "bifrost_sync::manager",
+                    name = %local_rule.name,
+                    remote_id = ?local_rule.sync.remote_id,
+                    "synced rule disappeared from remote, deleting local copy (remote deletion detected)"
+                );
+                rules_storage.delete(&local_rule.name)?;
+            } else if local_rule.sync.remote_id.is_some()
+                && local_rule.sync.status == RuleSyncStatus::Modified
+            {
+                tracing::info!(
+                    target: "bifrost_sync::manager",
+                    name = %local_rule.name,
+                    remote_id = ?local_rule.sync.remote_id,
+                    "modified rule's remote disappeared, re-creating on remote (local changes preserved)"
+                );
+                plan.push(SyncPlanStep::CreateRemote {
+                    local_rule: local_rule.clone(),
+                });
             } else {
                 plan.push(SyncPlanStep::CreateRemote {
                     local_rule: local_rule.clone(),
@@ -722,9 +745,19 @@ impl SyncManager {
         }
 
         for remote_env in &remote_rules {
-            if consumed_remote_ids.contains(&remote_env.id)
-                || blocked_names.contains(&remote_env.name)
+            if consumed_remote_ids.contains(&remote_env.id) {
+                continue;
+            }
+
+            if tombstone_names.contains(remote_env.name.as_str())
+                || tombstone_remote_ids.contains(remote_env.id.as_str())
             {
+                tracing::debug!(
+                    target: "bifrost_sync::manager",
+                    name = %remote_env.name,
+                    remote_id = %remote_env.id,
+                    "skipping remote rule blocked by tombstone"
+                );
                 continue;
             }
 
@@ -870,29 +903,49 @@ impl SyncManager {
         }
 
         let mut current_state = self.state.lock();
-        for (deleted_rule_id, tombstone) in &current_state.deleted_rules {
+        for (deleted_rule_id, tombstone) in &state_snapshot.deleted_rules {
             if rules_storage.exists(&tombstone.rule_name) {
                 continue;
             }
 
-            if let Some(success) = tombstone_delete_success.get(&tombstone.rule_id) {
-                if *success {
-                    tombstones_to_remove.insert(deleted_rule_id.clone());
-                }
+            let tombstone_age = tombstone
+                .deleted_at
+                .parse::<DateTime<Utc>>()
+                .ok()
+                .map(|deleted_at| (now - deleted_at).num_seconds())
+                .unwrap_or(0);
+
+            let remote_has_matching = remote_rules
+                .iter()
+                .any(|env| env.id == tombstone.remote_id || env.name == tombstone.rule_name);
+
+            if tombstone_age > TOMBSTONE_MAX_AGE_SECS {
+                tracing::warn!(
+                    target: "bifrost_sync::manager",
+                    name = %tombstone.rule_name,
+                    rule_id = %tombstone.rule_id,
+                    deleted_at = %tombstone.deleted_at,
+                    "tombstone expired after max age, removing"
+                );
+                tombstones_to_remove.insert(deleted_rule_id.clone());
                 continue;
             }
 
-            if !remote_rules
-                .iter()
-                .any(|env| env.name == tombstone.rule_name)
-            {
+            if !remote_has_matching && tombstone_age >= TOMBSTONE_MIN_AGE_SECS {
+                tracing::info!(
+                    target: "bifrost_sync::manager",
+                    name = %tombstone.rule_name,
+                    remote_id = %tombstone.remote_id,
+                    age_secs = tombstone_age,
+                    "tombstone cleared: remote has no matching rules and min age reached"
+                );
                 tombstones_to_remove.insert(deleted_rule_id.clone());
             }
         }
         for deleted_rule_id in tombstones_to_remove {
             current_state.deleted_rules.remove(&deleted_rule_id);
         }
-        current_state.last_sync_at = Some(Utc::now().to_rfc3339());
+        current_state.last_sync_at = Some(now.to_rfc3339());
         current_state.last_sync_action = Some(match (pushed_local, pulled_remote) {
             (true, true) => SyncAction::Bidirectional,
             (true, false) => SyncAction::LocalPushed,

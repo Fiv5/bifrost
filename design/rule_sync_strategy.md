@@ -181,28 +181,31 @@ remote_updated_at = "2026-03-25T10:00:00Z"
 
 对每个 tombstone：
 
-1. 如果远端对象不存在，删除成功，移除 tombstone
+1. 如果远端对象（按 `remote_id` 精确匹配）不存在，立即移除 tombstone
 2. 如果远端对象存在，直接请求删除
 3. 删除失败则保留 tombstone，等待下次重试
+4. 超过 7 天的 tombstone 自动过期清除
 
-这里不做“远端变了所以进入 delete_conflict”，因为你已经明确不要冲突管理。
+注意：tombstone 按 `remote_id` 精确匹配，不再按 `rule_name` 宽泛匹配所有同名远端对象。
 
 也就是说：
 
-- 只要 tombstone 在，就持续删除远端
-- 直到删成功或远端消失
+- 只要 tombstone 在，就持续按 `remote_id` 删除目标远端对象
+- 直到删成功或远端消失或过期
 
 ### 第二步：处理活规则
 
 #### 本地存在，远端不存在
 
-- `status = local_only` 或 `modified`
+- `status = local_only`
   - 直接 create 到远端
+- `status = modified` 且已有 `remote_id`
+  - 本地有未同步修改，远端对象消失
+  - 直接重新 create（保留本地修改优先语义）
 - `status = synced` 且已有 `remote_id`
-  - 说明远端对象消失
-  - 直接重新 create
-
-这意味着“远端删了但本地还在”时，本地会重新补上去。
+  - 远端对象消失，说明被其他端删除
+  - **直接删除本地副本**（尊重远端删除意图）
+  - 这是解决多端删除冲突的关键：synced 状态表示本地未修改，远端消失即意味着应同步删除
 
 #### 本地存在，远端也存在
 
@@ -260,8 +263,25 @@ remote_updated_at = "2026-03-25T10:00:00Z"
 
 策略：
 
-- 若本地还在，直接重新 create
+- 若本地是 `synced` 状态（未修改），直接删除本地副本
+- 若本地是 `modified` 状态（有未同步修改），重新 create 到远端
 - 若本地也删了且有 tombstone，继续保持删除语义
+
+### Tombstone 精确匹配
+
+策略：
+
+- Tombstone 按 `remote_id` 精确匹配远端对象，不再按 `rule_name` 宽泛匹配
+- 避免误删其他端创建的同名但不同 ID 的新规则
+- Tombstone 的 `rule_name` 仅用于阻止从远端拉取同名规则
+
+### Tombstone 生命周期管理
+
+策略：
+
+- 远端对象按 `remote_id` 查找不到时，立即清除 tombstone（目的已达成）
+- Tombstone 超过 7 天自动过期清除，避免永久累积
+- 远端删除成功后立即清除对应 tombstone
 
 ## 失败处理
 
