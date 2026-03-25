@@ -1,0 +1,476 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use bifrost_script::{
+    RequestData, ResponseData, ScriptContext, ScriptEngine, ScriptEngineConfig,
+    ScriptExecutionResult, ScriptLogEntry, ScriptType,
+};
+use bifrost_storage::{ConfigManager, ValuesStorage};
+
+use crate::cli::ScriptCommands;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScriptSelection {
+    script_type: Option<ScriptType>,
+    name: String,
+}
+
+fn parse_script_type(s: &str) -> bifrost_core::Result<ScriptType> {
+    match s.to_lowercase().as_str() {
+        "request" | "req" => Ok(ScriptType::Request),
+        "response" | "res" => Ok(ScriptType::Response),
+        "decode" | "dec" => Ok(ScriptType::Decode),
+        _ => Err(bifrost_core::BifrostError::Config(format!(
+            "Invalid script type '{}'. Expected: request, response, decode",
+            s
+        ))),
+    }
+}
+
+fn parse_lookup_args(args: &[String], command_name: &str) -> bifrost_core::Result<ScriptSelection> {
+    match args {
+        [name] => Ok(ScriptSelection {
+            script_type: None,
+            name: name.clone(),
+        }),
+        [script_type, name] => Ok(ScriptSelection {
+            script_type: Some(parse_script_type(script_type)?),
+            name: name.clone(),
+        }),
+        _ => Err(bifrost_core::BifrostError::Config(format!(
+            "script {} expects either <name> or <type> <name>",
+            command_name
+        ))),
+    }
+}
+
+fn read_script_content(
+    content: Option<String>,
+    file: Option<std::path::PathBuf>,
+) -> bifrost_core::Result<String> {
+    if let Some(content) = content {
+        Ok(content)
+    } else if let Some(path) = file {
+        Ok(std::fs::read_to_string(&path)?)
+    } else {
+        Err(bifrost_core::BifrostError::Config(
+            "Either --content or --file must be provided".to_string(),
+        ))
+    }
+}
+
+fn list_all_scripts(
+    engine: &ScriptEngine,
+    rt: &tokio::runtime::Runtime,
+) -> bifrost_core::Result<Vec<(ScriptType, String)>> {
+    let mut all_scripts = Vec::new();
+    for script_type in [
+        ScriptType::Request,
+        ScriptType::Response,
+        ScriptType::Decode,
+    ] {
+        let scripts = rt.block_on(engine.list_scripts(script_type)).map_err(|e| {
+            bifrost_core::BifrostError::Config(format!(
+                "failed to list {} scripts: {e}",
+                script_type
+            ))
+        })?;
+        all_scripts.extend(scripts.into_iter().map(|info| (script_type, info.name)));
+    }
+    Ok(all_scripts)
+}
+
+fn find_matching_script(
+    engine: &ScriptEngine,
+    rt: &tokio::runtime::Runtime,
+    name: &str,
+) -> bifrost_core::Result<(ScriptType, String)> {
+    let all_scripts = list_all_scripts(engine, rt)?;
+
+    let needle = name.to_lowercase();
+    let exact_matches: Vec<_> = all_scripts
+        .iter()
+        .filter(|(_, script_name)| script_name.eq_ignore_ascii_case(name))
+        .cloned()
+        .collect();
+
+    if let [matched] = exact_matches.as_slice() {
+        return Ok(matched.clone());
+    }
+
+    if exact_matches.len() > 1 {
+        return Err(ambiguous_script_error(name, &exact_matches));
+    }
+
+    let fuzzy_matches: Vec<_> = all_scripts
+        .into_iter()
+        .filter(|(_, script_name)| script_name.to_lowercase().contains(&needle))
+        .collect();
+
+    match fuzzy_matches.as_slice() {
+        [] => Err(bifrost_core::BifrostError::Config(format!(
+            "script '{}' not found in any type",
+            name
+        ))),
+        [matched] => Ok(matched.clone()),
+        _ => Err(ambiguous_script_error(name, &fuzzy_matches)),
+    }
+}
+
+fn ambiguous_script_error(
+    query: &str,
+    candidates: &[(ScriptType, String)],
+) -> bifrost_core::BifrostError {
+    let candidate_list = candidates
+        .iter()
+        .map(|(script_type, name)| format!("{} {}", script_type, name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bifrost_core::BifrostError::Config(format!(
+        "script '{}' matched multiple scripts: {}. Please specify the type explicitly.",
+        query, candidate_list
+    ))
+}
+
+fn load_values(data_dir: &Path) -> HashMap<String, String> {
+    let Ok(storage) = ValuesStorage::with_dir(data_dir.join("values")) else {
+        return HashMap::new();
+    };
+
+    let Ok(keys) = storage.list_keys() else {
+        return HashMap::new();
+    };
+
+    keys.into_iter()
+        .filter_map(|key| storage.get_value(&key).map(|value| (key, value)))
+        .collect()
+}
+
+fn build_mock_request() -> RequestData {
+    RequestData {
+        url: "https://example.com/api".to_string(),
+        method: "GET".to_string(),
+        host: "example.com".to_string(),
+        path: "/api".to_string(),
+        protocol: "https".to_string(),
+        client_ip: "127.0.0.1".to_string(),
+        client_app: Some("cli".to_string()),
+        headers: HashMap::from([
+            ("content-type".to_string(), "application/json".to_string()),
+            ("x-bifrost-source".to_string(), "cli".to_string()),
+        ]),
+        body: Some("{\"message\":\"hello from bifrost cli\"}".to_string()),
+    }
+}
+
+fn build_mock_response(request: &RequestData) -> ResponseData {
+    ResponseData {
+        status: 200,
+        status_text: "OK".to_string(),
+        headers: HashMap::from([("content-type".to_string(), "application/json".to_string())]),
+        body: Some("{\"ok\":true,\"source\":\"bifrost-cli\"}".to_string()),
+        request: request.clone(),
+    }
+}
+
+fn print_logs(logs: &[ScriptLogEntry]) {
+    println!("Logs:");
+    if logs.is_empty() {
+        println!("No logs.");
+        return;
+    }
+
+    for log in logs {
+        print!("[{}] {}", log.level, log.message);
+        if let Some(args) = &log.args {
+            if !args.is_empty() {
+                let rendered_args = args
+                    .iter()
+                    .map(|arg| match arg {
+                        serde_json::Value::String(text) => text.clone(),
+                        _ => arg.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                print!(" {}", rendered_args);
+            }
+        }
+        println!();
+    }
+}
+
+fn print_run_result(result: &ScriptExecutionResult) -> bifrost_core::Result<()> {
+    println!("Script: {} ({})", result.script_name, result.script_type);
+    println!("Success: {}", result.success);
+    println!("Duration: {} ms", result.duration_ms);
+    println!();
+
+    println!("Output:");
+    if let Some(error) = &result.error {
+        println!("Error: {}", error);
+    } else if let Some(output) = &result.decode_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(output)
+                .map_err(|e| bifrost_core::BifrostError::Config(e.to_string()))?
+        );
+    } else if let Some(mods) = &result.request_modifications {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(mods)
+                .map_err(|e| bifrost_core::BifrostError::Config(e.to_string()))?
+        );
+    } else if let Some(mods) = &result.response_modifications {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(mods)
+                .map_err(|e| bifrost_core::BifrostError::Config(e.to_string()))?
+        );
+    } else {
+        println!("null");
+    }
+    println!();
+
+    print_logs(&result.logs);
+    Ok(())
+}
+
+pub fn handle_script_command(action: ScriptCommands) -> bifrost_core::Result<()> {
+    let data_dir = bifrost_storage::data_dir();
+    let scripts_dir = data_dir.join("scripts");
+    let engine = ScriptEngine::new(ScriptEngineConfig {
+        scripts_dir: scripts_dir.clone(),
+        ..Default::default()
+    });
+
+    let rt = tokio::runtime::Runtime::new().map_err(|e| {
+        bifrost_core::BifrostError::Config(format!("failed to create tokio runtime: {e}"))
+    })?;
+
+    rt.block_on(engine.init())
+        .map_err(|e| bifrost_core::BifrostError::Config(format!("failed to init scripts: {e}")))?;
+
+    match action {
+        ScriptCommands::List { r#type } => {
+            let types: Vec<ScriptType> = if let Some(ref t) = r#type {
+                vec![parse_script_type(t)?]
+            } else {
+                vec![
+                    ScriptType::Request,
+                    ScriptType::Response,
+                    ScriptType::Decode,
+                ]
+            };
+
+            let mut total = 0;
+            for script_type in &types {
+                let scripts = rt
+                    .block_on(engine.list_scripts(*script_type))
+                    .map_err(|e| {
+                        bifrost_core::BifrostError::Config(format!(
+                            "failed to list {} scripts: {e}",
+                            script_type
+                        ))
+                    })?;
+
+                if !scripts.is_empty() {
+                    println!("{} scripts ({}):", script_type, scripts.len());
+                    for info in &scripts {
+                        println!("  {}", info.name);
+                    }
+                    total += scripts.len();
+                }
+            }
+
+            if total == 0 {
+                println!("No scripts found.");
+            }
+
+            println!();
+            println!("Scripts directory: {}", scripts_dir.display());
+        }
+        ScriptCommands::Add {
+            r#type,
+            name,
+            content,
+            file,
+        } => {
+            let script_type = parse_script_type(&r#type)?;
+            let script_content = read_script_content(content, file)?;
+
+            rt.block_on(engine.save_script(script_type, &name, &script_content))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to save {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+            println!("Script '{}' ({}) saved successfully.", name, script_type);
+        }
+        ScriptCommands::Update {
+            r#type,
+            name,
+            content,
+            file,
+        } => {
+            let script_type = parse_script_type(&r#type)?;
+            let script_content = read_script_content(content, file)?;
+
+            rt.block_on(engine.load_script(script_type, &name))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to load existing {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+
+            rt.block_on(engine.save_script(script_type, &name, &script_content))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to update {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+            println!("Script '{}' ({}) updated successfully.", name, script_type);
+        }
+        ScriptCommands::Delete { r#type, name } => {
+            let script_type = parse_script_type(&r#type)?;
+
+            rt.block_on(engine.delete_script(script_type, &name))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to delete {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+            println!("Script '{}' ({}) deleted successfully.", name, script_type);
+        }
+        ScriptCommands::Show { args } => {
+            let selection = parse_lookup_args(&args, "show/get")?;
+            let (script_type, name) = match selection.script_type {
+                Some(script_type) => (script_type, selection.name),
+                None => find_matching_script(&engine, &rt, &selection.name)?,
+            };
+
+            let content = rt
+                .block_on(engine.load_script(script_type, &name))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to load {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+            println!("Script: {} ({})", name, script_type);
+            println!("Content:");
+            println!("{}", content);
+        }
+        ScriptCommands::Run { args } => {
+            let selection = parse_lookup_args(&args, "run")?;
+            let (script_type, name) = match selection.script_type {
+                Some(script_type) => (script_type, selection.name),
+                None => find_matching_script(&engine, &rt, &selection.name)?,
+            };
+
+            let content = rt
+                .block_on(engine.load_script(script_type, &name))
+                .map_err(|e| {
+                    bifrost_core::BifrostError::Config(format!(
+                        "failed to load {} script '{}': {e}",
+                        script_type, name
+                    ))
+                })?;
+
+            let values = load_values(&data_dir);
+            let request = build_mock_request();
+            let response = build_mock_response(&request);
+            let ctx = ScriptContext {
+                request_id: "cli-test".to_string(),
+                script_name: name.clone(),
+                script_type,
+                values,
+                matched_rules: vec![],
+            };
+
+            let config = ConfigManager::new(data_dir.clone())
+                .ok()
+                .map(|manager| rt.block_on(manager.config()));
+
+            let mut result = if let Some(config) = config.as_ref() {
+                rt.block_on(engine.test_script_with_config(
+                    script_type,
+                    &content,
+                    Some(&request),
+                    Some(&response),
+                    &ctx,
+                    config,
+                ))
+            } else {
+                rt.block_on(engine.test_script(
+                    script_type,
+                    &content,
+                    Some(&request),
+                    Some(&response),
+                    &ctx,
+                ))
+            };
+            result.script_name = name;
+
+            print_run_result(&result)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_lookup_args_supports_name_only() {
+        let args = vec!["demo".to_string()];
+        let selection = parse_lookup_args(&args, "show").unwrap();
+        assert_eq!(
+            selection,
+            ScriptSelection {
+                script_type: None,
+                name: "demo".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_lookup_args_supports_type_and_name() {
+        let args = vec!["request".to_string(), "demo".to_string()];
+        let selection = parse_lookup_args(&args, "show").unwrap();
+        assert_eq!(
+            selection,
+            ScriptSelection {
+                script_type: Some(ScriptType::Request),
+                name: "demo".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_lookup_args_rejects_invalid_arity() {
+        let args = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let error = parse_lookup_args(&args, "run").unwrap_err();
+        assert!(error.to_string().contains("script run expects"));
+    }
+
+    #[test]
+    fn ambiguous_script_error_lists_candidates() {
+        let error = ambiguous_script_error(
+            "demo",
+            &[
+                (ScriptType::Request, "foo/demo".to_string()),
+                (ScriptType::Response, "bar/demo".to_string()),
+            ],
+        );
+        let message = error.to_string();
+        assert!(message.contains("demo"));
+        assert!(message.contains("request foo/demo"));
+        assert!(message.contains("response bar/demo"));
+    }
+}

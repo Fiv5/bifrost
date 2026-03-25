@@ -308,6 +308,7 @@ dependencies = [
  "bifrost-admin",
  "bifrost-core",
  "bifrost-proxy",
+ "bifrost-script",
  "bifrost-storage",
  "bifrost-sync",
  "bifrost-tls",

@@ -138,10 +138,13 @@ bifrost ca info
 bifrost rule list
 bifrost rule add <name> --content "rule"
 bifrost rule add <name> --file rules.txt
+bifrost rule update <name> --content "new rule"
+bifrost rule update <name> --file rules.txt
 bifrost rule enable <name>
 bifrost rule disable <name>
 bifrost rule delete <name>
 bifrost rule show <name>
+bifrost rule get <name>
 ```
 
 ### 白名单管理
@@ -160,10 +163,27 @@ bifrost whitelist status
 
 ```bash
 bifrost value list
+bifrost value show <name>
 bifrost value get <name>
+bifrost value add <name> <value>
 bifrost value set <name> <value>
+bifrost value update <name> <value>
 bifrost value delete <name>
 bifrost value import <file>
+```
+
+### Scripts 管理
+
+```bash
+bifrost script list
+bifrost script list -t request
+bifrost script add request demo --content 'log.info("hello")'
+bifrost script update request demo --content 'log.info("updated")'
+bifrost script show request demo
+bifrost script show demo
+bifrost script get demo
+bifrost script run demo
+bifrost script delete request demo
 ```
 
 ### 系统代理管理

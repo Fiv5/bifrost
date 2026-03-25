@@ -34,19 +34,20 @@ fn handle_rule_local(action: RuleCommands) -> bifrost_core::Result<()> {
             content,
             file,
         } => {
-            let rule_content = if let Some(c) = content {
-                c
-            } else if let Some(path) = file {
-                std::fs::read_to_string(&path)?
-            } else {
-                return Err(bifrost_core::BifrostError::Config(
-                    "Either --content or --file must be provided".to_string(),
-                ));
-            };
+            let rule_content = load_rule_content(content, file)?;
 
             let rule = RuleFile::new(&name, rule_content);
             storage.save(&rule)?;
             println!("Rule '{}' added successfully.", name);
+        }
+        RuleCommands::Update {
+            name,
+            content,
+            file,
+        } => {
+            let rule_content = load_rule_content(content, file)?;
+            storage.update_content(&name, rule_content)?;
+            println!("Rule '{}' updated successfully.", name);
         }
         RuleCommands::Delete { name } => {
             storage.delete(&name)?;
@@ -74,6 +75,21 @@ fn handle_rule_local(action: RuleCommands) -> bifrost_core::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_rule_content(
+    content: Option<String>,
+    file: Option<std::path::PathBuf>,
+) -> bifrost_core::Result<String> {
+    if let Some(c) = content {
+        Ok(c)
+    } else if let Some(path) = file {
+        Ok(std::fs::read_to_string(&path)?)
+    } else {
+        Err(bifrost_core::BifrostError::Config(
+            "Either --content or --file must be provided".to_string(),
+        ))
+    }
 }
 
 fn handle_rule_sync() -> bifrost_core::Result<()> {
