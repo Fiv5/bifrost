@@ -482,11 +482,10 @@ impl SyncManager {
 
         let client = SyncHttpClient::new(&config.sync)?;
         let reachable = client.probe_reachable(&config.sync).await;
-        tracing::info!(
+        tracing::debug!(
             target: "bifrost_sync::manager",
             enabled = config.sync.enabled,
             auto_sync = config.sync.auto_sync,
-            remote_base_url = %config.sync.remote_base_url,
             reachable,
             "sync tick evaluated connectivity"
         );
@@ -607,7 +606,7 @@ impl SyncManager {
         let local_rules = rules_storage.load_all()?;
         let remote_rules = client.search_envs(config, token, &user.user_id).await?;
         let now = Utc::now();
-        tracing::info!(
+        tracing::debug!(
             target: "bifrost_sync::manager",
             local_rules = local_rules.len(),
             remote_rules = remote_rules.len(),
@@ -718,21 +717,21 @@ impl SyncManager {
             } else if local_rule.sync.remote_id.is_some()
                 && local_rule.sync.status == RuleSyncStatus::Synced
             {
-                tracing::info!(
+                tracing::debug!(
                     target: "bifrost_sync::manager",
                     name = %local_rule.name,
                     remote_id = ?local_rule.sync.remote_id,
-                    "synced rule disappeared from remote, deleting local copy (remote deletion detected)"
+                    "synced rule disappeared from remote, deleting local copy"
                 );
                 rules_storage.delete(&local_rule.name)?;
             } else if local_rule.sync.remote_id.is_some()
                 && local_rule.sync.status == RuleSyncStatus::Modified
             {
-                tracing::info!(
+                tracing::debug!(
                     target: "bifrost_sync::manager",
                     name = %local_rule.name,
                     remote_id = ?local_rule.sync.remote_id,
-                    "modified rule's remote disappeared, re-creating on remote (local changes preserved)"
+                    "modified rule's remote disappeared, re-creating on remote"
                 );
                 plan.push(SyncPlanStep::CreateRemote {
                     local_rule: local_rule.clone(),
@@ -761,7 +760,7 @@ impl SyncManager {
                 continue;
             }
 
-            tracing::info!(
+            tracing::debug!(
                 target: "bifrost_sync::manager",
                 name = %remote_env.name,
                 remote_id = %remote_env.id,
@@ -777,17 +776,21 @@ impl SyncManager {
         let mut local_storage_changed = false;
         let mut tombstones_to_remove: HashSet<String> = HashSet::new();
         let mut tombstone_delete_success: HashMap<String, bool> = HashMap::new();
+        let mut tombstone_deleted_remote_count: usize = 0;
+        let mut tombstone_deleted_local_count: usize = 0;
+        let mut tombstone_delete_failed_count: usize = 0;
         for step in plan {
             match step {
                 SyncPlanStep::DeleteLocal { tombstone } => {
                     if rules_storage.exists(&tombstone.rule_name) {
                         rules_storage.delete(&tombstone.rule_name)?;
-                        tracing::info!(
+                        tracing::debug!(
                             target: "bifrost_sync::manager",
                             name = %tombstone.rule_name,
                             rule_id = %tombstone.rule_id,
                             "deleted local rule via tombstone"
                         );
+                        tombstone_deleted_local_count += 1;
                         local_storage_changed = true;
                     }
                 }
@@ -803,17 +806,18 @@ impl SyncManager {
                             .entry(tombstone.rule_id.clone())
                             .and_modify(|success| *success &= true)
                             .or_insert(true);
-                        tracing::info!(
+                        tracing::debug!(
                             target: "bifrost_sync::manager",
                             name = %tombstone.rule_name,
-                            rule_id = %tombstone.rule_id,
                             remote_id = %remote_env.id,
                             "deleted remote rule via tombstone"
                         );
+                        tombstone_deleted_remote_count += 1;
                         pushed_local = true;
                     }
                     Err(error) => {
                         tombstone_delete_success.insert(tombstone.rule_id.clone(), false);
+                        tombstone_delete_failed_count += 1;
                         tracing::warn!(
                             target: "bifrost_sync::manager",
                             name = %tombstone.rule_name,
@@ -902,6 +906,19 @@ impl SyncManager {
             }
         }
 
+        if tombstone_deleted_remote_count > 0
+            || tombstone_deleted_local_count > 0
+            || tombstone_delete_failed_count > 0
+        {
+            tracing::info!(
+                target: "bifrost_sync::manager",
+                remote_deleted = tombstone_deleted_remote_count,
+                local_deleted = tombstone_deleted_local_count,
+                failed = tombstone_delete_failed_count,
+                "tombstone enforcement summary"
+            );
+        }
+
         let mut current_state = self.state.lock();
         for (deleted_rule_id, tombstone) in &state_snapshot.deleted_rules {
             if rules_storage.exists(&tombstone.rule_name) {
@@ -920,7 +937,7 @@ impl SyncManager {
                 .any(|env| env.id == tombstone.remote_id || env.name == tombstone.rule_name);
 
             if tombstone_age > TOMBSTONE_MAX_AGE_SECS {
-                tracing::warn!(
+                tracing::debug!(
                     target: "bifrost_sync::manager",
                     name = %tombstone.rule_name,
                     rule_id = %tombstone.rule_id,
@@ -932,7 +949,7 @@ impl SyncManager {
             }
 
             if !remote_has_matching && tombstone_age >= TOMBSTONE_MIN_AGE_SECS {
-                tracing::info!(
+                tracing::debug!(
                     target: "bifrost_sync::manager",
                     name = %tombstone.rule_name,
                     remote_id = %tombstone.remote_id,
@@ -942,22 +959,39 @@ impl SyncManager {
                 tombstones_to_remove.insert(deleted_rule_id.clone());
             }
         }
-        for deleted_rule_id in tombstones_to_remove {
-            current_state.deleted_rules.remove(&deleted_rule_id);
+        for deleted_rule_id in &tombstones_to_remove {
+            current_state.deleted_rules.remove(deleted_rule_id);
+        }
+        if !tombstones_to_remove.is_empty() {
+            tracing::info!(
+                target: "bifrost_sync::manager",
+                cleared = tombstones_to_remove.len(),
+                remaining = current_state.deleted_rules.len(),
+                "tombstones cleared"
+            );
         }
         current_state.last_sync_at = Some(now.to_rfc3339());
-        current_state.last_sync_action = Some(match (pushed_local, pulled_remote) {
+        let sync_action = match (pushed_local, pulled_remote) {
             (true, true) => SyncAction::Bidirectional,
             (true, false) => SyncAction::LocalPushed,
             (false, true) => SyncAction::RemotePulled,
             (false, false) => SyncAction::NoChange,
-        });
-        tracing::info!(
-            target: "bifrost_sync::manager",
-            deleted_rules = current_state.deleted_rules.len(),
-            last_sync_action = ?current_state.last_sync_action,
-            "persisting sync state after sync cycle"
-        );
+        };
+        current_state.last_sync_action = Some(sync_action);
+        if sync_action != SyncAction::NoChange {
+            tracing::info!(
+                target: "bifrost_sync::manager",
+                tombstones = current_state.deleted_rules.len(),
+                last_sync_action = ?sync_action,
+                "sync cycle completed"
+            );
+        } else {
+            tracing::debug!(
+                target: "bifrost_sync::manager",
+                tombstones = current_state.deleted_rules.len(),
+                "sync cycle completed with no changes"
+            );
+        }
         self.persist_state(&current_state)?;
         drop(current_state);
 
