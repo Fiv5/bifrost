@@ -25,7 +25,6 @@ import {
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
-import { useAppModal } from '../../../hooks/useAppModal';
 import styles from './index.module.css';
 
 type RuleSortMode = 'manual' | 'updated_desc' | 'name_asc';
@@ -54,7 +53,6 @@ export default function RuleList() {
     hasUnsavedChanges,
   } = useRulesStore();
 
-  const modal = useAppModal();
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newRuleName, setNewRuleName] = useState('');
   const [renameModalVisible, setRenameModalVisible] = useState(false);
@@ -179,7 +177,7 @@ export default function RuleList() {
   };
 
   const handleDelete = async (name: string) => {
-    modal.confirm({
+    Modal.confirm({
       title: 'Delete Rule',
       content: `Are you sure to delete "${name}"?`,
       okText: 'Delete',
@@ -200,7 +198,7 @@ export default function RuleList() {
       handleDelete(names[0]);
       return;
     }
-    modal.confirm({
+    Modal.confirm({
       title: 'Delete Rules',
       content: `Are you sure to delete ${names.length} rules?`,
       okText: 'Delete',

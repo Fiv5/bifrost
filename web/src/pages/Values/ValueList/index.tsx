@@ -14,7 +14,6 @@ import {
 import { useValuesStore } from "../../../stores/useValuesStore";
 import { ImportBifrostButton } from "../../../components/ImportBifrostButton";
 import { useExportBifrost } from "../../../hooks/useExportBifrost";
-import { useAppModal } from "../../../hooks/useAppModal";
 import styles from "./index.module.css";
 
 type ValueSortMode = "created_desc" | "updated_desc" | "name_asc";
@@ -41,7 +40,6 @@ export default function ValueList() {
     hasUnsavedChanges,
   } = useValuesStore();
 
-  const modal = useAppModal();
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newValueName, setNewValueName] = useState("");
   const [renameModalVisible, setRenameModalVisible] = useState(false);
@@ -91,7 +89,7 @@ export default function ValueList() {
   };
 
   const handleDelete = async (name: string) => {
-    modal.confirm({
+    Modal.confirm({
       title: "Delete Value",
       content: `Are you sure to delete "${name}"?`,
       okText: "Delete",
@@ -112,7 +110,7 @@ export default function ValueList() {
       handleDelete(names[0]);
       return;
     }
-    modal.confirm({
+    Modal.confirm({
       title: "Delete Values",
       content: `Are you sure to delete ${names.length} values?`,
       okText: "Delete",
