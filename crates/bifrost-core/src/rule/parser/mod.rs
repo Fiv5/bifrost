@@ -2777,6 +2777,7 @@ combined.test reqScript://reqHandler resScript://resHandler
         let rules = parse_line("http://127.0.0.1:8889").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "http://127.0.0.1:8889");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
     }
 
     #[test]
@@ -2784,6 +2785,7 @@ combined.test reqScript://reqHandler resScript://resHandler
         let rules = parse_line("http://192.168.1.1:3000").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "http://192.168.1.1:3000");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
     }
 
     #[test]
@@ -2791,6 +2793,7 @@ combined.test reqScript://reqHandler resScript://resHandler
         let rules = parse_line("https://127.0.0.1:443").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "https://127.0.0.1:443");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
     }
 
     #[test]
@@ -2798,6 +2801,7 @@ combined.test reqScript://reqHandler resScript://resHandler
         let rules = parse_line("http://localhost:8080").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "http://localhost:8080");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
     }
 
     #[test]
@@ -2805,15 +2809,96 @@ combined.test reqScript://reqHandler resScript://resHandler
         let rules = parse_line("127.0.0.1:8889").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "127.0.0.1:8889");
+        assert_eq!(rules[0].protocol, Protocol::Passthrough);
     }
 
     #[test]
     fn test_parse_single_http_ip_url_with_target() {
-        let rules =
-            parse_line("http://127.0.0.1:8889 http://127.0.0.1:9999").unwrap();
+        let rules = parse_line("http://127.0.0.1:8889 http://127.0.0.1:9999").unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].pattern, "http://127.0.0.1:8889");
         assert_eq!(rules[0].protocol, Protocol::Http);
         assert_eq!(rules[0].value, "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_parse_http_ip_url_forward_to_localhost() {
+        let rules = parse_line("http://192.168.1.100:8080 http://localhost:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://192.168.1.100:8080");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "localhost:3000");
+    }
+
+    #[test]
+    fn test_parse_bare_ip_port_forward_to_target() {
+        let rules = parse_line("127.0.0.1:8889 http://127.0.0.1:9999").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "127.0.0.1:8889");
+        assert_eq!(rules[0].protocol, Protocol::Http);
+        assert_eq!(rules[0].value, "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_parse_bare_ip_port_forward_to_host() {
+        let rules = parse_line("127.0.0.1:8889 host://127.0.0.1:9999").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "127.0.0.1:8889");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "127.0.0.1:9999");
+    }
+
+    #[test]
+    fn test_parse_https_ip_url_forward() {
+        let rules = parse_line("https://10.0.0.1:443 https://10.0.0.2:8443").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "https://10.0.0.1:443");
+        assert_eq!(rules[0].protocol, Protocol::Https);
+        assert_eq!(rules[0].value, "10.0.0.2:8443");
+    }
+
+    #[test]
+    fn test_parse_http_localhost_forward_to_host_protocol() {
+        let rules = parse_line("http://localhost:8080 host://192.168.1.1:3000").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "http://localhost:8080");
+        assert_eq!(rules[0].protocol, Protocol::Host);
+        assert_eq!(rules[0].value, "192.168.1.1:3000");
+    }
+
+    #[test]
+    fn test_validate_single_http_ip_url_no_errors() {
+        let content = r#"
+http://127.0.0.1:8889
+http://127.0.0.1:99900
+http://192.168.1.1:3000
+https://127.0.0.1:443
+http://localhost:8080
+127.0.0.1:8889
+"#;
+        let errors = validate_rules(content);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for single URL rules, got: {:?}",
+            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_validate_ip_url_forward_rules_no_errors() {
+        let content = r#"
+http://127.0.0.1:8889 http://127.0.0.1:9999
+http://192.168.1.100:8080 http://localhost:3000
+127.0.0.1:8889 http://127.0.0.1:9999
+127.0.0.1:8889 host://127.0.0.1:9999
+https://10.0.0.1:443 https://10.0.0.2:8443
+http://localhost:8080 host://192.168.1.1:3000
+"#;
+        let errors = validate_rules(content);
+        assert!(
+            errors.is_empty(),
+            "Expected no errors for IP URL forward rules, got: {:?}",
+            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
     }
 }
