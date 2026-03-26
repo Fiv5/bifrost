@@ -533,6 +533,8 @@ pub fn run_foreground(
     };
     write_runtime_info(&runtime_info)?;
 
+    raise_fd_limit();
+
     print_startup_help(config.port);
 
     println!("════════════════════════════════════════════════════════════════════════");
@@ -1133,6 +1135,44 @@ pub fn run_foreground(
 }
 
 #[cfg(unix)]
+fn raise_fd_limit() {
+    use libc::{getrlimit, rlimit, setrlimit, RLIMIT_NOFILE};
+    unsafe {
+        let mut rlim = rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if getrlimit(RLIMIT_NOFILE, &mut rlim) == 0 {
+            let old = rlim.rlim_cur;
+            if rlim.rlim_cur < rlim.rlim_max {
+                rlim.rlim_cur = rlim.rlim_max;
+                if setrlimit(RLIMIT_NOFILE, &rlim) == 0 {
+                    tracing::info!(
+                        old_limit = old,
+                        new_limit = rlim.rlim_cur,
+                        "raised file descriptor limit"
+                    );
+                } else {
+                    tracing::warn!(
+                        old_limit = old,
+                        hard_limit = rlim.rlim_max,
+                        "failed to raise file descriptor limit"
+                    );
+                }
+            } else {
+                tracing::debug!(
+                    current_limit = rlim.rlim_cur,
+                    "file descriptor limit already at maximum"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
+#[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 pub fn run_daemon(
     config: ProxyConfig,
@@ -1184,6 +1224,8 @@ pub fn run_daemon(
             setsid().map_err(|e| {
                 bifrost_core::BifrostError::Config(format!("Failed to create new session: {}", e))
             })?;
+
+            raise_fd_limit();
 
             let _ = chdir(&bifrost_dir);
 

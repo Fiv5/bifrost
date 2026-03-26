@@ -8,11 +8,13 @@ import {
   ShrinkOutlined,
 } from "@ant-design/icons";
 import type { TrafficRecord } from "../../../types";
+import { generateCurl } from "../../../utils/curl";
 
 const { Text } = Typography;
 
 interface HeaderProps {
   record: TrafficRecord;
+  requestBody: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
 }
 
@@ -46,9 +48,11 @@ const getStatusColor = (status: number): string => {
 
 const HeaderContent = memo(function HeaderContent({
   record,
+  requestBody,
   onOpenInNewWindow,
 }: {
   record: TrafficRecord;
+  requestBody: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
 }) {
   const { method, status, url } = record;
@@ -73,18 +77,13 @@ const HeaderContent = memo(function HeaderContent({
   }, [url]);
 
   const handleCopyCurl = useCallback(() => {
-    let curl = `curl '${url}'`;
-    if (record.request_headers) {
-      record.request_headers.forEach(([key, value]) => {
-        curl += ` \\\n  -H '${key}: ${value}'`;
-      });
-    }
-    if (method !== "GET") {
-      curl += ` \\\n  -X ${method}`;
-    }
+    const curl = generateCurl({
+      ...record,
+      request_body: requestBody,
+    });
     navigator.clipboard.writeText(curl);
     message.success("cURL copied");
-  }, [url, method, record.request_headers]);
+  }, [record, requestBody]);
 
   const copyMenuItems: MenuProps["items"] = [
     { key: "url", label: "Copy URL", onClick: handleCopyUrl },
@@ -201,6 +200,7 @@ const HeaderContent = memo(function HeaderContent({
         <Dropdown menu={{ items: copyMenuItems }} trigger={["click"]}>
           <Tooltip title="Copy">
             <CopyOutlined
+              data-testid="traffic-detail-copy-trigger"
               style={{
                 fontSize: 14,
                 padding: 4,
@@ -215,11 +215,16 @@ const HeaderContent = memo(function HeaderContent({
   );
 });
 
-export const Header = ({ record, onOpenInNewWindow }: HeaderProps) => {
+export const Header = ({
+  record,
+  requestBody,
+  onOpenInNewWindow,
+}: HeaderProps) => {
   return (
     <HeaderContent
       key={record.id}
       record={record}
+      requestBody={requestBody}
       onOpenInNewWindow={onOpenInNewWindow}
     />
   );

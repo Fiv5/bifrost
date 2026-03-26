@@ -609,7 +609,11 @@ export default function TrafficDetail({
 
   return (
     <div style={styles.container} data-testid="traffic-detail">
-      <Header record={record} onOpenInNewWindow={onOpenInNewWindow} />
+      <Header
+        record={record}
+        requestBody={requestBody}
+        onOpenInNewWindow={onOpenInNewWindow}
+      />
       <div style={styles.splitterWrapper}>
         <Splitter
           layout="vertical"

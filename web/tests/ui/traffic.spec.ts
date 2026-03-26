@@ -489,6 +489,55 @@ test("独立详情路由加载单条请求", async ({ page, request }) => {
   }
 });
 
+test("详情页 Copy as cURL 会包含 POST body", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const path = `/copy-curl-body-${token}`;
+  const body = JSON.stringify({ hello: token });
+
+  try {
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+
+    await execFileAsync(
+      "curl",
+      [
+        "-sS",
+        "--fail",
+        "-x",
+        proxyUrl,
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data",
+        body,
+        `http://127.0.0.1:${server.port}${path}`,
+      ],
+      { timeout: 10000 },
+    );
+
+    await page.reload();
+
+    const row = page.getByTestId("traffic-row").filter({ hasText: path }).first();
+    await expect(row).toBeVisible();
+    await row.click();
+
+    await page.getByTestId("traffic-detail-copy-trigger").click();
+    await page.getByText("Copy as cURL").click();
+
+    const readCopiedText = () =>
+      page.evaluate(async () => navigator.clipboard.readText());
+
+    await expect.poll(readCopiedText).toContain("--data");
+    await expect.poll(readCopiedText).toContain(body);
+  } finally {
+    await server.close();
+  }
+});
+
 
 test("左侧 Filters 展示基础请求数量", async ({ page, request }) => {
   await clearTraffic(request);
