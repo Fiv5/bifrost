@@ -24,7 +24,7 @@ use hyper::HeaderMap;
 use hyper::{Method, Request, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tracing::{debug, error, info, warn};
 
@@ -689,34 +689,76 @@ impl ProxyServer {
     }
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
+        const MAX_CONNECTIONS: usize = 10000;
+        const EMFILE_BACKOFF_MS: u64 = 2000;
+        const GENERAL_BACKOFF_MS: u64 = 500;
+        const MAX_BACKOFF_MS: u64 = 10000;
+        const FATAL_CONSECUTIVE_ERRORS: u32 = 200;
+
+        let conn_semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let mut consecutive_errors = 0u32;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
-        const ERROR_BACKOFF_MS: u64 = 100;
+        let mut last_emfile_warn = Instant::now() - Duration::from_secs(60);
 
         loop {
             let (stream, peer_addr) = match listener.accept().await {
                 Ok(conn) => {
+                    if consecutive_errors > 0 {
+                        info!(
+                            recovered_after = consecutive_errors,
+                            "accept recovered from transient errors"
+                        );
+                    }
                     consecutive_errors = 0;
                     conn
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!(
-                        "Failed to accept connection (attempt {}/{}): {}",
-                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
-                    );
+                    let is_emfile = e.raw_os_error() == Some(libc::EMFILE)
+                        || e.raw_os_error() == Some(libc::ENFILE);
 
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        return Err(BifrostError::Network(format!(
-                            "Too many consecutive accept errors ({}), giving up: {}",
-                            consecutive_errors, e
-                        )));
+                    if is_emfile {
+                        if last_emfile_warn.elapsed() >= Duration::from_secs(5) {
+                            error!(
+                                consecutive_errors,
+                                available_permits = conn_semaphore.available_permits(),
+                                "accept hit file descriptor limit (EMFILE), backing off"
+                            );
+                            last_emfile_warn = Instant::now();
+                        }
+                        let backoff = (EMFILE_BACKOFF_MS * consecutive_errors.min(5) as u64)
+                            .min(MAX_BACKOFF_MS);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    } else {
+                        error!(
+                            consecutive_errors,
+                            error = %e,
+                            "failed to accept connection"
+                        );
+
+                        if consecutive_errors >= FATAL_CONSECUTIVE_ERRORS {
+                            return Err(BifrostError::Network(format!(
+                                "too many consecutive non-EMFILE accept errors ({}): {}",
+                                consecutive_errors, e
+                            )));
+                        }
+
+                        let backoff =
+                            (GENERAL_BACKOFF_MS * consecutive_errors as u64).min(MAX_BACKOFF_MS);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
                     }
+                    continue;
+                }
+            };
 
-                    tokio::time::sleep(tokio::time::Duration::from_millis(
-                        ERROR_BACKOFF_MS * consecutive_errors as u64,
-                    ))
-                    .await;
+            let permit = match conn_semaphore.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    warn!(
+                        peer_addr = %peer_addr,
+                        max_connections = MAX_CONNECTIONS,
+                        "connection limit reached, dropping new connection"
+                    );
+                    drop(stream);
                     continue;
                 }
             };
@@ -771,6 +813,7 @@ impl ProxyServer {
             let udp_relay_addr = Arc::clone(&self.udp_relay_addr);
 
             tokio::spawn(async move {
+                let _permit = permit;
                 let connection_task = async {
                     if enable_socks {
                         let mut peekable = PeekableStream::new(stream);

@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::ensure_crypto_provider;
 use bifrost_admin::{AdminState, ConnectionInfo, FrameDirection, TrafficRecord, TrafficType};
@@ -16,7 +16,7 @@ use hyper::{Request, Response, Uri};
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
@@ -371,34 +371,76 @@ impl SocksServer {
     }
 
     pub async fn serve(&self, listener: TcpListener) -> Result<()> {
+        const MAX_CONNECTIONS: usize = 10000;
+        const EMFILE_BACKOFF_MS: u64 = 2000;
+        const GENERAL_BACKOFF_MS: u64 = 500;
+        const MAX_BACKOFF_MS: u64 = 10000;
+        const FATAL_CONSECUTIVE_ERRORS: u32 = 200;
+
+        let conn_semaphore = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         let mut consecutive_errors = 0u32;
-        const MAX_CONSECUTIVE_ERRORS: u32 = 10;
-        const ERROR_BACKOFF_MS: u64 = 100;
+        let mut last_emfile_warn = Instant::now() - Duration::from_secs(60);
 
         loop {
             let (stream, peer_addr) = match listener.accept().await {
                 Ok(conn) => {
+                    if consecutive_errors > 0 {
+                        info!(
+                            recovered_after = consecutive_errors,
+                            "SOCKS5: accept recovered from transient errors"
+                        );
+                    }
                     consecutive_errors = 0;
                     conn
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!(
-                        "SOCKS5: Failed to accept connection (attempt {}/{}): {}",
-                        consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
-                    );
+                    let is_emfile = e.raw_os_error() == Some(libc::EMFILE)
+                        || e.raw_os_error() == Some(libc::ENFILE);
 
-                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                        return Err(BifrostError::Network(format!(
-                            "SOCKS5: Too many consecutive accept errors ({}), giving up: {}",
-                            consecutive_errors, e
-                        )));
+                    if is_emfile {
+                        if last_emfile_warn.elapsed() >= Duration::from_secs(5) {
+                            error!(
+                                consecutive_errors,
+                                available_permits = conn_semaphore.available_permits(),
+                                "SOCKS5: accept hit file descriptor limit (EMFILE), backing off"
+                            );
+                            last_emfile_warn = Instant::now();
+                        }
+                        let backoff = (EMFILE_BACKOFF_MS * consecutive_errors.min(5) as u64)
+                            .min(MAX_BACKOFF_MS);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
+                    } else {
+                        error!(
+                            consecutive_errors,
+                            error = %e,
+                            "SOCKS5: failed to accept connection"
+                        );
+
+                        if consecutive_errors >= FATAL_CONSECUTIVE_ERRORS {
+                            return Err(BifrostError::Network(format!(
+                                "SOCKS5: too many consecutive non-EMFILE accept errors ({}): {}",
+                                consecutive_errors, e
+                            )));
+                        }
+
+                        let backoff =
+                            (GENERAL_BACKOFF_MS * consecutive_errors as u64).min(MAX_BACKOFF_MS);
+                        tokio::time::sleep(Duration::from_millis(backoff)).await;
                     }
+                    continue;
+                }
+            };
 
-                    tokio::time::sleep(tokio::time::Duration::from_millis(
-                        ERROR_BACKOFF_MS * consecutive_errors as u64,
-                    ))
-                    .await;
+            let permit = match conn_semaphore.clone().try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    warn!(
+                        peer_addr = %peer_addr,
+                        max_connections = MAX_CONNECTIONS,
+                        "SOCKS5: connection limit reached, dropping new connection"
+                    );
+                    drop(stream);
                     continue;
                 }
             };
@@ -444,6 +486,7 @@ impl SocksServer {
             let unsafe_ssl = self.unsafe_ssl;
 
             tokio::spawn(async move {
+                let _permit = permit;
                 let handler_task = async {
                     let udp_addr = {
                         let addr = udp_relay_addr.read().await;
