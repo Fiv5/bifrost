@@ -53,6 +53,22 @@ struct NoisyConnErrorLogState {
 static INCOMPLETE_MESSAGE_LOG_STATE: LazyLock<Mutex<NoisyConnErrorLogState>> =
     LazyLock::new(|| Mutex::new(NoisyConnErrorLogState::default()));
 
+#[cfg(unix)]
+fn is_fd_limit_error(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(code) if code == libc::EMFILE || code == libc::ENFILE)
+}
+
+#[cfg(windows)]
+fn is_fd_limit_error(err: &std::io::Error) -> bool {
+    const WSAEMFILE: i32 = 10024;
+    matches!(err.raw_os_error(), Some(WSAEMFILE))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_fd_limit_error(_err: &std::io::Error) -> bool {
+    false
+}
+
 fn log_connection_serve_error(peer_addr: SocketAddr, err: &hyper::Error) {
     let err_debug = format!("{err:?}");
     let is_noisy_disconnect =
@@ -713,8 +729,7 @@ impl ProxyServer {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let is_emfile = e.raw_os_error() == Some(libc::EMFILE)
-                        || e.raw_os_error() == Some(libc::ENFILE);
+                    let is_emfile = is_fd_limit_error(&e);
 
                     if is_emfile {
                         if last_emfile_warn.elapsed() >= Duration::from_secs(5) {

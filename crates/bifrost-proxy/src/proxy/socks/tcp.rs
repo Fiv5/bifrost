@@ -51,6 +51,22 @@ static SOCKS5_PROCESS_START_TS: LazyLock<u64> = LazyLock::new(|| {
         .unwrap_or(0)
 });
 
+#[cfg(unix)]
+fn is_fd_limit_error(err: &std::io::Error) -> bool {
+    matches!(err.raw_os_error(), Some(code) if code == libc::EMFILE || code == libc::ENFILE)
+}
+
+#[cfg(windows)]
+fn is_fd_limit_error(err: &std::io::Error) -> bool {
+    const WSAEMFILE: i32 = 10024;
+    matches!(err.raw_os_error(), Some(WSAEMFILE))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn is_fd_limit_error(_err: &std::io::Error) -> bool {
+    false
+}
+
 fn generate_socks5_request_id() -> String {
     let seq = SOCKS5_REQUEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     format!("SOCKS-{:x}-{:06}", *SOCKS5_PROCESS_START_TS, seq)
@@ -395,8 +411,7 @@ impl SocksServer {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    let is_emfile = e.raw_os_error() == Some(libc::EMFILE)
-                        || e.raw_os_error() == Some(libc::ENFILE);
+                    let is_emfile = is_fd_limit_error(&e);
 
                     if is_emfile {
                         if last_emfile_warn.elapsed() >= Duration::from_secs(5) {
