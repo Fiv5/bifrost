@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 source "${PROJECT_DIR}/e2e-tests/test_utils/assert.sh"
+source "${PROJECT_DIR}/e2e-tests/test_utils/process.sh"
 
 pick_free_port() {
     python3 - <<'PY'
@@ -28,7 +29,10 @@ ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 SSE_PROXY="http://${PROXY_HOST}:${PROXY_PORT}"
 SSE_TARGET="http://${SSE_HOST}:${SSE_PORT}"
-BIFROST_BIN="${PROJECT_DIR}/target/debug/bifrost"
+BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 BIFROST_DATA_DIR=""
 BIFROST_PID=""
 SSE_SERVER_PID=""
@@ -36,14 +40,13 @@ BIFROST_LOG_FILE=""
 VALID_TRAFFIC_ID=""
 
 cleanup() {
-    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
-    fi
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
+
+    safe_cleanup_proxy "$BIFROST_PID"
 
     if [[ -n "$SSE_SERVER_PID" ]] && kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
-        kill "$SSE_SERVER_PID" 2>/dev/null || true
-        wait "$SSE_SERVER_PID" 2>/dev/null || true
+        kill_pid "$SSE_SERVER_PID"
+        wait_pid "$SSE_SERVER_PID"
     fi
 
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
@@ -92,8 +95,6 @@ start_sse_server() {
 }
 
 start_bifrost() {
-    (cd "$PROJECT_DIR" && cargo build --bin bifrost >/dev/null) || return 1
-
     BIFROST_DATA_DIR="$(mktemp -d "${PROJECT_DIR}/.bifrost-e2e-openai-search.XXXXXX")"
     BIFROST_LOG_FILE="$(mktemp)"
     export BIFROST_DATA_DIR

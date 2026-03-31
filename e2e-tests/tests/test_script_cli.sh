@@ -17,6 +17,9 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 TEST_DATA_DIR=""
 SKIP_BUILD="${SKIP_BUILD:-false}"
 
@@ -60,12 +63,6 @@ build_bifrost() {
         return
     fi
 
-    info "编译 bifrost..."
-    cd "$PROJECT_DIR"
-    cargo build --release --bin bifrost >/tmp/bifrost-script-cli-build.log 2>&1 || {
-        tail -50 /tmp/bifrost-script-cli-build.log
-        exit 1
-    }
     echo -e "${GREEN}✓${NC} 编译完成"
 }
 

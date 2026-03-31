@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-$((18880 + ($$ % 500)))}"
@@ -18,6 +19,9 @@ ECHO_SSE_PORT="${ECHO_SSE_PORT:-$((13300 + ($$ % 500)))}"
 ECHO_PROXY_PORT="${ECHO_PROXY_PORT:-$((13999 + ($$ % 200)))}"
 
 BIFROST_BIN="$ROOT_DIR/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 TEST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-rule-semantics-${PROXY_PORT}-$$"
 RULES_FILE="$TEST_DATA_DIR/rules.txt"
 RULES_TEMPLATE="$ROOT_DIR/e2e-tests/rules/regression/rule_semantics_split_parsing.txt"
@@ -28,10 +32,8 @@ HTTP_HEADERS=""
 HTTP_BODY=""
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
-    fi
+    kill_bifrost_on_port "$PROXY_PORT"
+    safe_cleanup_proxy "$PROXY_PID"
     "$ROOT_DIR/e2e-tests/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
     rm -rf "$TEST_DATA_DIR"
 }
@@ -123,7 +125,7 @@ start_mock_servers() {
 
 build_bifrost() {
     log_section "Building bifrost"
-    (cd "$ROOT_DIR" && cargo build --release --bin bifrost)
+    return 0
 }
 
 write_rules() {

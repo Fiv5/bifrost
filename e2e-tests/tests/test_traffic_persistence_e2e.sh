@@ -4,6 +4,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
 ADMIN_PORT="${ADMIN_PORT:-19900}"
@@ -12,7 +13,12 @@ ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 
 TEST_DATA_DIR="${TEST_DATA_DIR:-./.bifrost-persistence-test}"
-BIFROST_BIN="${BIFROST_BIN:-cargo run --bin bifrost --}"
+MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-3198}"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -85,6 +91,7 @@ run_test() {
 }
 
 PROXY_PID=""
+MOCK_PID=""
 
 start_proxy() {
     log_info "Starting Bifrost proxy on port ${PROXY_PORT}..."
@@ -96,8 +103,14 @@ start_proxy() {
     PROXY_PID=$!
     
     local max_wait=30
+    if is_windows; then max_wait=60; fi
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            log_fail "Proxy process exited unexpectedly (PID: $PROXY_PID)"
+            cat "$TEST_DATA_DIR/proxy.log" || true
+            return 1
+        fi
         if curl -sS -o /dev/null -w "" "${ADMIN_BASE_URL}/api/traffic?limit=1" 2>/dev/null; then
             log_info "Proxy started successfully (PID: $PROXY_PID)"
             return 0
@@ -114,11 +127,14 @@ start_proxy() {
 stop_proxy() {
     if [[ -n "$PROXY_PID" ]]; then
         log_info "Stopping proxy (PID: $PROXY_PID)..."
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
+        safe_cleanup_proxy "$PROXY_PID"
         PROXY_PID=""
-        sleep 2
     fi
+    if is_windows; then
+        kill_bifrost_on_port "$PROXY_PORT"
+        win_wait_port_free "$PROXY_PORT" 30 || true
+    fi
+    sleep 2
 }
 
 restart_proxy() {
@@ -130,8 +146,14 @@ restart_proxy() {
     PROXY_PID=$!
     
     local max_wait=30
+    if is_windows; then max_wait=60; fi
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            log_fail "Proxy process exited unexpectedly during restart (PID: $PROXY_PID)"
+            cat "$TEST_DATA_DIR/proxy.log" || true
+            return 1
+        fi
         if curl -sS -o /dev/null -w "" "${ADMIN_BASE_URL}/api/traffic?limit=1" 2>/dev/null; then
             log_info "Proxy restarted successfully (PID: $PROXY_PID)"
             return 0
@@ -146,26 +168,53 @@ restart_proxy() {
 }
 
 cleanup() {
+    stop_mock_server
     stop_proxy
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
     log_info "Cleaning up test data directory..."
     rm -rf "$TEST_DATA_DIR"
 }
 
 trap cleanup EXIT
 
+start_mock_server() {
+    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" >/dev/null 2>&1 &
+    MOCK_PID=$!
+    local waited=0
+    while [[ $waited -lt 10 ]]; do
+        if curl -sS -o /dev/null -w "" "http://127.0.0.1:${MOCK_HTTP_PORT}/get" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        ((waited++))
+    done
+    return 1
+}
+
+stop_mock_server() {
+    if [[ -n "$MOCK_PID" ]]; then
+        kill_pid "$MOCK_PID"
+        wait_pid "$MOCK_PID"
+        MOCK_PID=""
+    fi
+}
+
 generate_traffic() {
     local count="${1:-3}"
-    local host="${2:-httpbin.org}"
+    local pids=()
     
     log_info "Generating $count traffic records..."
     
     for i in $(seq 1 "$count"); do
         curl -sS --proxy "http://127.0.0.1:${PROXY_PORT}" \
-            --connect-timeout 10 --max-time 30 \
-            "https://${host}/get?test_id=persistence_test_$$_${i}" \
+            --connect-timeout 5 --max-time 10 \
+            "http://127.0.0.1:${MOCK_HTTP_PORT}/get?test_id=persistence_test_$$_${i}" \
             -o /dev/null 2>/dev/null &
+        pids+=($!)
     done
-    wait
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
     sleep 2
 }
 
@@ -378,6 +427,7 @@ main() {
     echo "=========================================="
 
     start_proxy || exit 1
+    start_mock_server || { log_fail "Could not start mock server"; exit 1; }
 
     run_test "Data Persistence After Restart" test_data_persistence_after_restart
     run_test "Sequence Continuity" test_sequence_continuity

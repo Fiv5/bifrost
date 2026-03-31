@@ -17,6 +17,10 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 E2E_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+BIFROST_BIN="${ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-9900}"
@@ -25,6 +29,8 @@ BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-./.bifrost-nextoncall-test}"
 
 RULES_FILE="$E2E_DIR/rules/forwarding/nextoncall_rules.txt"
 MOCK_SERVER="$E2E_DIR/mock_servers/http_ws_echo_server.py"
+
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 PROXY_PID=""
 MOCK_PID=""
@@ -52,25 +58,40 @@ log_warn() {
     echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$seconds" "$@"
+    elif [[ -x "$E2E_DIR/bin/timeout" ]]; then
+        "$E2E_DIR/bin/timeout" "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 cleanup() {
     log_info "Cleaning up..."
 
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
+    if [[ -n "$PROXY_PID" ]]; then
         log_info "Stopping proxy server (PID: $PROXY_PID)"
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
+        safe_cleanup_proxy "$PROXY_PID"
     fi
 
-    if [[ -n "$MOCK_PID" ]] && kill -0 "$MOCK_PID" 2>/dev/null; then
+    if [[ -n "$MOCK_PID" ]]; then
         log_info "Stopping mock server (PID: $MOCK_PID)"
-        kill "$MOCK_PID" 2>/dev/null || true
-        wait "$MOCK_PID" 2>/dev/null || true
+        kill_pid "$MOCK_PID"
+        wait_pid "$MOCK_PID"
     fi
 
     if [[ -d "$BIFROST_DATA_DIR" ]]; then
         rm -rf "$BIFROST_DATA_DIR"
     fi
 
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
     log_info "Cleanup complete"
 }
 
@@ -96,25 +117,24 @@ check_deps() {
     if command -v websocat &> /dev/null; then
         log_info "websocat found, WebSocket tests will be enabled"
         HAS_WEBSOCAT=true
+        if websocat --help 2>/dev/null | grep -q -- "--proxy"; then
+            HAS_WEBSOCAT_HTTP_PROXY=true
+        else
+            HAS_WEBSOCAT_HTTP_PROXY=false
+            log_warn "websocat is installed but does not support --proxy; WSS proxy test will be skipped"
+        fi
     else
         log_warn "websocat not found, WebSocket tests will be skipped"
         log_warn "Install with: brew install websocat"
         HAS_WEBSOCAT=false
+        HAS_WEBSOCAT_HTTP_PROXY=false
     fi
 
     log_success "Dependencies check passed"
 }
 
 build_proxy() {
-    log_info "Building bifrost proxy..."
-    cd "$ROOT_DIR"
-
-    if ! cargo build --bin bifrost --release 2>&1; then
-        log_error "Failed to build bifrost"
-        exit 1
-    fi
-
-    log_success "Build completed"
+    :
 }
 
 start_mock_server() {
@@ -145,11 +165,9 @@ start_mock_server() {
 start_proxy() {
     log_info "Starting bifrost proxy on port $PROXY_PORT with debug logging..."
 
-    cd "$ROOT_DIR"
-
     BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
     RUST_LOG=debug \
-    cargo run --bin bifrost --release -- \
+    "$BIFROST_BIN" \
         -p "$PROXY_PORT" \
         -l debug \
         start \
@@ -191,14 +209,12 @@ test_http_root_forward() {
     log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://www.qq.com/"
     log_info "Expected: Request forwarded to mock server at 127.0.0.1:$MOCK_PORT"
 
-    local response
+    local response exit_code=0
     response=$(curl -s -x "http://$PROXY_HOST:$PROXY_PORT" \
         -k \
         --connect-timeout 10 \
         --max-time 30 \
-        "https://www.qq.com/" 2>&1)
-
-    local exit_code=$?
+        "https://www.qq.com/" 2>&1) || exit_code=$?
 
     if [[ $exit_code -ne 0 ]]; then
         log_error "curl failed with exit code: $exit_code"
@@ -228,14 +244,12 @@ test_http_api_path() {
     log_info "Testing: curl -x http://$PROXY_HOST:$PROXY_PORT https://www.qq.com/api/test"
     log_info "Expected: Request NOT forwarded to mock server (excludeFilter should exclude /api/)"
 
-    local response
+    local response exit_code=0
     response=$(curl -s -x "http://$PROXY_HOST:$PROXY_PORT" \
         -k \
         --connect-timeout 10 \
         --max-time 30 \
-        "https://www.qq.com/api/test" 2>&1)
-
-    local exit_code=$?
+        "https://www.qq.com/api/test" 2>&1) || exit_code=$?
 
     echo "Response (first 500 chars):"
     echo "$response" | head -c 500
@@ -260,11 +274,16 @@ test_websocket_forward() {
         return 0
     fi
 
+    if [[ "$HAS_WEBSOCAT_HTTP_PROXY" != "true" ]]; then
+        log_warn "Skipping WebSocket test (installed websocat has no HTTP proxy support)"
+        return 0
+    fi
+
     log_info "Testing: websocat wss://www.qq.com/ via proxy"
     log_info "Expected: WebSocket connection forwarded to mock server"
 
     local response
-    response=$(echo '{"test": "hello"}' | timeout 10 websocat -v \
+    response=$(echo '{"test": "hello"}' | run_with_timeout 10 websocat -v \
         --ws-c-uri "wss://www.qq.com/" \
         --proxy "http://$PROXY_HOST:$PROXY_PORT" \
         -k \
@@ -330,21 +349,21 @@ run_tests() {
     echo ""
 
     if test_http_root_forward; then
-        ((passed++))
+        ((passed++)) || true
     else
-        ((failed++))
+        ((failed++)) || true
     fi
 
     if test_http_api_path; then
-        ((passed++))
+        ((passed++)) || true
     else
-        ((failed++))
+        ((failed++)) || true
     fi
 
     if test_websocket_forward; then
-        ((passed++))
+        ((passed++)) || true
     else
-        ((failed++))
+        ((failed++)) || true
     fi
 
     echo ""

@@ -4,6 +4,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$(cd "$E2E_DIR/.." && pwd)"
+BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
+
+source "$E2E_DIR/test_utils/process.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-8080}"
@@ -11,6 +17,7 @@ ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-3000}"
 ECHO_HTTPS_PORT="${ECHO_HTTPS_PORT:-3443}"
 REQUESTS="${REQUESTS:-10000}"
 CONCURRENCY="${CONCURRENCY:-20}"
+WS_CONCURRENCY="${WS_CONCURRENCY:-10}"
 REQ_SIZE="${REQ_SIZE:-262144}"
 RES_SIZE="${RES_SIZE:-524288}"
 TIMEOUT="${TIMEOUT:-60}"
@@ -31,10 +38,8 @@ PROXY_PID=""
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
-    fi
+    kill_bifrost_on_port "$PROXY_PORT"
+    safe_cleanup_proxy "$PROXY_PID"
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 }
 
@@ -77,7 +82,7 @@ EOF
     local rules_file="$E2E_DIR/test_data/memory_pressure_load_rules.txt"
     RUST_LOG=info,bifrost_proxy=info \
     BIFROST_DATA_DIR="$TEST_DATA_DIR" \
-    cargo run --bin bifrost --manifest-path "$PROJECT_DIR/Cargo.toml" -- \
+    "$BIFROST_BIN" \
         -p "$PROXY_PORT" \
         start \
         --intercept \
@@ -220,7 +225,7 @@ run_ws_load() {
     rss_before=$(get_rss_kb)
     local start_ts
     start_ts=$(date +%s)
-    seq 1 "$WS_CONNECTIONS" | xargs -P "$CONCURRENCY" -I{} bash -c \
+    seq 1 "$WS_CONNECTIONS" | xargs -P "$WS_CONCURRENCY" -I{} bash -c \
         "python3 '$E2E_DIR/test_utils/ws_stress_client.py' --proxy-host '${PROXY_HOST}' --proxy-port '${PROXY_PORT}' --host-header 'stress-ws.local' --path '/ws' --messages '${WS_MESSAGES}' --timeout '${TIMEOUT}' >/dev/null 2>&1 && echo 200 || echo 500" \
         >> "$result_file"
     local end_ts

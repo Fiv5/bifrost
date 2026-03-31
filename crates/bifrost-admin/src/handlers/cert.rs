@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::net::IpAddr;
 
 use bifrost_tls::{CertInstaller, CertStatus};
@@ -268,6 +269,7 @@ fn get_local_ips() -> Vec<String> {
     ips
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),

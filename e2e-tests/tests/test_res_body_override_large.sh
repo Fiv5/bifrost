@@ -7,6 +7,8 @@ PROJECT_DIR="$(cd "$E2E_DIR/.." && pwd)"
 
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
+source "$E2E_DIR/test_utils/process.sh"
+source "$E2E_DIR/test_utils/rule_fixture.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-8080}"
@@ -23,10 +25,10 @@ PROXY_PID=""
 TEST_ID=""
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
+    if [[ -n "$PROXY_PID" ]]; then
+        safe_cleanup_proxy "$PROXY_PID"
     fi
+    kill_bifrost_on_port "$PROXY_PORT"
 
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
 }
@@ -59,13 +61,19 @@ max_body_memory_size = 0
 max_records = 2000
 EOF
 
-    local rules_file="$E2E_DIR/rules/advanced/body_size_strategy.txt"
+    local rules_template="$E2E_DIR/rules/advanced/body_size_strategy.txt"
+    local rules_file="$TEST_DATA_DIR/body_size_strategy.txt"
+    render_rule_fixture_to_file "$rules_template" "$rules_file" \
+        "ECHO_HTTP_PORT=${ECHO_HTTP_PORT}"
     if [[ ! -f "$rules_file" ]]; then
         exit 1
     fi
 
     local bifrost_bin="$PROJECT_DIR/target/release/bifrost"
-    if [[ ! -x "$bifrost_bin" ]]; then
+    if [[ ! -x "$bifrost_bin" && -f "${bifrost_bin}.exe" ]]; then
+        bifrost_bin="${bifrost_bin}.exe"
+    fi
+    if [[ ! -f "$bifrost_bin" ]]; then
         exit 1
     fi
 
@@ -80,7 +88,10 @@ EOF
     PROXY_PID=$!
 
     local count=0
-    while ! nc -z "$PROXY_HOST" "$PROXY_PORT" 2>/dev/null; do
+    while true; do
+        if curl -s --max-time 2 "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
+            break
+        fi
         count=$((count + 1))
         if [[ $count -ge 60 ]]; then
             cat "$PROXY_LOG_FILE"

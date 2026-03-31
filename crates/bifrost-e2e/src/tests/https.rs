@@ -1,5 +1,5 @@
 use crate::curl::CurlCommand;
-use crate::mock::EnhancedMockServer;
+use crate::mock::{EnhancedMockServer, HttpbinMockServer, HttpsMockServer};
 use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
 use std::time::Duration;
@@ -58,8 +58,11 @@ pub fn get_all_tests() -> Vec<TestCase> {
 }
 
 async fn test_https_tunnel_passthrough() -> Result<(), String> {
+    let mock = HttpbinMockServer::start().await;
     let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(port, vec![])
+    let rules = mock.http_rules();
+    let rule_refs: Vec<&str> = rules.iter().map(String::as_str).collect();
+    let _proxy = ProxyInstance::start(port, rule_refs)
         .await
         .map_err(|e| format!("Failed to start proxy: {}", e))?;
 
@@ -69,6 +72,7 @@ async fn test_https_tunnel_passthrough() -> Result<(), String> {
         &format!("http://127.0.0.1:{}", port),
         "https://httpbin.org/get",
     )
+    .insecure()
     .connect_timeout(10)
     .max_time(30)
     .execute()
@@ -76,7 +80,8 @@ async fn test_https_tunnel_passthrough() -> Result<(), String> {
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
-    result.assert_body_contains("httpbin.org")?;
+    result.assert_body_contains("\"Host\":\"httpbin.org\"")?;
+    result.assert_body_contains("\"User-Agent\":\"curl/")?;
 
     Ok(())
 }
@@ -112,30 +117,47 @@ async fn test_https_tunnel_with_host_rule() -> Result<(), String> {
 }
 
 async fn test_https_curl_insecure_flag() -> Result<(), String> {
+    let mock = HttpsMockServer::start("insecure-flag.test").await;
+    mock.set_response(200, "insecure_flag_ok");
+
     let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(port, vec![])
-        .await
-        .map_err(|e| format!("Failed to start proxy: {}", e))?;
+    let _proxy = ProxyInstance::start(
+        port,
+        vec![&format!(
+            "insecure-flag.test host://127.0.0.1:{}",
+            mock.port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start proxy: {}", e))?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let result = CurlCommand::with_proxy(
         &format!("http://127.0.0.1:{}", port),
-        "https://httpbin.org/headers",
+        "https://insecure-flag.test/headers",
     )
     .insecure()
+    .connect_timeout(10)
+    .max_time(30)
     .execute()
     .await
     .map_err(|e| format!("curl failed: {}", e))?;
 
     result.assert_success()?;
+    result.assert_body_contains("insecure_flag_ok")?;
+
+    mock.assert_request_received()?;
 
     Ok(())
 }
 
 async fn test_https_tunnel_public_site() -> Result<(), String> {
+    let mock = HttpbinMockServer::start().await;
     let port = portpicker::pick_unused_port().unwrap();
-    let _proxy = ProxyInstance::start(port, vec![])
+    let rules = mock.http_rules();
+    let rule_refs: Vec<&str> = rules.iter().map(String::as_str).collect();
+    let _proxy = ProxyInstance::start(port, rule_refs)
         .await
         .map_err(|e| format!("Failed to start proxy: {}", e))?;
 
@@ -145,6 +167,7 @@ async fn test_https_tunnel_public_site() -> Result<(), String> {
         &format!("http://127.0.0.1:{}", port),
         "https://httpbin.org/user-agent",
     )
+    .insecure()
     .execute()
     .await
     .map_err(|e| format!("curl failed: {}", e))?;

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RULES_DIR="${SCRIPT_DIR}/rules"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RESULTS_DIR="${SCRIPT_DIR}/.test_results"
+source "$SCRIPT_DIR/test_utils/process.sh"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -17,6 +18,12 @@ NC='\033[0m'
 header() { echo -e "\n${CYAN}══════════════════════════════════════════════════════════════${NC}"; echo -e "${CYAN}  $1${NC}"; echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}\n"; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1"; }
+
+truthy() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    [[ "$value" == "1" || "$value" == "true" || "$value" == "yes" || "$value" == "on" ]]
+}
 
 usage() {
     echo "用法: $0 [选项]"
@@ -48,24 +55,120 @@ detect_cpu_count() {
     fi
 }
 
+ensure_cargo_on_path() {
+    if command -v cargo >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [[ -x "${HOME}/.cargo/bin/cargo" ]]; then
+        export PATH="${HOME}/.cargo/bin:${PATH}"
+    fi
+}
+
+resolve_bifrost_release_bin() {
+    local release_dir="${PROJECT_DIR}/target/release"
+    local unix_bin="${release_dir}/bifrost"
+    local windows_bin="${release_dir}/bifrost.exe"
+
+    if [[ -x "$unix_bin" ]]; then
+        printf '%s\n' "$unix_bin"
+        return 0
+    fi
+
+    if [[ -f "$windows_bin" ]]; then
+        printf '%s\n' "$windows_bin"
+        return 0
+    fi
+
+    return 1
+}
+
+FIXTURE_ONLY_RULES=(
+    "comprehensive_test.txt"
+    "admin_api/create_proxy_rule.txt"
+    "admin_api/list_contains_created_rule.txt"
+    "admin_api/rule_count_multiline.txt"
+    "admin_api/update_mock_file_rule.txt"
+    "advanced/body_replace.txt"
+    "advanced/body_size_strategy.txt"
+    "advanced/header_replace.txt"
+    "advanced/large_body.txt"
+    "forwarding/nextoncall_rules.txt"
+    "hot_reload/status_201.txt"
+    "hot_reload/status_202.txt"
+    "http3/http3_e2e.txt"
+    "regression/rule_semantics_split_parsing.txt"
+    "replay/delete_header.txt"
+    "replay/host_redirect.txt"
+    "replay/method_post.txt"
+    "replay/multiple_rules.txt"
+    "replay/referer.txt"
+    "replay/req_body.txt"
+    "replay/req_cookies.txt"
+    "replay/req_headers.txt"
+    "replay/response_modification.txt"
+    "replay/sse_req_headers.txt"
+    "replay/url_params.txt"
+    "replay/user_agent.txt"
+    "replay/websocket_req_headers.txt"
+    "request_modify/req_res_script.txt"
+    "runtime/client_process_transport_attribution.txt"
+    "socks5_tls/compare_header_mode.txt"
+    "socks5_tls/host_redirect.txt"
+    "socks5_tls/mock_response.txt"
+    "socks5_tls/res_header.txt"
+    "socks5_udp/dns_redirect_domain.txt"
+    "socks5_udp/dns_redirect_ip.txt"
+    "system_proxy/basic_forwarding.txt"
+    "tls/intercept_header_injection.txt"
+    "tls/passthrough_localhost.txt"
+    "values/status_code_value.txt"
+    "websocket/decode_utf8_searchable.txt"
+)
+
+should_skip_rule_fixture() {
+    local rel_path="$1"
+    local fixture
+
+    for fixture in "${FIXTURE_ONLY_RULES[@]}"; do
+        if [[ "$rel_path" == "$fixture" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 collect_test_files() {
     local category="$1"
 
     if [[ -n "$category" ]]; then
         if [[ -d "${RULES_DIR}/${category}" ]]; then
-            find "${RULES_DIR}/${category}" -name "*.txt" -type f 2>/dev/null | sort
+            find "${RULES_DIR}/${category}" -name "*.txt" -type f 2>/dev/null | sort | while read -r rule_file; do
+                local rel_path="${rule_file#$RULES_DIR/}"
+                if should_skip_rule_fixture "$rel_path"; then
+                    continue
+                fi
+                echo "$rule_file"
+            done
         else
             echo -e "${RED}✗${NC} 分类不存在: $category" >&2
             exit 1
         fi
     else
-        find "$RULES_DIR" -name "*.txt" -type f 2>/dev/null | sort
+        find "$RULES_DIR" -name "*.txt" -type f 2>/dev/null | sort | while read -r rule_file; do
+            local rel_path="${rule_file#$RULES_DIR/}"
+            if should_skip_rule_fixture "$rel_path"; then
+                continue
+            fi
+            echo "$rule_file"
+        done
     fi
 }
 
 build_proxy_once() {
     if [[ "$SKIP_BUILD" == "true" ]]; then
-        if [[ ! -x "${PROJECT_DIR}/target/release/bifrost" ]]; then
+        if ! resolve_bifrost_release_bin >/dev/null 2>&1; then
             echo -e "${RED}✗${NC} 跳过编译但二进制文件不存在，请先编译"
             exit 1
         fi
@@ -91,48 +194,122 @@ run_single_test() {
     local log_file="${RESULTS_DIR}/log_${test_index}.txt"
     local data_dir="${RESULTS_DIR}/data_${test_index}"
 
-    # 并行场景下，首次 HTTPS 请求可能因为证书/密钥生成 + CPU 竞争导致耗时显著增加。
-    # test_utils/http_client.sh 默认 TIMEOUT=10s，容易在高并发下触发 curl 000。
     local timeout="${TIMEOUT:-60}"
+    local fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-180}"
 
     mkdir -p "$data_dir"
+
+    local http_retries="${BIFROST_E2E_HTTP_RETRIES:-2}"
 
     {
         echo "TEST_FILE=$rel_path"
         echo "PROXY_PORT=$proxy_port"
 
         local test_id="${rel_path}:${proxy_port}"
-        if TIMEOUT="$timeout" TEST_ID="$test_id" "$SCRIPT_DIR/test_rules.sh" \
+        local test_pid
+        TIMEOUT="$timeout" TEST_ID="$test_id" BIFROST_E2E_HTTP_RETRIES="$http_retries" "$SCRIPT_DIR/test_rules.sh" \
             --no-build \
             --use-binary \
             --skip-mock-servers \
             -p "$proxy_port" \
             -d "$data_dir" \
-            "$rule_file" > "$log_file" 2>&1; then
+            "$rule_file" > "$log_file" 2>&1 &
+        test_pid=$!
+
+        local watchdog_pid=""
+        (
+            sleep "$fixture_timeout"
+            if kill -0 "$test_pid" 2>/dev/null; then
+                echo "[TIMEOUT] fixture ${rel_path} exceeded ${fixture_timeout}s on port ${proxy_port}" >> "$log_file"
+                kill -TERM "$test_pid" 2>/dev/null || true
+                sleep 3
+                kill -9 "$test_pid" 2>/dev/null || true
+            fi
+        ) &
+        watchdog_pid=$!
+
+        if wait "$test_pid" 2>/dev/null; then
             echo "STATUS=passed"
         else
             echo "STATUS=failed"
         fi
 
+        kill "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
+
         local passed=$(grep "^Passed:" "$log_file" 2>/dev/null | tail -1 | perl -pe 's/\e\[[0-9;]*m//g' | sed 's/.*: *//' | tr -d '[:space:]' || echo "0")
         local failed=$(grep "^Failed:" "$log_file" 2>/dev/null | tail -1 | perl -pe 's/\e\[[0-9;]*m//g' | sed 's/.*: *//' | tr -d '[:space:]' || echo "0")
         echo "PASSED=${passed:-0}"
         echo "FAILED=${failed:-0}"
+
+        if is_windows; then
+            kill_bifrost_on_port "$proxy_port"
+        fi
     } > "$result_file"
 }
 
 print_progress() {
     local completed="$1"
     local total="$2"
+    local fixture_name="${3:-}"
     local width=50
     local percent=$((completed * 100 / total))
     local filled=$((completed * width / total))
     local empty=$((width - filled))
 
-    printf "\r${CYAN}进度: [${NC}"
-    printf "%${filled}s" | tr ' ' '█'
-    printf "%${empty}s" | tr ' ' '░'
-    printf "${CYAN}] %3d%% (%d/%d)${NC}" "$percent" "$completed" "$total"
+    if [[ -t 1 ]]; then
+        printf "\r${CYAN}进度: [${NC}"
+        printf "%${filled}s" | tr ' ' '█'
+        printf "%${empty}s" | tr ' ' '░'
+        printf "${CYAN}] %3d%% (%d/%d)${NC}" "$percent" "$completed" "$total"
+    else
+        local bar=""
+        bar+=$(printf "%${filled}s" | tr ' ' '█')
+        bar+=$(printf "%${empty}s" | tr ' ' '░')
+        if [[ -n "$fixture_name" ]]; then
+            printf "进度: [%s] %3d%% (%d/%d) %s\n" "$bar" "$percent" "$completed" "$total" "$fixture_name"
+        else
+            printf "进度: [%s] %3d%% (%d/%d)\n" "$bar" "$percent" "$completed" "$total"
+        fi
+    fi
+}
+
+print_failure_diagnostics() {
+    local log_file="$1"
+    [[ -f "$log_file" ]] || return 0
+
+    local clean_log
+    clean_log=$(mktemp)
+    perl -pe 's/\e\[[0-9;]*m//g' "$log_file" > "$clean_log"
+
+    local failure_excerpt
+    failure_excerpt=$(awk '
+        /│ 规则:/ { current_rule=$0; next }
+        /【测试】/ { current_test=$0; next }
+        /^✗ / {
+            if (current_rule != "") print current_rule;
+            if (current_test != "") print current_test;
+            print $0;
+            for (i = 0; i < 2; i++) {
+                if (getline line) print line;
+            }
+            print "";
+        }
+    ' "$clean_log")
+
+    if [[ -n "$failure_excerpt" ]]; then
+        echo -e "    ${YELLOW}失败断言摘录:${NC}"
+        printf '%s\n' "$failure_excerpt" | tail -60 | sed 's/^/      /'
+    fi
+
+    local warning_excerpt
+    warning_excerpt=$(rg -n "请求速度测试第|响应速度测试第|超时: " "$clean_log" -S 2>/dev/null || true)
+    if [[ -n "$warning_excerpt" ]]; then
+        echo -e "    ${YELLOW}测速诊断摘录:${NC}"
+        printf '%s\n' "$warning_excerpt" | tail -20 | sed 's/^/      /'
+    fi
+
+    rm -f "$clean_log"
 }
 
 aggregate_results() {
@@ -150,6 +327,7 @@ aggregate_results() {
         local failed=0
 
         while IFS='=' read -r key value; do
+            value="${value%$'\r'}"
             case "$key" in
                 TEST_FILE) test_file="$value" ;;
                 STATUS) status="$value" ;;
@@ -188,6 +366,7 @@ aggregate_results() {
                         idx="${idx%.txt}"
                         local log_file="${RESULTS_DIR}/log_${idx}.txt"
                         if [[ -f "$log_file" ]]; then
+                            print_failure_diagnostics "$log_file"
                             echo -e "    ${YELLOW}最后 20 行日志:${NC}"
                             tail -20 "$log_file" | sed 's/^/      /'
                         fi
@@ -214,36 +393,190 @@ aggregate_results() {
 
 cleanup() {
     info "清理资源..."
+    if is_windows; then
+        kill_all_bifrost
+    fi
     "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+}
+
+collect_failed_result_indices() {
+    local result_file
+
+    for result_file in "${RESULTS_DIR}"/result_*.txt; do
+        [[ -f "$result_file" ]] || continue
+
+        local status=""
+        status=$(grep '^STATUS=' "$result_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        if [[ "$status" != "failed" ]]; then
+            continue
+        fi
+
+        local idx="${result_file##*result_}"
+        idx="${idx%.txt}"
+        printf '%s\n' "$idx"
+    done
+}
+
+ensure_mock_servers_alive() {
+    if is_http_echo_ready; then
+        return 0
+    fi
+
+    warn "Mock 服务器不可用，尝试重启..."
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+    sleep 1
+    "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
+    sleep 2
+
+    if is_http_echo_ready; then
+        echo -e "${GREEN}✓${NC} Mock 服务器已重启"
+        return 0
+    fi
+
+    echo -e "${RED}✗${NC} Mock 服务器重启失败"
+    return 1
+}
+
+retry_failed_suites_once() {
+    local failed_indices=()
+    while IFS= read -r idx; do
+        [[ -n "$idx" ]] && failed_indices+=("$idx")
+    done < <(collect_failed_result_indices)
+
+    if [[ ${#failed_indices[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local retry_budget="${BIFROST_E2E_RETRY_BUDGET_SECS:-300}"
+    local retry_start=$SECONDS
+    local retried=0
+    local skipped=0
+
+    local max_retry_suites="${BIFROST_E2E_MAX_RETRY_SUITES:-10}"
+    if [[ ${#failed_indices[@]} -gt $max_retry_suites ]]; then
+        warn "失败套件过多 (${#failed_indices[@]} > ${max_retry_suites})，仅重试前 ${max_retry_suites} 个"
+        failed_indices=("${failed_indices[@]:0:$max_retry_suites}")
+    fi
+
+    header "串行重试失败套件"
+    info "首次运行失败 ${#failed_indices[@]} 个套件，按原端口逐个重试 (时间预算: ${retry_budget}s)"
+
+    if is_windows; then
+        info "Windows: 重试前清理残留 bifrost 进程..."
+        kill_all_bifrost
+        sleep 3
+    fi
+
+    if ! ensure_mock_servers_alive; then
+        warn "Mock 服务器不可用，跳过全部重试"
+        return 0
+    fi
+
+    local retry_fixture_timeout="${BIFROST_E2E_RETRY_FIXTURE_TIMEOUT:-${BIFROST_E2E_FIXTURE_TIMEOUT:-120}}"
+    local saved_fixture_timeout="${BIFROST_E2E_FIXTURE_TIMEOUT:-}"
+    export BIFROST_E2E_FIXTURE_TIMEOUT="$retry_fixture_timeout"
+
+    local idx
+    for idx in "${failed_indices[@]}"; do
+        local elapsed=$(( SECONDS - retry_start ))
+        if [[ $elapsed -ge $retry_budget ]]; then
+            skipped=$(( ${#failed_indices[@]} - retried ))
+            warn "重试时间预算已用尽 (${elapsed}s >= ${retry_budget}s)，跳过剩余 ${skipped} 个套件"
+            break
+        fi
+
+        local remaining=$(( retry_budget - elapsed ))
+        if [[ $remaining -lt 30 ]]; then
+            skipped=$(( ${#failed_indices[@]} - retried ))
+            warn "剩余时间不足 (${remaining}s < 30s)，跳过剩余 ${skipped} 个套件"
+            break
+        fi
+
+        local result_file="${RESULTS_DIR}/result_${idx}.txt"
+        local log_file="${RESULTS_DIR}/log_${idx}.txt"
+        local data_dir="${RESULTS_DIR}/data_${idx}"
+        local rule_rel=""
+        local rule_file=""
+
+        rule_rel=$(grep '^TEST_FILE=' "$result_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        rule_file="${RULES_DIR}/${rule_rel}"
+
+        if [[ -z "$rule_rel" || ! -f "$rule_file" ]]; then
+            warn "无法定位失败套件 ${idx} 对应的规则文件，跳过重试"
+            retried=$((retried + 1))
+            continue
+        fi
+
+        info "重试 ${rule_rel} (proxy_port=$((BASE_PORT + idx))) [${elapsed}s/${retry_budget}s]"
+        rm -rf "$data_dir" "$log_file" "$result_file"
+        if is_windows; then
+            kill_bifrost_on_port "$((BASE_PORT + idx))"
+        fi
+        run_single_test "$rule_file" "$idx"
+        retried=$((retried + 1))
+
+        local status=""
+        status=$(grep '^STATUS=' "$result_file" 2>/dev/null | tail -1 | cut -d'=' -f2-)
+        if [[ "$status" == "passed" ]]; then
+            echo -e "${GREEN}✓${NC} 重试通过: ${rule_rel}"
+        else
+            warn "重试仍失败: ${rule_rel}"
+            if [[ -f "$log_file" ]]; then
+                print_failure_diagnostics "$log_file"
+                echo -e "    ${YELLOW}最后 20 行日志:${NC}"
+                tail -20 "$log_file" | sed 's/^/      /'
+            fi
+        fi
+    done
+
+    if [[ -n "$saved_fixture_timeout" ]]; then
+        export BIFROST_E2E_FIXTURE_TIMEOUT="$saved_fixture_timeout"
+    else
+        unset BIFROST_E2E_FIXTURE_TIMEOUT
+    fi
 }
 
 is_http_echo_ready() {
     curl -sf "http://127.0.0.1:3000/health" >/dev/null 2>&1
 }
 
-JOBS=$(detect_cpu_count)
+ensure_cargo_on_path
+
+JOBS="${BIFROST_E2E_RULE_JOBS:-$(detect_cpu_count)}"
 CATEGORY=""
 SKIP_BUILD="false"
 VERBOSE="false"
 BASE_PORT=9000
+RETRY_FAILED_ONCE="false"
 
 pick_available_base_port() {
     local requested_base_port="$1"
     local suite_count="$2"
     local attempt=0
 
-    # 需要保证 [base_port, base_port + suite_count - 1] 这一段端口都空闲，
-    # 否则并行运行时会出现“误连旧进程/绑定失败”等随机用例失败。
     while [[ $attempt -lt 30 ]]; do
         local candidate=$((requested_base_port + attempt * 100))
         local ok=true
 
-        for ((p=candidate; p<candidate + suite_count; p++)); do
-            if lsof -i ":${p}" -t >/dev/null 2>&1; then
-                ok=false
-                break
-            fi
-        done
+        if is_windows; then
+            local used_ports
+            used_ports=$(netstat.exe -ano 2>/dev/null \
+                | awk '$1 == "TCP" && $4 == "LISTENING" { split($2, a, ":"); print a[length(a)] }' \
+                | tr -d '\r' | sort -un | tr '\n' ',' || true)
+            for ((p=candidate; p<candidate + suite_count; p++)); do
+                if [[ ",$used_ports," == *",$p,"* ]]; then
+                    ok=false
+                    break
+                fi
+            done
+        else
+            for ((p=candidate; p<candidate + suite_count; p++)); do
+                if lsof -i ":${p}" -t >/dev/null 2>&1; then
+                    ok=false
+                    break
+                fi
+            done
+        fi
 
         if [[ "$ok" == "true" ]]; then
             echo "$candidate"
@@ -253,7 +586,6 @@ pick_available_base_port() {
         attempt=$((attempt + 1))
     done
 
-    # 回退：返回原值，由后续单测自行报错。
     echo "$requested_base_port"
 }
 
@@ -279,6 +611,10 @@ parse_args() {
                 BASE_PORT="$2"
                 shift 2
                 ;;
+            --retry-failed-once)
+                RETRY_FAILED_ONCE="true"
+                shift
+                ;;
             -v|--verbose)
                 VERBOSE="true"
                 shift
@@ -293,12 +629,18 @@ parse_args() {
 
 main() {
     parse_args "$@"
+    if truthy "${BIFROST_E2E_RETRY_FAILED_ONCE:-false}"; then
+        RETRY_FAILED_ONCE="true"
+    fi
 
     header "Bifrost 并行端到端测试运行器"
     echo "并行任务数: $JOBS"
     echo "起始端口: $BASE_PORT"
     if [[ -n "$CATEGORY" ]]; then
         echo "测试分类: $CATEGORY"
+    fi
+    if [[ "$RETRY_FAILED_ONCE" == "true" ]]; then
+        echo "失败重试: 开启（串行重试一次）"
     fi
     echo ""
 
@@ -311,9 +653,12 @@ main() {
     build_proxy_once
 
     header "启动共享 Mock 服务器"
+    info "停止可能存在的旧 Mock 服务器..."
     "$SCRIPT_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
     sleep 1
+    info "启动 Mock 服务器 (后台模式)..."
     "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
+    info "等待 Mock 服务器就绪..."
     sleep 2
 
     if is_http_echo_ready; then
@@ -336,8 +681,9 @@ main() {
         exit 0
     fi
 
-    # 如果默认端口段被占用（例如本机已有 bifrost 或其它服务占用 9000），
-    # 自动选择一个可用的连续端口段，避免并行测试误连旧进程/绑定失败。
+    info "找到 $total_suites 个测试套件"
+
+    info "选择可用端口段..."
     local selected_base_port
     selected_base_port=$(pick_available_base_port "$BASE_PORT" "$total_suites")
     if [[ "$selected_base_port" != "$BASE_PORT" ]]; then
@@ -368,7 +714,19 @@ main() {
                 unset 'pids[i]'
                 completed=$((completed + 1))
                 running=$((running - 1))
-                print_progress "$completed" "$total_suites"
+                local fixture_rel="${test_files[$i]#$RULES_DIR/}"
+                local result_status=""
+                local rf="${RESULTS_DIR}/result_${i}.txt"
+                if [[ -f "$rf" ]]; then
+                    result_status=$(grep "^STATUS=" "$rf" 2>/dev/null | head -1 | cut -d= -f2)
+                fi
+                local label="${fixture_rel}"
+                if [[ "$result_status" == "passed" ]]; then
+                    label="✓ ${fixture_rel}"
+                elif [[ "$result_status" == "failed" ]]; then
+                    label="✗ ${fixture_rel}"
+                fi
+                print_progress "$completed" "$total_suites" "$label"
             fi
         done
 
@@ -378,7 +736,15 @@ main() {
     echo ""
     echo ""
 
-    aggregate_results
+    if ! aggregate_results; then
+        if [[ "$RETRY_FAILED_ONCE" == "true" ]]; then
+            retry_failed_suites_once
+            echo ""
+            aggregate_results
+        else
+            return 1
+        fi
+    fi
 }
 
 main "$@"

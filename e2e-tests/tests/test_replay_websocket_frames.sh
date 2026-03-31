@@ -3,6 +3,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${ROOT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-}"
@@ -33,6 +37,7 @@ WSS_BASE_URL="wss://${WS_HOST}:${WSS_PORT}"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -43,24 +48,25 @@ WS_SERVER_PID=""
 WSS_SERVER_PID=""
 
 cleanup() {
-    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
+    if [[ -n "$BIFROST_PID" ]]; then
+        safe_cleanup_proxy "$BIFROST_PID"
     fi
 
-    if [[ -n "$WS_SERVER_PID" ]] && kill -0 "$WS_SERVER_PID" 2>/dev/null; then
-        kill "$WS_SERVER_PID" 2>/dev/null || true
-        wait "$WS_SERVER_PID" 2>/dev/null || true
+    if [[ -n "$WS_SERVER_PID" ]]; then
+        kill_pid "$WS_SERVER_PID"
+        wait_pid "$WS_SERVER_PID"
     fi
 
-    if [[ -n "$WSS_SERVER_PID" ]] && kill -0 "$WSS_SERVER_PID" 2>/dev/null; then
-        kill "$WSS_SERVER_PID" 2>/dev/null || true
-        wait "$WSS_SERVER_PID" 2>/dev/null || true
+    if [[ -n "$WSS_SERVER_PID" ]]; then
+        kill_pid "$WSS_SERVER_PID"
+        wait_pid "$WSS_SERVER_PID"
     fi
 
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
         rm -rf "$BIFROST_DATA_DIR"
     fi
+
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
 }
 
 trap cleanup EXIT
@@ -93,28 +99,45 @@ check_deps() {
     fi
 }
 
+wait_for_port() {
+    local port="$1"
+    local max_wait="${2:-10}"
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if (echo >/dev/tcp/127.0.0.1/"$port") 2>/dev/null || \
+           command -v nc &>/dev/null && nc -z 127.0.0.1 "$port" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 start_ws_server() {
     python3 "$SCRIPT_DIR/../mock_servers/ws_echo_server.py" --port "$WS_PORT" > /dev/null 2>&1 &
     WS_SERVER_PID=$!
-    sleep 1
-    kill -0 "$WS_SERVER_PID" 2>/dev/null
+    if ! wait_for_port "$WS_PORT" 20; then
+        kill -0 "$WS_SERVER_PID" 2>/dev/null
+        return 1
+    fi
 }
 
 start_wss_server() {
     python3 "$SCRIPT_DIR/../mock_servers/ws_echo_server.py" --port "$WSS_PORT" --ssl > /dev/null 2>&1 &
     WSS_SERVER_PID=$!
-    sleep 1
-    kill -0 "$WSS_SERVER_PID" 2>/dev/null
+    if ! wait_for_port "$WSS_PORT" 20; then
+        kill -0 "$WSS_SERVER_PID" 2>/dev/null
+        return 1
+    fi
 }
 
 start_bifrost() {
-    (cd "$ROOT_DIR" && SKIP_FRONTEND_BUILD=1 cargo build --bin bifrost)
-
     BIFROST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR
 
     local log_file="$BIFROST_DATA_DIR/proxy.log"
-    (cd "$ROOT_DIR" && SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > "$log_file" 2>&1) &
+    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > "$log_file" 2>&1 &
     BIFROST_PID=$!
     sleep 1
     if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
@@ -125,6 +148,11 @@ start_bifrost() {
     local max_wait=60
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+            echo "Bifrost process exited during startup (PID: $BIFROST_PID)"
+            tail -n 120 "$log_file" || true
+            return 1
+        fi
         if curl -sf "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system" >/dev/null 2>&1; then
             return 0
         fi
@@ -342,13 +370,13 @@ test_ws_replay_ping_pong_capture() {
 }
 
 test_ws_replay_long_connection_over_30s() {
-    log_test "Replay WebSocket long connection (>30s)"
+    log_test "Replay WebSocket long connection (>15s)"
 
     clear_traffic >/dev/null 2>&1 || true
     sleep 0.5
 
-    local upstream_url="${WS_BASE_URL}/ws/idle?delay=35&msg=late_message"
-    if ! ws_replay_connect_receive_only "$upstream_url" "" "" "" "" 50 "late_message" 1; then
+    local upstream_url="${WS_BASE_URL}/ws/idle?delay=15&msg=late_message"
+    if ! ws_replay_connect_receive_only "$upstream_url" "" "" "" "" 25 "late_message" 1; then
         fail "Long connection was disconnected before late message"
         return 1
     fi

@@ -13,10 +13,14 @@ export ADMIN_HOST ADMIN_PORT ADMIN_PATH_PREFIX="/_bifrost"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 export ADMIN_BASE_URL
 
 BIFROST_BIN="$ROOT_DIR/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 TEST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-values-consistency-${PROXY_PORT}-$$"
 
 PROXY_PID=""
@@ -38,10 +42,8 @@ assert_equals() {
 }
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
-    fi
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
+    safe_cleanup_proxy "$PROXY_PID"
     rm -rf "$TEST_DATA_DIR"
 }
 
@@ -56,14 +58,6 @@ record_result() {
 }
 
 start_bifrost() {
-    if [[ ! -x "$BIFROST_BIN" ]]; then
-        echo "[INFO] Building bifrost (release)..."
-        (cd "$ROOT_DIR" && SKIP_FRONTEND_BUILD=1 cargo build --release --bin bifrost) || {
-            echo "[FAIL] Failed to build bifrost"
-            exit 1
-        }
-    fi
-
     mkdir -p "$TEST_DATA_DIR"
 
     echo "[INFO] Starting bifrost on port $PROXY_PORT with data dir $TEST_DATA_DIR"

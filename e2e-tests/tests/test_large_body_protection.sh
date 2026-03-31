@@ -20,9 +20,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$(cd "$E2E_DIR/.." && pwd)"
+BIFROST_BIN="${PROJECT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
+source "$E2E_DIR/test_utils/process.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -72,15 +77,13 @@ header() {
 
 cleanup() {
     log_info "清理测试环境..."
-    
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        log_debug "停止代理服务器 (PID: $PROXY_PID)"
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
-    fi
-    
+
+    kill_bifrost_on_port "$PROXY_PORT"
+
+    safe_cleanup_proxy "$PROXY_PID"
+
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
-    
+
     log_info "清理完成"
 }
 
@@ -128,12 +131,13 @@ start_proxy() {
     
     mkdir -p "$TEST_DATA_DIR"
     
-    local rules_file="$E2E_DIR/rules/advanced/large_body.txt"
-    
-    if [[ ! -f "$rules_file" ]]; then
-        log_error "规则文件不存在: $rules_file"
-        exit 1
-    fi
+    local rules_file="$TEST_DATA_DIR/large_body_rules.txt"
+    cat > "$rules_file" <<RULES_EOF
+test-large-req-replace.local http://127.0.0.1:${ECHO_HTTP_PORT} reqReplace://REQ_MARKER_12345=REQ_REPLACED
+test-large-res-replace.local http://127.0.0.1:${ECHO_HTTP_PORT} resReplace://RES_MARKER_67890=RES_REPLACED
+test-large-both-replace.local http://127.0.0.1:${ECHO_HTTP_PORT} reqReplace://REQ_MARKER_12345=REQ_REPLACED resReplace://RES_MARKER_67890=RES_REPLACED
+test-large-no-rule.local http://127.0.0.1:${ECHO_HTTP_PORT}
+RULES_EOF
     
     log_debug "规则文件: $rules_file"
     log_debug "代理端口: $PROXY_PORT"
@@ -141,7 +145,7 @@ start_proxy() {
     
     RUST_LOG=info,bifrost_proxy=debug \
     BIFROST_DATA_DIR="$TEST_DATA_DIR" \
-    cargo run --bin bifrost --manifest-path "$PROJECT_DIR/Cargo.toml" -- \
+    "$BIFROST_BIN" \
         -p "$PROXY_PORT" \
         start \
         --unsafe-ssl \

@@ -3,12 +3,17 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${BIFROST_BIN:-${ROOT_DIR}/target/release/bifrost}"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_PORT="${PROXY_PORT:-18888}"
 ADMIN_PORT="$PROXY_PORT"
 ADMIN_BASE_URL="http://127.0.0.1:${ADMIN_PORT}/_bifrost"
 
 source "$SCRIPT_DIR/../test_utils/assert.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 BIFROST_PID=""
 passed=0
@@ -18,12 +23,12 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
 
-    if [ -n "$BIFROST_PID" ] && kill -0 "$BIFROST_PID" 2>/dev/null; then
+    if [ -n "$BIFROST_PID" ]; then
         echo "  Stopping Bifrost proxy (PID: $BIFROST_PID)..."
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
+        safe_cleanup_proxy "$BIFROST_PID"
     fi
 
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
     echo "Cleanup complete."
 }
 
@@ -33,12 +38,18 @@ start_bifrost() {
     echo "Starting Bifrost proxy on port $PROXY_PORT..."
     cd "$ROOT_DIR"
 
-    BIFROST_DATA_DIR="./.bifrost-e2e-test" cargo run --release --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
+    BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-./.bifrost-e2e-test}" "$BIFROST_BIN" start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
     BIFROST_PID=$!
 
-    local timeout=420
+    local timeout=120
     local waited=0
     while [ $waited -lt $timeout ]; do
+        if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+            echo "Bifrost process exited unexpectedly (PID: $BIFROST_PID)"
+            echo "Last log:"
+            tail -30 /tmp/bifrost_e2e.log
+            exit 1
+        fi
         if curl -s "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1; then
             echo "  Bifrost proxy started (PID: $BIFROST_PID)"
             return 0
@@ -49,7 +60,7 @@ start_bifrost() {
 
     echo "Failed to start Bifrost proxy within ${timeout}s"
     echo "Last log:"
-    tail -20 /tmp/bifrost_e2e.log
+    tail -30 /tmp/bifrost_e2e.log
     exit 1
 }
 

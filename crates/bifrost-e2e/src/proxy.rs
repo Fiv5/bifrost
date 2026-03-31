@@ -941,10 +941,11 @@ impl ProxyInstance {
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
+        let listener = server.bind(addr).await?;
 
         tokio::spawn(async move {
             tokio::select! {
-                result = server.run() => {
+                result = server.run_with_listener(listener) => {
                     if let Err(e) = result {
                         tracing::error!("Proxy server error: {}", e);
                     }
@@ -954,8 +955,6 @@ impl ProxyInstance {
                 }
             }
         });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         Ok(Self {
             addr,
@@ -1010,10 +1009,11 @@ impl ProxyInstance {
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
+        let listener = server.bind(addr).await?;
 
         tokio::spawn(async move {
             tokio::select! {
-                result = server.run() => {
+                result = server.run_with_listener(listener) => {
                     if let Err(e) = result {
                         tracing::error!("Proxy server error: {}", e);
                     }
@@ -1023,8 +1023,6 @@ impl ProxyInstance {
                 }
             }
         });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         Ok(Self {
             addr,
@@ -1168,9 +1166,11 @@ impl ProxyInstance {
             .cloned()
             .expect("admin_state should be set");
 
+        let listener = server.bind(addr).await?;
+
         tokio::spawn(async move {
             tokio::select! {
-                result = server.run() => {
+                result = server.run_with_listener(listener) => {
                     if let Err(e) = result {
                         tracing::error!("Proxy server error: {}", e);
                     }
@@ -1180,8 +1180,6 @@ impl ProxyInstance {
                 }
             }
         });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         Ok((
             Self {
@@ -1198,6 +1196,27 @@ impl ProxyInstance {
 
     pub fn proxy_url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    pub async fn wait_for_ready(&self) -> Result<(), String> {
+        let max_attempts = 50;
+        for i in 0..max_attempts {
+            match tokio::net::TcpStream::connect(self.addr).await {
+                Ok(_) => return Ok(()),
+                Err(_) if i < max_attempts - 1 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "Proxy at {} not ready after {}ms: {}",
+                        self.addr,
+                        max_attempts * 50,
+                        e
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn shutdown(&mut self) {

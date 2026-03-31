@@ -4,6 +4,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
 ADMIN_PORT="${ADMIN_PORT:-9900}"
@@ -12,6 +13,8 @@ ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 WS_URL="ws://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/ws"
 WS_PUSH_URL="ws://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/push"
+MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-3199}"
+MOCK_PID=""
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -104,19 +107,44 @@ ensure_websocat() {
     return 0
 }
 
+start_mock_server() {
+    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" >/dev/null 2>&1 &
+    MOCK_PID=$!
+    local waited=0
+    while [[ $waited -lt 10 ]]; do
+        if curl -sS -o /dev/null -w "" "http://127.0.0.1:${MOCK_HTTP_PORT}/get" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        ((waited++))
+    done
+    return 1
+}
+
+stop_mock_server() {
+    if [[ -n "$MOCK_PID" ]]; then
+        kill_pid "$MOCK_PID"
+        wait_pid "$MOCK_PID"
+        MOCK_PID=""
+    fi
+}
+
 generate_traffic() {
     local count="${1:-3}"
-    local host="${2:-httpbin.org}"
+    local pids=()
     
     log_info "Generating $count traffic records via proxy ${PROXY_PORT}..."
     
     for i in $(seq 1 "$count"); do
         curl -sS --proxy "http://127.0.0.1:${PROXY_PORT}" \
-            --connect-timeout 10 --max-time 30 \
-            "https://${host}/get?test_id=push_test_$$_${i}" \
+            --connect-timeout 5 --max-time 10 \
+            "http://127.0.0.1:${MOCK_HTTP_PORT}/get?test_id=push_test_$$_${i}" \
             -o /dev/null -w "" 2>/dev/null &
+        pids+=($!)
     done
-    wait
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
     sleep 1
 }
 
@@ -128,8 +156,10 @@ test_ws_connection() {
     
     (echo '{"need_overview":true}' | websocat -t --one-message "${WS_PUSH_URL}?x_client_id=e2e_conn_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
-    sleep 2
-    kill $ws_pid 2>/dev/null || true
+    local ws_wait=2
+    if is_windows; then ws_wait=5; fi
+    sleep "$ws_wait"
+    kill_pid $ws_pid
     
     local response
     response=$(cat "$temp_file")
@@ -164,14 +194,18 @@ test_ws_traffic_delta() {
     (echo "{\"last_sequence\":$initial_seq}" | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_delta_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
-    sleep 1
+    local ws_settle=1
+    if is_windows; then ws_settle=3; fi
+    sleep "$ws_settle"
     
     generate_traffic 2
     
-    sleep 3
+    local ws_data_wait=3
+    if is_windows; then ws_data_wait=6; fi
+    sleep "$ws_data_wait"
     
-    kill $ws_pid 2>/dev/null || true
-    wait $ws_pid 2>/dev/null || true
+    kill_pid $ws_pid
+    wait_pid $ws_pid
     
     local messages
     messages=$(cat "$temp_file")
@@ -210,10 +244,12 @@ test_ws_overview_push() {
     (echo '{"need_overview":true}' | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_overview_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
-    sleep 3
+    local ws_overview_wait=3
+    if is_windows; then ws_overview_wait=6; fi
+    sleep "$ws_overview_wait"
     
-    kill $ws_pid 2>/dev/null || true
-    wait $ws_pid 2>/dev/null || true
+    kill_pid $ws_pid
+    wait_pid $ws_pid
     
     local messages
     messages=$(cat "$temp_file")
@@ -236,40 +272,26 @@ test_ws_overview_push() {
 test_ws_max_channels() {
     log_info "Testing WebSocket max client channels (MAX=3)..."
 
-    if ! ensure_websocat; then
-        return 0
-    fi
-
-    local log1
-    log1=$(mktemp)
-
-    local pid1 pid2 pid3
-    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_1_$$_$RANDOM" >"$log1" 2>&1) &
-    pid1=$!
-    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_2_$$_$RANDOM" >/dev/null 2>&1) &
-    pid2=$!
-    (while true; do echo '{"need_overview":true}'; sleep 1; done | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_chan_3_$$_$RANDOM" >/dev/null 2>&1) &
-    pid3=$!
-
     sleep 2
 
-    echo '{"need_overview":true}' | websocat -t --one-message "${WS_PUSH_URL}?x_client_id=e2e_chan_4_$$_$RANDOM" >/dev/null 2>&1 || true
+    local attempt
+    for attempt in 1 2; do
+        local probe_output
+        probe_output=$(node "$SCRIPT_DIR/../test_utils/ws_channel_limit_probe.js" "$WS_PUSH_URL" 4 5000)
 
-    sleep 3
+        log_debug "Max channels probe (attempt $attempt): $probe_output"
 
-    kill "$pid1" "$pid2" "$pid3" 2>/dev/null || true
-    wait "$pid1" 2>/dev/null || true
-    wait "$pid2" 2>/dev/null || true
-    wait "$pid3" 2>/dev/null || true
+        if echo "$probe_output" | jq -e '.oldest_disconnect == true' >/dev/null 2>&1; then
+            return 0
+        fi
 
-    local out
-    out=$(cat "$log1")
-    rm -f "$log1"
+        if [[ "$attempt" -eq 1 ]]; then
+            log_warn "Attempt 1 failed, retrying after wait..."
+            sleep 3
+        fi
+    done
 
-    if echo "$out" | grep -q '"type":"disconnect"'; then
-        return 0
-    fi
-
+    log_warn "Oldest channel messages: $(echo "$probe_output" | jq -c '.oldest_messages')"
     log_fail "Disconnect message not received on oldest channel"
     return 1
 }
@@ -283,10 +305,12 @@ test_ws_metrics_push() {
     (echo '{"need_metrics":true,"metrics_interval_ms":500}' | websocat -t "${WS_PUSH_URL}?x_client_id=e2e_metrics_$$_$RANDOM" > "$temp_file" 2>&1) &
     local ws_pid=$!
     
-    sleep 3
+    local ws_metrics_wait=3
+    if is_windows; then ws_metrics_wait=6; fi
+    sleep "$ws_metrics_wait"
     
-    kill $ws_pid 2>/dev/null || true
-    wait $ws_pid 2>/dev/null || true
+    kill_pid $ws_pid
+    wait_pid $ws_pid
     
     local messages
     messages=$(cat "$temp_file")
@@ -418,6 +442,9 @@ main() {
     echo "Proxy Port: ${PROXY_PORT}"
     echo "=========================================="
 
+    trap 'stop_mock_server; admin_cleanup_bifrost' EXIT
+    admin_ensure_bifrost || { log_fail "Could not start Bifrost"; exit 1; }
+
     local connectivity
     connectivity=$(curl -sS -o /dev/null -w "%{http_code}" "${ADMIN_BASE_URL}/api/traffic?limit=1" 2>/dev/null || echo "000")
     
@@ -428,6 +455,8 @@ main() {
     fi
     
     log_info "Connected to Bifrost admin API"
+
+    start_mock_server || { log_fail "Could not start mock server"; exit 1; }
 
     local has_websocat=true
     if ! ensure_websocat; then

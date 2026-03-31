@@ -2,6 +2,11 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_DIR="$SCRIPT_DIR/.."
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_PORT="${PROXY_PORT:-18889}"
 PROXY_HOST="127.0.0.1"
@@ -18,6 +23,7 @@ source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -27,17 +33,17 @@ PROXY_PID=""
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null
-        wait "$PROXY_PID" 2>/dev/null
+    if [[ -n "$PROXY_PID" ]]; then
+        safe_cleanup_proxy "$PROXY_PID"
     fi
     if [[ -d "$DATA_DIR" ]]; then
         rm -rf "$DATA_DIR"
     fi
-    if [[ -n "$ECHO_PID" ]] && kill -0 "$ECHO_PID" 2>/dev/null; then
-        kill "$ECHO_PID" 2>/dev/null
-        wait "$ECHO_PID" 2>/dev/null
+    if [[ -n "$ECHO_PID" ]]; then
+        kill_pid "$ECHO_PID"
+        wait_pid "$ECHO_PID"
     fi
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
     echo "Cleanup done"
 }
 
@@ -75,21 +81,29 @@ start_proxy() {
     log_info "Starting HTTP echo server on port $ECHO_PORT..."
     python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$ECHO_PORT" > "$DATA_DIR/echo.log" 2>&1 &
     ECHO_PID=$!
-    sleep 1
-    if ! kill -0 "$ECHO_PID" 2>/dev/null; then
-        log_fail "Failed to start HTTP echo server"
+
+    local echo_wait=0
+    local echo_max_wait=30
+    while [[ $echo_wait -lt $echo_max_wait ]]; do
+        if ! kill -0 "$ECHO_PID" 2>/dev/null; then
+            log_fail "Echo server process exited during startup"
+            cat "$DATA_DIR/echo.log"
+            return 1
+        fi
+        if curl -sf --connect-timeout 2 --max-time 5 "http://127.0.0.1:${ECHO_PORT}/health" >/dev/null 2>&1; then
+            log_info "Echo server is ready on port $ECHO_PORT"
+            break
+        fi
+        sleep 1
+        echo_wait=$((echo_wait + 1))
+    done
+    if [[ $echo_wait -ge $echo_max_wait ]]; then
+        log_fail "Echo server not responding after ${echo_max_wait}s"
         cat "$DATA_DIR/echo.log"
         return 1
     fi
 
-    log_info "Building bifrost binary (may take a while on first run)..."
-    RUST_LOG=info cargo build --bin bifrost > "$DATA_DIR/build.log" 2>&1 || {
-        log_fail "Failed to build bifrost"
-        cat "$DATA_DIR/build.log"
-        return 1
-    }
-
-    RUST_LOG=info cargo run --bin bifrost -- \
+    RUST_LOG=info "$BIFROST_BIN" \
         -p "$PROXY_PORT" \
         start --unsafe-ssl \
         > "$DATA_DIR/proxy.log" 2>&1 &
@@ -108,6 +122,11 @@ start_proxy() {
     local max_wait=60
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$PROXY_PID" 2>/dev/null; then
+            log_fail "Proxy process exited during startup (PID: $PROXY_PID)"
+            cat "$DATA_DIR/proxy.log"
+            return 1
+        fi
         if curl -s "http://${PROXY_HOST}:${PROXY_PORT}${ADMIN_PATH_PREFIX}/api/system/status" >/dev/null 2>&1; then
             log_info "Proxy server is ready"
             return 0

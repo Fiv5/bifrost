@@ -1,10 +1,13 @@
 #!/bin/bash
 # Bifrost Admin API 客户端工具
 
-ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
-ADMIN_PORT="${ADMIN_PORT:-9900}"
-ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
-ADMIN_BASE_URL="${ADMIN_BASE_URL:-http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}}"
+_ADMIN_CLIENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_ADMIN_CLIENT_DIR/process.sh"
+
+ADMIN_HOST="${ADMIN_HOST-}"
+ADMIN_PORT="${ADMIN_PORT-}"
+ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX-}"
+ADMIN_BASE_URL_OVERRIDE="${ADMIN_BASE_URL-}"
 
 # ---------------------------------------------------------------------------
 # Test helper: ensure an admin-capable bifrost instance is running.
@@ -27,17 +30,42 @@ ADMIN_CLIENT_STARTED_BIFROST=0
 ADMIN_CLIENT_BIFROST_PID=""
 ADMIN_CLIENT_BIFROST_DATA_DIR=""
 ADMIN_CLIENT_BIFROST_LOG_FILE=""
+ADMIN_CLIENT_HOME_DIR=""
+ADMIN_CLIENT_XDG_CONFIG_HOME=""
+ADMIN_CLIENT_XDG_DATA_HOME=""
 
 admin_log_info() { echo "[INFO] $*"; }
 admin_log_fail() { echo "[FAIL] $*"; }
 
+admin_host() {
+    echo "${ADMIN_HOST:-127.0.0.1}"
+}
+
+admin_port() {
+    echo "${ADMIN_PORT:-9900}"
+}
+
+admin_path_prefix() {
+    echo "${ADMIN_PATH_PREFIX:-/_bifrost}"
+}
+
+admin_base_url() {
+    if [[ -n "${ADMIN_BASE_URL_OVERRIDE:-}" ]]; then
+        echo "${ADMIN_BASE_URL_OVERRIDE}"
+    else
+        echo "http://$(admin_host):$(admin_port)$(admin_path_prefix)"
+    fi
+}
+
 admin_wait_for_admin_ready() {
     local timeout="${1:-60}"
     local waited=0
+    local admin_url
+    admin_url="$(admin_base_url)"
 
     while [[ $waited -lt $timeout ]]; do
-        if curl -s "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1 || \
-           curl -s "${ADMIN_BASE_URL}/api/system/status" >/dev/null 2>&1; then
+        if curl -s "${admin_url}/api/system" >/dev/null 2>&1 || \
+           curl -s "${admin_url}/api/system/status" >/dev/null 2>&1; then
             return 0
         fi
 
@@ -52,8 +80,37 @@ admin_wait_for_admin_ready() {
     return 1
 }
 
+admin_wait_for_proxy_ready() {
+    local timeout="${1:-30}"
+    local waited=0
+    local proxy_ready_url="${ADMIN_PROXY_READY_URL:-}"
+    local proxy_url
+    proxy_url="http://$(admin_host):$(admin_port)"
+
+    if [[ -z "$proxy_ready_url" ]]; then
+        return 0
+    fi
+
+    while [[ $waited -lt $timeout ]]; do
+        if curl -fsS --max-time 5 --proxy "$proxy_url" "$proxy_ready_url" >/dev/null 2>&1; then
+            return 0
+        fi
+
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    admin_log_fail "Timeout waiting for proxy forwarding via ${proxy_url} to ${proxy_ready_url}"
+    return 1
+}
+
 admin_start_bifrost() {
-    admin_log_info "Starting Bifrost (admin) on ${ADMIN_HOST}:${ADMIN_PORT}..."
+    local host
+    local port
+    host="$(admin_host)"
+    port="$(admin_port)"
+
+    admin_log_info "Starting Bifrost (admin) on ${host}:${port}..."
 
     ADMIN_CLIENT_STARTED_BIFROST=1
 
@@ -64,17 +121,40 @@ admin_start_bifrost() {
         ADMIN_CLIENT_BIFROST_DATA_DIR="${BIFROST_DATA_DIR}"
     fi
 
+    ADMIN_CLIENT_HOME_DIR="${ADMIN_CLIENT_BIFROST_DATA_DIR}/home"
+    ADMIN_CLIENT_XDG_CONFIG_HOME="${ADMIN_CLIENT_BIFROST_DATA_DIR}/xdg-config"
+    ADMIN_CLIENT_XDG_DATA_HOME="${ADMIN_CLIENT_BIFROST_DATA_DIR}/xdg-data"
+    mkdir -p \
+        "$ADMIN_CLIENT_HOME_DIR" \
+        "$ADMIN_CLIENT_XDG_CONFIG_HOME" \
+        "$ADMIN_CLIENT_XDG_DATA_HOME"
+
     ADMIN_CLIENT_BIFROST_LOG_FILE="$(mktemp)"
 
-    local bifrost_bin="$ADMIN_CLIENT_REPO_DIR/target/release/bifrost"
-    if [[ -x "$bifrost_bin" ]]; then
-        SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            "$bifrost_bin" -p "$ADMIN_PORT" start --skip-cert-check --unsafe-ssl \
+    local bifrost_bin=""
+    local unix_bin="$ADMIN_CLIENT_REPO_DIR/target/release/bifrost"
+    local windows_bin="$ADMIN_CLIENT_REPO_DIR/target/release/bifrost.exe"
+    if [[ -x "$unix_bin" ]]; then
+        bifrost_bin="$unix_bin"
+    elif [[ -f "$windows_bin" ]]; then
+        bifrost_bin="$windows_bin"
+    fi
+    if [[ -n "$bifrost_bin" ]]; then
+        SKIP_FRONTEND_BUILD=1 \
+            HOME="$ADMIN_CLIENT_HOME_DIR" \
+            XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
+            XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
+            BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+            "$bifrost_bin" -H "$host" -p "$port" start --skip-cert-check --unsafe-ssl \
             >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     else
         (cd "$ADMIN_CLIENT_REPO_DIR" && \
-            SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-            cargo run --release --bin bifrost -- -p "$ADMIN_PORT" start --skip-cert-check --unsafe-ssl \
+            SKIP_FRONTEND_BUILD=1 \
+            HOME="$ADMIN_CLIENT_HOME_DIR" \
+            XDG_CONFIG_HOME="$ADMIN_CLIENT_XDG_CONFIG_HOME" \
+            XDG_DATA_HOME="$ADMIN_CLIENT_XDG_DATA_HOME" \
+            BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
+            cargo run --release --bin bifrost -- -H "$host" -p "$port" start --skip-cert-check --unsafe-ssl \
         ) >"$ADMIN_CLIENT_BIFROST_LOG_FILE" 2>&1 &
     fi
 
@@ -84,14 +164,18 @@ admin_start_bifrost() {
     admin_wait_for_admin_ready 90
     rc=$?
     if [[ $rc -eq 0 ]]; then
-        admin_log_info "Bifrost started (PID: $ADMIN_CLIENT_BIFROST_PID)"
-        return 0
+        if ! admin_wait_for_proxy_ready 30; then
+            rc=1
+        else
+            admin_log_info "Bifrost started (PID: $ADMIN_CLIENT_BIFROST_PID)"
+            return 0
+        fi
     fi
 
     if [[ $rc -eq 2 ]]; then
         admin_log_fail "Bifrost process exited early (PID: $ADMIN_CLIENT_BIFROST_PID)"
     else
-        admin_log_fail "Timeout waiting for admin server at ${ADMIN_BASE_URL}"
+        admin_log_fail "Timeout waiting for admin server at ${admin_url}"
     fi
 
     if [[ -n "$ADMIN_CLIENT_BIFROST_LOG_FILE" ]]; then
@@ -103,8 +187,14 @@ admin_start_bifrost() {
 
 admin_stop_bifrost() {
     if [[ -n "$ADMIN_CLIENT_BIFROST_PID" ]] && kill -0 "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null; then
-        kill "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null || true
-        wait "$ADMIN_CLIENT_BIFROST_PID" 2>/dev/null || true
+        safe_cleanup_proxy "$ADMIN_CLIENT_BIFROST_PID"
+    fi
+    if is_windows; then
+        local _port
+        _port="$(admin_port)"
+        if [[ -n "$_port" ]]; then
+            kill_bifrost_on_port "$_port"
+        fi
     fi
 
     if [[ -n "$ADMIN_CLIENT_BIFROST_LOG_FILE" && -f "$ADMIN_CLIENT_BIFROST_LOG_FILE" ]]; then
@@ -118,13 +208,19 @@ admin_stop_bifrost() {
     ADMIN_CLIENT_BIFROST_PID=""
     ADMIN_CLIENT_BIFROST_LOG_FILE=""
     ADMIN_CLIENT_BIFROST_DATA_DIR=""
+    ADMIN_CLIENT_HOME_DIR=""
+    ADMIN_CLIENT_XDG_CONFIG_HOME=""
+    ADMIN_CLIENT_XDG_DATA_HOME=""
     ADMIN_CLIENT_STARTED_BIFROST=0
 }
 
 admin_ensure_bifrost() {
+    local admin_url
+    admin_url="$(admin_base_url)"
+
     # If admin is already reachable, do nothing.
-    if curl -s "${ADMIN_BASE_URL}/api/system/status" >/dev/null 2>&1 || \
-       curl -s "${ADMIN_BASE_URL}/api/system" >/dev/null 2>&1; then
+    if curl -s "${admin_url}/api/system/status" >/dev/null 2>&1 || \
+       curl -s "${admin_url}/api/system" >/dev/null 2>&1; then
         return 0
     fi
     admin_start_bifrost
@@ -138,30 +234,30 @@ admin_cleanup_bifrost() {
 
 admin_get() {
     local path="$1"
-    curl -s "${ADMIN_BASE_URL}${path}"
+    curl -s "$(admin_base_url)${path}"
 }
 
 admin_post() {
     local path="$1"
     local data="$2"
-    curl -s -X POST -H "Content-Type: application/json" -d "$data" "${ADMIN_BASE_URL}${path}"
+    curl -s -X POST -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
 }
 
 admin_delete() {
     local path="$1"
-    curl -s -X DELETE "${ADMIN_BASE_URL}${path}"
+    curl -s -X DELETE "$(admin_base_url)${path}"
 }
 
 get_traffic_list() {
-    local arg1="$1"
-    local arg2="$2"
+    local arg1="${1:-}"
+    local arg2="${2:-}"
     local arg3="${3:-100}"
 
     if [[ -n "$arg2" ]]; then
         local host="$arg1"
         local port="$arg2"
         local limit="$arg3"
-        curl -s "http://${host}:${port}${ADMIN_PATH_PREFIX}/api/traffic?limit=${limit}"
+        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}"
     else
         local limit="${arg1:-100}"
         admin_get "/api/traffic?limit=${limit}"
@@ -186,9 +282,9 @@ get_traffic_by_url() {
 }
 
 find_traffic_id_by_url() {
-    local host="$1"
-    local port="$2"
-    local url_pattern="$3"
+    local host="${1:-}"
+    local port="${2:-}"
+    local url_pattern="${3:-}"
     local limit="${4:-50}"
 
     if [[ -z "$url_pattern" ]]; then
@@ -196,13 +292,13 @@ find_traffic_id_by_url() {
         limit="${port:-50}"
         get_traffic_list "$limit" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     else
-        curl -s "http://${host}:${port}${ADMIN_PATH_PREFIX}/api/traffic?limit=${limit}" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
+        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic?limit=${limit}" | jq -r ".records[] | select((.url // .p // \"\") | contains(\"$url_pattern\")) | .id" | head -1
     fi
 }
 
 get_frames() {
     local arg1="$1"
-    local arg2="$2"
+    local arg2="${2:-}"
     local arg3="${3:-}"
     local arg4="${4:-0}"
     local arg5="${5:-100}"
@@ -213,7 +309,7 @@ get_frames() {
         local traffic_id="$arg3"
         local after="$arg4"
         local limit="$arg5"
-        curl -s "http://${host}:${port}${ADMIN_PATH_PREFIX}/api/traffic/${traffic_id}/frames?after=${after}&limit=${limit}"
+        curl -s "http://${host}:${port}$(admin_path_prefix)/api/traffic/${traffic_id}/frames?after=${after}&limit=${limit}"
     else
         local traffic_id="$arg1"
         local after="${arg2:-0}"
@@ -258,14 +354,14 @@ subscribe_frames() {
     local traffic_id="$1"
     local timeout="${2:-10}"
 
-    timeout "$timeout" curl -sN "${ADMIN_BASE_URL}/api/traffic/${traffic_id}/frames/stream" 2>/dev/null
+    timeout "$timeout" curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" 2>/dev/null
 }
 
 subscribe_frames_bg() {
     local traffic_id="$1"
     local output_file="$2"
 
-    curl -sN "${ADMIN_BASE_URL}/api/traffic/${traffic_id}/frames/stream" > "$output_file" 2>/dev/null &
+    curl -sN "$(admin_base_url)/api/traffic/${traffic_id}/frames/stream" > "$output_file" 2>/dev/null &
     echo $!
 }
 
@@ -294,16 +390,18 @@ check_health() {
 wait_for_admin() {
     local timeout="${1:-30}"
     local waited=0
+    local admin_url
+    admin_url="$(admin_base_url)"
 
     while [[ $waited -lt $timeout ]]; do
-        if curl -s "${ADMIN_BASE_URL}/api/system/status" >/dev/null 2>&1; then
+        if curl -s "${admin_url}/api/system/status" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
         waited=$((waited + 1))
     done
 
-    echo "Timeout waiting for admin server at ${ADMIN_BASE_URL}" >&2
+    echo "Timeout waiting for admin server at ${admin_url}" >&2
     return 1
 }
 
@@ -334,13 +432,13 @@ clear_traffic() {
 admin_put() {
     local path="$1"
     local data="$2"
-    curl -s -X PUT -H "Content-Type: application/json" -d "$data" "${ADMIN_BASE_URL}${path}"
+    curl -s -X PUT -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
 }
 
 admin_delete_with_body() {
     local path="$1"
     local data="$2"
-    curl -s -X DELETE -H "Content-Type: application/json" -d "$data" "${ADMIN_BASE_URL}${path}"
+    curl -s -X DELETE -H "Content-Type: application/json" -d "$data" "$(admin_base_url)${path}"
 }
 
 list_rules() {
@@ -478,16 +576,22 @@ get_cert_info() {
 }
 
 download_cert() {
-    curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert"
+    local base_url
+    base_url="$(admin_base_url)"
+    curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert"
 }
 
 download_cert_absolute_form() {
-    local base_url="${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}"
-    curl -s --proxy "${base_url}" "${base_url}${ADMIN_PATH_PREFIX}/public/cert"
+    local base_url
+    base_url="$(admin_base_url)"
+    base_url="${base_url%$(admin_path_prefix)}"
+    curl -s --proxy "${base_url}" "${base_url}$(admin_path_prefix)/public/cert"
 }
 
 get_cert_qrcode() {
-    curl -s "${ADMIN_BASE_URL%${ADMIN_PATH_PREFIX}}${ADMIN_PATH_PREFIX}/public/cert/qrcode"
+    local base_url
+    base_url="$(admin_base_url)"
+    curl -s "${base_url%$(admin_path_prefix)}$(admin_path_prefix)/public/cert/qrcode"
 }
 
 get_system_proxy() {

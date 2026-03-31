@@ -197,6 +197,7 @@ pub fn needs_response_override(rules: &ResolvedRules) -> bool {
 enum BodyMode {
     Known(usize),
     Stream,
+    StreamWithLength(usize),
     StreamWithTrailers,
 }
 
@@ -255,6 +256,14 @@ fn normalize_req_headers(parts: &mut hyper::http::request::Parts, mode: BodyMode
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
             parts.headers.remove(hyper::header::CONTENT_LENGTH);
         }
+        BodyMode::StreamWithLength(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
+        }
     }
 }
 
@@ -276,6 +285,14 @@ fn normalize_res_headers(parts: &mut ResponseParts, mode: BodyMode, method: &str
         BodyMode::Stream | BodyMode::StreamWithTrailers => {
             parts.headers.remove(hyper::header::TRANSFER_ENCODING);
             parts.headers.remove(hyper::header::CONTENT_LENGTH);
+        }
+        BodyMode::StreamWithLength(len) => {
+            parts.headers.remove(hyper::header::TRANSFER_ENCODING);
+            parts.headers.remove(hyper::header::CONTENT_LENGTH);
+            parts.headers.insert(
+                hyper::header::CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap(),
+            );
         }
     }
 }
@@ -440,8 +457,13 @@ pub async fn handle_http_request(
         })
         .unwrap_or_default();
 
-    let resolved_rules =
-        rules.resolve_with_context(&url, &method, &incoming_headers, &incoming_cookies);
+    let rule_match_url = if ctx.url.is_empty() { &url } else { &ctx.url };
+    let resolved_rules = rules.resolve_with_context(
+        rule_match_url,
+        &method,
+        &incoming_headers,
+        &incoming_cookies,
+    );
 
     // 解压输出上限：用于防御压缩炸弹。优先读取配置，否则使用默认 10MiB。
     let max_decompress_output_bytes = if let Some(ref state) = admin_state {
@@ -726,7 +748,19 @@ pub async fn handle_http_request(
                 break;
             }
         }
-        (Bytes::new(), new_body.clone())
+        let req_content_type = parts
+            .headers
+            .get(hyper::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        let processed = apply_body_rules(
+            new_body.clone(),
+            &resolved_rules,
+            Phase::Request,
+            req_content_type,
+            verbose_logging,
+            ctx,
+        );
+        (Bytes::new(), processed)
     } else if content_length.unwrap_or(0) == 0 && !has_transfer_encoding {
         (Bytes::new(), Bytes::new())
     } else {
@@ -800,7 +834,11 @@ pub async fn handle_http_request(
     };
 
     let req_body_mode = if streaming_body.is_some() {
-        BodyMode::Stream
+        if let Some(len) = content_length {
+            BodyMode::StreamWithLength(len)
+        } else {
+            BodyMode::Stream
+        }
     } else {
         BodyMode::Known(final_body.len())
     };
@@ -1308,6 +1346,23 @@ pub async fn handle_http_request(
         );
     }
 
+    if let Some(delay_ms) = resolved_rules.res_delay {
+        if verbose_logging {
+            info!("[{}] [RES_DELAY] Sleeping {}ms", ctx.id_str(), delay_ms);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+
+    if let Some(speed) = resolved_rules.res_speed {
+        if verbose_logging {
+            info!(
+                "[{}] [RES_SPEED] Speed limit: {} bytes/s",
+                ctx.id_str(),
+                speed
+            );
+        }
+    }
+
     if skip_body_processing {
         let is_streaming =
             is_streaming_response(&res_parts, res_content_length, max_body_buffer_size);
@@ -1448,7 +1503,8 @@ pub async fn handle_http_request(
                 sse_stream_writer,
                 max_body_buffer_size,
             );
-            let body = with_trailers(tee_body.boxed(), &resolved_rules);
+            let final_body = wrap_throttled_body(tee_body.boxed(), resolved_rules.res_speed);
+            let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         } else {
             let res_body = res_body_stream.take().unwrap();
@@ -1470,7 +1526,8 @@ pub async fn handle_http_request(
                     response_headers_size,
                 )
             };
-            let body = with_trailers(tee_body, &resolved_rules);
+            let final_body = wrap_throttled_body(tee_body, resolved_rules.res_speed);
+            let body = with_trailers(final_body, &resolved_rules);
             return Ok(Response::from_parts(res_parts, body));
         }
     }
@@ -1818,7 +1875,8 @@ pub async fn handle_http_request(
         state.record_traffic(record);
     }
 
-    let body = with_trailers(full_body(final_res_body), &resolved_rules);
+    let response_body = wrap_throttled_body(full_body(final_res_body), resolved_rules.res_speed);
+    let body = with_trailers(response_body, &resolved_rules);
     Ok(Response::from_parts(res_parts, body))
 }
 

@@ -3,6 +3,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${ROOT_DIR}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-}"
@@ -28,6 +32,7 @@ WS_HOST_HEADER="${WS_HOST}:${WS_PORT}"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 TESTS_PASSED=0
 TESTS_FAILED=0
@@ -38,22 +43,22 @@ WS_SERVER_PID=""
 RULE_FIXTURE="$SCRIPT_DIR/../rules/websocket/decode_utf8_searchable.txt"
 
 cleanup() {
-    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
+    if [[ -n "$BIFROST_PID" ]]; then
+        safe_cleanup_proxy "$BIFROST_PID"
     fi
 
-    if [[ -n "$WS_SERVER_PID" ]] && kill -0 "$WS_SERVER_PID" 2>/dev/null; then
-        kill "$WS_SERVER_PID" 2>/dev/null || true
-        wait "$WS_SERVER_PID" 2>/dev/null || true
+    if [[ -n "$WS_SERVER_PID" ]]; then
+        kill_pid "$WS_SERVER_PID"
+        wait_pid "$WS_SERVER_PID"
     fi
 
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
-        # 仅清理本测试创建的临时目录，避免误删用户自定义目录
         if [[ "$BIFROST_DATA_DIR" == "$ROOT_DIR/.bifrost-e2e"* ]]; then
             rm -rf "$BIFROST_DATA_DIR"
         fi
     fi
+
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
 }
 
 trap cleanup EXIT
@@ -89,13 +94,22 @@ check_deps() {
 start_ws_server() {
     python3 "$SCRIPT_DIR/../mock_servers/ws_echo_server.py" --port "$WS_PORT" > /dev/null 2>&1 &
     WS_SERVER_PID=$!
-    sleep 1
+    local max_wait=10
+    if is_windows; then max_wait=20; fi
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if kill -0 "$WS_SERVER_PID" 2>/dev/null; then
+            if python3 -c "import socket; s=socket.create_connection(('${WS_HOST}', ${WS_PORT}), 2); s.close()" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
     kill -0 "$WS_SERVER_PID" 2>/dev/null
 }
 
 start_bifrost() {
-    (cd "$ROOT_DIR" && cargo build --bin bifrost)
-
     if [[ -z "$BIFROST_DATA_DIR" ]]; then
         BIFROST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-test/ws_frames_${PROXY_PORT}_$$"
     fi
@@ -103,9 +117,11 @@ start_bifrost() {
     export BIFROST_DATA_DIR
 
     local log_file="$BIFROST_DATA_DIR/proxy.log"
-    (cd "$ROOT_DIR" && BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > "$log_file" 2>&1) &
+    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" -p "$PROXY_PORT" start --skip-cert-check --unsafe-ssl > "$log_file" 2>&1 &
     BIFROST_PID=$!
-    sleep 1
+    local init_wait=1
+    if is_windows; then init_wait=3; fi
+    sleep "$init_wait"
     if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
         tail -n 120 "$log_file" || true
         return 1
@@ -114,6 +130,11 @@ start_bifrost() {
     local max_wait=60
     local waited=0
     while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+            echo "Bifrost process exited during startup (PID: $BIFROST_PID)"
+            tail -n 120 "$log_file" || true
+            return 1
+        fi
         if curl -sf "http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}/api/system" >/dev/null 2>&1; then
             return 0
         fi
@@ -126,13 +147,15 @@ start_bifrost() {
 
 ws_generate_echo_traffic() {
     local messages="${1:-3}"
+    local timeout=15.0
+    if is_windows; then timeout=30.0; fi
     python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
         --proxy-host "$PROXY_HOST" \
         --proxy-port "$PROXY_PORT" \
         --host-header "$WS_HOST_HEADER" \
         --path "/ws" \
         --messages "$messages" \
-        --timeout 15.0
+        --timeout "$timeout"
 }
 
 is_ws_record() {
@@ -166,10 +189,18 @@ test_ws_frames_capture() {
     sleep 0.5
 
     ws_generate_echo_traffic 3 >/dev/null 2>&1 || true
-    sleep 1
+    sleep 2
 
-    local traffic_id
-    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
+    local traffic_id=""
+    local find_attempt=0
+    while [[ $find_attempt -lt 5 ]]; do
+        traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
+        if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+            break
+        fi
+        sleep 2
+        find_attempt=$((find_attempt + 1))
+    done
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         fail "No WebSocket traffic recorded"
         return 1
@@ -228,10 +259,18 @@ test_ws_frame_directions() {
     sleep 0.5
 
     ws_generate_echo_traffic 1 >/dev/null 2>&1 || true
-    sleep 1
+    sleep 2
 
-    local traffic_id
-    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
+    local traffic_id=""
+    local find_attempt=0
+    while [[ $find_attempt -lt 5 ]]; do
+        traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws" 20)
+        if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+            break
+        fi
+        sleep 2
+        find_attempt=$((find_attempt + 1))
+    done
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         fail "No traffic ID found"
         return 1
@@ -287,10 +326,18 @@ test_ws_binary_payload_decode_and_search() {
         --messages 2 \
         --timeout 15.0 \
         --expect-binary >/dev/null 2>&1 || true
-    sleep 1
+    sleep 2
 
-    local traffic_id
-    traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws/binary" 20)
+    local traffic_id=""
+    local find_attempt=0
+    while [[ $find_attempt -lt 5 ]]; do
+        traffic_id=$(find_traffic_id_by_url "$ADMIN_HOST" "$ADMIN_PORT" "/ws/binary" 20)
+        if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+            break
+        fi
+        sleep 2
+        find_attempt=$((find_attempt + 1))
+    done
     if [[ -z "$traffic_id" || "$traffic_id" == "null" ]]; then
         fail "No WebSocket binary traffic recorded"
         return 1
@@ -324,7 +371,7 @@ test_ws_binary_payload_decode_and_search() {
     fi
 
     local search_response
-    search_response=$(curl -s -X POST -H "Content-Type: application/json" -d "{\"keyword\":\"$msg\"}" "${ADMIN_BASE_URL}/api/search")
+    search_response=$(admin_post "/api/search" "{\"keyword\":\"$msg\"}")
     if ! echo "$search_response" | jq -e --arg id "$traffic_id" '.results[].record.id | select(. == $id)' >/dev/null 2>&1; then
         fail "Search should find traffic by decoded ws payload"
         return 1

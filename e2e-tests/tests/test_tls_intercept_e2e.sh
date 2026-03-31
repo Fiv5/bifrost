@@ -1,14 +1,15 @@
 #!/bin/bash
 
-set -e
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$PROJECT_ROOT/e2e-tests/test_utils/rule_fixture.sh"
+source "$PROJECT_ROOT/e2e-tests/test_utils/process.sh"
 
-PROXY_PORT=19900
-MOCK_HTTP_PORT=18080
-MOCK_HTTPS_PORT=18443
+PROXY_PORT="${PROXY_PORT:-19290}"
+MOCK_HTTP_PORT=${MOCK_HTTP_PORT:-$((PROXY_PORT + 1))}
+MOCK_HTTPS_PORT=${MOCK_HTTPS_PORT:-$((PROXY_PORT + 3))}
 ADMIN_PORT=$PROXY_PORT
 
 # External E2E (optional):
@@ -18,7 +19,12 @@ EXTERNAL_TEST_URL=${EXTERNAL_TEST_URL:-"https://www.google.com/"}
 ONLY_TEST=${ONLY_TEST:-""}
 CURL_COMMON_ARGS=(--connect-timeout 5 --max-time 15)
 
-export BIFROST_DATA_DIR="$PROJECT_ROOT/.bifrost_test"
+BIFROST_BIN="$PROJECT_ROOT/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
+
+export BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-$PROJECT_ROOT/.bifrost_test}"
 mkdir -p "$BIFROST_DATA_DIR"
 RULES_DIR="$PROJECT_ROOT/e2e-tests/rules/tls"
 
@@ -33,15 +39,28 @@ log_pass() { echo -e "${GREEN}[PASS]${NC} $*"; }
 log_fail() { echo -e "${RED}[FAIL]${NC} $*"; }
 log_section() { echo -e "\n${YELLOW}=== $* ===${NC}"; }
 
+PROXY_PID=""
+MOCK_HTTP_PID=""
+MOCK_HTTPS_PID=""
+
 cleanup() {
     log_info "Cleaning up..."
-    [[ -n "$PROXY_PID" ]] && kill $PROXY_PID 2>/dev/null || true
-    [[ -n "$MOCK_HTTP_PID" ]] && kill $MOCK_HTTP_PID 2>/dev/null || true
-    [[ -n "$MOCK_HTTPS_PID" ]] && kill $MOCK_HTTPS_PID 2>/dev/null || true
+    [[ -n "$PROXY_PID" ]] && safe_cleanup_proxy "$PROXY_PID"
+    [[ -n "$MOCK_HTTP_PID" ]] && safe_cleanup_proxy "$MOCK_HTTP_PID"
+    [[ -n "$MOCK_HTTPS_PID" ]] && safe_cleanup_proxy "$MOCK_HTTPS_PID"
+    if is_windows; then
+        kill_bifrost_on_port "$PROXY_PORT"
+    fi
     rm -f /tmp/mock_server_*.log /tmp/proxy_*.log /tmp/test_cert.* 2>/dev/null || true
+    rm -f "$BIFROST_DATA_DIR/bifrost.pid" "$BIFROST_DATA_DIR/runtime.json" 2>/dev/null || true
     rm -rf "$BIFROST_DATA_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+kill_process_on_port() {
+    local port="$1"
+    kill_bifrost_on_port "$port"
+}
 
 generate_test_cert() {
     log_info "Generating test certificate..."
@@ -51,6 +70,7 @@ generate_test_cert() {
 
 start_mock_http_server() {
     log_info "Starting mock HTTP server on port $MOCK_HTTP_PORT..."
+    kill_process_on_port $MOCK_HTTP_PORT
     
     cat > /tmp/mock_http_server.py << 'EOF'
 import http.server
@@ -90,6 +110,7 @@ class LoggingHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("", PORT), LoggingHandler) as httpd:
     print(f"Mock HTTP server listening on port {PORT}", flush=True)
     httpd.serve_forever()
@@ -109,6 +130,7 @@ EOF
 
 start_mock_https_server() {
     log_info "Starting mock HTTPS server on port $MOCK_HTTPS_PORT..."
+    kill_process_on_port $MOCK_HTTPS_PORT
     
     cat > /tmp/mock_https_server.py << 'EOF'
 import http.server
@@ -153,6 +175,7 @@ class LoggingHandler(http.server.SimpleHTTPRequestHandler):
 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 context.load_cert_chain(CERT_FILE, KEY_FILE)
 
+socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("", PORT), LoggingHandler) as httpd:
     httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
     print(f"Mock HTTPS server listening on port {PORT}", flush=True)
@@ -173,17 +196,16 @@ EOF
 
 start_proxy() {
     local rules="$1"
-    local extra_args="$2"
-    
-    log_info "Building proxy..."
-    cd "$PROJECT_ROOT"
-    cargo build --release --bin bifrost 2>/dev/null
+    local extra_args="${2:-}"
     
     log_info "Starting proxy on port $PROXY_PORT..."
     log_info "Rules: $rules"
     log_info "Extra args: $extra_args"
     
-    local cmd="$PROJECT_ROOT/target/release/bifrost --port $PROXY_PORT --log-level debug start --skip-cert-check --unsafe-ssl"
+    kill_process_on_port "$PROXY_PORT"
+    rm -f "$BIFROST_DATA_DIR/bifrost.pid" "$BIFROST_DATA_DIR/runtime.json" 2>/dev/null || true
+
+    local cmd="$BIFROST_BIN --port $PROXY_PORT --log-level debug start --skip-cert-check --unsafe-ssl"
     
     if [[ -n "$rules" ]]; then
         cmd="$cmd --rules \"$rules\""
@@ -196,7 +218,9 @@ start_proxy() {
     eval "RUST_LOG=bifrost_proxy=debug $cmd" > /tmp/proxy_server.log 2>&1 &
     PROXY_PID=$!
     
-    for i in {1..20}; do
+    local max_ready=20
+    if is_windows; then max_ready=40; fi
+    for i in $(seq 1 "$max_ready"); do
         if ! kill -0 "$PROXY_PID" 2>/dev/null; then
             log_fail "Proxy exited before becoming ready"
             cat /tmp/proxy_server.log
@@ -225,13 +249,22 @@ rules_from_fixture() {
 
 stop_proxy() {
     if [[ -n "$PROXY_PID" ]]; then
-        kill $PROXY_PID 2>/dev/null || true
-        wait $PROXY_PID 2>/dev/null || true
+        safe_cleanup_proxy "$PROXY_PID"
         PROXY_PID=""
     fi
-    rm -f "$BIFROST_DATA_DIR/bifrost.pid" 2>/dev/null || true
+    rm -f "$BIFROST_DATA_DIR/bifrost.pid" "$BIFROST_DATA_DIR/runtime.json" 2>/dev/null || true
+    if is_windows; then
+        kill_bifrost_on_port "$PROXY_PORT"
+        win_wait_port_free "$PROXY_PORT" 30 || true
+    fi
     for _ in {1..20}; do
-        if ! lsof -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        local port_in_use=false
+        if command -v lsof >/dev/null 2>&1; then
+            lsof -nP -iTCP:"$PROXY_PORT" -sTCP:LISTEN >/dev/null 2>&1 && port_in_use=true
+        elif command -v ss >/dev/null 2>&1; then
+            ss -tlnp "sport = :$PROXY_PORT" 2>/dev/null | grep -q LISTEN && port_in_use=true
+        fi
+        if ! $port_in_use; then
             break
         fi
         sleep 0.5
@@ -499,9 +532,9 @@ main() {
         case "$ONLY_TEST" in
             external_google)
                 if test_external_google_https; then
-                    ((TESTS_PASSED++))
+                    ((TESTS_PASSED++)) || true
                 else
-                    ((TESTS_FAILED++))
+                    ((TESTS_FAILED++)) || true
                 fi
                 ;;
             *)
@@ -519,14 +552,14 @@ main() {
         exit 0
     fi
     
-    if test_http_basic; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_https_passthrough; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_https_with_rule_intercept; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_https_with_rule_passthrough; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_external_google_https; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_intercept_mode_blacklist; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_intercept_mode_whitelist; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
-    if test_api_update_tls_config; then ((TESTS_PASSED++)); else ((TESTS_FAILED++)); fi
+    if test_http_basic; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_https_passthrough; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_https_with_rule_intercept; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_https_with_rule_passthrough; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_external_google_https; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_intercept_mode_blacklist; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_intercept_mode_whitelist; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
+    if test_api_update_tls_config; then ((TESTS_PASSED++)) || true; else ((TESTS_FAILED++)) || true; fi
     
     show_all_logs
     

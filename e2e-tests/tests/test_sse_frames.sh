@@ -1,8 +1,12 @@
 #!/bin/bash
 
-set -e
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIFROST_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 pick_free_port() {
@@ -41,6 +45,7 @@ export SSE_PROXY
 
 source "$SCRIPT_DIR/../test_utils/sse_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -58,14 +63,13 @@ SSE_SERVER_PID=""
 cleanup() {
     log_info "Cleaning up..."
 
-    if [[ -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
-    fi
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
+
+    safe_cleanup_proxy "$BIFROST_PID"
 
     if [[ -n "$SSE_SERVER_PID" ]] && kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
-        kill "$SSE_SERVER_PID" 2>/dev/null || true
-        wait "$SSE_SERVER_PID" 2>/dev/null || true
+        kill_pid "$SSE_SERVER_PID"
+        wait_pid "$SSE_SERVER_PID"
     fi
 
     if [[ -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
@@ -87,8 +91,10 @@ start_sse_server() {
         return 1
     fi
 
+    local max_wait=50
+    if is_windows; then max_wait=100; fi
     local waited=0
-    while [[ $waited -lt 50 ]]; do
+    while [[ $waited -lt $max_wait ]]; do
         if curl -s "${SSE_TARGET}/health" >/dev/null 2>&1; then
             return 0
         fi
@@ -98,21 +104,14 @@ start_sse_server() {
 
     log_fail "SSE server health check failed"
     return 1
-    return 0
 }
 
 start_bifrost() {
-    log_info "Building bifrost binary..."
-    (cd "$SCRIPT_DIR/../.." && cargo build --bin bifrost) || {
-        log_fail "Failed to build bifrost"
-        return 1
-    }
-
     log_info "Starting Bifrost proxy on port $PROXY_PORT..."
     BIFROST_DATA_DIR="$(mktemp -d)"
     export BIFROST_DATA_DIR
 
-    (cd "$SCRIPT_DIR/../.." && BIFROST_DATA_DIR="$BIFROST_DATA_DIR" cargo run --bin bifrost -- start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl > /dev/null 2>&1) &
+    BIFROST_DATA_DIR="$BIFROST_DATA_DIR" "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl > /dev/null 2>&1 &
     BIFROST_PID=$!
 
     local max_wait=60
@@ -398,7 +397,7 @@ test_sse_stream_open_full_and_live() {
     traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
@@ -409,7 +408,7 @@ test_sse_stream_open_full_and_live() {
 
     if [[ -z "$stream_output" ]]; then
         log_fail "Open SSE stream should output data events"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
@@ -417,7 +416,7 @@ test_sse_stream_open_full_and_live() {
     seq0=$(echo "$stream_output" | head -n 1 | jq -r '.seq // 0')
     if [[ "${seq0:-0}" -le 0 ]]; then
         log_fail "SSE stream payload should contain seq"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
@@ -425,11 +424,11 @@ test_sse_stream_open_full_and_live() {
     data0=$(echo "$stream_output" | head -n 1 | jq -r '.data // ""')
     if [[ -z "$data0" ]]; then
         log_fail "SSE stream payload should contain non-empty data"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
-    wait "$sse_pid" >/dev/null 2>&1 || true
+    wait_pid "$sse_pid"
     return 0
 }
 
@@ -562,7 +561,7 @@ test_sse_updates_live_size() {
     traffic_id=$(wait_for_traffic_id_by_url "/sse/custom" 10)
     if [[ -z "$traffic_id" ]]; then
         log_fail "No SSE traffic found"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
@@ -583,11 +582,11 @@ test_sse_updates_live_size() {
     if [[ "${size:-0}" -le 0 ]]; then
         log_fail "SSE updates should include non-zero res_sz while open"
         log_debug "Updates response: $(curl -s "http://${ADMIN_HOST}:${ADMIN_PORT}/_bifrost/api/traffic/updates?after_seq=0&pending_ids=${traffic_id}&limit=1" | head -c 300)"
-        kill "$sse_pid" >/dev/null 2>&1 || true
+        kill_pid "$sse_pid"
         return 1
     fi
 
-    wait "$sse_pid" >/dev/null 2>&1 || true
+    wait_pid "$sse_pid"
     return 0
 }
 

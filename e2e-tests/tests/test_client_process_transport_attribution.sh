@@ -22,20 +22,25 @@ export ADMIN_HOST ADMIN_PORT ADMIN_PATH_PREFIX="/_bifrost"
 source "$SCRIPT_DIR/../test_utils/assert.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
 export ADMIN_BASE_URL
 
 BIFROST_BIN="$ROOT_DIR/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
+CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
 TEST_DATA_DIR="$ROOT_DIR/.bifrost-e2e-client-attribution-${PROXY_PORT}-$$"
 RULES_FILE="$TEST_DATA_DIR/rules.txt"
 RULES_TEMPLATE="$ROOT_DIR/e2e-tests/rules/runtime/client_process_transport_attribution.txt"
 PROXY_PID=""
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
+    if [[ -n "$PROXY_PID" ]]; then
+        safe_cleanup_proxy "$PROXY_PID"
     fi
+    kill_bifrost_on_port "$PROXY_PORT"
     "$ROOT_DIR/e2e-tests/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
     rm -rf "$TEST_DATA_DIR"
 }
@@ -118,8 +123,15 @@ start_mock_servers() {
 }
 
 build_bifrost() {
+    if [[ "${SKIP_BUILD:-false}" == "true" ]] && [[ -f "$BIFROST_BIN" ]]; then
+        echo "[INFO] Skipping build (SKIP_BUILD=true), using existing binary: $BIFROST_BIN"
+        return 0
+    fi
     log_section "Building bifrost"
-    (cd "$ROOT_DIR" && cargo build --release --bin bifrost)
+    (cd "$ROOT_DIR" && "$CARGO_BIN" build --release --bin bifrost) || {
+        echo "Failed to build bifrost with $CARGO_BIN" >&2
+        exit 1
+    }
 }
 
 write_rules() {
@@ -178,6 +190,35 @@ wait_for_traffic() {
     done
 
     return 1
+}
+
+run_curl_capture_with_retries() {
+    local body_file="$1"
+    local headers_file="$2"
+    shift 2
+
+    local attempts=0
+    local max_attempts=3
+    local status=""
+    local curl_exit=0
+
+    while [[ $attempts -lt $max_attempts ]]; do
+        : > "$body_file"
+        : > "$headers_file"
+        curl_exit=0
+        status=$(curl -sS -o "$body_file" -D "$headers_file" "$@" -w '%{http_code}') || curl_exit=$?
+        if [[ $curl_exit -eq 0 && "$status" != "000" ]]; then
+            printf '%s\n' "$status"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        if [[ $attempts -lt $max_attempts ]]; then
+            sleep 1
+        fi
+    done
+
+    printf '%s\n' "${status:-000}"
+    return "$curl_exit"
 }
 
 test_http_proxy_attribution() {
@@ -241,13 +282,12 @@ test_socks5_tls_attribution() {
     body_file=$(mktemp)
 
     local status
-    status=$(curl -sS -o "$body_file" -D "$headers_file" \
+    status=$(run_curl_capture_with_retries "$body_file" "$headers_file" \
         --socks5-hostname "${PROXY_HOST}:${SOCKS5_PORT}" \
         --connect-timeout 5 \
         --max-time 20 \
         -k \
-        "https://httpbin.org/headers" \
-        -w '%{http_code}')
+        "https://httpbin.org/headers")
     local body
     body=$(cat "$body_file")
     local headers

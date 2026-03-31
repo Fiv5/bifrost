@@ -431,6 +431,8 @@ pub struct ResolvedRules {
     pub dns_servers: Vec<String>,
 
     pub tls_intercept: Option<bool>,
+    pub tls_options: Option<String>,
+    pub sni_callback: Option<String>,
 
     pub req_scripts: Vec<String>,
     pub res_scripts: Vec<String>,
@@ -482,6 +484,10 @@ pub trait RulesResolver: Send + Sync {
         req_headers: &std::collections::HashMap<String, String>,
         req_cookies: &std::collections::HashMap<String, String>,
     ) -> ResolvedRules;
+
+    fn has_response_rules_for_host(&self, _host: &str) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -619,6 +625,26 @@ impl ProxyServer {
     }
 
     pub async fn bind(&self, addr: SocketAddr) -> Result<TcpListener> {
+        let check_addr = if addr.ip().is_unspecified() {
+            SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                addr.port(),
+            )
+        } else {
+            addr
+        };
+        if let Ok(Ok(_)) = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            tokio::net::TcpStream::connect(check_addr),
+        )
+        .await
+        {
+            return Err(BifrostError::Network(format!(
+                "Failed to bind to {}: another process is already listening on this port",
+                addr
+            )));
+        }
+
         TcpListener::bind(addr)
             .await
             .map_err(|e| BifrostError::Network(format!("Failed to bind to {}: {}", addr, e)))
@@ -957,6 +983,26 @@ async fn handle_http_connection(
     let io = TokioIo::new(stream);
     let client_process_cache = Arc::new(Mutex::new(None::<ClientProcess>));
     let client_process_resolution_started = Arc::new(AtomicBool::new(false));
+
+    if peer_addr.ip().is_loopback() {
+        let cache = Arc::clone(&client_process_cache);
+        let started = Arc::clone(&client_process_resolution_started);
+        tokio::spawn(async move {
+            let result = resolve_client_process_async_for_connection_with_retry(
+                &peer_addr,
+                &local_addr,
+                20,
+                50,
+            )
+            .await;
+            if let Some(process) = result {
+                started.store(true, Ordering::Release);
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = Some(process);
+                }
+            }
+        });
+    }
     let http1_max_header_size = if let Some(ref state) = admin_state {
         if let Some(ref config_manager) = state.config_manager {
             config_manager.config().await.server.http1_max_header_size
@@ -1058,7 +1104,9 @@ async fn handle_request(
         None
     };
 
-    let mut ctx = RequestContext::new().with_client_ip(peer_addr.ip().to_string());
+    let mut ctx = RequestContext::new()
+        .with_client_ip(peer_addr.ip().to_string())
+        .with_port(proxy_config.port);
     let cached_client_process = client_process_cache
         .lock()
         .ok()
@@ -1140,6 +1188,49 @@ async fn handle_request(
                 *cache = Some(client_process.clone());
             }
         }
+        let client_process = if client_process.is_some() {
+            client_process
+        } else if is_local_client {
+            let mut resolved = None;
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if let Ok(guard) = client_process_cache.lock() {
+                    if guard.is_some() {
+                        resolved = guard.clone();
+                        break;
+                    }
+                }
+            }
+            if resolved.is_none() {
+                if let Some(state) = admin_state.clone() {
+                    let should_spawn =
+                        !client_process_resolution_started.swap(true, Ordering::AcqRel);
+                    if should_spawn {
+                        let record_id = ctx.id_str();
+                        let client_process_cache = Arc::clone(&client_process_cache);
+                        spawn_async_process_resolver(
+                            peer_addr,
+                            local_addr,
+                            record_id.to_string(),
+                            move |id, process| {
+                                if let Ok(mut cache) = client_process_cache.lock() {
+                                    *cache = Some(process.clone());
+                                }
+                                state.update_client_process(
+                                    &id,
+                                    process.name,
+                                    process.pid,
+                                    process.path,
+                                );
+                            },
+                        );
+                    }
+                }
+            }
+            resolved
+        } else {
+            None
+        };
         client_process
     };
     let (client_app, client_pid, client_path) = client_process

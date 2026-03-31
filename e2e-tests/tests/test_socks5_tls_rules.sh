@@ -8,12 +8,17 @@ PROJECT_ROOT="$(dirname "$E2E_DIR")"
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
 source "$E2E_DIR/test_utils/rule_fixture.sh"
+source "$E2E_DIR/test_utils/process.sh"
 
 PROXY_HOST=${PROXY_HOST:-127.0.0.1}
 PROXY_PORT=${PROXY_PORT:-18081}
 SOCKS5_PORT=${SOCKS5_PORT:-18082}
 BIFROST_BIN="${PROJECT_ROOT}/target/release/bifrost"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 DATA_DIR="${PROJECT_ROOT}/.bifrost-socks5-tls-rules-test"
+PROXY_LOG_FILE="${DATA_DIR}/proxy.log"
 RULES_DIR="$E2E_DIR/rules/socks5_tls"
 
 rules_from_fixture() {
@@ -23,40 +28,102 @@ rules_from_fixture() {
 
 cleanup() {
     echo "Cleaning up..."
-    pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true
+    if [ -n "${PROXY_PID:-}" ]; then
+        safe_cleanup_proxy "$PROXY_PID"
+    fi
+    kill_bifrost_on_port "$PROXY_PORT"
+    HTTP_PORT="${ECHO_HTTP_PORT:-3000}" \
+    HTTPS_PORT="${ECHO_HTTPS_PORT:-3443}" \
+    "$E2E_DIR/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
     sleep 1
     rm -rf "$DATA_DIR"
 }
 
 trap cleanup EXIT
 
+start_mock_servers() {
+    local http_port="${ECHO_HTTP_PORT:-3000}"
+    local https_port="${ECHO_HTTPS_PORT:-3443}"
+
+    echo "Starting mock HTTP ($http_port) and HTTPS ($https_port) servers..."
+    HTTP_PORT="$http_port" \
+    HTTPS_PORT="$https_port" \
+    "$E2E_DIR/mock_servers/start_servers.sh" start-bg 2>&1 || true
+
+    local waited=0
+    while [ $waited -lt 30 ]; do
+        if curl -sf --connect-timeout 2 --max-time 3 "http://127.0.0.1:${http_port}/health" >/dev/null 2>&1; then
+            echo "Mock servers ready"
+            return 0
+        fi
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    echo "WARNING: Mock servers may not be fully ready"
+}
+
+wait_for_proxy_ready() {
+    local max_wait=30
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if curl -sf --connect-timeout 2 --max-time 3 \
+            "http://${PROXY_HOST}:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 1
+}
+
 start_proxy_with_rules() {
     local rules="$1"
+    local http_port="${ECHO_HTTP_PORT:-3000}"
+    local combined_rules
+    combined_rules="$(cat <<EOF
+http://httpbin.org/ http://127.0.0.1:${http_port}
+https://httpbin.org/ http://127.0.0.1:${http_port}
+EOF
+)"
+    if [ -n "$rules" ]; then
+        combined_rules="${combined_rules}"$'\n'"${rules}"
+    fi
+
     echo "Starting Bifrost proxy on port $PROXY_PORT (SOCKS5: $SOCKS5_PORT)..."
-    echo "Rules: $rules"
+    echo "Rules: $combined_rules"
     
-    pkill -f "bifrost.*${DATA_DIR}" 2>/dev/null || true
+    if [ -n "${PROXY_PID:-}" ]; then
+        safe_cleanup_proxy "$PROXY_PID"
+    fi
     sleep 1
     
     rm -rf "$DATA_DIR"
     mkdir -p "$DATA_DIR/rules"
     
+    if [ -z "${MOCK_SERVERS_STARTED:-}" ]; then
+        start_mock_servers
+        MOCK_SERVERS_STARTED=1
+    fi
+    
     export BIFROST_DATA_DIR="$DATA_DIR"
     
-    if [ -n "$rules" ]; then
+    if [ -n "$combined_rules" ]; then
         RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
-            --unsafe-ssl --skip-cert-check --rules "$rules" 2>&1 &
+            --unsafe-ssl --skip-cert-check --rules "$combined_rules" >"$PROXY_LOG_FILE" 2>&1 &
     else
         RUST_LOG=bifrost_proxy=debug "$BIFROST_BIN" -p "$PROXY_PORT" --socks5-port "$SOCKS5_PORT" start \
-            --unsafe-ssl --skip-cert-check 2>&1 &
+            --unsafe-ssl --skip-cert-check >"$PROXY_LOG_FILE" 2>&1 &
     fi
     PROXY_PID=$!
     
-    sleep 5
-    
-    if ! kill -0 $PROXY_PID 2>/dev/null; then
-        echo "ERROR: Proxy failed to start"
-        exit 1
+    if ! wait_for_proxy_ready; then
+        if ! kill -0 $PROXY_PID 2>/dev/null; then
+            echo "ERROR: Proxy process died"
+            echo "=== Proxy log ==="
+            cat "$PROXY_LOG_FILE" 2>/dev/null || true
+            exit 1
+        fi
+        echo "WARNING: Proxy admin API not reachable, but process is alive"
     fi
     
     echo "Proxy started (PID: $PROXY_PID)"
@@ -65,13 +132,21 @@ start_proxy_with_rules() {
 restart_proxy_with_rules() {
     local rules="$1"
     echo "Restarting proxy with new rules..."
-    pkill -f "bifrost" 2>/dev/null || true
-    sleep 3
     
-    while lsof -i :$PROXY_PORT >/dev/null 2>&1 || lsof -i :$SOCKS5_PORT >/dev/null 2>&1; do
-        echo "  Waiting for ports to be released..."
+    if [ -n "${PROXY_PID:-}" ]; then
+        kill_pid "$PROXY_PID"
+    fi
+    sleep 2
+    
+    local wait_count=0
+    while [ $wait_count -lt 15 ] && kill -0 ${PROXY_PID:-0} 2>/dev/null; do
+        echo "  Waiting for proxy process to exit..."
         sleep 1
+        wait_count=$((wait_count + 1))
     done
+    wait_pid "$PROXY_PID"
+    
+    rm -f "$DATA_DIR/bifrost.pid" "$DATA_DIR/runtime.json" 2>/dev/null || true
     
     start_proxy_with_rules "$rules"
 }

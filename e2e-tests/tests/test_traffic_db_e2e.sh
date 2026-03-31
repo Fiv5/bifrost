@@ -5,12 +5,17 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/http_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 ADMIN_HOST="${ADMIN_HOST:-127.0.0.1}"
 ADMIN_PORT="${ADMIN_PORT:-9900}"
 PROXY_PORT="${PROXY_PORT:-9900}"
 ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 ADMIN_BASE_URL="http://${ADMIN_HOST}:${ADMIN_PORT}${ADMIN_PATH_PREFIX}"
+MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-3197}"
+MOCK_PID=""
+
+export ADMIN_HOST ADMIN_PORT ADMIN_PATH_PREFIX
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -111,19 +116,44 @@ run_test() {
     fi
 }
 
+start_mock_server() {
+    python3 "$SCRIPT_DIR/../mock_servers/http_echo_server.py" "$MOCK_HTTP_PORT" >/dev/null 2>&1 &
+    MOCK_PID=$!
+    local waited=0
+    while [[ $waited -lt 10 ]]; do
+        if curl -sS -o /dev/null -w "" "http://127.0.0.1:${MOCK_HTTP_PORT}/get" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        ((waited++))
+    done
+    return 1
+}
+
+stop_mock_server() {
+    if [[ -n "$MOCK_PID" ]]; then
+        kill_pid "$MOCK_PID"
+        wait_pid "$MOCK_PID"
+        MOCK_PID=""
+    fi
+}
+
 generate_traffic() {
     local count="${1:-5}"
-    local host="${2:-httpbin.org}"
+    local pids=()
     
     log_info "Generating $count traffic records via proxy ${PROXY_PORT}..."
     
     for i in $(seq 1 "$count"); do
         curl -sS --proxy "http://127.0.0.1:${PROXY_PORT}" \
-            --connect-timeout 10 --max-time 30 \
-            "https://${host}/get?test_id=traffic_db_test_$$_${i}" \
+            --connect-timeout 5 --max-time 10 \
+            "http://127.0.0.1:${MOCK_HTTP_PORT}/get?test_id=traffic_db_test_$$_${i}" \
             -o /dev/null -w "" 2>/dev/null &
+        pids+=($!)
     done
-    wait
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || true
+    done
     sleep 2
 }
 
@@ -320,8 +350,8 @@ test_traffic_clear() {
 print("x" * 4096)
 PY
     curl -sS --proxy "http://127.0.0.1:${PROXY_PORT}" \
-        --connect-timeout 10 --max-time 30 \
-        -X POST "https://httpbin.org/post" \
+        --connect-timeout 5 --max-time 10 \
+        -X POST "http://127.0.0.1:${MOCK_HTTP_PORT}/post" \
         -H "Content-Type: text/plain" \
         --data-binary "@${payload_file}" \
         -o /dev/null 2>/dev/null
@@ -493,7 +523,7 @@ test_filter_by_method() {
 test_body_retrieval() {
     log_info "Testing request/response body retrieval..."
     
-    generate_traffic 1 "httpbin.org"
+    generate_traffic 1
     sleep 1
     
     local list_response
@@ -529,16 +559,12 @@ main() {
     echo "Proxy Port: ${PROXY_PORT}"
     echo "=========================================="
 
-    local connectivity
-    connectivity=$(curl -sS -o /dev/null -w "%{http_code}" "${ADMIN_BASE_URL}/api/traffic?limit=1" 2>/dev/null || echo "000")
-    
-    if [[ "$connectivity" != "200" ]]; then
-        log_fail "Cannot connect to Bifrost admin API at ${ADMIN_BASE_URL}"
-        log_info "Make sure Bifrost proxy is running on port ${ADMIN_PORT}"
-        exit 1
-    fi
-    
+    trap 'stop_mock_server; admin_cleanup_bifrost; if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi' EXIT
+
+    admin_ensure_bifrost || { log_fail "Could not start Bifrost"; exit 1; }
+
     log_info "Connected to Bifrost admin API"
+    start_mock_server || { log_fail "Could not start mock server"; exit 1; }
 
     run_test "Traffic Query API" test_traffic_query_api
     run_test "Traffic Updates API" test_traffic_updates_api

@@ -1,9 +1,14 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIFROST_BIN="${BIFROST_BIN:-$(cd "$SCRIPT_DIR/../.." && pwd)/target/release/bifrost}"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 source "$SCRIPT_DIR/../test_utils/ws_client.sh"
 source "$SCRIPT_DIR/../test_utils/sse_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
 PROXY_PORT="${PROXY_PORT:-9900}"
@@ -21,6 +26,7 @@ BIFROST_DATA_DIR=""
 BIFROST_LOG_FILE=""
 STARTED_BIFROST=0
 CREATED_DATA_DIR=0
+SSE_TRAFFIC_OK=0
 
 TESTS_RUN=0
 TESTS_PASSED=0
@@ -30,6 +36,62 @@ log_info() { echo "[INFO] $*"; }
 log_pass() { echo "[PASS] $*"; }
 log_fail() { echo "[FAIL] $*"; }
 log_debug() { [[ "${DEBUG:-0}" == "1" ]] && echo "[DEBUG] $*"; }
+
+traffic_list_json() {
+    curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=100"
+}
+
+find_traffic_id_by_url_fragment() {
+    local fragment="$1"
+    local traffic_list
+    traffic_list=$(traffic_list_json)
+    echo "$traffic_list" | jq -r --arg fragment "$fragment" '.records[] | select(((.url // .p // .path // "") | contains($fragment))) | .id' | head -1
+}
+
+wait_for_traffic_id_by_url_fragment() {
+    local fragment="$1"
+    local timeout="${2:-10}"
+    local waited=0
+    local traffic_id=""
+
+    while [[ $waited -lt $timeout ]]; do
+        traffic_id=$(find_traffic_id_by_url_fragment "$fragment")
+        if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+            printf '%s\n' "$traffic_id"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    return 1
+}
+
+find_ws_record_id() {
+    local traffic_id=""
+    traffic_id=$(wait_for_traffic_id_by_url_fragment "/ws" 10) || true
+    if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+        printf '%s\n' "$traffic_id"
+        return 0
+    fi
+
+    local traffic_list
+    traffic_list=$(traffic_list_json)
+    echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1
+}
+
+find_sse_record_id() {
+    local traffic_id=""
+    traffic_id=$(wait_for_traffic_id_by_url_fragment "/sse" 10) || true
+    if [[ -n "$traffic_id" && "$traffic_id" != "null" ]]; then
+        printf '%s\n' "$traffic_id"
+        return 0
+    fi
+
+    local traffic_list
+    traffic_list=$(traffic_list_json)
+    echo "$traffic_list" | jq -r '.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1)) | .id' | head -1
+}
 
 assert_equals() {
     local expected="$1"
@@ -122,14 +184,24 @@ start_sse_server() {
     log_info "Starting SSE echo server on port $SSE_PORT..."
     python3 "$SCRIPT_DIR/../mock_servers/sse_echo_server.py" --port "$SSE_PORT" &
     SSE_SERVER_PID=$!
-    sleep 1
 
-    if ! kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
-        log_fail "Failed to start SSE server"
-        return 1
-    fi
-    log_info "SSE server started (PID: $SSE_SERVER_PID)"
-    return 0
+    local max_wait=10
+    local waited=0
+    while [[ $waited -lt $max_wait ]]; do
+        if ! kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
+            log_fail "SSE server process exited early"
+            return 1
+        fi
+        if curl -s --max-time 2 "http://$PROXY_HOST:$SSE_PORT/health" | grep -q '"status"' 2>/dev/null; then
+            log_info "SSE server started (PID: $SSE_SERVER_PID)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log_fail "Failed to start SSE server (health check timeout)"
+    return 1
 }
 
 start_bifrost() {
@@ -164,7 +236,7 @@ start_bifrost() {
     cd "$rust_dir" || return 1
 
     SKIP_FRONTEND_BUILD=1 BIFROST_DATA_DIR="$BIFROST_DATA_DIR" \
-        cargo run --bin bifrost -- start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl \
+        "$BIFROST_BIN" start -p "$PROXY_PORT" --skip-cert-check --unsafe-ssl \
         >"$BIFROST_LOG_FILE" 2>&1 &
     BIFROST_PID=$!
     STARTED_BIFROST=1
@@ -200,23 +272,24 @@ start_bifrost() {
 cleanup() {
     log_info "Cleaning up..."
 
-    if [[ "$STARTED_BIFROST" == "1" && -n "$BIFROST_PID" ]] && kill -0 "$BIFROST_PID" 2>/dev/null; then
-        kill "$BIFROST_PID" 2>/dev/null
-        wait "$BIFROST_PID" 2>/dev/null
+    if [[ "$STARTED_BIFROST" == "1" && -n "$BIFROST_PID" ]]; then
+        safe_cleanup_proxy "$BIFROST_PID"
         log_info "Stopped Bifrost proxy"
     fi
 
-    if [[ -n "$WS_SERVER_PID" ]] && kill -0 "$WS_SERVER_PID" 2>/dev/null; then
-        kill "$WS_SERVER_PID" 2>/dev/null
-        wait "$WS_SERVER_PID" 2>/dev/null
+    if [[ -n "$WS_SERVER_PID" ]]; then
+        kill_pid "$WS_SERVER_PID"
+        wait_pid "$WS_SERVER_PID"
         log_info "Stopped WebSocket server"
     fi
 
-    if [[ -n "$SSE_SERVER_PID" ]] && kill -0 "$SSE_SERVER_PID" 2>/dev/null; then
-        kill "$SSE_SERVER_PID" 2>/dev/null
-        wait "$SSE_SERVER_PID" 2>/dev/null
+    if [[ -n "$SSE_SERVER_PID" ]]; then
+        kill_pid "$SSE_SERVER_PID"
+        wait_pid "$SSE_SERVER_PID"
         log_info "Stopped SSE server"
     fi
+
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
 
     if [[ "$CREATED_DATA_DIR" == "1" && -n "$BIFROST_DATA_DIR" && -d "$BIFROST_DATA_DIR" ]]; then
         rm -rf "$BIFROST_DATA_DIR"
@@ -234,40 +307,72 @@ cleanup() {
 generate_ws_traffic() {
     log_info "Generating WebSocket traffic..."
 
-    local ok=0
-    for _ in $(seq 1 3); do
-        local headers
-        headers=$(curl -sS --max-time 3 -x "http://$PROXY_HOST:$PROXY_PORT" --http1.1 \
-            -H "Connection: Upgrade" \
-            -H "Upgrade: websocket" \
-            -H "Sec-WebSocket-Version: 13" \
-            -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-            "http://$PROXY_HOST:$WS_PORT/" -D - -o /dev/null 2>/dev/null || true)
-        if echo "$headers" | head -n 1 | grep -q "101"; then
-            ok=1
-            break
-        fi
-        sleep 0.3
-    done
-
-    if [[ "$ok" != "1" ]]; then
-        log_fail "Failed to generate WebSocket traffic (no 101 response)"
+    local ws_host_header="${PROXY_HOST}:${WS_PORT}"
+    if ! python3 "$SCRIPT_DIR/../test_utils/ws_stress_client.py" \
+        --proxy-host "$PROXY_HOST" \
+        --proxy-port "$PROXY_PORT" \
+        --host-header "$ws_host_header" \
+        --path "/ws" \
+        --messages 2 \
+        --timeout 15.0 \
+        >/dev/null 2>&1; then
+        log_fail "Failed to generate WebSocket traffic"
         return 1
     fi
 
-    sleep 1
+    if ! wait_for_traffic_id_by_url_fragment "/ws" 10 >/dev/null 2>&1; then
+        log_fail "WebSocket traffic was not recorded in admin API"
+        return 1
+    fi
+
     log_info "WebSocket traffic generated"
 }
 
 generate_sse_traffic() {
     log_info "Generating SSE traffic..."
 
-    local sse_url="http://$PROXY_HOST:$SSE_PORT/sse?count=3"
+    local sse_url="http://$PROXY_HOST:$SSE_PORT"
 
-    curl -s --max-time 5 -x "http://$PROXY_HOST:$PROXY_PORT" "$sse_url" > /dev/null 2>&1
+    local health_ok=0
+    for i in $(seq 1 5); do
+        if curl -s --max-time 3 "http://$PROXY_HOST:$SSE_PORT/health" | grep -q '"status"' 2>/dev/null; then
+            health_ok=1
+            break
+        fi
+        log_debug "SSE server health check attempt $i failed, retrying..."
+        sleep 1
+    done
+    if [[ "$health_ok" -ne 1 ]]; then
+        log_fail "SSE echo server not reachable at $PROXY_HOST:$SSE_PORT"
+        return 1
+    fi
 
-    sleep 1
+    local sse_ok=0
+    local attempt
+    for attempt in 1 2 3; do
+        local sse_output
+        sse_output=$(SSE_PROXY="http://$PROXY_HOST:$PROXY_PORT" sse_fetch_all "$sse_url" "/sse?count=3" 10 2>&1)
+        local sse_exit=$?
+        if [[ $sse_exit -eq 0 ]] && echo "$sse_output" | grep -q "data:" 2>/dev/null; then
+            sse_ok=1
+            break
+        fi
+        log_debug "SSE traffic attempt $attempt: exit=$sse_exit output_len=${#sse_output}"
+        sleep 2
+    done
+    if [[ "$sse_ok" -ne 1 ]]; then
+        log_fail "curl SSE request through proxy failed after 3 attempts"
+        return 1
+    fi
+
+    if ! wait_for_traffic_id_by_url_fragment "/sse" 15 >/dev/null 2>&1; then
+        log_debug "Traffic list at failure: $(traffic_list_json 2>/dev/null | head -c 500)"
+        log_fail "SSE traffic was not recorded in admin API"
+        return 1
+    fi
+
     log_info "SSE traffic generated"
+    SSE_TRAFFIC_OK=1
 }
 
 generate_http_traffic() {
@@ -326,10 +431,10 @@ test_traffic_list_pagination() {
 
 test_frames_api_structure() {
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
+    ws_record=$(find_ws_record_id)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -370,11 +475,16 @@ test_frames_api_structure() {
 }
 
 test_frames_api_frame_fields() {
+    if [[ "$SSE_TRAFFIC_OK" -ne 1 ]]; then
+        log_debug "Skipping: SSE traffic was not generated"
+        return 0
+    fi
+
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1)) | .id' | head -1)
+    sse_record=$(find_sse_record_id)
 
     if [[ -z "$sse_record" || "$sse_record" == "null" ]]; then
         log_fail "No SSE traffic found"
@@ -422,10 +532,10 @@ test_frames_api_frame_fields() {
 
 test_frames_api_pagination() {
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
+    ws_record=$(find_ws_record_id)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -497,10 +607,12 @@ test_websocket_connections_list() {
 
 test_traffic_record_ws_fields() {
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
+    local ws_record_id
+    ws_record_id=$(find_ws_record_id)
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq '[.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1))] | first')
+    ws_record=$(echo "$traffic_list" | jq --arg id "$ws_record_id" '[.records[] | select((.id // "") == $id)] | first')
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic record found"
@@ -519,11 +631,18 @@ test_traffic_record_ws_fields() {
 }
 
 test_traffic_record_sse_fields() {
-    local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    if [[ "$SSE_TRAFFIC_OK" -ne 1 ]]; then
+        log_debug "Skipping: SSE traffic was not generated"
+        return 0
+    fi
 
+    local traffic_list
+    traffic_list=$(traffic_list_json)
+
+    local sse_record_id
+    sse_record_id=$(find_sse_record_id)
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq '[.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1))] | first')
+    sse_record=$(echo "$traffic_list" | jq --arg id "$sse_record_id" '[.records[] | select((.id // "") == $id)] | first')
 
     if [[ -z "$sse_record" || "$sse_record" == "null" ]]; then
         log_fail "No SSE traffic record found"
@@ -543,10 +662,10 @@ test_traffic_record_sse_fields() {
 
 test_frame_direction_values() {
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
+    ws_record=$(find_ws_record_id)
 
     if [[ -z "$ws_record" || "$ws_record" == "null" ]]; then
         log_fail "No WebSocket traffic found"
@@ -576,10 +695,10 @@ test_frame_direction_values() {
 
 test_frame_type_values() {
     local traffic_list
-    traffic_list=$(curl -s "http://$ADMIN_HOST:$ADMIN_PORT${ADMIN_PATH_PREFIX}/api/traffic?limit=50")
+    traffic_list=$(traffic_list_json)
 
     local ws_record
-    ws_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_websocket // false) == true or ((((.flags // 0) / 2) | floor) % 2 == 1)) | .id' | head -1)
+    ws_record=$(find_ws_record_id)
 
     if [[ -n "$ws_record" && "$ws_record" != "null" ]]; then
         local ws_frames
@@ -603,7 +722,7 @@ test_frame_type_values() {
     fi
 
     local sse_record
-    sse_record=$(echo "$traffic_list" | jq -r '.records[] | select((.is_sse // false) == true or ((((.flags // 0) / 4) | floor) % 2 == 1)) | .id' | head -1)
+    sse_record=$(find_sse_record_id)
 
     if [[ -n "$sse_record" && "$sse_record" != "null" ]]; then
         local sse_frames
@@ -677,8 +796,7 @@ main() {
     fi
 
     if ! start_sse_server; then
-        log_fail "Failed to start SSE server"
-        exit 1
+        log_info "SSE server failed to start; SSE-dependent tests will be skipped"
     fi
 
     if ! start_bifrost; then

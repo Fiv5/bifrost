@@ -3,6 +3,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIFROST_BIN="${BIFROST_BIN:-${ROOT_DIR}/target/release/bifrost}"
+if [[ ! -x "$BIFROST_BIN" && -f "${BIFROST_BIN}.exe" ]]; then
+    BIFROST_BIN="${BIFROST_BIN}.exe"
+fi
 
 PROXY_PORT="${PROXY_PORT:-18888}"
 MOCK_HTTP_PORT="${MOCK_HTTP_PORT:-13000}"
@@ -16,6 +20,7 @@ source "$SCRIPT_DIR/../test_utils/http_client.sh"
 source "$SCRIPT_DIR/../test_utils/admin_client.sh"
 source "$SCRIPT_DIR/../test_utils/ws_client.sh"
 source "$SCRIPT_DIR/../test_utils/rule_fixture.sh"
+source "$SCRIPT_DIR/../test_utils/process.sh"
 
 BIFROST_PID=""
 MOCK_HTTP_PID=""
@@ -29,30 +34,30 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
     
-    if [ -n "$BIFROST_PID" ] && kill -0 "$BIFROST_PID" 2>/dev/null; then
+    if [ -n "$BIFROST_PID" ]; then
         echo "  Stopping Bifrost proxy (PID: $BIFROST_PID)..."
-        kill "$BIFROST_PID" 2>/dev/null || true
-        wait "$BIFROST_PID" 2>/dev/null || true
+        safe_cleanup_proxy "$BIFROST_PID"
     fi
     
-    if [ -n "$MOCK_HTTP_PID" ] && kill -0 "$MOCK_HTTP_PID" 2>/dev/null; then
+    if [ -n "$MOCK_HTTP_PID" ]; then
         echo "  Stopping Mock HTTP server (PID: $MOCK_HTTP_PID)..."
-        kill "$MOCK_HTTP_PID" 2>/dev/null || true
-        wait "$MOCK_HTTP_PID" 2>/dev/null || true
+        kill_pid "$MOCK_HTTP_PID"
+        wait_pid "$MOCK_HTTP_PID"
     fi
 
-    if [ -n "$MOCK_SSE_PID" ] && kill -0 "$MOCK_SSE_PID" 2>/dev/null; then
+    if [ -n "$MOCK_SSE_PID" ]; then
         echo "  Stopping Mock SSE server (PID: $MOCK_SSE_PID)..."
-        kill "$MOCK_SSE_PID" 2>/dev/null || true
-        wait "$MOCK_SSE_PID" 2>/dev/null || true
+        kill_pid "$MOCK_SSE_PID"
+        wait_pid "$MOCK_SSE_PID"
     fi
 
-    if [ -n "$MOCK_WS_PID" ] && kill -0 "$MOCK_WS_PID" 2>/dev/null; then
+    if [ -n "$MOCK_WS_PID" ]; then
         echo "  Stopping Mock WS server (PID: $MOCK_WS_PID)..."
-        kill "$MOCK_WS_PID" 2>/dev/null || true
-        wait "$MOCK_WS_PID" 2>/dev/null || true
+        kill_pid "$MOCK_WS_PID"
+        wait_pid "$MOCK_WS_PID"
     fi
-    
+
+    if is_windows; then kill_bifrost_on_port "$PROXY_PORT"; fi
     echo "Cleanup complete."
 }
 
@@ -144,17 +149,19 @@ start_bifrost() {
     echo "Starting Bifrost proxy on port $PROXY_PORT..."
     cd "$ROOT_DIR"
 
-    # 立即编译运行，避免使用已编译的二进制文件（保持与当前代码一致）
-    # 使用独立的 target 目录，避免与其它 cargo 进程抢占构建锁
-    local target_dir="./target-e2e-${PROXY_PORT}"
-    BIFROST_DATA_DIR="./.bifrost-e2e-test" CARGO_TARGET_DIR="$target_dir" \
-        cargo run --bin bifrost -- start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
+    BIFROST_DATA_DIR="${BIFROST_DATA_DIR:-./.bifrost-e2e-test}" \
+        "$BIFROST_BIN" start -p "$PROXY_PORT" --unsafe-ssl --skip-cert-check > /tmp/bifrost_e2e.log 2>&1 &
     BIFROST_PID=$!
     
-    # cargo run 首次编译可能较慢
-    local timeout=580
+    local timeout=120
     local waited=0
     while [ $waited -lt $timeout ]; do
+        if ! kill -0 "$BIFROST_PID" 2>/dev/null; then
+            echo "Bifrost process exited unexpectedly (PID: $BIFROST_PID)"
+            echo "Last log:"
+            tail -30 /tmp/bifrost_e2e.log
+            exit 1
+        fi
         if curl -s "http://127.0.0.1:${PROXY_PORT}/_bifrost/api/system" >/dev/null 2>&1; then
             echo "  Bifrost proxy started (PID: $BIFROST_PID)"
             return 0
@@ -165,7 +172,7 @@ start_bifrost() {
     
     echo "Failed to start Bifrost proxy within ${timeout}s"
     echo "Last log:"
-    tail -20 /tmp/bifrost_e2e.log
+    tail -30 /tmp/bifrost_e2e.log
     exit 1
 }
 

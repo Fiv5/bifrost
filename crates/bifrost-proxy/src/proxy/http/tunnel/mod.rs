@@ -180,6 +180,42 @@ fn requires_tls_interception_for_host_rewrite(resolved_rules: &ResolvedRules) ->
         )
 }
 
+pub fn requires_tls_interception_for_rules(resolved_rules: &ResolvedRules) -> bool {
+    !resolved_rules.res_headers.is_empty()
+        || !resolved_rules.req_headers.is_empty()
+        || !resolved_rules.delete_res_headers.is_empty()
+        || !resolved_rules.delete_req_headers.is_empty()
+        || resolved_rules.res_body.is_some()
+        || resolved_rules.req_body.is_some()
+        || resolved_rules.status_code.is_some()
+        || resolved_rules.replace_status.is_some()
+        || resolved_rules.mock_file.is_some()
+        || resolved_rules.mock_rawfile.is_some()
+        || resolved_rules.mock_template.is_some()
+        || !resolved_rules.res_replace.is_empty()
+        || !resolved_rules.res_replace_regex.is_empty()
+        || !resolved_rules.req_replace.is_empty()
+        || !resolved_rules.req_replace_regex.is_empty()
+        || resolved_rules.res_prepend.is_some()
+        || resolved_rules.res_append.is_some()
+        || resolved_rules.req_prepend.is_some()
+        || resolved_rules.req_append.is_some()
+        || !resolved_rules.res_cookies.is_empty()
+        || !resolved_rules.req_cookies.is_empty()
+        || !resolved_rules.header_replace.is_empty()
+        || !resolved_rules.req_scripts.is_empty()
+        || !resolved_rules.res_scripts.is_empty()
+        || resolved_rules.html_append.is_some()
+        || resolved_rules.html_prepend.is_some()
+        || resolved_rules.html_body.is_some()
+        || resolved_rules.js_append.is_some()
+        || resolved_rules.js_prepend.is_some()
+        || resolved_rules.js_body.is_some()
+        || resolved_rules.css_append.is_some()
+        || resolved_rules.css_prepend.is_some()
+        || resolved_rules.css_body.is_some()
+}
+
 pub(super) fn sanitize_upstream_headers(headers: &mut hyper::HeaderMap) {
     client::sanitize_upstream_headers(headers)
 }
@@ -233,6 +269,42 @@ fn build_upstream_pool_partition(
         rules.host_protocol,
         rules.ignored.host
     )
+}
+
+fn merge_connect_resolved_rules(
+    mut base: ResolvedRules,
+    tunnel_specific: ResolvedRules,
+) -> ResolvedRules {
+    if tunnel_specific.host.is_some() && !base.ignored.host {
+        base.host = tunnel_specific.host;
+        base.host_protocol = tunnel_specific.host_protocol;
+    }
+
+    if tunnel_specific.tls_intercept.is_some() {
+        base.tls_intercept = tunnel_specific.tls_intercept;
+    }
+    if tunnel_specific.tls_options.is_some() {
+        base.tls_options = tunnel_specific.tls_options;
+    }
+    if tunnel_specific.sni_callback.is_some() {
+        base.sni_callback = tunnel_specific.sni_callback;
+    }
+
+    if !tunnel_specific.rules.is_empty() {
+        base.rules.extend(tunnel_specific.rules);
+    }
+
+    base
+}
+
+fn parse_sni_callback_spec(value: &str) -> (&str, Option<&str>) {
+    if let Some((plugin, raw_arg)) = value.split_once('(') {
+        let plugin = plugin.trim();
+        let arg = raw_arg.trim_end_matches(')').trim();
+        return (plugin, (!arg.is_empty()).then_some(arg));
+    }
+
+    (value.trim(), None)
 }
 
 #[cfg(feature = "http3")]
@@ -305,7 +377,37 @@ pub async fn handle_connect(
     }
 
     let url = format!("https://{}:{}", host, port);
-    let resolved_rules = rules.resolve(&url, "CONNECT");
+    let tunnel_url = format!("tunnel://{}:{}", host, port);
+    let mut resolved_rules = rules.resolve(&url, "CONNECT");
+    let tunnel_rules = rules.resolve(&tunnel_url, "CONNECT");
+    if tunnel_rules.host.is_some()
+        || tunnel_rules.tls_options.is_some()
+        || tunnel_rules.sni_callback.is_some()
+        || !tunnel_rules.rules.is_empty()
+    {
+        resolved_rules = merge_connect_resolved_rules(resolved_rules, tunnel_rules);
+    }
+
+    if let Some(ref tls_options) = resolved_rules.tls_options {
+        info!(
+            "[{}] CONNECT TLS options matched for {}:{} => {}",
+            ctx.id_str(),
+            host,
+            port,
+            tls_options
+        );
+    }
+    if let Some(ref sni_callback) = resolved_rules.sni_callback {
+        let (plugin, sni_value) = parse_sni_callback_spec(sni_callback);
+        info!(
+            "[{}] CONNECT SNI callback matched for {}:{} => plugin={}, sniValue={}",
+            ctx.id_str(),
+            host,
+            port,
+            plugin,
+            sni_value.unwrap_or("<none>")
+        );
+    }
     let is_local_client = ctx
         .client_ip
         .parse::<std::net::IpAddr>()
@@ -340,6 +442,15 @@ pub async fn handle_connect(
         &tls_config,
         &resolved_rules,
     );
+
+    if !intercept
+        && tls_config.ca_cert.is_some()
+        && !matches!(resolved_rules.tls_intercept, Some(false))
+        && (requires_tls_interception_for_rules(&resolved_rules)
+            || rules.has_response_rules_for_host(&host))
+    {
+        intercept = true;
+    }
 
     if intercept
         && !is_standard_tls_intercept_port(port)
@@ -442,7 +553,7 @@ pub async fn handle_connect(
 
         let p = parsed_port.unwrap_or(match resolved_rules.host_protocol {
             Some(Protocol::Http) | Some(Protocol::Ws) => 80,
-            Some(Protocol::Https) | Some(Protocol::Wss) => 443,
+            Some(Protocol::Https) | Some(Protocol::Wss) | Some(Protocol::Tunnel) => 443,
             _ => port,
         });
         debug!(

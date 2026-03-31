@@ -7,15 +7,15 @@ PROJECT_DIR="$(cd "$E2E_DIR/.." && pwd)"
 
 source "$E2E_DIR/test_utils/assert.sh"
 source "$E2E_DIR/test_utils/http_client.sh"
+source "$E2E_DIR/test_utils/process.sh"
 
-# Admin API is served on the same port as proxy (path prefix /_bifrost)
+PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
+PROXY_PORT="${PROXY_PORT:-8080}"
+
 export ADMIN_HOST="${ADMIN_HOST:-$PROXY_HOST}"
 export ADMIN_PORT="${ADMIN_PORT:-$PROXY_PORT}"
 export ADMIN_PATH_PREFIX="${ADMIN_PATH_PREFIX:-/_bifrost}"
 source "$E2E_DIR/test_utils/admin_client.sh"
-
-PROXY_HOST="${PROXY_HOST:-127.0.0.1}"
-PROXY_PORT="${PROXY_PORT:-8080}"
 ECHO_HTTP_PORT="${ECHO_HTTP_PORT:-3000}"
 TEST_ID="${TEST_ID:-req_res_script}"
 export TEST_ID
@@ -26,12 +26,13 @@ MOCK_LOG_FILE="$TEST_DATA_DIR/mock.log"
 PROXY_PID=""
 
 cleanup() {
-    if [[ -n "$PROXY_PID" ]] && kill -0 "$PROXY_PID" 2>/dev/null; then
-        kill "$PROXY_PID" 2>/dev/null || true
-        wait "$PROXY_PID" 2>/dev/null || true
+    if [[ -n "$PROXY_PID" ]]; then
+        safe_cleanup_proxy "$PROXY_PID"
     fi
 
     "$E2E_DIR/mock_servers/start_servers.sh" stop 2>/dev/null || true
+
+    kill_bifrost_on_port "$PROXY_PORT"
 }
 
 trap cleanup EXIT
@@ -57,8 +58,7 @@ assert_body_contains_ci() {
 start_mock_servers() {
     mkdir -p "$TEST_DATA_DIR"
 
-    "$E2E_DIR/mock_servers/start_servers.sh" stop >/dev/null 2>&1 || true
-    "$E2E_DIR/mock_servers/start_servers.sh" start > "$MOCK_LOG_FILE" 2>&1 &
+    HTTP_PORT="$ECHO_HTTP_PORT" "$E2E_DIR/mock_servers/start_servers.sh" start-http > "$MOCK_LOG_FILE" 2>&1 &
 
     local count=0
     while ! curl -s "http://127.0.0.1:${ECHO_HTTP_PORT}/health" >/dev/null 2>&1; do
@@ -116,13 +116,13 @@ EOF
 start_proxy() {
     mkdir -p "$TEST_DATA_DIR"
 
-    local rules_file="$E2E_DIR/rules/request_modify/req_res_script.txt"
-    if [[ ! -f "$rules_file" ]]; then
-        exit 1
-    fi
-
-    echo "[e2e] Building bifrost (release)..." >>"$PROXY_LOG_FILE"
-    (cd "$PROJECT_DIR" && cargo build --release --bin bifrost) >>"$PROXY_LOG_FILE" 2>&1
+    local rules_file="$TEST_DATA_DIR/req_res_script.txt"
+    cat > "$rules_file" <<RULES
+script-test.local host://127.0.0.1:${ECHO_HTTP_PORT}
+script-test.local reqScript://req_script
+script-test.local resScript://res_script
+script-test.local decode://decode_script
+RULES
 
     local bifrost_bin="$PROJECT_DIR/target/release/bifrost"
     if [[ ! -x "$bifrost_bin" ]]; then
@@ -142,19 +142,24 @@ start_proxy() {
     local count=0
     while ! nc -z "$PROXY_HOST" "$PROXY_PORT" 2>/dev/null; do
         count=$((count + 1))
-        if [[ $count -ge 60 ]]; then
+        if [[ $count -ge 90 ]]; then
+            echo "ERROR: Proxy port $PROXY_PORT not available after 90s" >&2
             cat "$PROXY_LOG_FILE"
             exit 1
         fi
         sleep 1
     done
 
-    wait_for_admin 30
+    if ! wait_for_admin 60; then
+        echo "ERROR: Admin API not ready after 60s" >&2
+        cat "$PROXY_LOG_FILE"
+        exit 1
+    fi
 }
 
 wait_for_traffic_id() {
     local url_pattern="$1"
-    local timeout_seconds="${2:-10}"
+    local timeout_seconds="${2:-30}"
 
     local waited=0
     while [[ $waited -lt $timeout_seconds ]]; do
@@ -207,8 +212,9 @@ EOF
 }
 
 test_decode_script_bodies() {
+    sleep 2
     local id
-    id=$(wait_for_traffic_id "/echo" 15)
+    id=$(wait_for_traffic_id "/echo" 30)
     if [[ -z "$id" ]]; then
         _log_fail "decode should record traffic" "traffic id" "not found"
         return 1
@@ -220,7 +226,7 @@ test_decode_script_bodies() {
     assert_body_contains "decoded-req::body-from-reqscript" "$req_body" "decode should see final (post-reqScript) request body"
 
     local res_id
-    res_id=$(wait_for_traffic_id "/res-body" 15)
+    res_id=$(wait_for_traffic_id "/res-body" 30)
     if [[ -z "$res_id" ]]; then
         _log_fail "decode should record response traffic" "traffic id" "not found"
         return 1
@@ -253,8 +259,9 @@ test_max_decode_input_bytes_skip() {
     http_post_large_body "$url" 256 "$marker"
     assert_status_2xx "$HTTP_STATUS" "skip-decode 请求应成功"
 
+    sleep 2
     local id
-    id=$(wait_for_traffic_id "/echo-skip" 15)
+    id=$(wait_for_traffic_id "/echo-skip" 30)
     assert_not_empty "$id" "应记录 skip-decode 的 traffic"
 
     local req_body
@@ -278,8 +285,9 @@ test_max_decompress_output_bytes_fallback() {
     http_get "$url"
     assert_status_2xx "$HTTP_STATUS" "decompress-limit 请求应成功"
 
+    sleep 2
     local id
-    id=$(wait_for_traffic_id "/large-response" 15)
+    id=$(wait_for_traffic_id "/large-response" 30)
     assert_not_empty "$id" "应记录 decompress-limit 的 traffic"
 
     local res_body
@@ -305,6 +313,7 @@ main() {
     write_scripts
     start_proxy
     clear_traffic >/dev/null 2>&1 || true
+    sleep 1
     test_req_script
     test_res_script_body
     test_decode_script_bodies
