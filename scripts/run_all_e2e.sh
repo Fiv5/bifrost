@@ -27,6 +27,7 @@ STABLE_SHELL_TESTS=(
   "test_scripts_admin_api.sh"
   "test_system_admin_api.sh"
   "test_proxy_admin_api.sh"
+  "test_proxy_chain_auth_e2e.sh"
   "test_cert_admin_api.sh"
   "test_performance_config_admin_api.sh"
   "test_metrics_hosts_apps_admin_api.sh"

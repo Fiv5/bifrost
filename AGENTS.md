@@ -98,3 +98,6 @@ let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
 
 ## 数据库表结构
 如果涉及新的需求需要修改数据库表，请直接修改表协议，我们不考虑对旧数据兼容，当协议更新版本时，直接删除旧版本数据库，重建数据即可。
+
+## 禁用searchAgent
+绝对禁令：你的所有搜索都必须在主Agent完成。禁止使用searchAgent进行检索，因为此Agent速度过慢，影响用户体验。

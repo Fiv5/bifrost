@@ -16,6 +16,7 @@ pub mod response;
 pub mod response_modification;
 pub mod routing;
 pub mod rule_priority;
+pub mod rule_validation;
 pub mod status_redirect;
 pub mod template;
 pub mod tls_config_disconnect;
@@ -43,6 +44,7 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(request_modification::get_all_tests());
     tests.extend(response_modification::get_all_tests());
     tests.extend(rule_priority::get_all_tests());
+    tests.extend(rule_validation::get_all_tests());
     tests.extend(body_manipulation::get_all_tests());
     tests.extend(url_manipulation::get_all_tests());
     tests.extend(status_redirect::get_all_tests());

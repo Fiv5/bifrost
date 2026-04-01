@@ -51,6 +51,10 @@ pub struct EnhancedMockServer {
     response: Arc<RwLock<MockResponse>>,
 }
 
+pub struct ProxyEchoServer {
+    inner: EnhancedMockServer,
+}
+
 impl EnhancedMockServer {
     pub async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -264,6 +268,35 @@ impl EnhancedMockServer {
                 expected, request.method
             ))
         }
+    }
+}
+
+impl ProxyEchoServer {
+    pub async fn start() -> Self {
+        Self {
+            inner: EnhancedMockServer::start().await,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.inner.port
+    }
+
+    pub fn set_response(&self, status: u16, body: &str) {
+        self.inner.set_response(status, body);
+    }
+
+    pub fn assert_path(&self, expected: &str) -> Result<(), String> {
+        self.inner.assert_path(expected)
+    }
+
+    pub fn assert_proxy_auth_received(&self, expected: &str) -> Result<(), String> {
+        self.inner
+            .assert_header_received("proxy-authorization", expected)
+    }
+
+    pub fn last_request(&self) -> Option<RecordedRequest> {
+        self.inner.last_request()
     }
 }
 

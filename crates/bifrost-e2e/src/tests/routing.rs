@@ -1,5 +1,5 @@
 use crate::curl::CurlCommand;
-use crate::mock::EnhancedMockServer;
+use crate::mock::{EnhancedMockServer, ProxyEchoServer};
 use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
 use std::time::Duration;
@@ -77,6 +77,12 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Host vs Proxy: host takes priority",
             "routing",
             test_routing_host_vs_proxy,
+        ),
+        TestCase::standalone(
+            "routing_proxy_chain_with_auth",
+            "Proxy protocol: chain to another bifrost proxy with auth",
+            "routing",
+            test_routing_proxy_chain_with_auth,
         ),
         TestCase::standalone(
             "routing_host_preserve_query",
@@ -431,6 +437,63 @@ async fn test_routing_host_vs_proxy() -> Result<(), String> {
 
     result.assert_success()?;
     result.assert_body_contains("host_wins")?;
+
+    Ok(())
+}
+
+async fn test_routing_proxy_chain_with_auth() -> Result<(), String> {
+    let proxy_echo = ProxyEchoServer::start().await;
+    proxy_echo.set_response(200, "proxy_chain_ok");
+
+    let upstream_port = portpicker::pick_unused_port().unwrap();
+    let _upstream_proxy = ProxyInstance::start(
+        upstream_port,
+        vec![&format!(
+            "chain.test host://127.0.0.1:{}",
+            proxy_echo.port()
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start upstream proxy: {}", e))?;
+
+    let entry_port = portpicker::pick_unused_port().unwrap();
+    let _entry_proxy = ProxyInstance::start(
+        entry_port,
+        vec![&format!(
+            "chain.test proxy://user:pass@127.0.0.1:{}",
+            upstream_port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start entry proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", entry_port),
+        "http://chain.test/api?via=entry",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_body_contains("proxy_chain_ok")?;
+    proxy_echo.assert_path("/api")?;
+    proxy_echo.assert_proxy_auth_received("Basic dXNlcjpwYXNz")?;
+
+    let request = proxy_echo
+        .last_request()
+        .ok_or_else(|| "No request received by final mock server".to_string())?;
+    let query = request
+        .query
+        .ok_or_else(|| "Query string missing from chained request".to_string())?;
+    if !query.contains("via=entry") {
+        return Err(format!(
+            "Unexpected query string after proxy chain: {}",
+            query
+        ));
+    }
 
     Ok(())
 }

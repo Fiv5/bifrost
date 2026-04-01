@@ -347,10 +347,12 @@ interface EditorContext {
   currentProtocol: string | null;
   afterProtocolSeparator: boolean;
   inCodeBlock: boolean;
+  inLineBlock: boolean;
 }
 
 function analyzeContext(textBeforeCursor: string): EditorContext {
   const inCodeBlock = /```\w*\s*$/.test(textBeforeCursor) || /```\w+[\s\S]*(?!```)$/.test(textBeforeCursor);
+  const inLineBlock = /(?:^|\n)line`[\s\S]*(?!\n`\s*\n)/.test(textBeforeCursor);
 
   const protocolMatch = textBeforeCursor.match(/(\w+):\/\/(\S*)$/);
   if (protocolMatch) {
@@ -359,16 +361,18 @@ function analyzeContext(textBeforeCursor: string): EditorContext {
       currentProtocol: protocolMatch[1],
       afterProtocolSeparator: true,
       inCodeBlock,
+      inLineBlock,
     };
   }
 
-  const hasPattern = /^\s*\S+/.test(textBeforeCursor) && !textBeforeCursor.trim().startsWith('#');
+  const hasPattern = inLineBlock || (/^\s*\S+/.test(textBeforeCursor) && !textBeforeCursor.trim().startsWith('#'));
 
   return {
     hasPattern,
     currentProtocol: null,
     afterProtocolSeparator: false,
     inCodeBlock,
+    inLineBlock,
   };
 }
 
