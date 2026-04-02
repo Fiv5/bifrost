@@ -430,9 +430,22 @@ impl AdminState {
 
         let existing_db_ids = traffic_db_store.all_ids_set();
 
+        let protected_body_ids = self
+            .body_store
+            .as_ref()
+            .map(|store| {
+                let store = store.read();
+                let mut protected = store.active_stream_id_set();
+                protected.extend(store.recently_modified_ids(std::time::Duration::from_secs(300)));
+                protected
+            })
+            .unwrap_or_default();
+
         let orphan_body_ids: Vec<String> = body_sizes
             .keys()
-            .filter(|id| !existing_db_ids.contains(id.as_str()))
+            .filter(|id| {
+                !existing_db_ids.contains(id.as_str()) && !protected_body_ids.contains(id.as_str())
+            })
             .cloned()
             .collect();
         let orphan_frame_ids: Vec<String> = frame_sizes
@@ -473,6 +486,7 @@ impl AdminState {
                 orphan_frame = orphan_frame_ids.len(),
                 orphan_ws = orphan_ws_ids.len(),
                 orphan_bytes = orphan_bytes,
+                protected_body = protected_body_ids.len(),
                 "[TRAFFIC] Cleaned up orphaned cache files"
             );
         }
