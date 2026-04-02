@@ -15,7 +15,7 @@ use bifrost_admin::{
     AsyncTrafficWriter, BodyStore, PortRebindManager, PortRebindRequest, PushManager,
     ReplayDbStore, RuntimeConfig, WsPayloadStore,
 };
-use bifrost_core::Rule;
+use bifrost_core::{Rule, UserPassAccountConfig, UserPassAuthConfig};
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
 use bifrost_storage::{set_data_dir, ConfigChangeEvent, ConfigManager};
 use bifrost_sync::SyncManager;
@@ -280,6 +280,7 @@ pub fn run_start(
     access_mode: Option<String>,
     whitelist: Option<String>,
     allow_lan: bool,
+    proxy_user: Vec<String>,
     intercept: bool,
     no_intercept: bool,
     intercept_exclude: Option<String>,
@@ -335,6 +336,16 @@ pub fn run_start(
     } else {
         stored_config.access.allow_lan
     };
+    let userpass_auth = if proxy_user.is_empty() {
+        stored_config.access.userpass.clone()
+    } else {
+        Some(UserPassAuthConfig {
+            enabled: true,
+            accounts: parse_proxy_users(&proxy_user)?,
+        })
+    };
+    let userpass_last_connected_at =
+        futures::executor::block_on(config_manager.userpass_last_connected_at());
 
     let enable_tls_interception = if intercept {
         true
@@ -394,6 +405,8 @@ pub fn run_start(
         access_mode: parsed_access_mode,
         client_whitelist,
         allow_lan: allow_lan_final,
+        userpass_auth,
+        userpass_last_connected_at,
         enable_tls_interception,
         intercept_exclude: exclude_list.clone(),
         intercept_include: include_list.clone(),
@@ -1159,6 +1172,39 @@ pub fn run_foreground(
     Ok(())
 }
 
+fn parse_proxy_users(proxy_users: &[String]) -> bifrost_core::Result<Vec<UserPassAccountConfig>> {
+    let mut usernames = std::collections::HashSet::new();
+    let mut accounts = Vec::new();
+
+    for proxy_user in proxy_users {
+        let Some((username, password)) = proxy_user.split_once(':') else {
+            return Err(bifrost_core::BifrostError::Config(format!(
+                "Invalid --proxy-user value '{}', expected USER:PASS",
+                proxy_user
+            )));
+        };
+        if username.is_empty() || password.is_empty() {
+            return Err(bifrost_core::BifrostError::Config(format!(
+                "Invalid --proxy-user value '{}', username and password must be non-empty",
+                proxy_user
+            )));
+        }
+        if !usernames.insert(username.to_string()) {
+            return Err(bifrost_core::BifrostError::Config(format!(
+                "Duplicate proxy username '{}'",
+                username
+            )));
+        }
+        accounts.push(UserPassAccountConfig {
+            username: username.to_string(),
+            password: Some(password.to_string()),
+            enabled: true,
+        });
+    }
+
+    Ok(accounts)
+}
+
 #[cfg(unix)]
 fn raise_fd_limit() {
     use libc::{getrlimit, rlimit, setrlimit, RLIMIT_NOFILE};
@@ -1894,9 +1940,12 @@ fn spawn_admin_push_watcher_task(
                     ConfigChangeEvent::ValuesChanged(_) => {
                         push_manager.broadcast_values_snapshot().await;
                     }
-                    ConfigChangeEvent::RulesChanged
-                    | ConfigChangeEvent::StateChanged
-                    | ConfigChangeEvent::SyncConfigChanged => {}
+                    ConfigChangeEvent::RulesChanged | ConfigChangeEvent::SyncConfigChanged => {}
+                    ConfigChangeEvent::StateChanged => {
+                        push_manager
+                            .broadcast_settings_scope(SETTINGS_SCOPE_WHITELIST_STATUS)
+                            .await;
+                    }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     tracing::warn!(

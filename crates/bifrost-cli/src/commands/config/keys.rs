@@ -28,13 +28,19 @@ pub enum ConfigKey {
 
     AccessMode,
     AccessAllowLan,
+    AccessUserPassEnabled,
+    AccessUserPassAccounts,
 }
 
 impl ConfigKey {
     pub fn is_list(&self) -> bool {
         matches!(
             self,
-            Self::TlsExclude | Self::TlsInclude | Self::TlsAppExclude | Self::TlsAppInclude
+            Self::TlsExclude
+                | Self::TlsInclude
+                | Self::TlsAppExclude
+                | Self::TlsAppInclude
+                | Self::AccessUserPassAccounts
         )
     }
 
@@ -77,6 +83,8 @@ impl ConfigKey {
             "traffic.ws-payload-max-open-files",
             "access.mode",
             "access.allow-lan",
+            "access.userpass.enabled",
+            "access.userpass.accounts",
         ]
     }
 }
@@ -111,6 +119,8 @@ impl FromStr for ConfigKey {
             "traffic.ws-payload-max-open-files" => Ok(Self::TrafficWsPayloadMaxOpenFiles),
             "access.mode" => Ok(Self::AccessMode),
             "access.allow-lan" => Ok(Self::AccessAllowLan),
+            "access.userpass.enabled" => Ok(Self::AccessUserPassEnabled),
+            "access.userpass.accounts" => Ok(Self::AccessUserPassAccounts),
             _ => Err(format!(
                 "Unknown config key: '{}'\n\nAvailable keys:\n{}",
                 s,
@@ -152,6 +162,8 @@ impl std::fmt::Display for ConfigKey {
             Self::TrafficWsPayloadMaxOpenFiles => "traffic.ws-payload-max-open-files",
             Self::AccessMode => "access.mode",
             Self::AccessAllowLan => "access.allow-lan",
+            Self::AccessUserPassEnabled => "access.userpass.enabled",
+            Self::AccessUserPassAccounts => "access.userpass.accounts",
         };
         write!(f, "{}", s)
     }

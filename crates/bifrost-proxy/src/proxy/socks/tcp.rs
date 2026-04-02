@@ -280,6 +280,7 @@ impl SocksServer {
             mode: config.access_mode,
             whitelist: config.client_whitelist.clone(),
             allow_lan: config.allow_lan,
+            userpass: None,
         };
         Self {
             config,
@@ -462,31 +463,47 @@ impl SocksServer {
 
             debug!("SOCKS5: Accepted connection from {}", peer_addr);
 
-            let decision = {
+            let (decision, should_defer_userpass) = {
                 let access_control = self.access_control.read().await;
-                access_control.check_access(&peer_addr.ip())
+                let decision = access_control.check_access(&peer_addr.ip());
+                let should_defer_userpass = access_control.should_defer_userpass(&decision);
+                (decision, should_defer_userpass)
             };
 
             match decision {
                 AccessDecision::Allow => {}
                 AccessDecision::Deny => {
-                    warn!(
-                        "SOCKS5: Access denied for client {} (not in whitelist)",
-                        peer_addr.ip()
-                    );
-                    continue;
+                    if should_defer_userpass {
+                        debug!(
+                            "SOCKS5: deferring access denial for {} to username/password auth",
+                            peer_addr.ip()
+                        );
+                    } else {
+                        warn!(
+                            "SOCKS5: Access denied for client {} (not in whitelist)",
+                            peer_addr.ip()
+                        );
+                        continue;
+                    }
                 }
                 AccessDecision::Prompt(ip) => {
-                    {
-                        let access_control = self.access_control.read().await;
-                        access_control.add_pending_authorization(ip);
-                    }
-                    warn!(
-                        "SOCKS5: Non-whitelisted client {} added to pending authorization. \
+                    if should_defer_userpass {
+                        debug!(
+                            "SOCKS5: deferring interactive authorization for {} to username/password auth",
+                            ip
+                        );
+                    } else {
+                        {
+                            let access_control = self.access_control.read().await;
+                            access_control.add_pending_authorization(ip);
+                        }
+                        warn!(
+                            "SOCKS5: Non-whitelisted client {} added to pending authorization. \
                         Approve via admin UI or use `bifrost whitelist add {}`",
-                        ip, ip
-                    );
-                    continue;
+                            ip, ip
+                        );
+                        continue;
+                    }
                 }
             }
 
@@ -499,6 +516,7 @@ impl SocksServer {
             let dns_resolver = self.dns_resolver.clone();
             let verbose_logging = self.verbose_logging;
             let unsafe_ssl = self.unsafe_ssl;
+            let access_control = Arc::clone(&self.access_control);
 
             tokio::spawn(async move {
                 let _permit = permit;
@@ -512,7 +530,8 @@ impl SocksServer {
                     );
                     handler = handler
                         .with_verbose_logging(verbose_logging)
-                        .with_unsafe_ssl(unsafe_ssl);
+                        .with_unsafe_ssl(unsafe_ssl)
+                        .with_access_control(access_control);
                     if let Some(dns) = dns_resolver {
                         handler = handler.with_dns_resolver(dns);
                     }
@@ -555,6 +574,7 @@ pub struct SocksHandler {
     tls_config: Option<Arc<TlsConfig>>,
     tls_intercept_config: Option<TlsInterceptConfig>,
     admin_state: Option<Arc<AdminState>>,
+    access_control: Option<Arc<RwLock<ClientAccessControl>>>,
     dns_resolver: Option<Arc<DnsResolver>>,
     verbose_logging: bool,
     unsafe_ssl: bool,
@@ -584,6 +604,7 @@ impl SocksHandler {
             tls_config: None,
             tls_intercept_config: None,
             admin_state: None,
+            access_control: None,
             dns_resolver: None,
             verbose_logging: false,
             unsafe_ssl: true,
@@ -608,6 +629,11 @@ impl SocksHandler {
         self.tls_config = Some(tls_config);
         self.tls_intercept_config = Some(tls_intercept_config);
         self.admin_state = admin_state;
+        self
+    }
+
+    pub fn with_access_control(mut self, access_control: Arc<RwLock<ClientAccessControl>>) -> Self {
+        self.access_control = Some(access_control);
         self
     }
 
@@ -696,7 +722,8 @@ impl SocksHandler {
         let mut methods = vec![0u8; nmethods as usize];
         self.stream().read_exact(&mut methods).await?;
 
-        let selected_method = self.select_auth_method(&methods);
+        let selected_method =
+            self.select_auth_method(&methods, self.requires_userpass_auth().await);
 
         let response = [SOCKS5_VERSION, selected_method as u8];
         self.stream().write_all(&response).await?;
@@ -710,8 +737,8 @@ impl SocksHandler {
         Ok(selected_method)
     }
 
-    fn select_auth_method(&self, methods: &[u8]) -> AuthMethod {
-        if self.auth_required {
+    fn select_auth_method(&self, methods: &[u8], userpass_auth_required: bool) -> AuthMethod {
+        if self.auth_required || userpass_auth_required {
             if methods.contains(&(AuthMethod::UsernamePassword as u8)) {
                 return AuthMethod::UsernamePassword;
             }
@@ -757,7 +784,8 @@ impl SocksHandler {
         let username = String::from_utf8_lossy(&username).to_string();
         let password = String::from_utf8_lossy(&password).to_string();
 
-        let auth_success = self.verify_credentials(&username, &password);
+        let matched_username = self.verify_credentials(&username, &password).await;
+        let auth_success = matched_username.is_some();
 
         let response = if auth_success {
             [0x01, 0x00]
@@ -775,13 +803,56 @@ impl SocksHandler {
         Ok(())
     }
 
-    fn verify_credentials(&self, username: &str, password: &str) -> bool {
+    async fn verify_credentials(&self, username: &str, password: &str) -> Option<String> {
+        if let Some(access_control) = &self.access_control {
+            let matched_username = {
+                let access_control = access_control.read().await;
+                access_control.verify_userpass(username, password)
+            };
+            if let Some(matched_username) = matched_username {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or_default();
+                {
+                    let access_control = access_control.read().await;
+                    access_control.record_userpass_success(&matched_username, timestamp);
+                }
+                if let Some(admin_state) = &self.admin_state {
+                    if let Some(config_manager) = admin_state.config_manager.as_ref() {
+                        if let Err(error) = config_manager
+                            .record_userpass_last_connected_at(&matched_username, timestamp)
+                            .await
+                        {
+                            warn!(
+                                "SOCKS5: failed to persist userpass auth timestamp for {}: {}",
+                                matched_username, error
+                            );
+                        }
+                    }
+                }
+                return Some(matched_username);
+            }
+        }
         match (&self.username, &self.password) {
             (Some(expected_user), Some(expected_pass)) => {
-                username == expected_user && password == expected_pass
+                if username == expected_user && password == expected_pass {
+                    Some(username.to_string())
+                } else {
+                    None
+                }
             }
-            _ => false,
+            _ => None,
         }
+    }
+
+    async fn requires_userpass_auth(&self) -> bool {
+        let Some(access_control) = &self.access_control else {
+            return false;
+        };
+        let access_control = access_control.read().await;
+        let decision = access_control.check_access(&self.peer_addr.ip());
+        access_control.should_defer_userpass(&decision)
     }
 
     async fn handle_request(&mut self) -> Result<(SocksCommand, SocksAddress, u16)> {

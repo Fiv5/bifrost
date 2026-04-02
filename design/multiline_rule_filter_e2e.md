@@ -36,6 +36,7 @@
 - `bash e2e-tests/tests/test_multiline_rule_filter_e2e.sh`
 - 新脚本使用 mock 服务黑盒验证多行规则的真实运行效果，而不是只检查解析结果。
 - 断言覆盖请求期与响应期两个阶段，避免只验证单侧行为。
+- 将 `test_multiline_rule_filter_e2e.sh` 纳入 `scripts/run_all_e2e.sh` 的稳定 shell 回归集合，确保日常默认回归入口持续覆盖该场景。
 - 同步更新 `e2e-tests/rules/COVERAGE.md`，记录多行规则过滤器回归夹具已经补充。
 
 ## 校验要求

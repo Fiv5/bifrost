@@ -90,6 +90,15 @@ const getModeIcon = (mode: AccessMode) => {
   }
 };
 
+interface UserPassAccountDraft {
+  key: string;
+  username: string;
+  password: string;
+  enabled: boolean;
+  hasPassword: boolean;
+  lastConnectedAt: string | null;
+}
+
 export default function AccessControlTab() {
   const {
     status,
@@ -100,6 +109,7 @@ export default function AccessControlTab() {
     removeFromWhitelist,
     setMode,
     setAllowLan,
+    setUserPassConfig,
     addTemporary,
     removeTemporary,
     clearError,
@@ -107,6 +117,8 @@ export default function AccessControlTab() {
 
   const [newIpOrCidr, setNewIpOrCidr] = useState("");
   const [newTempIp, setNewTempIp] = useState("");
+  const [userPassEnabled, setUserPassEnabled] = useState(false);
+  const [userPassAccounts, setUserPassAccounts] = useState<UserPassAccountDraft[]>([]);
 
   useEffect(() => {
     if (error) {
@@ -114,6 +126,23 @@ export default function AccessControlTab() {
       clearError();
     }
   }, [error, clearError]);
+
+  useEffect(() => {
+    if (!status) {
+      return;
+    }
+    setUserPassEnabled(status.userpass.enabled);
+    setUserPassAccounts(
+      status.userpass.accounts.map((account) => ({
+        key: account.username,
+        username: account.username,
+        password: "",
+        enabled: account.enabled,
+        hasPassword: account.has_password,
+        lastConnectedAt: account.last_connected_at,
+      })),
+    );
+  }, [status]);
 
   const handleAdd = async () => {
     if (!newIpOrCidr.trim()) {
@@ -164,6 +193,58 @@ export default function AccessControlTab() {
     const success = await setAllowLan(allow);
     if (success) {
       message.success(`LAN access ${allow ? "enabled" : "disabled"}`);
+    }
+  };
+
+  const handleAddUserPassAccount = () => {
+    setUserPassAccounts((current) => [
+      ...current,
+      {
+        key: `new-${Date.now()}-${current.length}`,
+        username: "",
+        password: "",
+        enabled: true,
+        hasPassword: false,
+        lastConnectedAt: null,
+      },
+    ]);
+  };
+
+  const handleRemoveUserPassAccount = (key: string) => {
+    setUserPassAccounts((current) => current.filter((account) => account.key !== key));
+  };
+
+  const handleUpdateUserPassAccount = (
+    key: string,
+    field: keyof UserPassAccountDraft,
+    value: string | boolean | null,
+  ) => {
+    setUserPassAccounts((current) =>
+      current.map((account) =>
+        account.key === key ? { ...account, [field]: value } : account,
+      ),
+    );
+  };
+
+  const handleSaveUserPassConfig = async () => {
+    if (
+      userPassAccounts.some(
+        (account) => !account.username.trim() || (!account.hasPassword && !account.password.trim()),
+      )
+    ) {
+      message.warning("New accounts require both username and password");
+      return;
+    }
+    const success = await setUserPassConfig(
+      userPassEnabled,
+      userPassAccounts.map((account) => ({
+        username: account.username.trim(),
+        password: account.password.trim() ? account.password.trim() : undefined,
+        enabled: account.enabled,
+      })),
+    );
+    if (success) {
+      message.success("Updated user/password proxy authentication");
     }
   };
 
@@ -304,6 +385,85 @@ export default function AccessControlTab() {
                   When enabled, private network IPs (192.168.x.x, 10.x.x.x,
                   172.16-31.x.x) are allowed
                 </Text>
+              </Col>
+              <Col span={24}>
+                <Divider style={{ margin: "8px 0" }} />
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  <Space>
+                    <Switch
+                      checked={userPassEnabled}
+                      onChange={setUserPassEnabled}
+                      data-testid="settings-access-userpass-enabled"
+                    />
+                    <Text>Enable User/Password Auth</Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    When IP-based access does not pass, configured accounts can still authenticate over HTTP and SOCKS5.
+                  </Text>
+                  <Space direction="vertical" style={{ width: "100%" }} size="middle">
+                    {userPassAccounts.map((account) => (
+                      <Card key={account.key} size="small">
+                        <Space direction="vertical" style={{ width: "100%" }}>
+                          <Space wrap style={{ width: "100%", justifyContent: "space-between" }}>
+                            <Text strong>Account</Text>
+                            <Button
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                              onClick={() => handleRemoveUserPassAccount(account.key)}
+                            >
+                              Remove
+                            </Button>
+                          </Space>
+                          <Input
+                            placeholder="Username"
+                            value={account.username}
+                            onChange={(e) =>
+                              handleUpdateUserPassAccount(account.key, "username", e.target.value)
+                            }
+                            data-testid={`settings-access-userpass-username-${account.key}`}
+                          />
+                          <Input.Password
+                            placeholder={account.hasPassword ? "Leave blank to keep current password" : "Password"}
+                            value={account.password}
+                            onChange={(e) =>
+                              handleUpdateUserPassAccount(account.key, "password", e.target.value)
+                            }
+                            data-testid={`settings-access-userpass-password-${account.key}`}
+                          />
+                          <Space>
+                            <Switch
+                              checked={account.enabled}
+                              onChange={(checked) =>
+                                handleUpdateUserPassAccount(account.key, "enabled", checked)
+                              }
+                            />
+                            <Text>Account Enabled</Text>
+                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            Last Connected: {account.lastConnectedAt ?? "-"}
+                          </Text>
+                        </Space>
+                      </Card>
+                    ))}
+                    <Space>
+                      <Button
+                        icon={<PlusOutlined />}
+                        onClick={handleAddUserPassAccount}
+                        data-testid="settings-access-userpass-add-button"
+                      >
+                        Add Account
+                      </Button>
+                      <Button
+                        type="primary"
+                        onClick={handleSaveUserPassConfig}
+                        data-testid="settings-access-userpass-save-button"
+                      >
+                        Save User/Password Auth
+                      </Button>
+                    </Space>
+                  </Space>
+                </Space>
               </Col>
             </Row>
           </Card>

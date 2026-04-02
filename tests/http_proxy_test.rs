@@ -312,6 +312,8 @@ fn test_proxy_config_custom() {
         max_body_probe_size: 64 * 1024,
         binary_traffic_performance_mode: true,
         enable_socks: true,
+        userpass_auth: None,
+        userpass_last_connected_at: std::collections::HashMap::new(),
     };
     assert_eq!(config.port, 9000);
     assert!(config.enable_tls_interception);

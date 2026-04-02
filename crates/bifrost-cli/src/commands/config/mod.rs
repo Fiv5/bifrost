@@ -14,7 +14,7 @@ use crate::cli::ConfigCommands;
 use client::{
     ConfigApiClient, PerformanceConfigResponse, ServerConfigResponse, TlsConfigResponse,
     UpdatePerformanceConfigRequest, UpdateServerConfigRequest, UpdateTlsConfigRequest,
-    WhitelistResponse,
+    UpdateUserPassAccountRequest, UpdateUserPassRequest, WhitelistResponse,
 };
 use keys::{format_size, parse_bool, parse_list, parse_size, ConfigKey};
 
@@ -254,6 +254,15 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
             let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
             serde_json::Value::Bool(whitelist.allow_lan)
         }
+        ConfigKey::AccessUserPassEnabled => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(whitelist.userpass.enabled)
+        }
+        ConfigKey::AccessUserPassAccounts => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            serde_json::to_value(whitelist.userpass.accounts)
+                .map_err(|error| BifrostError::Config(error.to_string()))?
+        }
     };
 
     if json {
@@ -266,6 +275,18 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
         display::print_config_value(&config_key, &value);
     }
     Ok(())
+}
+
+fn parse_userpass_accounts(
+    value: &str,
+) -> std::result::Result<Vec<UpdateUserPassAccountRequest>, String> {
+    serde_json::from_str(value).map_err(|error| {
+        format!(
+            "access.userpass.accounts expects a JSON array like \
+[{{\"username\":\"demo\",\"password\":\"secret\",\"enabled\":true}}]: {}",
+            error
+        )
+    })
 }
 
 fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<()> {
@@ -556,6 +577,37 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
             let allow = parse_bool(value).map_err(BifrostError::Config)?;
             client.set_allow_lan(allow).map_err(BifrostError::Config)?;
             println!("✓ allow-lan set to {}", allow);
+        }
+        ConfigKey::AccessUserPassEnabled => {
+            let enabled = parse_bool(value).map_err(BifrostError::Config)?;
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled,
+                    accounts: whitelist
+                        .userpass
+                        .accounts
+                        .into_iter()
+                        .map(|account| UpdateUserPassAccountRequest {
+                            username: account.username,
+                            password: None,
+                            enabled: account.enabled,
+                        })
+                        .collect(),
+                })
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.userpass.enabled set to {}", enabled);
+        }
+        ConfigKey::AccessUserPassAccounts => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            let accounts = parse_userpass_accounts(value).map_err(BifrostError::Config)?;
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled: whitelist.userpass.enabled,
+                    accounts,
+                })
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.userpass.accounts updated");
         }
     }
     Ok(())
@@ -975,6 +1027,34 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
         ConfigKey::AccessAllowLan => {
             client.set_allow_lan(false).map_err(BifrostError::Config)?;
             println!("✓ access.allow-lan reset to false");
+        }
+        ConfigKey::AccessUserPassEnabled => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled: false,
+                    accounts: whitelist
+                        .userpass
+                        .accounts
+                        .into_iter()
+                        .map(|account| UpdateUserPassAccountRequest {
+                            username: account.username,
+                            password: None,
+                            enabled: account.enabled,
+                        })
+                        .collect(),
+                })
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.userpass.enabled reset to false");
+        }
+        ConfigKey::AccessUserPassAccounts => {
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled: false,
+                    accounts: Vec::new(),
+                })
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.userpass.accounts reset");
         }
     }
     Ok(())

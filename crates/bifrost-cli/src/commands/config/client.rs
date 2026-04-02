@@ -77,6 +77,10 @@ impl ConfigApiClient {
         )
     }
 
+    pub fn set_userpass(&self, req: &UpdateUserPassRequest) -> Result<serde_json::Value, String> {
+        self.put("/whitelist/userpass", req)
+    }
+
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
         let url = format!("{}{}", self.base_url, path);
         let resp = bifrost_core::direct_ureq_agent().get(&url).call().map_err(|e| {
@@ -300,6 +304,21 @@ pub struct WhitelistResponse {
     pub allow_lan: bool,
     pub whitelist: Vec<String>,
     pub temporary_whitelist: Vec<String>,
+    pub userpass: UserPassResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UserPassResponse {
+    pub enabled: bool,
+    pub accounts: Vec<UserPassAccountResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPassAccountResponse {
+    pub username: String,
+    pub enabled: bool,
+    pub has_password: bool,
+    pub last_connected_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,4 +329,17 @@ pub struct AccessModeRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct AllowLanRequest {
     pub allow_lan: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateUserPassRequest {
+    pub enabled: bool,
+    pub accounts: Vec<UpdateUserPassAccountRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateUserPassAccountRequest {
+    pub username: String,
+    pub password: Option<String>,
+    pub enabled: bool,
 }

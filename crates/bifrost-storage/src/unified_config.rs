@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use bifrost_core::AccessMode;
+use bifrost_core::{AccessMode, UserPassAuthConfig};
 use serde::{Deserialize, Serialize};
 
 pub const MIN_TRAFFIC_MAX_RECORDS: usize = 1_000;
@@ -227,6 +227,7 @@ pub struct AccessConfig {
     pub mode: AccessMode,
     pub whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub userpass: Option<UserPassAuthConfig>,
 }
 
 impl Default for AccessConfig {
@@ -235,6 +236,7 @@ impl Default for AccessConfig {
             mode: AccessMode::LocalOnly,
             whitelist: Vec::new(),
             allow_lan: false,
+            userpass: None,
         }
     }
 }
@@ -382,6 +384,7 @@ pub struct AccessConfigUpdate {
     pub mode: Option<AccessMode>,
     pub whitelist: Option<Vec<String>>,
     pub allow_lan: Option<bool>,
+    pub userpass: Option<Option<UserPassAuthConfig>>,
 }
 
 #[derive(Debug, Clone, Default)]

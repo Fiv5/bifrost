@@ -1125,11 +1125,21 @@ impl PushManager {
             SETTINGS_SCOPE_WHITELIST_STATUS => {
                 let access_control = self.state.access_control.as_ref()?;
                 let ac = access_control.read().await;
+                let userpass = ac.userpass_status();
                 json!({
                     "mode": ac.mode().to_string(),
                     "allow_lan": ac.allow_lan(),
                     "whitelist": ac.whitelist_entries(),
                     "temporary_whitelist": ac.temporary_whitelist_entries().iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
+                    "userpass": {
+                        "enabled": userpass.enabled,
+                        "accounts": userpass.accounts.into_iter().map(|account| json!({
+                            "username": account.username,
+                            "enabled": account.enabled,
+                            "has_password": account.has_password,
+                            "last_connected_at": account.last_connected_at.and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp as i64, 0).map(|dt| dt.to_rfc3339())),
+                        })).collect::<Vec<_>>(),
+                    },
                 })
             }
             SETTINGS_SCOPE_PENDING_AUTHORIZATIONS => {

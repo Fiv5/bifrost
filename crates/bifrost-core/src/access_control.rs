@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -88,6 +88,7 @@ pub struct AccessControlConfig {
     pub mode: AccessMode,
     pub whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub userpass: Option<UserPassAuthConfig>,
 }
 
 impl Default for AccessControlConfig {
@@ -96,14 +97,44 @@ impl Default for AccessControlConfig {
             mode: AccessMode::LocalOnly,
             whitelist: Vec::new(),
             allow_lan: false,
+            userpass: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserPassAccountConfig {
+    pub username: String,
+    pub password: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UserPassAuthConfig {
+    pub enabled: bool,
+    pub accounts: Vec<UserPassAccountConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UserPassAccountStatus {
+    pub username: String,
+    pub enabled: bool,
+    pub has_password: bool,
+    pub last_connected_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct UserPassAuthStatus {
+    pub enabled: bool,
+    pub accounts: Vec<UserPassAccountStatus>,
 }
 
 pub struct ClientAccessControl {
     mode: AccessMode,
     whitelist: HashSet<IpNet>,
     allow_lan: bool,
+    userpass: RwLock<Option<UserPassAuthConfig>>,
+    userpass_last_connected_at: RwLock<HashMap<String, u64>>,
     temporary_whitelist: RwLock<HashSet<IpAddr>>,
     session_denied: RwLock<HashSet<IpAddr>>,
     pending_authorization: RwLock<Vec<(IpAddr, u64, u32)>>,
@@ -132,6 +163,8 @@ impl ClientAccessControl {
             mode: config.mode,
             whitelist,
             allow_lan: config.allow_lan,
+            userpass: RwLock::new(config.userpass),
+            userpass_last_connected_at: RwLock::new(HashMap::new()),
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
@@ -155,6 +188,8 @@ impl ClientAccessControl {
             mode,
             whitelist: HashSet::new(),
             allow_lan: false,
+            userpass: RwLock::new(None),
+            userpass_last_connected_at: RwLock::new(HashMap::new()),
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
@@ -377,6 +412,89 @@ impl ClientAccessControl {
         info!("Allow LAN set to: {}", allow);
     }
 
+    pub fn userpass_config(&self) -> Option<UserPassAuthConfig> {
+        self.userpass.read().unwrap().clone()
+    }
+
+    pub fn set_userpass_config(&self, config: Option<UserPassAuthConfig>) {
+        *self.userpass.write().unwrap() = config;
+        self.retain_userpass_runtime_state();
+        self.increment_generation();
+    }
+
+    pub fn has_userpass_auth(&self) -> bool {
+        self.userpass
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+    }
+
+    pub fn should_defer_userpass(&self, _decision: &AccessDecision) -> bool {
+        self.has_userpass_auth()
+    }
+
+    pub fn verify_userpass(&self, username: &str, password: &str) -> Option<String> {
+        let userpass = self.userpass.read().unwrap();
+        let config = userpass.as_ref()?;
+        if !config.enabled {
+            return None;
+        }
+
+        config.accounts.iter().find_map(|account| {
+            if !account.enabled {
+                return None;
+            }
+
+            match &account.password {
+                Some(expected_password)
+                    if account.username == username && expected_password == password =>
+                {
+                    Some(account.username.clone())
+                }
+                _ => None,
+            }
+        })
+    }
+
+    pub fn record_userpass_success(&self, username: &str, timestamp: u64) {
+        self.userpass_last_connected_at
+            .write()
+            .unwrap()
+            .insert(username.to_string(), timestamp);
+    }
+
+    pub fn set_userpass_last_connected_at(&self, last_connected_at: HashMap<String, u64>) {
+        *self.userpass_last_connected_at.write().unwrap() = last_connected_at;
+        self.retain_userpass_runtime_state();
+    }
+
+    pub fn userpass_last_connected_at(&self) -> HashMap<String, u64> {
+        self.userpass_last_connected_at.read().unwrap().clone()
+    }
+
+    pub fn userpass_status(&self) -> UserPassAuthStatus {
+        let userpass = self.userpass.read().unwrap();
+        let Some(config) = userpass.as_ref() else {
+            return UserPassAuthStatus::default();
+        };
+        let last_connected_at = self.userpass_last_connected_at.read().unwrap();
+
+        UserPassAuthStatus {
+            enabled: config.enabled,
+            accounts: config
+                .accounts
+                .iter()
+                .map(|account| UserPassAccountStatus {
+                    username: account.username.clone(),
+                    enabled: account.enabled,
+                    has_password: account.password.is_some(),
+                    last_connected_at: last_connected_at.get(&account.username).copied(),
+                })
+                .collect(),
+        }
+    }
+
     pub fn add_pending_authorization(&self, ip: IpAddr) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -478,6 +596,26 @@ impl ClientAccessControl {
         pending.clear();
         info!("Cleared all pending authorizations");
     }
+
+    fn retain_userpass_runtime_state(&self) {
+        let usernames: HashSet<String> = self
+            .userpass
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|config| {
+                config
+                    .accounts
+                    .iter()
+                    .map(|account| account.username.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.userpass_last_connected_at
+            .write()
+            .unwrap()
+            .retain(|username, _| usernames.contains(username));
+    }
 }
 
 impl Default for ClientAccessControl {
@@ -560,6 +698,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec!["192.168.1.0/24".to_string()],
             allow_lan: false,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 
@@ -576,6 +715,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec![],
             allow_lan: true,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 
@@ -652,6 +792,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec!["192.168.1.0/24".to_string(), "10.0.0.1".to_string()],
             allow_lan: false,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 

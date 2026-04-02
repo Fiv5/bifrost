@@ -158,6 +158,21 @@ pub fn print_access_config(whitelist: &WhitelistResponse) {
     println!("Access Control");
     println!("  Mode:                 {}", whitelist.mode);
     println!("  Allow LAN:            {}", whitelist.allow_lan);
+    println!("  UserPass Enabled:     {}", whitelist.userpass.enabled);
+    if whitelist.userpass.accounts.is_empty() {
+        println!("  UserPass Accounts:    []");
+    } else {
+        println!("  UserPass Accounts:");
+        for account in &whitelist.userpass.accounts {
+            println!(
+                "    - {} (enabled: {}, has_password: {}, last_connected_at: {})",
+                account.username,
+                account.enabled,
+                account.has_password,
+                account.last_connected_at.as_deref().unwrap_or("-")
+            );
+        }
+    }
 }
 
 pub fn print_config_value(key: &ConfigKey, value: &serde_json::Value) {

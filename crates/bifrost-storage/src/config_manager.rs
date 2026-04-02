@@ -155,6 +155,9 @@ impl ConfigManager {
         if let Some(allow_lan) = update.allow_lan {
             config.access.allow_lan = allow_lan;
         }
+        if let Some(userpass) = update.userpass {
+            config.access.userpass = userpass;
+        }
 
         self.save_config(&config)?;
         let _ = self
@@ -498,6 +501,34 @@ impl ConfigManager {
         state.enabled_groups()
     }
 
+    pub async fn userpass_last_connected_at(&self) -> std::collections::HashMap<String, u64> {
+        let state = self.state_manager.read().await;
+        state.userpass_last_connected_at().clone()
+    }
+
+    pub async fn record_userpass_last_connected_at(
+        &self,
+        username: &str,
+        timestamp: u64,
+    ) -> Result<()> {
+        let mut state = self.state_manager.write().await;
+        state.set_userpass_last_connected_at(username, timestamp);
+        state.save()?;
+        let _ = self.change_notifier.send(ConfigChangeEvent::StateChanged);
+        Ok(())
+    }
+
+    pub async fn replace_userpass_last_connected_at(
+        &self,
+        timestamps: std::collections::HashMap<String, u64>,
+    ) -> Result<()> {
+        let mut state = self.state_manager.write().await;
+        state.replace_userpass_last_connected_at(timestamps);
+        state.save()?;
+        let _ = self.change_notifier.send(ConfigChangeEvent::StateChanged);
+        Ok(())
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<ConfigChangeEvent> {
         self.change_notifier.subscribe()
     }
@@ -605,6 +636,7 @@ impl ConfigManager {
                     .unwrap_or(bifrost_core::AccessMode::LocalOnly),
                 whitelist: legacy.access.whitelist.clone(),
                 allow_lan: legacy.access.allow_lan,
+                userpass: None,
             },
             proxy: ProxySettings::default(),
             system_proxy: SystemProxyConfig {

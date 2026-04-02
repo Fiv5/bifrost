@@ -1142,11 +1142,13 @@ pub async fn handle_http_request(
         .collect();
 
     #[cfg(feature = "http3")]
+    let use_upstream_proxy = should_use_upstream_proxy(&resolved_rules);
+
     let should_try_http3_upstream = use_tls
         && resolved_rules.upstream_http3
         && !request_body_is_streaming
         && dns_resolver.is_some()
-        && resolved_rules.proxy.is_none()
+        && !use_upstream_proxy
         && !ProtocolDetector::is_websocket_upgrade(&req_headers_for_h3)
         && !ProtocolDetector::is_sse_request(&req_headers_for_h3);
 
@@ -1213,107 +1215,172 @@ pub async fn handle_http_request(
         build_upstream_pool_partition(&original_host, &host, port, use_tls, &resolved_rules);
 
     #[cfg(feature = "http3")]
-    let upstream_result = if let Some(ref proxy_rule) = resolved_rules.proxy {
-        let send_start = Instant::now();
-        let proxy_target_uri =
-            build_proxy_forward_uri(&processed_uri, &original_host, original_port, is_https)?;
-        let (outgoing_parts, outgoing_body) = outgoing_req.into_parts();
-        let res = match send_request_via_upstream_proxy(
-            proxy_rule,
-            proxy_target_uri,
-            outgoing_parts,
-            outgoing_body,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let error_message = e.to_string();
-                error!("[{}] {}", ctx.id_str(), error_message);
-                return Ok(build_conn_error_and_record(
-                    "REQUEST_PROXY_FAILED",
-                    error_message,
-                    None,
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        let (parts, body) = res.into_parts();
-        (parts, Some(body), None, None, wait_ms)
-    } else if let Some((res, wait_ms)) = h3_attempt {
-        let (parts, body) = res.into_parts();
-        (
-            parts,
-            None,
-            Some(full_body(body.clone())),
-            Some((body, 0)),
-            wait_ms,
-        )
-    } else {
-        let send_start = Instant::now();
-        let res = match send_pooled_request(
-            outgoing_req,
-            unsafe_ssl,
-            &resolved_rules.dns_servers,
-            &pool_partition,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let retryable_upstream_h2 = use_tls
-                    && matches!(method.as_str(), "GET" | "HEAD")
-                    && retry_blueprint.is_some()
-                    && (!e.is_connect() || is_retryable_http2_upstream_error(&e));
+    let upstream_result =
+        if let Some(proxy_rule) = resolved_rules.proxy.as_ref().filter(|_| use_upstream_proxy) {
+            let send_start = Instant::now();
+            let proxy_target_uri =
+                build_proxy_forward_uri(&processed_uri, &original_host, original_port, is_https)?;
+            let (outgoing_parts, outgoing_body) = outgoing_req.into_parts();
+            let res = match send_request_via_upstream_proxy(
+                proxy_rule,
+                proxy_target_uri,
+                outgoing_parts,
+                outgoing_body,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let error_message = e.to_string();
+                    error!("[{}] {}", ctx.id_str(), error_message);
+                    return Ok(build_conn_error_and_record(
+                        "REQUEST_PROXY_FAILED",
+                        error_message,
+                        None,
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            let (parts, body) = res.into_parts();
+            (parts, Some(body), None, None, wait_ms)
+        } else if let Some((res, wait_ms)) = h3_attempt {
+            let (parts, body) = res.into_parts();
+            (
+                parts,
+                None,
+                Some(full_body(body.clone())),
+                Some((body, 0)),
+                wait_ms,
+            )
+        } else {
+            let send_start = Instant::now();
+            let res = match send_pooled_request(
+                outgoing_req,
+                unsafe_ssl,
+                &resolved_rules.dns_servers,
+                &pool_partition,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let retryable_upstream_h2 = use_tls
+                        && matches!(method.as_str(), "GET" | "HEAD")
+                        && retry_blueprint.is_some()
+                        && (!e.is_connect() || is_retryable_http2_upstream_error(&e));
 
-                if retryable_upstream_h2 {
-                    warn!(
-                        "[{}] Upstream HTTP/2 request failed; retrying with HTTP/1.1 fallback",
-                        ctx.id_str()
-                    );
-                    mark_http1_upstream_fallback(
-                        unsafe_ssl,
-                        &resolved_rules.dns_servers,
-                        &pool_partition,
-                    );
-                    let retry_request = retry_blueprint
-                        .as_ref()
-                        .expect("retry blueprint exists for retryable request")
-                        .build()?;
-                    match send_pooled_request_http1_only(
-                        retry_request,
-                        unsafe_ssl,
-                        &resolved_rules.dns_servers,
-                        &pool_partition,
-                    )
-                    .await
-                    {
-                        Ok(response) => {
-                            info!(
-                                "[{}] Upstream request recovered via HTTP/1.1 fallback",
-                                ctx.id_str()
-                            );
-                            response
-                        }
-                        Err(retry_err) => {
-                            let classified = classify_request_error(&retry_err);
-                            error!(
-                                "[{}] {} ({})",
-                                ctx.id_str(),
-                                classified.error_message,
-                                classified.error_type
-                            );
-                            for source in &classified.source_chain {
-                                error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                    if retryable_upstream_h2 {
+                        warn!(
+                            "[{}] Upstream HTTP/2 request failed; retrying with HTTP/1.1 fallback",
+                            ctx.id_str()
+                        );
+                        mark_http1_upstream_fallback(
+                            unsafe_ssl,
+                            &resolved_rules.dns_servers,
+                            &pool_partition,
+                        );
+                        let retry_request = retry_blueprint
+                            .as_ref()
+                            .expect("retry blueprint exists for retryable request")
+                            .build()?;
+                        match send_pooled_request_http1_only(
+                            retry_request,
+                            unsafe_ssl,
+                            &resolved_rules.dns_servers,
+                            &pool_partition,
+                        )
+                        .await
+                        {
+                            Ok(response) => {
+                                info!(
+                                    "[{}] Upstream request recovered via HTTP/1.1 fallback",
+                                    ctx.id_str()
+                                );
+                                response
                             }
-                            return Ok(build_conn_error_and_record(
-                                classified.error_type,
-                                classified.error_message,
-                                None,
-                            ));
+                            Err(retry_err) => {
+                                let classified = classify_request_error(&retry_err);
+                                error!(
+                                    "[{}] {} ({})",
+                                    ctx.id_str(),
+                                    classified.error_message,
+                                    classified.error_type
+                                );
+                                for source in &classified.source_chain {
+                                    error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                                }
+                                return Ok(build_conn_error_and_record(
+                                    classified.error_type,
+                                    classified.error_message,
+                                    None,
+                                ));
+                            }
                         }
+                    } else {
+                        let classified = classify_request_error(&e);
+                        error!(
+                            "[{}] {} ({})",
+                            ctx.id_str(),
+                            classified.error_message,
+                            classified.error_type
+                        );
+                        for source in &classified.source_chain {
+                            error!("[{}] Request failure source: {}", ctx.id_str(), source);
+                        }
+                        return Ok(build_conn_error_and_record(
+                            classified.error_type,
+                            classified.error_message,
+                            None,
+                        ));
                     }
-                } else {
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            let (parts, body) = res.into_parts();
+            (parts, Some(body), None, None, wait_ms)
+        };
+
+    #[cfg(not(feature = "http3"))]
+    let upstream_result =
+        if let Some(proxy_rule) = resolved_rules.proxy.as_ref().filter(|_| use_upstream_proxy) {
+            let send_start = Instant::now();
+            let proxy_target_uri =
+                build_proxy_forward_uri(&processed_uri, &original_host, original_port, is_https)?;
+            let (outgoing_parts, outgoing_body) = outgoing_req.into_parts();
+            let res = match send_request_via_upstream_proxy(
+                proxy_rule,
+                proxy_target_uri,
+                outgoing_parts,
+                outgoing_body,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    let error_message = e.to_string();
+                    error!("[{}] {}", ctx.id_str(), error_message);
+                    return Ok(build_conn_error_and_record(
+                        "REQUEST_PROXY_FAILED",
+                        error_message,
+                        None,
+                    ));
+                }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            let (parts, body) = res.into_parts();
+            (parts, Some(body), None, None, wait_ms)
+        } else {
+            let send_start = Instant::now();
+            let res = match send_pooled_request(
+                outgoing_req,
+                unsafe_ssl,
+                &resolved_rules.dns_servers,
+                &pool_partition,
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
                     let classified = classify_request_error(&e);
                     error!(
                         "[{}] {} ({})",
@@ -1330,74 +1397,11 @@ pub async fn handle_http_request(
                         None,
                     ));
                 }
-            }
+            };
+            let wait_ms = send_start.elapsed().as_millis() as u64;
+            let (parts, body) = res.into_parts();
+            (parts, Some(body), None, None, wait_ms)
         };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        let (parts, body) = res.into_parts();
-        (parts, Some(body), None, None, wait_ms)
-    };
-
-    #[cfg(not(feature = "http3"))]
-    let upstream_result = if let Some(ref proxy_rule) = resolved_rules.proxy {
-        let send_start = Instant::now();
-        let proxy_target_uri =
-            build_proxy_forward_uri(&processed_uri, &original_host, original_port, is_https)?;
-        let (outgoing_parts, outgoing_body) = outgoing_req.into_parts();
-        let res = match send_request_via_upstream_proxy(
-            proxy_rule,
-            proxy_target_uri,
-            outgoing_parts,
-            outgoing_body,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let error_message = e.to_string();
-                error!("[{}] {}", ctx.id_str(), error_message);
-                return Ok(build_conn_error_and_record(
-                    "REQUEST_PROXY_FAILED",
-                    error_message,
-                    None,
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        let (parts, body) = res.into_parts();
-        (parts, Some(body), None, None, wait_ms)
-    } else {
-        let send_start = Instant::now();
-        let res = match send_pooled_request(
-            outgoing_req,
-            unsafe_ssl,
-            &resolved_rules.dns_servers,
-            &pool_partition,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let classified = classify_request_error(&e);
-                error!(
-                    "[{}] {} ({})",
-                    ctx.id_str(),
-                    classified.error_message,
-                    classified.error_type
-                );
-                for source in &classified.source_chain {
-                    error!("[{}] Request failure source: {}", ctx.id_str(), source);
-                }
-                return Ok(build_conn_error_and_record(
-                    classified.error_type,
-                    classified.error_message,
-                    None,
-                ));
-            }
-        };
-        let wait_ms = send_start.elapsed().as_millis() as u64;
-        let (parts, body) = res.into_parts();
-        (parts, Some(body), None, None, wait_ms)
-    };
 
     let (mut res_parts, mut res_body_incoming, mut res_body_stream, mut pre_read_res, wait_ms) =
         upstream_result;
@@ -2133,6 +2137,10 @@ fn extract_host_port(uri: &Uri, rules: &ResolvedRules, is_https: bool) -> Result
     Ok((host, port))
 }
 
+fn should_use_upstream_proxy(rules: &ResolvedRules) -> bool {
+    rules.proxy.is_some() && (rules.ignored.host || rules.host.is_none())
+}
+
 fn get_default_port(host_protocol: &Option<Protocol>, is_https: bool) -> u16 {
     match host_protocol {
         Some(Protocol::Http) | Some(Protocol::Ws) => 80,
@@ -2815,6 +2823,39 @@ mod tests {
         let (host, port) = extract_host_port(&uri, &rules, false).unwrap();
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 9090);
+    }
+
+    #[test]
+    fn test_should_use_upstream_proxy_when_only_proxy_rule_exists() {
+        let rules = ResolvedRules {
+            proxy: Some("127.0.0.1:9090".to_string()),
+            ..Default::default()
+        };
+        assert!(should_use_upstream_proxy(&rules));
+    }
+
+    #[test]
+    fn test_should_not_use_upstream_proxy_when_host_rule_also_exists() {
+        let rules = ResolvedRules {
+            host: Some("127.0.0.1:3000".to_string()),
+            proxy: Some("127.0.0.1:9090".to_string()),
+            ..Default::default()
+        };
+        assert!(!should_use_upstream_proxy(&rules));
+    }
+
+    #[test]
+    fn test_should_use_upstream_proxy_when_host_rule_is_ignored() {
+        let rules = ResolvedRules {
+            host: Some("127.0.0.1:3000".to_string()),
+            proxy: Some("127.0.0.1:9090".to_string()),
+            ignored: crate::server::IgnoredFields {
+                host: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(should_use_upstream_proxy(&rules));
     }
 
     #[test]
