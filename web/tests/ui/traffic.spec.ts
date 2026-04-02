@@ -1544,3 +1544,109 @@ test("OpenAI 风格 SSE 会自动打开聚合后的 Response tab", async ({ page
 
   await server.close();
 });
+
+test("push 重连后已删除记录应从列表移除", async ({ page, request }) => {
+  await clearTraffic(request);
+  const server = await startMockServer();
+  const token = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const keepPath = `/reconnect-keep-${token}`;
+  const deletePath1 = `/reconnect-del1-${token}`;
+  const deletePath2 = `/reconnect-del2-${token}`;
+
+  let blockServerMessages = false;
+
+  await page.routeWebSocket(/\/api\/push/, (ws) => {
+    const srv = ws.connectToServer();
+    ws.onMessage((message) => {
+      srv.send(message);
+    });
+    srv.onMessage((message) => {
+      if (!blockServerMessages) {
+        ws.send(message);
+      }
+    });
+  });
+
+  try {
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${keepPath}`);
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${deletePath1}`);
+    await sendProxyRequest(`http://127.0.0.1:${server.port}${deletePath2}`);
+
+    await page.goto("/_bifrost/traffic");
+    await expect(page.getByTestId("traffic-table")).toBeVisible();
+
+    const keepRow = page.getByTestId("traffic-row").filter({ hasText: keepPath }).first();
+    const delRow1 = page.getByTestId("traffic-row").filter({ hasText: deletePath1 }).first();
+    const delRow2 = page.getByTestId("traffic-row").filter({ hasText: deletePath2 }).first();
+    await expect(keepRow).toBeVisible();
+    await expect(delRow1).toBeVisible();
+    await expect(delRow2).toBeVisible();
+
+    const delId1 = await delRow1.getAttribute("data-record-id");
+    const delId2 = await delRow2.getAttribute("data-record-id");
+    expect(delId1).toBeTruthy();
+    expect(delId2).toBeTruthy();
+
+    blockServerMessages = true;
+
+    await page.evaluate(() => {
+      const bt = (window as any).__bifrost_test;
+      if (bt) bt.pauseRealtime();
+    });
+
+    await page.waitForTimeout(1000);
+
+    const del1Resp = await request.fetch(`${apiBase}/traffic`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      data: JSON.stringify({ ids: [delId1] }),
+    });
+    expect(del1Resp.ok()).toBeTruthy();
+
+    const del2Resp = await request.fetch(`${apiBase}/traffic`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      data: JSON.stringify({ ids: [delId2] }),
+    });
+    expect(del2Resp.ok()).toBeTruthy();
+
+    const verifyDeleted = await request.get(
+      `${apiBase}/traffic/${encodeURIComponent(delId1!)}`,
+    );
+    expect(verifyDeleted.status()).toBe(404);
+
+    await page.waitForTimeout(500);
+
+    const rowCountBeforeResume = await page.getByTestId("traffic-row").filter({ hasText: token }).count();
+
+    blockServerMessages = false;
+
+    await page.evaluate(() => {
+      const bt = (window as any).__bifrost_test;
+      if (bt) bt.resumeRealtime();
+    });
+
+    await page.waitForTimeout(8000);
+
+    const rowCountAfterResume = await page.getByTestId("traffic-row").filter({ hasText: token }).count();
+
+    await expect(keepRow).toBeVisible();
+
+    const del1Count = await delRow1.count();
+    const del2Count = await delRow2.count();
+
+    expect(
+      del1Count + del2Count,
+      `BUG: Deleted rows still visible after push reconnect. ` +
+        `Before resume: ${rowCountBeforeResume}, after: ${rowCountAfterResume}. ` +
+        `Expected deleted rows to be removed.`,
+    ).toBe(0);
+  } finally {
+    blockServerMessages = false;
+    await page.evaluate(() => {
+      const bt = (window as any).__bifrost_test;
+      if (bt) bt.resumeRealtime();
+    });
+    await server.close();
+  }
+});

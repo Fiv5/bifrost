@@ -61,6 +61,7 @@ interface TrafficState {
   fetchInitialData: () => Promise<void>;
   backfillHistory: () => Promise<void>;
   catchUpUpdates: () => Promise<void>;
+  reloadRecords: () => Promise<void>;
   fetchTrafficDetail: (id: string) => Promise<void>;
   appendSseResponseBody: (recordId: string, payload: string) => void;
   setResponseBody: (recordId: string, body: string | null) => void;
@@ -1691,6 +1692,11 @@ export const useTrafficStore = create<TrafficState>()(
           };
           const response = await api.getTrafficUpdates(filter);
 
+          set((prev) => ({
+            serverTotal: response.server_total,
+            serverSequence: response.server_sequence ?? prev.serverSequence,
+          }));
+
           if (response.new_records.length > 0 || response.updated_records.length > 0) {
             const convertedNew = response.new_records.map(compactToSummary);
             const convertedUpdated = response.updated_records.map(compactToSummary);
@@ -1780,6 +1786,67 @@ export const useTrafficStore = create<TrafficState>()(
           set({ error: (e as Error).message });
         } finally {
           set({ catchingUp: false });
+        }
+
+        const afterState = get();
+        if (afterState.records.length > 0 && afterState.serverTotal < afterState.records.length) {
+          await get().reloadRecords();
+        }
+      },
+
+      reloadRecords: async () => {
+        try {
+          const filter: TrafficUpdatesFilter = {
+            limit: INITIAL_WINDOW_LIMIT,
+          };
+          const response = await api.getTrafficUpdates(filter);
+          const convertedRecords = response.new_records.map(compactToSummary);
+          const preprocessedRecords = preprocessRecords(convertedRecords);
+
+          const newPendingIds = new Set<string>();
+          const newRecordsMap = new Map<string, TrafficSummary>();
+          for (const r of preprocessedRecords) {
+            newRecordsMap.set(r.id, r);
+            if (isPendingRecord(r)) {
+              newPendingIds.add(r.id);
+            }
+          }
+          capPendingIds(newPendingIds);
+
+          const boundaries = getBoundaryState(preprocessedRecords);
+          const clientCatalog = buildClientCatalog(preprocessedRecords);
+
+          set({
+            records: preprocessedRecords,
+            recordsMap: newRecordsMap,
+            serverTotal: response.server_total,
+            serverSequence: response.server_sequence,
+            hasMore: response.has_more,
+            oldestSequence: boundaries.oldestSequence,
+            lastId: boundaries.lastId,
+            lastSequence: boundaries.lastSequence,
+            pendingIds: newPendingIds,
+            filterVersion: get().filterVersion + 1,
+            recordsMutation: createRecordsMutation({
+              reset: true,
+              inserted: preprocessedRecords,
+              updated: [],
+              deletedIds: [],
+            }),
+            ...clientCatalog,
+          });
+
+          pushService.updateSubscription({
+            last_traffic_id: boundaries.lastId || undefined,
+            last_sequence: boundaries.lastSequence || undefined,
+            pending_ids: Array.from(newPendingIds),
+          });
+
+          if (response.has_more) {
+            void get().backfillHistory();
+          }
+        } catch (_e) {
+          // reload is best-effort; errors are non-fatal
         }
       },
 
