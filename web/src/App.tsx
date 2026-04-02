@@ -3,6 +3,7 @@ import { BrowserRouter, HashRouter, Routes, Route, Navigate } from "react-router
 import { ConfigProvider, Modal, Steps, App as AntApp, message, theme, Typography } from "antd";
 import AppLayout from "./components/Layout";
 import BifrostFileDropZone from "./components/BifrostFileDropZone";
+import PendingAuthModal from "./components/PendingAuthModal";
 import Rules from "./pages/Rules";
 import Traffic from "./pages/Traffic";
 import TrafficDetailPage from "./pages/TrafficDetailPage";
@@ -252,6 +253,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
       {isDesktopShell() ? (
         <HashRouter>
           <BifrostFileDropZone>
+            <PendingAuthModal />
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
@@ -270,6 +272,7 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
       ) : (
         <BrowserRouter basename={getAdminPrefix()}>
           <BifrostFileDropZone>
+            <PendingAuthModal />
             <Routes>
               <Route path="/sync-login" element={<SyncLogin />} />
               <Route path="/traffic/detail" element={<TrafficDetailPage />} />
