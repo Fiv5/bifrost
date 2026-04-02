@@ -1,4 +1,4 @@
-use std::io::stdout;
+use std::io::{stdout, IsTerminal};
 use std::time::Duration;
 
 use crossterm::{
@@ -322,7 +322,7 @@ fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> se
 }
 
 fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
-    let use_color = !options.no_color && atty::is(atty::Stream::Stdout);
+    let use_color = !options.no_color && std::io::stdout().is_terminal();
 
     println!();
     if use_color {
@@ -439,7 +439,7 @@ fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
 }
 
 fn print_compact_format(response: &SearchResponse, options: &SearchOptions) {
-    let use_color = !options.no_color && atty::is(atty::Stream::Stdout);
+    let use_color = !options.no_color && std::io::stdout().is_terminal();
 
     for item in &response.results {
         let r = &item.record;

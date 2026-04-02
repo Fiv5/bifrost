@@ -42,7 +42,7 @@ colored = "2"
 tempfile = "3"
 ratatui = "0.29"
 crossterm = "0.28"
-atty = "0.2"
+is-terminal = "0.4"
 tokio-tungstenite = "0.26"
 
 [target.'cfg(unix)'.dependencies]
