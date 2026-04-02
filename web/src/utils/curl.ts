@@ -24,12 +24,7 @@ export function generateCurl(record: TrafficRecord): string {
   }
 
   if (record.request_body) {
-    const body = record.request_body;
-    if (body.length > 1000) {
-      parts.push(`--data '${escapeShellArg(body.substring(0, 1000))}...'`);
-    } else {
-      parts.push(`--data '${escapeShellArg(body)}'`);
-    }
+    parts.push(`--data '${escapeShellArg(record.request_body)}'`);
   }
 
   return parts.join(' \\\n  ');
