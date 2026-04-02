@@ -3133,13 +3133,13 @@ x-tt-env: ppe_yqq_test
         assert_eq!(rule0.value, "localhost:5173");
         assert_eq!(
             rule0.include_filters.len(),
-            0,
-            "domain-style includeFilter (mira.byteintl.net) is not a recognized filter type"
+            1,
+            "domain-style includeFilter (mira.byteintl.net) should be recognized as URL filter"
         );
         assert_eq!(
             rule0.exclude_filters.len(),
-            0,
-            "domain-style excludeFilter paths without leading / are not recognized"
+            7,
+            "domain-style excludeFilter paths should be recognized as URL filters"
         );
 
         let rule1 = &rules[1];

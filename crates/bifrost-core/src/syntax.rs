@@ -880,11 +880,18 @@ pub fn validate_filter_value(filter_str: &str) -> Result<(), FilterValidationErr
         return Ok(());
     }
 
+    if filter_str.contains('.') {
+        return Ok(());
+    }
+
     Err(FilterValidationError {
         filter_type: "unknown".to_string(),
         value: filter_str.to_string(),
         message: format!("Unknown filter format: '{}'", filter_str),
-        suggestion: Some("Valid prefixes: m:, s:, h:, reqH:, resH:, i:, b:, /path/".to_string()),
+        suggestion: Some(
+            "Valid prefixes: m:, s:, h:, reqH:, resH:, i:, b:, /path/, or domain.com/path"
+                .to_string(),
+        ),
     })
 }
 
@@ -1069,6 +1076,11 @@ mod tests {
         assert!(validate_filter_value("*").is_ok());
 
         assert!(validate_filter_value("unknown:value").is_err());
+
+        assert!(validate_filter_value("mira.byteintl.net").is_ok());
+        assert!(validate_filter_value("mira.byteintl.net/api").is_ok());
+        assert!(validate_filter_value("mira.bytedance.com/mira/api").is_ok());
+        assert!(validate_filter_value("example.com/proxy").is_ok());
     }
 
     #[test]
