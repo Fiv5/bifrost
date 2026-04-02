@@ -67,6 +67,7 @@ fn make_auth_config(accounts: Vec<(&str, &str, bool)>) -> UserPassAuthConfig {
                 enabled,
             })
             .collect(),
+        loopback_requires_auth: false,
     }
 }
 

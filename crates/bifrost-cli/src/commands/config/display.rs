@@ -159,6 +159,10 @@ pub fn print_access_config(whitelist: &WhitelistResponse) {
     println!("  Mode:                 {}", whitelist.mode);
     println!("  Allow LAN:            {}", whitelist.allow_lan);
     println!("  UserPass Enabled:     {}", whitelist.userpass.enabled);
+    println!(
+        "  Loopback Requires Auth: {}",
+        whitelist.userpass.loopback_requires_auth
+    );
     if whitelist.userpass.accounts.is_empty() {
         println!("  UserPass Accounts:    []");
     } else {

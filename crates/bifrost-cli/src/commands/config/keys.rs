@@ -30,6 +30,7 @@ pub enum ConfigKey {
     AccessAllowLan,
     AccessUserPassEnabled,
     AccessUserPassAccounts,
+    AccessUserPassLoopbackRequiresAuth,
 }
 
 impl ConfigKey {
@@ -85,6 +86,7 @@ impl ConfigKey {
             "access.allow-lan",
             "access.userpass.enabled",
             "access.userpass.accounts",
+            "access.userpass.loopback-requires-auth",
         ]
     }
 }
@@ -121,6 +123,9 @@ impl FromStr for ConfigKey {
             "access.allow-lan" => Ok(Self::AccessAllowLan),
             "access.userpass.enabled" => Ok(Self::AccessUserPassEnabled),
             "access.userpass.accounts" => Ok(Self::AccessUserPassAccounts),
+            "access.userpass.loopback-requires-auth" => {
+                Ok(Self::AccessUserPassLoopbackRequiresAuth)
+            }
             _ => Err(format!(
                 "Unknown config key: '{}'\n\nAvailable keys:\n{}",
                 s,
@@ -164,6 +169,7 @@ impl std::fmt::Display for ConfigKey {
             Self::AccessAllowLan => "access.allow-lan",
             Self::AccessUserPassEnabled => "access.userpass.enabled",
             Self::AccessUserPassAccounts => "access.userpass.accounts",
+            Self::AccessUserPassLoopbackRequiresAuth => "access.userpass.loopback-requires-auth",
         };
         write!(f, "{}", s)
     }

@@ -1399,6 +1399,8 @@ async fn handle_request(
         {
             return Ok(response);
         }
+    }
+    if has_userpass || !is_loopback {
         req.headers_mut().remove("proxy-authorization");
     }
 
@@ -1543,14 +1545,15 @@ async fn authorize_proxy_request(
     admin_state: Option<&Arc<AdminState>>,
     ctx: &RequestContext,
 ) -> Option<Response<BoxBody>> {
-    let (decision, has_userpass) = {
+    let (decision, has_userpass, loopback_requires_auth) = {
         let access_control = access_control.read().await;
         let decision = access_control.check_access(&peer_addr.ip());
         let has_userpass = access_control.has_userpass_auth();
-        (decision, has_userpass)
+        let loopback_requires_auth = access_control.loopback_requires_auth();
+        (decision, has_userpass, loopback_requires_auth)
     };
 
-    if matches!(decision, AccessDecision::Allow) && !has_userpass {
+    if matches!(decision, AccessDecision::Allow) && !loopback_requires_auth {
         return None;
     }
 
@@ -1562,22 +1565,16 @@ async fn authorize_proxy_request(
         }
     }
 
-    let auth_result =
-        match authenticate_proxy_credentials(req.headers(), access_control, admin_state, ctx).await
-        {
-            ProxyAuthResult::Authorized => return None,
-            ProxyAuthResult::Unauthorized => ProxyAuthResult::Unauthorized,
-        };
+    if matches!(decision, AccessDecision::Allow) {
+        return None;
+    }
 
     if matches!(decision, AccessDecision::Prompt(_)) {
         let access_control = access_control.read().await;
         access_control.add_pending_authorization(peer_addr.ip());
     }
 
-    match auth_result {
-        ProxyAuthResult::Authorized => None,
-        ProxyAuthResult::Unauthorized => Some(proxy_auth_required_response()),
-    }
+    Some(proxy_auth_required_response())
 }
 
 async fn authenticate_proxy_credentials(

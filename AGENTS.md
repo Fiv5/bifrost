@@ -1,6 +1,7 @@
 # Bifrost 项目开发规则
 
 ## 开发需求标准流程
+
 1. 分析现状代码与 `design/` 目录文件，明确需求范围与影响面
 2. 设计技术方案：在 `design/` 下新增或更新对应模块文档（文件名：`功能模块名.md`）
 3. 实现功能与必要测试：新增功能或修复 bug 后按“E2E 测试要求”执行
@@ -9,6 +10,7 @@
 6. 收尾清理：清理临时数据目录，避免资源膨胀
 
 ## 技术方案（design 目录）
+
 - 方案文档必须位于 `design/`，每个功能模块维护一个独立文件：`功能模块名.md`
 - 同模块方案持续增量更新，保持与代码实现同步
 - 技术方案必须包含：
@@ -57,17 +59,17 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsa
 
 ### 各入口点日志初始化规范
 
-| 入口点      | 初始化方式                     | 说明                              |
-| ----------- | ------------------------------ | --------------------------------- |
-| bifrost-cli | `init_logging(&cli.log_level)` | 使用 bifrost-core 统一函数        |
+| 入口点         | 初始化方式                          | 说明                            |
+| ----------- | ------------------------------ | ----------------------------- |
+| bifrost-cli | `init_logging(&cli.log_level)` | 使用 bifrost-core 统一函数          |
 | bifrost-e2e | `tracing_subscriber::fmt()`    | 从 `--verbose` 和 `RUST_LOG` 读取 |
 
-### verbose_logging 双轨机制
+### verbose\_logging 双轨机制
 
 项目使用两套日志控制机制：
 
 1. **tracing 级别** - 控制全局日志输出（通过 `EnvFilter`）
-2. **verbose_logging 布尔值** - 控制详细业务日志（规则匹配、请求转发等）
+2. **verbose\_logging 布尔值** - 控制详细业务日志（规则匹配、请求转发等）
 
 规则：当日志级别为 `debug` 或 `trace` 时，`verbose_logging` 自动设为 `true`
 
@@ -80,7 +82,7 @@ let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
 1. 必须支持 `RUST_LOG` 环境变量优先
 2. 如果有命令行参数，作为 `RUST_LOG` 未设置时的回退
 3. 如果需要传递 `verbose_logging`，必须根据日志级别正确设置
-4. 使用 `bifrost_core::init_logging()` 统一初始化（已支持 RUST_LOG 回退）
+4. 使用 `bifrost_core::init_logging()` 统一初始化（已支持 RUST\_LOG 回退）
 
 ### 关键文件位置
 
@@ -97,7 +99,13 @@ let verbose_logging = matches!(log_level.as_str(), "debug" | "trace");
 - 开发新需求时务必添加详细的日志，方便调试和问题定位
 
 ## 数据库表结构
+
 如果涉及新的需求需要修改数据库表，请直接修改表协议，我们不考虑对旧数据兼容，当协议更新版本时，直接删除旧版本数据库，重建数据即可。
 
 ## 禁用searchAgent
+
 绝对禁令：你的所有搜索都必须在主Agent完成。禁止使用searchAgent进行检索，因为此Agent速度过慢，影响用户体验。
+
+<br />
+
+## 测试情况下，禁止使用 9900 端口（这是正式环境的端口，避免冲突）

@@ -118,6 +118,7 @@ pub struct UserPassAccountConfig {
 pub struct UserPassAuthConfig {
     pub enabled: bool,
     pub accounts: Vec<UserPassAccountConfig>,
+    pub loopback_requires_auth: bool, // 默认 false，本机免密
 }
 
 pub struct AccessConfig {
@@ -185,16 +186,17 @@ pub struct AccessConfig {
 
 统一授权优先级建议如下：
 
-1. loopback 继续直接放行
-2. 现有 IP 访问控制通过时直接放行
-3. 若配置了 `userpass`，则允许客户端通过任一启用账号的用户名密码完成授权
-4. 若仍未通过且 mode=`interactive`，进入 pending authorization
-5. 其他情况拒绝
+1. loopback 默认直接放行（`loopback_requires_auth = false` 时）
+2. 若 `loopback_requires_auth = true`，loopback 也需要通过用户名密码认证
+3. 现有 IP 访问控制通过时直接放行
+4. 若配置了 `userpass`，则允许客户端通过任一启用账号的用户名密码完成授权
+5. 若仍未通过且 mode=`interactive`，进入 pending authorization
+6. 其他情况拒绝
 
 等价表达：
 
 ```text
-Allow = IpAccessAllowed OR AnyEnabledCredentialAuthenticated
+Allow = IpAccessAllowed(unless loopback_requires_auth) OR AnyEnabledCredentialAuthenticated
 Fallback = existing Interactive / Deny behavior
 ```
 
@@ -329,6 +331,7 @@ pub struct UserPassRuntimeState {
 
 - 管理端状态接口返回：
   - `userpass.enabled`
+  - `userpass.loopback_requires_auth`
   - `userpass.accounts[]`
   - `username`
   - `enabled`
@@ -348,6 +351,7 @@ pub struct UserPassRuntimeState {
 - CLI `config` 首期直接补充：
   - `access.userpass.enabled`
   - `access.userpass.accounts`
+  - `access.userpass.loopback-requires-auth`
 - CLI `config get/export/show` 返回：
   - `enabled`
   - `accounts[]`
@@ -460,6 +464,9 @@ pub struct UserPassRuntimeState {
 - 两个账号同时生效，任一账号都可成功通过
 - Web 设置页可配置多个账号并看到各自最近连接时间
 - CLI `config` 与 `start` 可配置多个账号
+- `loopback_requires_auth=false` 时，本机 HTTP/HTTPS/SOCKS5 请求免密直连
+- `loopback_requires_auth=true` 时，本机请求必须提供正确密码（返回 407）
+- `loopback_requires_auth` 开关动态切换后行为立即生效
 
 ## 校验要求
 

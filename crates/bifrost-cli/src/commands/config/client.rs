@@ -311,6 +311,7 @@ pub struct WhitelistResponse {
 pub struct UserPassResponse {
     pub enabled: bool,
     pub accounts: Vec<UserPassAccountResponse>,
+    pub loopback_requires_auth: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +336,8 @@ pub struct AllowLanRequest {
 pub struct UpdateUserPassRequest {
     pub enabled: bool,
     pub accounts: Vec<UpdateUserPassAccountRequest>,
+    #[serde(default)]
+    pub loopback_requires_auth: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -263,6 +263,10 @@ fn get_config_value(client: &ConfigApiClient, key: &str, json: bool) -> Result<(
             serde_json::to_value(whitelist.userpass.accounts)
                 .map_err(|error| BifrostError::Config(error.to_string()))?
         }
+        ConfigKey::AccessUserPassLoopbackRequiresAuth => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            serde_json::Value::Bool(whitelist.userpass.loopback_requires_auth)
+        }
     };
 
     if json {
@@ -594,6 +598,7 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
                             enabled: account.enabled,
                         })
                         .collect(),
+                    loopback_requires_auth: whitelist.userpass.loopback_requires_auth,
                 })
                 .map_err(BifrostError::Config)?;
             println!("✓ access.userpass.enabled set to {}", enabled);
@@ -605,9 +610,34 @@ fn set_config_value(client: &ConfigApiClient, key: &str, value: &str) -> Result<
                 .set_userpass(&UpdateUserPassRequest {
                     enabled: whitelist.userpass.enabled,
                     accounts,
+                    loopback_requires_auth: whitelist.userpass.loopback_requires_auth,
                 })
                 .map_err(BifrostError::Config)?;
             println!("✓ access.userpass.accounts updated");
+        }
+        ConfigKey::AccessUserPassLoopbackRequiresAuth => {
+            let enabled = parse_bool(value).map_err(BifrostError::Config)?;
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled: whitelist.userpass.enabled,
+                    accounts: whitelist
+                        .userpass
+                        .accounts
+                        .into_iter()
+                        .map(|account| UpdateUserPassAccountRequest {
+                            username: account.username,
+                            password: None,
+                            enabled: account.enabled,
+                        })
+                        .collect(),
+                    loopback_requires_auth: enabled,
+                })
+                .map_err(BifrostError::Config)?;
+            println!(
+                "✓ access.userpass.loopback-requires-auth set to {}",
+                enabled
+            );
         }
     }
     Ok(())
@@ -1043,6 +1073,7 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
                             enabled: account.enabled,
                         })
                         .collect(),
+                    loopback_requires_auth: whitelist.userpass.loopback_requires_auth,
                 })
                 .map_err(BifrostError::Config)?;
             println!("✓ access.userpass.enabled reset to false");
@@ -1052,9 +1083,30 @@ fn reset_config(client: &ConfigApiClient, key: &str, yes: bool) -> Result<()> {
                 .set_userpass(&UpdateUserPassRequest {
                     enabled: false,
                     accounts: Vec::new(),
+                    loopback_requires_auth: false,
                 })
                 .map_err(BifrostError::Config)?;
             println!("✓ access.userpass.accounts reset");
+        }
+        ConfigKey::AccessUserPassLoopbackRequiresAuth => {
+            let whitelist = client.get_whitelist().map_err(BifrostError::Config)?;
+            client
+                .set_userpass(&UpdateUserPassRequest {
+                    enabled: whitelist.userpass.enabled,
+                    accounts: whitelist
+                        .userpass
+                        .accounts
+                        .into_iter()
+                        .map(|account| UpdateUserPassAccountRequest {
+                            username: account.username,
+                            password: None,
+                            enabled: account.enabled,
+                        })
+                        .collect(),
+                    loopback_requires_auth: false,
+                })
+                .map_err(BifrostError::Config)?;
+            println!("✓ access.userpass.loopback-requires-auth reset to false");
         }
     }
     Ok(())

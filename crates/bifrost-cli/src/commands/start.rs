@@ -342,6 +342,7 @@ pub fn run_start(
         Some(UserPassAuthConfig {
             enabled: true,
             accounts: parse_proxy_users(&proxy_user)?,
+            loopback_requires_auth: false,
         })
     };
     let userpass_last_connected_at =

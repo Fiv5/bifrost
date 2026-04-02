@@ -31,9 +31,10 @@ export async function setAllowLan(allowLan: boolean): Promise<{ success: boolean
 
 export async function setUserPassConfig(
   enabled: boolean,
-  accounts: UserPassAccountUpdate[]
+  accounts: UserPassAccountUpdate[],
+  loopback_requires_auth: boolean = false
 ): Promise<{ success: boolean }> {
-  return put('/whitelist/userpass', { enabled, accounts });
+  return put('/whitelist/userpass', { enabled, accounts, loopback_requires_auth });
 }
 
 export async function addTemporary(ip: string): Promise<{ success: boolean; message: string }> {

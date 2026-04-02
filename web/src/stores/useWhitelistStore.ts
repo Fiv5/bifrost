@@ -13,7 +13,7 @@ interface WhitelistState {
   removeFromWhitelist: (ipOrCidr: string) => Promise<boolean>;
   setMode: (mode: AccessMode) => Promise<boolean>;
   setAllowLan: (allow: boolean) => Promise<boolean>;
-  setUserPassConfig: (enabled: boolean, accounts: UserPassAccountUpdate[]) => Promise<boolean>;
+  setUserPassConfig: (enabled: boolean, accounts: UserPassAccountUpdate[], loopback_requires_auth: boolean) => Promise<boolean>;
   addTemporary: (ip: string) => Promise<boolean>;
   removeTemporary: (ip: string) => Promise<boolean>;
   clearError: () => void;
@@ -110,10 +110,10 @@ export const useWhitelistStore = create<WhitelistState>((set) => ({
     }
   },
 
-  setUserPassConfig: async (enabled: boolean, accounts: UserPassAccountUpdate[]) => {
+  setUserPassConfig: async (enabled: boolean, accounts: UserPassAccountUpdate[], loopback_requires_auth: boolean) => {
     set({ loading: true, error: null });
     try {
-      await api.setUserPassConfig(enabled, accounts);
+      await api.setUserPassConfig(enabled, accounts, loopback_requires_auth);
       const status = await api.getWhitelistStatus();
       set({ status, loading: false });
       return true;

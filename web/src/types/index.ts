@@ -545,6 +545,7 @@ export interface UserPassAccount {
 export interface UserPassStatus {
   enabled: boolean;
   accounts: UserPassAccount[];
+  loopback_requires_auth: boolean;
 }
 
 export interface UserPassAccountUpdate {

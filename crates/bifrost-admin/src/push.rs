@@ -1139,6 +1139,7 @@ impl PushManager {
                             "has_password": account.has_password,
                             "last_connected_at": account.last_connected_at.and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp as i64, 0).map(|dt| dt.to_rfc3339())),
                         })).collect::<Vec<_>>(),
+                        "loopback_requires_auth": userpass.loopback_requires_auth,
                     },
                 })
             }

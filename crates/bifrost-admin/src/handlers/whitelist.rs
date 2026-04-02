@@ -30,6 +30,7 @@ struct WhitelistResponse {
 struct UserPassAuthResponse {
     enabled: bool,
     accounts: Vec<UserPassAccountResponse>,
+    loopback_requires_auth: bool,
 }
 
 #[derive(Serialize)]
@@ -59,6 +60,8 @@ struct UpdateAllowLanRequest {
 struct UpdateUserPassRequest {
     enabled: bool,
     accounts: Vec<UpdateUserPassAccountRequest>,
+    #[serde(default)]
+    loopback_requires_auth: bool,
 }
 
 #[derive(Deserialize)]
@@ -492,6 +495,7 @@ fn validate_userpass_request(
     Ok(UserPassAuthConfig {
         enabled: request.enabled,
         accounts,
+        loopback_requires_auth: request.loopback_requires_auth,
     })
 }
 
@@ -509,6 +513,7 @@ fn build_userpass_response(access_control: &ClientAccessControl) -> UserPassAuth
                 last_connected_at: account.last_connected_at.and_then(format_timestamp_rfc3339),
             })
             .collect(),
+        loopback_requires_auth: status.loopback_requires_auth,
     }
 }
 

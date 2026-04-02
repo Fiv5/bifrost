@@ -118,6 +118,7 @@ export default function AccessControlTab() {
   const [newIpOrCidr, setNewIpOrCidr] = useState("");
   const [newTempIp, setNewTempIp] = useState("");
   const [userPassEnabled, setUserPassEnabled] = useState(false);
+  const [loopbackRequiresAuth, setLoopbackRequiresAuth] = useState(false);
   const [userPassAccounts, setUserPassAccounts] = useState<UserPassAccountDraft[]>([]);
 
   useEffect(() => {
@@ -132,6 +133,7 @@ export default function AccessControlTab() {
       return;
     }
     setUserPassEnabled(status.userpass.enabled);
+    setLoopbackRequiresAuth(status.userpass.loopback_requires_auth ?? false);
     setUserPassAccounts(
       status.userpass.accounts.map((account) => ({
         key: account.username,
@@ -242,6 +244,7 @@ export default function AccessControlTab() {
         password: account.password.trim() ? account.password.trim() : undefined,
         enabled: account.enabled,
       })),
+      loopbackRequiresAuth,
     );
     if (success) {
       message.success("Updated user/password proxy authentication");
@@ -397,6 +400,17 @@ export default function AccessControlTab() {
                     />
                     <Text>Enable User/Password Auth</Text>
                   </Space>
+                  <Space>
+                    <Switch
+                      checked={loopbackRequiresAuth}
+                      onChange={setLoopbackRequiresAuth}
+                      data-testid="settings-access-loopback-requires-auth"
+                    />
+                    <Text>Require Auth for Localhost</Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    When enabled, loopback (127.0.0.1) connections also need username/password authentication.
+                  </Text>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     When IP-based access does not pass, configured accounts can still authenticate over HTTP and SOCKS5.
                   </Text>
