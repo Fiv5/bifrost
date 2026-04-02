@@ -217,8 +217,15 @@ export const PROTOCOL_DOCS: Record<string, ProtocolDoc> = {
     name: 'proxy',
     description: 'Route request through another proxy',
     valueType: 'proxy URL',
-    valueDescription: 'Upstream proxy URL (http/https/socks5)',
-    examples: ['proxy://127.0.0.1:8888', 'proxy://socks5://127.0.0.1:1080'],
+    valueDescription: 'Upstream proxy URL (http/https/socks5), supports user:password@ authentication',
+    valueSyntax: 'proxy://[user:password@]host:port or proxy://socks5://[user:password@]host:port',
+    examples: [
+      'proxy://127.0.0.1:8888',
+      'proxy://user:password@127.0.0.1:8888',
+      'proxy://socks5://127.0.0.1:1080',
+      'proxy://socks5://user:password@127.0.0.1:1080',
+      'proxy://http://user:password@proxy.example.com:3128',
+    ],
     category: 'redirect',
   },
   http: {

@@ -146,7 +146,8 @@ fn get_protocol_description(protocol: Protocol) -> &'static str {
 
 fn get_protocol_value_type(protocol: Protocol) -> &'static str {
     match protocol {
-        Protocol::Host | Protocol::XHost | Protocol::Proxy => "host:port",
+        Protocol::Host | Protocol::XHost => "host:port",
+        Protocol::Proxy => "proxy_url",
         Protocol::Pac => "pac_url_or_script",
         Protocol::Http | Protocol::Https | Protocol::Ws | Protocol::Wss | Protocol::Redirect => {
             "url"
@@ -210,7 +211,7 @@ fn get_protocol_example(protocol: Protocol) -> &'static str {
         Protocol::Https => "https://api.example.com/",
         Protocol::Ws => "ws://localhost:8080/socket",
         Protocol::Wss => "wss://api.example.com/socket",
-        Protocol::Proxy => "proxy://127.0.0.1:8888",
+        Protocol::Proxy => "proxy://user:password@127.0.0.1:8888",
         Protocol::Http3 => "http3://",
         Protocol::Pac => "pac://http://127.0.0.1:8000/proxy.pac",
         Protocol::Redirect => "redirect://https://new-site.com/",
