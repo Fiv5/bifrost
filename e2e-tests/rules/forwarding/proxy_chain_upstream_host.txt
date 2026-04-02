@@ -1,0 +1,2 @@
+# 验证上游 Bifrost 接收到代理请求后，继续按 host:// 规则转发到最终回显服务
+chain.test host://127.0.0.1:__ECHO_HTTP_PORT__

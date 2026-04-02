@@ -500,6 +500,29 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
     daemon_threads = True
 
+    def get_request(self):
+        try:
+            return super().get_request()
+        except (ssl.SSLError, OSError, ConnectionResetError) as e:
+            raise OSError(f"TLS accept failed: {e}") from None
+
+    def handle_error(self, request, client_address):
+        import traceback
+        exc_text = traceback.format_exc()
+        if any(kw in exc_text for kw in (
+            "SSL", "TLS", "EOF", "RESET", "ECONNRESET",
+            "ECONNABORTED", "Broken pipe", "WinError",
+            "CONNECTION_RESET", "PROTOCOL_ERROR",
+        )):
+            return
+        super().handle_error(request, client_address)
+
+    def _handle_request_noblock(self):
+        try:
+            super()._handle_request_noblock()
+        except Exception:
+            pass
+
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3443

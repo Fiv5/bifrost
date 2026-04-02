@@ -417,6 +417,7 @@ impl RulesResolver {
             }
             Filter::ClientIp(matcher) => matcher.matches(&ctx.client_ip),
             Filter::Body(_regex) => false,
+            Filter::Url(matcher) => matcher.matches(&ctx.url, &ctx.host, &ctx.path),
             Filter::Custom(_key, _value) => true,
         }
     }

@@ -3,23 +3,13 @@ import { useSearchParams } from "react-router-dom";
 import { useShallow } from "zustand/react/shallow";
 import {
   Alert,
-  Badge,
-  Button,
-  List,
-  Popconfirm,
-  Space,
   Spin,
   Tabs,
-  Typography,
   message,
 } from "antd";
 import {
   DashboardOutlined,
-  CheckOutlined,
-  CloseOutlined,
-  ClearOutlined,
   CloudOutlined,
-  WarningOutlined,
   GlobalOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
@@ -27,11 +17,6 @@ import {
 } from "@ant-design/icons";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
-import {
-  approvePending,
-  rejectPending,
-  clearPendingAuthorizations,
-} from "../../api/whitelist";
 import { getAppMetrics, getHostMetrics } from "../../api/metrics";
 import {
   getProxyAddressInfo,
@@ -65,8 +50,7 @@ import {
   getCertQRCodeUrl,
   type CertInfo,
 } from "../../api/cert";
-import { getPendingAuthorizations } from "../../api/whitelist";
-import type { PendingAuth, AppMetrics, HostMetrics } from "../../types";
+import type { AppMetrics, HostMetrics } from "../../types";
 import { useWhitelistStore } from "../../stores/useWhitelistStore";
 import ProxyTab from "./tabs/ProxyTab";
 import CertificateTab from "./tabs/CertificateTab";
@@ -85,8 +69,6 @@ import {
 import { useDesktopCoreStore } from "../../stores/useDesktopCoreStore";
 import pushService from "../../services/pushService";
 import { showTlsWhitelistChangeSuccess } from "../../utils/tlsInterceptionNotice";
-
-const { Text } = Typography;
 
 const TAB_PARAM = "tab";
 const DEFAULT_TAB = "proxy";
@@ -152,8 +134,6 @@ export default function Settings() {
     [setSearchParams],
   );
 
-  const [pendingList, setPendingList] = useState<PendingAuth[]>([]);
-  const [pendingLoading, setPendingLoading] = useState(false);
   const {
     systemProxy,
     cliProxy,
@@ -331,20 +311,6 @@ export default function Settings() {
       if (!suppressRestartErrors && !isConnectionIssueError(error)) {
         console.error("Failed to fetch proxy address info");
       }
-    }
-  }, [suppressRestartErrors]);
-
-  const fetchPendingAuthorizations = useCallback(async () => {
-    setPendingLoading(true);
-    try {
-      const list = await getPendingAuthorizations();
-      setPendingList(list);
-    } catch (error) {
-      if (!suppressRestartErrors && !isConnectionIssueError(error)) {
-        console.error("Failed to fetch pending authorizations");
-      }
-    } finally {
-      setPendingLoading(false);
     }
   }, [suppressRestartErrors]);
 
@@ -729,10 +695,7 @@ export default function Settings() {
         ]);
         break;
       case "access":
-        void Promise.all([
-          fetchWhitelistStatus(),
-          fetchPendingAuthorizations(),
-        ]);
+        void fetchWhitelistStatus();
         break;
       case "performance":
         void fetchPerformanceConfig();
@@ -751,7 +714,6 @@ export default function Settings() {
     fetchDesktopRuntime,
     fetchHistory,
     fetchHostMetricsData,
-    fetchPendingAuthorizations,
     fetchPerformanceConfig,
     fetchProxyAddressInfo,
     fetchProxySettings,
@@ -769,36 +731,6 @@ export default function Settings() {
       });
     };
   }, []);
-
-  const handleApprove = async (ip: string) => {
-    try {
-      await approvePending(ip);
-      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
-      message.success(`Approved ${ip}`);
-    } catch {
-      message.error(`Failed to approve ${ip}`);
-    }
-  };
-
-  const handleReject = async (ip: string) => {
-    try {
-      await rejectPending(ip);
-      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
-      message.success(`Rejected ${ip}`);
-    } catch {
-      message.error(`Failed to reject ${ip}`);
-    }
-  };
-
-  const handleClearAll = async () => {
-    try {
-      await clearPendingAuthorizations();
-      await Promise.all([fetchPendingAuthorizations(), fetchWhitelistStatus()]);
-      message.success("Cleared all pending authorizations");
-    } catch {
-      message.error("Failed to clear pending authorizations");
-    }
-  };
 
   const copyProxyConfig = () => {
     const config = `HTTP Proxy: 127.0.0.1:${overview?.server.port || 9900}
@@ -1022,22 +954,10 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
     return marks;
   };
 
-  const formatTimeAgo = (timestamp: number) => {
-    const now = Math.floor(Date.now() / 1000);
-    const diff = now - timestamp;
-    if (diff < 60) return `${diff}s ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return `${Math.floor(diff / 86400)}d ago`;
-  };
-
   const memoryPercent = overview
     ? (overview.metrics.memory_used / overview.metrics.memory_total) * 100
     : 0;
 
-  const pendingCount = activeTab === "access"
-    ? pendingList.length
-    : (overview?.pending_authorizations || 0);
   const trafficDraft = perfDraft ?? performanceConfig?.traffic;
 
   const maxRecordsMin = 1000;
@@ -1249,83 +1169,6 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
         flexDirection: "column",
       }}
     >
-      {pendingCount > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          icon={<WarningOutlined />}
-          style={{ marginBottom: 16 }}
-          message={
-            <Space>
-              <Badge
-                count={pendingCount}
-                style={{ backgroundColor: "#faad14" }}
-              />
-              <span>Pending Authorization Requests</span>
-            </Space>
-          }
-          description={
-            <div style={{ marginTop: 8 }}>
-              <List
-                loading={pendingLoading}
-                size="small"
-                dataSource={pendingList}
-                locale={{ emptyText: "Loading..." }}
-                renderItem={(item) => (
-                  <List.Item
-                    actions={[
-                      <Button
-                        key="approve"
-                        type="primary"
-                        size="small"
-                        icon={<CheckOutlined />}
-                        onClick={() => handleApprove(item.ip)}
-                      >
-                        Allow
-                      </Button>,
-                      <Button
-                        key="reject"
-                        danger
-                        size="small"
-                        icon={<CloseOutlined />}
-                        onClick={() => handleReject(item.ip)}
-                      >
-                        Deny
-                      </Button>,
-                    ]}
-                  >
-                    <List.Item.Meta
-                      title={<Text code>{item.ip}</Text>}
-                      description={
-                        <Text type="secondary">
-                          First seen: {formatTimeAgo(item.first_seen)} ·
-                          Attempts: {item.attempt_count}
-                        </Text>
-                      }
-                    />
-                  </List.Item>
-                )}
-              />
-              {pendingList.length > 0 && (
-                <div style={{ marginTop: 8, textAlign: "right" }}>
-                  <Popconfirm
-                    title="Clear all pending authorizations?"
-                    description="This will reject all pending requests."
-                    onConfirm={handleClearAll}
-                    okText="Yes"
-                    cancelText="No"
-                  >
-                    <Button size="small" icon={<ClearOutlined />}>
-                      Clear All
-                    </Button>
-                  </Popconfirm>
-                </div>
-              )}
-            </div>
-          }
-        />
-      )}
-
       <Tabs
         className="settings-tabs"
         style={{ flex: 1, minHeight: 0 }}

@@ -223,6 +223,7 @@ bash scripts/run_all_e2e.sh --full-shell
 
 - `--ci` 会在流水线中执行规则夹具、shell 套件、`bifrost-e2e` runner 和 Playwright；shell 脚本会按平台跳过明确不适用的场景，例如 macOS 专属系统代理脚本
 - `--full-shell` 会在本地尝试更广的 shell 套件；默认本地入口仍保留稳定 shell 集合作为更快的日常回归
+- 当前稳定 shell 集合已包含多行规则过滤器专项回归 `test_multiline_rule_filter_e2e.sh`
 - 旧文档中的 `run_all_tests.sh` 已废弃，实际可执行入口为 `run_all_tests_parallel.sh` 和 `scripts/run_all_e2e.sh`
 
 ### Admin API 客户端工具

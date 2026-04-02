@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use futures_util::FutureExt;
 
 use regex::Regex;
@@ -13,7 +14,7 @@ use bifrost_admin::{
     handle_sync_login_callback, is_cert_public_request, is_valid_admin_request, AdminRouter,
     AdminSecurityConfig, AdminState, SharedPushManager, ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
 };
-use bifrost_core::{BifrostError, Protocol, Result};
+use bifrost_core::{BifrostError, Protocol, Result, UserPassAuthConfig};
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -153,6 +154,8 @@ pub struct ProxyConfig {
     pub access_mode: AccessMode,
     pub client_whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub userpass_auth: Option<UserPassAuthConfig>,
+    pub userpass_last_connected_at: HashMap<String, u64>,
     pub unsafe_ssl: bool,
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
@@ -191,6 +194,8 @@ impl Default for ProxyConfig {
             access_mode: AccessMode::LocalOnly,
             client_whitelist: Vec::new(),
             allow_lan: false,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
             unsafe_ssl: false,
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
             max_body_probe_size: 64 * 1024,
@@ -561,7 +566,11 @@ impl ProxyServer {
             mode: config.access_mode,
             whitelist: config.client_whitelist.clone(),
             allow_lan: config.allow_lan,
+            userpass: config.userpass_auth.clone(),
         };
+        let access_control = ClientAccessControl::new(access_config);
+        access_control.set_userpass_last_connected_at(config.userpass_last_connected_at.clone());
+        let access_control = Arc::new(RwLock::new(access_control));
         let dns_resolver = Arc::new(DnsResolver::new(config.verbose_logging));
         Self {
             config,
@@ -570,7 +579,7 @@ impl ProxyServer {
             admin_state: None,
             push_manager: None,
             admin_security_config,
-            access_control: Arc::new(RwLock::new(ClientAccessControl::new(access_config))),
+            access_control,
             dns_resolver,
             udp_relay_addr: Arc::new(RwLock::new(None)),
             udp_relay: Arc::new(RwLock::new(None)),
@@ -806,31 +815,47 @@ impl ProxyServer {
 
             debug!("Accepted connection from {}", peer_addr);
 
-            let decision = {
+            let (decision, should_defer_userpass) = {
                 let access_control = self.access_control.read().await;
-                access_control.check_access(&peer_addr.ip())
+                let decision = access_control.check_access(&peer_addr.ip());
+                let should_defer_userpass = access_control.should_defer_userpass(&decision);
+                (decision, should_defer_userpass)
             };
 
             match decision {
                 AccessDecision::Allow => {}
                 AccessDecision::Deny => {
-                    warn!(
-                        "Access denied for client {} (not in whitelist)",
-                        peer_addr.ip()
-                    );
-                    continue;
+                    if should_defer_userpass {
+                        debug!(
+                            "Deferring access denial for {} to protocol-level userpass auth",
+                            peer_addr.ip()
+                        );
+                    } else {
+                        warn!(
+                            "Access denied for client {} (not in whitelist)",
+                            peer_addr.ip()
+                        );
+                        continue;
+                    }
                 }
                 AccessDecision::Prompt(ip) => {
-                    {
-                        let access_control = self.access_control.read().await;
-                        access_control.add_pending_authorization(ip);
-                    }
-                    warn!(
-                        "Non-whitelisted client {} added to pending authorization. \
+                    if should_defer_userpass {
+                        debug!(
+                            "Deferring interactive authorization for {} to protocol-level userpass auth",
+                            ip
+                        );
+                    } else {
+                        {
+                            let access_control = self.access_control.read().await;
+                            access_control.add_pending_authorization(ip);
+                        }
+                        warn!(
+                            "Non-whitelisted client {} added to pending authorization. \
                         Approve via admin UI or use `bifrost whitelist add {}`",
-                        ip, ip
-                    );
-                    continue;
+                            ip, ip
+                        );
+                        continue;
+                    }
                 }
             }
 
@@ -883,6 +908,7 @@ impl ProxyServer {
                                 .with_rules(Arc::clone(&rules))
                                 .with_verbose_logging(proxy_config.verbose_logging)
                                 .with_unsafe_ssl(proxy_config.unsafe_ssl)
+                                .with_access_control(Arc::clone(&access_control))
                                 .with_dns_resolver(Arc::clone(&dns_resolver))
                                 .with_tls_intercept(
                                     Arc::clone(&tls_config),
@@ -1058,7 +1084,7 @@ async fn handle_http_connection(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
-    req: Request<Incoming>,
+    mut req: Request<Incoming>,
     peer_addr: SocketAddr,
     local_addr: SocketAddr,
     rules: Arc<dyn RulesResolver>,
@@ -1268,19 +1294,28 @@ async fn handle_request(
         let current_generation = ac.generation();
         if current_generation != initial_generation {
             let decision = ac.check_access(&peer_addr.ip());
+            let should_defer_userpass = ac.should_defer_userpass(&decision);
             drop(ac);
             match decision {
                 AccessDecision::Allow => {}
                 AccessDecision::Deny | AccessDecision::Prompt(_) => {
-                    warn!(
+                    if should_defer_userpass {
+                        debug!(
+                            "[{}] Deferring access policy re-check for {} to HTTP userpass auth",
+                            ctx.id_str(),
+                            peer_addr.ip()
+                        );
+                    } else {
+                        warn!(
                         "[{}] Access denied for {} on existing connection (access control changed)",
                         ctx.id_str(),
                         peer_addr.ip()
                     );
-                    return Ok(error_response(
-                        403,
-                        "Access denied - access control policy changed",
-                    ));
+                        return Ok(error_response(
+                            403,
+                            "Access denied - access control policy changed",
+                        ));
+                    }
                 }
             }
         }
@@ -1350,6 +1385,23 @@ async fn handle_request(
             peer_addr
         );
         return Ok(redirect_response(ADMIN_PATH_PREFIX));
+    }
+
+    let has_userpass = {
+        let ac = access_control.read().await;
+        ac.has_userpass_auth()
+    };
+
+    if !is_loopback || has_userpass {
+        if let Some(response) =
+            authorize_proxy_request(&req, peer_addr, &access_control, admin_state.as_ref(), &ctx)
+                .await
+        {
+            return Ok(response);
+        }
+    }
+    if has_userpass || !is_loopback {
+        req.headers_mut().remove("proxy-authorization");
     }
 
     if let Some(ref state) = admin_state {
@@ -1478,6 +1530,130 @@ fn error_response(status: u16, message: &str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .body(full_body(message.to_string()))
+        .unwrap()
+}
+
+enum ProxyAuthResult {
+    Authorized,
+    Unauthorized,
+}
+
+async fn authorize_proxy_request(
+    req: &Request<Incoming>,
+    peer_addr: SocketAddr,
+    access_control: &Arc<tokio::sync::RwLock<ClientAccessControl>>,
+    admin_state: Option<&Arc<AdminState>>,
+    ctx: &RequestContext,
+) -> Option<Response<BoxBody>> {
+    let (decision, has_userpass, loopback_requires_auth) = {
+        let access_control = access_control.read().await;
+        let decision = access_control.check_access(&peer_addr.ip());
+        let has_userpass = access_control.has_userpass_auth();
+        let loopback_requires_auth = access_control.loopback_requires_auth();
+        (decision, has_userpass, loopback_requires_auth)
+    };
+
+    if matches!(decision, AccessDecision::Allow) && !loopback_requires_auth {
+        return None;
+    }
+
+    if has_userpass {
+        match authenticate_proxy_credentials(req.headers(), access_control, admin_state, ctx).await
+        {
+            ProxyAuthResult::Authorized => return None,
+            ProxyAuthResult::Unauthorized => return Some(proxy_auth_required_response()),
+        }
+    }
+
+    if matches!(decision, AccessDecision::Allow) {
+        return None;
+    }
+
+    if matches!(decision, AccessDecision::Prompt(_)) {
+        let access_control = access_control.read().await;
+        access_control.add_pending_authorization(peer_addr.ip());
+    }
+
+    Some(proxy_auth_required_response())
+}
+
+async fn authenticate_proxy_credentials(
+    headers: &HeaderMap<HeaderValue>,
+    access_control: &Arc<tokio::sync::RwLock<ClientAccessControl>>,
+    admin_state: Option<&Arc<AdminState>>,
+    ctx: &RequestContext,
+) -> ProxyAuthResult {
+    let Some(encoded) = headers
+        .get("proxy-authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_proxy_basic_auth_header)
+    else {
+        return ProxyAuthResult::Unauthorized;
+    };
+
+    let decoded = match base64::engine::general_purpose::STANDARD.decode(encoded) {
+        Ok(decoded) => decoded,
+        Err(_) => return ProxyAuthResult::Unauthorized,
+    };
+    let decoded = match String::from_utf8(decoded) {
+        Ok(decoded) => decoded,
+        Err(_) => return ProxyAuthResult::Unauthorized,
+    };
+    let Some((username, password)) = decoded.split_once(':') else {
+        return ProxyAuthResult::Unauthorized;
+    };
+
+    let matched_username = {
+        let access_control = access_control.read().await;
+        access_control.verify_userpass(username, password)
+    };
+
+    let Some(matched_username) = matched_username else {
+        return ProxyAuthResult::Unauthorized;
+    };
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    {
+        let access_control = access_control.read().await;
+        access_control.record_userpass_success(&matched_username, timestamp);
+    }
+    if let Some(admin_state) = admin_state {
+        if let Some(config_manager) = admin_state.config_manager.as_ref() {
+            if let Err(error) = config_manager
+                .record_userpass_last_connected_at(&matched_username, timestamp)
+                .await
+            {
+                warn!(
+                    "[{}] Failed to persist userpass auth timestamp for {}: {}",
+                    ctx.id_str(),
+                    matched_username,
+                    error
+                );
+            }
+        }
+    }
+
+    ProxyAuthResult::Authorized
+}
+
+fn parse_proxy_basic_auth_header(header: &str) -> Option<&str> {
+    let (scheme, encoded) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    Some(encoded)
+}
+
+fn proxy_auth_required_response() -> Response<BoxBody> {
+    Response::builder()
+        .status(407)
+        .header("Proxy-Authenticate", "Basic realm=\"Bifrost\"")
+        .body(full_body(
+            "Proxy authentication required. Provide valid proxy username and password.".to_string(),
+        ))
         .unwrap()
 }
 
@@ -1618,6 +1794,8 @@ mod tests {
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
             enable_socks: true,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
         };
         let server = ProxyServer::new(config);
         assert_eq!(server.config().port, 9000);

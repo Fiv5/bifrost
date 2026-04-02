@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client';
-import type { WhitelistStatus, AccessMode, PendingAuth } from '../types';
+import type { WhitelistStatus, AccessMode, PendingAuth, UserPassAccountUpdate } from '../types';
 
 export async function getWhitelistStatus(): Promise<WhitelistStatus> {
   return get<WhitelistStatus>('/whitelist');
@@ -27,6 +27,14 @@ export async function getAllowLan(): Promise<{ allow_lan: boolean }> {
 
 export async function setAllowLan(allowLan: boolean): Promise<{ success: boolean; allow_lan: boolean }> {
   return put('/whitelist/allow-lan', { allow_lan: allowLan });
+}
+
+export async function setUserPassConfig(
+  enabled: boolean,
+  accounts: UserPassAccountUpdate[],
+  loopback_requires_auth: boolean = false
+): Promise<{ success: boolean }> {
+  return put('/whitelist/userpass', { enabled, accounts, loopback_requires_auth });
 }
 
 export async function addTemporary(ip: string): Promise<{ success: boolean; message: string }> {

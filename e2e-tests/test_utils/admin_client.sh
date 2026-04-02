@@ -571,6 +571,11 @@ clear_pending_authorizations() {
     admin_delete "/api/whitelist/pending"
 }
 
+set_userpass_config() {
+    local data="$1"
+    admin_put "/api/whitelist/userpass" "$data"
+}
+
 get_cert_info() {
     admin_get "/api/cert/info"
 }

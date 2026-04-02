@@ -323,6 +323,11 @@ pub enum Commands {
         allow_lan: bool,
         #[arg(
             long,
+            help = "Proxy user credentials in USER:PASS format. Can be specified multiple times."
+        )]
+        proxy_user: Vec<String>,
+        #[arg(
+            long,
             conflicts_with = "no_intercept",
             help = "Enable TLS/HTTPS interception"
         )]

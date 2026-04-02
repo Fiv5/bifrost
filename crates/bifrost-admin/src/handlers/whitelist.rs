@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
@@ -13,7 +14,7 @@ use tracing::info;
 
 use super::{error_response, full_body, json_response, method_not_allowed, BoxBody};
 use crate::push::SharedPushManager;
-use bifrost_core::{AccessMode, ClientAccessControl};
+use bifrost_core::{AccessMode, ClientAccessControl, UserPassAccountConfig, UserPassAuthConfig};
 use bifrost_storage::{AccessConfigUpdate, SharedConfigManager};
 
 #[derive(Serialize)]
@@ -22,6 +23,22 @@ struct WhitelistResponse {
     allow_lan: bool,
     whitelist: Vec<String>,
     temporary_whitelist: Vec<String>,
+    userpass: UserPassAuthResponse,
+}
+
+#[derive(Serialize)]
+struct UserPassAuthResponse {
+    enabled: bool,
+    accounts: Vec<UserPassAccountResponse>,
+    loopback_requires_auth: bool,
+}
+
+#[derive(Serialize)]
+struct UserPassAccountResponse {
+    username: String,
+    enabled: bool,
+    has_password: bool,
+    last_connected_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +54,21 @@ struct UpdateModeRequest {
 #[derive(Deserialize)]
 struct UpdateAllowLanRequest {
     allow_lan: bool,
+}
+
+#[derive(Deserialize)]
+struct UpdateUserPassRequest {
+    enabled: bool,
+    accounts: Vec<UpdateUserPassAccountRequest>,
+    #[serde(default)]
+    loopback_requires_auth: bool,
+}
+
+#[derive(Deserialize)]
+struct UpdateUserPassAccountRequest {
+    username: String,
+    password: Option<String>,
+    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +98,9 @@ pub async fn handle_whitelist_request(
         (&Method::GET, "/api/whitelist/allow-lan") => handle_get_allow_lan(access_control).await,
         (&Method::PUT, "/api/whitelist/allow-lan") => {
             handle_set_allow_lan(req, access_control, config_manager, push_manager).await
+        }
+        (&Method::PUT, "/api/whitelist/userpass") => {
+            handle_set_userpass(req, access_control, config_manager, push_manager).await
         }
         (&Method::POST, "/api/whitelist/temporary") => {
             handle_add_temporary(req, access_control, push_manager).await
@@ -101,6 +136,7 @@ async fn handle_list(access_control: Arc<RwLock<ClientAccessControl>>) -> Respon
             .iter()
             .map(|ip| ip.to_string())
             .collect(),
+        userpass: build_userpass_response(&ac),
     };
     json_response(&response)
 }
@@ -148,6 +184,7 @@ async fn handle_add(
                     mode: None,
                     whitelist: Some(whitelist),
                     allow_lan: None,
+                    userpass: None,
                 };
                 if let Err(e) = cm.update_access_config(update).await {
                     tracing::error!("Failed to persist whitelist: {}", e);
@@ -199,6 +236,7 @@ async fn handle_remove(
                         mode: None,
                         whitelist: Some(whitelist),
                         allow_lan: None,
+                        userpass: None,
                     };
                     if let Err(e) = cm.update_access_config(update).await {
                         tracing::error!("Failed to persist whitelist removal: {}", e);
@@ -266,6 +304,7 @@ async fn handle_set_mode(
             mode: Some(mode),
             whitelist: None,
             allow_lan: None,
+            userpass: None,
         };
         if let Err(e) = cm.update_access_config(update).await {
             tracing::error!("Failed to persist access mode: {}", e);
@@ -323,6 +362,7 @@ async fn handle_set_allow_lan(
             mode: None,
             whitelist: None,
             allow_lan: Some(request.allow_lan),
+            userpass: None,
         };
         if let Err(e) = cm.update_access_config(update).await {
             tracing::error!("Failed to persist allow_lan setting: {}", e);
@@ -345,6 +385,140 @@ async fn handle_set_allow_lan(
         .header("Access-Control-Allow-Origin", "*")
         .body(full_body(response.to_string()))
         .unwrap()
+}
+
+async fn handle_set_userpass(
+    req: Request<Incoming>,
+    access_control: Arc<RwLock<ClientAccessControl>>,
+    config_manager: Option<SharedConfigManager>,
+    push_manager: Option<SharedPushManager>,
+) -> Response<BoxBody> {
+    let body = match req.collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(_) => return error_response(StatusCode::BAD_REQUEST, "Failed to read request body"),
+    };
+
+    let request: UpdateUserPassRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("Invalid JSON: {}", e)),
+    };
+
+    let existing_userpass = {
+        let ac = access_control.read().await;
+        ac.userpass_config()
+    };
+    let userpass = match validate_userpass_request(request, existing_userpass.as_ref()) {
+        Ok(userpass) => userpass,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+
+    {
+        let ac = access_control.read().await;
+        ac.set_userpass_config(Some(userpass.clone()));
+    }
+
+    if let Some(ref cm) = config_manager {
+        let update = AccessConfigUpdate {
+            mode: None,
+            whitelist: None,
+            allow_lan: None,
+            userpass: Some(Some(userpass.clone())),
+        };
+        if let Err(e) = cm.update_access_config(update).await {
+            tracing::error!("Failed to persist userpass config: {}", e);
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to persist userpass config",
+            );
+        }
+        let valid_usernames = userpass
+            .accounts
+            .iter()
+            .map(|account| account.username.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let filtered_timestamps = cm
+            .userpass_last_connected_at()
+            .await
+            .into_iter()
+            .filter(|(username, _)| valid_usernames.contains(username))
+            .collect();
+        if let Err(e) = cm
+            .replace_userpass_last_connected_at(filtered_timestamps)
+            .await
+        {
+            tracing::error!("Failed to persist userpass timestamps cleanup: {}", e);
+        }
+    }
+
+    broadcast_access_snapshots(&push_manager, false).await;
+    json_response(&serde_json::json!({
+        "success": true
+    }))
+}
+
+fn validate_userpass_request(
+    request: UpdateUserPassRequest,
+    existing_userpass: Option<&UserPassAuthConfig>,
+) -> Result<UserPassAuthConfig, String> {
+    let mut usernames = std::collections::HashSet::new();
+    let mut accounts = Vec::new();
+
+    for account in request.accounts {
+        if account.username.trim().is_empty() {
+            return Err("username cannot be empty".to_string());
+        }
+        if !usernames.insert(account.username.clone()) {
+            return Err(format!("duplicate username '{}'", account.username));
+        }
+        let password = account.password.or_else(|| {
+            existing_userpass.and_then(|current| {
+                current
+                    .accounts
+                    .iter()
+                    .find(|existing| existing.username == account.username)
+                    .and_then(|existing| existing.password.clone())
+            })
+        });
+        if password.as_deref().unwrap_or_default().is_empty() {
+            return Err(format!(
+                "password is required for account '{}'",
+                account.username
+            ));
+        }
+        accounts.push(UserPassAccountConfig {
+            username: account.username,
+            password,
+            enabled: account.enabled,
+        });
+    }
+
+    Ok(UserPassAuthConfig {
+        enabled: request.enabled,
+        accounts,
+        loopback_requires_auth: request.loopback_requires_auth,
+    })
+}
+
+fn build_userpass_response(access_control: &ClientAccessControl) -> UserPassAuthResponse {
+    let status = access_control.userpass_status();
+    UserPassAuthResponse {
+        enabled: status.enabled,
+        accounts: status
+            .accounts
+            .into_iter()
+            .map(|account| UserPassAccountResponse {
+                username: account.username,
+                enabled: account.enabled,
+                has_password: account.has_password,
+                last_connected_at: account.last_connected_at.and_then(format_timestamp_rfc3339),
+            })
+            .collect(),
+        loopback_requires_auth: status.loopback_requires_auth,
+    }
+}
+
+fn format_timestamp_rfc3339(timestamp: u64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp(timestamp as i64, 0).map(|dt| dt.to_rfc3339())
 }
 
 async fn handle_add_temporary(

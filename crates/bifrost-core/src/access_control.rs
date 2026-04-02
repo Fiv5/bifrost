@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -88,6 +88,7 @@ pub struct AccessControlConfig {
     pub mode: AccessMode,
     pub whitelist: Vec<String>,
     pub allow_lan: bool,
+    pub userpass: Option<UserPassAuthConfig>,
 }
 
 impl Default for AccessControlConfig {
@@ -96,14 +97,47 @@ impl Default for AccessControlConfig {
             mode: AccessMode::LocalOnly,
             whitelist: Vec::new(),
             allow_lan: false,
+            userpass: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserPassAccountConfig {
+    pub username: String,
+    pub password: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct UserPassAuthConfig {
+    pub enabled: bool,
+    pub accounts: Vec<UserPassAccountConfig>,
+    #[serde(default)]
+    pub loopback_requires_auth: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct UserPassAccountStatus {
+    pub username: String,
+    pub enabled: bool,
+    pub has_password: bool,
+    pub last_connected_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub struct UserPassAuthStatus {
+    pub enabled: bool,
+    pub accounts: Vec<UserPassAccountStatus>,
+    pub loopback_requires_auth: bool,
 }
 
 pub struct ClientAccessControl {
     mode: AccessMode,
     whitelist: HashSet<IpNet>,
     allow_lan: bool,
+    userpass: RwLock<Option<UserPassAuthConfig>>,
+    userpass_last_connected_at: RwLock<HashMap<String, u64>>,
     temporary_whitelist: RwLock<HashSet<IpAddr>>,
     session_denied: RwLock<HashSet<IpAddr>>,
     pending_authorization: RwLock<Vec<(IpAddr, u64, u32)>>,
@@ -132,6 +166,8 @@ impl ClientAccessControl {
             mode: config.mode,
             whitelist,
             allow_lan: config.allow_lan,
+            userpass: RwLock::new(config.userpass),
+            userpass_last_connected_at: RwLock::new(HashMap::new()),
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
@@ -155,6 +191,8 @@ impl ClientAccessControl {
             mode,
             whitelist: HashSet::new(),
             allow_lan: false,
+            userpass: RwLock::new(None),
+            userpass_last_connected_at: RwLock::new(HashMap::new()),
             temporary_whitelist: RwLock::new(HashSet::new()),
             session_denied: RwLock::new(HashSet::new()),
             pending_authorization: RwLock::new(Vec::new()),
@@ -377,6 +415,104 @@ impl ClientAccessControl {
         info!("Allow LAN set to: {}", allow);
     }
 
+    pub fn userpass_config(&self) -> Option<UserPassAuthConfig> {
+        self.userpass.read().unwrap().clone()
+    }
+
+    pub fn set_userpass_config(&self, config: Option<UserPassAuthConfig>) {
+        *self.userpass.write().unwrap() = config;
+        self.retain_userpass_runtime_state();
+        self.increment_generation();
+    }
+
+    pub fn has_userpass_auth(&self) -> bool {
+        self.userpass
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|config| config.enabled)
+    }
+
+    pub fn should_defer_userpass(&self, decision: &AccessDecision) -> bool {
+        if !self.has_userpass_auth() {
+            return false;
+        }
+        if matches!(decision, AccessDecision::Allow) {
+            return self.loopback_requires_auth();
+        }
+        true
+    }
+
+    pub fn loopback_requires_auth(&self) -> bool {
+        self.userpass
+            .read()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|config| config.enabled && config.loopback_requires_auth)
+    }
+
+    pub fn verify_userpass(&self, username: &str, password: &str) -> Option<String> {
+        let userpass = self.userpass.read().unwrap();
+        let config = userpass.as_ref()?;
+        if !config.enabled {
+            return None;
+        }
+
+        config.accounts.iter().find_map(|account| {
+            if !account.enabled {
+                return None;
+            }
+
+            match &account.password {
+                Some(expected_password)
+                    if account.username == username && expected_password == password =>
+                {
+                    Some(account.username.clone())
+                }
+                _ => None,
+            }
+        })
+    }
+
+    pub fn record_userpass_success(&self, username: &str, timestamp: u64) {
+        self.userpass_last_connected_at
+            .write()
+            .unwrap()
+            .insert(username.to_string(), timestamp);
+    }
+
+    pub fn set_userpass_last_connected_at(&self, last_connected_at: HashMap<String, u64>) {
+        *self.userpass_last_connected_at.write().unwrap() = last_connected_at;
+        self.retain_userpass_runtime_state();
+    }
+
+    pub fn userpass_last_connected_at(&self) -> HashMap<String, u64> {
+        self.userpass_last_connected_at.read().unwrap().clone()
+    }
+
+    pub fn userpass_status(&self) -> UserPassAuthStatus {
+        let userpass = self.userpass.read().unwrap();
+        let Some(config) = userpass.as_ref() else {
+            return UserPassAuthStatus::default();
+        };
+        let last_connected_at = self.userpass_last_connected_at.read().unwrap();
+
+        UserPassAuthStatus {
+            enabled: config.enabled,
+            accounts: config
+                .accounts
+                .iter()
+                .map(|account| UserPassAccountStatus {
+                    username: account.username.clone(),
+                    enabled: account.enabled,
+                    has_password: account.password.is_some(),
+                    last_connected_at: last_connected_at.get(&account.username).copied(),
+                })
+                .collect(),
+            loopback_requires_auth: config.loopback_requires_auth,
+        }
+    }
+
     pub fn add_pending_authorization(&self, ip: IpAddr) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -478,6 +614,26 @@ impl ClientAccessControl {
         pending.clear();
         info!("Cleared all pending authorizations");
     }
+
+    fn retain_userpass_runtime_state(&self) {
+        let usernames: HashSet<String> = self
+            .userpass
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|config| {
+                config
+                    .accounts
+                    .iter()
+                    .map(|account| account.username.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.userpass_last_connected_at
+            .write()
+            .unwrap()
+            .retain(|username, _| usernames.contains(username));
+    }
 }
 
 impl Default for ClientAccessControl {
@@ -560,6 +716,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec!["192.168.1.0/24".to_string()],
             allow_lan: false,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 
@@ -576,6 +733,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec![],
             allow_lan: true,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 
@@ -652,6 +810,7 @@ mod tests {
             mode: AccessMode::Whitelist,
             whitelist: vec!["192.168.1.0/24".to_string(), "10.0.0.1".to_string()],
             allow_lan: false,
+            userpass: None,
         };
         let ac = ClientAccessControl::new(config);
 
@@ -665,5 +824,202 @@ mod tests {
         assert_eq!(format!("{}", AccessMode::LocalOnly), "local_only");
         assert_eq!(format!("{}", AccessMode::Whitelist), "whitelist");
         assert_eq!(format!("{}", AccessMode::Interactive), "interactive");
+    }
+
+    #[test]
+    fn test_should_defer_userpass_allow_decision_no_defer_default() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        assert!(ac.has_userpass_auth());
+        assert!(!ac.should_defer_userpass(&AccessDecision::Allow));
+    }
+
+    #[test]
+    fn test_should_defer_userpass_allow_defers_when_loopback_requires_auth() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: true,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        assert!(ac.has_userpass_auth());
+        assert!(ac.should_defer_userpass(&AccessDecision::Allow));
+    }
+
+    #[test]
+    fn test_should_defer_userpass_deny_decision_defers_when_enabled() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        assert!(ac.should_defer_userpass(&AccessDecision::Deny));
+    }
+
+    #[test]
+    fn test_should_defer_userpass_deny_no_defer_without_userpass() {
+        let ac = ClientAccessControl::with_mode(AccessMode::LocalOnly);
+
+        assert!(!ac.has_userpass_auth());
+        assert!(!ac.should_defer_userpass(&AccessDecision::Deny));
+    }
+
+    #[test]
+    fn test_loopback_allowed_with_userpass_enabled_default() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let decision = ac.check_access(&localhost);
+        assert_eq!(decision, AccessDecision::Allow);
+        assert!(!ac.should_defer_userpass(&decision));
+
+        let external = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let decision = ac.check_access(&external);
+        assert_eq!(decision, AccessDecision::Deny);
+        assert!(ac.should_defer_userpass(&decision));
+    }
+
+    #[test]
+    fn test_loopback_requires_auth_when_switch_enabled() {
+        let config = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: true,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        let decision = ac.check_access(&localhost);
+        assert_eq!(decision, AccessDecision::Allow);
+        assert!(ac.should_defer_userpass(&decision));
+
+        let external = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let decision = ac.check_access(&external);
+        assert_eq!(decision, AccessDecision::Deny);
+        assert!(ac.should_defer_userpass(&decision));
+    }
+
+    #[test]
+    fn test_prompt_decision_defers_with_userpass() {
+        let config = AccessControlConfig {
+            mode: AccessMode::Interactive,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![UserPassAccountConfig {
+                    username: "user1".to_string(),
+                    password: Some("pass1".to_string()),
+                    enabled: true,
+                }],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config);
+
+        let external = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
+        let decision = ac.check_access(&external);
+        assert!(matches!(decision, AccessDecision::Prompt(_)));
+        assert!(ac.should_defer_userpass(&decision));
+    }
+
+    #[test]
+    fn test_loopback_requires_auth_getter() {
+        let config_off = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![],
+                loopback_requires_auth: false,
+            }),
+        };
+        let ac = ClientAccessControl::new(config_off);
+        assert!(!ac.loopback_requires_auth());
+
+        let config_on = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: true,
+                accounts: vec![],
+                loopback_requires_auth: true,
+            }),
+        };
+        let ac = ClientAccessControl::new(config_on);
+        assert!(ac.loopback_requires_auth());
+
+        let config_disabled = AccessControlConfig {
+            mode: AccessMode::LocalOnly,
+            whitelist: vec![],
+            allow_lan: false,
+            userpass: Some(UserPassAuthConfig {
+                enabled: false,
+                accounts: vec![],
+                loopback_requires_auth: true,
+            }),
+        };
+        let ac = ClientAccessControl::new(config_disabled);
+        assert!(!ac.loopback_requires_auth());
     }
 }

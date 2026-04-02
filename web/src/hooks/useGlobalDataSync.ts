@@ -142,6 +142,15 @@ export function useGlobalDataSync() {
 
     initializeGlobalData();
 
+    if (import.meta.env.DEV) {
+      (window as any).__bifrost_test = {
+        pauseRealtime,
+        resumeRealtime,
+        pushService,
+        useTrafficStore,
+      };
+    }
+
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onPageShow);

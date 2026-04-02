@@ -886,6 +886,84 @@ impl ProxyInstance {
         Self::start_with_values(port, rules, HashMap::new()).await
     }
 
+    pub async fn start_with_userpass(
+        port: u16,
+        rules: Vec<&str>,
+        userpass_auth: bifrost_core::UserPassAuthConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        init_crypto_provider();
+        let normalized_rules = collapse_legacy_mock_overrides(
+            rules
+                .iter()
+                .flat_map(|rule| expand_rule_lines(rule))
+                .collect(),
+        );
+        let parsed_rules: Vec<Rule> = normalized_rules
+            .iter()
+            .filter_map(|r| parse_rules(r).ok())
+            .flatten()
+            .collect();
+
+        let resolver = Arc::new(RulesResolverAdapter {
+            inner: CoreRulesResolver::new(parsed_rules)
+                .with_values(HashMap::new())
+                .disable_cache(),
+        });
+        let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let config = ProxyConfig {
+            port,
+            host: "127.0.0.1".to_string(),
+            enable_tls_interception: false,
+            intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
+            timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
+            socks5_port: None,
+            socks5_auth_required: false,
+            socks5_username: None,
+            socks5_password: None,
+            verbose_logging: true,
+            access_mode: bifrost_proxy::AccessMode::LocalOnly,
+            client_whitelist: Vec::new(),
+            allow_lan: false,
+            unsafe_ssl: false,
+            max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
+            enable_socks: true,
+            userpass_auth: Some(userpass_auth),
+            userpass_last_connected_at: HashMap::new(),
+        };
+
+        let server = ProxyServer::new(config).with_rules(resolver);
+        let listener = server.bind(addr).await?;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                result = server.run_with_listener(listener) => {
+                    if let Err(e) = result {
+                        tracing::error!("Proxy server error: {}", e);
+                    }
+                }
+                _ = shutdown_rx => {
+                    tracing::info!("Proxy server shutting down");
+                }
+            }
+        });
+
+        Ok(Self {
+            addr,
+            shutdown_tx: Some(shutdown_tx),
+        })
+    }
+
     pub async fn start_with_values(
         port: u16,
         rules: Vec<&str>,
@@ -938,6 +1016,8 @@ impl ProxyInstance {
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
             enable_socks: true,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -1006,6 +1086,8 @@ impl ProxyInstance {
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
             enable_socks: true,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
         };
 
         let server = ProxyServer::new(config).with_rules(resolver);
@@ -1083,6 +1165,8 @@ impl ProxyInstance {
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
             enable_socks: true,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
         };
 
         init_crypto_provider();

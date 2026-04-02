@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { WhitelistStatus, AccessMode } from '../types';
+import type { WhitelistStatus, AccessMode, UserPassAccountUpdate } from '../types';
 import * as api from '../api';
 import { isConnectionIssueError } from '../api/client';
 
@@ -13,6 +13,7 @@ interface WhitelistState {
   removeFromWhitelist: (ipOrCidr: string) => Promise<boolean>;
   setMode: (mode: AccessMode) => Promise<boolean>;
   setAllowLan: (allow: boolean) => Promise<boolean>;
+  setUserPassConfig: (enabled: boolean, accounts: UserPassAccountUpdate[], loopback_requires_auth: boolean) => Promise<boolean>;
   addTemporary: (ip: string) => Promise<boolean>;
   removeTemporary: (ip: string) => Promise<boolean>;
   clearError: () => void;
@@ -102,6 +103,19 @@ export const useWhitelistStore = create<WhitelistState>((set) => ({
           : state.status,
         loading: false,
       }));
+      return true;
+    } catch (e) {
+      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      return false;
+    }
+  },
+
+  setUserPassConfig: async (enabled: boolean, accounts: UserPassAccountUpdate[], loopback_requires_auth: boolean) => {
+    set({ loading: true, error: null });
+    try {
+      await api.setUserPassConfig(enabled, accounts, loopback_requires_auth);
+      const status = await api.getWhitelistStatus();
+      set({ status, loading: false });
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });

@@ -1,0 +1,15 @@
+# 测试目标: 验证 line` 多行规则在真实代理链路中正确应用 includeFilter 与 excludeFilter。
+
+line`
+http://127.0.0.1:__ECHO_HTTP_PORT__
+line-block-filter.local
+`
+
+line`
+line-block-filter.local
+reqHeaders://X-Line-Block-Request=matched
+resHeaders://X-Line-Block-Response=matched
+includeFilter://m:GET
+includeFilter:///api/
+excludeFilter:///api/internal/
+`

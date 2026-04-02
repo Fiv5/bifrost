@@ -216,26 +216,151 @@ pub fn validate_rules_with_context(
 
     let clean_text = extract_markdown_value_blocks(text, &mut HashMap::new());
 
+    let mut in_line_block = false;
+    let mut line_block_content = String::new();
+    let mut line_block_start: usize = 1;
+    let mut current_line = String::new();
+    let mut start_line_num: usize = 1;
+
     for (line_num, line) in clean_text.lines().enumerate() {
         let line_num = line_num + 1;
         let trimmed = line.trim();
 
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if in_line_block {
+            if trimmed == "`" {
+                in_line_block = false;
+                let block_line =
+                    normalize_line_block_tokens(&line_block_content.trim().replace('\n', " "));
+                if !block_line.is_empty() {
+                    validate_variable_references(
+                        &block_line,
+                        line_block_start,
+                        &merged_values,
+                        &mut result,
+                    );
+                    extract_script_references(&block_line, line_block_start, &mut result);
+                    validate_filter_values(&block_line, line_block_start, &mut result);
+                    validate_protocol_values(&block_line, line_block_start, &mut result);
+                    match parse_line_with_values(&block_line, &merged_values) {
+                        Ok(rules) => {
+                            result.rule_count += rules.len();
+                        }
+                        Err(e) => {
+                            let error =
+                                create_detailed_parse_error(line_block_start, &block_line, &e);
+                            result.errors.push(error);
+                        }
+                    }
+                }
+                line_block_content.clear();
+            } else {
+                line_block_content.push_str(trimmed);
+                line_block_content.push('\n');
+            }
             continue;
         }
 
-        validate_variable_references(trimmed, line_num, &merged_values, &mut result);
-        extract_script_references(trimmed, line_num, &mut result);
-        validate_filter_values(trimmed, line_num, &mut result);
-        validate_protocol_values(trimmed, line_num, &mut result);
+        if trimmed.starts_with("line`") {
+            in_line_block = true;
+            line_block_start = line_num;
+            let after_marker = trimmed.strip_prefix("line`").unwrap_or("");
+            if !after_marker.is_empty() {
+                line_block_content.push_str(after_marker);
+                line_block_content.push('\n');
+            }
+            continue;
+        }
 
-        match parse_line_with_values(trimmed, &merged_values) {
+        if let Some(stripped) = trimmed.strip_suffix('\\') {
+            if current_line.is_empty() {
+                start_line_num = line_num;
+            }
+            current_line.push_str(stripped);
+            current_line.push(' ');
+            continue;
+        }
+
+        let (effective_line, effective_line_num) = if !current_line.is_empty() {
+            current_line.push_str(trimmed);
+            let line_ref = current_line.clone();
+            current_line.clear();
+            (line_ref, start_line_num)
+        } else {
+            (trimmed.to_string(), line_num)
+        };
+
+        let effective_trimmed = effective_line.trim();
+
+        if effective_trimmed.is_empty() || effective_trimmed.starts_with('#') {
+            continue;
+        }
+
+        validate_variable_references(
+            effective_trimmed,
+            effective_line_num,
+            &merged_values,
+            &mut result,
+        );
+        extract_script_references(effective_trimmed, effective_line_num, &mut result);
+        validate_filter_values(effective_trimmed, effective_line_num, &mut result);
+        validate_protocol_values(effective_trimmed, effective_line_num, &mut result);
+
+        match parse_line_with_values(effective_trimmed, &merged_values) {
             Ok(rules) => {
                 result.rule_count += rules.len();
             }
             Err(e) => {
-                let error = create_detailed_parse_error(line_num, trimmed, &e);
+                let error = create_detailed_parse_error(effective_line_num, effective_trimmed, &e);
                 result.errors.push(error);
+            }
+        }
+    }
+
+    if !current_line.is_empty() {
+        let effective_trimmed = current_line.trim();
+        if !effective_trimmed.is_empty() && !effective_trimmed.starts_with('#') {
+            validate_variable_references(
+                effective_trimmed,
+                start_line_num,
+                &merged_values,
+                &mut result,
+            );
+            extract_script_references(effective_trimmed, start_line_num, &mut result);
+            validate_filter_values(effective_trimmed, start_line_num, &mut result);
+            validate_protocol_values(effective_trimmed, start_line_num, &mut result);
+            match parse_line_with_values(effective_trimmed, &merged_values) {
+                Ok(rules) => {
+                    result.rule_count += rules.len();
+                }
+                Err(e) => {
+                    let error = create_detailed_parse_error(start_line_num, effective_trimmed, &e);
+                    result.errors.push(error);
+                }
+            }
+        }
+    }
+
+    if in_line_block {
+        let error = ParseError::with_range(
+            line_block_start,
+            1,
+            5,
+            format!(
+                "Unclosed line block starting at line {}. Missing closing '`' delimiter.",
+                line_block_start
+            ),
+        )
+        .with_code("E006")
+        .with_suggestion("Add '`' on a new line to close the line block.".to_string());
+        result.errors.push(error);
+
+        if !line_block_content.is_empty() {
+            let block_line =
+                normalize_line_block_tokens(&line_block_content.trim().replace('\n', " "));
+            if !block_line.is_empty() {
+                if let Ok(rules) = parse_line_with_values(&block_line, &merged_values) {
+                    result.rule_count += rules.len();
+                }
             }
         }
     }
@@ -1080,6 +1205,8 @@ fn extract_markdown_value_blocks(text: &str, values: &mut HashMap<String, String
                 for _ in 0..backtick_count {
                     result.push('`');
                 }
+                line_start = false;
+                continue;
             }
         }
 
@@ -1518,6 +1645,8 @@ fn extract_pattern_and_protocols(parts: &[String]) -> Result<ParsedPatternResult
     if patterns.is_empty() {
         return Err(BifrostError::Parse("No pattern found in rule".to_string()));
     }
+
+    let patterns: Vec<String> = patterns.into_iter().map(|p| strip_backticks(&p)).collect();
 
     Ok((
         patterns,
@@ -2890,6 +3019,8 @@ combined.test reqScript://reqHandler resScript://resHandler
         assert_eq!(rules[0].pattern, "127.0.0.1:8889");
         assert_eq!(rules[0].protocol, Protocol::Host);
         assert_eq!(rules[0].value, "127.0.0.1:9999");
+        assert_eq!(rules[0].include_filters.len(), 0);
+        assert_eq!(rules[0].exclude_filters.len(), 0);
     }
 
     #[test]
@@ -2899,6 +3030,8 @@ combined.test reqScript://reqHandler resScript://resHandler
         assert_eq!(rules[0].pattern, "https://10.0.0.1:443");
         assert_eq!(rules[0].protocol, Protocol::Https);
         assert_eq!(rules[0].value, "10.0.0.2:8443");
+        assert_eq!(rules[0].include_filters.len(), 0);
+        assert_eq!(rules[0].exclude_filters.len(), 0);
     }
 
     #[test]
@@ -2944,5 +3077,316 @@ http://localhost:8080 host://192.168.1.1:3000
             "Expected no errors for IP URL forward rules, got: {:?}",
             errors.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_parse_complex_multiline_with_line_blocks_and_markdown_values() {
+        let text = r#"
+line`
+https://mira.byteintl.net   http://localhost:5173
+includeFilter://mira.byteintl.net
+excludeFilter://mira.byteintl.net/api
+excludeFilter://mira.byteintl.net/global_config
+excludeFilter://mira.byteintl.net/devops
+excludeFilter://mira.byteintl.net/upload
+excludeFilter://mira.byteintl.net/proxy
+excludeFilter://mira.byteintl.net/mira/api
+excludeFilter://mira.byteintl.net/mira/scheduler
+`
+
+line`
+https://mira.bytedance.com   http://localhost:5173
+includeFilter://mira.bytedance.com
+excludeFilter://mira.bytedance.com/api
+excludeFilter://mira.bytedance.com/global_config
+excludeFilter://mira.bytedance.com/devops
+excludeFilter://mira.bytedance.com/upload
+excludeFilter://mira.bytedance.com/proxy
+excludeFilter://mira.bytedance.com/mira/api
+excludeFilter://mira.bytedance.com/mira/scheduler
+`
+
+```mcp-ppe
+x-use-ppe: 1
+x-tt-env: ppe_mira_mcp_app
+```
+
+```task-ppe
+x-use-ppe: 1
+x-tt-env: ppe_yqq_test
+```
+
+# mira.bytedance.com reqHeaders://{mcp-ppe}
+# mira.byteintl.net reqHeaders://{mcp-ppe}
+"#;
+        let rules = parse_rules(text).unwrap();
+
+        assert_eq!(
+            rules.len(),
+            2,
+            "should have 2 rules (2 line blocks, 2 commented)"
+        );
+
+        let rule0 = &rules[0];
+        assert_eq!(rule0.pattern, "https://mira.byteintl.net");
+        assert_eq!(rule0.protocol, Protocol::Http);
+        assert_eq!(rule0.value, "localhost:5173");
+        assert_eq!(
+            rule0.include_filters.len(),
+            1,
+            "domain-style includeFilter (mira.byteintl.net) should be recognized as URL filter"
+        );
+        assert_eq!(
+            rule0.exclude_filters.len(),
+            7,
+            "domain-style excludeFilter paths should be recognized as URL filters"
+        );
+
+        let rule1 = &rules[1];
+        assert_eq!(rule1.pattern, "https://mira.bytedance.com");
+        assert_eq!(rule1.protocol, Protocol::Http);
+        assert_eq!(rule1.value, "localhost:5173");
+    }
+
+    #[test]
+    fn test_parse_multiline_line_blocks_with_reqheaders_markdown_values() {
+        let text = r#"
+line`
+https://mira.byteintl.net   http://localhost:5173
+includeFilter://mira.byteintl.net
+excludeFilter://mira.byteintl.net/api
+excludeFilter://mira.byteintl.net/global_config
+excludeFilter://mira.byteintl.net/devops
+excludeFilter://mira.byteintl.net/upload
+excludeFilter://mira.byteintl.net/proxy
+excludeFilter://mira.byteintl.net/mira/api
+excludeFilter://mira.byteintl.net/mira/scheduler
+`
+
+line`
+https://mira.bytedance.com   http://localhost:5173
+includeFilter://mira.bytedance.com
+excludeFilter://mira.bytedance.com/api
+excludeFilter://mira.bytedance.com/global_config
+excludeFilter://mira.bytedance.com/devops
+excludeFilter://mira.bytedance.com/upload
+excludeFilter://mira.bytedance.com/proxy
+excludeFilter://mira.bytedance.com/mira/api
+excludeFilter://mira.bytedance.com/mira/scheduler
+`
+
+```mcp-ppe
+x-use-ppe: 1
+x-tt-env: ppe_mira_mcp_app
+```
+
+```task-ppe
+x-use-ppe: 1
+x-tt-env: ppe_yqq_test
+```
+
+mira.bytedance.com reqHeaders://{mcp-ppe}
+mira.byteintl.net reqHeaders://{mcp-ppe}
+"#;
+        let rules = parse_rules(text).unwrap();
+
+        assert_eq!(
+            rules.len(),
+            4,
+            "should have 4 rules (2 line blocks + 2 reqHeaders)"
+        );
+
+        let rule0 = &rules[0];
+        assert_eq!(rule0.pattern, "https://mira.byteintl.net");
+        assert_eq!(rule0.protocol, Protocol::Http);
+        assert_eq!(rule0.value, "localhost:5173");
+        assert_eq!(rule0.line, Some(2));
+
+        let rule1 = &rules[1];
+        assert_eq!(rule1.pattern, "https://mira.bytedance.com");
+        assert_eq!(rule1.protocol, Protocol::Http);
+        assert_eq!(rule1.value, "localhost:5173");
+        assert_eq!(rule1.line, Some(14));
+
+        let rule2 = &rules[2];
+        assert_eq!(rule2.pattern, "mira.bytedance.com");
+        assert_eq!(rule2.protocol, Protocol::ReqHeaders);
+        assert_eq!(
+            rule2.value, "{mcp-ppe}",
+            "multi-line markdown value is not expanded inline"
+        );
+
+        let rule3 = &rules[3];
+        assert_eq!(rule3.pattern, "mira.byteintl.net");
+        assert_eq!(rule3.protocol, Protocol::ReqHeaders);
+        assert_eq!(
+            rule3.value, "{mcp-ppe}",
+            "multi-line markdown value is not expanded inline"
+        );
+    }
+
+    #[test]
+    fn test_validate_line_block_no_errors() {
+        let content = r#"
+line`
+host://127.0.0.1
+example.com
+`
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "line block should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 1);
+    }
+
+    #[test]
+    fn test_validate_line_block_with_filters_no_errors() {
+        let content = r#"
+line`
+host://127.0.0.1
+example.com
+includeFilter://m:GET
+excludeFilter:///admin/
+`
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "line block with filters should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 1);
+    }
+
+    #[test]
+    fn test_validate_complex_multiline_with_line_blocks_and_markdown() {
+        let content = r#"
+line`
+`https://mira.byteintl.net`   http://localhost:5173
+includeFilter://mira.byteintl.net
+excludeFilter://mira.byteintl.net/api
+excludeFilter://mira.byteintl.net/global_config
+excludeFilter://mira.byteintl.net/devops
+excludeFilter://mira.byteintl.net/upload
+excludeFilter://mira.byteintl.net/proxy
+excludeFilter://mira.byteintl.net/mira/api
+excludeFilter://mira.byteintl.net/mira/scheduler
+`
+
+line`
+`https://mira.bytedance.com`   http://localhost:5173
+includeFilter://mira.bytedance.com
+excludeFilter://mira.bytedance.com/api
+excludeFilter://mira.bytedance.com/global_config
+excludeFilter://mira.bytedance.com/devops
+excludeFilter://mira.bytedance.com/upload
+excludeFilter://mira.bytedance.com/proxy
+excludeFilter://mira.bytedance.com/mira/api
+excludeFilter://mira.bytedance.com/mira/scheduler
+`
+
+```mcp-ppe
+x-use-ppe: 1
+x-tt-env: ppe_mira_mcp_app
+```
+
+```task-ppe
+x-use-ppe: 1
+x-tt-env: ppe_yqq_test
+```
+
+# mira.bytedance.com reqHeaders://{mcp-ppe}
+# mira.byteintl.net reqHeaders://{mcp-ppe}
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "complex multiline should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 2, "2 line blocks, comments excluded");
+        assert!(result.valid);
+    }
+
+    #[test]
+    fn test_validate_line_blocks_with_active_reqheaders() {
+        let content = r#"
+line`
+`https://mira.byteintl.net`   http://localhost:5173
+includeFilter://mira.byteintl.net
+excludeFilter://mira.byteintl.net/api
+`
+
+```mcp-ppe
+x-use-ppe: 1
+x-tt-env: ppe_mira_mcp_app
+```
+
+mira.byteintl.net reqHeaders://{mcp-ppe}
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "line block + reqHeaders should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 2, "1 line block + 1 reqHeaders");
+
+        assert!(
+            result.defined_variables.iter().any(|v| v.name == "mcp-ppe"),
+            "should detect mcp-ppe variable"
+        );
+    }
+
+    #[test]
+    fn test_validate_line_block_mixed_with_normal_rules() {
+        let content = r#"
+example.com host://127.0.0.1
+
+line`
+`https://test.local`   http://localhost:3000
+excludeFilter:///api/
+`
+
+another.com proxy://proxy.local:8080
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "mixed rules should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 3, "2 normal + 1 line block");
+    }
+
+    #[test]
+    fn test_validate_continuation_lines_no_errors() {
+        let content = r#"example.com \
+host://127.0.0.1 \
+reqHeaders://{test=1}"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(
+            result.errors.is_empty(),
+            "continuation lines should not produce errors, got: {:?}",
+            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert_eq!(result.rule_count, 2, "host + reqHeaders");
+    }
+
+    #[test]
+    fn test_validate_unclosed_line_block() {
+        let content = r#"
+line`
+host://127.0.0.1
+example.com
+"#;
+        let result = validate_rules_with_context(content, &HashMap::new());
+        assert!(!result.valid);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].message.contains("Unclosed line block"));
+        assert_eq!(result.errors[0].code.as_deref(), Some("E006"));
     }
 }

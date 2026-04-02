@@ -15,6 +15,7 @@ pub enum Filter {
     },
     ClientIp(IpMatcher),
     Body(Regex),
+    Url(UrlMatcher),
     Custom(String, String),
 }
 
@@ -52,6 +53,56 @@ impl PathMatcher {
             PathMatcher::Regex(r) => r.is_match(path),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum UrlMatcher {
+    Contains(String),
+    HostPath { host: String, path: Option<String> },
+}
+
+impl UrlMatcher {
+    pub fn matches(&self, url: &str, host: &str, path: &str) -> bool {
+        match self {
+            UrlMatcher::Contains(s) => url.contains(s.as_str()),
+            UrlMatcher::HostPath {
+                host: filter_host,
+                path: filter_path,
+            } => {
+                let host_match =
+                    host == filter_host || host.starts_with(&format!("{}:", filter_host));
+                if !host_match {
+                    return false;
+                }
+                if let Some(fp) = filter_path {
+                    path.starts_with(fp.as_str())
+                } else {
+                    true
+                }
+            }
+        }
+    }
+}
+
+pub fn parse_url_filter(s: &str) -> Option<UrlMatcher> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(pos) = s.find('/') {
+        let host = &s[..pos];
+        let path = &s[pos..];
+        if !host.is_empty() {
+            return Some(UrlMatcher::HostPath {
+                host: host.to_string(),
+                path: Some(path.to_string()),
+            });
+        }
+    }
+    Some(UrlMatcher::HostPath {
+        host: s.to_string(),
+        path: None,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +242,12 @@ pub fn parse_filter(filter_str: &str) -> Option<Filter> {
         return Some(Filter::Path(PathMatcher::Contains(filter_str.to_string())));
     }
 
+    if looks_like_url_pattern(filter_str) {
+        if let Some(url_matcher) = parse_url_filter(filter_str) {
+            return Some(Filter::Url(url_matcher));
+        }
+    }
+
     None
 }
 
@@ -232,6 +289,10 @@ fn parse_regex_pattern(s: &str) -> Option<Regex> {
         return Regex::new(pattern).ok();
     }
     None
+}
+
+fn looks_like_url_pattern(s: &str) -> bool {
+    s.contains('.')
 }
 
 fn parse_ip_matcher(s: &str) -> Option<IpMatcher> {
@@ -412,5 +473,63 @@ mod tests {
         let props = LineProps::new().with_important(true).with_disabled(false);
         assert!(props.important);
         assert!(!props.disabled);
+    }
+
+    #[test]
+    fn test_parse_url_filter_domain_only() {
+        let filter = parse_filter("mira.byteintl.net").unwrap();
+        if let Filter::Url(matcher) = filter {
+            assert!(matcher.matches(
+                "https://mira.byteintl.net/page",
+                "mira.byteintl.net",
+                "/page"
+            ));
+            assert!(!matcher.matches(
+                "https://other.example.com/page",
+                "other.example.com",
+                "/page"
+            ));
+        } else {
+            panic!("Expected Url filter");
+        }
+    }
+
+    #[test]
+    fn test_parse_url_filter_domain_with_path() {
+        let filter = parse_filter("mira.byteintl.net/api").unwrap();
+        if let Filter::Url(matcher) = filter {
+            assert!(matcher.matches(
+                "https://mira.byteintl.net/api/v1",
+                "mira.byteintl.net",
+                "/api/v1"
+            ));
+            assert!(!matcher.matches(
+                "https://mira.byteintl.net/page",
+                "mira.byteintl.net",
+                "/page"
+            ));
+            assert!(!matcher.matches("https://other.example.com/api", "other.example.com", "/api"));
+        } else {
+            panic!("Expected Url filter");
+        }
+    }
+
+    #[test]
+    fn test_parse_url_filter_domain_with_deep_path() {
+        let filter = parse_filter("mira.byteintl.net/mira/api").unwrap();
+        if let Filter::Url(matcher) = filter {
+            assert!(matcher.matches(
+                "https://mira.byteintl.net/mira/api/endpoint",
+                "mira.byteintl.net",
+                "/mira/api/endpoint"
+            ));
+            assert!(!matcher.matches(
+                "https://mira.byteintl.net/other",
+                "mira.byteintl.net",
+                "/other"
+            ));
+        } else {
+            panic!("Expected Url filter");
+        }
     }
 }

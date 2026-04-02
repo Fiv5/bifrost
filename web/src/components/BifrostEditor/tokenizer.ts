@@ -22,6 +22,10 @@ const config: languages.LanguageConfiguration = {
   ],
   folding: {
     offSide: true,
+    markers: {
+      start: /^\s*line`\s*$/,
+      end: /^\s*`\s*$/,
+    },
   },
 };
 
@@ -43,6 +47,14 @@ const language: languages.IMonarchLanguage = {
     root: [
       { include: '@whitespace' },
       { include: '@comment' },
+
+      [
+        /^(line)(`)$/,
+        [
+          { token: 'keyword' },
+          { token: 'delimiter.bracket', bracket: '@open', next: '@lineblock' },
+        ],
+      ],
 
       [
         /\/(?=([^\\\/]|\\.)+\/([dgimsuy]*)(\s*))/,
@@ -181,6 +193,38 @@ const language: languages.IMonarchLanguage = {
         },
       ],
       [/[^`]+/, 'string'],
+    ],
+
+    lineblock: [
+      [
+        /^`$/,
+        {
+          token: 'delimiter.bracket',
+          bracket: '@close',
+          next: '@pop',
+        },
+      ],
+      { include: '@comment' },
+      [
+        /(includeFilter:\/\/)(.*)/,
+        ['keyword', 'string'],
+      ],
+      [
+        /(excludeFilter:\/\/)(.*)/,
+        ['keyword', 'string'],
+      ],
+      [
+        /(lineProps:\/\/)(.*)/,
+        ['keyword', 'string'],
+      ],
+      [
+        /([\w.\-]+:\/\/)([^#\s]*)/,
+        ['keyword', 'string'],
+      ],
+      [/`[^`]+`/, 'scheme'],
+      [/(@scheme:\/\/)?[\w@:/?*.\-]+/, 'scheme'],
+      { include: '@whitespace' },
+      [/./, ''],
     ],
   },
 };

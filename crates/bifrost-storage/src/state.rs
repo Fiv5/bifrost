@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub struct RuntimeState {
     pub enabled_groups: HashSet<String>,
     pub disabled_rules: HashSet<String>,
+    pub userpass_last_connected_at: HashMap<String, u64>,
 }
 
 impl RuntimeState {
@@ -102,6 +103,24 @@ impl StateManager {
 
     pub fn reset(&mut self) {
         self.state = RuntimeState::default();
+    }
+
+    pub fn userpass_last_connected_at(&self) -> &HashMap<String, u64> {
+        &self.state.userpass_last_connected_at
+    }
+
+    pub fn set_userpass_last_connected_at(&mut self, username: &str, timestamp: u64) {
+        self.state
+            .userpass_last_connected_at
+            .insert(username.to_string(), timestamp);
+    }
+
+    pub fn replace_userpass_last_connected_at(&mut self, timestamps: HashMap<String, u64>) {
+        self.state.userpass_last_connected_at = timestamps;
+    }
+
+    pub fn remove_userpass_last_connected_at(&mut self, username: &str) {
+        self.state.userpass_last_connected_at.remove(username);
     }
 }
 

@@ -535,11 +535,31 @@ export interface ApiResponse<T = unknown> {
 
 export type AccessMode = 'allow_all' | 'local_only' | 'whitelist' | 'interactive';
 
+export interface UserPassAccount {
+  username: string;
+  enabled: boolean;
+  has_password: boolean;
+  last_connected_at: string | null;
+}
+
+export interface UserPassStatus {
+  enabled: boolean;
+  accounts: UserPassAccount[];
+  loopback_requires_auth: boolean;
+}
+
+export interface UserPassAccountUpdate {
+  username: string;
+  password?: string | null;
+  enabled: boolean;
+}
+
 export interface WhitelistStatus {
   mode: AccessMode;
   allow_lan: boolean;
   whitelist: string[];
   temporary_whitelist: string[];
+  userpass: UserPassStatus;
 }
 
 export interface PendingAuth {

@@ -6,6 +6,7 @@ use tokio::process::Command;
 #[derive(Debug, Clone)]
 pub struct CurlCommand {
     proxy: Option<String>,
+    proxy_user: Option<String>,
     url: String,
     method: Option<String>,
     headers: Vec<(String, String)>,
@@ -31,6 +32,7 @@ impl CurlCommand {
     pub fn new(url: &str) -> Self {
         Self {
             proxy: None,
+            proxy_user: None,
             url: url.to_string(),
             method: None,
             headers: Vec::new(),
@@ -46,6 +48,7 @@ impl CurlCommand {
     pub fn with_proxy(proxy_url: &str, target_url: &str) -> Self {
         Self {
             proxy: Some(proxy_url.to_string()),
+            proxy_user: None,
             url: target_url.to_string(),
             method: None,
             headers: Vec::new(),
@@ -60,6 +63,11 @@ impl CurlCommand {
 
     pub fn proxy(mut self, proxy_url: &str) -> Self {
         self.proxy = Some(proxy_url.to_string());
+        self
+    }
+
+    pub fn proxy_user(mut self, user_pass: &str) -> Self {
+        self.proxy_user = Some(user_pass.to_string());
         self
     }
 
@@ -118,6 +126,11 @@ impl CurlCommand {
         if let Some(ref proxy) = self.proxy {
             args.push("-x".to_string());
             args.push(proxy.clone());
+        }
+
+        if let Some(ref proxy_user) = self.proxy_user {
+            args.push("--proxy-user".to_string());
+            args.push(proxy_user.clone());
         }
 
         if let Some(ref method) = self.method {

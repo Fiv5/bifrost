@@ -16,6 +16,7 @@ pub mod response;
 pub mod response_modification;
 pub mod routing;
 pub mod rule_priority;
+pub mod rule_validation;
 pub mod status_redirect;
 pub mod template;
 pub mod tls_config_disconnect;
@@ -23,6 +24,7 @@ pub mod tls_intercept_mode;
 pub mod tls_switch_test;
 pub mod traffic_cli;
 pub mod url_manipulation;
+pub mod userpass_auth;
 pub mod ws_payload_persistence;
 
 use crate::runner::TestCase;
@@ -43,6 +45,7 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(request_modification::get_all_tests());
     tests.extend(response_modification::get_all_tests());
     tests.extend(rule_priority::get_all_tests());
+    tests.extend(rule_validation::get_all_tests());
     tests.extend(body_manipulation::get_all_tests());
     tests.extend(url_manipulation::get_all_tests());
     tests.extend(status_redirect::get_all_tests());
@@ -55,5 +58,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(client_process::get_all_tests());
     tests.extend(traffic_cli::get_all_tests());
     tests.extend(ws_payload_persistence::get_all_tests());
+    tests.extend(userpass_auth::get_all_tests());
     tests
 }
