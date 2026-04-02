@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -402,6 +403,42 @@ impl WsPayloadStore {
             }
         }
         Ok(sizes)
+    }
+
+    pub fn active_connection_ids(&self) -> HashSet<String> {
+        let state = self.state.lock();
+        state.writers.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    pub fn recently_modified_ids(&self, max_age: Duration) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        let payload_dir = self.payload_dir();
+        if !payload_dir.exists() {
+            return ids;
+        }
+        let now = SystemTime::now();
+        let entries = match fs::read_dir(&payload_dir) {
+            Ok(e) => e,
+            Err(_) => return ids,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let within_age = (|| {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                let age = now.duration_since(modified).ok()?;
+                Some(age <= max_age)
+            })()
+            .unwrap_or(false);
+            if within_age {
+                if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    ids.insert(file_stem.to_string());
+                }
+            }
+        }
+        ids
     }
 
     fn get_retention_days(&self) -> u64 {
