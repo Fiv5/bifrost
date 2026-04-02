@@ -172,7 +172,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bifrost-core"
-version = "0.0.22-beta"
+version = "0.0.34-beta"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-desktop"
-version = "0.0.22-beta"
+version = "0.0.34-beta"
 dependencies = [
  "bifrost-core",
  "bifrost-storage",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-storage"
-version = "0.0.22-beta"
+version = "0.0.34-beta"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -227,16 +227,18 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "urlencoding",
+ "uuid",
 ]
 
 [[package]]
 name = "bifrost-tls"
-version = "0.0.22-beta"
+version = "0.0.34-beta"
 dependencies = [
  "bifrost-core",
  "chrono",
@@ -3660,9 +3662,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.9"
+version = "0.103.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7df23109aa6c1567d1c575b9952556388da57401e4ace1d15f79eedad0d8f53"
+checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
 dependencies = [
  "aws-lc-rs",
  "ring",
