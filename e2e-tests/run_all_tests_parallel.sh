@@ -421,7 +421,15 @@ collect_failed_result_indices() {
 }
 
 ensure_mock_servers_alive() {
-    if is_http_echo_ready; then
+    local need_restart=false
+    if ! is_http_echo_ready; then
+        need_restart=true
+    fi
+    if ! is_https_echo_ready; then
+        need_restart=true
+    fi
+
+    if [[ "$need_restart" == "false" ]]; then
         return 0
     fi
 
@@ -431,7 +439,7 @@ ensure_mock_servers_alive() {
     "$SCRIPT_DIR/mock_servers/start_servers.sh" start-bg
     sleep 2
 
-    if is_http_echo_ready; then
+    if is_http_echo_ready && is_https_echo_ready; then
         echo -e "${GREEN}✓${NC} Mock 服务器已重启"
         return 0
     fi
@@ -541,6 +549,10 @@ retry_failed_suites_once() {
 
 is_http_echo_ready() {
     curl -sf "http://127.0.0.1:3000/health" >/dev/null 2>&1
+}
+
+is_https_echo_ready() {
+    curl -skf --connect-timeout 2 --max-time 5 "https://127.0.0.1:${HTTPS_PORT:-3443}/health" >/dev/null 2>&1
 }
 
 ensure_cargo_on_path
@@ -664,10 +676,15 @@ main() {
     info "等待 Mock 服务器就绪..."
     sleep 2
 
-    if is_http_echo_ready; then
+    if is_http_echo_ready && is_https_echo_ready; then
         echo -e "${GREEN}✓${NC} Mock 服务器已启动 (所有测试共享)"
     else
-        echo -e "${RED}✗${NC} Mock 服务器启动失败"
+        if ! is_http_echo_ready; then
+            echo -e "${RED}✗${NC} HTTP Mock 服务器启动失败"
+        fi
+        if ! is_https_echo_ready; then
+            echo -e "${RED}✗${NC} HTTPS Mock 服务器启动失败"
+        fi
         exit 1
     fi
 
