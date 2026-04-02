@@ -1,0 +1,46 @@
+# Bifrost Sync Server Configuration
+# Copy this file to config.yaml and modify as needed.
+
+# ─── Server ─────────────────────────────────────────────────
+server:
+  port: 8686
+  host: 0.0.0.0
+
+# ─── Storage ────────────────────────────────────────────────
+# type: sqlite (default) or mysql
+storage:
+  type: sqlite
+  sqlite:
+    data_dir: ./bifrost-sync-data
+
+  # Uncomment below to use MySQL instead of SQLite:
+  # type: mysql
+  # mysql:
+  #   host: 127.0.0.1
+  #   port: 3306
+  #   user: root
+  #   password: ""
+  #   database: bifrost_sync
+
+# ─── Auth ───────────────────────────────────────────────────
+# mode: password (default) or oauth2
+auth:
+  mode: password
+
+  # Uncomment below to use OAuth2 instead of password:
+  # mode: oauth2
+  # oauth2:
+  #   client_id: your-client-id
+  #   client_secret: your-client-secret
+  #   authorize_url: https://accounts.example.com/oauth2/authorize
+  #   token_url: https://accounts.example.com/oauth2/token
+  #   userinfo_url: https://accounts.example.com/oauth2/userinfo
+  #   scopes:
+  #     - openid
+  #     - profile
+  #     - email
+  #   redirect_uri: http://localhost:8686/v4/sso/callback  # optional, auto-detected
+  #   user_id_field: sub          # field in userinfo response for user_id
+  #   nickname_field: name        # field for nickname
+  #   email_field: email          # field for email
+  #   avatar_field: picture       # field for avatar URL
