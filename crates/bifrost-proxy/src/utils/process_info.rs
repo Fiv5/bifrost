@@ -58,6 +58,7 @@ pub struct ProcessResolver {
     #[cfg(not(target_os = "macos"))]
     socket_snapshot: RwLock<Option<SocketSnapshot>>,
     cache_ttl: Duration,
+    pid_cache_ttl: Duration,
     negative_cache_ttl: Duration,
     #[cfg(not(target_os = "macos"))]
     socket_snapshot_ttl: Duration,
@@ -77,6 +78,7 @@ impl ProcessResolver {
             #[cfg(not(target_os = "macos"))]
             socket_snapshot: RwLock::new(None),
             cache_ttl: Duration::from_secs(30),
+            pid_cache_ttl: Duration::from_secs(2),
             negative_cache_ttl: Duration::from_secs(5),
             #[cfg(not(target_os = "macos"))]
             socket_snapshot_ttl: Duration::from_millis(250),
@@ -298,7 +300,7 @@ impl ProcessResolver {
                 pid,
                 CachedProcess {
                     process: process.clone(),
-                    expires_at: now + self.cache_ttl,
+                    expires_at: now + self.pid_cache_ttl,
                 },
             );
             if cache.len() > 10000 {
