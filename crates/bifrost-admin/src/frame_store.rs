@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -762,6 +762,39 @@ impl FrameStore {
             }
         }
         Ok(sizes)
+    }
+
+    pub fn recently_modified_ids(&self, max_age: Duration) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        let frames_dir = self.frames_dir();
+        if !frames_dir.exists() {
+            return ids;
+        }
+        let now = SystemTime::now();
+        let entries = match fs::read_dir(&frames_dir) {
+            Ok(e) => e,
+            Err(_) => return ids,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let within_age = (|| {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                let age = now.duration_since(modified).ok()?;
+                Some(age <= max_age)
+            })()
+            .unwrap_or(false);
+            if within_age {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    if let Some(base_id) = file_name.strip_suffix(".jsonl") {
+                        ids.insert(base_id.to_string());
+                    }
+                }
+            }
+        }
+        ids
     }
 }
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -47,6 +48,7 @@ pub struct BodyStore {
     stream_flush_bytes: usize,
     stream_flush_interval: Duration,
     active_stream_writers: Arc<AtomicUsize>,
+    active_stream_ids: Arc<RwLock<HashSet<String>>>,
     max_open_stream_writers: usize,
 }
 
@@ -63,6 +65,8 @@ pub struct BodyStreamWriter {
     flush_interval: Duration,
     last_flush: Instant,
     active_stream_writers: Arc<AtomicUsize>,
+    active_stream_ids: Arc<RwLock<HashSet<String>>>,
+    record_id: String,
     released_stream_slot: bool,
 }
 
@@ -124,6 +128,7 @@ impl BodyStreamWriter {
         }
         self.released_stream_slot = true;
         self.active_stream_writers.fetch_sub(1, Ordering::SeqCst);
+        self.active_stream_ids.write().remove(&self.record_id);
     }
 }
 
@@ -177,6 +182,7 @@ impl BodyStore {
             stream_flush_bytes,
             stream_flush_interval,
             active_stream_writers: Arc::new(AtomicUsize::new(0)),
+            active_stream_ids: Arc::new(RwLock::new(HashSet::new())),
             max_open_stream_writers: max_open_stream_writers.max(1),
         }
     }
@@ -289,6 +295,8 @@ impl BodyStore {
                 return Err(error);
             }
         };
+        let record_id = id.to_string();
+        self.active_stream_ids.write().insert(record_id.clone());
         Ok(BodyStreamWriter {
             path,
             file,
@@ -298,6 +306,8 @@ impl BodyStore {
             flush_interval: self.stream_flush_interval,
             last_flush: Instant::now(),
             active_stream_writers: Arc::clone(&self.active_stream_writers),
+            active_stream_ids: Arc::clone(&self.active_stream_ids),
+            record_id,
             released_stream_slot: false,
         })
     }
@@ -535,6 +545,40 @@ impl BodyStore {
             }
         }
         Ok(sizes)
+    }
+
+    pub fn active_stream_id_set(&self) -> HashSet<String> {
+        self.active_stream_ids.read().clone()
+    }
+
+    pub fn recently_modified_ids(&self, max_age: Duration) -> HashSet<String> {
+        let mut ids = HashSet::new();
+        if !self.temp_dir.exists() {
+            return ids;
+        }
+        let now = SystemTime::now();
+        let entries = match fs::read_dir(&self.temp_dir) {
+            Ok(e) => e,
+            Err(_) => return ids,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let dominated_by_age = (|| {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                let age = now.duration_since(modified).ok()?;
+                Some(age <= max_age)
+            })()
+            .unwrap_or(false);
+            if dominated_by_age {
+                if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                    ids.insert(extract_base_id(file_name).to_string());
+                }
+            }
+        }
+        ids
     }
 }
 

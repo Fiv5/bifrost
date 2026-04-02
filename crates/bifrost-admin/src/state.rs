@@ -430,19 +430,54 @@ impl AdminState {
 
         let existing_db_ids = traffic_db_store.all_ids_set();
 
+        let recent_threshold = std::time::Duration::from_secs(300);
+
+        let protected_body_ids = self
+            .body_store
+            .as_ref()
+            .map(|store| {
+                let store = store.read();
+                let mut protected = store.active_stream_id_set();
+                protected.extend(store.recently_modified_ids(recent_threshold));
+                protected
+            })
+            .unwrap_or_default();
+
+        let protected_frame_ids = self
+            .frame_store
+            .as_ref()
+            .map(|store| store.recently_modified_ids(recent_threshold))
+            .unwrap_or_default();
+
+        let protected_ws_ids = self
+            .ws_payload_store
+            .as_ref()
+            .map(|store| {
+                let mut protected = store.active_connection_ids();
+                protected.extend(store.recently_modified_ids(recent_threshold));
+                protected
+            })
+            .unwrap_or_default();
+
         let orphan_body_ids: Vec<String> = body_sizes
             .keys()
-            .filter(|id| !existing_db_ids.contains(id.as_str()))
+            .filter(|id| {
+                !existing_db_ids.contains(id.as_str()) && !protected_body_ids.contains(id.as_str())
+            })
             .cloned()
             .collect();
         let orphan_frame_ids: Vec<String> = frame_sizes
             .keys()
-            .filter(|id| !existing_db_ids.contains(id.as_str()))
+            .filter(|id| {
+                !existing_db_ids.contains(id.as_str()) && !protected_frame_ids.contains(id.as_str())
+            })
             .cloned()
             .collect();
         let orphan_ws_ids: Vec<String> = ws_payload_sizes
             .keys()
-            .filter(|id| !existing_db_ids.contains(id.as_str()))
+            .filter(|id| {
+                !existing_db_ids.contains(id.as_str()) && !protected_ws_ids.contains(id.as_str())
+            })
             .cloned()
             .collect();
 
@@ -473,6 +508,9 @@ impl AdminState {
                 orphan_frame = orphan_frame_ids.len(),
                 orphan_ws = orphan_ws_ids.len(),
                 orphan_bytes = orphan_bytes,
+                protected_body = protected_body_ids.len(),
+                protected_frame = protected_frame_ids.len(),
+                protected_ws = protected_ws_ids.len(),
                 "[TRAFFIC] Cleaned up orphaned cache files"
             );
         }

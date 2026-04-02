@@ -453,7 +453,7 @@ function AppMetricsContent({
         scroll={{ x: 900 }}
         pagination={{
           pageSize: 10,
-          showSizeChanger: true,
+          showSizeChanger: false,
           showTotal: (total) => `Total ${total} applications`,
         }}
       />
@@ -647,7 +647,7 @@ function HostMetricsContent({
         scroll={{ x: 900 }}
         pagination={{
           pageSize: 10,
-          showSizeChanger: true,
+          showSizeChanger: false,
           showTotal: (total) => `Total ${total} hosts`,
         }}
       />

@@ -103,6 +103,13 @@ function getSnippetsForProtocol(
       return genSnippet(name);
     case 'host:port':
       return [`${name}://\${1:ip}:\${2:port}`, `${name}://\${1:ip}`];
+    case 'proxy_url':
+      return [
+        `${name}://\${1:ip}:\${2:port}`,
+        `${name}://\${1:user}:\${2:password}@\${3:ip}:\${4:port}`,
+        `${name}://socks5://\${1:ip}:\${2:port}`,
+        `${name}://socks5://\${1:user}:\${2:password}@\${3:ip}:\${4:port}`,
+      ];
     case 'url':
       return [`${name}://\${1:ip}:\${2:port}`, `${name}://\${1:hostname}`];
     case 'milliseconds':
@@ -458,6 +465,24 @@ function getProtocolValueSuggestions(protocol: string, range: IRange): languages
           label: String(bytes),
           detail: kb >= 1024 ? `${kb / 1024} MB/s` : `${kb} KB/s`,
           insertText: String(bytes),
+          sortText: String(index).padStart(2, '0'),
+        });
+      });
+      break;
+
+    case 'proxy':
+      [
+        { value: '127.0.0.1:8888', detail: 'HTTP proxy (localhost)' },
+        { value: 'user:password@127.0.0.1:8888', detail: 'HTTP proxy with auth' },
+        { value: 'socks5://127.0.0.1:1080', detail: 'SOCKS5 proxy' },
+        { value: 'socks5://user:password@127.0.0.1:1080', detail: 'SOCKS5 proxy with auth' },
+        { value: 'http://user:password@proxy.example.com:3128', detail: 'HTTP proxy with auth (explicit)' },
+      ].forEach(({ value, detail }, index) => {
+        suggestions.push({
+          ...base,
+          label: value,
+          detail,
+          insertText: value,
           sortText: String(index).padStart(2, '0'),
         });
       });

@@ -2,6 +2,7 @@ use crate::curl::CurlCommand;
 use crate::mock::{EnhancedMockServer, ProxyEchoServer};
 use crate::proxy::ProxyInstance;
 use crate::runner::TestCase;
+use bifrost_core::{UserPassAccountConfig, UserPassAuthConfig};
 use std::time::Duration;
 
 pub fn get_all_tests() -> Vec<TestCase> {
@@ -101,6 +102,24 @@ pub fn get_all_tests() -> Vec<TestCase> {
             "Combined: statusCode + file response",
             "routing",
             test_routing_statuscode_with_file,
+        ),
+        TestCase::standalone(
+            "routing_proxy_chain_upstream_auth_correct",
+            "Proxy chain: upstream requires auth, correct credentials succeed",
+            "routing",
+            test_routing_proxy_chain_upstream_auth_correct,
+        ),
+        TestCase::standalone(
+            "routing_proxy_chain_upstream_auth_wrong",
+            "Proxy chain: upstream requires auth, wrong credentials get 407",
+            "routing",
+            test_routing_proxy_chain_upstream_auth_wrong,
+        ),
+        TestCase::standalone(
+            "routing_proxy_chain_upstream_auth_missing",
+            "Proxy chain: upstream requires auth, no credentials get 407",
+            "routing",
+            test_routing_proxy_chain_upstream_auth_missing,
         ),
     ]
 }
@@ -590,6 +609,155 @@ async fn test_routing_statuscode_with_file() -> Result<(), String> {
     Ok(())
 }
 
+fn make_upstream_auth_config() -> UserPassAuthConfig {
+    UserPassAuthConfig {
+        enabled: true,
+        accounts: vec![UserPassAccountConfig {
+            username: "proxyuser".to_string(),
+            password: Some("proxypass".to_string()),
+            enabled: true,
+        }],
+        loopback_requires_auth: true,
+    }
+}
+
+async fn test_routing_proxy_chain_upstream_auth_correct() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "upstream_auth_ok");
+
+    let upstream_port = portpicker::pick_unused_port().unwrap();
+    let _upstream_proxy = ProxyInstance::start_with_userpass(
+        upstream_port,
+        vec![&format!("authchain.test host://127.0.0.1:{}", mock.port)],
+        make_upstream_auth_config(),
+    )
+    .await
+    .map_err(|e| format!("Failed to start upstream proxy: {}", e))?;
+
+    let entry_port = portpicker::pick_unused_port().unwrap();
+    let _entry_proxy = ProxyInstance::start(
+        entry_port,
+        vec![&format!(
+            "authchain.test proxy://proxyuser:proxypass@127.0.0.1:{}",
+            upstream_port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start entry proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", entry_port),
+        "http://authchain.test/api/data?key=value",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_success()?;
+    result.assert_body_contains("upstream_auth_ok")?;
+
+    let req = mock
+        .last_request()
+        .ok_or_else(|| "No request received by mock server".to_string())?;
+    if req.path != "/api/data" {
+        return Err(format!("Expected path /api/data, got: {}", req.path));
+    }
+    let query = req
+        .query
+        .ok_or_else(|| "Query string missing".to_string())?;
+    if !query.contains("key=value") {
+        return Err(format!("Query string not preserved: {}", query));
+    }
+
+    Ok(())
+}
+
+async fn test_routing_proxy_chain_upstream_auth_wrong() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "should_not_reach");
+
+    let upstream_port = portpicker::pick_unused_port().unwrap();
+    let _upstream_proxy = ProxyInstance::start_with_userpass(
+        upstream_port,
+        vec![&format!(
+            "authchain-wrong.test host://127.0.0.1:{}",
+            mock.port
+        )],
+        make_upstream_auth_config(),
+    )
+    .await
+    .map_err(|e| format!("Failed to start upstream proxy: {}", e))?;
+
+    let entry_port = portpicker::pick_unused_port().unwrap();
+    let _entry_proxy = ProxyInstance::start(
+        entry_port,
+        vec![&format!(
+            "authchain-wrong.test proxy://proxyuser:wrongpass@127.0.0.1:{}",
+            upstream_port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start entry proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", entry_port),
+        "http://authchain-wrong.test/api/data",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_status(407)?;
+
+    Ok(())
+}
+
+async fn test_routing_proxy_chain_upstream_auth_missing() -> Result<(), String> {
+    let mock = EnhancedMockServer::start().await;
+    mock.set_response(200, "should_not_reach");
+
+    let upstream_port = portpicker::pick_unused_port().unwrap();
+    let _upstream_proxy = ProxyInstance::start_with_userpass(
+        upstream_port,
+        vec![&format!(
+            "authchain-none.test host://127.0.0.1:{}",
+            mock.port
+        )],
+        make_upstream_auth_config(),
+    )
+    .await
+    .map_err(|e| format!("Failed to start upstream proxy: {}", e))?;
+
+    let entry_port = portpicker::pick_unused_port().unwrap();
+    let _entry_proxy = ProxyInstance::start(
+        entry_port,
+        vec![&format!(
+            "authchain-none.test proxy://127.0.0.1:{}",
+            upstream_port
+        )],
+    )
+    .await
+    .map_err(|e| format!("Failed to start entry proxy: {}", e))?;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let result = CurlCommand::with_proxy(
+        &format!("http://127.0.0.1:{}", entry_port),
+        "http://authchain-none.test/api/data",
+    )
+    .execute()
+    .await
+    .map_err(|e| format!("curl failed: {}", e))?;
+
+    result.assert_status(407)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +789,24 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_host_order() {
         let result = test_routing_multiple_host_order().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_proxy_chain_upstream_auth_correct() {
+        let result = test_routing_proxy_chain_upstream_auth_correct().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_proxy_chain_upstream_auth_wrong() {
+        let result = test_routing_proxy_chain_upstream_auth_wrong().await;
+        assert!(result.is_ok(), "Test failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_proxy_chain_upstream_auth_missing() {
+        let result = test_routing_proxy_chain_upstream_auth_missing().await;
         assert!(result.is_ok(), "Test failed: {:?}", result.err());
     }
 }
