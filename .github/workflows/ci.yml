@@ -10,6 +10,8 @@ on:
       - "desktop/**"
       - "scripts/**"
       - "web/**"
+      - "packages/**"
+      - "e2e-tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
@@ -22,6 +24,8 @@ on:
       - "desktop/**"
       - "scripts/**"
       - "web/**"
+      - "packages/**"
+      - "e2e-tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
@@ -195,6 +199,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
         working-directory: web
+      - name: Install sync-server dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: packages/bifrost-sync-server
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Download release binary

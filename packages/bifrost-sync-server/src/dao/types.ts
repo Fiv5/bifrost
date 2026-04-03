@@ -19,11 +19,39 @@ export interface IEnvDao {
   create(req: CreateEnvReq): Promise<Env>;
   update(id: string, fields: UpdateEnvReq): Promise<Env | undefined>;
   delete(id: string): Promise<boolean>;
+  deleteByUserId(userId: string): Promise<number>;
   search(query: SearchEnvQuery): Promise<{ list: Env[]; total: number }>;
+}
+
+export interface IGroupDao {
+  create(name: string, avatar: string, description: string, visibility: string, createdBy: string): Promise<import('../types').Group>;
+  findById(id: string): Promise<import('../types').Group | undefined>;
+  findByName(name: string): Promise<import('../types').Group | undefined>;
+  update(id: string, fields: import('../types').UpdateGroupReq): Promise<import('../types').Group | undefined>;
+  delete(id: string): Promise<boolean>;
+  search(query: import('../types').SearchGroupQuery, userId?: string): Promise<{ list: import('../types').Group[]; total: number }>;
+}
+
+export interface IGroupMemberDao {
+  add(groupId: string, userId: string, level: number): Promise<import('../types').GroupMember>;
+  remove(groupId: string, userId: string): Promise<boolean>;
+  updateLevel(groupId: string, userId: string, level: number): Promise<boolean>;
+  findByGroupAndUser(groupId: string, userId: string): Promise<import('../types').GroupMember | undefined>;
+  listByGroup(groupId: string, query?: { keyword?: string; offset?: number; limit?: number }): Promise<{ list: import('../types').GroupMember[]; total: number }>;
+  listByUser(userId: string): Promise<import('../types').GroupMember[]>;
+}
+
+export interface IGroupSettingDao {
+  get(groupId: string): Promise<import('../types').GroupSetting>;
+  update(groupId: string, fields: import('../types').UpdateGroupSettingReq): Promise<void>;
+  init(groupId: string): Promise<void>;
 }
 
 export interface IStorage {
   user: IUserDao;
   env: IEnvDao;
+  group: IGroupDao;
+  groupMember: IGroupMemberDao;
+  groupSetting: IGroupSettingDao;
   close(): Promise<void>;
 }

@@ -117,8 +117,8 @@ export default function RuleList() {
   }, [setActiveGroupId]);
 
   const groupSwitcherOptions = useMemo(() => {
-    const options: { label: ReactNode; value: string }[] = [
-      { label: 'My Rules', value: '__my__' },
+    const options: { label: ReactNode; value: string; searchText: string }[] = [
+      { label: 'My Rules', value: '__my__', searchText: 'My Rules' },
     ];
 
     const sorted = [...(userGroups ?? [])].sort((a, b) => {
@@ -146,6 +146,7 @@ export default function RuleList() {
           </span>
         ),
         value: g.id,
+        searchText: g.name,
       });
     }
     return options;
@@ -556,12 +557,17 @@ export default function RuleList() {
         <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)' }}>
           <Select
             size="small"
+            showSearch
             value={activeGroupId ?? '__my__'}
             onChange={handleGroupChange}
             options={groupSwitcherOptions}
             style={{ width: '100%' }}
             suffixIcon={<SwapOutlined />}
             popupMatchSelectWidth={true}
+            filterOption={(input, option) => {
+              const text = (option as { searchText?: string })?.searchText ?? '';
+              return text.toLowerCase().includes(input.toLowerCase());
+            }}
           />
         </div>
       )}
