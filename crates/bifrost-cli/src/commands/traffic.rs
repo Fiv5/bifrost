@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::time::Duration;
 
 use bifrost_core::{BifrostError, Result};
@@ -176,7 +177,7 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
 pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
     let mut id = options.id.clone();
     if id.is_none() {
-        if !atty::is(atty::Stream::Stdin) {
+        if !std::io::stdin().is_terminal() {
             return Err(BifrostError::Parse(
                 "Missing <id> and stdin is not interactive".to_string(),
             ));
@@ -199,7 +200,7 @@ pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
     let record = match fetch_traffic_record(options.port, &id) {
         Ok(v) => v,
         Err(FetchTrafficError::NotFound) => {
-            if !atty::is(atty::Stream::Stdin) {
+            if !std::io::stdin().is_terminal() {
                 return Err(BifrostError::NotFound(format!(
                     "Traffic record '{}' not found",
                     id
@@ -558,7 +559,7 @@ fn print_traffic_rows(
     format: OutputFormat,
     no_color: bool,
 ) {
-    let use_color = !no_color && atty::is(atty::Stream::Stdout);
+    let use_color = !no_color && std::io::stdout().is_terminal();
 
     match format {
         OutputFormat::Compact => {
