@@ -17,8 +17,7 @@ use crate::traffic_db::{
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
 const SEARCH_BATCH_SIZE: usize = 200;
-const MAX_SEARCH_ITERATIONS: usize = 500;
-const MAX_TOTAL_SEARCHED: usize = 100_000;
+const DEFAULT_MAX_SCAN: usize = 100_000;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SearchEngine {
@@ -80,6 +79,7 @@ impl SearchEngine {
         let keyword_lower = request.keyword.to_lowercase();
         let has_keyword = !keyword_lower.trim().is_empty();
         let started_at = Instant::now();
+        let max_total_searched = request.max_scan.unwrap_or(DEFAULT_MAX_SCAN);
 
         let scope = &request.scope;
         let need_url = (has_keyword && scope.should_search_url())
@@ -98,6 +98,7 @@ impl SearchEngine {
             scope = ?request.scope,
             cursor = ?request.cursor,
             limit = batch_size,
+            max_scan = max_total_searched,
             "[SEARCH] Starting iterative search"
         );
 
@@ -108,11 +109,7 @@ impl SearchEngine {
         let mut db_has_more = true;
         let mut timed_out = false;
 
-        while results.len() < batch_size
-            && iterations < MAX_SEARCH_ITERATIONS
-            && total_searched < MAX_TOTAL_SEARCHED
-            && db_has_more
-        {
+        while results.len() < batch_size && total_searched < max_total_searched && db_has_more {
             if started_at.elapsed() >= SEARCH_TIMEOUT {
                 warn!(
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -168,7 +165,7 @@ impl SearchEngine {
                 current_cursor = Some(compact.seq);
 
                 if !self.matches_filter_compact(compact, &request.filters) {
-                    if total_searched >= MAX_TOTAL_SEARCHED {
+                    if total_searched >= max_total_searched {
                         break;
                     }
                     continue;
@@ -183,7 +180,7 @@ impl SearchEngine {
                         &request.filters.conditions,
                     )
                 {
-                    if total_searched >= MAX_TOTAL_SEARCHED {
+                    if total_searched >= max_total_searched {
                         break;
                     }
                     continue;
@@ -199,7 +196,7 @@ impl SearchEngine {
                     }
                 }
 
-                if total_searched >= MAX_TOTAL_SEARCHED {
+                if total_searched >= max_total_searched {
                     break;
                 }
             }
@@ -210,11 +207,11 @@ impl SearchEngine {
                 total_searched,
                 total_matched: results.len(),
                 cursor: current_cursor,
-                has_more_hint: db_has_more && total_searched < MAX_TOTAL_SEARCHED,
+                has_more_hint: db_has_more && total_searched < max_total_searched,
             });
         }
 
-        let has_more = timed_out || (db_has_more && total_searched < MAX_TOTAL_SEARCHED);
+        let has_more = timed_out || (db_has_more && total_searched < max_total_searched);
         let total_matched = results.len();
 
         debug!(
@@ -913,6 +910,7 @@ mod tests {
             filters: SearchFilters::default(),
             cursor: None,
             limit: Some(20),
+            max_scan: None,
         });
 
         assert_eq!(response.total_matched, 1);

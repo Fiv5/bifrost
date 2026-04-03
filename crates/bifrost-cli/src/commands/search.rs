@@ -205,6 +205,7 @@ pub struct SearchOptions {
     pub filter_host: Option<String>,
     pub filter_path: Option<String>,
     pub no_color: bool,
+    pub max_scan: Option<usize>,
 }
 
 impl Default for SearchOptions {
@@ -230,6 +231,7 @@ impl Default for SearchOptions {
             filter_host: None,
             filter_path: None,
             no_color: false,
+            max_scan: None,
         }
     }
 }
@@ -372,7 +374,16 @@ fn stream_table_output(
                 "\x1b[33m⚠\x1b[0m No results found for '\x1b[1m{}\x1b[0m'",
                 options.keyword
             );
-            println!("  Searched {} records", format_number(total_searched));
+            println!(
+                "  Searched {} records (scan limit: {})",
+                format_number(total_searched),
+                format_number(options.max_scan.unwrap_or(0)),
+            );
+            if options.max_scan.is_some() {
+                println!(
+                    "\x1b[90m  Tip: Use --max-scan to broaden search range, e.g. --max-scan 100000\x1b[0m"
+                );
+            }
         }
         return 0;
     }
@@ -380,26 +391,28 @@ fn stream_table_output(
     println!();
     if use_color {
         println!(
-            "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches (searched {} records)",
+            "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches (scanned {} / {} records)",
             total_matched,
             format_number(total_searched),
+            format_number(options.max_scan.unwrap_or(total_searched)),
         );
     } else {
         println!(
-            "Found {} matches (searched {} records)",
+            "Found {} matches (scanned {} / {} records)",
             total_matched,
             format_number(total_searched),
+            format_number(options.max_scan.unwrap_or(total_searched)),
         );
     }
 
     if has_more {
         if use_color {
             println!(
-                "\x1b[90m  ... and more results. Use --limit to see more, or -i for interactive mode.\x1b[0m"
+                "\x1b[90m  ... more results available. Use --limit for more results, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m"
             );
         } else {
             println!(
-                "  ... and more results. Use --limit to see more, or -i for interactive mode."
+                "  ... more results available. Use --limit for more results, --max-scan to broaden search range, or -i for interactive mode."
             );
         }
     }
@@ -635,6 +648,10 @@ fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> se
 
     if let Some(c) = cursor {
         body["cursor"] = serde_json::json!(c);
+    }
+
+    if let Some(ms) = options.max_scan {
+        body["max_scan"] = serde_json::json!(ms);
     }
 
     body

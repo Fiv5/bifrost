@@ -664,6 +664,7 @@ export interface SearchRequest {
   filters: SearchFilters;
   cursor?: number;
   limit?: number;
+  max_scan?: number;
 }
 
 export interface MatchLocation {

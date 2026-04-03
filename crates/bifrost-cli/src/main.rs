@@ -177,6 +177,7 @@ fn main() {
             content_type,
             domain,
             no_color,
+            max_scan,
         }) => {
             let is_interactive = interactive || keyword.is_none();
             let options = SearchOptions {
@@ -200,6 +201,7 @@ fn main() {
                 filter_host: host,
                 filter_path: path,
                 no_color,
+                max_scan,
             };
             let exit_code = run_search(options);
             std::process::exit(exit_code);
@@ -287,6 +289,7 @@ fn main() {
                 content_type,
                 domain,
                 no_color,
+                max_scan,
             } => {
                 let is_interactive = interactive || keyword.is_none();
                 let options = SearchOptions {
@@ -310,6 +313,7 @@ fn main() {
                     filter_host: host,
                     filter_path: path,
                     no_color,
+                    max_scan,
                 };
                 let exit_code = run_search(options);
                 std::process::exit(exit_code);

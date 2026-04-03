@@ -510,6 +510,12 @@ pub enum Commands {
         domain: Option<String>,
         #[arg(long, help = "Disable colored output")]
         no_color: bool,
+        #[arg(
+            long = "max-scan",
+            default_value = "10000",
+            help = "Maximum records to scan (default: 10000, use larger value for broader search)"
+        )]
+        max_scan: Option<usize>,
     },
 }
 
@@ -631,6 +637,12 @@ pub enum TrafficCommands {
         domain: Option<String>,
         #[arg(long, help = "Disable colored output")]
         no_color: bool,
+        #[arg(
+            long = "max-scan",
+            default_value = "10000",
+            help = "Maximum records to scan (default: 10000, use larger value for broader search)"
+        )]
+        max_scan: Option<usize>,
     },
 }
 
