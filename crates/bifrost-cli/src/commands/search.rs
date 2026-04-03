@@ -376,64 +376,76 @@ fn stream_table_output(
                 "\x1b[33m⚠\x1b[0m No results found for '\x1b[1m{}\x1b[0m'",
                 options.keyword
             );
-            println!(
-                "  Searched {} records (scan limit: {})",
-                format_number(total_searched),
-                format_number(options.max_scan.unwrap_or(0)),
-            );
-            if options.max_scan.is_some() {
-                println!(
-                    "\x1b[90m  Tip: Use --max-scan to broaden search range, e.g. --max-scan 100000\x1b[0m"
-                );
-            }
+            print_search_summary(options, total_searched, total_matched, false, use_color);
         }
         return 0;
     }
 
     println!();
-    if use_color {
-        println!(
-            "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches (scanned {} / {} records)",
-            total_matched,
-            format_number(total_searched),
-            format_number(options.max_scan.unwrap_or(total_searched)),
-        );
-    } else {
-        println!(
-            "Found {} matches (scanned {} / {} records)",
-            total_matched,
-            format_number(total_searched),
-            format_number(options.max_scan.unwrap_or(total_searched)),
-        );
-    }
+    print_search_summary(options, total_searched, total_matched, has_more, use_color);
 
-    if has_more {
-        let max_results = options.max_results.unwrap_or(100);
-        let hit_results_limit = total_matched >= max_results;
-        if use_color {
-            if hit_results_limit {
-                println!(
-                    "\x1b[90m  Results capped at {} matches. Use --max-results to increase, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m",
-                    max_results
-                );
-            } else {
-                println!(
-                    "\x1b[90m  ... more results available. Use --max-results to increase limit, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m"
-                );
-            }
-        } else if hit_results_limit {
+    0
+}
+
+fn print_search_summary(
+    options: &SearchOptions,
+    total_searched: usize,
+    total_matched: usize,
+    has_more: bool,
+    use_color: bool,
+) {
+    let max_scan = options.max_scan.unwrap_or(0);
+    let max_results = options.max_results.unwrap_or(100);
+
+    if use_color {
+        if total_matched > 0 {
             println!(
-                "  Results capped at {} matches. Use --max-results to increase, --max-scan to broaden search range, or -i for interactive mode.",
-                max_results
+                "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches (scanned {} records, scan range: {}, max results: {})",
+                total_matched,
+                format_number(total_searched),
+                format_number(max_scan),
+                format_number(max_results),
             );
         } else {
             println!(
-                "  ... more results available. Use --max-results to increase limit, --max-scan to broaden search range, or -i for interactive mode."
+                "  Scanned {} records (scan range: {}, max results: {})",
+                format_number(total_searched),
+                format_number(max_scan),
+                format_number(max_results),
             );
         }
+        if has_more {
+            println!("\x1b[33m  ⚡ Search stopped early — more data may match.\x1b[0m");
+        }
+        println!(
+            "\x1b[90m  Tip: --max-scan <N>     Broaden scan range (e.g. --max-scan 100000)\x1b[0m"
+        );
+        println!("\x1b[90m       --max-results <N>  Increase max returned matches (e.g. --max-results 500)\x1b[0m");
+    } else {
+        if total_matched > 0 {
+            println!(
+                "Found {} matches (scanned {} records, scan range: {}, max results: {})",
+                total_matched,
+                format_number(total_searched),
+                format_number(max_scan),
+                format_number(max_results),
+            );
+        } else {
+            println!(
+                "  Scanned {} records (scan range: {}, max results: {})",
+                format_number(total_searched),
+                format_number(max_scan),
+                format_number(max_results),
+            );
+        }
+        if has_more {
+            println!("  Search stopped early — more data may match.");
+        }
+        println!("  Tip: --max-scan <N>     Broaden scan range (e.g. --max-scan 100000)");
+        println!(
+            "       --max-results <N>  Increase max returned matches (e.g. --max-results 500)"
+        );
     }
-
-    0
 }
 
 fn print_table_row(item: &SearchResultItem, options: &SearchOptions, use_color: bool) {
