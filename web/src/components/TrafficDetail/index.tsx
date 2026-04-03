@@ -26,6 +26,8 @@ import ScriptLogsPane from "./panes/ScriptLogs";
 import { getResponseBodyContentUrl } from "../../api/traffic";
 import { parseSseTextToEvents } from "../VirtualMessageViewer";
 import { assembleOpenAiLikeSse } from "./helper/openAiLikeSse";
+import { parseOpenAiLikeRequest } from "./helper/openAiLikeRequest";
+import { OpenAiChatView } from "./panes/OpenAiChatView";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -96,6 +98,7 @@ export default function TrafficDetail({
   >("50%");
   const [liveSseEvents, setLiveSseEvents] = useState<SSEEvent[]>([]);
   const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
+  const [hasAutoOpenedRequestOpenAiTab, setHasAutoOpenedRequestOpenAiTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -129,6 +132,7 @@ export default function TrafficDetail({
     setLiveSseCount(null);
     setLiveSseEvents([]);
     setHasAutoOpenedOpenAiTab(false);
+    setHasAutoOpenedRequestOpenAiTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -160,6 +164,10 @@ export default function TrafficDetail({
   const requestContentType = useMemo<RecordContentType>(() => {
     return getContentTypeFromHeader(record?.request_content_type);
   }, [record?.request_content_type]);
+
+  const openAiRequestParsed = useMemo(() => {
+    return parseOpenAiLikeRequest(requestBody);
+  }, [requestBody]);
 
   useEffect(() => {
     if (
@@ -283,6 +291,14 @@ export default function TrafficDetail({
         ),
       },
       {
+        key: "OpenAI",
+        label: "OpenAI",
+        enable: !!openAiRequestParsed,
+        children: openAiRequestParsed ? (
+          <OpenAiChatView parsed={openAiRequestParsed} />
+        ) : null,
+      },
+      {
         key: "Body",
         label: "Body",
         enable: !!requestBody,
@@ -328,6 +344,7 @@ export default function TrafficDetail({
     setRequestSearch,
     requestContentType,
     requestDisplayFormat,
+    openAiRequestParsed,
   ]);
 
   const openAiLikeAssembly = useMemo(() => {
@@ -512,6 +529,23 @@ export default function TrafficDetail({
   ]);
 
   useEffect(() => {
+    if (!openAiRequestParsed) return;
+    if (hasAutoOpenedRequestOpenAiTab) return;
+    if (requestTab === "OpenAI") {
+      setHasAutoOpenedRequestOpenAiTab(true);
+      return;
+    }
+
+    setRequestTab("OpenAI");
+    setHasAutoOpenedRequestOpenAiTab(true);
+  }, [
+    hasAutoOpenedRequestOpenAiTab,
+    openAiRequestParsed,
+    requestTab,
+    setRequestTab,
+  ]);
+
+  useEffect(() => {
     if (!record) return;
 
     const requestEnabledTabs = requestTabs.filter(
@@ -634,7 +668,7 @@ export default function TrafficDetail({
                 bodyData={requestBody}
                 collapsed={requestCollapsed}
                 onCollapsedChange={handleRequestCollapsedChange}
-                keepAliveTabs={["Body"]}
+                keepAliveTabs={["Body", "OpenAI"]}
               />
             </div>
           </Splitter.Panel>

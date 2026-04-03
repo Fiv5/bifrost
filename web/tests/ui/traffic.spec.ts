@@ -1590,7 +1590,7 @@ test("push 重连后已删除记录应从列表移除", async ({ page, request }
     blockServerMessages = true;
 
     await page.evaluate(() => {
-      const bt = (window as any).__bifrost_test;
+      const bt = (window as unknown as Record<string, Record<string, () => void>>).__bifrost_test;
       if (bt) bt.pauseRealtime();
     });
 
@@ -1622,7 +1622,7 @@ test("push 重连后已删除记录应从列表移除", async ({ page, request }
     blockServerMessages = false;
 
     await page.evaluate(() => {
-      const bt = (window as any).__bifrost_test;
+      const bt = (window as unknown as Record<string, Record<string, () => void>>).__bifrost_test;
       if (bt) bt.resumeRealtime();
     });
 
@@ -1644,7 +1644,7 @@ test("push 重连后已删除记录应从列表移除", async ({ page, request }
   } finally {
     blockServerMessages = false;
     await page.evaluate(() => {
-      const bt = (window as any).__bifrost_test;
+      const bt = (window as unknown as Record<string, Record<string, () => void>>).__bifrost_test;
       if (bt) bt.resumeRealtime();
     });
     await server.close();

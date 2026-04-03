@@ -143,7 +143,7 @@ export function useGlobalDataSync() {
     initializeGlobalData();
 
     if (import.meta.env.DEV) {
-      (window as any).__bifrost_test = {
+      (window as unknown as Record<string, unknown>).__bifrost_test = {
         pauseRealtime,
         resumeRealtime,
         pushService,
