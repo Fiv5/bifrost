@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use regex::Regex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::types::{
     FilterCondition, MatchLocation, SearchFilters, SearchRequest, SearchResponse, SearchResultItem,
@@ -14,9 +16,10 @@ use crate::traffic_db::{
 
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
-const SEARCH_BATCH_SIZE: usize = 200;
-const MAX_SEARCH_ITERATIONS: usize = 50;
-const MAX_TOTAL_SEARCHED: usize = 10000;
+const SEARCH_BATCH_SIZE: usize = 1000;
+const DEFAULT_MAX_SCAN: usize = 100_000;
+const DEFAULT_STREAM_MAX_RESULTS: usize = 100;
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SearchEngine {
     traffic_db: SharedTrafficDbStore,
@@ -59,12 +62,26 @@ impl SearchEngine {
     }
 
     pub fn search(&self, request: &SearchRequest) -> SearchResponse {
-        self.search_stream(request, |_| {}, |_| {})
+        self.search_internal(request, false, |_| {}, |_| {})
     }
 
     pub fn search_stream<F, P>(
         &self,
         request: &SearchRequest,
+        on_result: F,
+        on_progress: P,
+    ) -> SearchResponse
+    where
+        F: FnMut(&SearchResultItem),
+        P: FnMut(&SearchProgress),
+    {
+        self.search_internal(request, true, on_result, on_progress)
+    }
+
+    fn search_internal<F, P>(
+        &self,
+        request: &SearchRequest,
+        streaming: bool,
         mut on_result: F,
         mut on_progress: P,
     ) -> SearchResponse
@@ -74,10 +91,16 @@ impl SearchEngine {
     {
         let search_id = generate_search_id();
         let batch_size = request.limit.unwrap_or(DEFAULT_BATCH_SIZE);
+        let max_results = if streaming {
+            request.max_results.unwrap_or(DEFAULT_STREAM_MAX_RESULTS)
+        } else {
+            batch_size
+        };
         let keyword_lower = request.keyword.to_lowercase();
         let has_keyword = !keyword_lower.trim().is_empty();
+        let started_at = Instant::now();
+        let max_total_searched = request.max_scan.unwrap_or(DEFAULT_MAX_SCAN);
 
-        // search scope / filters 计算一次，避免循环里反复判断
         let scope = &request.scope;
         let need_url = (has_keyword && scope.should_search_url())
             || request
@@ -95,6 +118,9 @@ impl SearchEngine {
             scope = ?request.scope,
             cursor = ?request.cursor,
             limit = batch_size,
+            max_results = max_results,
+            max_scan = max_total_searched,
+            streaming = streaming,
             "[SEARCH] Starting iterative search"
         );
 
@@ -103,16 +129,24 @@ impl SearchEngine {
         let mut current_cursor = request.cursor;
         let mut iterations = 0;
         let mut db_has_more = true;
+        let mut timed_out = false;
 
-        while results.len() < batch_size
-            && iterations < MAX_SEARCH_ITERATIONS
-            && total_searched < MAX_TOTAL_SEARCHED
-            && db_has_more
-        {
+        while results.len() < max_results && total_searched < max_total_searched && db_has_more {
+            if started_at.elapsed() >= SEARCH_TIMEOUT {
+                warn!(
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    iterations,
+                    total_searched,
+                    matched = results.len(),
+                    "[SEARCH] Timeout reached, returning partial results"
+                );
+                timed_out = true;
+                break;
+            }
+
             iterations += 1;
 
             let query_params = self.build_query_params_with_cursor(request, current_cursor);
-            // 搜索会迭代多次，避免每次 query 都做 COUNT(*)
             let query_result = self.traffic_db.query_for_search(&query_params);
 
             if query_result.records.is_empty() {
@@ -128,7 +162,6 @@ impl SearchEngine {
                 "[SEARCH] Processing batch"
             );
 
-            // 先收集候选 id，批量拉取搜索字段，避免 N+1。
             let candidate_ids: Vec<&str> = query_result
                 .records
                 .iter()
@@ -154,7 +187,7 @@ impl SearchEngine {
                 current_cursor = Some(compact.seq);
 
                 if !self.matches_filter_compact(compact, &request.filters) {
-                    if total_searched >= MAX_TOTAL_SEARCHED {
+                    if total_searched >= max_total_searched {
                         break;
                     }
                     continue;
@@ -169,7 +202,7 @@ impl SearchEngine {
                         &request.filters.conditions,
                     )
                 {
-                    if total_searched >= MAX_TOTAL_SEARCHED {
+                    if total_searched >= max_total_searched {
                         break;
                     }
                     continue;
@@ -180,12 +213,12 @@ impl SearchEngine {
                     if let Some(last) = results.last() {
                         on_result(last);
                     }
-                    if results.len() >= batch_size {
+                    if !streaming && results.len() >= max_results {
                         break;
                     }
                 }
 
-                if total_searched >= MAX_TOTAL_SEARCHED {
+                if total_searched >= max_total_searched {
                     break;
                 }
             }
@@ -196,11 +229,11 @@ impl SearchEngine {
                 total_searched,
                 total_matched: results.len(),
                 cursor: current_cursor,
-                has_more_hint: db_has_more && total_searched < MAX_TOTAL_SEARCHED,
+                has_more_hint: db_has_more && total_searched < max_total_searched,
             });
         }
 
-        let has_more = db_has_more && total_searched < MAX_TOTAL_SEARCHED;
+        let has_more = timed_out || (db_has_more && total_searched < max_total_searched);
         let total_matched = results.len();
 
         debug!(
@@ -208,6 +241,8 @@ impl SearchEngine {
             total_searched = total_searched,
             matched = total_matched,
             has_more = has_more,
+            timed_out = timed_out,
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
             "[SEARCH] Iterative search completed"
         );
 
@@ -897,6 +932,8 @@ mod tests {
             filters: SearchFilters::default(),
             cursor: None,
             limit: Some(20),
+            max_scan: None,
+            max_results: None,
         });
 
         assert_eq!(response.total_matched, 1);

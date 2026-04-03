@@ -510,6 +510,18 @@ pub enum Commands {
         domain: Option<String>,
         #[arg(long, help = "Disable colored output")]
         no_color: bool,
+        #[arg(
+            long = "max-scan",
+            default_value = "10000",
+            help = "Maximum records to scan (default: 10000, use larger value for broader search)"
+        )]
+        max_scan: Option<usize>,
+        #[arg(
+            long = "max-results",
+            default_value = "100",
+            help = "Maximum matching results to return (default: 100)"
+        )]
+        max_results: Option<usize>,
     },
 }
 
@@ -631,6 +643,18 @@ pub enum TrafficCommands {
         domain: Option<String>,
         #[arg(long, help = "Disable colored output")]
         no_color: bool,
+        #[arg(
+            long = "max-scan",
+            default_value = "10000",
+            help = "Maximum records to scan (default: 10000, use larger value for broader search)"
+        )]
+        max_scan: Option<usize>,
+        #[arg(
+            long = "max-results",
+            default_value = "100",
+            help = "Maximum matching results to return (default: 100)"
+        )]
+        max_results: Option<usize>,
     },
 }
 

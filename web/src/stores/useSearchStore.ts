@@ -259,6 +259,7 @@ export const useSearchStore = create<SearchState>()(
         scope,
         filters,
         limit: 50,
+        max_results: 1000,
       };
 
       // 优先使用流式搜索，能让 UI 更快看到首批结果/进度。
@@ -359,6 +360,7 @@ export const useSearchStore = create<SearchState>()(
         filters,
         cursor: nextCursor,
         limit: 50,
+        max_results: 1000,
       };
 
       const streamResp = await apiFetch('/_bifrost/api/search/stream', {
