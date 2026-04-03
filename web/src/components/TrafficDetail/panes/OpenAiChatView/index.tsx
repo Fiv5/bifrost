@@ -1,5 +1,5 @@
 import { useMemo, useState, memo, useCallback, createElement } from 'react';
-import { Typography, Tag, theme, Collapse, Tooltip, Button, Space } from 'antd';
+import { Typography, Tag, theme, Collapse, Tooltip, Button, Space, Modal } from 'antd';
 import {
   RobotOutlined,
   UserOutlined,
@@ -25,6 +25,7 @@ import {
   ControlOutlined,
   FileTextOutlined,
   InfoCircleOutlined,
+  ExpandOutlined,
 } from '@ant-design/icons';
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
@@ -318,6 +319,88 @@ const ContentBlock = memo(({ content }: { content: unknown }) => {
   return <JsonBlock data={JSON.stringify(content, null, 2)} />;
 });
 
+const TOOL_RESULT_MAX_LINES = 10;
+
+const ToolResultContent = memo(({ content }: { content: unknown }) => {
+  const [modalOpen, setModalOpen] = useState(false);
+  const text = useMemo(() => stringifyContent(content), [content]);
+  const lines = useMemo(() => text.split('\n'), [text]);
+  const needsTruncation = lines.length > TOOL_RESULT_MAX_LINES;
+  const previewText = needsTruncation ? lines.slice(0, TOOL_RESULT_MAX_LINES).join('\n') : text;
+  const { token } = theme.useToken();
+
+  if (content === null || content === undefined || !text.trim()) {
+    return <Text type="secondary" italic style={{ fontSize: 12 }}>(empty)</Text>;
+  }
+
+  return (
+    <>
+      <div style={{ position: 'relative' }}>
+        <pre
+          style={{
+            margin: 0,
+            padding: '6px 8px',
+            fontSize: 12,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            lineHeight: 1.5,
+            backgroundColor: token.colorFillQuaternary,
+            borderRadius: 6,
+            border: `1px solid ${token.colorBorderSecondary}`,
+            color: token.colorText,
+          }}
+        >
+          {previewText}
+          {needsTruncation && (
+            <span style={{ color: token.colorTextSecondary }}>{'\n'}…</span>
+          )}
+        </pre>
+        {needsTruncation && (
+          <Button
+            type="link"
+            size="small"
+            icon={<ExpandOutlined />}
+            onClick={() => setModalOpen(true)}
+            style={{ padding: 0, fontSize: 11, height: 'auto', marginTop: 2 }}
+          >
+            Show all ({lines.length} lines)
+          </Button>
+        )}
+      </div>
+      {needsTruncation && (
+        <Modal
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 24 }}>
+              <span>Tool Result ({lines.length} lines)</span>
+              <CopyButton text={text} />
+            </div>
+          }
+          open={modalOpen}
+          onCancel={() => setModalOpen(false)}
+          footer={null}
+          width="80vw"
+          styles={{ body: { maxHeight: '70vh', overflow: 'auto', padding: 0 } }}
+        >
+          <pre
+            style={{
+              margin: 0,
+              padding: 12,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              lineHeight: 1.6,
+            }}
+          >
+            {text}
+          </pre>
+        </Modal>
+      )}
+    </>
+  );
+});
+
 const ToolRoundtripCard = memo(({ roundtrip }: { roundtrip: ToolRoundtrip }) => {
   const { token } = theme.useToken();
   const { name, args, callId, response } = roundtrip;
@@ -372,7 +455,7 @@ const ToolRoundtripCard = memo(({ roundtrip }: { roundtrip: ToolRoundtrip }) => 
                 <Tag style={{ margin: 0, fontSize: 10 }}>{responseName}</Tag>
               )}
             </div>
-            <ContentBlock content={responseContent} />
+            <ToolResultContent content={responseContent} />
           </div>
         ) : (
           <div style={{ padding: '4px 10px', backgroundColor: 'rgba(140,140,140,0.04)' }}>
