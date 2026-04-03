@@ -49,6 +49,24 @@ BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 8800 --unsa
 - 目的：提前发现仅在工作区聚合、全 feature 组合或 CI 路径下出现的失败，避免代码提交后才在 CI 暴露问题
 - 如果该命令失败，需要先定位并处理，或在提交说明中明确标注阻塞原因与影响范围
 
+## 代码质量检查要求（Clippy）
+
+- **提交前必须通过 clippy 检查**，执行命令：
+  ```bash
+  cargo clippy --workspace --all-targets --all-features -- -D warnings
+  ```
+- CI 使用 `-D warnings` 标志，任何 clippy 警告都会导致构建失败
+- 常见问题及修复：
+  - `useless_format`: 不带插值参数的 `format!()` 改用 `.to_string()`
+  - `unused_imports`: 删除未使用的 import
+  - `dead_code`: 删除未使用的代码或添加 `#[allow(dead_code)]` 并注释原因
+- 本地开发时建议在 IDE 中启用 clippy 实时检查
+- **绝对不要在未通过 `cargo clippy -- -D warnings` 的情况下推送代码到远端**
+- 项目提供了 `scripts/pre-commit` 钩子脚本，自动执行 fmt + clippy 检查。安装方式：
+  ```bash
+  cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+  ```
+
 ## 日志配置规范
 
 ### 日志级别优先级（从高到低）
