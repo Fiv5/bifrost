@@ -16,7 +16,7 @@ use crate::traffic_db::{
 
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
-const SEARCH_BATCH_SIZE: usize = 200;
+const SEARCH_BATCH_SIZE: usize = 1000;
 const DEFAULT_MAX_SCAN: usize = 100_000;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
