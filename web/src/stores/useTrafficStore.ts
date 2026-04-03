@@ -1845,7 +1845,7 @@ export const useTrafficStore = create<TrafficState>()(
           if (response.has_more) {
             void get().backfillHistory();
           }
-        } catch (_e) {
+        } catch {
           // reload is best-effort; errors are non-fatal
         }
       },

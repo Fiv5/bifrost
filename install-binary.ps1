@@ -90,31 +90,50 @@ function Get-Target {
     }
 }
 
-function Get-LatestVersion {
-    $allReleasesUrl = "https://api.github.com/repos/$REPO/releases?per_page=10"
-    
+function Get-GithubHeaders {
+    $headers = @{}
+    $token = $env:GITHUB_TOKEN
+    if ($token) {
+        $headers["Authorization"] = "token $token"
+    }
+    return $headers
+}
+
+function Get-LatestVersionViaRedirect {
+    $redirectUrl = "https://github.com/$REPO/releases/latest"
     try {
-        $releases = Invoke-RestMethod -Uri $allReleasesUrl -UseBasicParsing -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri $redirectUrl -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue
+        $location = $response.Headers["Location"]
     }
     catch {
-        if ($_.Exception.Message -match "rate limit") {
-            Write-Error "GitHub API rate limit exceeded"
-            Write-Warning "Please try again later or specify a version manually:"
-            Write-Host "  .\install-binary.ps1 -Version v0.0.9-alpha"
-            exit 1
+        $location = $_.Exception.Response.Headers.Location
+        if (-not $location) {
+            $location = $_.Exception.Response.ResponseUri
         }
-        Write-Error "Failed to fetch releases: $_"
-        exit 1
+    }
+
+    if ($location) {
+        $locationStr = "$location"
+        if ($locationStr -match '/tag/([^/]+)') {
+            return $Matches[1]
+        }
+    }
+    return $null
+}
+
+function Get-LatestVersionViaApi {
+    $allReleasesUrl = "https://api.github.com/repos/$REPO/releases?per_page=10"
+    $headers = Get-GithubHeaders
+
+    try {
+        $releases = Invoke-RestMethod -Uri $allReleasesUrl -Headers $headers -UseBasicParsing -ErrorAction Stop
+    }
+    catch {
+        return $null
     }
 
     if (-not $releases -or $releases.Count -eq 0) {
-        Write-Error "No releases found for $REPO"
-        Write-Warning "The project may not have published any releases yet."
-        Write-Host ""
-        Write-Host "You can build from source instead:"
-        Write-Host "  git clone https://github.com/$REPO.git"
-        Write-Host "  cd bifrost && cargo build --release"
-        exit 1
+        return $null
     }
 
     $stableRelease = $releases | Where-Object { -not $_.prerelease } | Select-Object -First 1
@@ -122,8 +141,29 @@ function Get-LatestVersion {
         return $stableRelease.tag_name
     }
 
-    Write-Warning "No stable release found, checking for pre-releases..."
     return $releases[0].tag_name
+}
+
+function Get-LatestVersion {
+    $version = Get-LatestVersionViaRedirect
+    if ($version) {
+        return $version
+    }
+    Write-Warning "Redirect-based version detection failed, falling back to GitHub API..."
+
+    $version = Get-LatestVersionViaApi
+    if ($version) {
+        return $version
+    }
+
+    Write-Error "Failed to detect latest version"
+    Write-Host ""
+    Write-Host "Solutions:"
+    Write-Host "  1. Specify a version manually:"
+    Write-Host "     .\install-binary.ps1 -Version v0.2.0"
+    Write-Host "  2. Download directly from:"
+    Write-Host "     https://github.com/$REPO/releases"
+    exit 1
 }
 
 function Get-FileHash256 {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Button,
@@ -117,9 +117,6 @@ export default function AccessControlTab() {
 
   const [newIpOrCidr, setNewIpOrCidr] = useState("");
   const [newTempIp, setNewTempIp] = useState("");
-  const [userPassEnabled, setUserPassEnabled] = useState(false);
-  const [loopbackRequiresAuth, setLoopbackRequiresAuth] = useState(false);
-  const [userPassAccounts, setUserPassAccounts] = useState<UserPassAccountDraft[]>([]);
 
   useEffect(() => {
     if (error) {
@@ -128,14 +125,14 @@ export default function AccessControlTab() {
     }
   }, [error, clearError]);
 
-  useEffect(() => {
+  const derivedUserPass = useMemo(() => {
     if (!status) {
-      return;
+      return null;
     }
-    setUserPassEnabled(status.userpass.enabled);
-    setLoopbackRequiresAuth(status.userpass.loopback_requires_auth ?? false);
-    setUserPassAccounts(
-      status.userpass.accounts.map((account) => ({
+    return {
+      enabled: status.userpass.enabled,
+      loopbackRequiresAuth: status.userpass.loopback_requires_auth ?? false,
+      accounts: status.userpass.accounts.map((account) => ({
         key: account.username,
         username: account.username,
         password: "",
@@ -143,8 +140,20 @@ export default function AccessControlTab() {
         hasPassword: account.has_password,
         lastConnectedAt: account.last_connected_at,
       })),
-    );
+    };
   }, [status]);
+
+  const [userPassEnabled, setUserPassEnabled] = useState(false);
+  const [loopbackRequiresAuth, setLoopbackRequiresAuth] = useState(false);
+  const [userPassAccounts, setUserPassAccounts] = useState<UserPassAccountDraft[]>([]);
+  const [lastSyncedStatus, setLastSyncedStatus] = useState(status);
+
+  if (derivedUserPass && status !== lastSyncedStatus) {
+    setLastSyncedStatus(status);
+    setUserPassEnabled(derivedUserPass.enabled);
+    setLoopbackRequiresAuth(derivedUserPass.loopbackRequiresAuth);
+    setUserPassAccounts(derivedUserPass.accounts);
+  }
 
   const handleAdd = async () => {
     if (!newIpOrCidr.trim()) {

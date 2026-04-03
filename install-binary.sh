@@ -107,24 +107,54 @@ get_archive_ext() {
     esac
 }
 
-get_latest_version() {
-    local all_releases_url="https://api.github.com/repos/${REPO}/releases?per_page=10"
-    local response version is_prerelease
+github_api_request() {
+    local url="$1"
+    if command -v curl &> /dev/null; then
+        if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            curl -sL -H "Authorization: token ${GITHUB_TOKEN}" "$url"
+        else
+            curl -sL "$url"
+        fi
+    elif command -v wget &> /dev/null; then
+        if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+            wget -qO- --header="Authorization: token ${GITHUB_TOKEN}" "$url"
+        else
+            wget -qO- "$url"
+        fi
+    else
+        return 1
+    fi
+}
+
+get_latest_version_via_redirect() {
+    local redirect_url="https://github.com/${REPO}/releases/latest"
+    local location
 
     if command -v curl &> /dev/null; then
-        response=$(curl -sL "$all_releases_url")
+        location=$(curl -sI -o /dev/null -w '%{url_effective}' -L "$redirect_url" 2>/dev/null)
     elif command -v wget &> /dev/null; then
-        response=$(wget -qO- "$all_releases_url")
-    else
-        print_error "Neither curl nor wget found. Please install one of them." >&2
-        exit 1
+        location=$(wget --spider -S --max-redirect=5 "$redirect_url" 2>&1 | grep -i 'Location:' | tail -1 | sed 's/.*Location:[[:space:]]*//' | sed 's/[[:space:]].*//' | tr -d '\r')
     fi
 
+    if [[ -n "$location" ]]; then
+        local version
+        version=$(echo "$location" | sed -E 's|.*/tag/([^/?#]+).*|\1|')
+        if [[ -n "$version" && "$version" != "$location" ]]; then
+            echo "$version"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_latest_version_via_api() {
+    local all_releases_url="https://api.github.com/repos/${REPO}/releases?per_page=10"
+    local response version
+
+    response=$(github_api_request "$all_releases_url" 2>/dev/null) || return 1
+
     if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"API rate limit exceeded'; then
-        print_error "GitHub API rate limit exceeded"
-        print_warning "Please try again later or specify a version manually:"
-        echo "  curl -fsSL ... | bash -s -- --version v0.0.9-alpha" >&2
-        exit 1
+        return 1
     fi
 
     if echo "$response" | grep -q '"message"[[:space:]]*:[[:space:]]*"Not Found"'; then
@@ -139,20 +169,37 @@ get_latest_version() {
         return 0
     fi
 
-    print_warning "No stable release found, checking for pre-releases..."
     version=$(echo "$response" | grep '"tag_name":' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-
-    if [[ -z "$version" ]]; then
-        print_error "No releases found for ${REPO}"
-        print_warning "The project may not have published any releases yet."
-        echo "" >&2
-        echo "You can build from source instead:" >&2
-        echo "  git clone https://github.com/${REPO}.git" >&2
-        echo "  cd bifrost && ./install.sh" >&2
-        exit 1
+    if [[ -n "$version" ]]; then
+        echo "$version"
+        return 0
     fi
 
-    echo "$version"
+    return 1
+}
+
+get_latest_version() {
+    local version
+
+    version=$(get_latest_version_via_redirect 2>/dev/null) && {
+        echo "$version"
+        return 0
+    }
+    print_warning "Redirect-based version detection failed, falling back to GitHub API..."
+
+    version=$(get_latest_version_via_api 2>/dev/null) && {
+        echo "$version"
+        return 0
+    }
+
+    print_error "Failed to detect latest version"
+    echo "" >&2
+    echo "Solutions:" >&2
+    echo "  1. Specify a version manually:" >&2
+    echo "     curl -fsSL ... | bash -s -- --version v0.2.0" >&2
+    echo "  2. Download directly from:" >&2
+    echo "     https://github.com/${REPO}/releases" >&2
+    exit 1
 }
 
 download_file() {
