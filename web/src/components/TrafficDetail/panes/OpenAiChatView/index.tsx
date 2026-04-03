@@ -1,4 +1,4 @@
-import { useMemo, useState, memo, useCallback } from 'react';
+import { useMemo, useState, memo, useCallback, createElement } from 'react';
 import { Typography, Tag, theme, Collapse, Tooltip, Button, Space } from 'antd';
 import {
   RobotOutlined,
@@ -389,7 +389,7 @@ const MessageCard = memo(({ group }: { group: ConversationGroup }) => {
   const { message, index, toolRoundtrips } = group;
   const role = (message.role as string) ?? 'unknown';
   const style = getRoleStyle(role);
-  const IconComp = getRoleIcon(role);
+  const roleIcon = useMemo(() => createElement(getRoleIcon(role)), [role]);
   const content = message.content;
   const functionCall = message.function_call as Record<string, unknown> | undefined;
   const toolCallId = message.tool_call_id as string | undefined;
@@ -438,7 +438,7 @@ const MessageCard = memo(({ group }: { group: ConversationGroup }) => {
           <Tag
             color={style.color}
             style={{ margin: 0, fontSize: 11, lineHeight: '18px', padding: '0 6px' }}
-            icon={<IconComp />}
+            icon={roleIcon}
           >
             {style.label}
           </Tag>
