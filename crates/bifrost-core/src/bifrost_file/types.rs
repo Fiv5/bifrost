@@ -74,6 +74,8 @@ pub struct RuleFileMeta {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default)]
     pub sync: RuleSyncMeta,
 }
@@ -97,6 +99,7 @@ impl RuleFileMeta {
             created_at: now.clone(),
             updated_at: now,
             description: None,
+            group: None,
             sync: RuleSyncMeta::default(),
         }
     }

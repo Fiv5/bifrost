@@ -401,6 +401,7 @@ async fn update_rule(
         enabled: request.enabled.unwrap_or(existing.enabled),
         sort_order: existing.sort_order,
         description: existing.description,
+        group: existing.group,
         version: existing.version,
         created_at: existing.created_at,
         updated_at: chrono::Utc::now().to_rfc3339(),

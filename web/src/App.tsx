@@ -12,6 +12,8 @@ import Settings from "./pages/Settings";
 import SyncLogin from "./pages/SyncLogin";
 import Values from "./pages/Values";
 import Scripts from "./pages/Scripts";
+import Groups from "./pages/Groups";
+import GroupDetail from "./pages/Groups/GroupDetail";
 import {
   DESKTOP_HANDOFF_COMPLETE_EVENT,
   listenDesktopEvent,
@@ -264,6 +266,8 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
                 <Route path="rules" element={<Rules />} />
                 <Route path="values" element={<Values />} />
                 <Route path="scripts" element={<Scripts />} />
+                <Route path="groups" element={<Groups />} />
+                <Route path="groups/:id" element={<GroupDetail />} />
                 <Route path="settings" element={<Settings />} />
               </Route>
             </Routes>
@@ -283,6 +287,8 @@ function AppShell({ desktopPlatform }: { desktopPlatform: ReturnType<typeof getD
                 <Route path="rules" element={<Rules />} />
                 <Route path="values" element={<Values />} />
                 <Route path="scripts" element={<Scripts />} />
+                <Route path="groups" element={<Groups />} />
+                <Route path="groups/:id" element={<GroupDetail />} />
                 <Route path="settings" element={<Settings />} />
               </Route>
             </Routes>

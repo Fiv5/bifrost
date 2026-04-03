@@ -278,6 +278,49 @@ impl SyncHttpClient {
         Ok(())
     }
 
+    pub async fn proxy_forward(
+        &self,
+        config: &SyncConfig,
+        token: &str,
+        method: reqwest::Method,
+        path: &str,
+        query: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, String, Vec<u8>)> {
+        let mut url = format!("{}{}", config.remote_base_url.trim_end_matches('/'), path);
+        if let Some(q) = query {
+            if !q.is_empty() {
+                url.push('?');
+                url.push_str(q);
+            }
+        }
+        let mut request = self
+            .http
+            .request(method, &url)
+            .header("x-bifrost-token", token)
+            .header("Content-Type", "application/json");
+        if let Some(body) = body {
+            request = request.body(body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| BifrostError::Network(format!("sync proxy request failed: {e}")))?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| BifrostError::Network(format!("sync proxy response read failed: {e}")))?
+            .to_vec();
+        Ok((status, content_type, body))
+    }
+
     async fn request_json<Q, B, T>(
         &self,
         method: reqwest::Method,

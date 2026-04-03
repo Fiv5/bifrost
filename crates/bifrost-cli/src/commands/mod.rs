@@ -1,5 +1,6 @@
 mod ca;
 mod config;
+mod group;
 mod install_skill;
 mod rule;
 mod script;
@@ -17,6 +18,7 @@ mod whitelist;
 
 pub use ca::*;
 pub use config::handle_config_command;
+pub use group::handle_group_command;
 pub use install_skill::handle_install_skill;
 pub use rule::*;
 pub use script::*;

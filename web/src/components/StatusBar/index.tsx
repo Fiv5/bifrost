@@ -1,15 +1,13 @@
-import { useEffect, useMemo, memo, useCallback, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, memo, useCallback, type CSSProperties } from "react";
 import { theme, Tooltip } from "antd";
 import { ArrowUpOutlined, ArrowDownOutlined } from "@ant-design/icons";
 import { useShallow } from "zustand/react/shallow";
 import { useMetricsStore } from "../../stores/useMetricsStore";
 import { useProxyStore } from "../../stores/useProxyStore";
 import { useVersionStore } from "../../stores/useVersionStore";
-import { getSyncStatus, type SyncStatus } from "../../api/sync";
-import { isConnectionIssueError } from "../../api/client";
+import { useSyncStore } from "../../stores/useSyncStore";
+import type { SyncStatus } from "../../api/sync";
 import VersionModal from "../VersionModal";
-
-const SYNC_STATUS_POLL_INTERVAL_MS = 5000;
 
 function formatSyncAction(action?: SyncStatus["last_sync_action"]): string | null {
   switch (action) {
@@ -63,8 +61,10 @@ const StatusBar = memo(function StatusBar() {
   );
   const systemProxy = useProxyStore((state) => state.systemProxy);
   const fetchSystemProxy = useProxyStore((state) => state.fetchSystemProxy);
-  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
-  
+  const syncStatus = useSyncStore((state) => state.syncStatus);
+  const startPolling = useSyncStore((state) => state.startPolling);
+  const stopPolling = useSyncStore((state) => state.stopPolling);
+
   const hasUpdate = useVersionStore((state) => state.hasUpdate);
   const latestVersion = useVersionStore((state) => state.latestVersion);
   const setModalVisible = useVersionStore((state) => state.setModalVisible);
@@ -73,37 +73,12 @@ const StatusBar = memo(function StatusBar() {
   useEffect(() => {
     fetchSystemProxy();
     enablePush({ needOverview: true, needMetrics: true });
+    startPolling();
     return () => {
       disablePush();
+      stopPolling();
     };
-  }, [fetchSystemProxy, enablePush, disablePush]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const loadSyncStatus = async () => {
-      try {
-        const status = await getSyncStatus();
-        if (!cancelled) {
-          setSyncStatus(status);
-        }
-      } catch (error) {
-        if (!cancelled && !isConnectionIssueError(error)) {
-          setSyncStatus(null);
-        }
-      }
-    };
-
-    void loadSyncStatus();
-    const timer = window.setInterval(() => {
-      void loadSyncStatus();
-    }, SYNC_STATUS_POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  }, [fetchSystemProxy, enablePush, disablePush, startPolling, stopPolling]);
 
   const metrics = current || overview?.metrics;
 

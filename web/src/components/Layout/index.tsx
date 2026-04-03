@@ -9,29 +9,23 @@ import {
   ThunderboltOutlined,
   SunOutlined,
   MoonOutlined,
+  UsergroupAddOutlined,
 } from "@ant-design/icons";
 import type { CSSProperties } from "react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { usePendingAuthStore } from "../../stores/usePendingAuthStore";
 import StatusBar from "../StatusBar";
 import { setNavigateCallback, type ReferenceLocation } from "../BifrostEditor";
 import { getDesktopPlatform, isDesktopShell } from "../../runtime";
 import { useThemeStore } from "../../stores/useThemeStore";
+import { useSyncStore } from "../../stores/useSyncStore";
 
 interface MenuItem {
   key: string;
   icon: React.ReactNode;
   label: string;
+  hidden?: boolean;
 }
-
-const menuItems: MenuItem[] = [
-  { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
-  { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
-  { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
-  { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
-  { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
-  { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
-];
 
 export default function AppLayout() {
   const navigate = useNavigate();
@@ -49,6 +43,31 @@ export default function AppLayout() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const setThemeMode = useThemeStore((state) => state.setMode);
   const isDark = resolvedTheme === "dark";
+  const syncStatus = useSyncStore((state) => state.syncStatus);
+  const startSyncPolling = useSyncStore((state) => state.startPolling);
+  const stopSyncPolling = useSyncStore((state) => state.stopPolling);
+
+  useEffect(() => {
+    startSyncPolling();
+    return () => {
+      stopSyncPolling();
+    };
+  }, [startSyncPolling, stopSyncPolling]);
+
+  const showGroups = syncStatus?.enabled ?? false;
+
+  const menuItems: MenuItem[] = useMemo(
+    () => [
+      { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
+      { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
+      { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+      { key: "/values", icon: <DatabaseOutlined />, label: "Values" },
+      { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
+      { key: "/groups", icon: <UsergroupAddOutlined />, label: "Groups", hidden: !showGroups },
+      { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
+    ],
+    [showGroups],
+  );
 
   useEffect(() => {
     fetchPendingList();
@@ -226,7 +245,7 @@ export default function AppLayout() {
 
   const isActive = (key: string) => {
     if (key === "/traffic" && location.pathname === "/") return true;
-    return location.pathname === key;
+    return location.pathname === key || location.pathname.startsWith(key + "/");
   };
 
   const renderMenuIcon = (item: MenuItem) => {
@@ -256,7 +275,7 @@ export default function AppLayout() {
       ) : null}
       <div style={styles.main}>
         <div style={styles.sidebar}>
-          {menuItems.map((item) => {
+          {menuItems.filter((item) => !item.hidden).map((item) => {
             const active = isActive(item.key);
             return (
               <div

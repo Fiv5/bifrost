@@ -84,6 +84,8 @@ pub struct RuleFile {
     pub sort_order: i32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default = "default_version")]
     pub version: String,
     #[serde(default = "default_timestamp")]
@@ -111,6 +113,7 @@ impl RuleFile {
             enabled: true,
             sort_order: 0,
             description: None,
+            group: None,
             version: "1.0.0".to_string(),
             created_at: now.clone(),
             updated_at: now,
@@ -180,6 +183,7 @@ impl RuleFile {
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
             description: self.description.clone(),
+            group: self.group.clone(),
             sync: BifrostRuleSyncMeta {
                 rule_id: self.sync.rule_id.clone(),
                 status: self.sync.status.into(),
@@ -200,6 +204,7 @@ impl RuleFile {
             enabled: meta.enabled,
             sort_order: meta.sort_order,
             description: meta.description,
+            group: meta.group,
             version: meta.version,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
@@ -480,6 +485,48 @@ impl RulesStorage {
     pub fn load_enabled(&self) -> Result<Vec<RuleFile>> {
         let rules = self.load_all()?;
         Ok(rules.into_iter().filter(|r| r.enabled).collect())
+    }
+
+    pub fn load_enabled_with_subdirs(&self) -> Result<Vec<RuleFile>> {
+        let mut all_enabled = self.load_enabled()?;
+
+        if let Ok(entries) = fs::read_dir(&self.base_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Ok(sub_storage) = RulesStorage::with_dir(path.clone()) {
+                        match sub_storage.load_enabled() {
+                            Ok(sub_enabled) => {
+                                let dir_name = path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown");
+                                if !sub_enabled.is_empty() {
+                                    tracing::info!(
+                                        target: "bifrost_storage::rules",
+                                        subdir = %dir_name,
+                                        count = sub_enabled.len(),
+                                        "loaded enabled rules from subdirectory"
+                                    );
+                                }
+                                all_enabled.extend(sub_enabled);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "bifrost_storage::rules",
+                                    subdir = %path.display(),
+                                    error = %e,
+                                    "failed to load rules from subdirectory"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        all_enabled.sort_by_key(|r| r.sort_order);
+        Ok(all_enabled)
     }
 
     pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {

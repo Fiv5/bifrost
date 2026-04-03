@@ -669,6 +669,7 @@ async fn handle_export_rules(req: Request<Incoming>, state: SharedAdminState) ->
         created_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
         description: request.description,
+        group: None,
         sync: bifrost_core::bifrost_file::RuleSyncMeta::default(),
     };
 

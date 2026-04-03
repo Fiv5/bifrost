@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Keyboard Letter Display</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: #1a1a2e;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    overflow: hidden;
+    transition: background 0.3s ease;
+    user-select: none;
+  }
+
+  .hint {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 2rem;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .letter-container {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .letter-container.active {
+    display: flex;
+  }
+
+  .uppercase {
+    font-size: 40vmin;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1;
+    text-shadow: 0 0 80px rgba(255, 255, 255, 0.3);
+    animation: popIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .lowercase {
+    font-size: 14vmin;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.5);
+    line-height: 1;
+    letter-spacing: 0.05em;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  @keyframes popIn {
+    0% { transform: scale(0.5); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hint" id="hint">Press any letter key</div>
+
+<div class="letter-container" id="letterContainer">
+  <div class="uppercase" id="upper"></div>
+  <div class="lowercase" id="lower"></div>
+</div>
+
+<script>
+  const colors = [
+    '#1a1a2e', '#16213e', '#0f3460', '#533483',
+    '#e94560', '#2b2d42', '#3a0ca3', '#7209b7',
+    '#f72585', '#4361ee', '#4cc9f0', '#006d77',
+    '#e29578', '#bc6c25', '#606c38', '#283618',
+    '#6d6875', '#b5838d', '#e5989b', '#ffcdb2',
+    '#264653', '#2a9d8f', '#e76f51', '#f4a261',
+    '#a8dadc', '#457b9d',
+  ];
+
+  const hint = document.getElementById('hint');
+  const container = document.getElementById('letterContainer');
+  const upperEl = document.getElementById('upper');
+  const lowerEl = document.getElementById('lower');
+
+  document.addEventListener('keydown', (e) => {
+    const key = e.key;
+    if (key.length !== 1 || !key.match(/[a-zA-Z]/)) return;
+
+    hint.style.display = 'none';
+    container.classList.add('active');
+
+    upperEl.textContent = key.toUpperCase();
+    lowerEl.textContent = key.toLowerCase();
+
+    upperEl.style.animation = 'none';
+    void upperEl.offsetWidth;
+    upperEl.style.animation = 'popIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+
+    const idx = key.toLowerCase().charCodeAt(0) - 97;
+    document.body.style.background = colors[idx];
+  });
+</script>
+
+</body>
+</html>

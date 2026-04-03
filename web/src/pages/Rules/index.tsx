@@ -3,6 +3,7 @@ import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
 import RuleEditor from './RuleEditor';
+import RulesDynamicIsland from './RulesDynamicIsland';
 import { useRulesStore } from '../../stores/useRulesStore';
 import { useValuesStore } from '../../stores/useValuesStore';
 import { notifyApiBusinessError } from '../../api/client';
@@ -59,18 +60,27 @@ export default function Rules() {
     width: '100%',
     height: '100%',
     overflow: 'hidden',
+    display: 'flex' as const,
+    flexDirection: 'column' as const,
     backgroundColor: token.colorBgContainer,
+    position: 'relative' as const,
   };
 
   return (
     <div style={containerStyle}>
-      <SplitPane
-        left={<RuleList />}
-        right={<RuleEditor />}
-        defaultLeftWidth="250px"
-        minLeftWidth={200}
-        minRightWidth={400}
+      <RulesDynamicIsland
+        rules={rules}
+        onClickRule={(name) => selectRule(name)}
       />
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        <SplitPane
+          left={<RuleList />}
+          right={<RuleEditor />}
+          defaultLeftWidth="250px"
+          minLeftWidth={200}
+          minRightWidth={400}
+        />
+      </div>
     </div>
   );
 }
