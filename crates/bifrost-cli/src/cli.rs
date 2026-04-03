@@ -441,6 +441,30 @@ pub enum Commands {
         #[command(subcommand)]
         action: TrafficCommands,
     },
+    #[command(
+        about = "Install bifrost SKILL.md to AI coding tools (Claude Code, Codex, Trae, Cursor)"
+    )]
+    InstallSkill {
+        #[arg(
+            short,
+            long,
+            help = "Target tool: claude-code, codex, trae, cursor, or 'all' (default: all)"
+        )]
+        tool: Option<String>,
+        #[arg(
+            short,
+            long,
+            help = "Custom install directory (overrides default tool path)"
+        )]
+        dir: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Install to current directory (project-level) instead of global directory"
+        )]
+        cwd: bool,
+        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        yes: bool,
+    },
     #[command(about = "Search traffic records with advanced filtering")]
     Search {
         #[arg(help = "Search keyword (searches URL, headers, body)")]

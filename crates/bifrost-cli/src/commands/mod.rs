@@ -1,5 +1,6 @@
 mod ca;
 mod config;
+mod install_skill;
 mod rule;
 mod script;
 mod search;
@@ -16,6 +17,7 @@ mod whitelist;
 
 pub use ca::*;
 pub use config::handle_config_command;
+pub use install_skill::handle_install_skill;
 pub use rule::*;
 pub use script::*;
 pub use search::{run_search, OutputFormat, SearchOptions};

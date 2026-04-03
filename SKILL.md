@@ -1,9 +1,10 @@
----
-name: "bifrost-cli-agent"
-description: "使用 bifrost CLI 管理代理生命周期、规则、证书、脚本、系统代理、运行时配置与流量查询；当需要通过命令行启动/停止代理、配置 TLS 拦截、调试规则、管理脚本、查看 traffic/search、修改 values/config 时使用。"
----
+***
 
-# Bifrost CLI Agent
+name: "bifrost"
+description: "使用 bifrost 命令行工具管理代理生命周期、规则、证书、脚本、系统代理、运行时配置与流量查询；当需要通过命令行启动/停止代理、配置 TLS 拦截、调试规则、管理脚本、查看 traffic/search、修改 values/config 时使用。"
+--------------------------------------------------------------------------------------------------------------------------------------------
+
+# Bifrost
 
 该技能用于指导 Agent 直接使用 `bifrost` CLI 完成代理启动、配置修改、规则调试、脚本管理和流量排查，而不是绕过 CLI 直接改底层数据文件。
 
@@ -42,7 +43,7 @@ bifrost --version
 - 如果仓库源码在本地但 `bifrost` 尚未加入 `PATH`，可退回源码方式检查：
 
 ```bash
-cargo run -p bifrost-cli -- --version
+cargo run -p bifrost -- --version
 ```
 
 ## 2. 如果 bifrost 不存在，自动安装最新版本
@@ -74,7 +75,7 @@ brew install bifrost
 git clone https://github.com/bifrost-proxy/bifrost.git /tmp/bifrost
 cd /tmp/bifrost
 cd web && pnpm install && pnpm build && cd ..
-cargo build --release -p bifrost-cli
+cargo build --release -p bifrost
 ./target/release/bifrost --version
 ```
 
@@ -174,6 +175,7 @@ bifrost start [OPTIONS]
 ```
 
 TLS 拦截优先级（从高到低）：
+
 1. 规则级别（`tlsIntercept://`、`tlsPassthrough://`）
 2. `--intercept-include` / `--app-intercept-include`：强制拦截
 3. `--intercept-exclude` / `--app-intercept-exclude`：强制不拦截
@@ -276,6 +278,7 @@ bifrost start --proxy-user user1:pass1 --proxy-user user2:pass2
 ```
 
 - 通过运行时配置管理：
+
 ```bash
 bifrost config set access.userpass.enabled true
 bifrost config add access.userpass.accounts 'user:pass'
@@ -318,34 +321,34 @@ bifrost config export --format json
 
 可用的配置键：
 
-| Section | Key | 类型 | 说明 |
-|---------|-----|------|------|
-| server | `server.timeout-secs` | 数值 | 服务器超时秒数 |
-| server | `server.http1-max-header-size` | 大小 | HTTP/1.1 最大请求头大小 |
-| server | `server.http2-max-header-list-size` | 大小 | HTTP/2 最大头列表大小 |
-| server | `server.websocket-handshake-max-header-size` | 大小 | WebSocket 握手最大头大小 |
-| tls | `tls.enabled` | 布尔 | TLS 拦截开关 |
-| tls | `tls.unsafe-ssl` | 布尔 | 跳过上游证书校验 |
-| tls | `tls.disconnect-on-change` | 布尔 | 配置变更时自动断开连接 |
-| tls | `tls.exclude` | 列表 | TLS 拦截排除域名 |
-| tls | `tls.include` | 列表 | TLS 拦截包含域名 |
-| tls | `tls.app-exclude` | 列表 | TLS 拦截排除应用 |
-| tls | `tls.app-include` | 列表 | TLS 拦截包含应用 |
-| traffic | `traffic.max-records` | 数值 | 最大记录数 |
-| traffic | `traffic.max-db-size` | 大小 | 最大数据库大小 |
-| traffic | `traffic.max-body-size` | 大小 | 最大 body 大小 |
-| traffic | `traffic.max-buffer-size` | 大小 | 最大缓冲区大小 |
-| traffic | `traffic.retention-days` | 数值 | 记录保留天数 |
-| traffic | `traffic.sse-stream-flush-bytes` | 大小 | SSE 流刷新字节数 |
-| traffic | `traffic.sse-stream-flush-interval-ms` | 数值 | SSE 流刷新间隔（毫秒） |
-| traffic | `traffic.ws-payload-flush-bytes` | 大小 | WebSocket 载荷刷新字节数 |
-| traffic | `traffic.ws-payload-flush-interval-ms` | 数值 | WebSocket 载荷刷新间隔（毫秒） |
-| traffic | `traffic.ws-payload-max-open-files` | 数值 | WebSocket 载荷最大打开文件数 |
-| access | `access.mode` | 枚举 | 访问模式（local_only/whitelist/interactive/allow_all） |
-| access | `access.allow-lan` | 布尔 | 允许局域网访问 |
-| access | `access.userpass.enabled` | 布尔 | 代理认证开关 |
-| access | `access.userpass.accounts` | 列表 | 代理认证账户列表 |
-| access | `access.userpass.loopback-requires-auth` | 布尔 | 回环地址是否需要认证 |
+| Section | Key                                          | 类型 | 说明                                                 |
+| ------- | -------------------------------------------- | -- | -------------------------------------------------- |
+| server  | `server.timeout-secs`                        | 数值 | 服务器超时秒数                                            |
+| server  | `server.http1-max-header-size`               | 大小 | HTTP/1.1 最大请求头大小                                   |
+| server  | `server.http2-max-header-list-size`          | 大小 | HTTP/2 最大头列表大小                                     |
+| server  | `server.websocket-handshake-max-header-size` | 大小 | WebSocket 握手最大头大小                                  |
+| tls     | `tls.enabled`                                | 布尔 | TLS 拦截开关                                           |
+| tls     | `tls.unsafe-ssl`                             | 布尔 | 跳过上游证书校验                                           |
+| tls     | `tls.disconnect-on-change`                   | 布尔 | 配置变更时自动断开连接                                        |
+| tls     | `tls.exclude`                                | 列表 | TLS 拦截排除域名                                         |
+| tls     | `tls.include`                                | 列表 | TLS 拦截包含域名                                         |
+| tls     | `tls.app-exclude`                            | 列表 | TLS 拦截排除应用                                         |
+| tls     | `tls.app-include`                            | 列表 | TLS 拦截包含应用                                         |
+| traffic | `traffic.max-records`                        | 数值 | 最大记录数                                              |
+| traffic | `traffic.max-db-size`                        | 大小 | 最大数据库大小                                            |
+| traffic | `traffic.max-body-size`                      | 大小 | 最大 body 大小                                         |
+| traffic | `traffic.max-buffer-size`                    | 大小 | 最大缓冲区大小                                            |
+| traffic | `traffic.retention-days`                     | 数值 | 记录保留天数                                             |
+| traffic | `traffic.sse-stream-flush-bytes`             | 大小 | SSE 流刷新字节数                                         |
+| traffic | `traffic.sse-stream-flush-interval-ms`       | 数值 | SSE 流刷新间隔（毫秒）                                      |
+| traffic | `traffic.ws-payload-flush-bytes`             | 大小 | WebSocket 载荷刷新字节数                                  |
+| traffic | `traffic.ws-payload-flush-interval-ms`       | 数值 | WebSocket 载荷刷新间隔（毫秒）                               |
+| traffic | `traffic.ws-payload-max-open-files`          | 数值 | WebSocket 载荷最大打开文件数                                |
+| access  | `access.mode`                                | 枚举 | 访问模式（local\_only/whitelist/interactive/allow\_all） |
+| access  | `access.allow-lan`                           | 布尔 | 允许局域网访问                                            |
+| access  | `access.userpass.enabled`                    | 布尔 | 代理认证开关                                             |
+| access  | `access.userpass.accounts`                   | 列表 | 代理认证账户列表                                           |
+| access  | `access.userpass.loopback-requires-auth`     | 布尔 | 回环地址是否需要认证                                         |
 
 大小类型支持单位：`B`、`KB`、`MB`、`GB`（如 `10MB`、`512KB`）。
 
@@ -441,10 +444,10 @@ bifrost upgrade -y            # 跳过确认
 
 ## 环境变量
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
+| 变量                 | 说明                                               | 默认值                |
+| ------------------ | ------------------------------------------------ | ------------------ |
 | `BIFROST_DATA_DIR` | 数据目录路径（含 config/rules/values/scripts/certs/logs） | `~/.bifrost`（平台相关） |
-| `RUST_LOG` | 日志级别与过滤器 | `info` |
+| `RUST_LOG`         | 日志级别与过滤器                                         | `info`             |
 
 ## 推荐工作流
 
@@ -526,7 +529,7 @@ bifrost config add access.userpass.accounts 'admin:secret'
 
 ## 特别说明
 
-本文档仅列出常用命令和参数摘要。**CLI 的完整参数、用法说明和示例均内置于 `--help` 输出中**，包括协议列表、规则语法快速参考、变量展开说明等。遇到本文档未覆盖的参数或用法时，**必须**先执行以下命令获取权威信息：
+本文档仅列出常用命令和参数摘要。**CLI 的完整参数、用法说明和示例均内置于** **`--help`** **输出中**，包括协议列表、规则语法快速参考、变量展开说明等。遇到本文档未覆盖的参数或用法时，**必须**先执行以下命令获取权威信息：
 
 ```bash
 bifrost -h                    # 完整帮助（含协议、规则语法、环境变量等）
@@ -534,7 +537,7 @@ bifrost <command> -h          # 子命令帮助（如 bifrost start -h、bifrost
 bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifrost config set -h）
 ```
 
-`-h` 输出的信息始终与当前安装版本一致，是最准确的参数参考。本文档可能因版本迭代而滞后，**以 `--help` 输出为准**。
+`-h` 输出的信息始终与当前安装版本一致，是最准确的参数参考。本文档可能因版本迭代而滞后，**以** **`--help`** **输出为准**。
 
 ## Agent 行为建议
 
@@ -542,12 +545,13 @@ bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifr
 - 做实验时始终显式设置 `BIFROST_DATA_DIR`
 - 如果用户没有要求修改系统环境，不要开启 `--system-proxy`、`--cli-proxy`
 - 如果用户只想验证规则，不必先启用 TLS 拦截
-- 遇到不确定的参数或用法，**先执行 `bifrost <command> -h` 获取完整手册**，不要猜测
+- 遇到不确定的参数或用法，**先执行** **`bifrost <command> -h`** **获取完整手册**，不要猜测
 
 ## 参考
 
-- CLI 定义：[crates/bifrost-cli/src/cli.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost-cli/src/cli.rs)
-- 启动与命令分发：[crates/bifrost-cli/src/main.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost-cli/src/main.rs)
+- CLI 定义：[crates/bifrost/src/cli.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost/src/cli.rs)
+- 启动与命令分发：[crates/bifrost/src/main.rs](https://github.com/bifrost-proxy/bifrost/blob/main/crates/bifrost/src/main.rs)
 - 规则语法：[docs/rule.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/rule.md)
 - Pattern 说明：[docs/pattern.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/pattern.md)
 - Operation 说明：[docs/operation.md](https://github.com/bifrost-proxy/bifrost/blob/main/docs/operation.md)
+

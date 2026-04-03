@@ -1,0 +1,128 @@
+# bifrost install-skill 技能安装方案
+
+## 功能模块描述
+
+为 `bifrost-cli` 新增 `install-skill` 子命令，用于从 GitHub 远端主干（main 分支）下载最新的 `SKILL.md` 文件，并安装到各 AI 编程工具的全局配置目录中。
+
+目标语义：
+
+- 每次安装都是覆盖式安装（overwrite），确保用户始终获取最新版本的技能文件
+- 支持 4 个目标工具：Claude Code、Codex、Trae、Cursor
+- 默认安装到全部工具，支持通过 `--tool`（`-t`）参数选择单个工具
+- 支持通过 `--dir`（`-d`）参数自定义安装目录，覆盖默认路径
+- 支持 `-y` 跳过安装确认提示，适用于脚本/自动化场景
+
+## 实现逻辑
+
+### 一、下载源
+
+从 GitHub 远端主干获取最新 SKILL.md：
+
+```
+https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/SKILL.md
+```
+
+使用 `ureq` 发起 HTTP GET 请求，读取响应体为字符串作为技能文件原始内容。
+
+### 二、工具与路径映射
+
+所有工具统一使用 `skills/bifrost/SKILL.md` 目录结构，遵循 Standard Agent Skills Format 规范：
+
+| 工具名        | 标识         | 全局安装路径                            | 项目级安装路径（--cwd）                 |
+| ---------- | ---------- | -------------------------------- | ------------------------------- |
+| Claude Code | claude     | `~/.claude/skills/bifrost/SKILL.md` | `./.claude/skills/bifrost/SKILL.md` |
+| Codex       | codex      | `~/.codex/skills/bifrost/SKILL.md`  | `./.codex/skills/bifrost/SKILL.md`  |
+| Trae        | trae       | `~/.trae/skills/bifrost/SKILL.md` + `~/.trae-cn/skills/bifrost/SKILL.md` | `./.trae/skills/bifrost/SKILL.md` |
+| Cursor      | cursor     | `~/.cursor/skills/bifrost/SKILL.md` | `./.cursor/skills/bifrost/SKILL.md` |
+
+Trae 在全局模式下同时安装到 `.trae` 和 `.trae-cn` 两个目录（适配国内外版本），项目级安装仅安装到 `.trae`。
+
+SKILL.md 源文件自带标准 YAML frontmatter（`name` + `description`），下载后直接写入，不做任何额外处理。
+
+各工具的 skill 自动发现机制基于 frontmatter 中的 `name` 和 `description` 字段：
+- `name`：skill 标识符，≤ 64 字符
+- `description`：触发匹配描述，≤ 1024 字符，AI 通过此字段判断何时加载该 skill
+
+### 三、CLI 参数设计
+
+```bash
+bifrost install-skill [OPTIONS]
+```
+
+参数说明：
+
+- `--tool`（`-t`）：指定安装目标工具，可选值为 `claude`、`codex`、`trae`、`cursor`、`all`，默认为 `all`
+- `--dir`（`-d`）：自定义安装目录，覆盖工具的默认安装路径。指定后文件名保持不变，仅替换父目录
+- `-y`：跳过确认提示，直接执行安装
+
+### 四、安装流程
+
+1. 解析命令行参数，确定目标工具列表
+2. 从远端下载 SKILL.md 内容
+3. 若未指定 `-y`，展示将要安装的工具与目标路径，等待用户确认
+4. 遍历目标工具列表，逐个执行安装：
+   - 创建目标路径的父目录（若不存在）
+   - 根据工具类型处理内容（直接写入或注入 frontmatter）
+   - 写入目标文件（覆盖已有文件）
+5. 输出安装结果，包含成功/失败的工具及路径
+
+### 五、错误处理
+
+网络错误：
+
+- DNS 解析失败：提示网络不可用或检查代理配置
+- 连接超时：提示重试或检查网络连接
+- HTTP 非 2xx 状态码：提示远端文件不可用，展示状态码
+
+权限错误：
+
+- 目标路径无写入权限：提示使用 `sudo` 或通过 `--dir` 指定有权限的目录
+
+写入失败：
+
+- 磁盘空间不足或其他 I/O 错误：提示具体错误信息
+
+未知工具名称：
+
+- `--tool` 传入不支持的工具名时，提示可选值列表
+
+### 六、终端输出
+
+使用 `colored` 库实现彩色输出：
+
+- 成功安装：绿色标记，展示工具名与安装路径
+- 安装失败：红色标记，展示工具名与错误原因
+- 安装总结：展示成功/失败数量
+
+## 依赖项
+
+- `ureq`：已有依赖，用于 HTTP 下载 SKILL.md 文件
+- `dirs`：已有依赖，用于获取用户 home 目录以拼接默认安装路径
+- `colored`：已有依赖，用于终端彩色输出
+
+无需引入新依赖。
+
+## 测试方案
+
+### E2E 测试
+
+新增 `bifrost-e2e` 覆盖以下场景：
+
+1. 安装到临时目录验证文件正确写入：使用 `--dir` 指定临时目录，验证各工具文件内容正确
+2. 覆盖安装验证旧文件被替换：先写入旧内容，再执行安装，验证文件内容更新为最新版本
+3. frontmatter 验证：安装后检查文件是否包含标准 YAML frontmatter（`name` 和 `description` 字段），确保兼容所有工具的 skill 自动发现机制
+4. 未知工具名称的错误处理：传入无效的 `--tool` 参数，验证 CLI 返回正确错误信息
+5. 全部工具安装验证：不指定 `--tool`，验证所有工具均写入文件
+6. `--cwd` 项目级安装验证：验证文件写入到当前目录下的 `.<tool>/skills/bifrost/SKILL.md`
+7. `--dir` 和 `--cwd` 互斥验证：同时传入两个参数时返回互斥错误
+
+## 校验要求
+
+- `cargo build -p bifrost-cli` 编译通过
+- `cargo test --workspace --all-features` 通过
+- `rust-project-validate` 通过
+
+## 文档更新要求
+
+- SKILL.md 已更新，新增第 13 节 install-skill 文档
+- README.md 如涉及 CLI 命令列表需同步更新
