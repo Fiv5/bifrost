@@ -1,5 +1,7 @@
+use std::time::{Duration, Instant};
+
 use regex::Regex;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::types::{
     FilterCondition, MatchLocation, SearchFilters, SearchRequest, SearchResponse, SearchResultItem,
@@ -15,8 +17,9 @@ use crate::traffic_db::{
 const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
 const SEARCH_BATCH_SIZE: usize = 200;
-const MAX_SEARCH_ITERATIONS: usize = 50;
-const MAX_TOTAL_SEARCHED: usize = 10000;
+const MAX_SEARCH_ITERATIONS: usize = 500;
+const MAX_TOTAL_SEARCHED: usize = 100_000;
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SearchEngine {
     traffic_db: SharedTrafficDbStore,
@@ -76,8 +79,8 @@ impl SearchEngine {
         let batch_size = request.limit.unwrap_or(DEFAULT_BATCH_SIZE);
         let keyword_lower = request.keyword.to_lowercase();
         let has_keyword = !keyword_lower.trim().is_empty();
+        let started_at = Instant::now();
 
-        // search scope / filters 计算一次，避免循环里反复判断
         let scope = &request.scope;
         let need_url = (has_keyword && scope.should_search_url())
             || request
@@ -103,16 +106,28 @@ impl SearchEngine {
         let mut current_cursor = request.cursor;
         let mut iterations = 0;
         let mut db_has_more = true;
+        let mut timed_out = false;
 
         while results.len() < batch_size
             && iterations < MAX_SEARCH_ITERATIONS
             && total_searched < MAX_TOTAL_SEARCHED
             && db_has_more
         {
+            if started_at.elapsed() >= SEARCH_TIMEOUT {
+                warn!(
+                    elapsed_ms = started_at.elapsed().as_millis() as u64,
+                    iterations,
+                    total_searched,
+                    matched = results.len(),
+                    "[SEARCH] Timeout reached, returning partial results"
+                );
+                timed_out = true;
+                break;
+            }
+
             iterations += 1;
 
             let query_params = self.build_query_params_with_cursor(request, current_cursor);
-            // 搜索会迭代多次，避免每次 query 都做 COUNT(*)
             let query_result = self.traffic_db.query_for_search(&query_params);
 
             if query_result.records.is_empty() {
@@ -128,7 +143,6 @@ impl SearchEngine {
                 "[SEARCH] Processing batch"
             );
 
-            // 先收集候选 id，批量拉取搜索字段，避免 N+1。
             let candidate_ids: Vec<&str> = query_result
                 .records
                 .iter()
@@ -200,7 +214,7 @@ impl SearchEngine {
             });
         }
 
-        let has_more = db_has_more && total_searched < MAX_TOTAL_SEARCHED;
+        let has_more = timed_out || (db_has_more && total_searched < MAX_TOTAL_SEARCHED);
         let total_matched = results.len();
 
         debug!(
@@ -208,6 +222,8 @@ impl SearchEngine {
             total_searched = total_searched,
             matched = total_matched,
             has_more = has_more,
+            timed_out = timed_out,
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
             "[SEARCH] Iterative search completed"
         );
 

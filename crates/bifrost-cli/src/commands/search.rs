@@ -1,4 +1,4 @@
-use std::io::{stdout, IsTerminal};
+use std::io::{stdout, BufRead, BufReader, IsTerminal};
 use std::time::Duration;
 
 use crossterm::{
@@ -27,17 +27,6 @@ fn direct_agent(timeout: Duration) -> ureq::Agent {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct SearchResponse {
-    pub results: Vec<SearchResultItem>,
-    pub total_searched: usize,
-    pub total_matched: usize,
-    pub next_cursor: Option<u64>,
-    pub has_more: bool,
-    search_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct SearchResultItem {
     pub record: TrafficSummary,
     pub matches: Vec<MatchLocation>,
@@ -47,7 +36,7 @@ pub struct SearchResultItem {
 #[allow(dead_code)]
 pub struct TrafficSummary {
     pub id: String,
-    seq: u64,
+    pub seq: u64,
     pub ts: u64,
     pub m: String,
     pub h: String,
@@ -107,6 +96,78 @@ pub enum OutputFormat {
     Compact,
     Json,
     JsonPretty,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SseProgressPayload {
+    total_searched: usize,
+    total_matched: usize,
+    #[allow(dead_code)]
+    next_cursor: Option<u64>,
+    #[allow(dead_code)]
+    has_more_hint: bool,
+    #[allow(dead_code)]
+    iterations: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SseDonePayload {
+    total_searched: usize,
+    total_matched: usize,
+    next_cursor: Option<u64>,
+    has_more: bool,
+    #[allow(dead_code)]
+    search_id: String,
+}
+
+enum SseEvent {
+    Result(Box<SearchResultItem>),
+    Progress(SseProgressPayload),
+    Done(SseDonePayload),
+}
+
+fn parse_sse_events(reader: impl std::io::Read) -> impl Iterator<Item = SseEvent> {
+    let buf = BufReader::new(reader);
+    let mut event_name = String::new();
+    let mut data_lines: Vec<String> = Vec::new();
+
+    let mut lines_iter = buf.lines();
+    std::iter::from_fn(move || loop {
+        match lines_iter.next() {
+            Some(Ok(line)) => {
+                if line.is_empty() {
+                    if !event_name.is_empty() && !data_lines.is_empty() {
+                        let data_text = data_lines.join("\n");
+                        let evt = match event_name.as_str() {
+                            "result" => serde_json::from_str::<SearchResultItem>(&data_text)
+                                .ok()
+                                .map(|r| SseEvent::Result(Box::new(r))),
+                            "progress" => serde_json::from_str::<SseProgressPayload>(&data_text)
+                                .ok()
+                                .map(SseEvent::Progress),
+                            "done" => serde_json::from_str::<SseDonePayload>(&data_text)
+                                .ok()
+                                .map(SseEvent::Done),
+                            _ => None,
+                        };
+                        event_name.clear();
+                        data_lines.clear();
+                        if let Some(e) = evt {
+                            return Some(e);
+                        }
+                    }
+                    event_name.clear();
+                    data_lines.clear();
+                } else if let Some(rest) = line.strip_prefix("event:") {
+                    event_name = rest.trim().to_string();
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    data_lines.push(rest.trim().to_string());
+                }
+            }
+            Some(Err(_)) => return None,
+            None => return None,
+        }
+    })
 }
 
 impl std::str::FromStr for OutputFormat {
@@ -202,7 +263,9 @@ pub fn run_search(options: SearchOptions) -> i32 {
 }
 
 fn run_simple_search(options: SearchOptions) -> i32 {
-    let response = match execute_search(&options, None) {
+    let use_color = !options.no_color && std::io::stdout().is_terminal();
+
+    let reader = match start_search_stream(&options, None) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("\x1b[31m✗\x1b[0m Search failed: {}", e);
@@ -210,7 +273,98 @@ fn run_simple_search(options: SearchOptions) -> i32 {
         }
     };
 
-    if response.results.is_empty() {
+    match options.format {
+        OutputFormat::Json | OutputFormat::JsonPretty => stream_json_output(reader, &options),
+        OutputFormat::Table => stream_table_output(reader, &options, use_color),
+        OutputFormat::Compact => stream_compact_output(reader, &options, use_color),
+    }
+}
+
+fn start_search_stream(
+    options: &SearchOptions,
+    cursor: Option<u64>,
+) -> Result<Box<dyn std::io::Read + Send>, String> {
+    let url = format!(
+        "http://127.0.0.1:{}/_bifrost/api/search/stream",
+        options.port
+    );
+    let body = build_search_request_body(options, cursor);
+
+    let response = direct_agent(Duration::from_secs(600))
+        .post(&url)
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| format!("Request failed: {}: {}", url, e))?;
+
+    let ct = response.header("Content-Type").unwrap_or("").to_string();
+
+    if !ct.contains("text/event-stream") {
+        return Err(format!(
+            "Server returned unexpected content-type: {}. Ensure Bifrost version supports streaming search.",
+            ct
+        ));
+    }
+
+    Ok(Box::new(response.into_reader()))
+}
+
+fn stream_table_output(
+    reader: Box<dyn std::io::Read + Send>,
+    options: &SearchOptions,
+    use_color: bool,
+) -> i32 {
+    let mut printed_header = false;
+    let mut total_matched = 0usize;
+    let mut total_searched = 0usize;
+    let mut has_more = false;
+
+    for event in parse_sse_events(reader) {
+        match event {
+            SseEvent::Result(item) => {
+                if !printed_header {
+                    println!();
+                    let header = if use_color {
+                        format!(
+                            "\x1b[1;37m{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}\x1b[0m",
+                            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
+                        )
+                    } else {
+                        format!(
+                            "{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}",
+                            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
+                        )
+                    };
+                    println!("{}", header);
+                    println!("{}", "─".repeat(150));
+                    printed_header = true;
+                }
+
+                total_matched += 1;
+                print_table_row(&item, options, use_color);
+            }
+            SseEvent::Progress(p) => {
+                total_searched = p.total_searched;
+                if use_color {
+                    eprint!(
+                        "\r\x1b[90m  ⏳ Searching... {} records scanned, {} matched\x1b[0m\x1b[K",
+                        format_number(p.total_searched),
+                        p.total_matched,
+                    );
+                }
+            }
+            SseEvent::Done(d) => {
+                total_searched = d.total_searched;
+                total_matched = d.total_matched;
+                has_more = d.has_more;
+
+                if use_color {
+                    eprint!("\r\x1b[K");
+                }
+            }
+        }
+    }
+
+    if total_matched == 0 {
         if options.format == OutputFormat::Json || options.format == OutputFormat::JsonPretty {
             println!("{{\"results\":[],\"total_matched\":0}}");
         } else {
@@ -218,37 +372,202 @@ fn run_simple_search(options: SearchOptions) -> i32 {
                 "\x1b[33m⚠\x1b[0m No results found for '\x1b[1m{}\x1b[0m'",
                 options.keyword
             );
-            println!(
-                "  Searched {} records",
-                format_number(response.total_searched)
-            );
+            println!("  Searched {} records", format_number(total_searched));
         }
         return 0;
     }
 
-    match options.format {
-        OutputFormat::Table => print_table_format(&response, &options),
-        OutputFormat::Compact => print_compact_format(&response, &options),
-        OutputFormat::Json => print_json_format(&response, false),
-        OutputFormat::JsonPretty => print_json_format(&response, true),
+    println!();
+    if use_color {
+        println!(
+            "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches (searched {} records)",
+            total_matched,
+            format_number(total_searched),
+        );
+    } else {
+        println!(
+            "Found {} matches (searched {} records)",
+            total_matched,
+            format_number(total_searched),
+        );
+    }
+
+    if has_more {
+        if use_color {
+            println!(
+                "\x1b[90m  ... and more results. Use --limit to see more, or -i for interactive mode.\x1b[0m"
+            );
+        } else {
+            println!(
+                "  ... and more results. Use --limit to see more, or -i for interactive mode."
+            );
+        }
     }
 
     0
 }
 
-fn execute_search(options: &SearchOptions, cursor: Option<u64>) -> Result<SearchResponse, String> {
-    let url = format!("http://127.0.0.1:{}/_bifrost/api/search", options.port);
-    let body = build_search_request_body(options, cursor);
+fn print_table_row(item: &SearchResultItem, options: &SearchOptions, use_color: bool) {
+    let r = &item.record;
 
-    let response = direct_agent(Duration::from_secs(30))
-        .post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(|e| format!("Request failed: {}", e))?;
+    let status_str = if r.s == 0 {
+        "...".to_string()
+    } else {
+        r.s.to_string()
+    };
 
-    response
-        .into_json::<SearchResponse>()
-        .map_err(|e| format!("Failed to parse response: {}", e))
+    let (status_color, status_display) = if use_color {
+        match r.s {
+            0 => ("\x1b[90m", format!("{:>6}", status_str)),
+            200..=299 => ("\x1b[32m", format!("{:>6}", status_str)),
+            300..=399 => ("\x1b[33m", format!("{:>6}", status_str)),
+            400..=499 => ("\x1b[31m", format!("{:>6}", status_str)),
+            500..=599 => ("\x1b[1;31m", format!("{:>6}", status_str)),
+            _ => ("\x1b[37m", format!("{:>6}", status_str)),
+        }
+    } else {
+        ("", format!("{:>6}", status_str))
+    };
+
+    let method_display = if use_color {
+        match r.m.as_str() {
+            "GET" => format!("\x1b[36m{:>6}\x1b[0m", r.m),
+            "POST" => format!("\x1b[33m{:>6}\x1b[0m", r.m),
+            "PUT" => format!("\x1b[35m{:>6}\x1b[0m", r.m),
+            "DELETE" => format!("\x1b[31m{:>6}\x1b[0m", r.m),
+            "PATCH" => format!("\x1b[34m{:>6}\x1b[0m", r.m),
+            _ => format!("{:>6}", r.m),
+        }
+    } else {
+        format!("{:>6}", r.m)
+    };
+
+    let proto = truncate_str(&r.proto, 7);
+    let host = highlight_keyword(&truncate_str(&r.h, 40), &options.keyword, use_color);
+    let path = highlight_keyword(&truncate_str(&r.p, 46), &options.keyword, use_color);
+    let size = format_size(r.res_sz);
+    let time = format_duration(r.dur);
+    let seq = r.seq.to_string();
+
+    if use_color {
+        println!(
+            "\x1b[90m{:>10}\x1b[0m  {}{}  {}  {:7}  {}  {}  {:>10}  {:>8}\x1b[0m",
+            seq, status_color, status_display, method_display, proto, host, path, size, time
+        );
+    } else {
+        println!(
+            "{:>10}  {}  {}  {:7}  {}  {}  {:>10}  {:>8}",
+            seq, status_display, method_display, proto, host, path, size, time
+        );
+    }
+
+    if !item.matches.is_empty() && item.matches.iter().any(|m| m.field != "url") {
+        for m in &item.matches {
+            if m.field == "url" {
+                continue;
+            }
+            let preview = highlight_keyword(&m.preview, &options.keyword, use_color);
+            if use_color {
+                println!(
+                    "        \x1b[90m└─ \x1b[34m{}\x1b[90m: {}\x1b[0m",
+                    m.field, preview
+                );
+            } else {
+                println!("        └─ {}: {}", m.field, preview);
+            }
+        }
+    }
+}
+
+fn stream_compact_output(
+    reader: Box<dyn std::io::Read + Send>,
+    _options: &SearchOptions,
+    use_color: bool,
+) -> i32 {
+    for event in parse_sse_events(reader) {
+        if let SseEvent::Result(item) = event {
+            let r = &item.record;
+            let status = if r.s == 0 {
+                "...".to_string()
+            } else {
+                r.s.to_string()
+            };
+
+            if use_color {
+                let status_color = match r.s {
+                    0 => "\x1b[90m",
+                    200..=299 => "\x1b[32m",
+                    300..=399 => "\x1b[33m",
+                    400..=499 => "\x1b[31m",
+                    500..=599 => "\x1b[1;31m",
+                    _ => "\x1b[37m",
+                };
+                println!(
+                    "\x1b[90m{:>10}\x1b[0m {}{}\x1b[0m {} \x1b[36m{}\x1b[0m{}",
+                    r.seq, status_color, status, r.m, r.h, r.p
+                );
+            } else {
+                println!("{:>10} {} {} {}{}", r.seq, status, r.m, r.h, r.p);
+            }
+        }
+    }
+
+    0
+}
+
+fn stream_json_output(reader: Box<dyn std::io::Read + Send>, options: &SearchOptions) -> i32 {
+    let pretty = options.format == OutputFormat::JsonPretty;
+    let mut results = Vec::new();
+    let mut total_matched = 0;
+    let mut total_searched = 0;
+    let mut has_more = false;
+
+    for event in parse_sse_events(reader) {
+        match event {
+            SseEvent::Result(item) => {
+                results.push(serde_json::json!({
+                    "id": item.record.id,
+                    "seq": item.record.seq,
+                    "method": item.record.m,
+                    "host": item.record.h,
+                    "path": item.record.p,
+                    "status": item.record.s,
+                    "protocol": item.record.proto,
+                    "request_size": item.record.req_sz,
+                    "response_size": item.record.res_sz,
+                    "duration_ms": item.record.dur,
+                    "timestamp": item.record.ts,
+                    "matches": item.matches.iter().map(|m| {
+                        serde_json::json!({
+                            "field": m.field,
+                            "preview": m.preview,
+                        })
+                    }).collect::<Vec<_>>(),
+                }));
+            }
+            SseEvent::Done(d) => {
+                total_matched = d.total_matched;
+                total_searched = d.total_searched;
+                has_more = d.has_more;
+            }
+            _ => {}
+        }
+    }
+
+    let output = serde_json::json!({
+        "results": results,
+        "total_matched": total_matched,
+        "total_searched": total_searched,
+        "has_more": has_more,
+    });
+
+    if pretty {
+        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    } else {
+        println!("{}", output);
+    }
+
+    0
 }
 
 fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> serde_json::Value {
@@ -319,184 +638,6 @@ fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> se
     }
 
     body
-}
-
-fn print_table_format(response: &SearchResponse, options: &SearchOptions) {
-    let use_color = !options.no_color && std::io::stdout().is_terminal();
-
-    println!();
-    if use_color {
-        println!(
-            "\x1b[1;32m✓\x1b[0m Found \x1b[1m{}\x1b[0m matches for '\x1b[1;36m{}\x1b[0m'",
-            response.total_matched, options.keyword
-        );
-    } else {
-        println!(
-            "Found {} matches for '{}'",
-            response.total_matched, options.keyword
-        );
-    }
-    println!();
-
-    let header = if use_color {
-        format!(
-            "\x1b[1;37m{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}\x1b[0m",
-            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
-        )
-    } else {
-        format!(
-            "{:>10}  {:>6}  {:>6}  {:7}  {:40}  {:46}  {:>10}  {:>8}",
-            "SEQ", "STATUS", "METHOD", "PROTO", "HOST", "PATH", "SIZE", "TIME"
-        )
-    };
-    println!("{}", header);
-    println!("{}", "─".repeat(150));
-
-    for item in &response.results {
-        let r = &item.record;
-
-        let status_str = if r.s == 0 {
-            "...".to_string()
-        } else {
-            r.s.to_string()
-        };
-
-        let (status_color, status_display) = if use_color {
-            match r.s {
-                0 => ("\x1b[90m", format!("{:>6}", status_str)),
-                200..=299 => ("\x1b[32m", format!("{:>6}", status_str)),
-                300..=399 => ("\x1b[33m", format!("{:>6}", status_str)),
-                400..=499 => ("\x1b[31m", format!("{:>6}", status_str)),
-                500..=599 => ("\x1b[1;31m", format!("{:>6}", status_str)),
-                _ => ("\x1b[37m", format!("{:>6}", status_str)),
-            }
-        } else {
-            ("", format!("{:>6}", status_str))
-        };
-
-        let method_display = if use_color {
-            match r.m.as_str() {
-                "GET" => format!("\x1b[36m{:>6}\x1b[0m", r.m),
-                "POST" => format!("\x1b[33m{:>6}\x1b[0m", r.m),
-                "PUT" => format!("\x1b[35m{:>6}\x1b[0m", r.m),
-                "DELETE" => format!("\x1b[31m{:>6}\x1b[0m", r.m),
-                "PATCH" => format!("\x1b[34m{:>6}\x1b[0m", r.m),
-                _ => format!("{:>6}", r.m),
-            }
-        } else {
-            format!("{:>6}", r.m)
-        };
-
-        let proto = truncate_str(&r.proto, 7);
-        let host = highlight_keyword(&truncate_str(&r.h, 40), &options.keyword, use_color);
-        let path = highlight_keyword(&truncate_str(&r.p, 46), &options.keyword, use_color);
-        let size = format_size(r.res_sz);
-        let time = format_duration(r.dur);
-        let seq = r.seq.to_string();
-
-        if use_color {
-            println!(
-                "\x1b[90m{:>10}\x1b[0m  {}{}  {}  {:7}  {}  {}  {:>10}  {:>8}\x1b[0m",
-                seq, status_color, status_display, method_display, proto, host, path, size, time
-            );
-        } else {
-            println!(
-                "{:>10}  {}  {}  {:7}  {}  {}  {:>10}  {:>8}",
-                seq, status_display, method_display, proto, host, path, size, time
-            );
-        }
-
-        if !item.matches.is_empty() && item.matches.iter().any(|m| m.field != "url") {
-            for m in &item.matches {
-                if m.field == "url" {
-                    continue;
-                }
-                let preview = highlight_keyword(&m.preview, &options.keyword, use_color);
-                if use_color {
-                    println!(
-                        "        \x1b[90m└─ \x1b[34m{}\x1b[90m: {}\x1b[0m",
-                        m.field, preview
-                    );
-                } else {
-                    println!("        └─ {}: {}", m.field, preview);
-                }
-            }
-        }
-    }
-
-    println!();
-    if response.has_more {
-        if use_color {
-            println!(
-                "\x1b[90m  ... and more results. Use --limit to see more, or -i for interactive mode.\x1b[0m"
-            );
-        } else {
-            println!(
-                "  ... and more results. Use --limit to see more, or -i for interactive mode."
-            );
-        }
-    }
-}
-
-fn print_compact_format(response: &SearchResponse, options: &SearchOptions) {
-    let use_color = !options.no_color && std::io::stdout().is_terminal();
-
-    for item in &response.results {
-        let r = &item.record;
-        let status = if r.s == 0 { "..." } else { &r.s.to_string() };
-
-        if use_color {
-            let status_color = match r.s {
-                0 => "\x1b[90m",
-                200..=299 => "\x1b[32m",
-                300..=399 => "\x1b[33m",
-                400..=499 => "\x1b[31m",
-                500..=599 => "\x1b[1;31m",
-                _ => "\x1b[37m",
-            };
-            println!(
-                "\x1b[90m{:>10}\x1b[0m {}{}\x1b[0m {} \x1b[36m{}\x1b[0m{}",
-                r.seq, status_color, status, r.m, r.h, r.p
-            );
-        } else {
-            println!("{:>10} {} {} {}{}", r.seq, status, r.m, r.h, r.p);
-        }
-    }
-}
-
-fn print_json_format(response: &SearchResponse, pretty: bool) {
-    let output = serde_json::json!({
-        "results": response.results.iter().map(|item| {
-            serde_json::json!({
-                "id": item.record.id,
-                "seq": item.record.seq,
-                "method": item.record.m,
-                "host": item.record.h,
-                "path": item.record.p,
-                "status": item.record.s,
-                "protocol": item.record.proto,
-                "request_size": item.record.req_sz,
-                "response_size": item.record.res_sz,
-                "duration_ms": item.record.dur,
-                "timestamp": item.record.ts,
-                "matches": item.matches.iter().map(|m| {
-                    serde_json::json!({
-                        "field": m.field,
-                        "preview": m.preview,
-                    })
-                }).collect::<Vec<_>>(),
-            })
-        }).collect::<Vec<_>>(),
-        "total_matched": response.total_matched,
-        "total_searched": response.total_searched,
-        "has_more": response.has_more,
-    });
-
-    if pretty {
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    } else {
-        println!("{}", output);
-    }
 }
 
 fn highlight_keyword(text: &str, keyword: &str, use_color: bool) -> String {
@@ -650,13 +791,32 @@ impl InteractiveApp {
         self.error_message = None;
         self.options.keyword = self.search_input.clone();
 
-        match execute_search(&self.options, None) {
-            Ok(response) => {
-                self.results = response.results;
-                self.total_matched = response.total_matched;
-                self.total_searched = response.total_searched;
-                self.has_more = response.has_more;
-                self.next_cursor = response.next_cursor;
+        match start_search_stream(&self.options, None) {
+            Ok(reader) => {
+                self.results.clear();
+                self.total_matched = 0;
+                self.total_searched = 0;
+                self.has_more = false;
+                self.next_cursor = None;
+
+                for event in parse_sse_events(reader) {
+                    match event {
+                        SseEvent::Result(item) => {
+                            self.results.push(*item);
+                        }
+                        SseEvent::Progress(p) => {
+                            self.total_searched = p.total_searched;
+                            self.total_matched = p.total_matched;
+                        }
+                        SseEvent::Done(d) => {
+                            self.total_matched = d.total_matched;
+                            self.total_searched = d.total_searched;
+                            self.has_more = d.has_more;
+                            self.next_cursor = d.next_cursor;
+                        }
+                    }
+                }
+
                 self.selected_index = 0;
                 self.scroll_offset = 0;
             }
@@ -674,11 +834,25 @@ impl InteractiveApp {
         }
 
         self.loading = true;
-        match execute_search(&self.options, self.next_cursor) {
-            Ok(response) => {
-                self.results.extend(response.results);
-                self.has_more = response.has_more;
-                self.next_cursor = response.next_cursor;
+        match start_search_stream(&self.options, self.next_cursor) {
+            Ok(reader) => {
+                for event in parse_sse_events(reader) {
+                    match event {
+                        SseEvent::Result(item) => {
+                            self.results.push(*item);
+                        }
+                        SseEvent::Progress(p) => {
+                            self.total_searched = p.total_searched;
+                            self.total_matched = p.total_matched;
+                        }
+                        SseEvent::Done(d) => {
+                            self.total_matched = d.total_matched;
+                            self.total_searched = d.total_searched;
+                            self.has_more = d.has_more;
+                            self.next_cursor = d.next_cursor;
+                        }
+                    }
+                }
             }
             Err(e) => {
                 self.error_message = Some(e);

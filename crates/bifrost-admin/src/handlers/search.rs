@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bytes::Bytes;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
@@ -7,6 +9,8 @@ use super::{error_response, json_response, method_not_allowed, BoxBody};
 use crate::search::{SearchEngine, SearchProgress, SearchRequest};
 use crate::state::SharedAdminState;
 use crate::traffic_db::TrafficSummaryCompact;
+
+const SEARCH_HANDLER_TIMEOUT: Duration = Duration::from_secs(310);
 
 fn enrich_compact_frame_info(summary: &mut TrafficSummaryCompact, state: &SharedAdminState) {
     state.reconcile_socket_summary(summary);
@@ -77,7 +81,7 @@ async fn execute_search(req: Request<Incoming>, state: SharedAdminState) -> Resp
     let frame_store = state.frame_store.clone();
     let connection_monitor = Some(state.connection_monitor.clone());
 
-    let search_result = tokio::task::spawn_blocking(move || {
+    let search_future = tokio::task::spawn_blocking(move || {
         let engine = SearchEngine::with_frame_support(
             traffic_db,
             body_store,
@@ -85,8 +89,17 @@ async fn execute_search(req: Request<Incoming>, state: SharedAdminState) -> Resp
             connection_monitor,
         );
         engine.search(&search_request)
-    })
-    .await;
+    });
+
+    let search_result = match tokio::time::timeout(SEARCH_HANDLER_TIMEOUT, search_future).await {
+        Ok(join_result) => join_result,
+        Err(_) => {
+            return error_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Search timed out. Try narrowing your search with filters or a more specific keyword.",
+            );
+        }
+    };
 
     match search_result {
         Ok(mut response) => {
