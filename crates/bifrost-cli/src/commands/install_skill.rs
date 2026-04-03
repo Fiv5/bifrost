@@ -98,10 +98,9 @@ fn format_network_error(err: &ureq::Error) -> String {
                     "HTTP 403 Forbidden: access denied to {url}. \
                      Check if the repository is public or if a token is required."
                 ),
-                429 => format!(
-                    "HTTP 429 Too Many Requests: rate limited by the server. \
+                429 => "HTTP 429 Too Many Requests: rate limited by the server. \
                      Please wait a moment and try again."
-                ),
+                    .to_string(),
                 500..=599 => format!(
                     "HTTP {code} Server Error: the remote server returned an error. \
                      This is likely a temporary issue — please retry later."
@@ -143,10 +142,9 @@ fn format_network_error(err: &ureq::Error) -> String {
                         format!("Network I/O error: {detail}")
                     }
                 }
-                ureq::ErrorKind::TooManyRedirects => format!(
-                    "Too many redirects: the server redirected too many times. \
+                ureq::ErrorKind::TooManyRedirects => "Too many redirects: the server redirected too many times. \
                      The URL may be misconfigured."
-                ),
+                    .to_string(),
                 ureq::ErrorKind::BadStatus => format!(
                     "Bad status line: received a malformed HTTP response. ({detail})"
                 ),
