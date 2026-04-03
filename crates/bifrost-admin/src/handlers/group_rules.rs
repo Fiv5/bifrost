@@ -182,7 +182,6 @@ async fn fetch_group_info(
     Ok(resp.data)
 }
 
-#[allow(dead_code)]
 async fn fetch_room_members(
     sync_manager: &bifrost_sync::SyncManager,
     group_id: &str,
@@ -399,6 +398,51 @@ async fn resolve_group_name(
     Ok(name)
 }
 
+async fn resolve_writable_from_room(
+    sync_manager: &bifrost_sync::SyncManager,
+    group_id: &str,
+) -> bool {
+    let current_user_id = match sync_manager.current_user_id() {
+        Some(id) => id,
+        None => return false,
+    };
+    match fetch_room_members(sync_manager, group_id).await {
+        Ok(members) => members
+            .iter()
+            .any(|m| m.user_id == current_user_id && m.level >= 1),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                group_id = %group_id,
+                "Failed to fetch room members for writable check"
+            );
+            false
+        }
+    }
+}
+
+async fn ensure_virtual_user(
+    sync_manager: &bifrost_sync::SyncManager,
+    group_id: &str,
+) {
+    let path = format!("/v4/group/{group_id}/setting");
+    match proxy_get_json::<serde_json::Value>(sync_manager, &path, None).await {
+        Ok(_) => {
+            tracing::info!(
+                group_id = %group_id,
+                "Triggered ensureVirtualUser via readSetting"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                group_id = %group_id,
+                "Failed to trigger ensureVirtualUser via readSetting"
+            );
+        }
+    }
+}
+
 async fn handle_list_and_sync(
     sync_manager: std::sync::Arc<bifrost_sync::SyncManager>,
     state: SharedAdminState,
@@ -409,7 +453,7 @@ async fn handle_list_and_sync(
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e),
     };
 
-    let peers = match fetch_peers(&sync_manager).await {
+    let mut peers = match fetch_peers(&sync_manager).await {
         Ok(p) => p,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch peers");
@@ -417,31 +461,32 @@ async fn handle_list_and_sync(
         }
     };
 
-    let virtual_user = find_virtual_user_for_group(&peers, group_id);
+    let mut virtual_user = find_virtual_user_for_group(&peers, group_id);
 
-    let writable = virtual_user
-        .map(|p| p.editable.unwrap_or(false))
-        .unwrap_or(false);
+    if virtual_user.is_none() {
+        tracing::info!(
+            group_id = %group_id,
+            group_name = %group_name,
+            "No virtual user peer found, triggering ensureVirtualUser and retrying"
+        );
+        ensure_virtual_user(&sync_manager, group_id).await;
 
-    let virtual_user_id = match virtual_user {
-        Some(p) => p.user_id.clone(),
+        if let Ok(new_peers) = fetch_peers(&sync_manager).await {
+            peers = new_peers;
+            virtual_user = find_virtual_user_for_group(&peers, group_id);
+        }
+    }
+
+    let (virtual_user_id, writable) = match virtual_user {
+        Some(p) => (p.user_id.clone(), p.editable.unwrap_or(false)),
         None => {
-            tracing::warn!(
+            tracing::info!(
                 group_id = %group_id,
                 group_name = %group_name,
-                "No virtual user found for group, returning empty rules"
+                "Still no virtual user peer after ensureVirtualUser, using group name as fallback"
             );
-            let group_storage = match get_group_rules_storage(&state, &group_name) {
-                Ok(s) => s,
-                Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
-            };
-            let rules = build_rule_info_from_storage(&group_storage);
-            return json_response(&GroupRulesResponse {
-                group_id: group_id.to_string(),
-                group_name,
-                writable: false,
-                rules,
-            });
+            let writable = resolve_writable_from_room(&sync_manager, group_id).await;
+            (group_name.clone(), writable)
         }
     };
 
@@ -453,21 +498,25 @@ async fn handle_list_and_sync(
         "Fetching group envs via virtual user"
     );
 
-    let envs = match fetch_user_envs(&sync_manager, &virtual_user_id).await {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to fetch envs for virtual user");
-            return error_response(StatusCode::BAD_GATEWAY, &e);
-        }
-    };
-
     let group_storage = match get_group_rules_storage(&state, &group_name) {
         Ok(s) => s,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
 
-    if let Err(e) = sync_envs_to_local(&group_storage, &envs, &group_name) {
-        tracing::warn!(error = %e, "Failed to sync envs to local storage");
+    match fetch_user_envs(&sync_manager, &virtual_user_id).await {
+        Ok(envs) => {
+            if let Err(e) = sync_envs_to_local(&group_storage, &envs, &group_name) {
+                tracing::warn!(error = %e, "Failed to sync envs to local storage");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                group_id = %group_id,
+                virtual_user_id = %virtual_user_id,
+                "Failed to fetch envs for virtual user, using local rules only"
+            );
+        }
     }
 
     let rules = build_rule_info_from_storage(&group_storage);
@@ -529,22 +578,30 @@ async fn handle_create_rule(
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e),
     };
 
-    let peers = match fetch_peers(&sync_manager).await {
+    let mut peers = match fetch_peers(&sync_manager).await {
         Ok(p) => p,
         Err(e) => return error_response(StatusCode::BAD_GATEWAY, &e),
     };
 
-    let virtual_user = match find_virtual_user_for_group(&peers, group_id) {
-        Some(p) => p.clone(),
+    let mut virtual_user = find_virtual_user_for_group(&peers, group_id);
+
+    if virtual_user.is_none() {
+        ensure_virtual_user(&sync_manager, group_id).await;
+        if let Ok(new_peers) = fetch_peers(&sync_manager).await {
+            peers = new_peers;
+            virtual_user = find_virtual_user_for_group(&peers, group_id);
+        }
+    }
+
+    let (virtual_user_id, writable) = match virtual_user {
+        Some(p) => (p.user_id.clone(), p.editable.unwrap_or(false)),
         None => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                "No virtual user found for this group",
-            )
+            let writable = resolve_writable_from_room(&sync_manager, group_id).await;
+            (group_name.clone(), writable)
         }
     };
 
-    if !virtual_user.editable.unwrap_or(false) {
+    if !writable {
         return error_response(StatusCode::FORBIDDEN, "No write permission for this group");
     }
 
@@ -559,7 +616,7 @@ async fn handle_create_rule(
     };
 
     let remote_body = serde_json::json!({
-        "user_id": virtual_user.user_id,
+        "user_id": virtual_user_id,
         "name": create_req.name,
         "rule": create_req.content.unwrap_or_default(),
     });

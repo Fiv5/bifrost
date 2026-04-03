@@ -114,11 +114,7 @@ fn handle_group_command_with_port(action: GroupCommands, port: u16) -> bifrost_c
     }
 }
 
-fn handle_group_list(
-    port: u16,
-    keyword: Option<String>,
-    limit: usize,
-) -> bifrost_core::Result<()> {
+fn handle_group_list(port: u16, keyword: Option<String>, limit: usize) -> bifrost_core::Result<()> {
     let mut url = format!("{}/group?offset=0&limit={}", base_url_for_port(port), limit);
     if let Some(ref kw) = keyword {
         url.push_str(&format!("&keyword={}", urlencoding::encode(kw)));
@@ -246,11 +242,7 @@ fn handle_group_rule_list(port: u16, group_id: &str) -> bifrost_core::Result<()>
     Ok(())
 }
 
-fn handle_group_rule_show(
-    port: u16,
-    group_id: &str,
-    rule_name: &str,
-) -> bifrost_core::Result<()> {
+fn handle_group_rule_show(port: u16, group_id: &str, rule_name: &str) -> bifrost_core::Result<()> {
     let url = format!(
         "{}/group-rules/{}/{}",
         base_url_for_port(port),
