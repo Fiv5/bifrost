@@ -80,8 +80,9 @@ mkdir -p ~/.claude/skills/bifrost && cp ./SKILL.md ~/.claude/skills/bifrost/SKIL
 # Codex
 mkdir -p ~/.codex/skills/bifrost && cp ./SKILL.md ~/.codex/skills/bifrost/SKILL.md
 
-# Trae
+# Trae (国际版 + 国内版)
 mkdir -p ~/.trae/skills/bifrost && cp ./SKILL.md ~/.trae/skills/bifrost/SKILL.md
+mkdir -p ~/.trae-cn/skills/bifrost && cp ./SKILL.md ~/.trae-cn/skills/bifrost/SKILL.md
 
 # Cursor
 mkdir -p ~/.cursor/skills/bifrost && cp ./SKILL.md ~/.cursor/skills/bifrost/SKILL.md
