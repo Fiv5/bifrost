@@ -167,7 +167,6 @@ const computeMessageCharCount = (message: Msg): number => {
 };
 
 const MAX_HIGHLIGHT_SIZE = 50_000;
-const MAX_TEXT_DISPLAY_SIZE = 100_000;
 const INVISIBLE_CHARS_RE = /[\s\u200B-\u200D\u2060\u2063\uFEFF]/g;
 
 const CopyButton = memo(({ text }: { text: string }) => {
@@ -241,40 +240,92 @@ const JsonBlock = memo(({ data, label }: { data: string; label?: string }) => {
   );
 });
 
-const TruncatedText = memo(({ text, token: themeToken }: { text: string; token: { colorText: string } }) => {
-  const [expanded, setExpanded] = useState(false);
-  const needsTruncation = text.length > MAX_TEXT_DISPLAY_SIZE;
-  const displayText = needsTruncation && !expanded ? text.slice(0, MAX_TEXT_DISPLAY_SIZE) : text;
+const COLLAPSIBLE_MAX_LINES = 10;
+
+const CollapsibleContent = memo(({ text, title }: { text: string; title?: string }) => {
+  const [modalOpen, setModalOpen] = useState(false);
+  const { token } = theme.useToken();
+  const lines = useMemo(() => text.split('\n'), [text]);
+  const needsTruncation = lines.length > COLLAPSIBLE_MAX_LINES;
+  const previewText = needsTruncation ? lines.slice(0, COLLAPSIBLE_MAX_LINES).join('\n') : text;
+  const modalTitle = title ?? 'Full Content';
+
+  if (!text.trim()) {
+    return <Text type="secondary" italic style={{ fontSize: 12 }}>(empty)</Text>;
+  }
 
   return (
-    <div style={{ position: 'relative' }}>
-      <div style={{ position: 'absolute', top: 0, right: 0, zIndex: 1 }}>
-        <CopyButton text={text} />
+    <>
+      <div style={{ position: 'relative' }}>
+        <div style={{ position: 'absolute', top: 0, right: 0, zIndex: 1 }}>
+          <CopyButton text={text} />
+        </div>
+        <Paragraph
+          style={{
+            margin: 0,
+            fontSize: 13,
+            lineHeight: 1.7,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            paddingRight: 28,
+            color: token.colorText,
+          }}
+        >
+          {previewText}
+          {needsTruncation && (
+            <span style={{ color: token.colorTextSecondary }}>{'\n'}…</span>
+          )}
+        </Paragraph>
+        {needsTruncation && (
+          <Button
+            type="link"
+            size="small"
+            icon={<ExpandOutlined />}
+            onClick={() => setModalOpen(true)}
+            style={{ padding: 0, fontSize: 11, height: 'auto', marginTop: 2 }}
+          >
+            Show all ({lines.length} lines, {formatCharCount(text.length)} chars)
+          </Button>
+        )}
       </div>
-      <Paragraph
-        style={{
-          margin: 0,
-          fontSize: 13,
-          lineHeight: 1.7,
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-          paddingRight: 28,
-          color: themeToken.colorText,
-        }}
-      >
-        {displayText}
-      </Paragraph>
-      {needsTruncation && !expanded && (
-        <Button type="link" size="small" onClick={() => setExpanded(true)} style={{ padding: 0, fontSize: 12, height: 'auto' }}>
-          Show all ({formatCharCount(text.length)} chars)
-        </Button>
+      {needsTruncation && (
+        <Modal
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 24 }}>
+              <span>{modalTitle} ({lines.length} lines)</span>
+              <CopyButton text={text} />
+            </div>
+          }
+          open={modalOpen}
+          onCancel={() => setModalOpen(false)}
+          footer={null}
+          width="90vw"
+          centered
+          styles={{
+            body: { height: '80vh', overflow: 'auto', padding: 0 },
+            header: { padding: '8px 16px', marginBottom: 0 },
+          }}
+        >
+          <pre
+            style={{
+              margin: 0,
+              padding: 12,
+              fontSize: 12,
+              fontFamily: 'monospace',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all',
+              lineHeight: 1.6,
+            }}
+          >
+            {text}
+          </pre>
+        </Modal>
       )}
-    </div>
+    </>
   );
 });
 
 const ContentBlock = memo(({ content }: { content: unknown }) => {
-  const { token } = theme.useToken();
   if (content === null || content === undefined) {
     return <Text type="secondary" italic style={{ fontSize: 12 }}>(empty)</Text>;
   }
@@ -283,7 +334,7 @@ const ContentBlock = memo(({ content }: { content: unknown }) => {
     if (!content.trim()) {
       return <Text type="secondary" italic style={{ fontSize: 12 }}>(empty)</Text>;
     }
-    return <TruncatedText text={content} token={token} />;
+    return <CollapsibleContent text={content} title="Message Content" />;
   }
 
   if (Array.isArray(content)) {
@@ -317,88 +368,6 @@ const ContentBlock = memo(({ content }: { content: unknown }) => {
   }
 
   return <JsonBlock data={JSON.stringify(content, null, 2)} />;
-});
-
-const TOOL_RESULT_MAX_LINES = 10;
-
-const ToolResultContent = memo(({ content }: { content: unknown }) => {
-  const [modalOpen, setModalOpen] = useState(false);
-  const text = useMemo(() => stringifyContent(content), [content]);
-  const lines = useMemo(() => text.split('\n'), [text]);
-  const needsTruncation = lines.length > TOOL_RESULT_MAX_LINES;
-  const previewText = needsTruncation ? lines.slice(0, TOOL_RESULT_MAX_LINES).join('\n') : text;
-  const { token } = theme.useToken();
-
-  if (content === null || content === undefined || !text.trim()) {
-    return <Text type="secondary" italic style={{ fontSize: 12 }}>(empty)</Text>;
-  }
-
-  return (
-    <>
-      <div style={{ position: 'relative' }}>
-        <pre
-          style={{
-            margin: 0,
-            padding: '6px 8px',
-            fontSize: 12,
-            fontFamily: 'monospace',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-all',
-            lineHeight: 1.5,
-            backgroundColor: token.colorFillQuaternary,
-            borderRadius: 6,
-            border: `1px solid ${token.colorBorderSecondary}`,
-            color: token.colorText,
-          }}
-        >
-          {previewText}
-          {needsTruncation && (
-            <span style={{ color: token.colorTextSecondary }}>{'\n'}…</span>
-          )}
-        </pre>
-        {needsTruncation && (
-          <Button
-            type="link"
-            size="small"
-            icon={<ExpandOutlined />}
-            onClick={() => setModalOpen(true)}
-            style={{ padding: 0, fontSize: 11, height: 'auto', marginTop: 2 }}
-          >
-            Show all ({lines.length} lines)
-          </Button>
-        )}
-      </div>
-      {needsTruncation && (
-        <Modal
-          title={
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingRight: 24 }}>
-              <span>Tool Result ({lines.length} lines)</span>
-              <CopyButton text={text} />
-            </div>
-          }
-          open={modalOpen}
-          onCancel={() => setModalOpen(false)}
-          footer={null}
-          width="80vw"
-          styles={{ body: { maxHeight: '70vh', overflow: 'auto', padding: 0 } }}
-        >
-          <pre
-            style={{
-              margin: 0,
-              padding: 12,
-              fontSize: 12,
-              fontFamily: 'monospace',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              lineHeight: 1.6,
-            }}
-          >
-            {text}
-          </pre>
-        </Modal>
-      )}
-    </>
-  );
 });
 
 const ToolRoundtripCard = memo(({ roundtrip }: { roundtrip: ToolRoundtrip }) => {
@@ -455,7 +424,7 @@ const ToolRoundtripCard = memo(({ roundtrip }: { roundtrip: ToolRoundtrip }) => 
                 <Tag style={{ margin: 0, fontSize: 10 }}>{responseName}</Tag>
               )}
             </div>
-            <ToolResultContent content={responseContent} />
+            <ContentBlock content={responseContent} />
           </div>
         ) : (
           <div style={{ padding: '4px 10px', backgroundColor: 'rgba(140,140,140,0.04)' }}>
@@ -572,18 +541,7 @@ const MessageCard = memo(({ group }: { group: ConversationGroup }) => {
             <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 2 }}>
               💭 Reasoning
             </Text>
-            <Paragraph
-              style={{
-                margin: 0,
-                fontSize: 12,
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                color: token.colorTextSecondary,
-              }}
-            >
-              {reasoningContent}
-            </Paragraph>
+            <CollapsibleContent text={reasoningContent!} title="Reasoning" />
           </div>
         )}
 

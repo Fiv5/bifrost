@@ -206,6 +206,7 @@ pub struct SearchOptions {
     pub filter_path: Option<String>,
     pub no_color: bool,
     pub max_scan: Option<usize>,
+    pub max_results: Option<usize>,
 }
 
 impl Default for SearchOptions {
@@ -232,6 +233,7 @@ impl Default for SearchOptions {
             filter_path: None,
             no_color: false,
             max_scan: None,
+            max_results: None,
         }
     }
 }
@@ -406,13 +408,27 @@ fn stream_table_output(
     }
 
     if has_more {
+        let max_results = options.max_results.unwrap_or(100);
+        let hit_results_limit = total_matched >= max_results;
         if use_color {
+            if hit_results_limit {
+                println!(
+                    "\x1b[90m  Results capped at {} matches. Use --max-results to increase, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m",
+                    max_results
+                );
+            } else {
+                println!(
+                    "\x1b[90m  ... more results available. Use --max-results to increase limit, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m"
+                );
+            }
+        } else if hit_results_limit {
             println!(
-                "\x1b[90m  ... more results available. Use --limit for more results, --max-scan to broaden search range, or -i for interactive mode.\x1b[0m"
+                "  Results capped at {} matches. Use --max-results to increase, --max-scan to broaden search range, or -i for interactive mode.",
+                max_results
             );
         } else {
             println!(
-                "  ... more results available. Use --limit for more results, --max-scan to broaden search range, or -i for interactive mode."
+                "  ... more results available. Use --max-results to increase limit, --max-scan to broaden search range, or -i for interactive mode."
             );
         }
     }
@@ -652,6 +668,10 @@ fn build_search_request_body(options: &SearchOptions, cursor: Option<u64>) -> se
 
     if let Some(ms) = options.max_scan {
         body["max_scan"] = serde_json::json!(ms);
+    }
+
+    if let Some(mr) = options.max_results {
+        body["max_results"] = serde_json::json!(mr);
     }
 
     body

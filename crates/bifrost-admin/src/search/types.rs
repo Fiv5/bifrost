@@ -15,6 +15,7 @@ pub struct SearchRequest {
     pub cursor: Option<u64>,
     pub limit: Option<usize>,
     pub max_scan: Option<usize>,
+    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

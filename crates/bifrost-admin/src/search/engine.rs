@@ -18,6 +18,7 @@ const MAX_PREVIEW_CONTEXT: usize = 50;
 const DEFAULT_BATCH_SIZE: usize = 50;
 const SEARCH_BATCH_SIZE: usize = 1000;
 const DEFAULT_MAX_SCAN: usize = 100_000;
+const DEFAULT_STREAM_MAX_RESULTS: usize = 100;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SearchEngine {
@@ -61,12 +62,26 @@ impl SearchEngine {
     }
 
     pub fn search(&self, request: &SearchRequest) -> SearchResponse {
-        self.search_stream(request, |_| {}, |_| {})
+        self.search_internal(request, false, |_| {}, |_| {})
     }
 
     pub fn search_stream<F, P>(
         &self,
         request: &SearchRequest,
+        on_result: F,
+        on_progress: P,
+    ) -> SearchResponse
+    where
+        F: FnMut(&SearchResultItem),
+        P: FnMut(&SearchProgress),
+    {
+        self.search_internal(request, true, on_result, on_progress)
+    }
+
+    fn search_internal<F, P>(
+        &self,
+        request: &SearchRequest,
+        streaming: bool,
         mut on_result: F,
         mut on_progress: P,
     ) -> SearchResponse
@@ -76,6 +91,11 @@ impl SearchEngine {
     {
         let search_id = generate_search_id();
         let batch_size = request.limit.unwrap_or(DEFAULT_BATCH_SIZE);
+        let max_results = if streaming {
+            request.max_results.unwrap_or(DEFAULT_STREAM_MAX_RESULTS)
+        } else {
+            batch_size
+        };
         let keyword_lower = request.keyword.to_lowercase();
         let has_keyword = !keyword_lower.trim().is_empty();
         let started_at = Instant::now();
@@ -98,7 +118,9 @@ impl SearchEngine {
             scope = ?request.scope,
             cursor = ?request.cursor,
             limit = batch_size,
+            max_results = max_results,
             max_scan = max_total_searched,
+            streaming = streaming,
             "[SEARCH] Starting iterative search"
         );
 
@@ -109,7 +131,7 @@ impl SearchEngine {
         let mut db_has_more = true;
         let mut timed_out = false;
 
-        while results.len() < batch_size && total_searched < max_total_searched && db_has_more {
+        while results.len() < max_results && total_searched < max_total_searched && db_has_more {
             if started_at.elapsed() >= SEARCH_TIMEOUT {
                 warn!(
                     elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -191,7 +213,7 @@ impl SearchEngine {
                     if let Some(last) = results.last() {
                         on_result(last);
                     }
-                    if results.len() >= batch_size {
+                    if !streaming && results.len() >= max_results {
                         break;
                     }
                 }
@@ -911,6 +933,7 @@ mod tests {
             cursor: None,
             limit: Some(20),
             max_scan: None,
+            max_results: None,
         });
 
         assert_eq!(response.total_matched, 1);
