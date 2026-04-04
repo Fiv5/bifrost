@@ -155,6 +155,39 @@ python_cmd() {
     fi
 }
 
+start_echo_server() {
+    local port=$1
+    local log_file=${2:-/dev/null}
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    local server_script="${script_dir}/mock_servers/http_echo_server.py"
+
+    python3 "${server_script}" "${port}" > >(tee "${log_file}") 2>&1 &
+    local pid=$!
+    echo "$pid"
+
+    local ready=0
+    for _ in $(seq 1 150); do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            echo "ERROR: echo server process (PID=${pid}) exited prematurely" >&2
+            [[ -f "${log_file}" ]] && cat "${log_file}" >&2
+            return 1
+        fi
+        if grep -q '^READY$' "${log_file}" 2>/dev/null; then
+            ready=1
+            break
+        fi
+        sleep 0.2
+    done
+
+    if [[ "${ready}" -ne 1 ]]; then
+        echo "ERROR: echo server did not become ready in 30s" >&2
+        [[ -f "${log_file}" ]] && cat "${log_file}" >&2
+        return 1
+    fi
+    return 0
+}
+
 safe_cleanup_proxy() {
     local pid=$1
     if [ -z "$pid" ]; then

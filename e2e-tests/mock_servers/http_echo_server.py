@@ -950,7 +950,7 @@ def main():
 
     with ThreadedHTTPServer((host, port), EchoHandler) as httpd:
         print(f"Starting HTTP Echo Server on {host}:{port}...")
-        print("Press Ctrl+C to stop\n")
+        print("READY", flush=True)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

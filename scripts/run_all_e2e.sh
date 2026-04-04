@@ -777,9 +777,11 @@ if [[ "$RUN_RULES" -eq 1 || "$RUN_SHELL" -eq 1 ]]; then
 fi
 
 RUNNER_BG_PID=""
+RUNNER_WATCHDOG_PID=""
 RUNNER_LOG_FILE=""
 RUNNER_STATUS_FILE=""
 RUNNER_START_TS=""
+RUNNER_TIMEOUT="${BIFROST_E2E_RUNNER_TIMEOUT:-2400}"
 if [[ "$RUN_RUNNER" -eq 1 ]]; then
   header "Starting bifrost-e2e custom runner (background)"
   RUNNER_JOBS="${BIFROST_E2E_RUNNER_JOBS:-1}"
@@ -788,13 +790,23 @@ if [[ "$RUN_RUNNER" -eq 1 ]]; then
   RUNNER_START_TS="$(date +%s)"
   (
     set +e
-    "$CARGO_BIN" run -p bifrost-e2e -- --port "$BIFROST_UI_TEST_RUNNER_PORT" --jobs "$RUNNER_JOBS" \
+    "$CARGO_BIN" run -p bifrost-e2e -- --port "$BIFROST_UI_TEST_RUNNER_PORT" --jobs "$RUNNER_JOBS" --timeout "$RUNNER_TIMEOUT" \
       > "$RUNNER_LOG_FILE" 2>&1
     rc=$?
     echo "$rc" > "$RUNNER_STATUS_FILE"
     exit "$rc"
   ) &
   RUNNER_BG_PID=$!
+  (
+    sleep "$RUNNER_TIMEOUT"
+    if kill -0 "$RUNNER_BG_PID" 2>/dev/null; then
+      echo "[TIMEOUT] bifrost-e2e runner exceeded ${RUNNER_TIMEOUT}s limit, killing pid ${RUNNER_BG_PID}" >&2
+      kill -TERM "$RUNNER_BG_PID" 2>/dev/null || true
+      sleep 5
+      kill -9 "$RUNNER_BG_PID" 2>/dev/null || true
+    fi
+  ) &
+  RUNNER_WATCHDOG_PID=$!
   log_info "bifrost-e2e runner started in background (PID: $RUNNER_BG_PID, jobs: $RUNNER_JOBS)"
 fi
 
@@ -870,6 +882,11 @@ if [[ -n "$RUNNER_BG_PID" ]]; then
     cat "$RUNNER_LOG_FILE"
   fi
   RUNNER_BG_PID=""
+  if [[ -n "$RUNNER_WATCHDOG_PID" ]]; then
+    kill "$RUNNER_WATCHDOG_PID" 2>/dev/null || true
+    wait "$RUNNER_WATCHDOG_PID" 2>/dev/null || true
+    RUNNER_WATCHDOG_PID=""
+  fi
 fi
 
 if [[ "$RUN_UI" -eq 1 ]]; then
