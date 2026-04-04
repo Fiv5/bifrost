@@ -20,14 +20,21 @@ where
     }
 }
 
+fn nullable_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RemoteUser {
     pub user_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub nickname: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub avatar: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub email: String,
 }
 
@@ -37,9 +44,11 @@ pub struct RemoteEnv {
     pub id: String,
     pub user_id: String,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub rule: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     pub create_time: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     pub update_time: String,
 }
 
@@ -60,18 +69,18 @@ pub enum SyncReason {
 pub struct RemoteGroup {
     pub id: String,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub avatar: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub visibility: String,
     pub level: Option<i32>,
     #[serde(default)]
     pub created_by: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub create_time: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub update_time: String,
 }
 
@@ -81,15 +90,15 @@ pub struct RemoteGroupMember {
     pub group_id: String,
     pub user_id: String,
     pub level: i32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub nickname: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub avatar: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub email: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub create_time: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub update_time: String,
 }
 

@@ -1,11 +1,18 @@
 use bifrost_storage::RulesStorage;
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{error_response, json_response, method_not_allowed, success_response, BoxBody};
 use crate::state::SharedAdminState;
 use bifrost_storage::ConfigChangeEvent;
+
+fn nullable_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 #[derive(Debug, Deserialize)]
 struct RemoteResponse<T> {
@@ -41,21 +48,29 @@ struct RemoteRoom {
 
 #[derive(Debug, Deserialize, Clone)]
 struct RemoteEnv {
+    #[serde(default, deserialize_with = "nullable_string")]
     id: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     user_id: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     name: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     rule: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     create_time: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     update_time: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 struct RemoteGroup {
     #[allow(dead_code)]
+    #[serde(default, deserialize_with = "nullable_string")]
     id: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     name: String,
     #[allow(dead_code)]
-    visibility: Option<i32>,
+    visibility: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -770,6 +785,10 @@ async fn handle_delete_rule(
 
     if let Err(e) = group_storage.delete(rule_name) {
         tracing::warn!(error = %e, "Failed to delete rule locally");
+    }
+
+    if existing.enabled {
+        notify_rules_changed(&state);
     }
 
     success_response("Rule deleted")
