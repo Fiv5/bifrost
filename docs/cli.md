@@ -147,6 +147,42 @@ bifrost rule show <name>
 bifrost rule get <name>
 ```
 
+### Group 管理
+
+```bash
+# 列出/搜索 groups
+bifrost group list
+bifrost group list --keyword "team" --limit 20
+
+# 查看 group 详情
+bifrost group show <group_id>
+
+# 列出 group 下所有规则
+bifrost group rule list <group_id>
+
+# 查看 group 规则详情
+bifrost group rule show <group_id> <rule_name>
+
+# 添加 group 规则
+bifrost group rule add <group_id> <name> --content "example.com host://127.0.0.1:3000"
+bifrost group rule add <group_id> <name> --file rules.txt
+
+# 更新 group 规则
+bifrost group rule update <group_id> <name> --content "new rule"
+bifrost group rule update <group_id> <name> --file rules.txt
+
+# 启用/禁用 group 规则
+bifrost group rule enable <group_id> <name>
+bifrost group rule disable <group_id> <name>
+
+# 删除 group 规则
+bifrost group rule delete <group_id> <name>
+```
+
+- `group` 命令需要代理服务运行中（通过 admin API 通信）
+- `group list` 支持 `--keyword` 模糊搜索和 `--limit` 限制结果数
+- `group rule add/update` 通过 `--content` 或 `--file` 提供规则内容
+
 ### 白名单管理
 
 ```bash

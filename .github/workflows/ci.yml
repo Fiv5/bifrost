@@ -10,6 +10,8 @@ on:
       - "desktop/**"
       - "scripts/**"
       - "web/**"
+      - "packages/**"
+      - "e2e-tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
@@ -22,6 +24,8 @@ on:
       - "desktop/**"
       - "scripts/**"
       - "web/**"
+      - "packages/**"
+      - "e2e-tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/*.yml"
@@ -195,6 +199,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
         working-directory: web
+      - name: Install sync-server dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: packages/bifrost-sync-server
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Download release binary
@@ -650,10 +657,11 @@ jobs:
       BIFROST_E2E_RULE_JOBS: "4"
       BIFROST_E2E_RETRY_FAILED_ONCE: "1"
       BIFROST_E2E_HTTP_RETRIES: "1"
-      BIFROST_E2E_FIXTURE_TIMEOUT: "180"
-      BIFROST_E2E_RETRY_FIXTURE_TIMEOUT: "150"
+      BIFROST_E2E_FIXTURE_TIMEOUT: "120"
+      BIFROST_E2E_RETRY_FIXTURE_TIMEOUT: "90"
       BIFROST_E2E_RETRY_BUDGET_SECS: "180"
-      BIFROST_E2E_MAX_RETRY_SUITES: "8"
+      BIFROST_E2E_MAX_RETRY_SUITES: "6"
+      BIFROST_E2E_SUITE_TIMEOUT: "1200"
       TIMEOUT: "90"
       PYTHONIOENCODING: utf-8
     steps:

@@ -46,12 +46,15 @@ export default function RuleEditor() {
     editingContent,
     loading,
     saving,
+    isGroupMode,
+    groupWritable,
     setEditingContent,
     saveCurrentRule,
     deleteRule,
   } = useRulesStore();
   const { resolvedTheme } = useThemeStore();
   const { values } = useValuesStore();
+  const canEdit = !isGroupMode || groupWritable;
 
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<MonacoEditor.ITextModel | null>(null);
@@ -181,7 +184,7 @@ export default function RuleEditor() {
     const model = BifrostEditor.createModel(initialContent);
     const ed = BifrostEditor.create(containerElement, {
       theme: editorTheme,
-      readOnly: false,
+      readOnly: !canEdit,
     });
 
     ed.setModel(model);
@@ -229,6 +232,11 @@ export default function RuleEditor() {
     const editorTheme = resolvedTheme === "dark" ? THEME_DARK : THEME_LIGHT;
     editorRef.current.updateOptions({ theme: editorTheme });
   }, [resolvedTheme]);
+
+  useEffect(() => {
+    if (!editorRef.current) return;
+    editorRef.current.updateOptions({ readOnly: !canEdit });
+  }, [canEdit]);
 
   useEffect(() => {
     if (
@@ -282,12 +290,17 @@ export default function RuleEditor() {
   const hasChanges =
     selectedRuleName && editingContent[selectedRuleName] !== undefined;
   const metaItems = currentRule
-    ? [
-        `Sync ${formatSyncStatus(currentRule.sync)}`,
-        `Created ${formatRuleTime(currentRule.created_at)}`,
-        `Updated ${formatRuleTime(currentRule.updated_at)}`,
-        `Last sync ${formatRuleTime(currentRule.sync?.last_synced_at)}`,
-      ]
+    ? isGroupMode
+      ? [
+          `Created ${formatRuleTime(currentRule.created_at)}`,
+          `Updated ${formatRuleTime(currentRule.updated_at)}`,
+        ]
+      : [
+          `Sync ${formatSyncStatus(currentRule.sync)}`,
+          `Created ${formatRuleTime(currentRule.created_at)}`,
+          `Updated ${formatRuleTime(currentRule.updated_at)}`,
+          `Last sync ${formatRuleTime(currentRule.sync?.last_synced_at)}`,
+        ]
     : [];
 
   return (
@@ -317,26 +330,30 @@ export default function RuleEditor() {
           >
             Copy
           </Button>
-          <Button
-            type="primary"
-            size="small"
-            icon={<SaveOutlined />}
-            onClick={handleSave}
-            disabled={!hasChanges}
-            loading={saving}
-            data-testid="rule-save-button"
-          >
-            Save
-          </Button>
-          <Button
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={handleDelete}
-            data-testid="rule-delete-button"
-          >
-            Delete
-          </Button>
+          {canEdit && (
+            <Button
+              type="primary"
+              size="small"
+              icon={<SaveOutlined />}
+              onClick={handleSave}
+              disabled={!hasChanges}
+              loading={saving}
+              data-testid="rule-save-button"
+            >
+              Save
+            </Button>
+          )}
+          {canEdit && (
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              onClick={handleDelete}
+              data-testid="rule-delete-button"
+            >
+              Delete
+            </Button>
+          )}
         </Space>
       </div>
       <div className={styles.editorContainer} ref={setContainerElement} data-testid="rule-editor-container" />

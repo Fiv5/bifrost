@@ -29,6 +29,9 @@ impl BifrostFileWriter {
         if let Some(ref desc) = meta.description {
             output.push_str(&format!("description = \"{}\"\n", escape_toml_string(desc)));
         }
+        if let Some(ref group) = meta.group {
+            output.push_str(&format!("group = \"{}\"\n", escape_toml_string(group)));
+        }
         output.push_str("\n[meta.sync]\n");
         output.push_str(&format!(
             "rule_id = \"{}\"\n",

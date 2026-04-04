@@ -9,24 +9,18 @@ import {
   ThunderboltOutlined,
   SunOutlined,
   MoonOutlined,
+  UsergroupAddOutlined,
 } from "@ant-design/icons";
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useThemeStore } from "../../stores/useThemeStore";
+import { getSyncStatus } from "../../api/sync";
 
 interface MenuItem {
   key: string;
   icon: React.ReactNode;
   label: string;
+  hidden?: boolean;
 }
-
-const menuItems: MenuItem[] = [
-  { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
-  { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
-  { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
-  { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
-  { key: "/values", icon: <TeamOutlined />, label: "Values" },
-  { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
-];
 
 export default function IconSidebar() {
   const navigate = useNavigate();
@@ -35,6 +29,37 @@ export default function IconSidebar() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const setThemeMode = useThemeStore((state) => state.setMode);
   const isDark = resolvedTheme === "dark";
+  const [showGroups, setShowGroups] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const status = await getSyncStatus();
+        if (!cancelled) {
+          setShowGroups(status.enabled);
+        }
+      } catch {
+        if (!cancelled) setShowGroups(false);
+      }
+    };
+    check();
+    const timer = setInterval(check, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const menuItems: MenuItem[] = [
+    { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },
+    { key: "/replay", icon: <ThunderboltOutlined />, label: "Replay" },
+    { key: "/rules", icon: <FileTextOutlined />, label: "Rules" },
+    { key: "/scripts", icon: <CodeOutlined />, label: "Scripts" },
+    { key: "/values", icon: <TeamOutlined />, label: "Values" },
+    { key: "/groups", icon: <UsergroupAddOutlined />, label: "Groups", hidden: !showGroups },
+    { key: "/settings", icon: <SettingOutlined />, label: "Settings" },
+  ];
 
   const handleThemeToggle = () => {
     setThemeMode(isDark ? "light" : "dark");
@@ -84,8 +109,8 @@ export default function IconSidebar() {
 
   return (
     <div style={styles.sidebar}>
-      {menuItems.map((item) => {
-        const isActive = location.pathname === item.key;
+      {menuItems.filter((item) => !item.hidden).map((item) => {
+        const isActive = location.pathname === item.key || location.pathname.startsWith(item.key + "/");
         return (
           <Tooltip key={item.key} title={item.label} placement="right">
             <div

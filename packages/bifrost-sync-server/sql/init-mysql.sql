@@ -23,8 +23,38 @@ CREATE TABLE IF NOT EXISTS bifrost_envs (
   user_id     VARCHAR(128) NOT NULL,
   name        VARCHAR(255) NOT NULL,
   rule        LONGTEXT     NOT NULL,
+  sort_order  INT          NOT NULL DEFAULT 0,
   create_time VARCHAR(32)  NOT NULL,
   update_time VARCHAR(32)  NOT NULL,
   UNIQUE KEY uk_bifrost_user_env (user_id, name),
   KEY idx_bifrost_envs_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bifrost_groups (
+  id          VARCHAR(32)  NOT NULL PRIMARY KEY,
+  name        VARCHAR(255) NOT NULL,
+  avatar      VARCHAR(512) DEFAULT '',
+  description TEXT         DEFAULT NULL,
+  visibility  VARCHAR(32)  DEFAULT 'private',
+  created_by  VARCHAR(128) NOT NULL,
+  create_time VARCHAR(32)  NOT NULL,
+  update_time VARCHAR(32)  NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bifrost_group_members (
+  id          VARCHAR(32)  NOT NULL PRIMARY KEY,
+  group_id    VARCHAR(32)  NOT NULL,
+  user_id     VARCHAR(128) NOT NULL,
+  level       INT          DEFAULT 0,
+  create_time VARCHAR(32)  NOT NULL,
+  update_time VARCHAR(32)  NOT NULL,
+  UNIQUE KEY uk_bifrost_group_member (group_id, user_id),
+  KEY idx_bifrost_group_members_group_id (group_id),
+  KEY idx_bifrost_group_members_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bifrost_group_settings (
+  group_id       VARCHAR(32) NOT NULL PRIMARY KEY,
+  rules_enabled  INT         DEFAULT 1,
+  visibility     VARCHAR(32) DEFAULT 'private'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
+import { useMemo, useState, useCallback, useRef, useEffect, type ReactNode } from 'react';
 import {
   Input,
   Button,
@@ -9,6 +9,7 @@ import {
   Tooltip,
   Spin,
   Select,
+  Tag,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -21,10 +22,13 @@ import {
   PoweroffOutlined,
   ExportOutlined,
   HolderOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
+import { getSyncStatus } from '../../../api/sync';
+import { searchGroups, type Group } from '../../../api/group';
 import styles from './index.module.css';
 
 type RuleSortMode = 'manual' | 'updated_desc' | 'name_asc';
@@ -46,6 +50,10 @@ export default function RuleList() {
     searchKeyword,
     loading,
     editingContent,
+    isGroupMode,
+    groupWritable,
+    activeGroupId,
+    setActiveGroupId,
     fetchRules,
     selectRule,
     createRule,
@@ -56,6 +64,9 @@ export default function RuleList() {
     setSearchKeyword,
     hasUnsavedChanges,
   } = useRulesStore();
+
+  const canEdit = !isGroupMode || groupWritable;
+  const isReadOnlyGroup = isGroupMode && !groupWritable;
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newRuleName, setNewRuleName] = useState('');
@@ -74,6 +85,92 @@ export default function RuleList() {
   const autoScrollFrameRef = useRef<number | null>(null);
   const autoScrollVelocityRef = useRef(0);
   const { exportFile } = useExportBifrost();
+
+  const [showGroupSwitcher, setShowGroupSwitcher] = useState(false);
+  const [userGroups, setUserGroups] = useState<Group[]>([]);
+  const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setShowLoadingOverlay(true);
+      }, 500);
+      loadingTimerRef.current = timer;
+      return () => {
+        clearTimeout(timer);
+        loadingTimerRef.current = null;
+      };
+    }
+    loadingTimerRef.current = null;
+    const frame = requestAnimationFrame(() => {
+      setShowLoadingOverlay(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const status = await getSyncStatus();
+        if (!cancelled && status.enabled && status.has_session && status.authorized) {
+          setShowGroupSwitcher(true);
+          const result = await searchGroups();
+          if (!cancelled) setUserGroups(result.list ?? []);
+        }
+      } catch {
+        if (!cancelled) setShowGroupSwitcher(false);
+      }
+    };
+    check();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    fetchRules();
+  }, [activeGroupId, fetchRules]);
+
+  const handleGroupChange = useCallback((value: string) => {
+    const groupId = value === '__my__' ? null : value;
+    setActiveGroupId(groupId);
+  }, [setActiveGroupId]);
+
+  const groupSwitcherOptions = useMemo(() => {
+    const options: { label: ReactNode; value: string; searchText: string }[] = [
+      { label: 'My Rules', value: '__my__', searchText: 'My Rules' },
+    ];
+
+    const sorted = [...(userGroups ?? [])].sort((a, b) => {
+      const rank = (g: Group) => {
+        if (g.level === 2) return 0;
+        if (g.level === 1 || g.level === 0) return 1;
+        return 2;
+      };
+      return rank(a) - rank(b) || a.name.localeCompare(b.name);
+    });
+
+    const levelTag = (g: Group) => {
+      if (g.level === 2) return <Tag color="gold" style={{ marginLeft: 'auto', marginRight: 0, lineHeight: '18px', fontSize: 11, padding: '0 4px' }}>Owner</Tag>;
+      if (g.level === 1) return <Tag color="blue" style={{ marginLeft: 'auto', marginRight: 0, lineHeight: '18px', fontSize: 11, padding: '0 4px' }}>Master</Tag>;
+      if (g.level === 0) return <Tag color="cyan" style={{ marginLeft: 'auto', marginRight: 0, lineHeight: '18px', fontSize: 11, padding: '0 4px' }}>Member</Tag>;
+      return <Tag style={{ marginLeft: 'auto', marginRight: 0, lineHeight: '18px', fontSize: 11, padding: '0 4px' }}>Public</Tag>;
+    };
+
+    for (const g of sorted) {
+      options.push({
+        label: (
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, width: '100%' }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{g.name}</span>
+            {levelTag(g)}
+          </span>
+        ),
+        value: g.id,
+        searchText: g.name,
+      });
+    }
+    return options;
+  }, [userGroups]);
 
   const stopAutoScroll = useCallback(() => {
     if (autoScrollFrameRef.current !== null) {
@@ -292,6 +389,56 @@ export default function RuleList() {
     const isSelected = selectedRules.includes(name);
     const bulkNames = isSelected && selectedRules.length > 0 ? selectedRules : [name];
 
+    if (isReadOnlyGroup) {
+      return [
+        {
+          key: 'toggle',
+          icon: enabled ? <PoweroffOutlined /> : <CheckOutlined />,
+          label: enabled ? 'Disable' : 'Enable',
+          onClick: () => handleToggle(name, !enabled),
+        },
+        {
+          type: 'divider',
+        },
+        {
+          key: 'export',
+          icon: <ExportOutlined />,
+          label: `Export${bulkNames.length > 1 ? ` (${bulkNames.length})` : ''}`,
+          onClick: () => handleExport(bulkNames),
+        },
+      ];
+    }
+
+    if (isGroupMode && groupWritable) {
+      return [
+        {
+          key: 'toggle',
+          icon: enabled ? <PoweroffOutlined /> : <CheckOutlined />,
+          label: enabled ? 'Disable' : 'Enable',
+          onClick: () => handleToggle(name, !enabled),
+        },
+        {
+          type: 'divider',
+        },
+        {
+          key: 'export',
+          icon: <ExportOutlined />,
+          label: `Export${bulkNames.length > 1 ? ` (${bulkNames.length})` : ''}`,
+          onClick: () => handleExport(bulkNames),
+        },
+        {
+          type: 'divider',
+        },
+        {
+          key: 'delete',
+          icon: <DeleteOutlined />,
+          label: `Delete${bulkNames.length > 1 ? ` (${bulkNames.length})` : ''}`,
+          danger: true,
+          onClick: () => handleBulkDelete(bulkNames),
+        },
+      ];
+    }
+
     return [
       {
         key: 'toggle',
@@ -426,18 +573,38 @@ export default function RuleList() {
 
   return (
     <div className={styles.container} data-testid="rules-list">
+      {showGroupSwitcher && (
+        <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--ant-color-border-secondary, #f0f0f0)' }}>
+          <Select
+            size="small"
+            showSearch
+            value={activeGroupId ?? '__my__'}
+            onChange={handleGroupChange}
+            options={groupSwitcherOptions}
+            style={{ width: '100%' }}
+            suffixIcon={<SwapOutlined />}
+            popupMatchSelectWidth={true}
+            filterOption={(input, option) => {
+              const text = (option as { searchText?: string })?.searchText ?? '';
+              return text.toLowerCase().includes(input.toLowerCase());
+            }}
+          />
+        </div>
+      )}
       <div className={styles.header}>
         <span className={styles.headerTitle}>Rules</span>
         <div className={styles.headerActions}>
-          <Tooltip title="New Rule">
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              onClick={() => setCreateModalVisible(true)}
-              data-testid="rule-new-button"
-            />
-          </Tooltip>
+          {canEdit && (
+            <Tooltip title="New Rule">
+              <Button
+                type="text"
+                size="small"
+                icon={<PlusOutlined />}
+                onClick={() => setCreateModalVisible(true)}
+                data-testid="rule-new-button"
+              />
+            </Tooltip>
+          )}
           <Tooltip title="Refresh">
             <Button
               type="text"
@@ -447,14 +614,16 @@ export default function RuleList() {
               data-testid="rule-refresh-button"
             />
           </Tooltip>
-          <ImportBifrostButton
-            expectedType="rules"
-            onImportSuccess={handleImportSuccess}
-            buttonText=""
-            buttonType="text"
-            size="small"
-            testId="rule-import-button"
-          />
+          {!isGroupMode && (
+            <ImportBifrostButton
+              expectedType="rules"
+              onImportSuccess={handleImportSuccess}
+              buttonText=""
+              buttonType="text"
+              size="small"
+              testId="rule-import-button"
+            />
+          )}
         </div>
       </div>
       <div className={styles.searchBox}>
@@ -478,9 +647,15 @@ export default function RuleList() {
         />
       </div>
 
-      <div
-        ref={listContainerRef}
-        className={styles.listContainer}
+      <div className={styles.listWrapper}>
+        {showLoadingOverlay && (
+          <div className={styles.loadingOverlay}>
+            <Spin size="small" />
+          </div>
+        )}
+        <div
+          ref={listContainerRef}
+          className={styles.listContainer}
         tabIndex={0}
         role="listbox"
         aria-label="Rules list"
@@ -528,14 +703,14 @@ export default function RuleList() {
                     className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
                     role="option"
                     aria-selected={isSelected}
-                    draggable={sortMode === 'manual'}
+                    draggable={!isGroupMode && sortMode === 'manual'}
                     onClick={(e) => {
                       listContainerRef.current?.focus();
                       handleSelect(rule.name, e);
                     }}
                     onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
                     onDragStart={() => {
-                      if (sortMode !== 'manual') return;
+                      if (isGroupMode || sortMode !== 'manual') return;
                       setDraggedRuleName(rule.name);
                     }}
                     onDragEnd={() => {
@@ -577,7 +752,7 @@ export default function RuleList() {
                     }
                   >
                     <div className={styles.itemContent}>
-                      {sortMode === 'manual' && (
+                      {!isGroupMode && sortMode === 'manual' && (
                         <Tooltip title="Drag to reorder">
                           <HolderOutlined className={styles.dragHandle} />
                         </Tooltip>
@@ -625,10 +800,12 @@ export default function RuleList() {
           </div>
         )}
       </div>
+      </div>
 
       <div className={styles.footer}>
         <span className={styles.stats}>
           {rules.length} rules, {rules.filter((r) => r.enabled).length} enabled
+          {isReadOnlyGroup && ' (Read-only)'}
         </span>
       </div>
 

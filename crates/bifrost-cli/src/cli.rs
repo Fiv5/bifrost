@@ -19,18 +19,6 @@ Supported Protocols:\n\
 Running 'bifrost' without a subcommand is equivalent to 'bifrost start'."
 )]
 #[command(after_help = "\
-SUPPORTED PROTOCOLS:
-  HTTP/1.1          Full support
-  HTTP/2            Frame-level processing, multiplexing
-  HTTP/3 (QUIC)     Upstream HTTP/3 attempts can be enabled per rule
-  HTTPS             TLS 1.2/1.3, MITM interception
-  SOCKS5 TCP        Username/password authentication
-  SOCKS5 UDP        Full UDP ASSOCIATE support
-  WebSocket         ws:// and wss:// protocols
-  CONNECT-UDP       MASQUE protocol (RFC 9298)
-  gRPC              Based on HTTP/2
-  SSE               Server-Sent Events
-
 EXAMPLES:
     bifrost                      Start proxy with defaults (port 9900, TLS disabled)
     bifrost -p 8080              Start proxy on port 8080
@@ -98,6 +86,17 @@ rule <ACTION>                     Manage rules
   disable <name>                    Disable a rule
   show <name>                       Show rule content
   delete <name>                     Delete a rule
+
+group <ACTION>                    Manage groups and group rules
+  list [-k keyword] [-l limit]      List groups
+  show <group_id>                   Show group details
+  rule list <group_id>              List rules in a group
+  rule show <group_id> <name>       Show a group rule
+  rule add <group_id> <name> [-c content|-f file]  Add a group rule
+  rule update <group_id> <name> [-c content|-f file] Update a group rule
+  rule delete <group_id> <name>     Delete a group rule
+  rule enable <group_id> <name>     Enable a group rule
+  rule disable <group_id> <name>    Disable a group rule
 
 ca <ACTION>                       Manage CA certificates
   install                           Install and trust CA certificate
@@ -401,6 +400,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: RuleCommands,
     },
+    #[command(about = "Manage groups and group rules")]
+    Group {
+        #[command(subcommand)]
+        action: GroupCommands,
+    },
     #[command(about = "Manage CA certificates")]
     Ca {
         #[command(subcommand)]
@@ -702,6 +706,86 @@ pub enum RuleCommands {
     },
     #[command(about = "Sync rules with remote server")]
     Sync,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum GroupCommands {
+    #[command(about = "List groups")]
+    List {
+        #[arg(short, long, help = "Search keyword")]
+        keyword: Option<String>,
+        #[arg(short, long, default_value = "50", help = "Maximum results")]
+        limit: usize,
+    },
+    #[command(about = "Show group details")]
+    Show {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+    },
+    #[command(about = "Manage group rules")]
+    Rule {
+        #[command(subcommand)]
+        action: GroupRuleCommands,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum GroupRuleCommands {
+    #[command(about = "List rules in a group")]
+    List {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+    },
+    #[command(alias = "get", about = "Show a group rule")]
+    Show {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+    },
+    #[command(about = "Add a rule to a group")]
+    Add {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+        #[arg(short, long, help = "Rule content")]
+        content: Option<String>,
+        #[arg(short, long, help = "Rule file path")]
+        file: Option<PathBuf>,
+    },
+    #[command(about = "Update a group rule")]
+    Update {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+        #[arg(short, long, help = "Rule content")]
+        content: Option<String>,
+        #[arg(short, long, help = "Rule file path")]
+        file: Option<PathBuf>,
+    },
+    #[command(about = "Delete a group rule")]
+    Delete {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+    },
+    #[command(about = "Enable a group rule")]
+    Enable {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+    },
+    #[command(about = "Disable a group rule")]
+    Disable {
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
+        group_id: String,
+        #[arg(help = "Rule name")]
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]

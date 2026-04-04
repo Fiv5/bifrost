@@ -1,16 +1,17 @@
 ---
 name: "bifrost"
-description: "使用 bifrost 命令行工具管理代理生命周期、规则、证书、脚本、系统代理、运行时配置与流量查询；当需要通过命令行启动/停止代理、配置 TLS 拦截、调试规则、管理脚本、查看 traffic/search、修改 values/config 时使用。"
+description: "使用 bifrost 命令行工具管理代理生命周期、规则、Group 规则、证书、脚本、系统代理、运行时配置与流量查询；当需要通过命令行启动/停止代理、配置 TLS 拦截、调试规则、管理 Group 规则、管理脚本、查看 traffic/search、修改 values/config 时使用。"
 ---
 
 # Bifrost
 
-该技能用于指导 Agent 直接使用 `bifrost` CLI 完成代理启动、配置修改、规则调试、脚本管理和流量排查，而不是绕过 CLI 直接改底层数据文件。
+该技能用于指导 Agent 直接使用 `bifrost` CLI 完成代理启动、配置修改、规则调试、Group 规则管理、脚本管理和流量排查，而不是绕过 CLI 直接改底层数据文件。
 
 ## 何时调用
 
 - 需要启动、停止、检查 Bifrost 代理
 - 需要通过命令行添加或调试规则
+- 需要管理 Group（查询 group、管理 group 规则）
 - 需要启用或排查 TLS 拦截
 - 需要管理 CA、系统代理、访问白名单、变量值
 - 需要管理脚本（request/response/decode）
@@ -94,20 +95,14 @@ bifrost --version
 ## 4. 完成自检后再进入正式任务
 
 1. 先确认目标是"运行代理"还是"管理已有代理"。
-2. 如无特殊要求，优先使用临时 `BIFROST_DATA_DIR`，避免污染用户本机已有配置。
+2. 始终使用默认数据目录（`~/.bifrost`），禁止使用临时 `BIFROST_DATA_DIR`，以确保证书、规则、配置等数据正确可用。
 3. 先用 `bifrost --help` 或 `bifrost <command> --help` 补充具体参数，再执行高影响命令。
 4. 会改本机网络环境的命令必须谨慎：`system-proxy enable/disable`、`start --system-proxy`、`start --cli-proxy`。
-
-推荐的临时目录模式：
-
-```bash
-BIFROST_DATA_DIR=./.bifrost-agent bifrost start -p 9900
-```
 
 ## 关键约束
 
 - `bifrost` 不带子命令时，等价于 `bifrost start`
-- `config`、`traffic`、`search`、多数 `status` 相关能力依赖"已有运行中的代理"
+- `config`、`traffic`、`search`、`group`、多数 `status` 相关能力依赖"已有运行中的代理"
 - `rule`、`value`、`script`、`ca` 主要操作本地数据目录，不一定要求代理正在运行
 - `system-proxy` 会修改操作系统代理设置；除非用户明确要求，不要主动启用
 - `--unsafe-ssl` 只适合测试排查，不要默认开启
@@ -221,7 +216,36 @@ bifrost rule sync                          # 与远端服务器同步规则
 - 单次验证可直接用 `start --rules "..."`
 - 多条或长期规则优先放入规则文件，再用 `--rules-file`
 
-### 5. 脚本管理
+### 5. Group 管理
+
+```bash
+# Group 查询
+bifrost group list                            # 列出所有 groups
+bifrost group list -k "team" -l 20            # 按关键词搜索，限制结果数
+bifrost group show <group_id>                 # 查看 group 详情
+
+# Group 规则查询
+bifrost group rule list <group_id>            # 列出 group 下所有规则
+bifrost group rule show <group_id> <name>     # 查看 group 规则详情
+
+# Group 规则增删改
+bifrost group rule add <group_id> <name> -c "example.com host://127.0.0.1:3000"
+bifrost group rule add <group_id> <name> -f ./rules/demo.txt
+bifrost group rule update <group_id> <name> -c "new content"
+bifrost group rule update <group_id> <name> -f ./rules/demo-v2.txt
+bifrost group rule delete <group_id> <name>
+
+# Group 规则启用/禁用
+bifrost group rule enable <group_id> <name>
+bifrost group rule disable <group_id> <name>
+```
+
+- **需要代理运行中**：`group` 命令通过 admin API 通信，需先 `bifrost start`
+- Group 规则新增/更新时，`--content` 和 `--file` 至少提供一个（add 可以不带，默认空内容）
+- `group rule show` 别名：`get`
+- `group list` 支持 `-k/--keyword` 模糊搜索和 `-l/--limit` 限制最大结果数（默认 50）
+
+### 6. 脚本管理
 
 ```bash
 bifrost script list
@@ -242,7 +266,7 @@ bifrost script delete request demo
 - `show` 和 `run` 支持只传名称进行模糊匹配；如有歧义需指定类型
 - `run` 会使用内置 mock 请求/响应数据执行脚本，输出修改结果和日志
 
-### 6. 变量值
+### 7. 变量值
 
 ```bash
 bifrost value list
@@ -256,7 +280,7 @@ bifrost value delete LOCAL_SERVER
 - 规则中可使用 `${NAME}` 和 `${env.VAR_NAME}`
 - 需要复用环境相关地址或 token 时，优先用 `value set` 而不是把值硬编码到规则里
 
-### 7. 访问控制
+### 8. 访问控制
 
 ```bash
 bifrost whitelist status
@@ -269,7 +293,7 @@ bifrost whitelist allow-lan true
 - 默认应偏向最小暴露面
 - 只有明确需要局域网访问时，再配合 `allow-lan` 或白名单
 
-### 8. 代理认证
+### 9. 代理认证
 
 ```bash
 bifrost start --proxy-user admin:password123
@@ -284,7 +308,7 @@ bifrost config add access.userpass.accounts 'user:pass'
 bifrost config set access.userpass.loopback-requires-auth false
 ```
 
-### 9. 系统代理
+### 10. 系统代理
 
 ```bash
 bifrost system-proxy status
@@ -295,7 +319,7 @@ bifrost system-proxy disable
 - 这是高影响命令，可能触发管理员权限
 - 没有用户明确授权时，不要主动修改系统代理
 
-### 10. 运行时配置
+### 11. 运行时配置
 
 ```bash
 bifrost config show
@@ -351,7 +375,7 @@ bifrost config export --format json
 
 大小类型支持单位：`B`、`KB`、`MB`、`GB`（如 `10MB`、`512KB`）。
 
-### 11. 流量查询
+### 12. 流量查询
 
 ```bash
 # 列出流量记录
@@ -400,7 +424,7 @@ bifrost traffic search openai --domain api.openai.com --method POST
     --no-color                禁用彩色输出
 ```
 
-### 12. 全文搜索
+### 13. 全文搜索
 
 ```bash
 bifrost search openai --domain api.openai.com --method POST
@@ -434,7 +458,7 @@ bifrost search '{"error"' --res-body --content-type json
     --no-color                禁用彩色输出
 ```
 
-### 13. 升级
+### 14. 升级
 
 ```bash
 bifrost upgrade
@@ -450,10 +474,10 @@ bifrost upgrade -y            # 跳过确认
 
 ## 推荐工作流
 
-### 本地临时调试一个规则
+### 本地调试一个规则
 
 ```bash
-BIFROST_DATA_DIR=./.bifrost-agent bifrost start -p 9900 \
+bifrost start -p 9900 \
   --rules "example.com reqHeaders://X-Debug=1" \
   --no-intercept
 ```
@@ -468,9 +492,9 @@ bifrost traffic get 1
 ### 调试 HTTPS 明文请求
 
 ```bash
-BIFROST_DATA_DIR=./.bifrost-agent bifrost ca generate
-BIFROST_DATA_DIR=./.bifrost-agent bifrost ca install
-BIFROST_DATA_DIR=./.bifrost-agent bifrost start -p 9900 --intercept
+bifrost ca generate
+bifrost ca install
+bifrost start -p 9900 --intercept
 ```
 
 若只想抓特定域名，优先改成：
@@ -517,6 +541,27 @@ bifrost traffic list --host example.com --limit 20
 bifrost traffic get <id> --request-body --response-body
 ```
 
+### 管理 Group 规则
+
+```bash
+# 查找目标 group
+bifrost group list -k "team"
+bifrost group show <group_id>
+
+# 查看/管理 group 规则
+bifrost group rule list <group_id>
+bifrost group rule add <group_id> api-mock -c "api.example.com host://127.0.0.1:3000"
+bifrost group rule enable <group_id> api-mock
+bifrost group rule show <group_id> api-mock
+
+# 更新已有规则
+bifrost group rule update <group_id> api-mock -f ./rules/api-mock-v2.txt
+
+# 不再需要时禁用或删除
+bifrost group rule disable <group_id> api-mock
+bifrost group rule delete <group_id> api-mock
+```
+
 ### 配置代理认证
 
 ```bash
@@ -541,7 +586,7 @@ bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifr
 ## Agent 行为建议
 
 - 优先通过 CLI 完成任务，不要直接手改 `~/.bifrost` 下的数据
-- 做实验时始终显式设置 `BIFROST_DATA_DIR`
+- 禁止使用临时 `BIFROST_DATA_DIR`，始终使用默认数据目录，确保证书和配置正确
 - 如果用户没有要求修改系统环境，不要开启 `--system-proxy`、`--cli-proxy`
 - 如果用户只想验证规则，不必先启用 TLS 拦截
 - 遇到不确定的参数或用法，**先执行** **`bifrost <command> -h`** **获取完整手册**，不要猜测

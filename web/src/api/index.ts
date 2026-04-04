@@ -8,3 +8,4 @@ export * from './config';
 export * from './cert';
 export * from './sync';
 export * from './ui';
+export * from './group';

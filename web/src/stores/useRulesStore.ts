@@ -2,11 +2,32 @@ import { create } from 'zustand';
 import type { RuleFile, RuleFileDetail } from '../types';
 import * as api from '../api';
 import { isConnectionIssueError } from '../api/client';
+import {
+  fetchGroupRules,
+  getGroupRule,
+  createGroupRule,
+  updateGroupRule,
+  deleteGroupRule,
+  enableGroupRule,
+  disableGroupRule,
+  type GroupRuleInfo,
+} from '../api/group';
 
 function sortRulesByManualOrder(rules: RuleFile[]): RuleFile[] {
   return [...rules].sort((left, right) => {
     return left.sort_order - right.sort_order || left.name.localeCompare(right.name);
   });
+}
+
+function groupRuleToRuleFile(info: GroupRuleInfo): RuleFile {
+  return {
+    name: info.name,
+    enabled: info.enabled,
+    sort_order: info.sort_order,
+    rule_count: info.rule_count,
+    created_at: info.created_at,
+    updated_at: info.updated_at,
+  };
 }
 
 interface RulesState {
@@ -18,6 +39,10 @@ interface RulesState {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  activeGroupId: string | null;
+  isGroupMode: boolean;
+  groupWritable: boolean;
+  setActiveGroupId: (groupId: string | null) => void;
   fetchRules: () => Promise<void>;
   fetchRule: (name: string) => Promise<void>;
   selectRule: (name: string | null) => Promise<void>;
@@ -43,19 +68,75 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   loading: false,
   saving: false,
   error: null,
+  activeGroupId: null,
+  isGroupMode: false,
+  groupWritable: false,
+
+  setActiveGroupId: (groupId: string | null) => {
+    set({
+      activeGroupId: groupId,
+      isGroupMode: groupId !== null,
+      groupWritable: false,
+      rules: [],
+      selectedRuleName: null,
+      currentRule: null,
+      editingContent: {},
+    });
+  },
 
   fetchRules: async () => {
+    const { activeGroupId } = get();
     set({ loading: true, error: null });
+
+    if (!activeGroupId) {
+      try {
+        const rules = await api.getRules();
+        set({ rules: sortRulesByManualOrder(rules), loading: false, isGroupMode: false, groupWritable: false });
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      }
+      return;
+    }
+
     try {
-      const rules = await api.getRules();
-      set({ rules: sortRulesByManualOrder(rules), loading: false });
+      const resp = await fetchGroupRules(activeGroupId);
+      const ruleFiles = resp.rules.map(groupRuleToRuleFile);
+      set({
+        rules: ruleFiles,
+        loading: false,
+        isGroupMode: true,
+        groupWritable: resp.writable,
+      });
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
     }
   },
 
   fetchRule: async (name: string) => {
+    const { isGroupMode, activeGroupId } = get();
     set({ loading: true, error: null });
+
+    if (isGroupMode && activeGroupId) {
+      try {
+        const detail = await getGroupRule(activeGroupId, name);
+        set({
+          currentRule: {
+            name: detail.name,
+            content: detail.content,
+            enabled: detail.enabled,
+            sort_order: detail.sort_order,
+            created_at: detail.created_at,
+            updated_at: detail.updated_at,
+            sync: detail.sync,
+          },
+          loading: false,
+        });
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      }
+      return;
+    }
+
     try {
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
@@ -69,7 +150,30 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       set({ selectedRuleName: null, currentRule: null });
       return;
     }
+    const { isGroupMode, activeGroupId } = get();
     set({ selectedRuleName: name, loading: true, error: null });
+
+    if (isGroupMode && activeGroupId) {
+      try {
+        const detail = await getGroupRule(activeGroupId, name);
+        set({
+          currentRule: {
+            name: detail.name,
+            content: detail.content,
+            enabled: detail.enabled,
+            sort_order: detail.sort_order,
+            created_at: detail.created_at,
+            updated_at: detail.updated_at,
+            sync: detail.sync,
+          },
+          loading: false,
+        });
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      }
+      return;
+    }
+
     try {
       const rule = await api.getRule(name);
       set({ currentRule: rule, loading: false });
@@ -79,6 +183,23 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   },
 
   createRule: async (name: string, content: string) => {
+    const { isGroupMode, groupWritable, activeGroupId } = get();
+
+    if (isGroupMode) {
+      if (!groupWritable || !activeGroupId) return false;
+      set({ loading: true, error: null });
+      try {
+        const detail = await createGroupRule(activeGroupId, name, content);
+        await get().fetchRules();
+        set({ selectedRuleName: detail.name });
+        await get().selectRule(detail.name);
+        return true;
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+        return false;
+      }
+    }
+
     set({ loading: true, error: null });
     try {
       await api.createRule(name, content);
@@ -108,7 +229,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   },
 
   saveCurrentRule: async () => {
-    const { selectedRuleName, editingContent, currentRule } = get();
+    const { selectedRuleName, editingContent, currentRule, isGroupMode, groupWritable, activeGroupId } = get();
     if (!selectedRuleName) return false;
 
     const content = editingContent[selectedRuleName];
@@ -117,21 +238,48 @@ export const useRulesStore = create<RulesState>((set, get) => ({
     }
 
     set({ saving: true, error: null });
+
+    if (isGroupMode) {
+      if (!groupWritable || !activeGroupId) {
+        set({ saving: false });
+        return false;
+      }
+      try {
+        const detail = await updateGroupRule(activeGroupId, selectedRuleName, content);
+        const newEditingContent = { ...get().editingContent };
+        delete newEditingContent[selectedRuleName];
+        set({
+          currentRule: {
+            name: detail.name,
+            content: detail.content,
+            enabled: detail.enabled,
+            sort_order: detail.sort_order,
+            created_at: detail.created_at,
+            updated_at: detail.updated_at,
+            sync: detail.sync,
+          },
+          saving: false,
+          editingContent: newEditingContent,
+        });
+        await get().fetchRules();
+        return true;
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, saving: false });
+        return false;
+      }
+    }
+
     try {
       await api.updateRule(selectedRuleName, content);
       await get().fetchRules();
       const rule = await api.getRule(selectedRuleName);
-      set((state) => ({
-        currentRule: rule,
-        saving: false,
-        editingContent: {
-          ...state.editingContent,
-          [selectedRuleName]: undefined as unknown as string,
-        },
-      }));
       const newEditingContent = { ...get().editingContent };
       delete newEditingContent[selectedRuleName];
-      set({ editingContent: newEditingContent });
+      set({
+        currentRule: rule,
+        saving: false,
+        editingContent: newEditingContent,
+      });
       return true;
     } catch (e) {
       set({ error: isConnectionIssueError(e) ? null : (e as Error).message, saving: false });
@@ -140,6 +288,28 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   },
 
   deleteRule: async (name: string) => {
+    const { isGroupMode, groupWritable, activeGroupId } = get();
+
+    if (isGroupMode) {
+      if (!groupWritable || !activeGroupId) return false;
+      set({ loading: true, error: null });
+      try {
+        await deleteGroupRule(activeGroupId, name);
+        await get().fetchRules();
+        const { selectedRuleName } = get();
+        if (selectedRuleName === name) {
+          const rules = get().rules;
+          const nextRule = rules.length > 0 ? rules[0].name : null;
+          set({ selectedRuleName: nextRule, currentRule: null });
+          if (nextRule) await get().selectRule(nextRule);
+        }
+        return true;
+      } catch (e) {
+        set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+        return false;
+      }
+    }
+
     set({ loading: true, error: null });
     try {
       await api.deleteRule(name);
@@ -171,6 +341,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
   },
 
   toggleRule: async (name: string, enabled: boolean) => {
+    const { isGroupMode, activeGroupId } = get();
     const previousRules = get().rules;
     set({
       rules: previousRules.map((r) =>
@@ -178,16 +349,40 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       ),
     });
     try {
-      if (enabled) {
-        await api.enableRule(name);
+      if (isGroupMode && activeGroupId) {
+        if (enabled) {
+          await enableGroupRule(activeGroupId, name);
+        } else {
+          await disableGroupRule(activeGroupId, name);
+        }
+        const resp = await fetchGroupRules(activeGroupId);
+        set({ rules: resp.rules.map(groupRuleToRuleFile) });
+        if (get().currentRule?.name === name) {
+          const detail = await getGroupRule(activeGroupId, name);
+          set({
+            currentRule: {
+              name: detail.name,
+              content: detail.content,
+              enabled: detail.enabled,
+              sort_order: detail.sort_order,
+              created_at: detail.created_at,
+              updated_at: detail.updated_at,
+              sync: detail.sync,
+            },
+          });
+        }
       } else {
-        await api.disableRule(name);
-      }
-      const rules = await api.getRules();
-      set({ rules: sortRulesByManualOrder(rules) });
-      if (get().currentRule?.name === name) {
-        const rule = await api.getRule(name);
-        set({ currentRule: rule });
+        if (enabled) {
+          await api.enableRule(name);
+        } else {
+          await api.disableRule(name);
+        }
+        const rules = await api.getRules();
+        set({ rules: sortRulesByManualOrder(rules) });
+        if (get().currentRule?.name === name) {
+          const rule = await api.getRule(name);
+          set({ currentRule: rule });
+        }
       }
       return true;
     } catch (e) {

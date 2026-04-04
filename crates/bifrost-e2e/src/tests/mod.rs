@@ -5,6 +5,7 @@ pub mod client_process;
 pub mod curl_mock;
 pub mod dns;
 pub mod filters;
+pub mod group_rules;
 pub mod https;
 pub mod install_skill;
 pub mod matchers;
@@ -61,5 +62,6 @@ pub fn all_tests() -> Vec<TestCase> {
     tests.extend(ws_payload_persistence::get_all_tests());
     tests.extend(userpass_auth::get_all_tests());
     tests.extend(install_skill::get_all_tests());
+    tests.extend(group_rules::get_all_tests());
     tests
 }

@@ -161,6 +161,16 @@ impl SyncManagerHandle {
     pub async fn clear_deleted_rule(&self, rule_name: &str) -> Result<()> {
         self.inner.clear_deleted_rule(rule_name).await
     }
+
+    pub async fn proxy_forward(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, String, Vec<u8>)> {
+        self.inner.proxy_forward(method, path, query, body).await
+    }
 }
 
 pub struct SyncManager {
@@ -227,6 +237,11 @@ impl SyncManager {
             last_error: runtime.last_error,
             user: state.user,
         }
+    }
+
+    pub fn current_user_id(&self) -> Option<String> {
+        let state = self.state.lock();
+        state.user.as_ref().map(|u| u.user_id.clone())
     }
 
     pub async fn login_url(&self, callback_url: &str) -> Result<String> {
@@ -327,6 +342,26 @@ impl SyncManager {
             self.persist_state(&state)?;
         }
         Ok(())
+    }
+
+    pub async fn proxy_forward(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> Result<(u16, String, Vec<u8>)> {
+        let config = self.config_manager.config().await;
+        let token = self
+            .state
+            .lock()
+            .token
+            .clone()
+            .ok_or_else(|| BifrostError::Config("sync session token missing".to_string()))?;
+        let client = SyncHttpClient::new(&config.sync)?;
+        client
+            .proxy_forward(&config.sync, &token, method, path, query, body)
+            .await
     }
 
     pub async fn logout(&self) -> Result<()> {
@@ -888,6 +923,7 @@ impl SyncManager {
                         enabled: false,
                         sort_order: 0,
                         description: Some("Synced from remote".to_string()),
+                        group: None,
                         version: "1.0.0".to_string(),
                         created_at: remote_env.create_time.clone(),
                         updated_at: remote_env.update_time.clone(),
@@ -1032,6 +1068,7 @@ fn merge_remote_into_local_rule(
         enabled: existing_rule.enabled,
         sort_order: existing_rule.sort_order,
         description: existing_rule.description.clone(),
+        group: existing_rule.group.clone(),
         version: existing_rule.version.clone(),
         created_at: existing_rule.created_at.clone(),
         updated_at: remote_env.update_time.clone(),

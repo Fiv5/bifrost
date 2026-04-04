@@ -6,10 +6,15 @@ use crate::handlers::{
     bifrost_file::handle_bifrost_file,
     cert::{handle_cert, handle_cert_public, handle_proxy_public},
     config::handle_config,
-    cors_preflight, error_response, frames,
+    cors_preflight,
+    env::handle_env,
+    error_response, frames,
+    group::handle_group,
+    group_rules::handle_group_rules,
     metrics::handle_metrics,
     proxy::handle_proxy,
     replay::handle_replay,
+    room::handle_room,
     rules::handle_rules,
     scripts::handle_scripts_request,
     search::handle_search,
@@ -17,6 +22,7 @@ use crate::handlers::{
     syntax::handle_syntax,
     system::handle_system,
     traffic::handle_traffic,
+    user::handle_user,
     values::handle_values,
     websocket::handle_websocket_upgrade,
     whitelist::handle_whitelist_request,
@@ -122,6 +128,16 @@ impl AdminRouter {
             handle_search(req, state, path).await
         } else if path.starts_with("/api/sync") {
             handle_sync(req, state, path).await
+        } else if path.starts_with("/api/group-rules") {
+            handle_group_rules(req, state, path).await
+        } else if path.starts_with("/api/group") {
+            handle_group(req, state, path).await
+        } else if path.starts_with("/api/env") {
+            handle_env(req, state, path).await
+        } else if path.starts_with("/api/room") {
+            handle_room(req, state, path).await
+        } else if path.starts_with("/api/user") {
+            handle_user(req, state, path).await
         } else if path.starts_with("/api/scripts") {
             if let Some(script_manager) = &state.script_manager {
                 handle_scripts_request(

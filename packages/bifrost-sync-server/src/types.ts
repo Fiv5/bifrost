@@ -3,6 +3,7 @@ export interface Env {
   user_id: string;
   name: string;
   rule: string;
+  sort_order: number;
   create_time: string;
   update_time: string;
 }
@@ -23,6 +24,7 @@ export interface CreateEnvReq {
   user_id: string;
   name: string;
   rule?: string;
+  sort_order?: number;
 }
 
 export interface UpdateEnvReq {
@@ -30,6 +32,7 @@ export interface UpdateEnvReq {
   user_id?: string;
   name?: string;
   rule?: string;
+  sort_order?: number;
 }
 
 export interface SearchEnvQuery {
@@ -87,4 +90,63 @@ export interface SyncServerConfig {
   server: ServerConfig;
   storage: StorageConfig;
   auth: AuthConfig;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  avatar: string;
+  description: string;
+  visibility: string;
+  created_by: string;
+  create_time: string;
+  update_time: string;
+}
+
+export interface GroupMember {
+  id: string;
+  group_id: string;
+  user_id: string;
+  level: number;
+  nickname: string;
+  avatar: string;
+  email: string;
+  create_time: string;
+  update_time: string;
+}
+
+export interface GroupSetting {
+  group_id: string;
+  rules_enabled: number;
+  visibility: string;
+}
+
+export interface CreateGroupReq {
+  name: string;
+  avatar?: string;
+  description?: string;
+  visibility?: string;
+}
+
+export interface UpdateGroupReq {
+  name?: string;
+  avatar?: string;
+  description?: string;
+}
+
+export interface SearchGroupQuery {
+  keyword?: string;
+  user_id?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface InviteGroupReq {
+  user_ids: string[];
+  level?: number;
+}
+
+export interface UpdateGroupSettingReq {
+  rules_enabled?: boolean;
+  visibility?: string;
 }

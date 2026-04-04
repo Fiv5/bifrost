@@ -10,6 +10,24 @@ import {
 } from '../http';
 import type { CreateEnvReq, UpdateEnvReq, SearchEnvQuery } from '../types';
 
+async function checkEditable(userId: string, currentUserId: string, storage: IStorage): Promise<boolean> {
+  if (userId === currentUserId) return true;
+  const group = await storage.group.findByName(userId);
+  if (!group) return false;
+  const member = await storage.groupMember.findByGroupAndUser(group.id, currentUserId);
+  return !!member && member.level >= 1;
+}
+
+async function checkReadable(userId: string, currentUserId: string, storage: IStorage): Promise<boolean> {
+  if (userId === currentUserId) return true;
+  const group = await storage.group.findByName(userId);
+  if (!group) return false;
+  const setting = await storage.groupSetting.get(group.id);
+  if (setting.visibility === 'public') return true;
+  const member = await storage.groupMember.findByGroupAndUser(group.id, currentUserId);
+  return !!member;
+}
+
 export async function handleEnv(ctx: RequestContext, storage: IStorage): Promise<boolean> {
   const { url, req } = ctx;
   const method = req.method ?? 'GET';
@@ -48,8 +66,16 @@ async function handleSearch(ctx: RequestContext, storage: IStorage): Promise<boo
   const offset = parseInt(ctx.url.searchParams.get('offset') ?? '0', 10);
   const limit = parseInt(ctx.url.searchParams.get('limit') ?? '500', 10);
 
+  const effectiveUserIds = userIds.length > 0 ? userIds : [ctx.user!.user_id];
+  for (const uid of effectiveUserIds) {
+    if (!(await checkReadable(uid, ctx.user!.user_id, storage))) {
+      sendError(ctx.res, 403, `read ${uid} denied`);
+      return true;
+    }
+  }
+
   const query: SearchEnvQuery = {
-    user_id: userIds.length > 0 ? userIds : undefined,
+    user_id: effectiveUserIds,
     keyword,
     offset,
     limit,
@@ -96,6 +122,11 @@ async function handleCreate(ctx: RequestContext, storage: IStorage): Promise<boo
     return true;
   }
 
+  if (!(await checkEditable(body.user_id, ctx.user!.user_id, storage))) {
+    sendError(ctx.res, 403, `access ${body.user_id} denied`);
+    return true;
+  }
+
   const existing = await storage.env.findByUserAndName(body.user_id, body.name);
   if (existing) {
     sendJson(ctx.res, 200, { code: 0, message: 'ok', data: existing });
@@ -117,6 +148,11 @@ async function handleRead(ctx: RequestContext, storage: IStorage): Promise<boole
     return true;
   }
 
+  if (!(await checkReadable(env.user_id, ctx.user!.user_id, storage))) {
+    sendError(ctx.res, 403, `read ${env.user_id} denied`);
+    return true;
+  }
+
   sendJson(ctx.res, 200, { code: 0, message: 'ok', data: env });
   return true;
 }
@@ -131,12 +167,18 @@ async function handleUpdate(ctx: RequestContext, storage: IStorage): Promise<boo
     return true;
   }
 
-  const env = await storage.env.update(id, body);
-  if (!env) {
+  const existing = await storage.env.findById(id);
+  if (!existing) {
     sendError(ctx.res, 404, `env ${id} not found`);
     return true;
   }
 
+  if (!(await checkEditable(existing.user_id, ctx.user!.user_id, storage))) {
+    sendError(ctx.res, 403, `access ${existing.user_id} denied`);
+    return true;
+  }
+
+  const env = await storage.env.update(id, body);
   sendJson(ctx.res, 200, { code: 0, message: 'ok', data: env });
   return true;
 }
@@ -145,12 +187,18 @@ async function handleDelete(ctx: RequestContext, storage: IStorage): Promise<boo
   if (!(await requireAuth(ctx, storage))) return true;
 
   const id = extractPathParam(ctx.url.pathname, '/v4/env/');
-  const deleted = await storage.env.delete(id);
-  if (!deleted) {
+  const existing = await storage.env.findById(id);
+  if (!existing) {
     sendError(ctx.res, 404, `env ${id} not found`);
     return true;
   }
 
+  if (!(await checkEditable(existing.user_id, ctx.user!.user_id, storage))) {
+    sendError(ctx.res, 403, `access ${existing.user_id} denied`);
+    return true;
+  }
+
+  await storage.env.delete(id);
   sendJson(ctx.res, 200, { code: 0, message: 'ok', data: 1 });
   return true;
 }
@@ -163,6 +211,7 @@ interface SyncEnvReq {
     id: string;
     name: string;
     rule?: string;
+    sort_order?: number;
     update_time: string;
   }>;
   delete_list: Array<{ user_id: string; id: string; delete_time: string }>;
@@ -193,6 +242,10 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
 
   for (const item of body.delete_list ?? []) {
     try {
+      if (!(await checkEditable(item.user_id, ctx.user!.user_id, storage))) {
+        resultList.push({ type: 0, user_id: item.user_id, id: item.id, status: 1, msg: `access ${item.user_id} denied` });
+        continue;
+      }
       const env = await storage.env.findById(item.id);
       if (env) {
         await storage.env.delete(item.id);
@@ -211,11 +264,16 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
 
   for (const item of body.update_list ?? []) {
     try {
+      if (!(await checkEditable(item.user_id, ctx.user!.user_id, storage))) {
+        resultList.push({ type: 1, id: item.id, user_id: item.user_id, status: 1, msg: `access ${item.user_id} denied` });
+        continue;
+      }
       const existing = await storage.env.findById(item.id);
       if (existing) {
         const updated = await storage.env.update(item.id, {
           name: item.name,
           rule: item.rule,
+          sort_order: item.sort_order,
           user_id: item.user_id,
         });
         if (updated) {
@@ -226,6 +284,7 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
           user_id: item.user_id,
           name: item.name,
           rule: item.rule,
+          sort_order: item.sort_order,
         });
         resultList.push({ type: 3, status: 0, ...created });
       }
@@ -244,6 +303,9 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
     try {
       const env = await storage.env.findById(item.id);
       if (env) {
+        if (!(await checkReadable(env.user_id, ctx.user!.user_id, storage))) {
+          continue;
+        }
         if (env.update_time !== item.update_time) {
           localUpdateList.push(env);
         }

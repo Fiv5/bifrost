@@ -3,13 +3,15 @@ import { createStorage, type IStorage } from './dao';
 import { handleSso } from './routes/sso';
 import { handleOAuth2 } from './routes/oauth2';
 import { handleEnv } from './routes/env';
+import { handleGroup } from './routes/group';
+import { handleUser } from './routes/user';
 import { readBody, sendJson, sendError, sendRateLimited, setSecurityHeaders, type RequestContext } from './http';
 import { RateLimiter, AccountLockManager, getClientIp } from './security';
 import type { SyncServerConfig } from './types';
 
 export type { SyncServerConfig, MysqlConfig, OAuth2Config, AuthConfig, StorageConfig, ServerConfig } from './types';
-export type { Env, User, CreateEnvReq, UpdateEnvReq, SearchEnvQuery, ApiResponse } from './types';
-export type { IStorage, IUserDao, IEnvDao } from './dao';
+export type { Env, User, CreateEnvReq, UpdateEnvReq, SearchEnvQuery, ApiResponse, Group, GroupMember, GroupSetting, CreateGroupReq, UpdateGroupReq, SearchGroupQuery, InviteGroupReq, UpdateGroupSettingReq } from './types';
+export type { IStorage, IUserDao, IEnvDao, IGroupDao, IGroupMemberDao, IGroupSettingDao } from './dao';
 export { createStorage } from './dao';
 export { SqliteStorage } from './dao/sqlite';
 export { MysqlStorage } from './dao/mysql';
@@ -87,7 +89,9 @@ export function createSyncServer(config: SyncServerConfig): SyncServerInstance {
       }
 
       if (await handleSso(ctx, storage, accountLock)) return;
+      if (await handleUser(ctx, storage)) return;
       if (await handleEnv(ctx, storage)) return;
+      if (await handleGroup(ctx, storage)) return;
 
       sendJson(res, 404, { code: -1, message: 'Not Found' });
     } catch (e: unknown) {

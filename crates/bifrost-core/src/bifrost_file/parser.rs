@@ -473,6 +473,7 @@ impl BifrostFileParser {
             created_at: Option<String>,
             updated_at: Option<String>,
             description: Option<String>,
+            group: Option<String>,
             sync: RuleSyncMeta,
         }
 
@@ -510,6 +511,7 @@ impl BifrostFileParser {
             created_at: partial.created_at.unwrap_or_else(|| now.clone()),
             updated_at: partial.updated_at.unwrap_or(now),
             description: partial.description,
+            group: partial.group,
             sync: partial.sync,
         }
     }

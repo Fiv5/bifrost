@@ -1664,7 +1664,7 @@ fn load_stored_rules(
         base_dir = %rules_storage.base_dir().display(),
         "loading rules from storage"
     );
-    match rules_storage.load_enabled() {
+    match rules_storage.load_enabled_with_subdirs() {
         Ok(rule_files) => {
             let stored_count = rule_files.len();
             for rule_file in rule_files {

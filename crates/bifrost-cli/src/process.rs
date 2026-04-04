@@ -76,9 +76,28 @@ pub fn remove_pid() -> bifrost_core::Result<()> {
 
 #[cfg(unix)]
 pub fn is_process_running(pid: u32) -> bool {
-    use nix::sys::signal::{kill, Signal};
+    use nix::sys::signal::kill;
     use nix::unistd::Pid;
-    kill(Pid::from_raw(pid as i32), Signal::SIGCONT).is_ok()
+
+    let p = Pid::from_raw(pid as i32);
+    if kill(p, None).is_err() {
+        return false;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+            if let Some(state_start) = stat.rfind(')') {
+                let after_comm = &stat[state_start + 1..];
+                let state = after_comm.trim_start().chars().next().unwrap_or(' ');
+                if state == 'Z' {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 #[cfg(not(unix))]

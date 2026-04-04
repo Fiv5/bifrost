@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -103,6 +104,7 @@ pub struct AdminState {
     pub total_size_cleanup_counter: AtomicUsize,
     pub port_rebind_manager: Option<SharedPortRebindManager>,
     pub sync_manager: Option<SharedSyncManager>,
+    group_name_cache: parking_lot::Mutex<HashMap<String, String>>,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -140,6 +142,7 @@ impl AdminState {
             total_size_cleanup_counter: AtomicUsize::new(0),
             port_rebind_manager: None,
             sync_manager: None,
+            group_name_cache: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -780,6 +783,33 @@ impl AdminState {
 
     pub fn get_replay_executor(&self) -> Option<&SharedReplayExecutor> {
         self.replay_executor.get()
+    }
+
+    pub fn group_name_cache(&self) -> GroupNameCacheGuard<'_> {
+        GroupNameCacheGuard {
+            guard: self.group_name_cache.lock(),
+        }
+    }
+}
+
+pub struct GroupNameCacheGuard<'a> {
+    guard: parking_lot::MutexGuard<'a, HashMap<String, String>>,
+}
+
+impl GroupNameCacheGuard<'_> {
+    pub fn get(&self, group_id: &str) -> Option<String> {
+        self.guard.get(group_id).cloned()
+    }
+
+    pub fn insert(&mut self, group_id: String, name: String) {
+        self.guard.insert(group_id, name);
+    }
+
+    pub fn reverse_lookup(&self, name: &str) -> Option<String> {
+        self.guard
+            .iter()
+            .find(|(_, v)| v.as_str() == name)
+            .map(|(k, _)| k.clone())
     }
 }
 
