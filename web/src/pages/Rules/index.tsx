@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
@@ -13,9 +13,37 @@ import pushService from '../../services/pushService';
 const GROUP_PARAM = 'group';
 const RULE_PARAM = 'rule';
 
+function getUrlParams(): URLSearchParams {
+  const hash = window.location.hash;
+  const qIdx = hash.indexOf('?');
+  const raw = qIdx >= 0 ? hash.slice(qIdx) : window.location.search;
+  return new URLSearchParams(raw);
+}
+
+function syncGroupFromUrl() {
+  const store = useRulesStore.getState();
+  const params = getUrlParams();
+  const groupParam = params.get(GROUP_PARAM);
+  const initialGroupId = groupParam || null;
+  if (initialGroupId !== store.activeGroupId) {
+    useRulesStore.setState({
+      activeGroupId: initialGroupId,
+      isGroupMode: initialGroupId !== null,
+      groupWritable: false,
+      rules: [],
+      selectedRuleName: null,
+      currentRule: null,
+      editingContent: {},
+    });
+  }
+}
+
+syncGroupFromUrl();
+
 export default function Rules() {
   const { token } = theme.useToken();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [, setSearchParams] = useSearchParams();
+  const [initialRuleParam] = useState(() => getUrlParams().get(RULE_PARAM));
   const error = useRulesStore((state) => state.error);
   const clearError = useRulesStore((state) => state.clearError);
   const rules = useRulesStore((state) => state.rules);
@@ -29,21 +57,15 @@ export default function Rules() {
 
   const initDoneRef = useRef(false);
   const groupFallbackRef = useRef(false);
+  const hasLoadedOnceRef = useRef(false);
+  const restoringRef = useRef(false);
 
   useEffect(() => {
     const storeHasState = rules.length > 0 && selectedRuleName !== null;
 
     if (storeHasState) {
       initDoneRef.current = true;
-    } else {
-      const groupParam = searchParams.get(GROUP_PARAM);
-      const initialGroupId = groupParam || null;
-
-      if (initialGroupId !== activeGroupId) {
-        setActiveGroupId(initialGroupId);
-      } else if (rules.length === 0) {
-        void fetchRules();
-      }
+      hasLoadedOnceRef.current = true;
     }
 
     pushService.connect({ need_values: true });
@@ -60,8 +82,15 @@ export default function Rules() {
   }, []);
 
   useEffect(() => {
+    if (loading) {
+      hasLoadedOnceRef.current = true;
+    }
+  }, [loading]);
+
+  useEffect(() => {
     if (initDoneRef.current) return;
     if (loading) return;
+    if (!hasLoadedOnceRef.current) return;
 
     if (rules.length === 0 && activeGroupId && !groupFallbackRef.current) {
       groupFallbackRef.current = true;
@@ -71,8 +100,9 @@ export default function Rules() {
 
     if (rules.length === 0) return;
     initDoneRef.current = true;
+    restoringRef.current = true;
 
-    const ruleParam = searchParams.get(RULE_PARAM);
+    const ruleParam = initialRuleParam;
     if (ruleParam) {
       const exists = rules.some((r) => r.name === ruleParam);
       if (exists) {
@@ -85,6 +115,10 @@ export default function Rules() {
   }, [rules, loading]);
 
   useEffect(() => {
+    if (restoringRef.current) {
+      restoringRef.current = false;
+      return;
+    }
     if (!initDoneRef.current) return;
     if (rules.length > 0 && !selectedRuleName) {
       selectRule(rules[0].name);

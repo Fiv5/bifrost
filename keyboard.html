@@ -21,7 +21,6 @@
     background: #1a1a2e;
     font-family: 'Helvetica Neue', Arial, sans-serif;
     overflow: hidden;
-    transition: background 0.3s ease;
     user-select: none;
   }
 
@@ -35,18 +34,25 @@
 
   .letter-container {
     display: none;
-    flex-direction: column;
+    flex-direction: row;
     justify-content: center;
     align-items: center;
-    gap: 1rem;
+    gap: 4vmin;
   }
 
   .letter-container.active {
     display: flex;
   }
 
+  .letter-side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .uppercase {
-    font-size: 40vmin;
+    font-size: 35vmin;
     font-weight: 800;
     color: #fff;
     line-height: 1;
@@ -55,11 +61,96 @@
   }
 
   .lowercase {
-    font-size: 14vmin;
+    font-size: 10vmin;
     font-weight: 300;
     color: rgba(255, 255, 255, 0.5);
     line-height: 1;
     letter-spacing: 0.05em;
+  }
+
+  .animal-side {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1vmin;
+    animation: fadeSlideIn 0.35s ease-out;
+  }
+
+  .animal-emoji {
+    font-size: 22vmin;
+    line-height: 1;
+    filter: drop-shadow(0 0 20px rgba(255, 255, 255, 0.15));
+  }
+
+  .animal-name {
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .animal-name-zh {
+    font-size: 3.5vmin;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .animal-name-en {
+    font-size: 2.2vmin;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.5);
+    text-transform: capitalize;
+  }
+
+  .fullscreen-btn {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 1.2rem 3rem;
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 12px;
+    cursor: pointer;
+    letter-spacing: 0.1em;
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+    z-index: 100;
+  }
+
+  .fullscreen-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.5);
+    transform: translate(-50%, -50%) scale(1.05);
+  }
+
+  .fullscreen-btn:active {
+    transform: translate(-50%, -50%) scale(0.98);
+  }
+
+  .hidden {
+    display: none !important;
+  }
+
+  .app-wrapper {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: #1a1a2e;
+  }
+
+  .app-wrapper:fullscreen {
+    width: 100%;
+    height: 100%;
+  }
+
+  .app-wrapper:-webkit-full-screen {
+    width: 100%;
+    height: 100%;
   }
 
   @keyframes pulse {
@@ -71,38 +162,200 @@
     0% { transform: scale(0.5); opacity: 0; }
     100% { transform: scale(1); opacity: 1; }
   }
+
+  @keyframes fadeSlideIn {
+    0% { transform: translateX(20px); opacity: 0; }
+    100% { transform: translateX(0); opacity: 1; }
+  }
 </style>
 </head>
 <body>
 
-<div class="hint" id="hint">Press any letter key</div>
+<button class="fullscreen-btn" id="fullscreenBtn">🖥 开始学习</button>
 
-<div class="letter-container" id="letterContainer">
-  <div class="uppercase" id="upper"></div>
-  <div class="lowercase" id="lower"></div>
+<div class="app-wrapper hidden" id="appWrapper">
+  <div class="hint" id="hint">Press any letter key</div>
+
+  <div class="letter-container" id="letterContainer">
+    <div class="letter-side">
+      <div class="uppercase" id="upper"></div>
+      <div class="lowercase" id="lower"></div>
+    </div>
+    <div class="animal-side" id="animalSide">
+      <div class="animal-emoji" id="animalEmoji"></div>
+      <div class="animal-name">
+        <div class="animal-name-zh" id="animalZh"></div>
+        <div class="animal-name-en" id="animalEn"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
-  const colors = [
-    '#1a1a2e', '#16213e', '#0f3460', '#533483',
-    '#e94560', '#2b2d42', '#3a0ca3', '#7209b7',
-    '#f72585', '#4361ee', '#4cc9f0', '#006d77',
-    '#e29578', '#bc6c25', '#606c38', '#283618',
-    '#6d6875', '#b5838d', '#e5989b', '#ffcdb2',
-    '#264653', '#2a9d8f', '#e76f51', '#f4a261',
-    '#a8dadc', '#457b9d',
-  ];
+  const animals = {
+    a: { zh: '鳄鱼', en: 'Alligator', emoji: '🐊' },
+    b: { zh: '小熊', en: 'Bear', emoji: '🐻' },
+    c: { zh: '小猫', en: 'Cat', emoji: '🐱' },
+    d: { zh: '小狗', en: 'Dog', emoji: '🐶' },
+    e: { zh: '大象', en: 'Elephant', emoji: '🐘' },
+    f: { zh: '狐狸', en: 'Fox', emoji: '🦊' },
+    g: { zh: '长颈鹿', en: 'Giraffe', emoji: '🦒' },
+    h: { zh: '河马', en: 'Hippo', emoji: '🦛' },
+    i: { zh: '鬣蜥', en: 'Iguana', emoji: '🦎' },
+    j: { zh: '水母', en: 'Jellyfish', emoji: '🪼' },
+    k: { zh: '考拉', en: 'Koala', emoji: '🐨' },
+    l: { zh: '狮子', en: 'Lion', emoji: '🦁' },
+    m: { zh: '猴子', en: 'Monkey', emoji: '🐵' },
+    n: { zh: '独角鲸', en: 'Narwhal', emoji: '🐋' },
+    o: { zh: '猫头鹰', en: 'Owl', emoji: '🦉' },
+    p: { zh: '企鹅', en: 'Penguin', emoji: '🐧' },
+    q: { zh: '鹌鹑', en: 'Quail', emoji: '🐦' },
+    r: { zh: '兔子', en: 'Rabbit', emoji: '🐰' },
+    s: { zh: '蛇', en: 'Snake', emoji: '🐍' },
+    t: { zh: '老虎', en: 'Tiger', emoji: '🐯' },
+    u: { zh: '独角兽', en: 'Unicorn', emoji: '🦄' },
+    v: { zh: '秃鹫', en: 'Vulture', emoji: '🦅' },
+    w: { zh: '鲸鱼', en: 'Whale', emoji: '🐳' },
+    x: { zh: '剑鱼', en: 'X-ray Fish', emoji: '🐟' },
+    y: { zh: '牦牛', en: 'Yak', emoji: '🐃' },
+    z: { zh: '斑马', en: 'Zebra', emoji: '🦓' },
+  };
 
   const hint = document.getElementById('hint');
   const container = document.getElementById('letterContainer');
   const upperEl = document.getElementById('upper');
   const lowerEl = document.getElementById('lower');
+  const animalEmojiEl = document.getElementById('animalEmoji');
+  const animalZhEl = document.getElementById('animalZh');
+  const animalEnEl = document.getElementById('animalEn');
+  const animalSideEl = document.getElementById('animalSide');
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  const appWrapper = document.getElementById('appWrapper');
+
+  function enterApp() {
+    fullscreenBtn.classList.add('hidden');
+    appWrapper.classList.remove('hidden');
+  }
+
+  function exitApp() {
+    fullscreenBtn.classList.remove('hidden');
+    appWrapper.classList.add('hidden');
+    hint.style.display = '';
+    container.classList.remove('active');
+  }
+
+  fullscreenBtn.addEventListener('click', () => {
+    const rfs = appWrapper.requestFullscreen
+      || appWrapper.webkitRequestFullscreen
+      || appWrapper.msRequestFullscreen;
+    if (rfs) {
+      const result = rfs.call(appWrapper);
+      if (result && result.then) {
+        result.then(enterApp).catch(enterApp);
+      } else {
+        enterApp();
+      }
+    } else {
+      enterApp();
+    }
+  });
+
+  function onFullscreenChange() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      exitApp();
+    }
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+  const synth = window.speechSynthesis;
+  let enVoice = null;
+  let zhVoice = null;
+
+  function pickVoices() {
+    const voices = synth.getVoices();
+    const enPrefer = ['Samantha', 'Karen', 'Daniel', 'Alex'];
+    const zhPrefer = ['Tingting', 'Sinji', 'Meijia'];
+    for (const name of enPrefer) {
+      const v = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));
+      if (v) { enVoice = v; break; }
+    }
+    if (!enVoice) enVoice = voices.find(v => v.lang.startsWith('en-') && !v.name.includes('Compact')) || null;
+    for (const name of zhPrefer) {
+      const v = voices.find(v => v.name.includes(name));
+      if (v) { zhVoice = v; break; }
+    }
+    if (!zhVoice) zhVoice = voices.find(v => v.lang.startsWith('zh')) || null;
+  }
+
+  pickVoices();
+  synth.addEventListener('voiceschanged', pickVoices);
+
+  function speak(text, lang, rate, voice) {
+    return new Promise((resolve) => {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = lang;
+      utter.rate = rate;
+      utter.volume = 1;
+      utter.pitch = 1.05;
+      if (voice) utter.voice = voice;
+      utter.onend = () => resolve(true);
+      utter.onerror = () => resolve(false);
+      synth.speak(utter);
+      if (synth.paused) synth.resume();
+      setTimeout(() => {
+        if (synth.paused) synth.resume();
+      }, 100);
+    });
+  }
+
+  function pause(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function waitSynthReady() {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!synth.speaking) {
+          resolve();
+        } else {
+          setTimeout(check, 10);
+        }
+      };
+      check();
+    });
+  }
+
+  let speakId = 0;
+
+  const letterPronounce = {
+    m: 'em, mmm',
+    n: 'en, nnn',
+  };
+
+  async function speakSequence(letter, animal) {
+    const id = ++speakId;
+    synth.cancel();
+    await pause(150);
+    await waitSynthReady();
+    if (speakId !== id) return;
+    const letterText = letterPronounce[letter] || letter.toLowerCase();
+    await speak(letterText, 'en-US', 0.45, enVoice);
+    if (speakId !== id) return;
+    await pause(300);
+    if (speakId !== id) return;
+    await speak(animal.en, 'en-US', 0.7, enVoice);
+    if (speakId !== id) return;
+    await pause(300);
+    if (speakId !== id) return;
+    await speak(animal.zh, 'zh-CN', 0.8, zhVoice);
+  }
 
   document.addEventListener('keydown', (e) => {
     const key = e.key;
     if (key.length !== 1 || !key.match(/[a-zA-Z]/)) return;
 
-    hint.style.display = 'none';
+    hint.classList.add('hidden');
     container.classList.add('active');
 
     upperEl.textContent = key.toUpperCase();
@@ -112,8 +365,17 @@
     void upperEl.offsetWidth;
     upperEl.style.animation = 'popIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
 
-    const idx = key.toLowerCase().charCodeAt(0) - 97;
-    document.body.style.background = colors[idx];
+    const letter = key.toLowerCase();
+    const animal = animals[letter];
+    if (animal) {
+      animalEmojiEl.textContent = animal.emoji;
+      animalZhEl.textContent = animal.zh;
+      animalEnEl.textContent = animal.en;
+      animalSideEl.style.animation = 'none';
+      void animalSideEl.offsetWidth;
+      animalSideEl.style.animation = 'fadeSlideIn 0.35s ease-out';
+      speakSequence(letter, animal);
+    }
   });
 </script>
 

@@ -77,6 +77,7 @@ export const useRulesStore = create<RulesState>((set, get) => ({
       activeGroupId: groupId,
       isGroupMode: groupId !== null,
       groupWritable: false,
+      rules: [],
       selectedRuleName: null,
       currentRule: null,
       editingContent: {},
