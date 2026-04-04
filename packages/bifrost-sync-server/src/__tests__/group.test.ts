@@ -1155,3 +1155,151 @@ describe('Group Env Management - Permission & Rules', () => {
     });
   });
 });
+
+describe('Env sort_order Support', () => {
+  let token: string;
+
+  beforeAll(async () => {
+    token = await registerUser('sort_order_user', 'password123');
+  });
+
+  it('should default sort_order to 0 when not provided', async () => {
+    const res = await req('POST', '/v4/env', {
+      user_id: 'sort_order_user',
+      name: 'no-sort-order',
+      rule: 'a.com -> 1.1.1.1',
+    }, token);
+    expect(res.status).toBe(200);
+    const env = res.data.data as { id: string; sort_order: number };
+    expect(env.sort_order).toBe(0);
+  });
+
+  it('should accept sort_order when creating env', async () => {
+    const res = await req('POST', '/v4/env', {
+      user_id: 'sort_order_user',
+      name: 'with-sort-order',
+      rule: 'b.com -> 2.2.2.2',
+      sort_order: 5,
+    }, token);
+    expect(res.status).toBe(200);
+    const env = res.data.data as { id: string; sort_order: number };
+    expect(env.sort_order).toBe(5);
+  });
+
+  it('should return sort_order when reading env', async () => {
+    const searchRes = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    const envs = (searchRes.data.data as { list: { id: string; name: string; sort_order: number }[] }).list;
+    const env = envs.find(e => e.name === 'with-sort-order');
+    expect(env).toBeDefined();
+
+    const readRes = await req('GET', `/v4/env/${env!.id}`, undefined, token);
+    expect(readRes.status).toBe(200);
+    const detail = readRes.data.data as { sort_order: number };
+    expect(detail.sort_order).toBe(5);
+  });
+
+  it('should return sort_order in search results', async () => {
+    const res = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    expect(res.status).toBe(200);
+    const data = res.data.data as { list: { name: string; sort_order: number }[] };
+    const noSort = data.list.find(e => e.name === 'no-sort-order');
+    const withSort = data.list.find(e => e.name === 'with-sort-order');
+    expect(noSort!.sort_order).toBe(0);
+    expect(withSort!.sort_order).toBe(5);
+  });
+
+  it('should update sort_order', async () => {
+    const searchRes = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    const envs = (searchRes.data.data as { list: { id: string; name: string }[] }).list;
+    const env = envs.find(e => e.name === 'no-sort-order')!;
+
+    const updateRes = await req('PATCH', `/v4/env/${env.id}`, {
+      sort_order: 10,
+    }, token);
+    expect(updateRes.status).toBe(200);
+    const updated = updateRes.data.data as { sort_order: number };
+    expect(updated.sort_order).toBe(10);
+  });
+
+  it('should preserve sort_order when not provided in update', async () => {
+    const searchRes = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    const envs = (searchRes.data.data as { list: { id: string; name: string; sort_order: number }[] }).list;
+    const env = envs.find(e => e.name === 'with-sort-order')!;
+    expect(env.sort_order).toBe(5);
+
+    const updateRes = await req('PATCH', `/v4/env/${env.id}`, {
+      rule: 'b.com -> 3.3.3.3',
+    }, token);
+    expect(updateRes.status).toBe(200);
+    const updated = updateRes.data.data as { sort_order: number };
+    expect(updated.sort_order).toBe(5);
+  });
+
+  it('should handle sort_order in sync update_list for new env', async () => {
+    const res = await req('POST', '/v4/env/sync', {
+      user_ids: [],
+      check_list: [],
+      update_list: [{
+        user_id: 'sort_order_user',
+        id: 'sync-new-sort-id',
+        name: 'sync-sort-env',
+        rule: 'sync.com -> 5.5.5.5',
+        sort_order: 3,
+        update_time: new Date().toISOString(),
+      }],
+      delete_list: [],
+    }, token);
+    expect(res.status).toBe(200);
+    const data = res.data.data as { result_list: { status: number; sort_order?: number; name?: string }[] };
+    expect(data.result_list[0].status).toBe(0);
+    expect(data.result_list[0].sort_order).toBe(3);
+  });
+
+  it('should handle sort_order in sync update_list for existing env', async () => {
+    const searchRes = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    const envs = (searchRes.data.data as { list: { id: string; name: string; sort_order: number }[] }).list;
+    const env = envs.find(e => e.name === 'sync-sort-env')!;
+    expect(env.sort_order).toBe(3);
+
+    const res = await req('POST', '/v4/env/sync', {
+      user_ids: [],
+      check_list: [],
+      update_list: [{
+        user_id: 'sort_order_user',
+        id: env.id,
+        name: 'sync-sort-env',
+        rule: 'sync.com -> 6.6.6.6',
+        sort_order: 7,
+        update_time: new Date().toISOString(),
+      }],
+      delete_list: [],
+    }, token);
+    expect(res.status).toBe(200);
+    const data = res.data.data as { result_list: { status: number; sort_order?: number }[] };
+    expect(data.result_list[0].status).toBe(0);
+    expect(data.result_list[0].sort_order).toBe(7);
+  });
+
+  it('should include sort_order in sync check_list local_update_list', async () => {
+    const searchRes = await req('GET', '/v4/env?user_id=sort_order_user', undefined, token);
+    const envs = (searchRes.data.data as { list: { id: string; name: string; sort_order: number; update_time: string }[] }).list;
+    const env = envs.find(e => e.name === 'sync-sort-env')!;
+
+    const res = await req('POST', '/v4/env/sync', {
+      user_ids: [],
+      check_list: [{
+        id: env.id,
+        user_id: 'sort_order_user',
+        update_time: '1970-01-01T00:00:00.000Z',
+        hash: '',
+      }],
+      update_list: [],
+      delete_list: [],
+    }, token);
+    expect(res.status).toBe(200);
+    const data = res.data.data as { local_update_list: { id: string; sort_order: number }[] };
+    expect(data.local_update_list.length).toBe(1);
+    expect(data.local_update_list[0].id).toBe(env.id);
+    expect(data.local_update_list[0].sort_order).toBe(7);
+  });
+});
