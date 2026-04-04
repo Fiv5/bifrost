@@ -88,6 +88,26 @@ export default function RuleList() {
 
   const [showGroupSwitcher, setShowGroupSwitcher] = useState(false);
   const [userGroups, setUserGroups] = useState<Group[]>([]);
+  const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (loading) {
+      const timer = setTimeout(() => {
+        setShowLoadingOverlay(true);
+      }, 500);
+      loadingTimerRef.current = timer;
+      return () => {
+        clearTimeout(timer);
+        loadingTimerRef.current = null;
+      };
+    }
+    loadingTimerRef.current = null;
+    const frame = requestAnimationFrame(() => {
+      setShowLoadingOverlay(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -627,9 +647,15 @@ export default function RuleList() {
         />
       </div>
 
-      <div
-        ref={listContainerRef}
-        className={styles.listContainer}
+      <div className={styles.listWrapper}>
+        {showLoadingOverlay && (
+          <div className={styles.loadingOverlay}>
+            <Spin size="small" />
+          </div>
+        )}
+        <div
+          ref={listContainerRef}
+          className={styles.listContainer}
         tabIndex={0}
         role="listbox"
         aria-label="Rules list"
@@ -773,6 +799,7 @@ export default function RuleList() {
             )}
           </div>
         )}
+      </div>
       </div>
 
       <div className={styles.footer}>

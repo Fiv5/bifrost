@@ -421,10 +421,7 @@ async fn resolve_writable_from_room(
     }
 }
 
-async fn ensure_virtual_user(
-    sync_manager: &bifrost_sync::SyncManager,
-    group_id: &str,
-) {
+async fn ensure_virtual_user(sync_manager: &bifrost_sync::SyncManager, group_id: &str) {
     let path = format!("/v4/group/{group_id}/setting");
     match proxy_get_json::<serde_json::Value>(sync_manager, &path, None).await {
         Ok(_) => {
