@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
@@ -9,8 +10,12 @@ import { useValuesStore } from '../../stores/useValuesStore';
 import { notifyApiBusinessError } from '../../api/client';
 import pushService from '../../services/pushService';
 
+const GROUP_PARAM = 'group';
+const RULE_PARAM = 'rule';
+
 export default function Rules() {
   const { token } = theme.useToken();
+  const [searchParams, setSearchParams] = useSearchParams();
   const error = useRulesStore((state) => state.error);
   const clearError = useRulesStore((state) => state.clearError);
   const rules = useRulesStore((state) => state.rules);
@@ -19,18 +24,28 @@ export default function Rules() {
   const fetchRules = useRulesStore((state) => state.fetchRules);
   const setActiveGroupId = useRulesStore((state) => state.setActiveGroupId);
   const activeGroupId = useRulesStore((state) => state.activeGroupId);
+  const loading = useRulesStore((state) => state.loading);
   const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
-  const initRef = useRef(false);
-  const loadedRef = useRef(false);
+  const initDoneRef = useRef(false);
+  const groupFallbackRef = useRef(false);
 
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
+    const storeHasState = rules.length > 0 && selectedRuleName !== null;
 
-    if (rules.length === 0) {
-      void fetchRules();
+    if (storeHasState) {
+      initDoneRef.current = true;
+    } else {
+      const groupParam = searchParams.get(GROUP_PARAM);
+      const initialGroupId = groupParam || null;
+
+      if (initialGroupId !== activeGroupId) {
+        setActiveGroupId(initialGroupId);
+      } else if (rules.length === 0) {
+        void fetchRules();
+      }
     }
+
     pushService.connect({ need_values: true });
     const unsubscribe = pushService.onValuesUpdate((data) => {
       applyValuesSnapshot(data.values);
@@ -41,15 +56,59 @@ export default function Rules() {
       pushService.updateSubscription({ need_values: false });
       pushService.disconnectIfIdle();
     };
-  }, [applyValuesSnapshot, fetchRules, rules.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    if (initRef.current) return;
+    if (initDoneRef.current) return;
+    if (loading) return;
+
+    if (rules.length === 0 && activeGroupId && !groupFallbackRef.current) {
+      groupFallbackRef.current = true;
+      setActiveGroupId(null);
+      return;
+    }
+
+    if (rules.length === 0) return;
+    initDoneRef.current = true;
+
+    const ruleParam = searchParams.get(RULE_PARAM);
+    if (ruleParam) {
+      const exists = rules.some((r) => r.name === ruleParam);
+      if (exists) {
+        selectRule(ruleParam);
+        return;
+      }
+    }
+    selectRule(rules[0].name);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rules, loading]);
+
+  useEffect(() => {
+    if (!initDoneRef.current) return;
     if (rules.length > 0 && !selectedRuleName) {
-      initRef.current = true;
       selectRule(rules[0].name);
     }
   }, [rules, selectedRuleName, selectRule]);
+
+  useEffect(() => {
+    if (!initDoneRef.current) return;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (activeGroupId) {
+        next.set(GROUP_PARAM, activeGroupId);
+      } else {
+        next.delete(GROUP_PARAM);
+      }
+      if (selectedRuleName) {
+        next.set(RULE_PARAM, selectedRuleName);
+      } else {
+        next.delete(RULE_PARAM);
+      }
+      if (next.toString() === prev.toString()) return prev;
+      return next;
+    }, { replace: true });
+  }, [activeGroupId, selectedRuleName, setSearchParams]);
 
   useEffect(() => {
     if (error) {
