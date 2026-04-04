@@ -1,20 +1,23 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { theme, Badge } from "antd";
-import { ThunderboltOutlined } from "@ant-design/icons";
-import type { RuleFile } from "../../types";
+import { ThunderboltOutlined, TeamOutlined } from "@ant-design/icons";
+import { getActiveSummary, type ActiveRuleItem } from "../../api/rules";
+import { useRulesStore } from "../../stores/useRulesStore";
 
 interface Props {
-  rules: RuleFile[];
-  onClickRule: (name: string) => void;
+  onNavigateRule: (name: string, groupId: string | null) => void;
 }
 
 const DRAG_THRESHOLD = 4;
 
-export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
+export default function RulesDynamicIsland({ onNavigateRule }: Props) {
   const { token } = theme.useToken();
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [activeRules, setActiveRules] = useState<ActiveRuleItem[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef({
     startX: 0,
@@ -24,10 +27,20 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
     hasMoved: false,
   });
 
-  const enabledRules = useMemo(
-    () => (rules ?? []).filter((r) => r.enabled),
-    [rules],
-  );
+  const rules = useRulesStore((s) => s.rules);
+
+  const fetchActive = useCallback(async () => {
+    try {
+      const resp = await getActiveSummary();
+      setActiveRules(resp.rules);
+    } catch {
+      setActiveRules([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchActive();
+  }, [fetchActive, rules]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -125,6 +138,21 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
       ? { left: position.x, top: position.y }
       : { top: 6, left: "50%", transform: "translateX(-50%)" };
 
+  const ownRules = activeRules.filter((r) => !r.group_id);
+  const groupRulesMap = new Map<string, { groupName: string; groupId: string; rules: ActiveRuleItem[] }>();
+  for (const r of activeRules) {
+    if (r.group_id) {
+      if (!groupRulesMap.has(r.group_id)) {
+        groupRulesMap.set(r.group_id, {
+          groupName: r.group_name ?? r.group_id,
+          groupId: r.group_id,
+          rules: [],
+        });
+      }
+      groupRulesMap.get(r.group_id)!.rules.push(r);
+    }
+  }
+
   return (
     <div
       ref={containerRef}
@@ -159,16 +187,20 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
         }}
       >
         <Badge
-          count={enabledRules.length}
+          count={activeRules.length}
           size="small"
-          color={enabledRules.length > 0 ? token.colorSuccess : token.colorTextDisabled}
+          color={
+            activeRules.length > 0
+              ? token.colorSuccess
+              : token.colorTextDisabled
+          }
           overflowCount={99}
         >
           <ThunderboltOutlined
             style={{
               fontSize: 14,
               color:
-                enabledRules.length > 0
+                activeRules.length > 0
                   ? token.colorSuccess
                   : token.colorTextDisabled,
             }}
@@ -181,11 +213,11 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
             color: token.colorText,
           }}
         >
-          {enabledRules.length} active
+          {activeRules.length} active
         </span>
       </div>
 
-      {expanded && enabledRules.length > 0 && (
+      {expanded && activeRules.length > 0 && (
         <div
           style={{
             position: "absolute",
@@ -193,9 +225,9 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
             left: "50%",
             transform: "translateX(-50%)",
             marginTop: 4,
-            minWidth: 220,
-            maxWidth: 360,
-            maxHeight: 320,
+            minWidth: 240,
+            maxWidth: 380,
+            maxHeight: 400,
             overflowY: "auto",
             backgroundColor: token.colorBgElevated,
             border: `1px solid ${token.colorBorderSecondary}`,
@@ -205,61 +237,74 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
             animation: "islandFadeIn 0.2s ease",
           }}
         >
-          {enabledRules.map((rule) => (
-            <div
-              key={rule.name}
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpanded(false);
-                onClickRule(rule.name);
-              }}
-              style={{
-                padding: "8px 16px",
-                fontSize: 13,
-                color: token.colorText,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                transition: "background-color 0.15s",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLDivElement).style.backgroundColor =
-                  token.colorBgTextHover;
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLDivElement).style.backgroundColor =
-                  "transparent";
-              }}
-            >
-              <ThunderboltOutlined
-                style={{ fontSize: 12, color: token.colorSuccess, flexShrink: 0 }}
-              />
-              <span
+          {ownRules.length > 0 && (
+            <>
+              <div
                 style={{
-                  flex: 1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {rule.name}
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
+                  padding: "6px 16px 2px",
+                  fontSize: 11,
+                  fontWeight: 600,
                   color: token.colorTextDescription,
-                  flexShrink: 0,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
                 }}
               >
-                {rule.rule_count} rules
-              </span>
+                My Rules
+              </div>
+              {ownRules.map((rule) => (
+                <RuleRow
+                  key={`own-${rule.name}`}
+                  rule={rule}
+                  token={token}
+                  onClick={() => {
+                    setExpanded(false);
+                    onNavigateRule(rule.name, null);
+                  }}
+                />
+              ))}
+            </>
+          )}
+          {[...groupRulesMap.values()].map((group) => (
+            <div key={group.groupId}>
+              <div
+                style={{
+                  padding: "8px 16px 2px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: token.colorTextDescription,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <TeamOutlined style={{ fontSize: 11 }} />
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {group.groupName}
+                </span>
+              </div>
+              {group.rules.map((rule) => (
+                <RuleRow
+                  key={`${group.groupId}-${rule.name}`}
+                  rule={rule}
+                  token={token}
+                  onClick={() => {
+                    setExpanded(false);
+                    onNavigateRule(rule.name, rule.group_id);
+                  }}
+                />
+              ))}
             </div>
           ))}
         </div>
       )}
 
-      {expanded && enabledRules.length === 0 && (
+      {expanded && activeRules.length === 0 && (
         <div
           style={{
             position: "absolute",
@@ -281,6 +326,66 @@ export default function RulesDynamicIsland({ rules, onClickRule }: Props) {
           No active rules
         </div>
       )}
+    </div>
+  );
+}
+
+function RuleRow({
+  rule,
+  token,
+  onClick,
+}: {
+  rule: ActiveRuleItem;
+  token: ReturnType<typeof theme.useToken>["token"];
+  onClick: () => void;
+}) {
+  return (
+    <div
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{
+        padding: "8px 16px",
+        fontSize: 13,
+        color: token.colorText,
+        cursor: "pointer",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        transition: "background-color 0.15s",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLDivElement).style.backgroundColor =
+          token.colorBgTextHover;
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLDivElement).style.backgroundColor =
+          "transparent";
+      }}
+    >
+      <ThunderboltOutlined
+        style={{ fontSize: 12, color: token.colorSuccess, flexShrink: 0 }}
+      />
+      <span
+        style={{
+          flex: 1,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {rule.name}
+      </span>
+      <span
+        style={{
+          fontSize: 12,
+          color: token.colorTextDescription,
+          flexShrink: 0,
+        }}
+      >
+        {rule.rule_count} rules
+      </span>
     </div>
   );
 }

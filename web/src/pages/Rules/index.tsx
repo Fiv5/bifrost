@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { theme } from 'antd';
 import SplitPane from '../../components/SplitPane';
 import RuleList from './RuleList';
@@ -17,6 +17,8 @@ export default function Rules() {
   const selectedRuleName = useRulesStore((state) => state.selectedRuleName);
   const selectRule = useRulesStore((state) => state.selectRule);
   const fetchRules = useRulesStore((state) => state.fetchRules);
+  const setActiveGroupId = useRulesStore((state) => state.setActiveGroupId);
+  const activeGroupId = useRulesStore((state) => state.activeGroupId);
   const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
   const initRef = useRef(false);
@@ -56,6 +58,18 @@ export default function Rules() {
     }
   }, [error, clearError]);
 
+  const handleNavigateRule = useCallback(
+    async (name: string, groupId: string | null) => {
+      const targetGroupId = groupId ?? null;
+      if (targetGroupId !== activeGroupId) {
+        setActiveGroupId(targetGroupId);
+        await fetchRules();
+      }
+      selectRule(name);
+    },
+    [activeGroupId, setActiveGroupId, fetchRules, selectRule],
+  );
+
   const containerStyle = {
     width: '100%',
     height: '100%',
@@ -68,10 +82,7 @@ export default function Rules() {
 
   return (
     <div style={containerStyle}>
-      <RulesDynamicIsland
-        rules={rules}
-        onClickRule={(name) => selectRule(name)}
-      />
+      <RulesDynamicIsland onNavigateRule={handleNavigateRule} />
       <div style={{ flex: 1, overflow: 'hidden' }}>
         <SplitPane
           left={<RuleList />}

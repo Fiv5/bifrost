@@ -1,6 +1,22 @@
 import { get, post, put, del } from './client';
 import type { RuleFile, RuleFileDetail, ApiResponse } from '../types';
 
+export interface ActiveRuleItem {
+  name: string;
+  rule_count: number;
+  group_id: string | null;
+  group_name: string | null;
+}
+
+export interface ActiveSummaryResponse {
+  total: number;
+  rules: ActiveRuleItem[];
+}
+
+export async function getActiveSummary(): Promise<ActiveSummaryResponse> {
+  return get<ActiveSummaryResponse>('/rules/active-summary');
+}
+
 export async function getRules(): Promise<RuleFile[]> {
   return get<RuleFile[]>('/rules');
 }

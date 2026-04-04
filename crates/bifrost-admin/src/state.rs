@@ -804,6 +804,13 @@ impl GroupNameCacheGuard<'_> {
     pub fn insert(&mut self, group_id: String, name: String) {
         self.guard.insert(group_id, name);
     }
+
+    pub fn reverse_lookup(&self, name: &str) -> Option<String> {
+        self.guard
+            .iter()
+            .find(|(_, v)| v.as_str() == name)
+            .map(|(k, _)| k.clone())
+    }
 }
 
 pub type SharedAdminState = Arc<AdminState>;

@@ -1,7 +1,7 @@
 use bifrost_core::{
     validate_rules_with_context, ParseError, ParseErrorSeverity, ScriptReference, VariableInfo,
 };
-use bifrost_storage::{ConfigChangeEvent, RuleFile, RuleSummary};
+use bifrost_storage::{ConfigChangeEvent, RuleFile, RuleSummary, RulesStorage};
 use http_body_util::BodyExt;
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,20 @@ struct RenameRuleRequest {
     new_name: String,
 }
 
+#[derive(Debug, Serialize)]
+struct ActiveRuleItem {
+    name: String,
+    rule_count: usize,
+    group_id: Option<String>,
+    group_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ActiveSummaryResponse {
+    total: usize,
+    rules: Vec<ActiveRuleItem>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ValidateRuleRequest {
     content: String,
@@ -105,6 +119,11 @@ pub async fn handle_rules(
     } else if path == "/api/rules/reorder" {
         match method {
             Method::PUT => reorder_rules(req, state, push_manager).await,
+            _ => method_not_allowed(),
+        }
+    } else if path == "/api/rules/active-summary" {
+        match method {
+            Method::GET => active_summary(state).await,
             _ => method_not_allowed(),
         }
     } else if path == "/api/rules/validate" {
@@ -165,6 +184,115 @@ async fn list_rules(state: SharedAdminState) -> Response<BoxBody> {
             &format!("Failed to list rules: {}", e),
         ),
     }
+}
+
+fn collect_enabled_from_storage(
+    storage: &RulesStorage,
+    group_id: Option<&str>,
+    group_name: Option<&str>,
+) -> Vec<ActiveRuleItem> {
+    let names = match storage.list() {
+        Ok(n) => n,
+        Err(_) => return Vec::new(),
+    };
+    let mut items = Vec::new();
+    for name in &names {
+        if let Ok(rule) = storage.load(name) {
+            if rule.enabled {
+                let rule_count = rule
+                    .content
+                    .lines()
+                    .filter(|l| {
+                        let t = l.trim();
+                        !t.is_empty() && !t.starts_with('#')
+                    })
+                    .count();
+                items.push(ActiveRuleItem {
+                    name: rule.name,
+                    rule_count,
+                    group_id: group_id.map(|s| s.to_string()),
+                    group_name: group_name.map(|s| s.to_string()),
+                });
+            }
+        }
+    }
+    items
+}
+
+async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
+    let mut all_rules = Vec::new();
+
+    match state.rules_storage.list_summaries() {
+        Ok(summaries) => {
+            for s in summaries {
+                if s.enabled {
+                    all_rules.push(ActiveRuleItem {
+                        name: s.name,
+                        rule_count: s.rule_count,
+                        group_id: None,
+                        group_name: None,
+                    });
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "bifrost_admin::rules",
+                error = %e,
+                "Failed to list own rules for active summary"
+            );
+        }
+    }
+
+    let base_dir = state.rules_storage.base_dir();
+
+    let group_dirs: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(base_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| {
+            let dir_name = e.file_name().to_string_lossy().to_string();
+            (dir_name, e.path())
+        })
+        .collect();
+
+    let reverse_cache: HashMap<String, String> = {
+        let cache = state.group_name_cache();
+        let mut map = HashMap::new();
+        for (dir_name, _) in &group_dirs {
+            if let Some(gid) = cache.reverse_lookup(dir_name) {
+                map.insert(dir_name.clone(), gid);
+            }
+        }
+        map
+    };
+
+    for (dir_name, dir_path) in &group_dirs {
+        let group_storage = match RulesStorage::with_dir(dir_path.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::rules",
+                    error = %e,
+                    dir = %dir_name,
+                    "Failed to open group rules storage for active summary"
+                );
+                continue;
+            }
+        };
+
+        let group_id = reverse_cache.get(dir_name).cloned();
+        let group_rules =
+            collect_enabled_from_storage(&group_storage, group_id.as_deref(), Some(dir_name));
+        all_rules.extend(group_rules);
+    }
+
+    let resp = ActiveSummaryResponse {
+        total: all_rules.len(),
+        rules: all_rules,
+    };
+    json_response(&resp)
 }
 
 async fn validate_rule(req: Request<Incoming>, state: SharedAdminState) -> Response<BoxBody> {

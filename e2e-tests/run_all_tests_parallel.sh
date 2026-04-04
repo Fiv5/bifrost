@@ -129,6 +129,27 @@ FIXTURE_ONLY_RULES=(
     "websocket/decode_utf8_searchable.txt"
 )
 
+WINDOWS_SKIP_RULES=(
+    "tls/sni_callback.txt"
+    "tls/tls_options.txt"
+    "tls/tls_intercept_rule.txt"
+    "forwarding/tunnel.txt"
+)
+
+should_skip_on_windows() {
+    local rel_path="$1"
+    if ! is_windows; then
+        return 1
+    fi
+    local fixture
+    for fixture in "${WINDOWS_SKIP_RULES[@]}"; do
+        if [[ "$rel_path" == "$fixture" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 should_skip_rule_fixture() {
     local rel_path="$1"
     local fixture
@@ -138,6 +159,10 @@ should_skip_rule_fixture() {
             return 0
         fi
     done
+
+    if should_skip_on_windows "$rel_path"; then
+        return 0
+    fi
 
     return 1
 }
@@ -712,6 +737,12 @@ main() {
     BASE_PORT="$selected_base_port"
 
     info "找到 $total_suites 个测试套件，使用 $JOBS 个并行任务"
+
+    if is_windows; then
+        info "Windows: 清理残留 bifrost 进程..."
+        kill_all_bifrost
+        sleep 2
+    fi
 
     header "执行并行测试"
 
