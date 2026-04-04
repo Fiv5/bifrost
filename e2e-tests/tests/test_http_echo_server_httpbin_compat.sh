@@ -80,17 +80,30 @@ curl_json() {
     curl -sS "$@" "${BASE_URL}${path}" -o "${output}"
 }
 
-python3 "${SERVER_SCRIPT}" "${PORT}" >"${TMP_DIR}/server.log" 2>&1 &
+SERVER_LOG="${TMP_DIR}/server.log"
+python3 "${SERVER_SCRIPT}" "${PORT}" > >(tee "${SERVER_LOG}") 2>&1 &
 SERVER_PID="$!"
 
-for _ in $(seq 1 50); do
-    if curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
+READY=0
+for _ in $(seq 1 150); do
+    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+        echo "ERROR: server process exited prematurely" >&2
+        cat "${SERVER_LOG}" >&2
+        exit 1
+    fi
+    if grep -q '^READY$' "${SERVER_LOG}" 2>/dev/null; then
+        READY=1
         break
     fi
     sleep 0.2
 done
 
-curl -fsS "${BASE_URL}/health" >/dev/null
+if [[ "${READY}" -ne 1 ]]; then
+    echo "ERROR: server did not become ready in 30s" >&2
+    echo "--- server log ---" >&2
+    cat "${SERVER_LOG}" >&2
+    exit 1
+fi
 
 GET_JSON="${TMP_DIR}/get.json"
 curl_json '/get?foo=bar' "${GET_JSON}" -H 'User-Agent: curl-test/1.0'

@@ -134,6 +134,8 @@ pub struct TestRunner {
     base_port: u16,
     concurrency: usize,
     reporter: Reporter,
+    global_timeout: Option<Duration>,
+    test_timeout: Duration,
 }
 
 impl TestRunner {
@@ -143,11 +145,23 @@ impl TestRunner {
             base_port,
             concurrency: 1,
             reporter,
+            global_timeout: None,
+            test_timeout: Duration::from_secs(120),
         }
     }
 
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency.max(1);
+        self
+    }
+
+    pub fn with_global_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.global_timeout = timeout;
+        self
+    }
+
+    pub fn with_test_timeout(mut self, timeout: Duration) -> Self {
+        self.test_timeout = timeout;
         self
     }
 
@@ -189,66 +203,87 @@ impl TestRunner {
         let total = self.tests.len();
         self.reporter.start(total);
 
-        let mut results = if self.concurrency <= 1 {
-            self.run_all_serial().await
-        } else {
-            self.run_all_parallel(total).await
+        let global_timeout = self.global_timeout;
+
+        let run_tests = async {
+            let mut results = if self.concurrency <= 1 {
+                self.run_all_serial().await
+            } else {
+                self.run_all_parallel(total).await
+            };
+
+            let retry_enabled = std::env::var("BIFROST_E2E_RETRY_FAILED_ONCE")
+                .ok()
+                .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+            if !retry_enabled {
+                return results;
+            }
+
+            let failed_indices: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.status == TestStatus::Failed)
+                .map(|(i, _)| i)
+                .collect();
+
+            if failed_indices.is_empty() {
+                return results;
+            }
+
+            tracing::info!("Retrying {} failed test(s) once...", failed_indices.len());
+
+            let test_timeout = self.test_timeout;
+            for &idx in &failed_indices {
+                let test = &self.tests[idx];
+                let port = self.base_port + (idx as u16);
+                tracing::info!("  Retrying: {} (port {})", test.name, port);
+                let result = run_single_test(test, port, test_timeout).await;
+                tracing::info!(
+                    "  Retry result: {} {} ({}ms)",
+                    match result.status {
+                        TestStatus::Passed => "✓",
+                        TestStatus::Failed => "✗",
+                        TestStatus::Skipped => "○",
+                    },
+                    result.name,
+                    result.duration.as_millis()
+                );
+                if result.status == TestStatus::Failed {
+                    if let Some(ref error) = result.error {
+                        tracing::error!("  RETRY FAIL: {} - {}", result.name, error);
+                    }
+                }
+                results[idx] = result;
+            }
+
+            results
         };
 
-        let retry_enabled = std::env::var("BIFROST_E2E_RETRY_FAILED_ONCE")
-            .ok()
-            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-
-        if !retry_enabled {
-            return results;
-        }
-
-        let failed_indices: Vec<usize> = results
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| r.status == TestStatus::Failed)
-            .map(|(i, _)| i)
-            .collect();
-
-        if failed_indices.is_empty() {
-            return results;
-        }
-
-        tracing::info!("Retrying {} failed test(s) once...", failed_indices.len());
-
-        for &idx in &failed_indices {
-            let test = &self.tests[idx];
-            let port = self.base_port + (idx as u16);
-            tracing::info!("  Retrying: {} (port {})", test.name, port);
-            let result = run_single_test(test, port).await;
-            tracing::info!(
-                "  Retry result: {} {} ({}ms)",
-                match result.status {
-                    TestStatus::Passed => "✓",
-                    TestStatus::Failed => "✗",
-                    TestStatus::Skipped => "○",
-                },
-                result.name,
-                result.duration.as_millis()
-            );
-            if result.status == TestStatus::Failed {
-                if let Some(ref error) = result.error {
-                    tracing::error!("  RETRY FAIL: {} - {}", result.name, error);
+        if let Some(timeout) = global_timeout {
+            match tokio::time::timeout(timeout, run_tests).await {
+                Ok(results) => results,
+                Err(_) => {
+                    tracing::error!(
+                        "Global timeout reached after {}s, aborting remaining tests",
+                        timeout.as_secs()
+                    );
+                    Vec::new()
                 }
             }
-            results[idx] = result;
+        } else {
+            run_tests.await
         }
-
-        results
     }
 
     async fn run_all_serial(&mut self) -> Vec<TestResult> {
         let mut results = Vec::new();
         let total = self.tests.len();
+        let test_timeout = self.test_timeout;
 
         for (i, test) in self.tests.iter().enumerate() {
             let port = self.base_port + (i as u16);
-            let result = run_single_test(test, port).await;
+            let result = run_single_test(test, port, test_timeout).await;
             self.reporter.report_test(&result, i + 1, total);
             results.push(result);
         }
@@ -260,6 +295,7 @@ impl TestRunner {
     async fn run_all_parallel(&mut self, total: usize) -> Vec<TestResult> {
         let semaphore = Arc::new(Semaphore::new(self.concurrency));
         let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let test_timeout = self.test_timeout;
 
         let mut handles = Vec::with_capacity(total);
 
@@ -271,7 +307,7 @@ impl TestRunner {
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
-                let result = run_single_test(&test, port).await;
+                let result = run_single_test(&test, port, test_timeout).await;
 
                 let done = completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 tracing::info!(
@@ -320,82 +356,95 @@ impl TestRunner {
     }
 }
 
-async fn run_single_test(test: &TestCase, port: u16) -> TestResult {
+async fn run_single_test(test: &TestCase, port: u16, test_timeout: Duration) -> TestResult {
     let start = Instant::now();
 
-    match &test.test_type {
-        TestCaseType::Standard { rules, test_fn } => {
-            let mut owned_rules = rules.clone();
-            let _httpbin = if rules.iter().any(|rule| rule.contains("httpbin.org")) {
-                let mock = HttpbinMockServer::start().await;
-                let mut injected = mock.http_rules();
-                injected.append(&mut owned_rules);
-                owned_rules = injected;
-                Some(mock)
-            } else {
-                None
-            };
+    let run = async {
+        match &test.test_type {
+            TestCaseType::Standard { rules, test_fn } => {
+                let mut owned_rules = rules.clone();
+                let _httpbin = if rules.iter().any(|rule| rule.contains("httpbin.org")) {
+                    let mock = HttpbinMockServer::start().await;
+                    let mut injected = mock.http_rules();
+                    injected.append(&mut owned_rules);
+                    owned_rules = injected;
+                    Some(mock)
+                } else {
+                    None
+                };
 
-            let rule_refs: Vec<&str> = owned_rules.iter().map(|s| s.as_str()).collect();
+                let rule_refs: Vec<&str> = owned_rules.iter().map(|s| s.as_str()).collect();
 
-            let proxy = match ProxyInstance::start(port, rule_refs).await {
-                Ok(p) => p,
-                Err(e) => {
-                    return TestResult {
-                        name: test.name.clone(),
-                        category: test.category.clone(),
-                        status: TestStatus::Failed,
-                        duration: start.elapsed(),
-                        error: Some(format!("Failed to start proxy: {}", e)),
-                    };
+                let proxy = match ProxyInstance::start(port, rule_refs).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return TestResult {
+                            name: test.name.clone(),
+                            category: test.category.clone(),
+                            status: TestStatus::Failed,
+                            duration: start.elapsed(),
+                            error: Some(format!("Failed to start proxy: {}", e)),
+                        };
+                    }
+                };
+
+                let client = match ProxyClient::new(&proxy.proxy_url()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return TestResult {
+                            name: test.name.clone(),
+                            category: test.category.clone(),
+                            status: TestStatus::Failed,
+                            duration: start.elapsed(),
+                            error: Some(format!("Failed to create client: {}", e)),
+                        };
+                    }
+                };
+
+                let result = (test_fn)(client).await;
+                let duration = start.elapsed();
+                let status = match &result {
+                    Ok(()) => TestStatus::Passed,
+                    Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
+                    Err(_) => TestStatus::Failed,
+                };
+
+                TestResult {
+                    name: test.name.clone(),
+                    category: test.category.clone(),
+                    status,
+                    duration,
+                    error: result.err(),
                 }
-            };
-
-            let client = match ProxyClient::new(&proxy.proxy_url()) {
-                Ok(c) => c,
-                Err(e) => {
-                    return TestResult {
-                        name: test.name.clone(),
-                        category: test.category.clone(),
-                        status: TestStatus::Failed,
-                        duration: start.elapsed(),
-                        error: Some(format!("Failed to create client: {}", e)),
-                    };
+            }
+            TestCaseType::Standalone { test_fn } => {
+                let result = (test_fn)().await;
+                let duration = start.elapsed();
+                let status = match &result {
+                    Ok(()) => TestStatus::Passed,
+                    Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
+                    Err(_) => TestStatus::Failed,
+                };
+                TestResult {
+                    name: test.name.clone(),
+                    category: test.category.clone(),
+                    status,
+                    duration,
+                    error: result.err(),
                 }
-            };
-
-            let result = (test_fn)(client).await;
-            let duration = start.elapsed();
-            let status = match &result {
-                Ok(()) => TestStatus::Passed,
-                Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
-                Err(_) => TestStatus::Failed,
-            };
-
-            TestResult {
-                name: test.name.clone(),
-                category: test.category.clone(),
-                status,
-                duration,
-                error: result.err(),
             }
         }
-        TestCaseType::Standalone { test_fn } => {
-            let result = (test_fn)().await;
-            let duration = start.elapsed();
-            let status = match &result {
-                Ok(()) => TestStatus::Passed,
-                Err(error) if error.starts_with("SKIPPED:") => TestStatus::Skipped,
-                Err(_) => TestStatus::Failed,
-            };
-            TestResult {
-                name: test.name.clone(),
-                category: test.category.clone(),
-                status,
-                duration,
-                error: result.err(),
-            }
-        }
+    };
+
+    match tokio::time::timeout(test_timeout, run).await {
+        Ok(result) => result,
+        Err(_) => TestResult {
+            name: test.name.clone(),
+            category: test.category.clone(),
+            status: TestStatus::Failed,
+            duration: start.elapsed(),
+            error: Some(format!("test timed out after {}s", test_timeout.as_secs())),
+        },
     }
 }
 
