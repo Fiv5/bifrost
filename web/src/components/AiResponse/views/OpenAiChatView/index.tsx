@@ -30,8 +30,8 @@ import {
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
 import '../../../../styles/hljs-github-theme.css';
-import type { OpenAiRequestParsed } from '../../helper/openAiLikeRequest';
-import { stringifyContent, formatToolArgs } from '../../helper/openAiLikeRequest';
+import type { OpenAiRequestParsed } from '../../parsers/openAiLikeRequest';
+import { stringifyContent, formatToolArgs } from '../../parsers/openAiLikeRequest';
 
 hljs.registerLanguage('json', json);
 

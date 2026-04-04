@@ -25,9 +25,13 @@ import { Messages } from "./panes/Messages";
 import ScriptLogsPane from "./panes/ScriptLogs";
 import { getResponseBodyContentUrl } from "../../api/traffic";
 import { parseSseTextToEvents } from "../VirtualMessageViewer";
-import { assembleOpenAiLikeSse } from "./helper/openAiLikeSse";
-import { parseOpenAiLikeRequest } from "./helper/openAiLikeRequest";
-import { OpenAiChatView } from "./panes/OpenAiChatView";
+import {
+  assembleOpenAiLikeSse,
+  assembleTraeLikeSse,
+  parseOpenAiLikeRequest,
+  OpenAiChatView,
+  SseResponseView,
+} from "../AiResponse";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -99,6 +103,7 @@ export default function TrafficDetail({
   const [liveSseEvents, setLiveSseEvents] = useState<SSEEvent[]>([]);
   const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
   const [hasAutoOpenedRequestOpenAiTab, setHasAutoOpenedRequestOpenAiTab] = useState(false);
+  const [hasAutoOpenedTraeTab, setHasAutoOpenedTraeTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -133,6 +138,7 @@ export default function TrafficDetail({
     setLiveSseEvents([]);
     setHasAutoOpenedOpenAiTab(false);
     setHasAutoOpenedRequestOpenAiTab(false);
+    setHasAutoOpenedTraeTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -360,6 +366,22 @@ export default function TrafficDetail({
     return assembleOpenAiLikeSse(responseSseEvents);
   }, [liveSseEvents, record?.is_sse, responseBody]);
 
+  const traeLikeAssembly = useMemo(() => {
+    if (!record?.is_sse) {
+      return null;
+    }
+    if (openAiLikeAssembly) {
+      return null;
+    }
+
+    const responseSseEvents = liveSseEvents.length > 0
+      ? liveSseEvents
+      : responseBody
+        ? parseSseTextToEvents(responseBody)
+        : [];
+    return assembleTraeLikeSse(responseSseEvents);
+  }, [liveSseEvents, openAiLikeAssembly, record?.is_sse, responseBody]);
+
   const responsePanelContentType = responseTab === "OpenAI"
     ? openAiLikeAssembly?.contentType ?? "Other"
     : responseContentType;
@@ -443,15 +465,23 @@ export default function TrafficDetail({
         key: "OpenAI",
         label: "OpenAI",
         enable: !!openAiLikeAssembly,
-        children: (
-          <Body
-            data={openAiLikeAssembly?.body}
-            contentType={openAiLikeAssembly?.contentType ?? "Other"}
-            searchValue={responseSearch}
-            displayFormat={responseDisplayFormat}
-            onSearch={setResponseSearch}
+        children: openAiLikeAssembly ? (
+          <SseResponseView
+            body={openAiLikeAssembly.body}
+            mode="openai"
           />
-        ),
+        ) : null,
+      },
+      {
+        key: "Trae",
+        label: "Trae",
+        enable: !!traeLikeAssembly,
+        children: traeLikeAssembly ? (
+          <SseResponseView
+            body={traeLikeAssembly.body}
+            mode="trae"
+          />
+        ) : null,
       },
       {
         key: "Body",
@@ -500,6 +530,7 @@ export default function TrafficDetail({
     record,
     liveSseCount,
     openAiLikeAssembly,
+    traeLikeAssembly,
     responseBody,
     onResponseBodyChange,
     canPreviewResponseImage,
@@ -522,6 +553,27 @@ export default function TrafficDetail({
     setHasAutoOpenedOpenAiTab(true);
   }, [
     hasAutoOpenedOpenAiTab,
+    openAiLikeAssembly,
+    record?.is_sse,
+    responseTab,
+    setResponseTab,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!traeLikeAssembly) return;
+    if (openAiLikeAssembly) return;
+    if (hasAutoOpenedTraeTab) return;
+    if (responseTab === "Trae") {
+      setHasAutoOpenedTraeTab(true);
+      return;
+    }
+
+    setResponseTab("Trae");
+    setHasAutoOpenedTraeTab(true);
+  }, [
+    hasAutoOpenedTraeTab,
+    traeLikeAssembly,
     openAiLikeAssembly,
     record?.is_sse,
     responseTab,
@@ -687,8 +739,8 @@ export default function TrafficDetail({
                 bodyData={responsePanelBodyData}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
-                keepAliveTabs={["Body", "Messages", "OpenAI"]}
-                bodyFormatTabs={["Body", "OpenAI"]}
+                keepAliveTabs={["Body", "Messages", "OpenAI", "Trae"]}
+                bodyFormatTabs={["Body"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>
