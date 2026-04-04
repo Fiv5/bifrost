@@ -20,6 +20,9 @@ import {
   ExclamationCircleOutlined,
   CalendarOutlined,
   TagOutlined,
+  SearchOutlined,
+  CommentOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import hljs from 'highlight.js/lib/core';
 import json from 'highlight.js/lib/languages/json';
@@ -533,13 +536,34 @@ interface TraeData {
   progressNotices: string[];
 }
 
-type ParsedData = OpenAiData | TraeData;
+interface DouBaoData {
+  type: 'doubao';
+  agentName: string;
+  modelType: string;
+  isDeepThinking: boolean;
+  conversationId: string;
+  messageId: string;
+  thinkingTitle: string;
+  thinkingFinishTitle: string;
+  thinkingSteps: string[];
+  searchQueries: string[];
+  content: string;
+  brief: string;
+  finishType: string;
+  replyEnds: Msg[];
+  meta: Msg | null;
+}
 
-const parseAssemblyBody = (body: string, mode: 'openai' | 'trae'): ParsedData | null => {
+type ParsedData = OpenAiData | TraeData | DouBaoData;
+
+const parseAssemblyBody = (body: string, mode: 'openai' | 'trae' | 'doubao'): ParsedData | null => {
   try {
     const obj = JSON.parse(body) as Msg;
     if (mode === 'openai') {
       return parseOpenAiBody(obj);
+    }
+    if (mode === 'doubao') {
+      return parseDouBaoBody(obj);
     }
     return parseTraeBody(obj);
   } catch {
@@ -727,6 +751,28 @@ const parseTraeBody = (obj: Msg): TraeData => {
     agentType: typeof msg.agent_type === 'string' ? msg.agent_type : undefined,
     requiredContexts: Array.isArray(obj.required_contexts) ? (obj.required_contexts as string[]) : [],
     progressNotices: Array.isArray(obj.progress_notices) ? (obj.progress_notices as string[]) : [],
+  };
+};
+
+const parseDouBaoBody = (obj: Msg): DouBaoData => {
+  const msg = (obj.message as Msg) ?? {};
+  const thinking = (obj.thinking as Msg) ?? {};
+  return {
+    type: 'doubao',
+    agentName: typeof obj.agent_name === 'string' ? obj.agent_name : '',
+    modelType: typeof obj.model_type === 'string' ? obj.model_type : '',
+    isDeepThinking: obj.is_deep_thinking === true,
+    conversationId: typeof obj.conversation_id === 'string' ? obj.conversation_id : '',
+    messageId: typeof obj.message_id === 'string' ? obj.message_id : '',
+    thinkingTitle: typeof thinking.title === 'string' ? thinking.title : '',
+    thinkingFinishTitle: typeof thinking.finish_title === 'string' ? thinking.finish_title : '',
+    thinkingSteps: Array.isArray(thinking.steps) ? (thinking.steps as string[]) : [],
+    searchQueries: Array.isArray(obj.search_queries) ? (obj.search_queries as string[]) : [],
+    content: typeof msg.content === 'string' ? msg.content : '',
+    brief: typeof obj.brief === 'string' ? obj.brief : '',
+    finishType: typeof obj.finish_type === 'string' ? obj.finish_type : '',
+    replyEnds: Array.isArray(obj.reply_ends) ? (obj.reply_ends as Msg[]) : [],
+    meta: obj.meta as Msg | null ?? null,
   };
 };
 
@@ -1167,9 +1213,128 @@ const TraeResponsePanel = memo(({ data, rawBody }: { data: TraeData; rawBody: st
   );
 });
 
+const DouBaoResponsePanel = memo(({ data, rawBody }: { data: DouBaoData; rawBody: string }) => {
+  const { token } = theme.useToken();
+  const hasContent = data.content.trim().length > 0;
+  const hasThinking = data.thinkingSteps.length > 0;
+  const hasSearch = data.searchQueries.length > 0;
+  const hasBrief = data.brief.trim().length > 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px 4px' }}>
+      <SectionCard
+        icon={<RobotOutlined style={{ color: '#1677ff', fontSize: 13 }} />}
+        title="Model Info"
+        headerBg="rgba(22,119,255,0.06)"
+        extra={data.agentName ? <Tag style={{ margin: 0, fontSize: 10 }}>{data.agentName}</Tag> : undefined}
+      >
+        {data.modelType && <MetaRow label="Model Type" value={<Text strong style={{ fontFamily: 'monospace', fontSize: 12 }}>{data.modelType}</Text>} />}
+        {data.conversationId && <MetaRow label="Conversation" value={<Text style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.8 }}>{data.conversationId}</Text>} />}
+        {data.messageId && <MetaRow label="Message ID" value={<Text style={{ fontFamily: 'monospace', fontSize: 11, opacity: 0.8 }}>{data.messageId}</Text>} />}
+        <MetaRow label="Deep Thinking" value={
+          <Tag color={data.isDeepThinking ? 'purple' : 'default'} style={{ margin: 0, fontSize: 10 }}>
+            {data.isDeepThinking ? 'Enabled' : 'Disabled'}
+          </Tag>
+        } />
+      </SectionCard>
+
+      {hasThinking && (
+        <SectionCard
+          icon={<BulbOutlined style={{ color: '#722ed1', fontSize: 13 }} />}
+          title={data.thinkingFinishTitle || data.thinkingTitle || 'Thinking'}
+          headerBg="rgba(114,46,209,0.06)"
+          extra={<Tag style={{ margin: 0, fontSize: 10, fontFamily: 'monospace' }}>{data.thinkingSteps.length} steps</Tag>}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {data.thinkingSteps.map((step, i) => (
+              <div key={i} style={{
+                padding: '4px 8px',
+                backgroundColor: token.colorFillQuaternary,
+                borderRadius: 4,
+                fontSize: 12,
+                fontFamily: 'monospace',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+              }}>
+                {step}
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      )}
+
+      {hasSearch && (
+        <SectionCard
+          icon={<SearchOutlined style={{ color: '#13c2c2', fontSize: 13 }} />}
+          title="Search Queries"
+          headerBg="rgba(19,194,194,0.06)"
+          extra={<Tag color="cyan" style={{ margin: 0, fontSize: 10 }}>{data.searchQueries.length}</Tag>}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {data.searchQueries.map((q, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <GlobalOutlined style={{ fontSize: 11, color: '#8c8c8c', flexShrink: 0 }} />
+                <Text style={{ fontSize: 12 }}>{q}</Text>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      )}
+
+      {hasContent && (
+        <SectionCard
+          icon={<CommentOutlined style={{ color: '#52c41a', fontSize: 13 }} />}
+          title="Assistant Output"
+          headerBg="rgba(82,196,26,0.06)"
+          extra={
+            <Space size={6}>
+              {data.finishType && (
+                <Tag color={data.finishType === 'msg_finish' ? 'green' : 'default'} style={{ margin: 0, fontSize: 10 }}>{data.finishType}</Tag>
+              )}
+              <Tag style={{ margin: 0, fontSize: 10, fontFamily: 'monospace' }}>
+                {formatCharCount(data.content.length)}
+              </Tag>
+            </Space>
+          }
+        >
+          <CollapsibleContent text={data.content} title="Assistant Content" />
+        </SectionCard>
+      )}
+
+      {hasBrief && !hasContent && (
+        <SectionCard
+          icon={<CommentOutlined style={{ color: '#52c41a', fontSize: 13 }} />}
+          title="Brief"
+          headerBg="rgba(82,196,26,0.06)"
+        >
+          <Text style={{ fontSize: 12 }}>{data.brief}</Text>
+        </SectionCard>
+      )}
+
+      {data.finishType && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+          <CheckCircleOutlined style={{ color: data.finishType === 'msg_finish' ? '#52c41a' : '#8c8c8c', fontSize: 12 }} />
+          <Text type="secondary" style={{ fontSize: 12 }}>Finish:</Text>
+          <Tag color={data.finishType === 'msg_finish' ? 'green' : 'default'} style={{ margin: 0, fontSize: 11 }}>{data.finishType}</Tag>
+        </div>
+      )}
+
+      <Collapse
+        size="small"
+        items={[{
+          key: 'raw',
+          label: <Text type="secondary" style={{ fontSize: 11 }}>Raw JSON</Text>,
+          children: <JsonBlock data={rawBody} />,
+        }]}
+        style={{ backgroundColor: 'transparent', borderColor: token.colorBorderSecondary }}
+      />
+    </div>
+  );
+});
+
 interface SseResponseViewProps {
   body: string;
-  mode: 'openai' | 'trae';
+  mode: 'openai' | 'trae' | 'doubao';
 }
 
 export const SseResponseView = memo(({ body, mode }: SseResponseViewProps) => {
@@ -1185,6 +1350,10 @@ export const SseResponseView = memo(({ body, mode }: SseResponseViewProps) => {
 
   if (parsed.type === 'openai') {
     return <OpenAiResponsePanel data={parsed} rawBody={body} />;
+  }
+
+  if (parsed.type === 'doubao') {
+    return <DouBaoResponsePanel data={parsed} rawBody={body} />;
   }
 
   return <TraeResponsePanel data={parsed} rawBody={body} />;

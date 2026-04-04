@@ -28,6 +28,7 @@ import { parseSseTextToEvents } from "../VirtualMessageViewer";
 import {
   assembleOpenAiLikeSse,
   assembleTraeLikeSse,
+  assembleDouBaoLikeSse,
   parseOpenAiLikeRequest,
   OpenAiChatView,
   SseResponseView,
@@ -104,6 +105,7 @@ export default function TrafficDetail({
   const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
   const [hasAutoOpenedRequestOpenAiTab, setHasAutoOpenedRequestOpenAiTab] = useState(false);
   const [hasAutoOpenedTraeTab, setHasAutoOpenedTraeTab] = useState(false);
+  const [hasAutoOpenedDouBaoTab, setHasAutoOpenedDouBaoTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -139,6 +141,7 @@ export default function TrafficDetail({
     setHasAutoOpenedOpenAiTab(false);
     setHasAutoOpenedRequestOpenAiTab(false);
     setHasAutoOpenedTraeTab(false);
+    setHasAutoOpenedDouBaoTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -382,6 +385,22 @@ export default function TrafficDetail({
     return assembleTraeLikeSse(responseSseEvents);
   }, [liveSseEvents, openAiLikeAssembly, record?.is_sse, responseBody]);
 
+  const douBaoLikeAssembly = useMemo(() => {
+    if (!record?.is_sse) {
+      return null;
+    }
+    if (openAiLikeAssembly || traeLikeAssembly) {
+      return null;
+    }
+
+    const responseSseEvents = liveSseEvents.length > 0
+      ? liveSseEvents
+      : responseBody
+        ? parseSseTextToEvents(responseBody)
+        : [];
+    return assembleDouBaoLikeSse(responseSseEvents);
+  }, [liveSseEvents, openAiLikeAssembly, traeLikeAssembly, record?.is_sse, responseBody]);
+
   const responsePanelContentType = responseTab === "OpenAI"
     ? openAiLikeAssembly?.contentType ?? "Other"
     : responseContentType;
@@ -484,6 +503,17 @@ export default function TrafficDetail({
         ) : null,
       },
       {
+        key: "DouBao",
+        label: "DouBao",
+        enable: !!douBaoLikeAssembly,
+        children: douBaoLikeAssembly ? (
+          <SseResponseView
+            body={douBaoLikeAssembly.body}
+            mode="doubao"
+          />
+        ) : null,
+      },
+      {
         key: "Body",
         label: "Body",
         enable: !!responseBody || canPreviewResponseImage,
@@ -531,6 +561,7 @@ export default function TrafficDetail({
     liveSseCount,
     openAiLikeAssembly,
     traeLikeAssembly,
+    douBaoLikeAssembly,
     responseBody,
     onResponseBodyChange,
     canPreviewResponseImage,
@@ -575,6 +606,28 @@ export default function TrafficDetail({
     hasAutoOpenedTraeTab,
     traeLikeAssembly,
     openAiLikeAssembly,
+    record?.is_sse,
+    responseTab,
+    setResponseTab,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!douBaoLikeAssembly) return;
+    if (openAiLikeAssembly || traeLikeAssembly) return;
+    if (hasAutoOpenedDouBaoTab) return;
+    if (responseTab === "DouBao") {
+      setHasAutoOpenedDouBaoTab(true);
+      return;
+    }
+
+    setResponseTab("DouBao");
+    setHasAutoOpenedDouBaoTab(true);
+  }, [
+    hasAutoOpenedDouBaoTab,
+    douBaoLikeAssembly,
+    openAiLikeAssembly,
+    traeLikeAssembly,
     record?.is_sse,
     responseTab,
     setResponseTab,
@@ -739,7 +792,7 @@ export default function TrafficDetail({
                 bodyData={responsePanelBodyData}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
-                keepAliveTabs={["Body", "Messages", "OpenAI", "Trae"]}
+                keepAliveTabs={["Body", "Messages", "OpenAI", "Trae", "DouBao"]}
                 bodyFormatTabs={["Body"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
