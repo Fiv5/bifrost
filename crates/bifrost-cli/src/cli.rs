@@ -719,7 +719,7 @@ pub enum GroupCommands {
     },
     #[command(about = "Show group details")]
     Show {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
     },
     #[command(about = "Manage group rules")]
@@ -733,19 +733,19 @@ pub enum GroupCommands {
 pub enum GroupRuleCommands {
     #[command(about = "List rules in a group")]
     List {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
     },
     #[command(alias = "get", about = "Show a group rule")]
     Show {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,
     },
     #[command(about = "Add a rule to a group")]
     Add {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,
@@ -756,7 +756,7 @@ pub enum GroupRuleCommands {
     },
     #[command(about = "Update a group rule")]
     Update {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,
@@ -767,21 +767,21 @@ pub enum GroupRuleCommands {
     },
     #[command(about = "Delete a group rule")]
     Delete {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,
     },
     #[command(about = "Enable a group rule")]
     Enable {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,
     },
     #[command(about = "Disable a group rule")]
     Disable {
-        #[arg(help = "Group ID")]
+        #[arg(allow_hyphen_values = true, help = "Group ID")]
         group_id: String,
         #[arg(help = "Rule name")]
         name: String,

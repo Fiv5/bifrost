@@ -2,7 +2,9 @@ import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
-import { nanoid } from 'nanoid';
+import { customAlphabet } from 'nanoid';
+
+const nanoid = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_', 21);
 import type {
   Env, User, CreateEnvReq, UpdateEnvReq, SearchEnvQuery,
   Group, GroupMember, GroupSetting, UpdateGroupReq, SearchGroupQuery, UpdateGroupSettingReq,
