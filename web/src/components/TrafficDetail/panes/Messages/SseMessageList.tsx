@@ -121,8 +121,7 @@ export const SseMessageList = ({
   }, [displayEvents, getSearchableText, normalizedQuery]);
 
   const getEventKey = useCallback((event: SSEEvent, index: number) => {
-    if (event.id) return String(event.id);
-    return `sse-${event.timestamp}-${index}`;
+    return `sse-${index}-${event.id || ''}-${event.timestamp}`;
   }, []);
 
   const getItemKey = useCallback((index: number) => {
