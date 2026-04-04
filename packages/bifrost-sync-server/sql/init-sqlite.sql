@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS bifrost_envs (
   user_id     TEXT NOT NULL,
   name        TEXT NOT NULL,
   rule        TEXT NOT NULL DEFAULT '',
+  sort_order  INTEGER NOT NULL DEFAULT 0,
   create_time TEXT NOT NULL,
   update_time TEXT NOT NULL,
   UNIQUE(user_id, name)

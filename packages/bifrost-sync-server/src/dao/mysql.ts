@@ -27,6 +27,7 @@ function rowToEnv(row: RowDataPacket): Env {
     user_id: row.user_id,
     name: row.name,
     rule: row.rule,
+    sort_order: row.sort_order ?? 0,
     create_time: row.create_time,
     update_time: row.update_time,
   };
@@ -154,8 +155,8 @@ export class MysqlEnvDao implements IEnvDao {
     const now = new Date().toISOString();
     const id = nanoid();
     await this.pool.execute(
-      'INSERT INTO bifrost_envs (id, user_id, name, rule, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, req.user_id, req.name, req.rule ?? '', now, now],
+      'INSERT INTO bifrost_envs (id, user_id, name, rule, sort_order, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, req.user_id, req.name, req.rule ?? '', req.sort_order ?? 0, now, now],
     );
     return (await this.findById(id))!;
   }
@@ -165,8 +166,8 @@ export class MysqlEnvDao implements IEnvDao {
     if (!existing) return undefined;
     const now = new Date().toISOString();
     await this.pool.execute(
-      'UPDATE bifrost_envs SET user_id = ?, name = ?, rule = ?, update_time = ? WHERE id = ?',
-      [fields.user_id ?? existing.user_id, fields.name ?? existing.name, fields.rule ?? existing.rule, now, id],
+      'UPDATE bifrost_envs SET user_id = ?, name = ?, rule = ?, sort_order = ?, update_time = ? WHERE id = ?',
+      [fields.user_id ?? existing.user_id, fields.name ?? existing.name, fields.rule ?? existing.rule, fields.sort_order ?? existing.sort_order, now, id],
     );
     return (await this.findById(id))!;
   }

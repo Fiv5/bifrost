@@ -3,6 +3,7 @@ export interface Env {
   user_id: string;
   name: string;
   rule: string;
+  sort_order: number;
   create_time: string;
   update_time: string;
 }
@@ -23,6 +24,7 @@ export interface CreateEnvReq {
   user_id: string;
   name: string;
   rule?: string;
+  sort_order?: number;
 }
 
 export interface UpdateEnvReq {
@@ -30,6 +32,7 @@ export interface UpdateEnvReq {
   user_id?: string;
   name?: string;
   rule?: string;
+  sort_order?: number;
 }
 
 export interface SearchEnvQuery {

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS bifrost_envs (
   user_id     VARCHAR(128) NOT NULL,
   name        VARCHAR(255) NOT NULL,
   rule        LONGTEXT     NOT NULL,
+  sort_order  INT          NOT NULL DEFAULT 0,
   create_time VARCHAR(32)  NOT NULL,
   update_time VARCHAR(32)  NOT NULL,
   UNIQUE KEY uk_bifrost_user_env (user_id, name),

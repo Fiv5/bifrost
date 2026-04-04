@@ -1274,6 +1274,178 @@ impl ProxyInstance {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_admin_sync(
+        port: u16,
+        rules: Vec<&str>,
+        enable_tls_interception: bool,
+        unsafe_ssl: bool,
+    ) -> Result<(Self, Arc<AdminState>), Box<dyn std::error::Error + Send + Sync>> {
+        let normalized_rules = collapse_legacy_mock_overrides(
+            rules
+                .iter()
+                .flat_map(|rule| expand_rule_lines(rule))
+                .collect(),
+        );
+        let parsed_rules: Vec<Rule> = normalized_rules
+            .iter()
+            .filter_map(|r| parse_rules(r).ok())
+            .flatten()
+            .collect();
+
+        let resolver = Arc::new(RulesResolverAdapter {
+            inner: CoreRulesResolver::new(parsed_rules)
+                .with_values(HashMap::new())
+                .disable_cache(),
+        });
+        let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+        let config = ProxyConfig {
+            port,
+            host: "127.0.0.1".to_string(),
+            enable_tls_interception,
+            intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
+            timeout_secs: 30,
+            http1_max_header_size: 64 * 1024,
+            http2_max_header_list_size: 256 * 1024,
+            websocket_handshake_max_header_size: 64 * 1024,
+            socks5_port: None,
+            socks5_auth_required: false,
+            socks5_username: None,
+            socks5_password: None,
+            verbose_logging: true,
+            access_mode: bifrost_proxy::AccessMode::AllowAll,
+            client_whitelist: Vec::new(),
+            allow_lan: true,
+            unsafe_ssl,
+            max_body_buffer_size: 10 * 1024 * 1024,
+            max_body_probe_size: 64 * 1024,
+            binary_traffic_performance_mode: true,
+            enable_socks: true,
+            userpass_auth: None,
+            userpass_last_connected_at: HashMap::new(),
+        };
+
+        init_crypto_provider();
+        let ca = generate_root_ca().map_err(|e| format!("Failed to generate CA: {}", e))?;
+        let ca_cert = ca
+            .certificate_der()
+            .map_err(|e| format!("Failed to get CA cert: {}", e))?;
+        let ca_key = ca.private_key_der();
+        let ca = Arc::new(ca);
+        let cert_generator = Arc::new(DynamicCertGenerator::new(ca.clone()));
+        let sni_resolver = Arc::new(SniResolver::new(ca));
+        let tls_config = Arc::new(TlsConfig {
+            ca_cert: Some(ca_cert.to_vec()),
+            ca_key: Some(ca_key.secret_der().to_vec()),
+            cert_generator: Some(cert_generator),
+            sni_resolver: Some(sni_resolver),
+        });
+
+        let runtime_config = RuntimeConfig {
+            enable_tls_interception,
+            intercept_exclude: Vec::new(),
+            intercept_include: Vec::new(),
+            app_intercept_exclude: Vec::new(),
+            app_intercept_include: Vec::new(),
+            unsafe_ssl,
+            disconnect_on_config_change: true,
+        };
+
+        let connection_registry = ConnectionRegistry::new(true);
+
+        let temp_dir = std::env::temp_dir().join(format!("bifrost_e2e_test_sync_{}", port));
+        let body_store = Arc::new(parking_lot::RwLock::new(BodyStore::new(
+            temp_dir.clone(),
+            2 * 1024 * 1024,
+            7,
+            64 * 1024,
+            Duration::from_millis(200),
+        )));
+
+        let ws_payload_store = Arc::new(WsPayloadStore::new(
+            temp_dir.clone(),
+            256 * 1024,
+            Duration::from_millis(200),
+            128,
+            7,
+        ));
+        std::mem::drop(start_ws_payload_cleanup_task(ws_payload_store.clone()));
+
+        let traffic_dir = temp_dir.join("traffic");
+        let traffic_db_store = Arc::new(
+            bifrost_admin::TrafficDbStore::new(traffic_dir, 1000, 0, Some(24))
+                .expect("failed to create traffic db store"),
+        );
+
+        let frame_store = Arc::new(bifrost_admin::FrameStore::new(temp_dir.clone(), Some(24)));
+        std::mem::drop(start_frame_cleanup_task(frame_store.clone()));
+
+        let (async_traffic_writer, async_traffic_rx) = AsyncTrafficWriter::new(10000);
+        let _async_traffic_task =
+            start_async_traffic_processor(async_traffic_rx, traffic_db_store.clone());
+
+        let config_manager = Arc::new(
+            bifrost_storage::ConfigManager::new(temp_dir.join("config"))
+                .expect("failed to create config manager"),
+        );
+        let sync_manager = Arc::new(
+            bifrost_sync::SyncManager::new(config_manager, port)
+                .expect("failed to create sync manager"),
+        );
+
+        let admin_state = AdminState::new(port)
+            .with_runtime_config(runtime_config)
+            .with_connection_registry(connection_registry)
+            .with_body_store(body_store)
+            .with_ws_payload_store(ws_payload_store)
+            .with_traffic_db_store_shared(traffic_db_store)
+            .with_async_traffic_writer(async_traffic_writer)
+            .with_frame_store_shared(frame_store)
+            .with_sync_manager_shared(sync_manager);
+        std::mem::drop(start_connection_cleanup_task(
+            admin_state.connection_monitor.clone(),
+        ));
+
+        let server = ProxyServer::new(config)
+            .with_rules(resolver)
+            .with_tls_config(tls_config)
+            .with_admin_state(admin_state);
+
+        let admin_state_arc = server
+            .admin_state()
+            .cloned()
+            .expect("admin_state should be set");
+
+        let listener = server.bind(addr).await?;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                result = server.run_with_listener(listener) => {
+                    if let Err(e) = result {
+                        tracing::error!("Proxy server error: {}", e);
+                    }
+                }
+                _ = shutdown_rx => {
+                    tracing::info!("Proxy server shutting down");
+                }
+            }
+        });
+
+        Ok((
+            Self {
+                addr,
+                shutdown_tx: Some(shutdown_tx),
+            },
+            admin_state_arc,
+        ))
+    }
+
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }

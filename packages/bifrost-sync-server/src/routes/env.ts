@@ -211,6 +211,7 @@ interface SyncEnvReq {
     id: string;
     name: string;
     rule?: string;
+    sort_order?: number;
     update_time: string;
   }>;
   delete_list: Array<{ user_id: string; id: string; delete_time: string }>;
@@ -272,6 +273,7 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
         const updated = await storage.env.update(item.id, {
           name: item.name,
           rule: item.rule,
+          sort_order: item.sort_order,
           user_id: item.user_id,
         });
         if (updated) {
@@ -282,6 +284,7 @@ async function handleSync(ctx: RequestContext, storage: IStorage): Promise<boole
           user_id: item.user_id,
           name: item.name,
           rule: item.rule,
+          sort_order: item.sort_order,
         });
         resultList.push({ type: 3, status: 0, ...created });
       }

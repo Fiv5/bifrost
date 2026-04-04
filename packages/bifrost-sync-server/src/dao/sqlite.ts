@@ -86,9 +86,9 @@ export class SqliteEnvDao implements IEnvDao {
     const id = nanoid();
     this.db
       .prepare(
-        'INSERT INTO bifrost_envs (id, user_id, name, rule, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO bifrost_envs (id, user_id, name, rule, sort_order, create_time, update_time) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(id, req.user_id, req.name, req.rule ?? '', now, now);
+      .run(id, req.user_id, req.name, req.rule ?? '', req.sort_order ?? 0, now, now);
     return (await this.findById(id))!;
   }
 
@@ -97,11 +97,12 @@ export class SqliteEnvDao implements IEnvDao {
     if (!existing) return undefined;
     const now = new Date().toISOString();
     this.db
-      .prepare('UPDATE bifrost_envs SET user_id = ?, name = ?, rule = ?, update_time = ? WHERE id = ?')
+      .prepare('UPDATE bifrost_envs SET user_id = ?, name = ?, rule = ?, sort_order = ?, update_time = ? WHERE id = ?')
       .run(
         fields.user_id ?? existing.user_id,
         fields.name ?? existing.name,
         fields.rule ?? existing.rule,
+        fields.sort_order ?? existing.sort_order,
         now,
         id,
       );
@@ -445,6 +446,7 @@ export class SqliteStorage implements IStorage {
         user_id     TEXT NOT NULL,
         name        TEXT NOT NULL,
         rule        TEXT NOT NULL DEFAULT '',
+        sort_order  INTEGER NOT NULL DEFAULT 0,
         create_time TEXT NOT NULL,
         update_time TEXT NOT NULL,
         UNIQUE(user_id, name)
@@ -478,6 +480,15 @@ export class SqliteStorage implements IStorage {
         visibility     TEXT DEFAULT 'private'
       );
     `);
+    this.migrateAddSortOrder();
+  }
+
+  private migrateAddSortOrder() {
+    const columns = this.db.pragma('table_info(bifrost_envs)') as Array<{ name: string }>;
+    const hasSortOrder = columns.some(col => col.name === 'sort_order');
+    if (!hasSortOrder) {
+      this.db.exec('ALTER TABLE bifrost_envs ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+    }
   }
 
   async close(): Promise<void> {
