@@ -1,8 +1,15 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::cli::{GroupCommands, GroupRuleCommands};
+
+fn nullable_string<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 const DEFAULT_PORT: u16 = 9900;
 
@@ -46,11 +53,14 @@ struct RemoteListPayload<T> {
 
 #[derive(Debug, Deserialize)]
 struct RemoteGroup {
+    #[serde(default, deserialize_with = "nullable_string")]
     id: String,
+    #[serde(default, deserialize_with = "nullable_string")]
     name: String,
-    #[serde(default)]
+    #[serde(default, alias = "description", deserialize_with = "nullable_string")]
     what: String,
-    visibility: Option<i32>,
+    visibility: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "nullable_string")]
     create_time: String,
 }
 
@@ -108,14 +118,28 @@ pub fn handle_group_command(action: GroupCommands) -> bifrost_core::Result<()> {
 
 fn handle_group_command_with_port(action: GroupCommands, port: u16) -> bifrost_core::Result<()> {
     match action {
-        GroupCommands::List { keyword, limit } => handle_group_list(port, keyword, limit),
+        GroupCommands::List {
+            keyword,
+            limit,
+            offset,
+        } => handle_group_list(port, keyword, limit, offset),
         GroupCommands::Show { group_id } => handle_group_show(port, &group_id),
         GroupCommands::Rule { action } => handle_group_rule_command_with_port(action, port),
     }
 }
 
-fn handle_group_list(port: u16, keyword: Option<String>, limit: usize) -> bifrost_core::Result<()> {
-    let mut url = format!("{}/group?offset=0&limit={}", base_url_for_port(port), limit);
+fn handle_group_list(
+    port: u16,
+    keyword: Option<String>,
+    limit: usize,
+    offset: usize,
+) -> bifrost_core::Result<()> {
+    let mut url = format!(
+        "{}/group?offset={}&limit={}",
+        base_url_for_port(port),
+        offset,
+        limit
+    );
     if let Some(ref kw) = keyword {
         url.push_str(&format!("&keyword={}", urlencoding::encode(kw)));
     }
@@ -135,8 +159,9 @@ fn handle_group_list(port: u16, keyword: Option<String>, limit: usize) -> bifros
 
     println!("Groups ({}/{}):", groups.len(), total);
     for g in &groups {
-        let vis = match g.visibility {
-            Some(1) => "public",
+        let vis = match &g.visibility {
+            Some(serde_json::Value::Number(n)) if n.as_i64() == Some(1) => "public",
+            Some(serde_json::Value::String(s)) if s == "public" => "public",
             _ => "private",
         };
         let desc = if g.what.is_empty() {
@@ -145,6 +170,29 @@ fn handle_group_list(port: u16, keyword: Option<String>, limit: usize) -> bifros
             format!(" - {}", g.what)
         };
         println!("  {} {} [{}]{}", g.id, g.name, vis, desc);
+    }
+
+    let current_page = offset / limit + 1;
+    let total_pages = if total == 0 {
+        1
+    } else {
+        (total as usize).div_ceil(limit)
+    };
+    println!();
+    println!(
+        "Page {}/{} (total: {}, limit: {}, offset: {})",
+        current_page, total_pages, total, limit, offset
+    );
+    if offset + groups.len() < total as usize {
+        let next_offset = offset + limit;
+        let mut hint = format!(
+            "View next page: bifrost group list --offset {} --limit {}",
+            next_offset, limit
+        );
+        if let Some(ref kw) = keyword {
+            hint.push_str(&format!(" --keyword {}", kw));
+        }
+        println!("{}", hint);
     }
 
     Ok(())
@@ -162,8 +210,9 @@ fn handle_group_show(port: u16, group_id: &str) -> bifrost_core::Result<()> {
     })?;
 
     let g = body.data;
-    let vis = match g.visibility {
-        Some(1) => "public",
+    let vis = match &g.visibility {
+        Some(serde_json::Value::Number(n)) if n.as_i64() == Some(1) => "public",
+        Some(serde_json::Value::String(s)) if s == "public" => "public",
         _ => "private",
     };
     println!("Group: {}", g.name);
@@ -554,6 +603,7 @@ mod tests {
             GroupCommands::List {
                 keyword: None,
                 limit: 50,
+                offset: 0,
             },
             port,
         );
@@ -582,6 +632,7 @@ mod tests {
             GroupCommands::List {
                 keyword: Some("Alpha".to_string()),
                 limit: 10,
+                offset: 0,
             },
             port,
         );
@@ -603,6 +654,160 @@ mod tests {
             GroupCommands::List {
                 keyword: None,
                 limit: 50,
+                offset: 0,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+        server.stop();
+    }
+
+    #[test]
+    fn test_group_list_pagination_first_page() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [
+                    {"id":"g1","name":"Team A","what":"","visibility":1,"create_time":"2024-01-01T00:00:00Z"},
+                    {"id":"g2","name":"Team B","what":"","visibility":0,"create_time":"2024-02-01T00:00:00Z"}
+                ],
+                "total": 5
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: None,
+                limit: 2,
+                offset: 0,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+
+        let logs = server.stop();
+        assert!(logs[0].contains("offset=0"));
+        assert!(logs[0].contains("limit=2"));
+    }
+
+    #[test]
+    fn test_group_list_pagination_middle_page() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [
+                    {"id":"g3","name":"Team C","what":"","visibility":1,"create_time":"2024-03-01T00:00:00Z"},
+                    {"id":"g4","name":"Team D","what":"","visibility":0,"create_time":"2024-04-01T00:00:00Z"}
+                ],
+                "total": 5
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: None,
+                limit: 2,
+                offset: 2,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+
+        let logs = server.stop();
+        assert!(logs[0].contains("offset=2"));
+        assert!(logs[0].contains("limit=2"));
+    }
+
+    #[test]
+    fn test_group_list_pagination_last_page() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [
+                    {"id":"g5","name":"Team E","what":"","visibility":1,"create_time":"2024-05-01T00:00:00Z"}
+                ],
+                "total": 5
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: None,
+                limit: 2,
+                offset: 4,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+
+        let logs = server.stop();
+        assert!(logs[0].contains("offset=4"));
+        assert!(logs[0].contains("limit=2"));
+    }
+
+    #[test]
+    fn test_group_list_pagination_with_keyword() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [
+                    {"id":"g3","name":"Alpha 3","what":"","visibility":1,"create_time":"2024-03-01T00:00:00Z"}
+                ],
+                "total": 3
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: Some("Alpha".to_string()),
+                limit: 1,
+                offset: 2,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+
+        let logs = server.stop();
+        assert!(logs[0].contains("offset=2"));
+        assert!(logs[0].contains("limit=1"));
+        assert!(logs[0].contains("keyword=Alpha"));
+    }
+
+    #[test]
+    fn test_group_list_pagination_beyond_total() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [],
+                "total": 3
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: None,
+                limit: 2,
+                offset: 10,
             },
             port,
         );
@@ -1014,6 +1219,7 @@ mod tests {
             GroupCommands::List {
                 keyword: None,
                 limit: 50,
+                offset: 0,
             },
             19999,
         );
@@ -1094,6 +1300,36 @@ mod tests {
             GroupCommands::List {
                 keyword: None,
                 limit: 50,
+                offset: 0,
+            },
+            port,
+        );
+        assert!(result.is_ok());
+        server.stop();
+    }
+
+    #[test]
+    fn test_group_list_null_fields() {
+        let json = r#"{
+            "code": 200,
+            "message": "ok",
+            "data": {
+                "list": [
+                    {"id":"g1","name":"Team","what":null,"visibility":null,"create_time":null},
+                    {"id":"g2","name":"Team2","description":null,"visibility":"public","create_time":"2024-01-01T00:00:00Z"}
+                ],
+                "total": 2
+            }
+        }"#;
+
+        let server = MockServer::start(vec![(200, json)]);
+        let port = mock_port_for_admin(server.port);
+
+        let result = handle_group_command_with_port(
+            GroupCommands::List {
+                keyword: None,
+                limit: 50,
+                offset: 0,
             },
             port,
         );

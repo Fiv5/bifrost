@@ -716,6 +716,8 @@ pub enum GroupCommands {
         keyword: Option<String>,
         #[arg(short, long, default_value = "50", help = "Maximum results")]
         limit: usize,
+        #[arg(short, long, default_value = "0", help = "Offset for pagination")]
+        offset: usize,
     },
     #[command(about = "Show group details")]
     Show {
