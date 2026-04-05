@@ -1,4 +1,4 @@
-export { assembleOpenAiLikeSse } from './parsers/openAiLikeSse';
+export { assembleOpenAiLikeSse, parseOpenAiLikeJsonResponse } from './parsers/openAiLikeSse';
 export type { OpenAiLikeSseAssembly } from './parsers/openAiLikeSse';
 
 export { assembleTraeLikeSse } from './parsers/traeLikeSse';

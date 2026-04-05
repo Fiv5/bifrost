@@ -27,6 +27,7 @@ import { getResponseBodyContentUrl } from "../../api/traffic";
 import { parseSseTextToEvents } from "../VirtualMessageViewer";
 import {
   assembleOpenAiLikeSse,
+  parseOpenAiLikeJsonResponse,
   assembleTraeLikeSse,
   assembleDouBaoLikeSse,
   parseOpenAiLikeRequest,
@@ -357,16 +358,16 @@ export default function TrafficDetail({
   ]);
 
   const openAiLikeAssembly = useMemo(() => {
-    if (!record?.is_sse) {
-      return null;
+    if (record?.is_sse) {
+      const responseSseEvents = liveSseEvents.length > 0
+        ? liveSseEvents
+        : responseBody
+          ? parseSseTextToEvents(responseBody)
+          : [];
+      return assembleOpenAiLikeSse(responseSseEvents);
     }
 
-    const responseSseEvents = liveSseEvents.length > 0
-      ? liveSseEvents
-      : responseBody
-        ? parseSseTextToEvents(responseBody)
-        : [];
-    return assembleOpenAiLikeSse(responseSseEvents);
+    return parseOpenAiLikeJsonResponse(responseBody);
   }, [liveSseEvents, record?.is_sse, responseBody]);
 
   const traeLikeAssembly = useMemo(() => {
@@ -572,7 +573,6 @@ export default function TrafficDetail({
   ]);
 
   useEffect(() => {
-    if (!record?.is_sse) return;
     if (!openAiLikeAssembly) return;
     if (hasAutoOpenedOpenAiTab) return;
     if (responseTab === "OpenAI") {
@@ -585,7 +585,6 @@ export default function TrafficDetail({
   }, [
     hasAutoOpenedOpenAiTab,
     openAiLikeAssembly,
-    record?.is_sse,
     responseTab,
     setResponseTab,
   ]);

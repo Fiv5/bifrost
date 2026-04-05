@@ -604,6 +604,34 @@ const assembleResponses = (
   };
 };
 
+export const parseOpenAiLikeJsonResponse = (
+  body: string | null,
+): OpenAiLikeSseAssembly | null => {
+  if (!body) return null;
+
+  let obj: JsonRecord | null = parseJsonRecord(body);
+  if (!obj) return null;
+
+  if (typeof obj.data === 'string' && obj.data.length > 2) {
+    const inner = parseJsonRecord(obj.data);
+    if (inner) obj = inner;
+  }
+
+  const objectType = typeof obj.object === 'string' ? obj.object : '';
+  if (
+    !objectType.startsWith('chat.completion') &&
+    !objectType.startsWith('response')
+  ) {
+    return null;
+  }
+
+  return {
+    mode: objectType.startsWith('response') ? 'responses' : 'chat.completions',
+    contentType: 'JSON',
+    body: JSON.stringify(obj, null, 2),
+  };
+};
+
 export const assembleOpenAiLikeSse = (
   events: SSEEvent[],
 ): OpenAiLikeSseAssembly | null => {
