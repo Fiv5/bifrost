@@ -1,0 +1,38 @@
+{
+  "name": "@bifrost-proxy/bifrost",
+  "version": "0.0.0",
+  "description": "High-performance HTTP/HTTPS/SOCKS5 proxy server written in Rust",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bifrost-proxy/bifrost"
+  },
+  "homepage": "https://github.com/bifrost-proxy/bifrost",
+  "keywords": [
+    "proxy",
+    "http",
+    "https",
+    "socks5",
+    "bifrost",
+    "mitm",
+    "network",
+    "debugging"
+  ],
+  "bin": {
+    "bifrost": "bin/bifrost"
+  },
+  "main": "lib/index.js",
+  "files": [
+    "bin/bifrost",
+    "lib/index.js"
+  ],
+  "optionalDependencies": {
+    "@bifrost-proxy/bifrost-linux-x64": "0.0.0",
+    "@bifrost-proxy/bifrost-linux-arm64": "0.0.0",
+    "@bifrost-proxy/bifrost-linux-arm": "0.0.0",
+    "@bifrost-proxy/bifrost-darwin-x64": "0.0.0",
+    "@bifrost-proxy/bifrost-darwin-arm64": "0.0.0",
+    "@bifrost-proxy/bifrost-win32-x64": "0.0.0",
+    "@bifrost-proxy/bifrost-win32-arm64": "0.0.0"
+  }
+}

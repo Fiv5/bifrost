@@ -1,0 +1,19 @@
+{
+  "name": "@bifrost-proxy/bifrost-linux-arm64",
+  "version": "0.0.0",
+  "description": "Bifrost CLI binary for Linux ARM64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bifrost-proxy/bifrost"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin/bifrost"
+  ]
+}
