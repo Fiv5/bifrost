@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback, useState } from "react";
-import { Empty, Splitter, Spin } from "antd";
+import { Empty, Splitter, Spin, AutoComplete, Input } from "antd";
 import type { CSSProperties } from "react";
 import type {
   TrafficRecord,
@@ -8,6 +8,7 @@ import type {
   SSEEvent,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
+import { useTrafficStore } from "../../stores/useTrafficStore";
 import {
   getContentTypeFromHeader,
   isImageContentType,
@@ -43,6 +44,7 @@ interface TrafficDetailProps {
   error?: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
   onResponseBodyChange?: ((body: string | null, recordId: string) => void) | undefined;
+  onSelectById?: (id: string) => void;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -90,6 +92,62 @@ const styles: Record<string, CSSProperties> = {
   },
 };
 
+const MAX_EMPTY_SUGGESTIONS = 20;
+
+function EmptySequenceSearch({ onSelect }: { onSelect: (id: string) => void }) {
+  const records = useTrafficStore((state) => state.records);
+  const [searchValue, setSearchValue] = useState("");
+
+  const options = useMemo(() => {
+    const keyword = searchValue.trim();
+    if (!keyword) return [];
+    const matched: typeof records = [];
+    for (const r of records) {
+      if (String(r.sequence).includes(keyword)) {
+        matched.push(r);
+        if (matched.length >= MAX_EMPTY_SUGGESTIONS) break;
+      }
+    }
+    return matched.map((r) => ({
+      value: r.id,
+      label: (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: "monospace" }}>
+          <span style={{ fontWeight: 600, minWidth: 48, textAlign: "right" }}>#{r.sequence}</span>
+          <span style={{ color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.method}  {r.status}  {r.host}{r.path && r.path !== "/" ? (r.path.length > 40 ? `  ${r.path.slice(0, 40)}…` : `  ${r.path}`) : ""}
+          </span>
+        </div>
+      ),
+    }));
+  }, [records, searchValue]);
+
+  const handleSelect = useCallback(
+    (id: string) => {
+      onSelect(id);
+      setSearchValue("");
+    },
+    [onSelect],
+  );
+
+  return (
+    <AutoComplete
+      options={options}
+      onSelect={handleSelect}
+      onSearch={setSearchValue}
+      value={searchValue}
+      style={{ width: 280 }}
+      popupMatchSelectWidth={400}
+    >
+      <Input
+        size="small"
+        placeholder="Search by sequence number..."
+        allowClear
+        style={{ fontSize: 12 }}
+      />
+    </AutoComplete>
+  );
+}
+
 export default function TrafficDetail({
   record,
   requestBody,
@@ -98,6 +156,7 @@ export default function TrafficDetail({
   error,
   onOpenInNewWindow,
   onResponseBodyChange,
+  onSelectById,
 }: TrafficDetailProps) {
   const [expandedRequestPanelSize, setExpandedRequestPanelSize] = useState<
     number | string
@@ -740,7 +799,10 @@ export default function TrafficDetail({
     }
     return (
       <div style={styles.emptyContainer}>
-        <Empty description="Select a request to view details" />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <Empty description="Select a request to view details" />
+          {onSelectById && <EmptySequenceSearch onSelect={onSelectById} />}
+        </div>
       </div>
     );
   }
@@ -751,6 +813,7 @@ export default function TrafficDetail({
         record={record}
         requestBody={requestBody}
         onOpenInNewWindow={onOpenInNewWindow}
+        onSelectById={onSelectById}
       />
       <div style={styles.splitterWrapper}>
         <Splitter

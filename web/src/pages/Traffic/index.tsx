@@ -755,6 +755,7 @@ export default function Traffic() {
         loading={detailLoading}
         error={detailError}
         onOpenInNewWindow={handleOpenDetailInNewWindow}
+        onSelectById={setSelectedId}
       />
     </div>
   );

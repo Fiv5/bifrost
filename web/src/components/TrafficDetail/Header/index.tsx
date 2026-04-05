@@ -1,14 +1,16 @@
-import { useCallback, useState, useRef, useEffect, memo } from "react";
-import { Typography, Tooltip, Dropdown, message } from "antd";
+import { useCallback, useState, useRef, useEffect, useMemo, memo } from "react";
+import { Typography, Tooltip, Dropdown, message, AutoComplete, Input } from "antd";
 import type { MenuProps } from "antd";
 import {
   CopyOutlined,
   ExportOutlined,
   ExpandAltOutlined,
   ShrinkOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
-import type { TrafficRecord } from "../../../types";
+import type { TrafficRecord, TrafficSummary } from "../../../types";
 import { generateCurl } from "../../../utils/curl";
+import { useTrafficStore } from "../../../stores/useTrafficStore";
 
 const { Text } = Typography;
 
@@ -16,6 +18,7 @@ interface HeaderProps {
   record: TrafficRecord;
   requestBody: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
+  onSelectById?: (id: string) => void;
 }
 
 const STATUS_CODES: Record<number, string> = {
@@ -46,14 +49,129 @@ const getStatusColor = (status: number): string => {
   return "#1890ff";
 };
 
+const MAX_SUGGESTIONS = 20;
+
+const formatSuggestion = (r: TrafficSummary): string => {
+  const parts = [r.method, String(r.status), r.host];
+  if (r.path && r.path !== "/") parts.push(r.path.length > 40 ? `${r.path.slice(0, 40)}…` : r.path);
+  return parts.join("  ");
+};
+
+const SequenceSearch = memo(function SequenceSearch({
+  currentSequence,
+  onSelect,
+}: {
+  currentSequence?: number;
+  onSelect: (id: string) => void;
+}) {
+  const records = useTrafficStore((state) => state.records);
+  const [searching, setSearching] = useState(false);
+  const [searchValue, setSearchValue] = useState("");
+  const inputRef = useRef<{ focus: () => void } | null>(null);
+
+  const options = useMemo(() => {
+    const keyword = searchValue.trim();
+    if (!keyword) return [];
+    const matched: TrafficSummary[] = [];
+    for (const r of records) {
+      if (String(r.sequence).includes(keyword)) {
+        matched.push(r);
+        if (matched.length >= MAX_SUGGESTIONS) break;
+      }
+    }
+    return matched.map((r) => ({
+      value: r.id,
+      label: (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: "monospace" }}>
+          <span style={{ fontWeight: 600, minWidth: 48, textAlign: "right" }}>#{r.sequence}</span>
+          <span style={{ color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {formatSuggestion(r)}
+          </span>
+        </div>
+      ),
+    }));
+  }, [records, searchValue]);
+
+  const handleSelect = useCallback(
+    (id: string) => {
+      onSelect(id);
+      setSearching(false);
+      setSearchValue("");
+    },
+    [onSelect],
+  );
+
+  const handleBlur = useCallback(() => {
+    setTimeout(() => {
+      setSearching(false);
+      setSearchValue("");
+    }, 200);
+  }, []);
+
+  const handleStartSearch = useCallback(() => {
+    setSearching(true);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
+
+  if (searching) {
+    return (
+      <AutoComplete
+        options={options}
+        onSelect={handleSelect}
+        onSearch={setSearchValue}
+        value={searchValue}
+        style={{ width: 200 }}
+        popupMatchSelectWidth={360}
+      >
+        <Input
+          ref={(el) => { inputRef.current = el; }}
+          size="small"
+          placeholder="Search by #seq..."
+          prefix={<SearchOutlined style={{ color: "#bbb" }} />}
+          onBlur={handleBlur}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setSearching(false);
+              setSearchValue("");
+            }
+          }}
+          style={{ fontSize: 12 }}
+        />
+      </AutoComplete>
+    );
+  }
+
+  return (
+    <Tooltip title="Click to search by sequence number">
+      <Text
+        strong
+        onClick={handleStartSearch}
+        style={{
+          whiteSpace: "nowrap",
+          userSelect: "none",
+          flexShrink: 0,
+          cursor: "pointer",
+          color: "#999",
+          fontSize: 12,
+          fontFamily: "monospace",
+        }}
+      >
+        #{currentSequence}
+      </Text>
+    </Tooltip>
+  );
+});
+
 const HeaderContent = memo(function HeaderContent({
   record,
   requestBody,
   onOpenInNewWindow,
+  onSelectById,
 }: {
   record: TrafficRecord;
   requestBody: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
+  onSelectById?: (id: string) => void;
 }) {
   const { method, status, url } = record;
   const statusText = STATUS_CODES[status] || "";
@@ -119,6 +237,12 @@ const HeaderContent = memo(function HeaderContent({
           gap: 8,
         }}
       >
+        {onSelectById && (
+          <SequenceSearch
+            currentSequence={record.sequence}
+            onSelect={onSelectById}
+          />
+        )}
         <Text
           strong
           style={{
@@ -219,6 +343,7 @@ export const Header = ({
   record,
   requestBody,
   onOpenInNewWindow,
+  onSelectById,
 }: HeaderProps) => {
   return (
     <HeaderContent
@@ -226,6 +351,7 @@ export const Header = ({
       record={record}
       requestBody={requestBody}
       onOpenInNewWindow={onOpenInNewWindow}
+      onSelectById={onSelectById}
     />
   );
 };
