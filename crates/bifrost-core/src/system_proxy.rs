@@ -77,7 +77,21 @@ impl SystemProxyManager {
             })?,
         };
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        let current = match Self::parse_windows_proxy() {
+            Some(proxy) => proxy,
+            None => Sysproxy::get_system_proxy().unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "[SYSTEM_PROXY] Failed to get system proxy via winreg, using default");
+                Sysproxy {
+                    enable: false,
+                    host: String::new(),
+                    port: 0,
+                    bypass: String::new(),
+                }
+            }),
+        };
+
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let current = Sysproxy::get_system_proxy().map_err(|e| {
             BifrostError::Config(format!(
                 "Failed to get current system proxy for backup: {}",
