@@ -230,7 +230,7 @@ const assembleChatCompletions = (
       if (!isRecord(rawChoice)) continue;
       const index = typeof rawChoice.index === 'number' ? rawChoice.index : 0;
       const choice = ensureChoiceState(choices, index);
-      mergeJsonRecord(choice.extra, rawChoice, ['delta', 'message', 'index']);
+      mergeJsonRecord(choice.extra, rawChoice, ['delta', 'message', 'text', 'index']);
 
       if (rawChoice.finish_reason !== undefined) {
         choice.finish_reason =
@@ -396,6 +396,10 @@ const assembleChatCompletions = (
             }
           }
         }
+      }
+
+      if (typeof rawChoice.text === 'string') {
+        choice.content = appendString(choice.content, rawChoice.text);
       }
     }
   }
@@ -600,6 +604,34 @@ const assembleResponses = (
   };
 };
 
+export const parseOpenAiLikeJsonResponse = (
+  body: string | null,
+): OpenAiLikeSseAssembly | null => {
+  if (!body) return null;
+
+  let obj: JsonRecord | null = parseJsonRecord(body);
+  if (!obj) return null;
+
+  if (typeof obj.data === 'string' && obj.data.length > 2) {
+    const inner = parseJsonRecord(obj.data);
+    if (inner) obj = inner;
+  }
+
+  const objectType = typeof obj.object === 'string' ? obj.object : '';
+  if (
+    !objectType.startsWith('chat.completion') &&
+    !objectType.startsWith('response')
+  ) {
+    return null;
+  }
+
+  return {
+    mode: objectType.startsWith('response') ? 'responses' : 'chat.completions',
+    contentType: 'JSON',
+    body: JSON.stringify(obj, null, 2),
+  };
+};
+
 export const assembleOpenAiLikeSse = (
   events: SSEEvent[],
 ): OpenAiLikeSseAssembly | null => {
@@ -622,6 +654,17 @@ export const assembleOpenAiLikeSse = (
     );
 
   if (parsedEvents.length === 0) {
+    return null;
+  }
+
+  const eventNames = new Set(parsedEvents.map((item) => (item.event.event ?? '').trim()));
+  const hasOpenAiObject = parsedEvents.some(
+    (item) =>
+      typeof item.payload.object === 'string' &&
+      (item.payload.object.startsWith('chat.completion') ||
+        item.payload.object.startsWith('response')),
+  );
+  if (!hasOpenAiObject && eventNames.has('meta') && (eventNames.has('done') || eventNames.has('output'))) {
     return null;
   }
 

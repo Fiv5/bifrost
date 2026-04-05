@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useCallback, useState } from "react";
-import { Empty, Splitter, Spin } from "antd";
+import { Empty, Splitter, Spin, AutoComplete, Input } from "antd";
 import type { CSSProperties } from "react";
 import type {
   TrafficRecord,
@@ -8,6 +8,7 @@ import type {
   SSEEvent,
 } from "../../types";
 import { useTrafficDetailStore } from "../../stores/useTrafficDetailStore";
+import { useTrafficStore } from "../../stores/useTrafficStore";
 import {
   getContentTypeFromHeader,
   isImageContentType,
@@ -25,9 +26,15 @@ import { Messages } from "./panes/Messages";
 import ScriptLogsPane from "./panes/ScriptLogs";
 import { getResponseBodyContentUrl } from "../../api/traffic";
 import { parseSseTextToEvents } from "../VirtualMessageViewer";
-import { assembleOpenAiLikeSse } from "./helper/openAiLikeSse";
-import { parseOpenAiLikeRequest } from "./helper/openAiLikeRequest";
-import { OpenAiChatView } from "./panes/OpenAiChatView";
+import {
+  assembleOpenAiLikeSse,
+  parseOpenAiLikeJsonResponse,
+  assembleTraeLikeSse,
+  assembleDouBaoLikeSse,
+  parseOpenAiLikeRequest,
+  OpenAiChatView,
+  SseResponseView,
+} from "../AiResponse";
 
 interface TrafficDetailProps {
   record: TrafficRecord | null;
@@ -37,6 +44,7 @@ interface TrafficDetailProps {
   error?: string | null;
   onOpenInNewWindow?: ((record: TrafficRecord) => void) | undefined;
   onResponseBodyChange?: ((body: string | null, recordId: string) => void) | undefined;
+  onSelectById?: (id: string) => void;
 }
 
 const hasQueryParams = (url: string): boolean => {
@@ -84,6 +92,62 @@ const styles: Record<string, CSSProperties> = {
   },
 };
 
+const MAX_EMPTY_SUGGESTIONS = 20;
+
+function EmptySequenceSearch({ onSelect }: { onSelect: (id: string) => void }) {
+  const records = useTrafficStore((state) => state.records);
+  const [searchValue, setSearchValue] = useState("");
+
+  const options = useMemo(() => {
+    const keyword = searchValue.trim();
+    if (!keyword) return [];
+    const matched: typeof records = [];
+    for (const r of records) {
+      if (String(r.sequence).includes(keyword)) {
+        matched.push(r);
+        if (matched.length >= MAX_EMPTY_SUGGESTIONS) break;
+      }
+    }
+    return matched.map((r) => ({
+      value: r.id,
+      label: (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: "monospace" }}>
+          <span style={{ fontWeight: 600, minWidth: 48, textAlign: "right" }}>#{r.sequence}</span>
+          <span style={{ color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {r.method}  {r.status}  {r.host}{r.path && r.path !== "/" ? (r.path.length > 40 ? `  ${r.path.slice(0, 40)}…` : `  ${r.path}`) : ""}
+          </span>
+        </div>
+      ),
+    }));
+  }, [records, searchValue]);
+
+  const handleSelect = useCallback(
+    (id: string) => {
+      onSelect(id);
+      setSearchValue("");
+    },
+    [onSelect],
+  );
+
+  return (
+    <AutoComplete
+      options={options}
+      onSelect={handleSelect}
+      onSearch={setSearchValue}
+      value={searchValue}
+      style={{ width: 280 }}
+      popupMatchSelectWidth={400}
+    >
+      <Input
+        size="small"
+        placeholder="Search by sequence number..."
+        allowClear
+        style={{ fontSize: 12 }}
+      />
+    </AutoComplete>
+  );
+}
+
 export default function TrafficDetail({
   record,
   requestBody,
@@ -92,6 +156,7 @@ export default function TrafficDetail({
   error,
   onOpenInNewWindow,
   onResponseBodyChange,
+  onSelectById,
 }: TrafficDetailProps) {
   const [expandedRequestPanelSize, setExpandedRequestPanelSize] = useState<
     number | string
@@ -99,6 +164,8 @@ export default function TrafficDetail({
   const [liveSseEvents, setLiveSseEvents] = useState<SSEEvent[]>([]);
   const [hasAutoOpenedOpenAiTab, setHasAutoOpenedOpenAiTab] = useState(false);
   const [hasAutoOpenedRequestOpenAiTab, setHasAutoOpenedRequestOpenAiTab] = useState(false);
+  const [hasAutoOpenedTraeTab, setHasAutoOpenedTraeTab] = useState(false);
+  const [hasAutoOpenedDouBaoTab, setHasAutoOpenedDouBaoTab] = useState(false);
   const {
     requestSearch,
     responseSearch,
@@ -133,6 +200,8 @@ export default function TrafficDetail({
     setLiveSseEvents([]);
     setHasAutoOpenedOpenAiTab(false);
     setHasAutoOpenedRequestOpenAiTab(false);
+    setHasAutoOpenedTraeTab(false);
+    setHasAutoOpenedDouBaoTab(false);
   }, [record?.id]);
 
   const responseContentType = useMemo<RecordContentType>(() => {
@@ -348,7 +417,23 @@ export default function TrafficDetail({
   ]);
 
   const openAiLikeAssembly = useMemo(() => {
+    if (record?.is_sse) {
+      const responseSseEvents = liveSseEvents.length > 0
+        ? liveSseEvents
+        : responseBody
+          ? parseSseTextToEvents(responseBody)
+          : [];
+      return assembleOpenAiLikeSse(responseSseEvents);
+    }
+
+    return parseOpenAiLikeJsonResponse(responseBody);
+  }, [liveSseEvents, record?.is_sse, responseBody]);
+
+  const traeLikeAssembly = useMemo(() => {
     if (!record?.is_sse) {
+      return null;
+    }
+    if (openAiLikeAssembly) {
       return null;
     }
 
@@ -357,8 +442,24 @@ export default function TrafficDetail({
       : responseBody
         ? parseSseTextToEvents(responseBody)
         : [];
-    return assembleOpenAiLikeSse(responseSseEvents);
-  }, [liveSseEvents, record?.is_sse, responseBody]);
+    return assembleTraeLikeSse(responseSseEvents);
+  }, [liveSseEvents, openAiLikeAssembly, record?.is_sse, responseBody]);
+
+  const douBaoLikeAssembly = useMemo(() => {
+    if (!record?.is_sse) {
+      return null;
+    }
+    if (openAiLikeAssembly || traeLikeAssembly) {
+      return null;
+    }
+
+    const responseSseEvents = liveSseEvents.length > 0
+      ? liveSseEvents
+      : responseBody
+        ? parseSseTextToEvents(responseBody)
+        : [];
+    return assembleDouBaoLikeSse(responseSseEvents);
+  }, [liveSseEvents, openAiLikeAssembly, traeLikeAssembly, record?.is_sse, responseBody]);
 
   const responsePanelContentType = responseTab === "OpenAI"
     ? openAiLikeAssembly?.contentType ?? "Other"
@@ -443,15 +544,34 @@ export default function TrafficDetail({
         key: "OpenAI",
         label: "OpenAI",
         enable: !!openAiLikeAssembly,
-        children: (
-          <Body
-            data={openAiLikeAssembly?.body}
-            contentType={openAiLikeAssembly?.contentType ?? "Other"}
-            searchValue={responseSearch}
-            displayFormat={responseDisplayFormat}
-            onSearch={setResponseSearch}
+        children: openAiLikeAssembly ? (
+          <SseResponseView
+            body={openAiLikeAssembly.body}
+            mode="openai"
           />
-        ),
+        ) : null,
+      },
+      {
+        key: "Trae",
+        label: "Trae",
+        enable: !!traeLikeAssembly,
+        children: traeLikeAssembly ? (
+          <SseResponseView
+            body={traeLikeAssembly.body}
+            mode="trae"
+          />
+        ) : null,
+      },
+      {
+        key: "DouBao",
+        label: "DouBao",
+        enable: !!douBaoLikeAssembly,
+        children: douBaoLikeAssembly ? (
+          <SseResponseView
+            body={douBaoLikeAssembly.body}
+            mode="doubao"
+          />
+        ) : null,
       },
       {
         key: "Body",
@@ -500,6 +620,8 @@ export default function TrafficDetail({
     record,
     liveSseCount,
     openAiLikeAssembly,
+    traeLikeAssembly,
+    douBaoLikeAssembly,
     responseBody,
     onResponseBodyChange,
     canPreviewResponseImage,
@@ -510,7 +632,6 @@ export default function TrafficDetail({
   ]);
 
   useEffect(() => {
-    if (!record?.is_sse) return;
     if (!openAiLikeAssembly) return;
     if (hasAutoOpenedOpenAiTab) return;
     if (responseTab === "OpenAI") {
@@ -523,6 +644,48 @@ export default function TrafficDetail({
   }, [
     hasAutoOpenedOpenAiTab,
     openAiLikeAssembly,
+    responseTab,
+    setResponseTab,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!traeLikeAssembly) return;
+    if (openAiLikeAssembly) return;
+    if (hasAutoOpenedTraeTab) return;
+    if (responseTab === "Trae") {
+      setHasAutoOpenedTraeTab(true);
+      return;
+    }
+
+    setResponseTab("Trae");
+    setHasAutoOpenedTraeTab(true);
+  }, [
+    hasAutoOpenedTraeTab,
+    traeLikeAssembly,
+    openAiLikeAssembly,
+    record?.is_sse,
+    responseTab,
+    setResponseTab,
+  ]);
+
+  useEffect(() => {
+    if (!record?.is_sse) return;
+    if (!douBaoLikeAssembly) return;
+    if (openAiLikeAssembly || traeLikeAssembly) return;
+    if (hasAutoOpenedDouBaoTab) return;
+    if (responseTab === "DouBao") {
+      setHasAutoOpenedDouBaoTab(true);
+      return;
+    }
+
+    setResponseTab("DouBao");
+    setHasAutoOpenedDouBaoTab(true);
+  }, [
+    hasAutoOpenedDouBaoTab,
+    douBaoLikeAssembly,
+    openAiLikeAssembly,
+    traeLikeAssembly,
     record?.is_sse,
     responseTab,
     setResponseTab,
@@ -636,7 +799,10 @@ export default function TrafficDetail({
     }
     return (
       <div style={styles.emptyContainer}>
-        <Empty description="Select a request to view details" />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+          <Empty description="Select a request to view details" />
+          {onSelectById && <EmptySequenceSearch onSelect={onSelectById} />}
+        </div>
       </div>
     );
   }
@@ -647,6 +813,7 @@ export default function TrafficDetail({
         record={record}
         requestBody={requestBody}
         onOpenInNewWindow={onOpenInNewWindow}
+        onSelectById={onSelectById}
       />
       <div style={styles.splitterWrapper}>
         <Splitter
@@ -687,8 +854,8 @@ export default function TrafficDetail({
                 bodyData={responsePanelBodyData}
                 collapsed={responseCollapsed}
                 onCollapsedChange={handleResponseCollapsedChange}
-                keepAliveTabs={["Body", "Messages", "OpenAI"]}
-                bodyFormatTabs={["Body", "OpenAI"]}
+                keepAliveTabs={["Body", "Messages", "OpenAI", "Trae", "DouBao"]}
+                bodyFormatTabs={["Body"]}
                 contentOverflow={responseTab === "Messages" ? "hidden" : "auto"}
               />
             </div>

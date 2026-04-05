@@ -29,18 +29,19 @@ export default function RulesDynamicIsland({ onNavigateRule }: Props) {
 
   const rules = useRulesStore((s) => s.rules);
 
-  const fetchActive = useCallback(async () => {
-    try {
-      const resp = await getActiveSummary();
-      setActiveRules(resp.rules);
-    } catch {
-      setActiveRules([]);
-    }
-  }, []);
-
   useEffect(() => {
-    fetchActive();
-  }, [fetchActive, rules]);
+    let cancelled = false;
+    getActiveSummary()
+      .then((resp) => {
+        if (!cancelled) setActiveRules(resp.rules);
+      })
+      .catch(() => {
+        if (!cancelled) setActiveRules([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rules]);
 
   useEffect(() => {
     if (!expanded) return;

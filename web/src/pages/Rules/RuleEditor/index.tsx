@@ -225,7 +225,7 @@ export default function RuleEditor() {
       editorRef.current = null;
       modelRef.current = null;
     };
-  }, [containerElement, handleChange, handleSave, resolvedTheme, handleValidationComplete]);
+  }, [containerElement, handleChange, handleSave, resolvedTheme, handleValidationComplete, canEdit]);
 
   useEffect(() => {
     if (!editorRef.current) return;
