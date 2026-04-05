@@ -30,3 +30,5 @@ e2e-tests/mock_servers/.logs/
 .e2e-reports/*
 /tmp-*/
 packages/bifrost-sync-server/dist/*
+npm/*/bin/
+!npm/bifrost/bin/
