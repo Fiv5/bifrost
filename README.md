@@ -36,9 +36,17 @@ Bifrost 是一个用 Rust 编写的高性能代理服务器，灵感来源于 [W
 
 安装 CLI：
 
+方法一：使用脚本安装
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash
 ```
+
+方法二：使用 npm 安装
+```bash
+npm i @bifrost-proxy/bifrost
+```
+
+更多安装方法：[`docs/getting-started.md`](docs/getting-started.md)
 
 启动代理：
 
