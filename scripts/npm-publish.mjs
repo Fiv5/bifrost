@@ -145,7 +145,15 @@ function extractBinary(archive, destDir, binaryName) {
   }
 }
 
-function npmPublish(pkgDir) {
+const PUBLISH_RETRY_COUNT = 3;
+const PUBLISH_RETRY_DELAY_MS = 15_000;
+const PUBLISH_INTERVAL_MS = 5_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function npmPublishOnce(pkgDir) {
   const args = ["publish", "--access", "public", "--tag", NPM_TAG, "--registry", "https://registry.npmjs.org/"];
   if (DRY_RUN) args.push("--dry-run");
   if (OTP_ARG) args.push("--otp", OTP_ARG);
@@ -161,6 +169,23 @@ function npmPublish(pkgDir) {
   const logArgs = OTP_ARG ? args.filter((a) => a !== OTP_ARG) : args;
   console.log(`  npm ${logArgs.join(" ")} (in ${pkgDir})`);
   execSync(`npm ${args.join(" ")}`, { cwd: pkgDir, stdio: "inherit", env });
+}
+
+async function npmPublish(pkgDir) {
+  for (let attempt = 1; attempt <= PUBLISH_RETRY_COUNT; attempt++) {
+    try {
+      npmPublishOnce(pkgDir);
+      return;
+    } catch (err) {
+      const isConflict = err.message && err.message.includes("E409");
+      if (isConflict && attempt < PUBLISH_RETRY_COUNT) {
+        console.log(`  ⏳ E409 Conflict, retrying in ${PUBLISH_RETRY_DELAY_MS / 1000}s... (attempt ${attempt}/${PUBLISH_RETRY_COUNT})`);
+        await sleep(PUBLISH_RETRY_DELAY_MS);
+      } else {
+        throw err;
+      }
+    }
+  }
 }
 
 function getLocalPlatformKey() {
@@ -233,7 +258,7 @@ async function publishLocal() {
 
   console.log("\n3️⃣  Publishing current platform package...\n");
   console.log(`  📦 Publishing @bifrost-proxy/${localPlatform.npmPkg}...`);
-  npmPublish(join(NPM_DIR, localPlatform.npmPkg));
+  await npmPublish(join(NPM_DIR, localPlatform.npmPkg));
 
   console.log("\n4️⃣  Publishing remaining platform packages (version bump only)...\n");
   for (const p of PLATFORMS) {
@@ -245,13 +270,21 @@ async function publishLocal() {
       writeFileSync(stubName, "");
       if (p.binary !== "bifrost.exe") chmodSync(stubName, 0o755);
     }
+    if (!DRY_RUN) {
+      console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s before next publish...`);
+      await sleep(PUBLISH_INTERVAL_MS);
+    }
     console.log(`  📦 Publishing @bifrost-proxy/${p.npmPkg} (stub)...`);
-    npmPublish(join(NPM_DIR, p.npmPkg));
+    await npmPublish(join(NPM_DIR, p.npmPkg));
   }
 
   console.log("\n5️⃣  Publishing main package...\n");
+  if (!DRY_RUN) {
+    console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s for platform packages to propagate...`);
+    await sleep(PUBLISH_INTERVAL_MS);
+  }
   console.log(`  📦 Publishing @bifrost-proxy/bifrost...`);
-  npmPublish(join(NPM_DIR, "bifrost"));
+  await npmPublish(join(NPM_DIR, "bifrost"));
 
   console.log(`\n✅ All packages published successfully! (v${VERSION})\n`);
   console.log(`Test with: npx @bifrost-proxy/bifrost@${VERSION} --version\n`);
@@ -307,11 +340,16 @@ async function publishCI() {
 
   console.log("\n3️⃣  Publishing platform packages...\n");
   const failedPlatforms = [];
-  for (const p of PLATFORMS) {
+  for (let i = 0; i < PLATFORMS.length; i++) {
+    const p = PLATFORMS[i];
     const pkgDir = join(NPM_DIR, p.npmPkg);
     console.log(`\n  📦 Publishing @bifrost-proxy/${p.npmPkg}...`);
     try {
-      npmPublish(pkgDir);
+      await npmPublish(pkgDir);
+      if (i < PLATFORMS.length - 1 && !DRY_RUN) {
+        console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s before next publish...`);
+        await sleep(PUBLISH_INTERVAL_MS);
+      }
     } catch (err) {
       console.error(`  ❌ Failed to publish @bifrost-proxy/${p.npmPkg}: ${err.message}`);
       failedPlatforms.push(p.npmPkg);
@@ -325,9 +363,13 @@ async function publishCI() {
   }
 
   console.log("\n4️⃣  Publishing main package...\n");
+  if (!DRY_RUN) {
+    console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s for platform packages to propagate...`);
+    await sleep(PUBLISH_INTERVAL_MS);
+  }
   const mainPkgDir = join(NPM_DIR, "bifrost");
   console.log(`  📦 Publishing @bifrost-proxy/bifrost...`);
-  npmPublish(mainPkgDir);
+  await npmPublish(mainPkgDir);
 
   console.log(`\n✅ All packages published successfully! (v${VERSION})\n`);
 }
