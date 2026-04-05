@@ -516,6 +516,11 @@ impl SystemProxyManager {
         self.is_set
     }
 
+    pub fn detach(mut self) {
+        self.is_set = false;
+        self.original_proxy = None;
+    }
+
     fn backup_file_path(&self) -> PathBuf {
         self.data_dir.join(BACKUP_FILE_NAME)
     }

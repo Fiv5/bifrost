@@ -122,5 +122,6 @@ pub fn handle_system_proxy_command(
             }
         }
     }
+    manager.detach();
     Ok(())
 }
