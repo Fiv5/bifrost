@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser)]
 #[command(name = "bifrost")]
@@ -168,6 +169,9 @@ search [keyword] [OPTIONS]         Search traffic records with advanced filterin
   --domain <PATTERN>                 Domain pattern filter
   --no-color                          Disable colored output
 
+completions <SHELL>                Generate shell completion scripts
+  SHELL: bash, zsh, fish, elvish, powershell
+
 TIP:
     Use 'bifrost <command> -h' for the full list of options for any subcommand.
 
@@ -273,6 +277,7 @@ pub struct Cli {
         short,
         long,
         default_value = "info",
+        value_parser = ["trace", "debug", "info", "warn", "error"],
         help = "Log level [trace|debug|info|warn|error]"
     )]
     pub log_level: String,
@@ -280,6 +285,7 @@ pub struct Cli {
     #[arg(
         long,
         default_value = "console,file",
+        value_parser = ["console", "file", "console,file"],
         help = "Log output targets: console, file, or both (comma-separated)"
     )]
     pub log_output: String,
@@ -310,6 +316,7 @@ pub enum Commands {
         skip_cert_check: bool,
         #[arg(
             long,
+            value_parser = ["local_only", "whitelist", "interactive", "allow_all"],
             help = "Access control mode: local_only (default), whitelist, interactive, allow_all"
         )]
         access_mode: Option<String>,
@@ -452,6 +459,7 @@ pub enum Commands {
         #[arg(
             short,
             long,
+            value_parser = ["claude-code", "codex", "trae", "cursor", "all"],
             help = "Target tool: claude-code, codex, trae, cursor, or 'all' (default: all)"
         )]
         tool: Option<String>,
@@ -481,6 +489,7 @@ pub enum Commands {
             short,
             long,
             default_value = "table",
+            value_parser = ["table", "compact", "json", "json-pretty"],
             help = "Output format: table, compact, json, json-pretty"
         )]
         format: String,
@@ -498,17 +507,17 @@ pub enum Commands {
         req_body: bool,
         #[arg(long = "res-body", help = "Search only in response body")]
         res_body: bool,
-        #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
+        #[arg(long, value_parser = ["2xx", "3xx", "4xx", "5xx", "error"], help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
         status: Option<String>,
-        #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
+        #[arg(long, value_parser = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE"], help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
         method: Option<String>,
         #[arg(long, help = "Filter host contains")]
         host: Option<String>,
         #[arg(long, help = "Filter path contains")]
         path: Option<String>,
-        #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
+        #[arg(long, value_parser = ["HTTP", "HTTPS", "WS", "WSS"], help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
         protocol: Option<String>,
-        #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]
+        #[arg(long, value_parser = ["json", "xml", "html", "form", "text", "javascript", "css", "image", "font", "binary"], help = "Filter by content type: json, xml, html, form, etc.")]
         content_type: Option<String>,
         #[arg(long, help = "Filter by domain pattern")]
         domain: Option<String>,
@@ -527,6 +536,11 @@ pub enum Commands {
         )]
         max_results: Option<usize>,
     },
+    #[command(about = "Generate shell completion scripts")]
+    Completions {
+        #[arg(help = "Target shell: bash, zsh, fish, elvish, powershell")]
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -543,10 +557,11 @@ pub enum TrafficCommands {
         #[arg(
             long,
             default_value = "backward",
+            value_parser = ["backward", "forward"],
             help = "Pagination direction: backward or forward"
         )]
         direction: String,
-        #[arg(long, help = "Filter by HTTP method")]
+        #[arg(long, value_parser = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE"], help = "Filter by HTTP method")]
         method: Option<String>,
         #[arg(long, help = "Filter by status code (exact)")]
         status: Option<u16>,
@@ -554,7 +569,7 @@ pub enum TrafficCommands {
         status_min: Option<u16>,
         #[arg(long, help = "Filter by status <= value")]
         status_max: Option<u16>,
-        #[arg(long, help = "Filter by protocol (http/https/ws/wss/h3)")]
+        #[arg(long, value_parser = ["http", "https", "ws", "wss", "h3"], help = "Filter by protocol (http/https/ws/wss/h3)")]
         protocol: Option<String>,
         #[arg(long, help = "Filter host contains")]
         host: Option<String>,
@@ -580,6 +595,7 @@ pub enum TrafficCommands {
             short,
             long,
             default_value = "table",
+            value_parser = ["table", "compact", "json", "json-pretty"],
             help = "Output format: table, compact, json, json-pretty"
         )]
         format: String,
@@ -598,6 +614,7 @@ pub enum TrafficCommands {
             short,
             long,
             default_value = "json-pretty",
+            value_parser = ["table", "compact", "json", "json-pretty"],
             help = "Output format: table, compact, json, json-pretty"
         )]
         format: String,
@@ -614,6 +631,7 @@ pub enum TrafficCommands {
             short,
             long,
             default_value = "table",
+            value_parser = ["table", "compact", "json", "json-pretty"],
             help = "Output format: table, compact, json, json-pretty"
         )]
         format: String,
@@ -631,17 +649,17 @@ pub enum TrafficCommands {
         req_body: bool,
         #[arg(long = "res-body", help = "Search only in response body")]
         res_body: bool,
-        #[arg(long, help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
+        #[arg(long, value_parser = ["2xx", "3xx", "4xx", "5xx", "error"], help = "Filter by status: 2xx, 3xx, 4xx, 5xx, error")]
         status: Option<String>,
-        #[arg(long, help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
+        #[arg(long, value_parser = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT", "TRACE"], help = "Filter by HTTP method: GET, POST, PUT, DELETE, etc.")]
         method: Option<String>,
         #[arg(long, help = "Filter host contains")]
         host: Option<String>,
         #[arg(long, help = "Filter path contains")]
         path: Option<String>,
-        #[arg(long, help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
+        #[arg(long, value_parser = ["HTTP", "HTTPS", "WS", "WSS"], help = "Filter by protocol: HTTP, HTTPS, WS, WSS")]
         protocol: Option<String>,
-        #[arg(long, help = "Filter by content type: json, xml, html, form, etc.")]
+        #[arg(long, value_parser = ["json", "xml", "html", "form", "text", "javascript", "css", "image", "font", "binary"], help = "Filter by content type: json, xml, html, form, etc.")]
         content_type: Option<String>,
         #[arg(long, help = "Filter by domain pattern")]
         domain: Option<String>,
@@ -887,12 +905,12 @@ pub enum ValueCommands {
 pub enum ScriptCommands {
     #[command(about = "List all scripts")]
     List {
-        #[arg(short, long, help = "Filter by type: request, response, decode")]
+        #[arg(short, long, value_parser = ["request", "response", "decode"], help = "Filter by type: request, response, decode")]
         r#type: Option<String>,
     },
     #[command(about = "Add or update a script")]
     Add {
-        #[arg(help = "Script type: request, response, decode")]
+        #[arg(value_parser = ["request", "response", "decode"], help = "Script type: request, response, decode")]
         r#type: String,
         #[arg(help = "Script name")]
         name: String,
@@ -903,7 +921,7 @@ pub enum ScriptCommands {
     },
     #[command(about = "Update an existing script")]
     Update {
-        #[arg(help = "Script type: request, response, decode")]
+        #[arg(value_parser = ["request", "response", "decode"], help = "Script type: request, response, decode")]
         r#type: String,
         #[arg(help = "Script name")]
         name: String,
@@ -914,7 +932,7 @@ pub enum ScriptCommands {
     },
     #[command(about = "Delete a script")]
     Delete {
-        #[arg(help = "Script type: request, response, decode")]
+        #[arg(value_parser = ["request", "response", "decode"], help = "Script type: request, response, decode")]
         r#type: String,
         #[arg(help = "Script name")]
         name: String,
@@ -945,7 +963,7 @@ pub enum ConfigCommands {
     Show {
         #[arg(long, help = "Output in JSON format")]
         json: bool,
-        #[arg(long, help = "Show specific section: tls, traffic, access")]
+        #[arg(long, value_parser = ["tls", "traffic", "access"], help = "Show specific section: tls, traffic, access")]
         section: Option<String>,
     },
     #[command(about = "Get a configuration value")]
@@ -997,7 +1015,7 @@ pub enum ConfigCommands {
     Export {
         #[arg(short, long, help = "Output file path (default: stdout)")]
         output: Option<PathBuf>,
-        #[arg(long, default_value = "toml", help = "Export format: json, toml")]
+        #[arg(long, default_value = "toml", value_parser = ["json", "toml"], help = "Export format: json, toml")]
         format: String,
     },
 }

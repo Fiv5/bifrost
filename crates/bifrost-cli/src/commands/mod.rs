@@ -1,4 +1,5 @@
 mod ca;
+mod completions;
 mod config;
 mod group;
 mod install_skill;

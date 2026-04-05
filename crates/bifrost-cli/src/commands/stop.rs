@@ -70,7 +70,7 @@ pub fn run_stop() -> bifrost_core::Result<()> {
 
         let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid as u32) };
 
-        if handle == 0 {
+        if handle.is_null() {
             eprintln!(
                 "Failed to open process (PID: {}). It may have already exited.",
                 pid

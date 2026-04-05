@@ -1,7 +1,8 @@
 use bifrost_core::{init_logging_with_config, install_panic_hook, LogConfig, LogOutput};
 use bifrost_storage::data_dir;
 use bifrost_tls::init_crypto_provider;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 
 mod cli;
 mod commands;
@@ -208,6 +209,11 @@ fn main() {
             };
             let exit_code = run_search(options);
             std::process::exit(exit_code);
+        }
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "bifrost", &mut std::io::stdout());
+            Ok(())
         }
         Some(Commands::Traffic { action }) => match action {
             TrafficCommands::List {
