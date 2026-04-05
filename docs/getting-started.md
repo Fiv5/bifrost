@@ -27,6 +27,12 @@ brew tap bifrost-proxy/bifrost
 brew install bifrost
 ```
 
+### 使用 npm 安装
+
+```bash
+npm i @bifrost-proxy/bifrost
+```
+
 ### 从源码构建
 
 环境要求：
