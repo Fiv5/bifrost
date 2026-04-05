@@ -1,6 +1,7 @@
 use bifrost_core::AccessMode;
 use bifrost_storage::{set_data_dir, AccessConfigUpdate, ConfigManager};
 
+use super::config::client::ConfigApiClient;
 use crate::cli::WhitelistCommands;
 use crate::config::get_bifrost_dir;
 
@@ -147,6 +148,104 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
                 "  {} - Allow all connections (not recommended)",
                 AccessMode::AllowAll
             );
+        }
+        WhitelistCommands::Mode { mode } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            match mode {
+                Some(m) => {
+                    client
+                        .set_access_mode(&m)
+                        .map_err(bifrost_core::BifrostError::Config)?;
+                    println!("Access mode set to: {}", m);
+                }
+                None => {
+                    let result = client
+                        .get_access_mode()
+                        .map_err(bifrost_core::BifrostError::Config)?;
+                    if let Some(mode) = result
+                        .get("mode")
+                        .and_then(|v: &serde_json::Value| v.as_str())
+                    {
+                        println!("Current access mode: {}", mode);
+                    } else {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&result).unwrap_or_default()
+                        );
+                    }
+                }
+            }
+        }
+        WhitelistCommands::Pending => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            let pending = client
+                .get_pending()
+                .map_err(bifrost_core::BifrostError::Config)?;
+
+            if pending.is_empty() {
+                println!("No pending access requests.");
+            } else {
+                println!("Pending Access Requests ({}):", pending.len());
+                for item in &pending {
+                    if let Some(ip) = item.get("ip").and_then(|v: &serde_json::Value| v.as_str()) {
+                        let ts = item
+                            .get("timestamp")
+                            .or_else(|| item.get("requested_at"))
+                            .and_then(|v: &serde_json::Value| v.as_str())
+                            .unwrap_or("-");
+                        println!("  {} (requested: {})", ip, ts);
+                    }
+                }
+            }
+        }
+        WhitelistCommands::Approve { ip } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .approve_pending(&ip)
+                .map_err(bifrost_core::BifrostError::Config)?;
+            println!("Approved access for: {}", ip);
+        }
+        WhitelistCommands::Reject { ip } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .reject_pending(&ip)
+                .map_err(bifrost_core::BifrostError::Config)?;
+            println!("Rejected access for: {}", ip);
+        }
+        WhitelistCommands::ClearPending => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .clear_pending()
+                .map_err(bifrost_core::BifrostError::Config)?;
+            println!("All pending access requests cleared.");
+        }
+        WhitelistCommands::AddTemporary { ip } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .add_temporary(&ip)
+                .map_err(bifrost_core::BifrostError::Config)?;
+            println!("Temporary access granted for: {}", ip);
+        }
+        WhitelistCommands::RemoveTemporary { ip } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .remove_temporary(&ip)
+                .map_err(bifrost_core::BifrostError::Config)?;
+            println!("Temporary access removed for: {}", ip);
         }
     }
 

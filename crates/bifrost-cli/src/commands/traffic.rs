@@ -14,6 +14,22 @@ fn direct_agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
+fn network_request_error(url: &str, e: &ureq::Error) -> BifrostError {
+    let detail = e.to_string();
+    let lower = detail.to_lowercase();
+    if lower.contains("connection refused") || lower.contains("connect error") {
+        BifrostError::Network(format!(
+            "Failed to connect to Bifrost admin API at {}\n\
+             Is the proxy server running?\n\n\
+             Hint: Start the proxy with: bifrost start\n\n\
+             Error: {}",
+            url, detail
+        ))
+    } else {
+        BifrostError::Network(format!("Request failed: {}: {}", url, detail))
+    }
+}
+
 pub struct TrafficListOptions {
     pub port: u16,
     pub limit: usize,
@@ -149,7 +165,7 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
     let resp = direct_agent(Duration::from_secs(10))
         .get(&url)
         .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+        .map_err(|e| network_request_error(&url, &e))?;
 
     let body = resp
         .into_string()
@@ -172,6 +188,39 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
             Ok(())
         }
     }
+}
+
+pub fn run_traffic_clear(port: u16, ids: Option<String>, yes: bool) -> Result<()> {
+    let client = super::config::client::ConfigApiClient::new("127.0.0.1", port);
+
+    if let Some(ids_str) = ids {
+        let id_list: Vec<String> = ids_str.split(',').map(|s| s.trim().to_string()).collect();
+        client
+            .delete_traffic_by_ids(&id_list)
+            .map_err(BifrostError::Config)?;
+        println!("Deleted {} traffic record(s).", id_list.len());
+    } else {
+        if !yes {
+            if !std::io::stdin().is_terminal() {
+                return Err(BifrostError::Config(
+                    "Use --yes to confirm clearing all traffic records in non-interactive mode"
+                        .to_string(),
+                ));
+            }
+            print!("Clear ALL traffic records? This cannot be undone. [y/N] ");
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+        client.clear_traffic().map_err(BifrostError::Config)?;
+        println!("All traffic records cleared.");
+    }
+    Ok(())
 }
 
 pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
@@ -282,10 +331,10 @@ fn fetch_traffic_record(port: u16, id: &str) -> std::result::Result<Value, Fetch
         Ok(r) => r,
         Err(ureq::Error::Status(404, _)) => return Err(FetchTrafficError::NotFound),
         Err(e) => {
-            return Err(FetchTrafficError::Other(BifrostError::Network(format!(
-                "Request failed: {}",
-                e
-            ))))
+            return Err(FetchTrafficError::Other(network_request_error(
+                &record_url,
+                &e,
+            )))
         }
     };
 
@@ -374,7 +423,7 @@ fn fetch_server_sequence(port: u16) -> Result<u64> {
     let resp = direct_agent(Duration::from_secs(10))
         .get(&url)
         .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+        .map_err(|e| network_request_error(&url, &e))?;
     let body = resp
         .into_string()
         .map_err(|e| BifrostError::Network(format!("Failed to read response: {}", e)))?;
@@ -403,7 +452,7 @@ fn find_id_by_exact_sequence(port: u16, seq: u64) -> Result<Option<String>> {
 
     let resp = match direct_agent(Duration::from_secs(10)).get(&url).call() {
         Ok(r) => r,
-        Err(e) => return Err(BifrostError::Network(format!("Request failed: {}", e))),
+        Err(e) => return Err(network_request_error(&url, &e)),
     };
     let body = resp
         .into_string()
@@ -431,7 +480,7 @@ fn select_traffic_id(port: u16, hint: Option<&str>) -> Result<String> {
     let resp = direct_agent(Duration::from_secs(10))
         .get(&url)
         .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+        .map_err(|e| network_request_error(&url, &e))?;
 
     let body = resp
         .into_string()

@@ -26,6 +26,22 @@ fn direct_agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
+fn network_request_error(url: &str, e: &ureq::Error) -> String {
+    let detail = e.to_string();
+    let lower = detail.to_lowercase();
+    if lower.contains("connection refused") || lower.contains("connect error") {
+        format!(
+            "Failed to connect to Bifrost admin API at {}\n\
+             Is the proxy server running?\n\n\
+             Hint: Start the proxy with: bifrost start\n\n\
+             Error: {}",
+            url, detail
+        )
+    } else {
+        format!("Request failed: {}: {}", url, detail)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResultItem {
     pub record: TrafficSummary,
@@ -298,7 +314,7 @@ fn start_search_stream(
         .post(&url)
         .set("Content-Type", "application/json")
         .send_string(&body.to_string())
-        .map_err(|e| format!("Request failed: {}: {}", url, e))?;
+        .map_err(|e| network_request_error(&url, &e))?;
 
     let ct = response.header("Content-Type").unwrap_or("").to_string();
 

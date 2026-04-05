@@ -8,6 +8,8 @@ use crate::cli::RuleCommands;
 pub fn handle_rule_command(action: RuleCommands) -> bifrost_core::Result<()> {
     match action {
         RuleCommands::Sync => handle_rule_sync(),
+        RuleCommands::Rename { name, new_name } => handle_rule_rename(&name, &new_name),
+        RuleCommands::Reorder { names } => handle_rule_reorder(&names),
         other => handle_rule_local(other),
     }
 }
@@ -71,7 +73,9 @@ fn handle_rule_local(action: RuleCommands) -> bifrost_core::Result<()> {
             println!("Content:");
             println!("{}", rule.content);
         }
-        RuleCommands::Sync => unreachable!(),
+        RuleCommands::Sync | RuleCommands::Rename { .. } | RuleCommands::Reorder { .. } => {
+            unreachable!()
+        }
     }
 
     Ok(())
@@ -133,5 +137,32 @@ fn handle_rule_sync() -> bifrost_core::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn handle_rule_rename(name: &str, new_name: &str) -> bifrost_core::Result<()> {
+    let port = crate::process::read_runtime_port().unwrap_or(9900);
+    let client = super::config::client::ConfigApiClient::new("127.0.0.1", port);
+
+    client
+        .rename_rule(name, new_name)
+        .map_err(bifrost_core::BifrostError::Config)?;
+
+    println!("Rule '{}' renamed to '{}'.", name, new_name);
+    Ok(())
+}
+
+fn handle_rule_reorder(names: &[String]) -> bifrost_core::Result<()> {
+    let port = crate::process::read_runtime_port().unwrap_or(9900);
+    let client = super::config::client::ConfigApiClient::new("127.0.0.1", port);
+
+    client
+        .reorder_rules(names)
+        .map_err(bifrost_core::BifrostError::Config)?;
+
+    println!("Rules reordered successfully:");
+    for (i, name) in names.iter().enumerate() {
+        println!("  {}. {}", i + 1, name);
+    }
     Ok(())
 }

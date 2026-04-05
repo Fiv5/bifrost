@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 
 #[derive(Parser)]
@@ -76,7 +76,7 @@ start [OPTIONS]                   Start the proxy server (default)
 
 stop                              Stop the running proxy
 
-status                            Show proxy status
+status (alias: st)                Show proxy status
   --tui                              Show interactive TUI dashboard
 
 rule <ACTION>                     Manage rules
@@ -87,6 +87,8 @@ rule <ACTION>                     Manage rules
   disable <name>                    Disable a rule
   show <name>                       Show rule content
   delete <name>                     Delete a rule
+  rename <name> <new_name>          Rename a rule
+  reorder <name1> <name2> ...       Reorder rules priority
 
 group <ACTION>                    Manage groups and group rules
   list [-k keyword] [-l limit]      List groups
@@ -105,21 +107,28 @@ ca <ACTION>                       Manage CA certificates
   export [-o path]                  Export CA certificate
   generate [-f]                     Generate CA certificate
 
-system-proxy <ACTION>             Manage system proxy
+system-proxy <ACTION> (alias: sp)  Manage system proxy
   status                            Show system proxy status
   enable [--host h] [--port p] [--bypass list]
                                     Enable system proxy
   disable                           Disable system proxy
 
 
-whitelist <ACTION>                Manage access control
+whitelist <ACTION> (alias: wl)    Manage access control
   list                              List whitelist entries
   add <ip>                          Add IP/CIDR to whitelist
   remove <ip>                       Remove IP/CIDR from whitelist
   allow-lan <true|false>            Enable/disable LAN access
   status                            Show access control settings
+  mode [MODE]                       Get or set access mode (local_only|whitelist|interactive|allow_all)
+  pending                           List pending access requests
+  approve <ip>                      Approve a pending request
+  reject <ip>                       Reject a pending request
+  clear-pending                     Clear all pending requests
+  add-temporary <ip>                Add temporary whitelist entry
+  remove-temporary <ip>             Remove temporary whitelist entry
 
-value <ACTION>                    Manage values for variable expansion
+value <ACTION> (alias: val)       Manage values for variable expansion
   list                              List all values
   show|get <name>                   Show a value
   add|set <name> <value>            Add a value
@@ -133,11 +142,12 @@ script <ACTION>                   Manage scripts (request/response/decode)
   show|get [type] <name>            Show script content; with one arg, fuzzy match by name
   run [type] <name>                 Run a script test and print output + logs
   delete <type> <name>              Delete a script
+  rename <type> <name> <new_name>   Rename a script
 
 upgrade [OPTIONS]                 Upgrade bifrost to the latest version
   -y, --yes                         Skip confirmation prompt
 
-config [ACTION]                   Manage runtime configuration
+config [ACTION] (alias: cfg)      Manage runtime configuration
   show [--json] [--section <SECTION>]  Show configuration (default)
   get <key> [--json]                  Get a configuration value (e.g., tls.enabled)
   set <key> <value>                   Set a configuration value
@@ -146,12 +156,16 @@ config [ACTION]                   Manage runtime configuration
   reset <key|all> [-y|--yes]           Reset a configuration to default value
   clear-cache [-y|--yes]               Clear all caches (body, traffic, frame)
   disconnect <domain>                  Disconnect connections by domain pattern
+  disconnect-by-app <app>              Disconnect connections by application
   export [-o path] [--format json|toml] Export configuration to file
+  performance                          Show performance overview
+  websocket                            Show active WebSocket connections
 
 traffic <ACTION>                  Inspect and query traffic records
   list [OPTIONS]                     List traffic records
   get [id] [OPTIONS]                 Get traffic record details by id/sequence
   search [keyword] [OPTIONS]         Search traffic records (same as `bifrost search`)
+  clear [--ids id1,id2] [-y]         Clear traffic records (all or by IDs)
 
 search [keyword] [OPTIONS]         Search traffic records with advanced filtering
   -i, --interactive                   Interactive TUI mode (default if no keyword)
@@ -169,11 +183,43 @@ search [keyword] [OPTIONS]         Search traffic records with advanced filterin
   --domain <PATTERN>                 Domain pattern filter
   --no-color                          Disable colored output
 
-completions <SHELL>                Generate shell completion scripts
+completions <SHELL> (alias: comp)  Generate shell completion scripts
   SHELL: bash, zsh, fish, elvish, powershell
+
+metrics <ACTION>                  View real-time metrics and statistics
+  summary                           Show metrics summary (default)
+  apps                              Show per-application traffic metrics
+  hosts                             Show per-host traffic metrics
+  history [-l limit]                Show metrics history
+
+sync <ACTION>                     Manage remote sync
+  status                            Show sync status
+  login                             Login to sync service
+  logout                            Logout from sync service
+  run                               Trigger manual sync
+  config [--enabled] [--auto-sync] [--remote-url]  View or update sync config
+
+import <file> [--detect-only]     Import a .bifrost file
+export <ACTION>                   Export to .bifrost file
+  rules <names...> [-d desc] [-o path]   Export rules
+  values [names...] [-d desc] [-o path]  Export values
+  scripts <names...> [-d desc] [-o path] Export scripts
+
+version-check                     Check for new version without upgrading
+
+install-skill [OPTIONS]           Install SKILL.md to AI coding tools
+  -t, --tool <TOOL>                   Target: claude-code, codex, trae, cursor, all
+  -d, --dir <PATH>                    Custom install directory
+  --cwd                               Install to current directory (project-level)
+  -y, --yes                           Skip confirmation prompt
 
 TIP:
     Use 'bifrost <command> -h' for the full list of options for any subcommand.
+
+COMMAND SHORTCUTS:
+    st    → status          cfg   → config
+    sp    → system-proxy    val   → value
+    wl    → whitelist       comp  → completions
 
 ────────────────────────────────────────────────────────────────────────────
 ENVIRONMENT VARIABLES
@@ -264,7 +310,7 @@ pub struct Cli {
     #[arg(short, long, default_value = "9900", help = "HTTP proxy port")]
     pub port: u16,
 
-    #[arg(short = 'H', long, default_value = "0.0.0.0", help = "Listen address")]
+    #[arg(short = 'H', long, default_value = "0.0.0.0", value_hint = ValueHint::Hostname, help = "Listen address")]
     pub host: String,
 
     #[arg(
@@ -290,7 +336,7 @@ pub struct Cli {
     )]
     pub log_output: String,
 
-    #[arg(long, help = "Log file directory (default: <data_dir>/logs)")]
+    #[arg(long, value_hint = ValueHint::DirPath, help = "Log file directory (default: <data_dir>/logs)")]
     pub log_dir: Option<PathBuf>,
 
     #[arg(long, default_value = "7", help = "Number of days to retain log files")]
@@ -303,7 +349,7 @@ pub enum Commands {
     Start {
         #[arg(short, long, help = "HTTP proxy port (overrides global -p)")]
         port: Option<u16>,
-        #[arg(short = 'H', long, help = "Listen address (overrides global -H)")]
+        #[arg(short = 'H', long, value_hint = ValueHint::Hostname, help = "Listen address (overrides global -H)")]
         host: Option<String>,
         #[arg(
             long,
@@ -375,7 +421,7 @@ pub enum Commands {
             help = "Proxy rules (e.g., 'example.com host://127.0.0.1:3000' or 'chatgpt.com http3://'). Can be specified multiple times."
         )]
         rules: Vec<String>,
-        #[arg(long, help = "Path to rules file (one rule per line)")]
+        #[arg(long, value_hint = ValueHint::FilePath, help = "Path to rules file (one rule per line)")]
         rules_file: Option<PathBuf>,
         #[arg(long, help = "Enable system proxy configuration")]
         system_proxy: bool,
@@ -397,7 +443,7 @@ pub enum Commands {
     },
     #[command(about = "Stop the proxy server")]
     Stop,
-    #[command(about = "Show proxy server status")]
+    #[command(visible_alias = "st", about = "Show proxy server status")]
     Status {
         #[arg(short, long, help = "Show interactive TUI dashboard")]
         tui: bool,
@@ -417,17 +463,23 @@ pub enum Commands {
         #[command(subcommand)]
         action: CaCommands,
     },
-    #[command(about = "Manage client IP whitelist")]
+    #[command(visible_alias = "wl", about = "Manage client IP whitelist")]
     Whitelist {
         #[command(subcommand)]
         action: WhitelistCommands,
     },
-    #[command(about = "Toggle system proxy (enable/disable/status)")]
+    #[command(
+        visible_alias = "sp",
+        about = "Toggle system proxy (enable/disable/status)"
+    )]
     SystemProxy {
         #[command(subcommand)]
         action: SystemProxyCommands,
     },
-    #[command(about = "Manage values for rule variable expansion")]
+    #[command(
+        visible_alias = "val",
+        about = "Manage values for rule variable expansion"
+    )]
     Value {
         #[command(subcommand)]
         action: ValueCommands,
@@ -442,7 +494,7 @@ pub enum Commands {
         #[arg(short = 'y', long, help = "Skip confirmation prompt")]
         yes: bool,
     },
-    #[command(about = "Manage runtime configuration")]
+    #[command(visible_alias = "cfg", about = "Manage runtime configuration")]
     Config {
         #[command(subcommand)]
         action: Option<ConfigCommands>,
@@ -466,6 +518,7 @@ pub enum Commands {
         #[arg(
             short,
             long,
+            value_hint = ValueHint::DirPath,
             help = "Custom install directory (overrides default tool path)"
         )]
         dir: Option<PathBuf>,
@@ -536,11 +589,38 @@ pub enum Commands {
         )]
         max_results: Option<usize>,
     },
-    #[command(about = "Generate shell completion scripts")]
+    #[command(visible_alias = "comp", about = "Generate shell completion scripts")]
     Completions {
-        #[arg(help = "Target shell: bash, zsh, fish, elvish, powershell")]
+        #[arg(
+            value_name = "SHELL",
+            help = "Target shell: bash, zsh, fish, elvish, powershell"
+        )]
         shell: Shell,
     },
+    #[command(about = "View real-time metrics and statistics")]
+    Metrics {
+        #[command(subcommand)]
+        action: MetricsCommands,
+    },
+    #[command(about = "Manage remote sync")]
+    Sync {
+        #[command(subcommand)]
+        action: SyncCommands,
+    },
+    #[command(about = "Import a .bifrost file (rules, scripts, values)")]
+    Import {
+        #[arg(value_hint = ValueHint::FilePath, help = "Path to .bifrost file")]
+        file: PathBuf,
+        #[arg(long, help = "Only detect file type without importing")]
+        detect_only: bool,
+    },
+    #[command(about = "Export rules, scripts, or values to .bifrost file")]
+    Export {
+        #[command(subcommand)]
+        action: ExportCommands,
+    },
+    #[command(about = "Check for new version without upgrading")]
+    VersionCheck,
 }
 
 #[derive(Subcommand, Clone)]
@@ -678,6 +758,13 @@ pub enum TrafficCommands {
         )]
         max_results: Option<usize>,
     },
+    #[command(about = "Clear traffic records")]
+    Clear {
+        #[arg(long, help = "Delete specific records by ID (comma-separated)")]
+        ids: Option<String>,
+        #[arg(short = 'y', long, help = "Skip confirmation prompt")]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -690,7 +777,7 @@ pub enum RuleCommands {
         name: String,
         #[arg(short, long, help = "Rule content")]
         content: Option<String>,
-        #[arg(short, long, help = "Rule file path")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Rule file path")]
         file: Option<PathBuf>,
     },
     #[command(about = "Update an existing rule")]
@@ -699,7 +786,7 @@ pub enum RuleCommands {
         name: String,
         #[arg(short, long, help = "Rule content")]
         content: Option<String>,
-        #[arg(short, long, help = "Rule file path")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Rule file path")]
         file: Option<PathBuf>,
     },
     #[command(about = "Delete a rule")]
@@ -724,6 +811,18 @@ pub enum RuleCommands {
     },
     #[command(about = "Sync rules with remote server")]
     Sync,
+    #[command(about = "Rename a rule")]
+    Rename {
+        #[arg(help = "Current rule name")]
+        name: String,
+        #[arg(help = "New rule name")]
+        new_name: String,
+    },
+    #[command(about = "Reorder rules priority")]
+    Reorder {
+        #[arg(num_args = 1.., help = "Rule names in desired order")]
+        names: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -771,7 +870,7 @@ pub enum GroupRuleCommands {
         name: String,
         #[arg(short, long, help = "Rule content")]
         content: Option<String>,
-        #[arg(short, long, help = "Rule file path")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Rule file path")]
         file: Option<PathBuf>,
     },
     #[command(about = "Update a group rule")]
@@ -782,7 +881,7 @@ pub enum GroupRuleCommands {
         name: String,
         #[arg(short, long, help = "Rule content")]
         content: Option<String>,
-        #[arg(short, long, help = "Rule file path")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Rule file path")]
         file: Option<PathBuf>,
     },
     #[command(about = "Delete a group rule")]
@@ -819,7 +918,7 @@ pub enum CaCommands {
     },
     #[command(about = "Export CA certificate")]
     Export {
-        #[arg(short, long, help = "Output path")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Output path")]
         output: Option<PathBuf>,
     },
     #[command(about = "Show CA certificate info")]
@@ -842,11 +941,40 @@ pub enum WhitelistCommands {
     },
     #[command(about = "Enable or disable LAN (private network) access")]
     AllowLan {
-        #[arg(help = "Enable (true) or disable (false) LAN access")]
+        #[arg(value_parser = ["true", "false"], help = "Enable (true) or disable (false) LAN access")]
         enable: String,
     },
     #[command(about = "Show current access control settings")]
     Status,
+    #[command(about = "Get or set access control mode")]
+    Mode {
+        #[arg(value_parser = ["local_only", "whitelist", "interactive", "allow_all"], help = "Set access mode (omit to show current)")]
+        mode: Option<String>,
+    },
+    #[command(about = "List pending access requests")]
+    Pending,
+    #[command(about = "Approve a pending access request")]
+    Approve {
+        #[arg(help = "IP address to approve")]
+        ip: String,
+    },
+    #[command(about = "Reject a pending access request")]
+    Reject {
+        #[arg(help = "IP address to reject")]
+        ip: String,
+    },
+    #[command(about = "Clear all pending access requests")]
+    ClearPending,
+    #[command(about = "Add a temporary whitelist entry")]
+    AddTemporary {
+        #[arg(help = "IP address for temporary access")]
+        ip: String,
+    },
+    #[command(about = "Remove a temporary whitelist entry")]
+    RemoveTemporary {
+        #[arg(help = "IP address to remove from temporary list")]
+        ip: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -857,7 +985,7 @@ pub enum SystemProxyCommands {
     Enable {
         #[arg(long, help = "Bypass list (comma-separated)")]
         bypass: Option<String>,
-        #[arg(long, help = "Proxy host (default: 127.0.0.1)")]
+        #[arg(long, value_hint = ValueHint::Hostname, help = "Proxy host (default: 127.0.0.1)")]
         host: Option<String>,
         #[arg(long, help = "Proxy port (default: global -p)")]
         port: Option<u16>,
@@ -896,7 +1024,7 @@ pub enum ValueCommands {
     },
     #[command(about = "Import values from file")]
     Import {
-        #[arg(help = "File path (supports .txt, .kv, .json)")]
+        #[arg(value_hint = ValueHint::FilePath, help = "File path (supports .txt, .kv, .json)")]
         file: PathBuf,
     },
 }
@@ -916,7 +1044,7 @@ pub enum ScriptCommands {
         name: String,
         #[arg(short, long, help = "Script content (JavaScript)")]
         content: Option<String>,
-        #[arg(short, long, help = "Script file path (.js)")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Script file path (.js)")]
         file: Option<PathBuf>,
     },
     #[command(about = "Update an existing script")]
@@ -927,7 +1055,7 @@ pub enum ScriptCommands {
         name: String,
         #[arg(short, long, help = "Script content (JavaScript)")]
         content: Option<String>,
-        #[arg(short, long, help = "Script file path (.js)")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Script file path (.js)")]
         file: Option<PathBuf>,
     },
     #[command(about = "Delete a script")]
@@ -954,6 +1082,15 @@ pub enum ScriptCommands {
             help = "Script type + name, or just name for fuzzy match"
         )]
         args: Vec<String>,
+    },
+    #[command(about = "Rename a script")]
+    Rename {
+        #[arg(value_parser = ["request", "response", "decode"], help = "Script type: request, response, decode")]
+        r#type: String,
+        #[arg(help = "Current script name")]
+        name: String,
+        #[arg(help = "New script name")]
+        new_name: String,
     },
 }
 
@@ -1013,9 +1150,90 @@ pub enum ConfigCommands {
     },
     #[command(about = "Export configuration to file")]
     Export {
-        #[arg(short, long, help = "Output file path (default: stdout)")]
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Output file path (default: stdout)")]
         output: Option<PathBuf>,
         #[arg(long, default_value = "toml", value_parser = ["json", "toml"], help = "Export format: json, toml")]
         format: String,
     },
+    #[command(about = "Disconnect connections by application name")]
+    DisconnectByApp {
+        #[arg(help = "Application name")]
+        app: String,
+    },
+    #[command(about = "Show performance overview (body store, frame store, sandbox)")]
+    Performance,
+    #[command(about = "Show active WebSocket connections")]
+    Websocket,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum MetricsCommands {
+    #[command(about = "Show metrics summary (default)")]
+    Summary,
+    #[command(about = "Show per-application traffic metrics")]
+    Apps,
+    #[command(about = "Show per-host traffic metrics")]
+    Hosts,
+    #[command(about = "Show metrics history")]
+    History {
+        #[arg(short, long, help = "Maximum history entries to show")]
+        limit: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum SyncCommands {
+    #[command(about = "Show sync status")]
+    Status,
+    #[command(about = "Login to sync service")]
+    Login,
+    #[command(about = "Logout from sync service")]
+    Logout,
+    #[command(about = "Trigger manual sync")]
+    Run,
+    #[command(about = "View or update sync configuration")]
+    Config {
+        #[arg(long, help = "Enable or disable sync")]
+        enabled: Option<bool>,
+        #[arg(long, help = "Enable or disable auto-sync")]
+        auto_sync: Option<bool>,
+        #[arg(long, value_hint = ValueHint::Url, help = "Set remote sync URL")]
+        remote_url: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Clone)]
+pub enum ExportCommands {
+    #[command(about = "Export rules to .bifrost file")]
+    Rules {
+        #[arg(num_args = 1.., help = "Rule names to export")]
+        names: Vec<String>,
+        #[arg(short, long, help = "Description for the export")]
+        description: Option<String>,
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Output file path (default: stdout)")]
+        output: Option<PathBuf>,
+    },
+    #[command(about = "Export values to .bifrost file")]
+    Values {
+        #[arg(help = "Value names to export (default: all)")]
+        names: Vec<String>,
+        #[arg(short, long, help = "Description for the export")]
+        description: Option<String>,
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Output file path (default: stdout)")]
+        output: Option<PathBuf>,
+    },
+    #[command(about = "Export scripts to .bifrost file")]
+    Scripts {
+        #[arg(num_args = 1.., help = "Script names to export (format: type/name)")]
+        names: Vec<String>,
+        #[arg(short, long, help = "Description for the export")]
+        description: Option<String>,
+        #[arg(short, long, value_hint = ValueHint::FilePath, help = "Output file path (default: stdout)")]
+        output: Option<PathBuf>,
+    },
+}
+
+pub struct ImportArgs {
+    pub file: PathBuf,
+    pub detect_only: bool,
 }
