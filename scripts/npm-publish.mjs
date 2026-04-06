@@ -29,7 +29,7 @@ if (!VERSION) {
 const ARTIFACTS_DIR = process.env.ARTIFACTS_DIR || join(ROOT, "artifacts");
 const DRY_RUN = process.argv.includes("--dry-run");
 const LOCAL_MODE = process.argv.includes("--local");
-const NPM_TAG = VERSION.includes("-") ? "next" : "latest";
+const NPM_TAG = "latest";
 
 const tokenIdx = process.argv.indexOf("--token");
 const NPM_TOKEN_ARG = tokenIdx !== -1 ? process.argv[tokenIdx + 1] : null;

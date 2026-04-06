@@ -22,9 +22,13 @@
     "bifrost": "bin/bifrost"
   },
   "main": "lib/index.js",
+  "scripts": {
+    "postinstall": "node install.js"
+  },
   "files": [
     "bin/bifrost",
     "lib/index.js",
+    "install.js",
     "README.md"
   ],
   "optionalDependencies": {
