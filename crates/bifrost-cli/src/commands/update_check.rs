@@ -419,6 +419,9 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
 }
 
 fn is_ci_environment() -> bool {
+    if std::env::var_os("BIFROST_FORCE_UPDATE_CHECK").is_some() {
+        return false;
+    }
     std::env::var_os("CI").is_some()
         || std::env::var_os("GITHUB_ACTIONS").is_some()
         || std::env::var_os("JENKINS_URL").is_some()
