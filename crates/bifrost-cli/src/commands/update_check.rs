@@ -418,6 +418,15 @@ pub fn is_newer_version(current: &str, latest: &str) -> bool {
     compare_versions(latest, current) == std::cmp::Ordering::Greater
 }
 
+fn is_ci_environment() -> bool {
+    std::env::var_os("CI").is_some()
+        || std::env::var_os("GITHUB_ACTIONS").is_some()
+        || std::env::var_os("JENKINS_URL").is_some()
+        || std::env::var_os("GITLAB_CI").is_some()
+        || std::env::var_os("TRAVIS").is_some()
+        || std::env::var_os("CIRCLECI").is_some()
+}
+
 pub fn get_latest_version() -> Option<VersionCache> {
     if let Some(cache) = read_cache() {
         if is_cache_valid(&cache) {
@@ -449,6 +458,10 @@ pub fn get_latest_version_fresh() -> Option<VersionCache> {
 }
 
 pub fn check_and_print_update_notice() {
+    if is_ci_environment() {
+        return;
+    }
+
     let current_version = env!("CARGO_PKG_VERSION");
 
     let cache = match get_latest_version() {
@@ -464,6 +477,9 @@ pub fn check_and_print_update_notice() {
 }
 
 pub fn spawn_update_check_notice() {
+    if is_ci_environment() {
+        return;
+    }
     let _ = thread::Builder::new()
         .name("bifrost-update-check".to_string())
         .spawn(check_and_print_update_notice);
