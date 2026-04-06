@@ -173,7 +173,7 @@ test_version_cache_creation() {
 
     setup_test_data_dir
 
-    BIFROST_DATA_DIR="$TEST_DATA_DIR" "$BIFROST_BIN" status >/dev/null 2>&1 || true
+    BIFROST_DATA_DIR="$TEST_DATA_DIR" BIFROST_FORCE_UPDATE_CHECK=1 "$BIFROST_BIN" status >/dev/null 2>&1 || true
 
     sleep 2
 
@@ -210,7 +210,7 @@ test_version_cache_content() {
 }
 EOF
 
-    BIFROST_DATA_DIR="$TEST_DATA_DIR" "$BIFROST_BIN" status >/dev/null 2>&1 || true
+    BIFROST_DATA_DIR="$TEST_DATA_DIR" BIFROST_FORCE_UPDATE_CHECK=1 "$BIFROST_BIN" status >/dev/null 2>&1 || true
 
     local content
     content=$(cat "$cache_file" 2>/dev/null || echo "")
@@ -240,7 +240,7 @@ test_new_version_notice() {
 EOF
 
     local result
-    result=$(BIFROST_DATA_DIR="$TEST_DATA_DIR" "$BIFROST_BIN" status 2>&1 | cat -v || true)
+    result=$(BIFROST_DATA_DIR="$TEST_DATA_DIR" BIFROST_FORCE_UPDATE_CHECK=1 "$BIFROST_BIN" status 2>&1 | cat -v || true)
 
     local checks=0
 
@@ -286,7 +286,7 @@ test_no_notice_when_current() {
 EOF
 
     local result
-    result=$(BIFROST_DATA_DIR="$TEST_DATA_DIR" "$BIFROST_BIN" status 2>&1 || true)
+    result=$(BIFROST_DATA_DIR="$TEST_DATA_DIR" BIFROST_FORCE_UPDATE_CHECK=1 "$BIFROST_BIN" status 2>&1 || true)
 
     if echo "$result" | grep -iq "new version"; then
         fail "当版本相同时不应显示更新提示"
