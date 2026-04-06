@@ -87,7 +87,7 @@ pub fn handle_system_proxy_command(
                 println!("System proxy not supported on this platform");
                 return Ok(());
             }
-            if let Err(e) = manager.disable() {
+            if let Err(e) = manager.force_disable() {
                 let msg = e.to_string();
                 if msg.contains("RequiresAdmin") {
                     println!("System proxy disable requires administrator privileges.");
@@ -122,5 +122,6 @@ pub fn handle_system_proxy_command(
             }
         }
     }
+    manager.detach();
     Ok(())
 }

@@ -26,6 +26,7 @@ parking_lot.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 dirs.workspace = true
 dialoguer = "0.11"
 toml.workspace = true
@@ -50,4 +51,4 @@ nix = { version = "0.28", features = ["signal", "process", "fs"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation", "Win32_System_Threading"] }

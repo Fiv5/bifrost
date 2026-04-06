@@ -61,15 +61,6 @@ impl ConfigApiClient {
         self.get("/whitelist")
     }
 
-    pub fn set_access_mode(&self, mode: &str) -> Result<serde_json::Value, String> {
-        self.put(
-            "/whitelist/mode",
-            &AccessModeRequest {
-                mode: mode.to_string(),
-            },
-        )
-    }
-
     pub fn set_allow_lan(&self, allow: bool) -> Result<serde_json::Value, String> {
         self.put(
             "/whitelist/allow-lan",
@@ -79,6 +70,191 @@ impl ConfigApiClient {
 
     pub fn set_userpass(&self, req: &UpdateUserPassRequest) -> Result<serde_json::Value, String> {
         self.put("/whitelist/userpass", req)
+    }
+
+    pub fn get_metrics(&self) -> Result<serde_json::Value, String> {
+        self.get("/metrics")
+    }
+
+    pub fn get_metrics_history(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let path = match limit {
+            Some(l) => format!("/metrics/history?limit={}", l),
+            None => "/metrics/history".to_string(),
+        };
+        self.get(&path)
+    }
+
+    pub fn get_system_overview(&self) -> Result<serde_json::Value, String> {
+        self.get("/system/overview")
+    }
+
+    pub fn get_app_metrics(&self) -> Result<Vec<serde_json::Value>, String> {
+        self.get("/metrics/apps")
+    }
+
+    pub fn get_host_metrics(&self) -> Result<Vec<serde_json::Value>, String> {
+        self.get("/metrics/hosts")
+    }
+
+    pub fn get_sync_status(&self) -> Result<SyncStatusResponse, String> {
+        self.get("/sync/status")
+    }
+
+    pub fn update_sync_config(
+        &self,
+        req: &UpdateSyncConfigRequest,
+    ) -> Result<SyncStatusResponse, String> {
+        self.put("/sync/config", req)
+    }
+
+    pub fn sync_login(&self) -> Result<SyncStatusResponse, String> {
+        self.post("/sync/login", &serde_json::json!({}))
+    }
+
+    pub fn sync_logout(&self) -> Result<SyncStatusResponse, String> {
+        self.post("/sync/logout", &serde_json::json!({}))
+    }
+
+    pub fn sync_run(&self) -> Result<SyncStatusResponse, String> {
+        self.post("/sync/run", &serde_json::json!({}))
+    }
+
+    pub fn clear_traffic(&self) -> Result<serde_json::Value, String> {
+        self.delete("/traffic")
+    }
+
+    pub fn delete_traffic_by_ids(&self, ids: &[String]) -> Result<serde_json::Value, String> {
+        self.delete_with_body("/traffic", &serde_json::json!({ "ids": ids }))
+    }
+
+    pub fn reorder_rules(&self, order: &[String]) -> Result<serde_json::Value, String> {
+        self.put("/rules/reorder", &serde_json::json!({ "order": order }))
+    }
+
+    pub fn rename_rule(&self, old_name: &str, new_name: &str) -> Result<serde_json::Value, String> {
+        let path = format!("/rules/{}/rename", urlencoding::encode(old_name));
+        self.put(&path, &serde_json::json!({ "new_name": new_name }))
+    }
+
+    pub fn rename_script(
+        &self,
+        script_type: &str,
+        name: &str,
+        new_name: &str,
+    ) -> Result<serde_json::Value, String> {
+        let path = format!(
+            "/scripts/rename/{}/{}",
+            script_type,
+            urlencoding::encode(name)
+        );
+        self.post(&path, &serde_json::json!({ "new_name": new_name }))
+    }
+
+    pub fn get_access_mode(&self) -> Result<serde_json::Value, String> {
+        self.get("/whitelist/mode")
+    }
+
+    pub fn set_access_mode(&self, mode: &str) -> Result<serde_json::Value, String> {
+        self.put("/whitelist/mode", &serde_json::json!({ "mode": mode }))
+    }
+
+    pub fn add_temporary(&self, ip: &str) -> Result<serde_json::Value, String> {
+        self.post("/whitelist/temporary", &serde_json::json!({ "ip": ip }))
+    }
+
+    pub fn remove_temporary(&self, ip: &str) -> Result<serde_json::Value, String> {
+        self.delete_with_body("/whitelist/temporary", &serde_json::json!({ "ip": ip }))
+    }
+
+    pub fn get_pending(&self) -> Result<Vec<serde_json::Value>, String> {
+        self.get("/whitelist/pending")
+    }
+
+    pub fn approve_pending(&self, ip: &str) -> Result<serde_json::Value, String> {
+        self.post(
+            "/whitelist/pending/approve",
+            &serde_json::json!({ "ip": ip }),
+        )
+    }
+
+    pub fn reject_pending(&self, ip: &str) -> Result<serde_json::Value, String> {
+        self.post(
+            "/whitelist/pending/reject",
+            &serde_json::json!({ "ip": ip }),
+        )
+    }
+
+    pub fn clear_pending(&self) -> Result<serde_json::Value, String> {
+        self.delete("/whitelist/pending")
+    }
+
+    pub fn get_sandbox_config(&self) -> Result<serde_json::Value, String> {
+        self.get("/config/sandbox")
+    }
+
+    pub fn version_check(&self) -> Result<serde_json::Value, String> {
+        self.get("/system/version-check")
+    }
+
+    pub fn get_websocket_connections(&self) -> Result<serde_json::Value, String> {
+        self.get("/websocket/connections")
+    }
+
+    pub fn disconnect_by_app(&self, app: &str) -> Result<serde_json::Value, String> {
+        self.post(
+            "/config/connections/disconnect-by-app",
+            &serde_json::json!({ "app": app }),
+        )
+    }
+
+    pub fn bifrost_file_detect(&self, content: &str) -> Result<serde_json::Value, String> {
+        self.post_text("/bifrost-file/detect", content)
+    }
+
+    pub fn bifrost_file_import(&self, content: &str) -> Result<serde_json::Value, String> {
+        self.post_text("/bifrost-file/import", content)
+    }
+
+    pub fn bifrost_file_export_rules(
+        &self,
+        rule_names: &[String],
+        description: Option<&str>,
+    ) -> Result<String, String> {
+        let mut body = serde_json::json!({ "rule_names": rule_names });
+        if let Some(desc) = description {
+            body["description"] = serde_json::json!(desc);
+        }
+        self.post_text_response("/bifrost-file/export/rules", &body)
+    }
+
+    pub fn bifrost_file_export_values(
+        &self,
+        value_names: Option<&[String]>,
+        description: Option<&str>,
+    ) -> Result<String, String> {
+        let mut body = serde_json::json!({});
+        if let Some(names) = value_names {
+            body["value_names"] = serde_json::json!(names);
+        }
+        if let Some(desc) = description {
+            body["description"] = serde_json::json!(desc);
+        }
+        self.post_text_response("/bifrost-file/export/values", &body)
+    }
+
+    pub fn bifrost_file_export_scripts(
+        &self,
+        script_names: &[String],
+        description: Option<&str>,
+    ) -> Result<String, String> {
+        let mut body = serde_json::json!({ "script_names": script_names });
+        if let Some(desc) = description {
+            body["description"] = serde_json::json!(desc);
+        }
+        self.post_text_response("/bifrost-file/export/scripts", &body)
     }
 
     fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
@@ -148,6 +324,60 @@ impl ConfigApiClient {
             .into_string()
             .map_err(|e| format!("Failed to read response: {}", e))?;
         serde_json::from_str(&body).map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    fn delete_with_body<T: DeserializeOwned, R: Serialize>(
+        &self,
+        path: &str,
+        body: &R,
+    ) -> Result<T, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = bifrost_core::direct_ureq_agent()
+            .delete(&url)
+            .send_json(body)
+            .map_err(|e| {
+            format!(
+                "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
+                url, e
+            )
+        })?;
+        let body = resp
+            .into_string()
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    fn post_text<T: DeserializeOwned>(&self, path: &str, text: &str) -> Result<T, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = bifrost_core::direct_ureq_agent()
+            .post(&url)
+            .set("Content-Type", "text/plain")
+            .send_string(text)
+            .map_err(|e| {
+            format!(
+                "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
+                url, e
+            )
+        })?;
+        let body = resp
+            .into_string()
+            .map_err(|e| format!("Failed to read response: {}", e))?;
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse response: {}", e))
+    }
+
+    fn post_text_response<R: Serialize>(&self, path: &str, body: &R) -> Result<String, String> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = bifrost_core::direct_ureq_agent()
+            .post(&url)
+            .send_json(body)
+            .map_err(|e| {
+            format!(
+                "Failed to connect to Bifrost admin API at {}\nIs the proxy server running?\n\nHint: Start the proxy with: bifrost start\n\nError: {}",
+                url, e
+            )
+        })?;
+        resp.into_string()
+            .map_err(|e| format!("Failed to read response: {}", e))
     }
 }
 
@@ -323,11 +553,6 @@ pub struct UserPassAccountResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct AccessModeRequest {
-    pub mode: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct AllowLanRequest {
     pub allow_lan: bool,
 }
@@ -345,4 +570,38 @@ pub struct UpdateUserPassAccountRequest {
     pub username: String,
     pub password: Option<String>,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    pub enabled: bool,
+    pub auto_sync: bool,
+    pub remote_base_url: String,
+    pub has_session: bool,
+    pub reachable: bool,
+    pub authorized: bool,
+    pub syncing: bool,
+    pub reason: String,
+    pub last_sync_at: Option<String>,
+    pub last_sync_action: Option<String>,
+    pub last_error: Option<String>,
+    pub user: Option<SyncUserInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncUserInfo {
+    pub user_id: String,
+    pub nickname: String,
+    pub avatar: String,
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct UpdateSyncConfigRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_sync: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_base_url: Option<String>,
 }

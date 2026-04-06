@@ -58,7 +58,45 @@ pub fn run_stop() -> bifrost_core::Result<()> {
         println!("Bifrost proxy stopped (forced).");
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
+        };
+
+        println!("Stopping Bifrost proxy (PID: {})...", pid);
+
+        let handle = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid as u32) };
+
+        if handle.is_null() {
+            eprintln!(
+                "Failed to open process (PID: {}). It may have already exited.",
+                pid
+            );
+            cleanup_proxy_state(&bifrost_dir);
+            remove_pid()?;
+        } else {
+            let terminated = unsafe { TerminateProcess(handle, 1) };
+            if terminated != 0 {
+                unsafe {
+                    WaitForSingleObject(handle, 5000);
+                }
+                cleanup_proxy_state(&bifrost_dir);
+                remove_pid()?;
+                println!("Bifrost proxy stopped.");
+            } else {
+                eprintln!("Failed to terminate process (PID: {}).", pid);
+                cleanup_proxy_state(&bifrost_dir);
+            }
+            unsafe {
+                CloseHandle(handle);
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
     {
         println!("Stop command is not supported on this platform.");
         println!("Please terminate the process manually (PID: {}).", pid);

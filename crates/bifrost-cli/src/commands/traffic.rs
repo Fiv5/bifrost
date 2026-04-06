@@ -14,6 +14,22 @@ fn direct_agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
+fn network_request_error(url: &str, e: &ureq::Error) -> BifrostError {
+    let detail = e.to_string();
+    let lower = detail.to_lowercase();
+    if lower.contains("connection refused") || lower.contains("connect error") {
+        BifrostError::Network(format!(
+            "Failed to connect to Bifrost admin API at {}\n\
+             Is the proxy server running?\n\n\
+             Hint: Start the proxy with: bifrost start\n\n\
+             Error: {}",
+            url, detail
+        ))
+    } else {
+        BifrostError::Network(format!("Request failed: {}: {}", url, detail))
+    }
+}
+
 pub struct TrafficListOptions {
     pub port: u16,
     pub limit: usize,
@@ -149,7 +165,7 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
     let resp = direct_agent(Duration::from_secs(10))
         .get(&url)
         .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+        .map_err(|e| network_request_error(&url, &e))?;
 
     let body = resp
         .into_string()
@@ -174,6 +190,39 @@ pub fn run_traffic_list(options: TrafficListOptions) -> Result<()> {
     }
 }
 
+pub fn run_traffic_clear(port: u16, ids: Option<String>, yes: bool) -> Result<()> {
+    let client = super::config::client::ConfigApiClient::new("127.0.0.1", port);
+
+    if let Some(ids_str) = ids {
+        let id_list: Vec<String> = ids_str.split(',').map(|s| s.trim().to_string()).collect();
+        client
+            .delete_traffic_by_ids(&id_list)
+            .map_err(BifrostError::Config)?;
+        println!("Deleted {} traffic record(s).", id_list.len());
+    } else {
+        if !yes {
+            if !std::io::stdin().is_terminal() {
+                return Err(BifrostError::Config(
+                    "Use --yes to confirm clearing all traffic records in non-interactive mode"
+                        .to_string(),
+                ));
+            }
+            print!("Clear ALL traffic records? This cannot be undone. [y/N] ");
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).ok();
+            if !input.trim().eq_ignore_ascii_case("y") {
+                println!("Cancelled.");
+                return Ok(());
+            }
+        }
+        client.clear_traffic().map_err(BifrostError::Config)?;
+        println!("All traffic records cleared.");
+    }
+    Ok(())
+}
+
 pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
     let mut id = options.id.clone();
     if id.is_none() {
@@ -190,11 +239,12 @@ pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
         return Err(BifrostError::Parse("Traffic id is empty".to_string()));
     }
 
+    let mut other_matches: Vec<SeqMatch> = Vec::new();
+
     if id.chars().all(|c| c.is_ascii_digit()) {
-        let seq: u64 = id
-            .parse()
-            .map_err(|_| BifrostError::Parse(format!("Invalid sequence: {}", id)))?;
-        id = find_id_by_sequence(options.port, seq)?;
+        let result = find_id_by_sequence_suffix(options.port, &id)?;
+        id = result.matched_id;
+        other_matches = result.others;
     }
 
     let record = match fetch_traffic_record(options.port, &id) {
@@ -238,6 +288,27 @@ pub fn run_traffic_get(options: TrafficGetOptions) -> Result<()> {
         }
     };
 
+    if !other_matches.is_empty() {
+        let use_color = std::io::stdout().is_terminal();
+        if use_color {
+            eprintln!(
+                "\n\x1b[90m{} other record(s) also match suffix:\x1b[0m",
+                other_matches.len()
+            );
+            for m in &other_matches {
+                eprintln!("\x1b[90m  bifrost traffic get {}\x1b[0m", m.seq);
+            }
+        } else {
+            eprintln!(
+                "\n{} other record(s) also match suffix:",
+                other_matches.len()
+            );
+            for m in &other_matches {
+                eprintln!("  bifrost traffic get {}", m.seq);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -260,10 +331,10 @@ fn fetch_traffic_record(port: u16, id: &str) -> std::result::Result<Value, Fetch
         Ok(r) => r,
         Err(ureq::Error::Status(404, _)) => return Err(FetchTrafficError::NotFound),
         Err(e) => {
-            return Err(FetchTrafficError::Other(BifrostError::Network(format!(
-                "Request failed: {}",
-                e
-            ))))
+            return Err(FetchTrafficError::Other(network_request_error(
+                &record_url,
+                &e,
+            )))
         }
     };
 
@@ -300,20 +371,79 @@ fn fetch_traffic_body(port: u16, id: &str, is_request: bool) -> Option<Value> {
     serde_json::from_str::<Value>(&body).ok()
 }
 
-fn find_id_by_sequence(port: u16, seq: u64) -> Result<String> {
-    if let Some(id) = find_id_by_sequence_db_style(port, seq)? {
-        return Ok(id);
-    }
-    if let Some(id) = find_id_by_sequence_scan(port, seq)? {
-        return Ok(id);
-    }
-    Err(BifrostError::NotFound(format!(
-        "Traffic record with sequence '{}' not found",
-        seq
-    )))
+struct SeqMatch {
+    seq: u64,
+    id: String,
 }
 
-fn find_id_by_sequence_db_style(port: u16, seq: u64) -> Result<Option<String>> {
+struct SeqSuffixResult {
+    matched_id: String,
+    others: Vec<SeqMatch>,
+}
+
+fn find_id_by_sequence_suffix(port: u16, suffix: &str) -> Result<SeqSuffixResult> {
+    let server_seq = fetch_server_sequence(port)?;
+
+    let suffix_val: u64 = suffix
+        .parse()
+        .map_err(|_| BifrostError::Parse(format!("Invalid sequence suffix: {}", suffix)))?;
+
+    let modulus = 10u64.pow(suffix.len() as u32);
+
+    let mut candidates: Vec<u64> = Vec::new();
+    let mut candidate = suffix_val;
+    while candidate <= server_seq {
+        candidates.push(candidate);
+        candidate += modulus;
+    }
+    candidates.reverse();
+
+    let mut all_matches: Vec<SeqMatch> = Vec::new();
+    for seq in candidates {
+        if let Some(id) = find_id_by_exact_sequence(port, seq)? {
+            all_matches.push(SeqMatch { seq, id });
+        }
+    }
+
+    if all_matches.is_empty() {
+        return Err(BifrostError::NotFound(format!(
+            "No traffic record with sequence suffix '{}' found",
+            suffix
+        )));
+    }
+
+    let matched_id = all_matches[0].id.clone();
+    let others = all_matches.into_iter().skip(1).collect();
+
+    Ok(SeqSuffixResult { matched_id, others })
+}
+
+fn fetch_server_sequence(port: u16) -> Result<u64> {
+    let url = format!("http://127.0.0.1:{}/_bifrost/api/traffic?limit=1", port);
+    let resp = direct_agent(Duration::from_secs(10))
+        .get(&url)
+        .call()
+        .map_err(|e| network_request_error(&url, &e))?;
+    let body = resp
+        .into_string()
+        .map_err(|e| BifrostError::Network(format!("Failed to read response: {}", e)))?;
+
+    if let Ok(r) = serde_json::from_str::<TrafficQueryResult>(&body) {
+        return Ok(r.server_sequence);
+    }
+
+    if let Ok(legacy) = serde_json::from_str::<TrafficListLegacyResponse>(&body) {
+        if let Some(first) = legacy.records.first() {
+            return Ok(first.sequence);
+        }
+    }
+
+    Err(BifrostError::NotFound(
+        "No traffic records available".to_string(),
+    ))
+}
+
+fn find_id_by_exact_sequence(port: u16, seq: u64) -> Result<Option<String>> {
     let cursor = seq.saturating_add(1);
     let url = format!(
         "http://127.0.0.1:{}/_bifrost/api/traffic?limit=1&cursor={}&direction=backward",
@@ -322,7 +452,7 @@ fn find_id_by_sequence_db_style(port: u16, seq: u64) -> Result<Option<String>> {
 
     let resp = match direct_agent(Duration::from_secs(10)).get(&url).call() {
         Ok(r) => r,
-        Err(e) => return Err(BifrostError::Network(format!("Request failed: {}", e))),
+        Err(e) => return Err(network_request_error(&url, &e)),
     };
     let body = resp
         .into_string()
@@ -345,34 +475,12 @@ fn find_id_by_sequence_db_style(port: u16, seq: u64) -> Result<Option<String>> {
     }
 }
 
-fn find_id_by_sequence_scan(port: u16, seq: u64) -> Result<Option<String>> {
-    let url = format!("http://127.0.0.1:{}/_bifrost/api/traffic?limit=500", port);
-    let resp = direct_agent(Duration::from_secs(10))
-        .get(&url)
-        .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
-    let body = resp
-        .into_string()
-        .map_err(|e| BifrostError::Network(format!("Failed to read response: {}", e)))?;
-
-    let legacy = match serde_json::from_str::<TrafficListLegacyResponse>(&body) {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
-
-    Ok(legacy
-        .records
-        .into_iter()
-        .find(|r| r.sequence == seq)
-        .map(|r| r.id))
-}
-
 fn select_traffic_id(port: u16, hint: Option<&str>) -> Result<String> {
     let url = format!("http://127.0.0.1:{}/_bifrost/api/traffic?limit=100", port);
     let resp = direct_agent(Duration::from_secs(10))
         .get(&url)
         .call()
-        .map_err(|e| BifrostError::Network(format!("Request failed: {}", e)))?;
+        .map_err(|e| network_request_error(&url, &e))?;
 
     let body = resp
         .into_string()
@@ -412,11 +520,11 @@ fn select_traffic_id(port: u16, hint: Option<&str>) -> Result<String> {
             )
         })
         .collect();
-    items.push("手动输入 ID...".to_string());
+    items.push("Enter ID manually...".to_string());
 
     let prompt = match hint {
-        Some(h) => format!("未找到精确匹配的 ID，选择一个候选项（关键字：{}）", h),
-        None => "选择一个 Traffic ID".to_string(),
+        Some(h) => format!("No exact match found. Select a candidate (keyword: {})", h),
+        None => "Select a Traffic ID".to_string(),
     };
 
     let selection = Select::with_theme(&ColorfulTheme::default())
@@ -428,7 +536,7 @@ fn select_traffic_id(port: u16, hint: Option<&str>) -> Result<String> {
 
     if selection == items.len() - 1 {
         let input: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("输入 Traffic ID")
+            .with_prompt("Enter Traffic ID")
             .interact_text()
             .map_err(dialoguer_error)?;
         if input.trim().is_empty() {

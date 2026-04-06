@@ -895,9 +895,9 @@ fn windows_store_contains_thumbprint(
 
 #[cfg(any(target_os = "windows", test))]
 fn parse_windows_certutil_thumbprint(line: &str) -> Option<String> {
-    line.split_once("Cert Hash(sha1):")
+    line.split_once("(sha1):")
         .map(|(_, value)| normalize_thumbprint(value))
-        .filter(|value| !value.is_empty())
+        .filter(|value| value.len() == 40)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -1044,8 +1044,27 @@ mod tests {
     #[test]
     fn test_parse_windows_certutil_thumbprint() {
         assert_eq!(
-            parse_windows_certutil_thumbprint("  Cert Hash(sha1): aa bb cc dd  "),
-            Some("AABBCCDD".to_string())
+            parse_windows_certutil_thumbprint(
+                "  Cert Hash(sha1): f7 c6 cb 00 d3 7d ee a9 9e 42 6f 16 a7 e4 13 c3 93 47 75 06  "
+            ),
+            Some("F7C6CB00D37DEEA99E426F16A7E413C393477506".to_string())
+        );
+        assert_eq!(
+            parse_windows_certutil_thumbprint(
+                "  证书哈希(sha1): f7 c6 cb 00 d3 7d ee a9 9e 42 6f 16 a7 e4 13 c3 93 47 75 06  "
+            ),
+            Some("F7C6CB00D37DEEA99E426F16A7E413C393477506".to_string())
+        );
+        let gbk_prefix: &[u8] = b"  \xd6\xa4\xca\xe9\xb9\xfe\xcf\xa3(sha1): f7 c6 cb 00 d3 7d ee a9 9e 42 6f 16 a7 e4 13 c3 93 47 75 06  ";
+        let lossy_line = String::from_utf8_lossy(gbk_prefix);
+        assert_eq!(
+            parse_windows_certutil_thumbprint(&lossy_line),
+            Some("F7C6CB00D37DEEA99E426F16A7E413C393477506".to_string())
+        );
+        assert_eq!(parse_windows_certutil_thumbprint("  Other line  "), None);
+        assert_eq!(
+            parse_windows_certutil_thumbprint("  Cert Hash(sha1): aa bb  "),
+            None
         );
     }
 }

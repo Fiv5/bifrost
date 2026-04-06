@@ -310,6 +310,8 @@ pub fn run_start(
         check_and_install_certificate()?;
     }
 
+    super::completions::install_completions_silently();
+
     #[cfg(not(unix))]
     let _ = (&log_dir, log_retention_days);
 

@@ -32,3 +32,4 @@ e2e-tests/mock_servers/.logs/
 packages/bifrost-sync-server/dist/*
 npm/*/bin/
 !npm/bifrost/bin/
+npm/bifrost/README.md

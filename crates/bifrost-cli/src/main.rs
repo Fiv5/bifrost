@@ -1,7 +1,8 @@
 use bifrost_core::{init_logging_with_config, install_panic_hook, LogConfig, LogOutput};
 use bifrost_storage::data_dir;
 use bifrost_tls::init_crypto_provider;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 
 mod cli;
 mod commands;
@@ -10,12 +11,13 @@ mod help;
 mod parsing;
 mod process;
 
-use cli::{Cli, Commands, TrafficCommands};
+use cli::{Cli, Commands, ImportArgs, TrafficCommands};
 use commands::{
-    check_and_print_update_notice, handle_ca_command, handle_config_command, handle_group_command,
-    handle_install_skill, handle_rule_command, handle_script_command, handle_system_proxy_command,
+    check_and_print_update_notice, handle_ca_command, handle_config_command, handle_export_command,
+    handle_group_command, handle_import_command, handle_install_skill, handle_metrics_command,
+    handle_rule_command, handle_script_command, handle_sync_command, handle_system_proxy_command,
     handle_upgrade, handle_value_command, handle_whitelist_command, run_search, run_start,
-    run_status, run_status_tui, run_stop, run_traffic_get, run_traffic_list,
+    run_status, run_status_tui, run_stop, run_traffic_clear, run_traffic_get, run_traffic_list,
     spawn_update_check_notice, OutputFormat, SearchOptions, TrafficGetOptions, TrafficListOptions,
 };
 use process::read_runtime_port;
@@ -209,6 +211,27 @@ fn main() {
             let exit_code = run_search(options);
             std::process::exit(exit_code);
         }
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "bifrost", &mut std::io::stdout());
+            Ok(())
+        }
+        Some(Commands::Metrics { action }) => {
+            handle_metrics_command(action, "127.0.0.1", get_effective_port(cli.port))
+        }
+        Some(Commands::Sync { action }) => {
+            handle_sync_command(action, "127.0.0.1", get_effective_port(cli.port))
+        }
+        Some(Commands::Import { file, detect_only }) => {
+            let args = ImportArgs { file, detect_only };
+            handle_import_command(args, "127.0.0.1", get_effective_port(cli.port))
+        }
+        Some(Commands::Export { action }) => {
+            handle_export_command(action, "127.0.0.1", get_effective_port(cli.port))
+        }
+        Some(Commands::VersionCheck) => {
+            commands::handle_version_check("127.0.0.1", get_effective_port(cli.port))
+        }
         Some(Commands::Traffic { action }) => match action {
             TrafficCommands::List {
                 limit,
@@ -322,6 +345,9 @@ fn main() {
                 };
                 let exit_code = run_search(options);
                 std::process::exit(exit_code);
+            }
+            TrafficCommands::Clear { ids, yes } => {
+                run_traffic_clear(get_effective_port(cli.port), ids, yes)
             }
         },
         None => run_start(

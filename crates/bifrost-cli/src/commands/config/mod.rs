@@ -1,4 +1,4 @@
-mod client;
+pub(crate) mod client;
 mod display;
 mod keys;
 
@@ -38,6 +38,90 @@ pub fn handle_config_command(action: Option<ConfigCommands>, host: &str, port: u
         Some(ConfigCommands::ClearCache { yes }) => clear_cache(&client, yes),
         Some(ConfigCommands::Disconnect { domain }) => disconnect_domain(&client, &domain),
         Some(ConfigCommands::Export { output, format }) => export_config(&client, output, &format),
+        Some(ConfigCommands::DisconnectByApp { app }) => {
+            let client = client::ConfigApiClient::new(host, port);
+            client
+                .disconnect_by_app(&app)
+                .map_err(BifrostError::Config)?;
+            println!("Disconnected connections for app: {}", app);
+            Ok(())
+        }
+        Some(ConfigCommands::Performance) => {
+            let client = client::ConfigApiClient::new(host, port);
+            let overview = client.get_system_overview().map_err(BifrostError::Config)?;
+            let sandbox = client.get_sandbox_config().map_err(BifrostError::Config)?;
+
+            println!("Performance Overview");
+            println!("====================");
+            println!();
+
+            if let Some(obj) = overview.as_object() {
+                println!("System:");
+                for (key, value) in obj {
+                    if key.contains("store")
+                        || key.contains("body")
+                        || key.contains("frame")
+                        || key.contains("writer")
+                        || key.contains("payload")
+                        || key.contains("memory")
+                        || key.contains("size")
+                        || key.contains("count")
+                        || key.contains("db")
+                    {
+                        if let Some(n) = value.as_u64() {
+                            println!("  {}: {}", key.replace('_', " "), n);
+                        } else if let Some(s) = value.as_str() {
+                            println!("  {}: {}", key.replace('_', " "), s);
+                        }
+                    }
+                }
+            }
+
+            println!();
+            println!("Sandbox Configuration:");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&sandbox).unwrap_or_default()
+            );
+
+            Ok(())
+        }
+        Some(ConfigCommands::Websocket) => {
+            let client = client::ConfigApiClient::new(host, port);
+            let connections = client
+                .get_websocket_connections()
+                .map_err(BifrostError::Config)?;
+
+            if let Some(arr) = connections.as_array() {
+                if arr.is_empty() {
+                    println!("No active WebSocket connections.");
+                } else {
+                    println!("Active WebSocket Connections ({}):", arr.len());
+                    println!();
+                    for conn in arr {
+                        if let Some(url) = conn.get("url").and_then(|v| v.as_str()) {
+                            println!("  URL: {}", url);
+                        }
+                        if let Some(id) = conn.get("id").and_then(|v| v.as_str()) {
+                            println!("  ID: {}", id);
+                        }
+                        if let Some(state) = conn.get("state").and_then(|v| v.as_str()) {
+                            println!("  State: {}", state);
+                        }
+                        if let Some(created) = conn.get("created_at").and_then(|v| v.as_str()) {
+                            println!("  Created: {}", created);
+                        }
+                        println!();
+                    }
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&connections).unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
     }
 }
 

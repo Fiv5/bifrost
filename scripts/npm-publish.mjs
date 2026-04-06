@@ -279,6 +279,8 @@ async function publishLocal() {
   }
 
   console.log("\n5️⃣  Publishing main package...\n");
+  copyFileSync(join(ROOT, "README.md"), join(NPM_DIR, "bifrost", "README.md"));
+  console.log("  ✅ Copied root README.md into main package");
   if (!DRY_RUN) {
     console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s for platform packages to propagate...`);
     await sleep(PUBLISH_INTERVAL_MS);
@@ -363,6 +365,8 @@ async function publishCI() {
   }
 
   console.log("\n4️⃣  Publishing main package...\n");
+  copyFileSync(join(ROOT, "README.md"), join(NPM_DIR, "bifrost", "README.md"));
+  console.log("  ✅ Copied root README.md into main package");
   if (!DRY_RUN) {
     console.log(`  ⏳ Waiting ${PUBLISH_INTERVAL_MS / 1000}s for platform packages to propagate...`);
     await sleep(PUBLISH_INTERVAL_MS);

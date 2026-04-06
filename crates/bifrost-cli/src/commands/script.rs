@@ -417,6 +417,20 @@ pub fn handle_script_command(action: ScriptCommands) -> bifrost_core::Result<()>
 
             print_run_result(&result)?;
         }
+        ScriptCommands::Rename {
+            r#type,
+            name,
+            new_name,
+        } => {
+            let port = crate::process::read_runtime_port().unwrap_or(9900);
+            let client = super::config::client::ConfigApiClient::new("127.0.0.1", port);
+
+            client
+                .rename_script(&r#type, &name, &new_name)
+                .map_err(bifrost_core::BifrostError::Config)?;
+
+            println!("Script '{}/{}' renamed to '{}'.", r#type, name, new_name);
+        }
     }
 
     Ok(())

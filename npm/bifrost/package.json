@@ -24,7 +24,8 @@
   "main": "lib/index.js",
   "files": [
     "bin/bifrost",
-    "lib/index.js"
+    "lib/index.js",
+    "README.md"
   ],
   "optionalDependencies": {
     "@bifrost-proxy/bifrost-linux-x64": "0.0.0",
