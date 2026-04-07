@@ -66,15 +66,58 @@ detect_arch() {
     esac
 }
 
+detect_libc() {
+    if [ "$(detect_os)" != "linux" ]; then
+        echo "gnu"
+        return
+    fi
+
+    if command -v ldd &> /dev/null; then
+        local ldd_output
+        ldd_output=$(ldd --version 2>&1 || true)
+        if echo "$ldd_output" | grep -qi "musl"; then
+            echo "musl"
+            return
+        fi
+        if echo "$ldd_output" | grep -qiE "GLIBC|GNU libc"; then
+            echo "gnu"
+            return
+        fi
+    fi
+
+    if [ -f /lib/ld-musl-x86_64.so.1 ] || \
+       [ -f /lib/ld-musl-aarch64.so.1 ] || \
+       [ -f /lib/ld-musl-armhf.so.1 ]; then
+        echo "musl"
+        return
+    fi
+
+    echo "gnu"
+}
+
 get_target() {
     local os="$1"
     local arch="$2"
+    local libc
+    libc=$(detect_libc)
 
     case "$os" in
         linux)
             case "$arch" in
-                x86_64)  echo "x86_64-unknown-linux-gnu" ;;
-                aarch64) echo "aarch64-unknown-linux-gnu" ;;
+                x86_64)
+                    if [ "$libc" = "musl" ]; then
+                        echo "x86_64-unknown-linux-musl"
+                    else
+                        echo "x86_64-unknown-linux-gnu"
+                    fi
+                    ;;
+                aarch64)
+                    if [ "$libc" = "musl" ]; then
+                        echo "aarch64-unknown-linux-musl"
+                    else
+                        echo "aarch64-unknown-linux-gnu"
+                    fi
+                    ;;
                 armv7)   echo "armv7-unknown-linux-gnueabihf" ;;
                 *)       return 1 ;;
             esac

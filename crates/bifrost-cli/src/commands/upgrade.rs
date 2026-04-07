@@ -63,11 +63,19 @@ fn get_target_triple() -> Option<&'static str> {
     {
         Some("x86_64-apple-darwin")
     }
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+    {
+        Some("x86_64-unknown-linux-musl")
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", not(target_env = "musl")))]
     {
         Some("x86_64-unknown-linux-gnu")
     }
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
+    {
+        Some("aarch64-unknown-linux-musl")
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64", not(target_env = "musl")))]
     {
         Some("aarch64-unknown-linux-gnu")
     }

@@ -35,6 +35,8 @@
     "@bifrost-proxy/bifrost-linux-x64": "0.0.0",
     "@bifrost-proxy/bifrost-linux-arm64": "0.0.0",
     "@bifrost-proxy/bifrost-linux-arm": "0.0.0",
+    "@bifrost-proxy/bifrost-linux-x64-musl": "0.0.0",
+    "@bifrost-proxy/bifrost-linux-arm64-musl": "0.0.0",
     "@bifrost-proxy/bifrost-darwin-x64": "0.0.0",
     "@bifrost-proxy/bifrost-darwin-arm64": "0.0.0",
     "@bifrost-proxy/bifrost-win32-x64": "0.0.0",

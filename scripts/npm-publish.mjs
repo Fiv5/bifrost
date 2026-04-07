@@ -54,6 +54,16 @@ const PLATFORMS = [
     binary: "bifrost",
   },
   {
+    npmPkg: "bifrost-linux-x64-musl",
+    rustTarget: "x86_64-unknown-linux-musl",
+    binary: "bifrost",
+  },
+  {
+    npmPkg: "bifrost-linux-arm64-musl",
+    rustTarget: "aarch64-unknown-linux-musl",
+    binary: "bifrost",
+  },
+  {
     npmPkg: "bifrost-darwin-x64",
     rustTarget: "x86_64-apple-darwin",
     binary: "bifrost",
