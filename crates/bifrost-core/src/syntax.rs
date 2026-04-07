@@ -1078,9 +1078,9 @@ mod tests {
 
         assert!(validate_filter_value("unknown:value").is_err());
 
-        assert!(validate_filter_value("mira.byteintl.net").is_ok());
-        assert!(validate_filter_value("mira.byteintl.net/api").is_ok());
-        assert!(validate_filter_value("mira.bytedance.com/mira/api").is_ok());
+        assert!(validate_filter_value("m.bifrost.local").is_ok());
+        assert!(validate_filter_value("m.bifrost.local/api").is_ok());
+        assert!(validate_filter_value("m.bifrost.local2/mira/api").is_ok());
         assert!(validate_filter_value("example.com/proxy").is_ok());
     }
 

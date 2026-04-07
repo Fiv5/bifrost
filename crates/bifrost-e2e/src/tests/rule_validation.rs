@@ -75,10 +75,10 @@ pub fn get_all_tests() -> Vec<TestCase> {
                 let client = build_client()?;
 
                 let content = "line`\n\
-                    https://mira.byteintl.net http://localhost:5173\n\
-                    includeFilter://mira.byteintl.net\n\
-                    excludeFilter://mira.byteintl.net/api\n\
-                    excludeFilter://mira.byteintl.net/upload\n\
+                    https://m.bifrost.local http://localhost:5173\n\
+                    includeFilter://m.bifrost.local\n\
+                    excludeFilter://m.bifrost.local/api\n\
+                    excludeFilter://m.bifrost.local/upload\n\
                     `";
 
                 let body = serde_json::json!({
@@ -135,27 +135,27 @@ pub fn get_all_tests() -> Vec<TestCase> {
 
                 let content = "\
 line`
-https://mira.byteintl.net http://localhost:5173
-includeFilter://mira.byteintl.net
-excludeFilter://mira.byteintl.net/api
-excludeFilter://mira.byteintl.net/global_config
-excludeFilter://mira.byteintl.net/devops
-excludeFilter://mira.byteintl.net/upload
-excludeFilter://mira.byteintl.net/proxy
-excludeFilter://mira.byteintl.net/mira/api
-excludeFilter://mira.byteintl.net/mira/scheduler
+https://m.bifrost.local http://localhost:5173
+includeFilter://m.bifrost.local
+excludeFilter://m.bifrost.local/api
+excludeFilter://m.bifrost.local/global_config
+excludeFilter://m.bifrost.local/devops
+excludeFilter://m.bifrost.local/upload
+excludeFilter://m.bifrost.local/proxy
+excludeFilter://m.bifrost.local/mira/api
+excludeFilter://m.bifrost.local/mira/scheduler
 `
 
 line`
-https://mira.bytedance.com http://localhost:5173
-includeFilter://mira.bytedance.com
-excludeFilter://mira.bytedance.com/api
-excludeFilter://mira.bytedance.com/global_config
-excludeFilter://mira.bytedance.com/devops
-excludeFilter://mira.bytedance.com/upload
-excludeFilter://mira.bytedance.com/proxy
-excludeFilter://mira.bytedance.com/mira/api
-excludeFilter://mira.bytedance.com/mira/scheduler
+https://m.bifrost.local2 http://localhost:5173
+includeFilter://m.bifrost.local2
+excludeFilter://m.bifrost.local2/api
+excludeFilter://m.bifrost.local2/global_config
+excludeFilter://m.bifrost.local2/devops
+excludeFilter://m.bifrost.local2/upload
+excludeFilter://m.bifrost.local2/proxy
+excludeFilter://m.bifrost.local2/mira/api
+excludeFilter://m.bifrost.local2/mira/scheduler
 `
 
 ```mcp-ppe
@@ -168,8 +168,8 @@ x-use-ppe: 1
 x-tt-env: ppe_yqq_test
 ```
 
-# mira.bytedance.com reqHeaders://{mcp-ppe}
-# mira.byteintl.net reqHeaders://{mcp-ppe}";
+# m.bifrost.local2 reqHeaders://{mcp-ppe}
+# m.bifrost.local reqHeaders://{mcp-ppe}";
 
                 let body = serde_json::json!({
                     "content": content,
@@ -345,8 +345,8 @@ x-tt-env: ppe_yqq_test
 example.com redirect://https://example.org
 
 line`
-https://mira.byteintl.net http://localhost:5173
-includeFilter://mira.byteintl.net
+https://m.bifrost.local http://localhost:5173
+includeFilter://m.bifrost.local
 `
 
 test.example.com file:///tmp/mock.json";
@@ -465,11 +465,11 @@ x-tt-env: ppe_mira_mcp_app
 ```
 
 line`
-https://mira.byteintl.net http://localhost:5173
-includeFilter://mira.byteintl.net
+https://m.bifrost.local http://localhost:5173
+includeFilter://m.bifrost.local
 `
 
-mira.byteintl.net reqHeaders://{mcp-ppe}";
+m.bifrost.local reqHeaders://{mcp-ppe}";
 
                 let body = serde_json::json!({
                     "content": content,

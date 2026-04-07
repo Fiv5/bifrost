@@ -11,9 +11,9 @@ import {
   MoonOutlined,
   UsergroupAddOutlined,
 } from "@ant-design/icons";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, type CSSProperties } from "react";
 import { useThemeStore } from "../../stores/useThemeStore";
-import { getSyncStatus } from "../../api/sync";
+import { useSyncStore } from "../../stores/useSyncStore";
 
 interface MenuItem {
   key: string;
@@ -29,27 +29,17 @@ export default function IconSidebar() {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const setThemeMode = useThemeStore((state) => state.setMode);
   const isDark = resolvedTheme === "dark";
-  const [showGroups, setShowGroups] = useState(false);
+  const syncStatus = useSyncStore((state) => state.syncStatus);
+  const startSyncPolling = useSyncStore((state) => state.startPolling);
+  const stopSyncPolling = useSyncStore((state) => state.stopPolling);
+  const showGroups = syncStatus?.enabled ?? false;
 
   useEffect(() => {
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const status = await getSyncStatus();
-        if (!cancelled) {
-          setShowGroups(status.enabled);
-        }
-      } catch {
-        if (!cancelled) setShowGroups(false);
-      }
-    };
-    check();
-    const timer = setInterval(check, 10000);
+    startSyncPolling();
     return () => {
-      cancelled = true;
-      clearInterval(timer);
+      stopSyncPolling();
     };
-  }, []);
+  }, [startSyncPolling, stopSyncPolling]);
 
   const menuItems: MenuItem[] = [
     { key: "/traffic", icon: <GlobalOutlined />, label: "Network" },

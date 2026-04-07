@@ -44,6 +44,7 @@ import {
   type SyncStatus,
 } from "../../api/sync";
 import { isConnectionIssueError } from "../../api/client";
+import { useSyncStore } from "../../stores/useSyncStore";
 import {
   getCertInfo,
   getCertDownloadUrl,
@@ -745,6 +746,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await updateSyncConfig({ enabled });
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success(enabled ? "Remote sync enabled" : "Remote sync disabled");
     } catch {
       message.error("Failed to update sync setting");
@@ -759,6 +761,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await updateSyncConfig({ auto_sync: autoSync });
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success(autoSync ? "Auto sync enabled" : "Auto sync disabled");
     } catch {
       message.error("Failed to update auto sync");
@@ -778,6 +781,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await updateSyncConfig({ remote_base_url: remoteBaseUrl });
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success("Remote sync URL updated");
     } catch {
       message.error("Failed to update remote sync URL");
@@ -791,6 +795,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await openSyncLogin();
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success("Remote sign-in window opened");
     } catch {
       message.error("Failed to open remote sign-in page");
@@ -803,6 +808,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await logoutSyncSession();
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success("Sync session cleared");
     } catch {
       message.error("Failed to sign out from remote sync");
@@ -817,6 +823,7 @@ HTTPS Proxy: 127.0.0.1:${overview?.server.port || 9900}`;
       const status = await runSyncNow();
       setSyncStatus(status);
       setSyncRemoteBaseUrlDraft(status.remote_base_url);
+      useSyncStore.getState().setSyncStatus(status);
       message.success("Sync requested");
     } catch {
       message.error("Failed to trigger sync");

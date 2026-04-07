@@ -13,6 +13,7 @@ interface SyncState {
   messageCleanup: (() => void) | null;
   subscriberCount: number;
 
+  setSyncStatus: (status: SyncStatus) => void;
   fetchSyncStatus: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
@@ -24,6 +25,10 @@ export const useSyncStore = create<SyncState>((set, get) => ({
   pollTimer: null,
   messageCleanup: null,
   subscriberCount: 0,
+
+  setSyncStatus: (status: SyncStatus) => {
+    set({ syncStatus: status });
+  },
 
   fetchSyncStatus: async () => {
     try {

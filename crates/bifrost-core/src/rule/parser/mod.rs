@@ -1999,12 +1999,12 @@ reqHeaders://{test=1}"#;
     #[test]
     fn test_parse_bare_domain_with_path_as_host_target() {
         let rules =
-            parse_line("gamingpop-boe.byteintl.net/manager gamingpop-boe.byteintl.net/manager")
+            parse_line("gamingpop-boe.bifrost.local/manager gamingpop-boe.bifrost.local/manager")
                 .unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].pattern, "gamingpop-boe.byteintl.net/manager");
+        assert_eq!(rules[0].pattern, "gamingpop-boe.bifrost.local/manager");
         assert_eq!(rules[0].protocol, Protocol::Host);
-        assert_eq!(rules[0].value, "gamingpop-boe.byteintl.net/manager");
+        assert_eq!(rules[0].value, "gamingpop-boe.bifrost.local/manager");
     }
 
     #[test]
@@ -3083,27 +3083,27 @@ http://localhost:8080 host://192.168.1.1:3000
     fn test_parse_complex_multiline_with_line_blocks_and_markdown_values() {
         let text = r#"
 line`
-https://mira.byteintl.net   http://localhost:5173
-includeFilter://mira.byteintl.net
-excludeFilter://mira.byteintl.net/api
-excludeFilter://mira.byteintl.net/global_config
-excludeFilter://mira.byteintl.net/devops
-excludeFilter://mira.byteintl.net/upload
-excludeFilter://mira.byteintl.net/proxy
-excludeFilter://mira.byteintl.net/mira/api
-excludeFilter://mira.byteintl.net/mira/scheduler
+https://m.bifrost.local   http://localhost:5173
+includeFilter://m.bifrost.local
+excludeFilter://m.bifrost.local/api
+excludeFilter://m.bifrost.local/global_config
+excludeFilter://m.bifrost.local/devops
+excludeFilter://m.bifrost.local/upload
+excludeFilter://m.bifrost.local/proxy
+excludeFilter://m.bifrost.local/mira/api
+excludeFilter://m.bifrost.local/mira/scheduler
 `
 
 line`
-https://mira.bytedance.com   http://localhost:5173
-includeFilter://mira.bytedance.com
-excludeFilter://mira.bytedance.com/api
-excludeFilter://mira.bytedance.com/global_config
-excludeFilter://mira.bytedance.com/devops
-excludeFilter://mira.bytedance.com/upload
-excludeFilter://mira.bytedance.com/proxy
-excludeFilter://mira.bytedance.com/mira/api
-excludeFilter://mira.bytedance.com/mira/scheduler
+https://m.bifrost.local2   http://localhost:5173
+includeFilter://m.bifrost.local2
+excludeFilter://m.bifrost.local2/api
+excludeFilter://m.bifrost.local2/global_config
+excludeFilter://m.bifrost.local2/devops
+excludeFilter://m.bifrost.local2/upload
+excludeFilter://m.bifrost.local2/proxy
+excludeFilter://m.bifrost.local2/mira/api
+excludeFilter://m.bifrost.local2/mira/scheduler
 `
 
 ```mcp-ppe
@@ -3116,8 +3116,8 @@ x-use-ppe: 1
 x-tt-env: ppe_yqq_test
 ```
 
-# mira.bytedance.com reqHeaders://{mcp-ppe}
-# mira.byteintl.net reqHeaders://{mcp-ppe}
+# m.bifrost.local2 reqHeaders://{mcp-ppe}
+# m.bifrost.local reqHeaders://{mcp-ppe}
 "#;
         let rules = parse_rules(text).unwrap();
 
@@ -3128,13 +3128,13 @@ x-tt-env: ppe_yqq_test
         );
 
         let rule0 = &rules[0];
-        assert_eq!(rule0.pattern, "https://mira.byteintl.net");
+        assert_eq!(rule0.pattern, "https://m.bifrost.local");
         assert_eq!(rule0.protocol, Protocol::Http);
         assert_eq!(rule0.value, "localhost:5173");
         assert_eq!(
             rule0.include_filters.len(),
             1,
-            "domain-style includeFilter (mira.byteintl.net) should be recognized as URL filter"
+            "domain-style includeFilter (m.bifrost.local) should be recognized as URL filter"
         );
         assert_eq!(
             rule0.exclude_filters.len(),
@@ -3143,7 +3143,7 @@ x-tt-env: ppe_yqq_test
         );
 
         let rule1 = &rules[1];
-        assert_eq!(rule1.pattern, "https://mira.bytedance.com");
+        assert_eq!(rule1.pattern, "https://m.bifrost.local2");
         assert_eq!(rule1.protocol, Protocol::Http);
         assert_eq!(rule1.value, "localhost:5173");
     }
@@ -3152,27 +3152,27 @@ x-tt-env: ppe_yqq_test
     fn test_parse_multiline_line_blocks_with_reqheaders_markdown_values() {
         let text = r#"
 line`
-https://mira.byteintl.net   http://localhost:5173
-includeFilter://mira.byteintl.net
-excludeFilter://mira.byteintl.net/api
-excludeFilter://mira.byteintl.net/global_config
-excludeFilter://mira.byteintl.net/devops
-excludeFilter://mira.byteintl.net/upload
-excludeFilter://mira.byteintl.net/proxy
-excludeFilter://mira.byteintl.net/mira/api
-excludeFilter://mira.byteintl.net/mira/scheduler
+https://m.bifrost.local   http://localhost:5173
+includeFilter://m.bifrost.local
+excludeFilter://m.bifrost.local/api
+excludeFilter://m.bifrost.local/global_config
+excludeFilter://m.bifrost.local/devops
+excludeFilter://m.bifrost.local/upload
+excludeFilter://m.bifrost.local/proxy
+excludeFilter://m.bifrost.local/mira/api
+excludeFilter://m.bifrost.local/mira/scheduler
 `
 
 line`
-https://mira.bytedance.com   http://localhost:5173
-includeFilter://mira.bytedance.com
-excludeFilter://mira.bytedance.com/api
-excludeFilter://mira.bytedance.com/global_config
-excludeFilter://mira.bytedance.com/devops
-excludeFilter://mira.bytedance.com/upload
-excludeFilter://mira.bytedance.com/proxy
-excludeFilter://mira.bytedance.com/mira/api
-excludeFilter://mira.bytedance.com/mira/scheduler
+https://m.bifrost.local2   http://localhost:5173
+includeFilter://m.bifrost.local2
+excludeFilter://m.bifrost.local2/api
+excludeFilter://m.bifrost.local2/global_config
+excludeFilter://m.bifrost.local2/devops
+excludeFilter://m.bifrost.local2/upload
+excludeFilter://m.bifrost.local2/proxy
+excludeFilter://m.bifrost.local2/mira/api
+excludeFilter://m.bifrost.local2/mira/scheduler
 `
 
 ```mcp-ppe
@@ -3185,8 +3185,8 @@ x-use-ppe: 1
 x-tt-env: ppe_yqq_test
 ```
 
-mira.bytedance.com reqHeaders://{mcp-ppe}
-mira.byteintl.net reqHeaders://{mcp-ppe}
+m.bifrost.local2 reqHeaders://{mcp-ppe}
+m.bifrost.local reqHeaders://{mcp-ppe}
 "#;
         let rules = parse_rules(text).unwrap();
 
@@ -3197,19 +3197,19 @@ mira.byteintl.net reqHeaders://{mcp-ppe}
         );
 
         let rule0 = &rules[0];
-        assert_eq!(rule0.pattern, "https://mira.byteintl.net");
+        assert_eq!(rule0.pattern, "https://m.bifrost.local");
         assert_eq!(rule0.protocol, Protocol::Http);
         assert_eq!(rule0.value, "localhost:5173");
         assert_eq!(rule0.line, Some(2));
 
         let rule1 = &rules[1];
-        assert_eq!(rule1.pattern, "https://mira.bytedance.com");
+        assert_eq!(rule1.pattern, "https://m.bifrost.local2");
         assert_eq!(rule1.protocol, Protocol::Http);
         assert_eq!(rule1.value, "localhost:5173");
         assert_eq!(rule1.line, Some(14));
 
         let rule2 = &rules[2];
-        assert_eq!(rule2.pattern, "mira.bytedance.com");
+        assert_eq!(rule2.pattern, "m.bifrost.local2");
         assert_eq!(rule2.protocol, Protocol::ReqHeaders);
         assert_eq!(
             rule2.value, "{mcp-ppe}",
@@ -3217,7 +3217,7 @@ mira.byteintl.net reqHeaders://{mcp-ppe}
         );
 
         let rule3 = &rules[3];
-        assert_eq!(rule3.pattern, "mira.byteintl.net");
+        assert_eq!(rule3.pattern, "m.bifrost.local");
         assert_eq!(rule3.protocol, Protocol::ReqHeaders);
         assert_eq!(
             rule3.value, "{mcp-ppe}",
@@ -3265,27 +3265,27 @@ excludeFilter:///admin/
     fn test_validate_complex_multiline_with_line_blocks_and_markdown() {
         let content = r#"
 line`
-`https://mira.byteintl.net`   http://localhost:5173
-includeFilter://mira.byteintl.net
-excludeFilter://mira.byteintl.net/api
-excludeFilter://mira.byteintl.net/global_config
-excludeFilter://mira.byteintl.net/devops
-excludeFilter://mira.byteintl.net/upload
-excludeFilter://mira.byteintl.net/proxy
-excludeFilter://mira.byteintl.net/mira/api
-excludeFilter://mira.byteintl.net/mira/scheduler
+`https://m.bifrost.local`   http://localhost:5173
+includeFilter://m.bifrost.local
+excludeFilter://m.bifrost.local/api
+excludeFilter://m.bifrost.local/global_config
+excludeFilter://m.bifrost.local/devops
+excludeFilter://m.bifrost.local/upload
+excludeFilter://m.bifrost.local/proxy
+excludeFilter://m.bifrost.local/mira/api
+excludeFilter://m.bifrost.local/mira/scheduler
 `
 
 line`
-`https://mira.bytedance.com`   http://localhost:5173
-includeFilter://mira.bytedance.com
-excludeFilter://mira.bytedance.com/api
-excludeFilter://mira.bytedance.com/global_config
-excludeFilter://mira.bytedance.com/devops
-excludeFilter://mira.bytedance.com/upload
-excludeFilter://mira.bytedance.com/proxy
-excludeFilter://mira.bytedance.com/mira/api
-excludeFilter://mira.bytedance.com/mira/scheduler
+`https://m.bifrost.local2`   http://localhost:5173
+includeFilter://m.bifrost.local2
+excludeFilter://m.bifrost.local2/api
+excludeFilter://m.bifrost.local2/global_config
+excludeFilter://m.bifrost.local2/devops
+excludeFilter://m.bifrost.local2/upload
+excludeFilter://m.bifrost.local2/proxy
+excludeFilter://m.bifrost.local2/mira/api
+excludeFilter://m.bifrost.local2/mira/scheduler
 `
 
 ```mcp-ppe
@@ -3298,8 +3298,8 @@ x-use-ppe: 1
 x-tt-env: ppe_yqq_test
 ```
 
-# mira.bytedance.com reqHeaders://{mcp-ppe}
-# mira.byteintl.net reqHeaders://{mcp-ppe}
+# m.bifrost.local2 reqHeaders://{mcp-ppe}
+# m.bifrost.local reqHeaders://{mcp-ppe}
 "#;
         let result = validate_rules_with_context(content, &HashMap::new());
         assert!(
@@ -3315,9 +3315,9 @@ x-tt-env: ppe_yqq_test
     fn test_validate_line_blocks_with_active_reqheaders() {
         let content = r#"
 line`
-`https://mira.byteintl.net`   http://localhost:5173
-includeFilter://mira.byteintl.net
-excludeFilter://mira.byteintl.net/api
+`https://m.bifrost.local`   http://localhost:5173
+includeFilter://m.bifrost.local
+excludeFilter://m.bifrost.local/api
 `
 
 ```mcp-ppe
@@ -3325,7 +3325,7 @@ x-use-ppe: 1
 x-tt-env: ppe_mira_mcp_app
 ```
 
-mira.byteintl.net reqHeaders://{mcp-ppe}
+m.bifrost.local reqHeaders://{mcp-ppe}
 "#;
         let result = validate_rules_with_context(content, &HashMap::new());
         assert!(
