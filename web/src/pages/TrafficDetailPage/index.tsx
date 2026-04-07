@@ -24,9 +24,10 @@ export default function TrafficDetailPage() {
   const detachedMode = searchParams.get("detached") === "1";
   const popupId = searchParams.get("popupId")?.trim() || null;
 
+  const urlId = searchParams.get("id")?.trim() || "";
   const recordId = detachedMode
-    ? selectedId?.trim() || ""
-    : searchParams.get("id")?.trim() || "";
+    ? selectedId?.trim() || urlId
+    : urlId;
 
   const handleAttachBack = useCallback(() => {
     attachDetailWindow();
