@@ -132,6 +132,7 @@ export interface UpdateGroupReq {
   name?: string;
   avatar?: string;
   description?: string;
+  visibility?: string;
 }
 
 export interface SearchGroupQuery {
@@ -142,7 +143,8 @@ export interface SearchGroupQuery {
 }
 
 export interface InviteGroupReq {
-  user_ids: string[];
+  group_id: string;
+  user_id: string[];
   level?: number;
 }
 
