@@ -220,8 +220,8 @@ echo "=== Step 3: Members Management ==="
 echo "--- Invite member (level 1 = master) ---"
 INVITE_MASTER=$(api -X POST -H "Content-Type: application/json" \
     -H "x-bifrost-token: ${TEST_TOKEN}" \
-    -d '{"user_ids":["e2e_member"],"level":1}' \
-    "${SYNC_URL}/v4/group/${GROUP_ID}/invite")
+    -d "{\"group_id\":\"${GROUP_ID}\",\"user_ids\":[\"e2e_member\"],\"level\":1}" \
+    "${SYNC_URL}/v4/group/invite")
 assert_body_contains '"code":0' "$INVITE_MASTER" "Invite master"
 
 echo "--- List members ---"
@@ -255,7 +255,7 @@ echo "--- Get group setting ---"
 GET_SETTING=$(api -H "x-bifrost-token: ${TEST_TOKEN}" \
     "${SYNC_URL}/v4/group/${GROUP_ID}/setting")
 assert_body_contains '"code":0' "$GET_SETTING" "Get setting"
-assert_json_field '.data.visibility' 'private' "$GET_SETTING" "Default visibility=private"
+assert_json_field '.data.level' '0' "$GET_SETTING" "Default visibility=private"
 
 echo "--- Update setting to public ---"
 UPDATE_SETTING=$(api -X PATCH -H "Content-Type: application/json" \
@@ -266,7 +266,7 @@ assert_body_contains '"code":0' "$UPDATE_SETTING" "Update setting"
 
 GET_SETTING2=$(api -H "x-bifrost-token: ${TEST_TOKEN}" \
     "${SYNC_URL}/v4/group/${GROUP_ID}/setting")
-assert_json_field '.data.visibility' 'public' "$GET_SETTING2" "visibility=public"
+assert_json_field '.data.level' '1' "$GET_SETTING2" "visibility=public"
 
 echo "--- Revert to private ---"
 api -X PATCH -H "Content-Type: application/json" \

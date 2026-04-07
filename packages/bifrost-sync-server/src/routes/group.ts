@@ -43,6 +43,11 @@ export async function handleGroup(ctx: RequestContext, storage: IStorage): Promi
     return handleInvite(ctx, storage);
   }
 
+  const inviteMatch = pathname.match(/^\/v4\/group\/([^/]+)\/invite$/);
+  if (inviteMatch && method === 'POST') {
+    return handleInvite(ctx, storage, inviteMatch[1]);
+  }
+
   const leaveMatch = pathname.match(/^\/v4\/group\/([^/]+)\/leave$/);
   if (leaveMatch && method === 'POST') {
     return handleLeave(ctx, storage, leaveMatch[1]);
@@ -300,22 +305,22 @@ async function handleListMembers(
 async function handleInvite(
   ctx: RequestContext,
   storage: IStorage,
+  groupIdFromPath?: string,
 ): Promise<boolean> {
   if (!(await requireAuth(ctx, storage))) return true;
 
   const body = parseJsonBody<InviteGroupReq>(ctx.body);
-  if (!body?.group_id) {
+  const groupId = body?.group_id ?? groupIdFromPath;
+  if (!groupId) {
     sendError(ctx.res, 400, 'group_id is required');
     return true;
   }
 
-  const userIds = body.user_id ?? (body as unknown as { user_ids?: string[] }).user_ids;
+  const userIds = body?.user_id ?? (body as unknown as { user_ids?: string[] })?.user_ids;
   if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
     sendError(ctx.res, 400, 'user_id is required');
     return true;
   }
-
-  const groupId = body.group_id;
 
   const member = await storage.groupMember.findByGroupAndUser(groupId, ctx.user!.user_id);
   if (!member || member.level < 1) {
@@ -326,7 +331,7 @@ async function handleInvite(
   for (const userId of userIds) {
     const existing = await storage.groupMember.findByGroupAndUser(groupId, userId);
     if (!existing) {
-      await storage.groupMember.add(groupId, userId, body.level ?? 0);
+      await storage.groupMember.add(groupId, userId, body?.level ?? 0);
     }
   }
 
