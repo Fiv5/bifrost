@@ -27,7 +27,7 @@ import {
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
 import { useExportBifrost } from '../../../hooks/useExportBifrost';
-import { getSyncStatus } from '../../../api/sync';
+import { useSyncStore } from '../../../stores/useSyncStore';
 import { searchGroups, type Group } from '../../../api/group';
 import styles from './index.module.css';
 
@@ -86,10 +86,11 @@ export default function RuleList() {
   const autoScrollVelocityRef = useRef(0);
   const { exportFile } = useExportBifrost();
 
-  const [showGroupSwitcher, setShowGroupSwitcher] = useState(false);
   const [userGroups, setUserGroups] = useState<Group[]>([]);
   const [showLoadingOverlay, setShowLoadingOverlay] = useState(false);
   const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncStatus = useSyncStore((state) => state.syncStatus);
+  const showGroupSwitcher = !!(syncStatus?.enabled && syncStatus?.has_session && syncStatus?.authorized);
 
   useEffect(() => {
     if (loading) {
@@ -110,22 +111,19 @@ export default function RuleList() {
   }, [loading]);
 
   useEffect(() => {
+    if (!showGroupSwitcher) return;
     let cancelled = false;
-    const check = async () => {
+    const loadGroups = async () => {
       try {
-        const status = await getSyncStatus();
-        if (!cancelled && status.enabled && status.has_session && status.authorized) {
-          setShowGroupSwitcher(true);
-          const result = await searchGroups();
-          if (!cancelled) setUserGroups(result.list ?? []);
-        }
+        const result = await searchGroups();
+        if (!cancelled) setUserGroups(result.list ?? []);
       } catch {
-        if (!cancelled) setShowGroupSwitcher(false);
+        // keep existing groups on error
       }
     };
-    check();
+    loadGroups();
     return () => { cancelled = true; };
-  }, []);
+  }, [showGroupSwitcher]);
 
   useEffect(() => {
     fetchRules();
