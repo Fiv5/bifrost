@@ -264,7 +264,7 @@ extract_archive() {
             fi
             ;;
         *)
-            tar -xzf "$archive" -C "$dest"
+            tar --no-same-owner -xzf "$archive" -C "$dest"
             ;;
     esac
 }

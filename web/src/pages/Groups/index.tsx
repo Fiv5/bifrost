@@ -16,11 +16,13 @@ import {
   message,
   Card,
   theme,
+  Alert,
 } from "antd";
 import {
   PlusOutlined,
   LockOutlined,
   GlobalOutlined,
+  TeamOutlined,
 } from "@ant-design/icons";
 import { useGroupStore } from "../../stores/useGroupStore";
 import type { Group, GroupVisibility } from "../../api/group";
@@ -172,6 +174,10 @@ export default function Groups() {
         setCreateModalOpen(false);
         form.resetFields();
         navigate(`/groups/${group.id}`);
+      } else {
+        const err = useGroupStore.getState().error;
+        (window as unknown as Record<string, unknown>).__BIFROST_LAST_ERROR__ = err;
+        message.error(err || "Failed to create group");
       }
     } finally {
       setCreateLoading(false);
@@ -225,6 +231,13 @@ export default function Groups() {
       }}
     >
       <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+        <Alert
+          type="info"
+          showIcon
+          icon={<TeamOutlined />}
+          message="Groups allow team members to share proxy rules and collaborate efficiently. Create or join a group to sync rules across your team."
+          style={{ marginBottom: 20 }}
+        />
         <div
           style={{
             display: "flex",
@@ -333,7 +346,15 @@ export default function Groups() {
               maxLength={200}
             />
           </Form.Item>
-          <Form.Item name="visibility" label="Visibility">
+          <Form.Item
+            name="visibility"
+            label="Visibility"
+            extra={
+              <span style={{ fontSize: 12 }}>
+                <b>Public</b>: Anyone can discover this group and access its shared rules. <b>Private</b>: Only invited members can see and access the group.
+              </span>
+            }
+          >
             <Select>
               <Select.Option value="private">
                 <Space>
