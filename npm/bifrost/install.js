@@ -8,17 +8,43 @@ const child_process = require("child_process");
 const packageJSON = require(path.join(__dirname, "package.json"));
 
 const PLATFORM_MAP = {
-  "linux-x64": { pkg: "@bifrost-proxy/bifrost-linux-x64", binary: "bifrost" },
-  "linux-arm64": { pkg: "@bifrost-proxy/bifrost-linux-arm64", binary: "bifrost" },
-  "linux-arm": { pkg: "@bifrost-proxy/bifrost-linux-arm", binary: "bifrost" },
+  "linux-x64-glibc": { pkg: "@bifrost-proxy/bifrost-linux-x64", binary: "bifrost" },
+  "linux-x64-musl": { pkg: "@bifrost-proxy/bifrost-linux-x64-musl", binary: "bifrost" },
+  "linux-arm64-glibc": { pkg: "@bifrost-proxy/bifrost-linux-arm64", binary: "bifrost" },
+  "linux-arm64-musl": { pkg: "@bifrost-proxy/bifrost-linux-arm64-musl", binary: "bifrost" },
+  "linux-arm-glibc": { pkg: "@bifrost-proxy/bifrost-linux-arm", binary: "bifrost" },
   "darwin-x64": { pkg: "@bifrost-proxy/bifrost-darwin-x64", binary: "bifrost" },
   "darwin-arm64": { pkg: "@bifrost-proxy/bifrost-darwin-arm64", binary: "bifrost" },
   "win32-x64": { pkg: "@bifrost-proxy/bifrost-win32-x64", binary: "bifrost.exe" },
   "win32-arm64": { pkg: "@bifrost-proxy/bifrost-win32-arm64", binary: "bifrost.exe" },
 };
 
+function detectLibc() {
+  if (process.platform !== "linux") return null;
+  try {
+    const lddOutput = child_process.execSync("ldd --version 2>&1 || true", {
+      stdio: ["pipe", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+    if (/musl/i.test(lddOutput)) return "musl";
+    if (/GLIBC|GNU libc/i.test(lddOutput)) return "glibc";
+  } catch {}
+  try {
+    if (fs.existsSync("/lib/ld-musl-x86_64.so.1") ||
+        fs.existsSync("/lib/ld-musl-aarch64.so.1") ||
+        fs.existsSync("/lib/ld-musl-armhf.so.1")) {
+      return "musl";
+    }
+  } catch {}
+  return "glibc";
+}
+
 function getPlatformInfo() {
-  const key = `${process.platform}-${os.arch()}`;
+  let key = `${process.platform}-${os.arch()}`;
+  if (process.platform === "linux") {
+    const libc = detectLibc();
+    key = `${key}-${libc}`;
+  }
   const info = PLATFORM_MAP[key];
   if (!info) {
     throw new Error(

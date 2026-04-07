@@ -13,6 +13,9 @@
   "cpu": [
     "arm"
   ],
+  "libc": [
+    "glibc"
+  ],
   "files": [
     "bin/bifrost"
   ]
