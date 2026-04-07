@@ -59,6 +59,9 @@ function normalizeGroup(raw: RemoteGroup): Group {
 }
 
 function unwrap<T>(resp: RemoteResponse<T>): T {
+  if (resp.code !== 0) {
+    throw new Error(resp.message || 'Request failed');
+  }
   return resp.data;
 }
 
@@ -115,6 +118,7 @@ export interface UpdateGroupReq {
   name?: string;
   avatar?: string;
   description?: string;
+  visibility?: GroupVisibility;
 }
 
 export interface InviteGroupReq {
@@ -125,6 +129,17 @@ export interface InviteGroupReq {
 export interface UpdateGroupSettingReq {
   rules_enabled?: boolean;
   visibility?: GroupVisibility;
+}
+
+function mapSettingReqToRemote(req: UpdateGroupSettingReq): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (req.rules_enabled !== undefined) {
+    body.status = req.rules_enabled;
+  }
+  if (req.visibility !== undefined) {
+    body.level = req.visibility === 'public' ? 1 : 0;
+  }
+  return body;
 }
 
 async function patch<T>(url: string, data?: unknown): Promise<T> {
@@ -151,13 +166,32 @@ export async function getGroup(id: string): Promise<Group> {
 }
 
 export async function createGroup(req: CreateGroupReq): Promise<Group> {
-  const resp = await post<RemoteResponse<RemoteGroup>>('/group', req);
-  return normalizeGroup(unwrap(resp));
+  const { description, visibility, ...rest } = req;
+  const body: Record<string, unknown> = { ...rest };
+  if (description !== undefined) {
+    body.what = description;
+  }
+  if (visibility !== undefined) {
+    body.visibility = visibility;
+  }
+  const resp = await post<RemoteResponse<RemoteGroup>>('/group', body);
+  const group = normalizeGroup(unwrap(resp));
+  if (visibility === 'public') {
+    await updateGroupSetting(group.id, { rules_enabled: true, visibility: 'public' });
+  }
+  return group;
 }
 
-export async function updateGroup(id: string, req: UpdateGroupReq): Promise<Group> {
-  const resp = await patch<RemoteResponse<RemoteGroup>>(`/group/${id}`, req);
-  return normalizeGroup(unwrap(resp));
+export async function updateGroup(id: string, req: UpdateGroupReq): Promise<void> {
+  const { description, ...rest } = req;
+  const body: Record<string, unknown> = { ...rest };
+  if (description !== undefined) {
+    body.what = description;
+  }
+  const resp = await patch<RemoteResponse<unknown>>(`/group/${id}`, body);
+  if (resp.code !== 0) {
+    throw new Error(resp.message || 'Failed to update group');
+  }
 }
 
 export async function deleteGroup(id: string): Promise<void> {
@@ -178,7 +212,11 @@ export async function getGroupMembers(id: string, keyword?: string, offset = 0, 
 }
 
 export async function inviteMembers(groupId: string, req: InviteGroupReq): Promise<void> {
-  await post('/group/invite', { ...req, group_id: groupId });
+  await Promise.all(
+    req.user_ids.map((userId) =>
+      post('/room', { group_id: groupId, user_id: userId, level: req.level ?? 0 }),
+    ),
+  );
 }
 
 export async function searchRoom(params: { group_id?: string[]; user_id?: string[]; keyword?: string; offset?: number; limit?: number }): Promise<RoomListResponse> {
@@ -240,13 +278,23 @@ export async function searchUsers(keyword: string, offset = 0, limit = 10): Prom
   };
 }
 
+interface RemoteGroupSetting {
+  status: boolean;
+  level: number;
+}
+
 export async function getGroupSetting(id: string): Promise<GroupSetting> {
-  const resp = await get<RemoteResponse<GroupSetting>>(`/group/${id}/setting`);
-  return unwrap(resp);
+  const resp = await get<RemoteResponse<RemoteGroupSetting>>(`/group/${id}/setting`);
+  const raw = unwrap(resp);
+  return {
+    group_id: id,
+    rules_enabled: raw.status,
+    visibility: raw.level === 1 ? 'public' : 'private',
+  };
 }
 
 export async function updateGroupSetting(id: string, req: UpdateGroupSettingReq): Promise<void> {
-  await patch(`/group/${id}/setting`, req);
+  await patch(`/group/${id}/setting`, mapSettingReqToRemote(req));
 }
 
 export interface RemoteEnv {

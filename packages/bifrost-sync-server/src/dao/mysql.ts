@@ -275,6 +275,10 @@ export class MysqlGroupDao implements IGroupDao {
       sets.push('description = ?');
       params.push(fields.description);
     }
+    if (fields.visibility !== undefined) {
+      sets.push('visibility = ?');
+      params.push(fields.visibility);
+    }
     if (sets.length === 0) return existing;
     sets.push('update_time = ?');
     params.push(now, id);
@@ -452,11 +456,11 @@ export class MysqlGroupMemberDao implements IGroupMemberDao {
 export class MysqlGroupSettingDao implements IGroupSettingDao {
   constructor(private pool: Pool) {}
 
-  async init(groupId: string): Promise<void> {
+  async init(groupId: string, visibility: string = 'private'): Promise<void> {
     await this.pool.execute(
       `INSERT IGNORE INTO bifrost_group_settings (group_id, rules_enabled, visibility)
-       VALUES (?, 1, 'private')`,
-      [groupId],
+       VALUES (?, 1, ?)`,
+      [groupId, visibility],
     );
   }
 

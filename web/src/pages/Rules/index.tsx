@@ -56,7 +56,6 @@ export default function Rules() {
   const applyValuesSnapshot = useValuesStore((state) => state.applyValuesSnapshot);
 
   const initDoneRef = useRef(false);
-  const groupFallbackRef = useRef(false);
   const hasLoadedOnceRef = useRef(false);
   const restoringRef = useRef(false);
 
@@ -91,12 +90,6 @@ export default function Rules() {
     if (initDoneRef.current) return;
     if (loading) return;
     if (!hasLoadedOnceRef.current) return;
-
-    if (rules.length === 0 && activeGroupId && !groupFallbackRef.current) {
-      groupFallbackRef.current = true;
-      setActiveGroupId(null);
-      return;
-    }
 
     if (rules.length === 0) return;
     initDoneRef.current = true;

@@ -27,12 +27,15 @@ import {
   LogoutOutlined,
   UserDeleteOutlined,
   SearchOutlined,
+  LockOutlined,
+  GlobalOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useGroupStore } from "../../stores/useGroupStore";
 import { useSyncStore } from "../../stores/useSyncStore";
-import type { GroupUserLevel, UserInfo } from "../../api/group";
-import { searchUsers } from "../../api/group";
+import type { GroupUserLevel, GroupVisibility, UserInfo } from "../../api/group";
+import { searchUsers, updateGroupSetting, updateGroup as apiUpdateGroup } from "../../api/group";
+import { normalizeApiErrorMessage } from "../../api/client";
 
 const { Title, Text } = Typography;
 
@@ -85,7 +88,6 @@ export default function GroupDetail() {
     fetchMembers,
     setMembersPage,
     setMembersKeyword,
-    updateGroup,
     deleteGroup,
     inviteMembers,
     removeMember,
@@ -99,6 +101,8 @@ export default function GroupDetail() {
 
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [inviteModalOpen, setInviteModalOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
   const [editForm] = Form.useForm();
   const [inviteForm] = Form.useForm();
   const [memberSearch, setMemberSearch] = useState("");
@@ -133,6 +137,7 @@ export default function GroupDetail() {
     editForm.setFieldsValue({
       name: currentGroup.name,
       description: currentGroup.description,
+      visibility: currentGroup.visibility,
     });
     setEditModalOpen(true);
   }, [currentGroup, editForm]);
@@ -140,21 +145,37 @@ export default function GroupDetail() {
   const handleEditSubmit = useCallback(async () => {
     try {
       const values = await editForm.validateFields();
-      const success = await updateGroup(id, values);
-      if (success) {
+      const { visibility, ...groupFields } = values;
+      setEditLoading(true);
+      try {
+        await apiUpdateGroup(id, { ...groupFields, visibility: visibility as GroupVisibility });
+        if (visibility && visibility !== currentGroup?.visibility) {
+          await updateGroupSetting(id, {
+            rules_enabled: true,
+            visibility: visibility as GroupVisibility,
+          });
+        }
+        await fetchGroupDetail(id, currentUserId ?? undefined);
         message.success("Group updated");
         setEditModalOpen(false);
+      } catch (e) {
+        message.error(normalizeApiErrorMessage(e) || "Failed to update group");
+      } finally {
+        setEditLoading(false);
       }
     } catch {
       /* validation error */
     }
-  }, [editForm, updateGroup, id]);
+  }, [editForm, id, currentGroup, fetchGroupDetail, currentUserId]);
 
   const handleDelete = useCallback(async () => {
     const success = await deleteGroup(id);
     if (success) {
       message.success("Group deleted");
       navigate("/groups");
+    } else {
+      const err = useGroupStore.getState().error;
+      message.error(err || "Failed to delete group");
     }
   }, [deleteGroup, id, navigate]);
 
@@ -163,6 +184,7 @@ export default function GroupDetail() {
       const values = await inviteForm.validateFields();
       const userIds: string[] = values.user_id ?? [];
       if (userIds.length === 0) return;
+      setInviteLoading(true);
       const success = await inviteMembers(id, {
         user_ids: userIds,
         level: values.level,
@@ -172,9 +194,13 @@ export default function GroupDetail() {
         setInviteModalOpen(false);
         inviteForm.resetFields();
         setUserOptions([]);
+      } else {
+        const err = useGroupStore.getState().error;
+        message.error(err || "Failed to send invitation");
       }
+      setInviteLoading(false);
     } catch {
-      /* validation error */
+      setInviteLoading(false);
     }
   }, [inviteForm, inviteMembers, id]);
 
@@ -183,6 +209,9 @@ export default function GroupDetail() {
       const success = await removeMember(id, userId);
       if (success) {
         message.success("Member removed");
+      } else {
+        const err = useGroupStore.getState().error;
+        message.error(err || "Failed to remove member");
       }
     },
     [removeMember, id],
@@ -193,6 +222,9 @@ export default function GroupDetail() {
       const success = await updateMemberLevel(id, userId, level);
       if (success) {
         message.success("Level updated");
+      } else {
+        const err = useGroupStore.getState().error;
+        message.error(err || "Failed to update level");
       }
     },
     [updateMemberLevel, id],
@@ -203,6 +235,9 @@ export default function GroupDetail() {
     if (success) {
       message.success("Left group");
       navigate("/groups");
+    } else {
+      const err = useGroupStore.getState().error;
+      message.error(err || "Failed to leave group");
     }
   }, [leaveGroup, id, navigate]);
 
@@ -362,7 +397,7 @@ export default function GroupDetail() {
               Add Members
             </Button>
           )}
-          {myLevel != null && (
+          {myLevel != null && !isOwner && (
             <Popconfirm
               title="Leave Group"
               description="Are you sure to leave this group?"
@@ -480,7 +515,7 @@ export default function GroupDetail() {
         open={editModalOpen}
         onOk={handleEditSubmit}
         onCancel={() => setEditModalOpen(false)}
-        confirmLoading={loading}
+        confirmLoading={editLoading}
       >
         <Form form={editForm} layout="vertical">
           <Form.Item
@@ -493,6 +528,30 @@ export default function GroupDetail() {
           <Form.Item name="description" label="Description">
             <Input.TextArea rows={3} />
           </Form.Item>
+          <Form.Item
+            name="visibility"
+            label="Visibility"
+            extra={
+              <span style={{ fontSize: 12 }}>
+                <b>Public</b>: Anyone can discover this group and access its shared rules. <b>Private</b>: Only invited members can see and access the group.
+              </span>
+            }
+          >
+            <Select>
+              <Select.Option value="private">
+                <Space>
+                  <LockOutlined />
+                  <span>Private</span>
+                </Space>
+              </Select.Option>
+              <Select.Option value="public">
+                <Space>
+                  <GlobalOutlined />
+                  <span>Public</span>
+                </Space>
+              </Select.Option>
+            </Select>
+          </Form.Item>
         </Form>
       </Modal>
 
@@ -504,7 +563,7 @@ export default function GroupDetail() {
           setInviteModalOpen(false);
           setUserOptions([]);
         }}
-        confirmLoading={loading}
+        confirmLoading={inviteLoading}
       >
         <Form form={inviteForm} layout="vertical" initialValues={{ level: 0 }} autoComplete="off">
           <Form.Item

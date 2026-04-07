@@ -12,7 +12,7 @@ import type {
 import type { IUserDao, IEnvDao, IGroupDao, IGroupMemberDao, IGroupSettingDao, IStorage } from './types';
 
 export class SqliteUserDao implements IUserDao {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) { }
 
   async findByToken(token: string): Promise<User | undefined> {
     return this.db
@@ -71,7 +71,7 @@ export class SqliteUserDao implements IUserDao {
 }
 
 export class SqliteEnvDao implements IEnvDao {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) { }
 
   async findById(id: string): Promise<Env | undefined> {
     return this.db.prepare('SELECT * FROM bifrost_envs WHERE id = ?').get(id) as Env | undefined;
@@ -151,7 +151,7 @@ export class SqliteEnvDao implements IEnvDao {
 }
 
 export class SqliteGroupDao implements IGroupDao {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) { }
 
   async create(
     name: string,
@@ -198,6 +198,10 @@ export class SqliteGroupDao implements IGroupDao {
     if (fields.description !== undefined) {
       sets.push('description = ?');
       params.push(fields.description);
+    }
+    if (fields.visibility !== undefined) {
+      sets.push('visibility = ?');
+      params.push(fields.visibility);
     }
     if (sets.length === 0) return existing;
     sets.push('update_time = ?');
@@ -277,7 +281,7 @@ export class SqliteGroupDao implements IGroupDao {
 }
 
 export class SqliteGroupMemberDao implements IGroupMemberDao {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) { }
 
   async add(groupId: string, userId: string, level: number): Promise<GroupMember> {
     const now = new Date().toISOString();
@@ -370,15 +374,15 @@ export class SqliteGroupMemberDao implements IGroupMemberDao {
 }
 
 export class SqliteGroupSettingDao implements IGroupSettingDao {
-  constructor(private db: Database.Database) {}
+  constructor(private db: Database.Database) { }
 
-  async init(groupId: string): Promise<void> {
+  async init(groupId: string, visibility: string = 'private'): Promise<void> {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO bifrost_group_settings (group_id, rules_enabled, visibility)
-         VALUES (?, 1, 'private')`,
+         VALUES (?, 1, ?)`,
       )
-      .run(groupId);
+      .run(groupId, visibility);
   }
 
   async get(groupId: string): Promise<GroupSetting> {

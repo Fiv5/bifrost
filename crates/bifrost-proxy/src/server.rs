@@ -14,6 +14,8 @@ use bifrost_admin::{
     handle_sync_login_callback, is_cert_public_request, is_valid_admin_request, AdminRouter,
     AdminSecurityConfig, AdminState, SharedPushManager, ADMIN_PATH_PREFIX, CERT_PUBLIC_PATH_PREFIX,
 };
+
+pub(crate) const ADMIN_VIRTUAL_HOST: &str = "bifrost.local";
 use bifrost_core::{BifrostError, Protocol, Result, UserPassAuthConfig};
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -1379,6 +1381,23 @@ async fn handle_request(
         return Ok(error_response(503, "Admin interface not enabled"));
     }
 
+    if is_admin_virtual_host_request(&req) {
+        if let Some(state) = admin_state {
+            if is_loopback {
+                debug!(
+                    "Serving admin UI via {} from {}: {} {}",
+                    ADMIN_VIRTUAL_HOST, peer_addr, method, path
+                );
+                let req = rewrite_virtual_host_request(req);
+                return Ok(convert_admin_response(
+                    AdminRouter::handle(req, state, push_manager).await,
+                ));
+            }
+            return Ok(error_response(403, "Forbidden"));
+        }
+        return Ok(error_response(503, "Admin interface not enabled"));
+    }
+
     if is_direct_browser_access(&req, &proxy_config) && admin_state.is_some() {
         debug!(
             "Redirecting direct browser access from {} to admin UI",
@@ -1425,6 +1444,7 @@ async fn handle_request(
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),
+            push_manager.clone(),
         )
         .await
         {
@@ -1663,6 +1683,50 @@ fn redirect_response(location: &str) -> Response<BoxBody> {
         .header("Location", location)
         .body(empty_body())
         .unwrap()
+}
+
+fn is_admin_virtual_host_request(req: &Request<Incoming>) -> bool {
+    if req.method() == hyper::Method::CONNECT {
+        return false;
+    }
+
+    if let Some(uri_host) = req.uri().host() {
+        if uri_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
+            return true;
+        }
+    }
+
+    if let Some(host_val) = req.headers().get("host").and_then(|h| h.to_str().ok()) {
+        let host_without_port = host_val.split(':').next().unwrap_or(host_val);
+        if host_without_port.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn rewrite_virtual_host_request(req: Request<Incoming>) -> Request<Incoming> {
+    let (mut parts, body) = req.into_parts();
+    let path = parts.uri.path();
+
+    if !path.starts_with(ADMIN_PATH_PREFIX) {
+        let new_path = if path == "/" {
+            format!("{}/", ADMIN_PATH_PREFIX)
+        } else {
+            format!("{}{}", ADMIN_PATH_PREFIX, path)
+        };
+        let new_uri = if let Some(query) = parts.uri.query() {
+            format!("{}?{}", new_path, query)
+        } else {
+            new_path
+        };
+        if let Ok(uri) = new_uri.parse() {
+            parts.uri = uri;
+        }
+    }
+
+    Request::from_parts(parts, body)
 }
 
 fn is_direct_browser_access(req: &Request<Incoming>, config: &ProxyConfig) -> bool {

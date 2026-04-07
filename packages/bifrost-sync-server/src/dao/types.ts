@@ -44,7 +44,7 @@ export interface IGroupMemberDao {
 export interface IGroupSettingDao {
   get(groupId: string): Promise<import('../types').GroupSetting>;
   update(groupId: string, fields: import('../types').UpdateGroupSettingReq): Promise<void>;
-  init(groupId: string): Promise<void>;
+  init(groupId: string, visibility?: string): Promise<void>;
 }
 
 export interface IStorage {

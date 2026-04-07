@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { Group, GroupMember, GroupUserLevel } from '../api/group';
 import * as groupApi from '../api/group';
-import { isConnectionIssueError } from '../api/client';
+import { isConnectionIssueError, normalizeApiErrorMessage } from '../api/client';
 
 interface GroupState {
   groups: Group[];
@@ -19,7 +19,7 @@ interface GroupState {
   fetchGroups: (keyword?: string) => Promise<void>;
   fetchGroupDetail: (id: string, userId?: string) => Promise<void>;
   createGroup: (req: groupApi.CreateGroupReq) => Promise<Group | null>;
-  updateGroup: (id: string, req: groupApi.UpdateGroupReq) => Promise<boolean>;
+  updateGroup: (id: string, req: groupApi.UpdateGroupReq) => Promise<true | string>;
   deleteGroup: (id: string) => Promise<boolean>;
   fetchMembers: (groupId: string, keyword?: string, offset?: number, limit?: number) => Promise<void>;
   setMembersPage: (page: number) => void;
@@ -53,7 +53,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       const result = await groupApi.searchGroups(keyword);
       set({ groups: result.list ?? [], total: result.total ?? 0, loading: false });
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
     }
   },
 
@@ -69,7 +69,8 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       const [group, roomResult] = await Promise.all(promises);
 
       const cachedGroup = get().groups.find(g => g.id === id);
-      if (cachedGroup && group.visibility === 'private' && cachedGroup.visibility === 'public') {
+
+      if (group.visibility === 'private' && cachedGroup?.visibility === 'public') {
         group.visibility = cachedGroup.visibility;
       }
 
@@ -80,7 +81,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
 
       set({ currentGroup: group, myLevel: level, loading: false });
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
     }
   },
 
@@ -91,7 +92,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchGroups();
       return group;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return null;
     }
   },
@@ -103,10 +104,12 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       const userId = undefined;
       await get().fetchGroupDetail(id, userId);
       await get().fetchGroups();
+      set({ loading: false });
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
-      return false;
+      const msg = isConnectionIssueError(e) ? 'Connection error' : normalizeApiErrorMessage(e);
+      set({ error: isConnectionIssueError(e) ? null : msg, loading: false });
+      return msg;
     }
   },
 
@@ -118,7 +121,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchGroups();
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return false;
     }
   },
@@ -134,7 +137,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       );
       set({ members: result.list ?? [], membersTotal: result.total ?? 0, membersLoading: false });
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, membersLoading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), membersLoading: false });
     }
   },
 
@@ -149,7 +152,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchMembers(groupId, membersKeyword, (membersPage - 1) * MEMBERS_PAGE_SIZE);
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return false;
     }
   },
@@ -162,7 +165,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchMembers(groupId, membersKeyword, (membersPage - 1) * MEMBERS_PAGE_SIZE);
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return false;
     }
   },
@@ -175,7 +178,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchMembers(groupId, membersKeyword, (membersPage - 1) * MEMBERS_PAGE_SIZE);
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return false;
     }
   },
@@ -188,7 +191,7 @@ export const useGroupStore = create<GroupState>((set, get) => ({
       await get().fetchGroups();
       return true;
     } catch (e) {
-      set({ error: isConnectionIssueError(e) ? null : (e as Error).message, loading: false });
+      set({ error: isConnectionIssueError(e) ? null : normalizeApiErrorMessage(e), loading: false });
       return false;
     }
   },

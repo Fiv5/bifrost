@@ -231,8 +231,9 @@ describe('Group API - Full Lifecycle', () => {
 
   describe('Invite Members', () => {
     it('should invite a member as owner', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {
-        user_ids: ['group_member'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: groupId,
+        user_id: ['group_member'],
         level: 0,
       }, ownerToken);
       expect(res.status).toBe(200);
@@ -240,28 +241,31 @@ describe('Group API - Full Lifecycle', () => {
     });
 
     it('should not duplicate invite existing member', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {
-        user_ids: ['group_member'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: groupId,
+        user_id: ['group_member'],
       }, ownerToken);
       expect(res.status).toBe(200);
     });
 
     it('should deny invite by outsider', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {
-        user_ids: ['group_outsider'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: groupId,
+        user_id: ['group_outsider'],
       }, outsiderToken);
       expect(res.status).toBe(403);
     });
 
     it('should deny invite by regular member (level 0)', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {
-        user_ids: ['group_outsider'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: groupId,
+        user_id: ['group_outsider'],
       }, memberToken);
       expect(res.status).toBe(403);
     });
 
-    it('should fail with missing user_ids', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {}, ownerToken);
+    it('should fail with missing user_id', async () => {
+      const res = await req('POST', `/v4/group/invite`, { group_id: groupId }, ownerToken);
       expect(res.status).toBe(400);
     });
   });
@@ -356,8 +360,9 @@ describe('Group API - Full Lifecycle', () => {
     });
 
     it('master should be able to invite members', async () => {
-      const res = await req('POST', `/v4/group/${groupId}/invite`, {
-        user_ids: ['group_outsider'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: groupId,
+        user_id: ['group_outsider'],
         level: 0,
       }, memberToken);
       expect(res.status).toBe(200);
@@ -392,9 +397,9 @@ describe('Group API - Full Lifecycle', () => {
       const res = await req('GET', `/v4/group/${groupId}/setting`, undefined, ownerToken);
       expect(res.status).toBe(200);
       expect(res.data.code).toBe(0);
-      const setting = res.data.data as { group_id: string; rules_enabled: number; visibility: string };
-      expect(setting.rules_enabled).toBe(1);
-      expect(setting.visibility).toBe('private');
+      const setting = res.data.data as { status: boolean; level: number };
+      expect(setting.status).toBe(true);
+      expect(setting.level).toBe(0);
     });
 
     it('should get group settings as master', async () => {
@@ -409,8 +414,8 @@ describe('Group API - Full Lifecycle', () => {
 
     it('should update group settings', async () => {
       const res = await req('PATCH', `/v4/group/${groupId}/setting`, {
-        rules_enabled: false,
-        visibility: 'public',
+        status: false,
+        level: 1,
       }, ownerToken);
       expect(res.status).toBe(200);
       expect(res.data.code).toBe(0);
@@ -418,9 +423,17 @@ describe('Group API - Full Lifecycle', () => {
 
     it('should verify updated settings', async () => {
       const res = await req('GET', `/v4/group/${groupId}/setting`, undefined, ownerToken);
-      const setting = res.data.data as { rules_enabled: number; visibility: string };
-      expect(setting.rules_enabled).toBe(0);
-      expect(setting.visibility).toBe('public');
+      const setting = res.data.data as { status: boolean; level: number };
+      expect(setting.status).toBe(false);
+      expect(setting.level).toBe(1);
+    });
+
+    it('should revert group settings to private', async () => {
+      const res = await req('PATCH', `/v4/group/${groupId}/setting`, {
+        status: true,
+        level: 0,
+      }, ownerToken);
+      expect(res.status).toBe(200);
     });
   });
 
@@ -460,23 +473,24 @@ describe('Group API - Full Lifecycle', () => {
 
     it('outsider should NOT modify public group settings', async () => {
       const res = await req('PATCH', `/v4/group/${publicGroupId}/setting`, {
-        rules_enabled: false,
+        status: false,
       }, outsiderToken);
       expect(res.status).toBe(403);
     });
 
     it('outsider should NOT invite members to public group', async () => {
-      const res = await req('POST', `/v4/group/${publicGroupId}/invite`, {
-        user_ids: ['group_outsider'],
+      const res = await req('POST', `/v4/group/invite`, {
+        group_id: publicGroupId,
+        user_id: ['group_outsider'],
       }, outsiderToken);
       expect(res.status).toBe(403);
     });
 
-    it('public group should default to rules_enabled=true', async () => {
+    it('public group should default to status=true', async () => {
       const res = await req('GET', `/v4/group/${publicGroupId}/setting`, undefined, ownerToken);
       expect(res.status).toBe(200);
-      const setting = res.data.data as { rules_enabled: number };
-      expect(setting.rules_enabled).toBe(1);
+      const setting = res.data.data as { status: boolean };
+      expect(setting.status).toBe(true);
     });
 
     it('public group search should be visible to outsider', async () => {
@@ -505,8 +519,9 @@ describe('Group API - Full Lifecycle', () => {
       }, ownerToken);
       leaveGroupId = (res.data.data as { id: string }).id;
 
-      await req('POST', `/v4/group/${leaveGroupId}/invite`, {
-        user_ids: ['leave_user'],
+      await req('POST', `/v4/group/invite`, {
+        group_id: leaveGroupId,
+        user_id: ['leave_user'],
       }, ownerToken);
     });
 
@@ -527,8 +542,9 @@ describe('Group API - Full Lifecycle', () => {
     });
 
     it('owner can leave if there is another owner', async () => {
-      await req('POST', `/v4/group/${leaveGroupId}/invite`, {
-        user_ids: ['leave_user'],
+      await req('POST', `/v4/group/invite`, {
+        group_id: leaveGroupId,
+        user_id: ['leave_user'],
         level: 2,
       }, ownerToken);
 
@@ -617,6 +633,57 @@ describe('Group API - Edge Cases', () => {
     }
 
     await req('DELETE', `/v4/group/${gId}`, undefined, token);
+  });
+});
+
+describe('Room API', () => {
+  let ownerToken: string;
+  let memberToken: string;
+  let groupId: string;
+
+  beforeAll(async () => {
+    ownerToken = await registerUser('room_owner', 'password123');
+    memberToken = await registerUser('room_member', 'password123');
+
+    const createRes = await req('POST', '/v4/group', {
+      name: 'Room Test Group',
+      visibility: 'private',
+    }, ownerToken);
+    groupId = (createRes.data.data as { id: string }).id;
+
+    await req('POST', `/v4/group/invite`, {
+      group_id: groupId,
+      user_id: ['room_member'],
+      level: 0,
+    }, ownerToken);
+  });
+
+  it('should search room by group_id', async () => {
+    const res = await req('GET', `/v4/room?group_id=${groupId}`, undefined, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.data.code).toBe(0);
+  });
+
+  it('should search room by user_id', async () => {
+    const res = await req('GET', `/v4/room?user_id=room_member`, undefined, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.data.code).toBe(0);
+  });
+
+  it('should update room level', async () => {
+    const res = await req('PATCH', '/v4/room', {
+      group_id: groupId,
+      user_id: 'room_member',
+      level: 1,
+    }, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.data.code).toBe(0);
+  });
+
+  it('should remove room', async () => {
+    const res = await req('DELETE', `/v4/room?group_id=${groupId}&user_id=room_member`, undefined, ownerToken);
+    expect(res.status).toBe(200);
+    expect(res.data.code).toBe(0);
   });
 });
 
@@ -772,13 +839,15 @@ describe('Group Env Management - Permission & Rules', () => {
     }, ownerToken);
     groupId = (createRes.data.data as { id: string }).id;
 
-    await req('POST', `/v4/group/${groupId}/invite`, {
-      user_ids: ['env_grp_master'],
+    await req('POST', `/v4/group/invite`, {
+      group_id: groupId,
+      user_id: ['env_grp_master'],
       level: 1,
     }, ownerToken);
 
-    await req('POST', `/v4/group/${groupId}/invite`, {
-      user_ids: ['env_grp_member'],
+    await req('POST', `/v4/group/invite`, {
+      group_id: groupId,
+      user_id: ['env_grp_member'],
       level: 0,
     }, ownerToken);
   });
@@ -969,7 +1038,7 @@ describe('Group Env Management - Permission & Rules', () => {
       publicGroupId = (res.data.data as { id: string }).id;
 
       await req('PATCH', `/v4/group/${publicGroupId}/setting`, {
-        visibility: 'public',
+        level: 1,
       }, ownerToken);
 
       const envRes = await req('POST', '/v4/env', {
@@ -1071,8 +1140,9 @@ describe('Group Env Management - Permission & Rules', () => {
       }, ownerToken);
       syncGroupId = (res.data.data as { id: string }).id;
 
-      await req('POST', `/v4/group/${syncGroupId}/invite`, {
-        user_ids: ['env_grp_master'],
+      await req('POST', `/v4/group/invite`, {
+        group_id: syncGroupId,
+        user_id: ['env_grp_master'],
         level: 1,
       }, ownerToken);
 

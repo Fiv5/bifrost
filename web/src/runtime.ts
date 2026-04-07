@@ -1,4 +1,5 @@
 const DEFAULT_ADMIN_PREFIX = '/_bifrost';
+const ADMIN_VIRTUAL_HOST = 'bifrost.local';
 const DEFAULT_BACKEND_PORT = 9900;
 
 type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'web';
@@ -67,7 +68,14 @@ export async function initializeDesktopRuntime(): Promise<void> {
   }
 }
 
+export function isVirtualHostAccess(): boolean {
+  return window.location.hostname.toLowerCase() === ADMIN_VIRTUAL_HOST;
+}
+
 export function getAdminPrefix(): string {
+  if (isVirtualHostAccess()) {
+    return '';
+  }
   return DEFAULT_ADMIN_PREFIX;
 }
 
@@ -81,6 +89,9 @@ export function getBackendOrigin(): string {
 
 export function buildBackendUrl(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (isVirtualHostAccess()) {
+    return `${getBackendOrigin()}${normalizedPath}`;
+  }
   const adminPrefix = getAdminPrefix();
   const resolvedPath = normalizedPath.startsWith(adminPrefix)
     ? normalizedPath
@@ -106,6 +117,10 @@ export function buildAppRouteUrl(path = ''): string {
     url.search = '';
     url.hash = `#${suffix}`;
     return url.toString();
+  }
+
+  if (isVirtualHostAccess()) {
+    return new URL(suffix, window.location.origin).toString();
   }
 
   return new URL(`${getAdminPrefix()}${suffix}`, window.location.origin).toString();

@@ -6,7 +6,10 @@ use crate::ensure_crypto_provider;
 #[cfg(feature = "http3")]
 use crate::http3::Http3Client;
 use crate::protocol::{ProtocolDetector, TransportProtocol};
-use bifrost_admin::{AdminState, ConnectionInfo, RequestTiming, TrafficRecord, TrafficType};
+use bifrost_admin::{
+    AdminRouter, AdminState, ConnectionInfo, RequestTiming, SharedPushManager, TrafficRecord,
+    TrafficType, ADMIN_PATH_PREFIX,
+};
 use bifrost_core::{BifrostError, Protocol, Result};
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt;
@@ -46,6 +49,7 @@ use super::ws_handshake::{
     header_values, negotiate_extensions, negotiate_protocol, read_http1_response_with_leftover,
 };
 use crate::dns::DnsResolver;
+use crate::server::ADMIN_VIRTUAL_HOST;
 use crate::server::{
     empty_body, full_body, with_trailers, BoxBody, ProxyConfig, ResolvedRules, RulesResolver,
     TlsConfig, TlsInterceptConfig,
@@ -356,6 +360,7 @@ pub async fn handle_connect(
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Result<Response<BoxBody>> {
     let uri = req.uri().clone();
     let authority = uri
@@ -444,6 +449,19 @@ pub async fn handle_connect(
     );
 
     if !intercept
+        && is_local_client
+        && host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST)
+        && tls_config.ca_cert.is_some()
+    {
+        intercept = true;
+        debug!(
+            "[{}] Forced TLS interception for admin virtual host {}",
+            ctx.id_str(),
+            host
+        );
+    }
+
+    if !intercept
         && tls_config.ca_cert.is_some()
         && !matches!(resolved_rules.tls_intercept, Some(false))
         && (requires_tls_interception_for_rules(&resolved_rules)
@@ -513,6 +531,7 @@ pub async fn handle_connect(
             tls_intercept_config.unsafe_ssl,
             ctx,
             admin_state,
+            push_manager,
         )
         .await;
     } else if tls_config.ca_cert.is_some() && verbose_logging {
@@ -773,6 +792,7 @@ async fn handle_tls_interception(
     unsafe_ssl: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
+    push_manager: Option<SharedPushManager>,
 ) -> Result<Response<BoxBody>> {
     ensure_crypto_provider();
     let alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
@@ -841,6 +861,7 @@ async fn handle_tls_interception(
             client_app,
             client_pid,
             client_path,
+            push_manager,
         )
         .await;
 
@@ -893,6 +914,7 @@ async fn tls_intercept_tunnel(
     client_app: Option<String>,
     client_pid: Option<u32>,
     client_path: Option<String>,
+    push_manager: Option<SharedPushManager>,
 ) -> Result<()> {
     let acceptor = TlsAcceptor::from(server_config);
     let client_tls = acceptor
@@ -912,6 +934,7 @@ async fn tls_intercept_tunnel(
     let client_ip_clone = client_ip.clone();
     let client_app_clone = client_app.clone();
     let client_path_clone = client_path.clone();
+    let push_manager_clone = push_manager.clone();
 
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
@@ -923,6 +946,7 @@ async fn tls_intercept_tunnel(
         let client_app = client_app_clone.clone();
         let client_pid = client_pid;
         let client_path = client_path_clone.clone();
+        let push_manager = push_manager_clone.clone();
         async move {
             handle_intercepted_request_with_protocol(
                 req,
@@ -939,6 +963,7 @@ async fn tls_intercept_tunnel(
                 client_app,
                 client_pid,
                 client_path,
+                push_manager,
             )
             .await
         }
@@ -990,6 +1015,7 @@ async fn tls_intercept_tunnel_with_cancel(
     client_app: Option<String>,
     client_pid: Option<u32>,
     client_path: Option<String>,
+    push_manager: Option<SharedPushManager>,
 ) -> Result<bool> {
     let acceptor = TlsAcceptor::from(server_config);
     let mut client_tls = acceptor
@@ -1040,6 +1066,7 @@ async fn tls_intercept_tunnel_with_cancel(
     let client_ip_clone = client_ip.clone();
     let client_app_clone = client_app.clone();
     let client_path_clone2 = client_path.clone();
+    let push_manager_clone = push_manager.clone();
 
     let service = service_fn(move |req: Request<Incoming>| {
         let original_host = original_host_for_requests.clone();
@@ -1051,6 +1078,7 @@ async fn tls_intercept_tunnel_with_cancel(
         let client_app = client_app_clone.clone();
         let client_pid = client_pid;
         let client_path = client_path_clone2.clone();
+        let push_manager = push_manager_clone.clone();
         async move {
             handle_intercepted_request_with_protocol(
                 req,
@@ -1067,6 +1095,7 @@ async fn tls_intercept_tunnel_with_cancel(
                 client_app,
                 client_pid,
                 client_path,
+                push_manager,
             )
             .await
         }
@@ -1328,6 +1357,31 @@ fn looks_like_http_payload(payload: &BytesMut) -> bool {
     )
 }
 
+fn rewrite_intercepted_virtual_host_request(req: Request<Incoming>) -> Request<Incoming> {
+    let (mut parts, body) = req.into_parts();
+    let path = parts.uri.path();
+    if !path.starts_with(ADMIN_PATH_PREFIX) {
+        let new_path = if path == "/" {
+            format!("{}/", ADMIN_PATH_PREFIX)
+        } else {
+            format!("{}{}", ADMIN_PATH_PREFIX, path)
+        };
+        let new_uri = if let Some(query) = parts.uri.query() {
+            format!("{}?{}", new_path, query)
+        } else {
+            new_path
+        };
+        if let Ok(uri) = new_uri.parse() {
+            parts.uri = uri;
+        }
+    }
+    Request::from_parts(parts, body)
+}
+
+fn convert_intercepted_admin_response(resp: Response<BoxBody>) -> Response<BoxBody> {
+    resp
+}
+
 fn is_websocket_upgrade_request(req: &Request<Incoming>) -> bool {
     if req.version() == hyper::Version::HTTP_2
         && req.method() == hyper::Method::CONNECT
@@ -1456,7 +1510,16 @@ async fn handle_intercepted_request_with_protocol(
     client_app: Option<String>,
     client_pid: Option<u32>,
     client_path: Option<String>,
+    push_manager: Option<SharedPushManager>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
+        if let Some(state) = admin_state.clone() {
+            let req = rewrite_intercepted_virtual_host_request(req);
+            let resp = AdminRouter::handle(req, state, push_manager.clone()).await;
+            return Ok(convert_intercepted_admin_response(resp));
+        }
+    }
+
     if is_websocket_upgrade_request(&req) {
         return handle_intercepted_websocket(
             req,
@@ -1471,6 +1534,7 @@ async fn handle_intercepted_request_with_protocol(
             client_app,
             client_pid,
             client_path,
+            push_manager,
         )
         .await;
     }
@@ -2867,7 +2931,16 @@ async fn handle_intercepted_websocket(
     client_app: Option<String>,
     client_pid: Option<u32>,
     client_path: Option<String>,
+    push_manager: Option<SharedPushManager>,
 ) -> std::result::Result<Response<BoxBody>, hyper::Error> {
+    if original_host.eq_ignore_ascii_case(ADMIN_VIRTUAL_HOST) {
+        if let Some(state) = admin_state.clone() {
+            let req = rewrite_intercepted_virtual_host_request(req);
+            let resp = AdminRouter::handle(req, state, push_manager).await;
+            return Ok(convert_intercepted_admin_response(resp));
+        }
+    }
+
     use tokio_rustls::rustls::pki_types::ServerName;
     use tokio_rustls::TlsConnector;
 

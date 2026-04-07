@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useMemo } from 'react';
+import { useCallback, useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Menu, message, Modal } from 'antd';
 import type { MenuProps } from 'antd';
@@ -6,21 +6,21 @@ import {
   CopyOutlined,
   CodeOutlined,
   DownloadOutlined,
-  LockOutlined,
+  UnlockOutlined,
   SendOutlined,
   ExportOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons';
 import type { TrafficRecord, TrafficSummary } from '../../types';
 import { generateCurl } from '../../utils/curl';
 import { downloadHAR } from '../../utils/har';
 import { getTrafficDetail, getRequestBody, getResponseBody } from '../../api/traffic';
-import { getTlsConfig, updateTlsConfig, disconnectByDomain } from '../../api/config';
 import { useReplayStore } from '../../stores/useReplayStore';
 import { useExportBifrost } from '../../hooks/useExportBifrost';
+import { useTlsConfigStore } from '../../stores/useTlsConfigStore';
+import { showTlsWhitelistChangeSuccess } from '../../utils/tlsInterceptionNotice';
 
 const MENU_WIDTH = 220;
-const MENU_ITEM_HEIGHT = 36;
-const DIVIDER_HEIGHT = 9;
 
 interface TrafficContextMenuProps {
   record: TrafficSummary | null;
@@ -41,34 +41,59 @@ export default function TrafficContextMenu({
   const navigate = useNavigate();
   const importFromTraffic = useReplayStore((state) => state.importFromTraffic);
   const { exportFile } = useExportBifrost();
+  const {
+    fetchConfig: fetchTlsConfig,
+    addDomainToIntercept,
+    addAppToIntercept,
+    isDomainInIntercept,
+    isAppInIntercept,
+    config: tlsConfig,
+  } = useTlsConfigStore();
 
   const isTunnel = record?.is_tunnel || record?.method === 'CONNECT';
+  const hasHost = !!record?.host;
+  const hasClientApp = !!record?.client_app;
 
   const hasMultipleSelected = selectedRecords.length > 1;
 
-  const adjustedPosition = useMemo(() => {
+  useEffect(() => {
+    if (visible && !tlsConfig) {
+      fetchTlsConfig();
+    }
+  }, [visible, tlsConfig, fetchTlsConfig]);
+
+  const domainAlreadyInIntercept = record?.host ? isDomainInIntercept(record.host) : false;
+  const appAlreadyInIntercept = record?.client_app ? isAppInIntercept(record.client_app) : false;
+
+  useLayoutEffect(() => {
+    const menuEl = menuRef.current;
+    if (!visible || !menuEl) return;
+
+    const padding = 8;
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const padding = 8;
-
-    const menuItemCount = hasMultipleSelected ? 1 : (isTunnel ? 5 : 6);
-    const dividerCount = hasMultipleSelected ? 0 : 1;
-    const estimatedMenuHeight =
-      menuItemCount * MENU_ITEM_HEIGHT + dividerCount * DIVIDER_HEIGHT + 8;
+    const menuWidth = menuEl.offsetWidth || MENU_WIDTH;
+    const menuHeight = menuEl.offsetHeight || 0;
 
     let newX = position.x;
     let newY = position.y;
 
-    if (position.x + MENU_WIDTH > viewportWidth - padding) {
-      newX = Math.max(padding, position.x - MENU_WIDTH);
+    if (newX + menuWidth > viewportWidth - padding) {
+      newX = Math.max(padding, position.x - menuWidth);
     }
 
-    if (position.y + estimatedMenuHeight > viewportHeight - padding) {
-      newY = Math.max(padding, viewportHeight - estimatedMenuHeight - padding);
+    if (newY + menuHeight > viewportHeight - padding) {
+      newY = Math.max(padding, viewportHeight - menuHeight - padding);
     }
 
-    return { x: newX, y: newY };
-  }, [position, isTunnel, hasMultipleSelected]);
+    menuEl.style.left = `${newX}px`;
+    menuEl.style.top = `${newY}px`;
+    menuEl.style.visibility = 'visible';
+
+    return () => {
+      menuEl.style.visibility = 'hidden';
+    };
+  }, [visible, position]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -154,44 +179,59 @@ export default function TrafficContextMenu({
     onClose();
   }, [record, selectedRecords, onClose]);
 
-  const addToInterceptList = useCallback(() => {
-    if (!record) return;
+  const addDomainToInterceptList = useCallback(() => {
+    if (!record?.host) return;
 
     const host = record.host;
-    if (!host) {
-      message.error('No host found for this request');
-      onClose();
-      return;
-    }
-
     onClose();
 
     Modal.confirm({
-      title: 'Add to Intercept List',
-      content: `Add "${host}" to TLS intercept list? This will enable HTTPS inspection for this domain and disconnect existing tunnel connections.`,
+      title: 'Add Domain to Intercept List',
+      content: `Add "${host}" to TLS intercept list? This will enable HTTPS decryption for this domain.`,
       okText: 'Add',
       cancelText: 'Cancel',
       onOk: async () => {
         try {
-          const currentConfig = await getTlsConfig();
-          if (currentConfig.intercept_include.includes(host)) {
-            message.info(`"${host}" is already in the intercept list`);
-            return;
+          const success = await addDomainToIntercept(host);
+          if (success) {
+            showTlsWhitelistChangeSuccess(`Added "${host}" to intercept list`);
+          } else {
+            message.error('Failed to add domain to intercept list');
           }
-
-          const newIncludeList = [...currentConfig.intercept_include, host];
-          await updateTlsConfig({ intercept_include: newIncludeList });
-
-          await disconnectByDomain(host);
-
-          message.success(`Added "${host}" to intercept list and disconnected existing connections`);
         } catch (error) {
           message.error('Failed to add domain to intercept list');
           console.error(error);
         }
       },
     });
-  }, [record, onClose]);
+  }, [record, onClose, addDomainToIntercept]);
+
+  const addAppToInterceptList = useCallback(() => {
+    if (!record?.client_app) return;
+
+    const app = record.client_app;
+    onClose();
+
+    Modal.confirm({
+      title: 'Add App to Intercept List',
+      content: `Add "${app}" to app intercept list? This will enable HTTPS decryption for traffic from this app.`,
+      okText: 'Add',
+      cancelText: 'Cancel',
+      onOk: async () => {
+        try {
+          const success = await addAppToIntercept(app);
+          if (success) {
+            showTlsWhitelistChangeSuccess(`Added "${app}" to app intercept list`);
+          } else {
+            message.error('Failed to add app to intercept list');
+          }
+        } catch (error) {
+          message.error('Failed to add app to intercept list');
+          console.error(error);
+        }
+      },
+    });
+  }, [record, onClose, addAppToIntercept]);
 
   const replayRequest = useCallback(async () => {
     if (!record) return;
@@ -208,6 +248,27 @@ export default function TrafficContextMenu({
     await exportFile('network', { record_ids: recordIds, include_body: true });
     onClose();
   }, [record, selectedRecords, exportFile, onClose]);
+
+  const interceptMenuItems: MenuProps['items'] = useMemo(() => {
+    const items: NonNullable<MenuProps['items']> = [];
+    if (hasHost && !domainAlreadyInIntercept) {
+      items.push({
+        key: 'add-domain-intercept',
+        icon: <UnlockOutlined />,
+        label: `Intercept ${record?.host}`,
+        onClick: addDomainToInterceptList,
+      });
+    }
+    if (hasClientApp && !appAlreadyInIntercept) {
+      items.push({
+        key: 'add-app-intercept',
+        icon: <AppstoreOutlined />,
+        label: `Intercept ${record?.client_app}`,
+        onClick: addAppToInterceptList,
+      });
+    }
+    return items;
+  }, [hasHost, hasClientApp, domainAlreadyInIntercept, appAlreadyInIntercept, record, addDomainToInterceptList, addAppToInterceptList]);
 
   if (!visible || !record) return null;
 
@@ -254,14 +315,9 @@ export default function TrafficContextMenu({
           label: 'Export as .bifrost',
           onClick: exportAsBifrost,
         },
-        ...(isTunnel ? [
+        ...(interceptMenuItems.length > 0 ? [
           { type: 'divider' as const },
-          {
-            key: 'add-intercept',
-            icon: <LockOutlined />,
-            label: 'Add to Intercept List',
-            onClick: addToInterceptList,
-          },
+          ...interceptMenuItems,
         ] : []),
       ];
 
@@ -270,9 +326,10 @@ export default function TrafficContextMenu({
       ref={menuRef}
       style={{
         position: 'fixed',
-        left: adjustedPosition.x,
-        top: adjustedPosition.y,
+        left: position.x,
+        top: position.y,
         zIndex: 1050,
+        visibility: 'hidden',
         boxShadow: '0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12), 0 9px 28px 8px rgba(0, 0, 0, 0.05)',
         borderRadius: 8,
       }}
