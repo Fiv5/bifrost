@@ -383,7 +383,7 @@ ${unknown} http://example.com:3000
     fn keeps_indented_code_blocks_parseable() {
         let env = remote_env(
             "服务台联调",
-            "nextoncall.bytedance.net reqHeaders://{block_var}\n \n ```block_var\n x-tt-env: ppe_online_ticket_tag\n ```\n",
+            "nextoncall.bifrost.local reqHeaders://{block_var}\n \n ```block_var\n x-tt-env: ppe_online_ticket_tag\n ```\n",
         );
 
         let actual = normalize_remote_rule(&env, std::slice::from_ref(&env));

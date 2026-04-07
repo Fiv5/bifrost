@@ -4159,7 +4159,7 @@ mod tests {
         };
 
         let result = should_intercept_tls(
-            "nextoncall-bd.byteintl.net",
+            "nextoncall-bd.bifrost.local",
             None,
             &tls_intercept_config,
             &tls_config,
@@ -4182,7 +4182,7 @@ mod tests {
         };
 
         let result = should_intercept_tls(
-            "nextoncall-bd.byteintl.net",
+            "nextoncall-bd.bifrost.local",
             None,
             &tls_intercept_config,
             &tls_config,
@@ -4206,7 +4206,7 @@ mod tests {
         };
 
         let result = should_intercept_tls(
-            "nextoncall-bd.byteintl.net",
+            "nextoncall-bd.bifrost.local",
             None,
             &tls_intercept_config,
             &tls_config,

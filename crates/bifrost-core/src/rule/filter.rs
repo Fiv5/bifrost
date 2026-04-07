@@ -477,13 +477,9 @@ mod tests {
 
     #[test]
     fn test_parse_url_filter_domain_only() {
-        let filter = parse_filter("mira.byteintl.net").unwrap();
+        let filter = parse_filter("m.bifrost.local").unwrap();
         if let Filter::Url(matcher) = filter {
-            assert!(matcher.matches(
-                "https://mira.byteintl.net/page",
-                "mira.byteintl.net",
-                "/page"
-            ));
+            assert!(matcher.matches("https://m.bifrost.local/page", "m.bifrost.local", "/page"));
             assert!(!matcher.matches(
                 "https://other.example.com/page",
                 "other.example.com",
@@ -496,18 +492,14 @@ mod tests {
 
     #[test]
     fn test_parse_url_filter_domain_with_path() {
-        let filter = parse_filter("mira.byteintl.net/api").unwrap();
+        let filter = parse_filter("m.bifrost.local/api").unwrap();
         if let Filter::Url(matcher) = filter {
             assert!(matcher.matches(
-                "https://mira.byteintl.net/api/v1",
-                "mira.byteintl.net",
+                "https://m.bifrost.local/api/v1",
+                "m.bifrost.local",
                 "/api/v1"
             ));
-            assert!(!matcher.matches(
-                "https://mira.byteintl.net/page",
-                "mira.byteintl.net",
-                "/page"
-            ));
+            assert!(!matcher.matches("https://m.bifrost.local/page", "m.bifrost.local", "/page"));
             assert!(!matcher.matches("https://other.example.com/api", "other.example.com", "/api"));
         } else {
             panic!("Expected Url filter");
@@ -516,18 +508,14 @@ mod tests {
 
     #[test]
     fn test_parse_url_filter_domain_with_deep_path() {
-        let filter = parse_filter("mira.byteintl.net/mira/api").unwrap();
+        let filter = parse_filter("m.bifrost.local/mira/api").unwrap();
         if let Filter::Url(matcher) = filter {
             assert!(matcher.matches(
-                "https://mira.byteintl.net/mira/api/endpoint",
-                "mira.byteintl.net",
+                "https://m.bifrost.local/mira/api/endpoint",
+                "m.bifrost.local",
                 "/mira/api/endpoint"
             ));
-            assert!(!matcher.matches(
-                "https://mira.byteintl.net/other",
-                "mira.byteintl.net",
-                "/other"
-            ));
+            assert!(!matcher.matches("https://m.bifrost.local/other", "m.bifrost.local", "/other"));
         } else {
             panic!("Expected Url filter");
         }
