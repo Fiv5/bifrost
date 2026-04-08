@@ -51,7 +51,7 @@ npm i @bifrost-proxy/bifrost
 启动代理：
 
 ```bash
-bifrost start
+bifrost start -d
 ```
 
 启动后访问管理端：
@@ -60,11 +60,6 @@ bifrost start
 http://127.0.0.1:9900/_bifrost/
 ```
 
-启用 HTTPS 拦截：
-
-```bash
-bifrost start --intercept
-```
 
 ## 基本用法摘要
 
