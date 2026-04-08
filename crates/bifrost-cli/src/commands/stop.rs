@@ -1,17 +1,56 @@
 use bifrost_storage::set_data_dir;
 
 use crate::config::get_bifrost_dir;
-use crate::process::{is_process_running, read_pid, remove_pid};
+use crate::process::{is_process_running, read_pid, read_runtime_info, remove_pid};
 
 fn cleanup_proxy_state(bifrost_dir: &std::path::Path) {
     if let Err(e) = bifrost_core::SystemProxyManager::recover_from_crash(bifrost_dir) {
         eprintln!("Failed to recover system proxy: {}", e);
     }
+
+    ensure_system_proxy_disabled(bifrost_dir);
+
     if let Err(e) = bifrost_core::ShellProxyManager::recover_from_crash(bifrost_dir) {
         eprintln!("Failed to recover CLI proxy: {}", e);
     }
     let mut shell_manager = bifrost_core::ShellProxyManager::new(bifrost_dir.to_path_buf());
     let _ = shell_manager.disable_persistent();
+}
+
+fn ensure_system_proxy_disabled(bifrost_dir: &std::path::Path) {
+    if !bifrost_core::SystemProxyManager::is_supported() {
+        return;
+    }
+
+    let runtime_port = read_runtime_info().map(|info| info.port);
+
+    let current = match bifrost_core::SystemProxyManager::get_current() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    if !current.enable {
+        return;
+    }
+
+    let is_bifrost_proxy = match runtime_port {
+        Some(port) => current.port == port,
+        None => {
+            let host = &current.host;
+            (host == "127.0.0.1" || host == "localhost" || host == "::1") && current.port > 0
+        }
+    };
+
+    if !is_bifrost_proxy {
+        return;
+    }
+
+    let mut manager = bifrost_core::SystemProxyManager::new(bifrost_dir.to_path_buf());
+    if let Err(e) = manager.force_disable() {
+        eprintln!("Failed to disable system proxy: {}", e);
+    } else {
+        println!("System proxy disabled.");
+    }
 }
 
 pub fn run_stop() -> bifrost_core::Result<()> {
