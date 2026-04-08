@@ -1,6 +1,6 @@
 [package]
 name = "bifrost-desktop"
-version = "0.0.44-beta"
+version = "0.0.45-beta"
 edition = "2021"
 authors = ["EdenLiu <hxfdarling@icloud.com>"]
 license = "MIT"
