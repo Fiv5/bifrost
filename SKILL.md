@@ -105,23 +105,6 @@ bifrost --version
 - `config`、`traffic`、`search`、`group`、多数 `status` 相关能力依赖"已有运行中的代理"
 - `rule`、`value`、`script`、`ca` 主要操作本地数据目录，不一定要求代理正在运行
 - `system-proxy` 会修改操作系统代理设置；除非用户明确要求，不要主动启用
-- `--unsafe-ssl` 只适合测试排查，不要默认开启
-- TLS 拦截默认关闭；要抓 HTTPS 内容，通常需要 `--intercept` 且准备好 CA
-
-## 全局参数
-
-所有子命令继承的全局参数：
-
-```
--p, --port <PORT>                 HTTP 代理端口（默认 9900）
--H, --host <HOST>                 监听地址（默认 0.0.0.0）
-    --socks5-port <PORT>          独立 SOCKS5 端口（默认共享主端口）
--l, --log-level <LEVEL>           日志级别 [trace|debug|info|warn|error]（默认 info）
-    --log-output <TARGETS>        日志输出目标：console, file 或组合（默认 console,file）
-    --log-dir <PATH>              日志文件目录（默认 <data_dir>/logs）
-    --log-retention-days <DAYS>   日志保留天数（默认 7）
--v, -V, --version                 打印版本号
-```
 
 ## 命令能力映射
 
@@ -478,8 +461,7 @@ bifrost upgrade -y            # 跳过确认
 
 ```bash
 bifrost start -p 9900 \
-  --rules "example.com reqHeaders://X-Debug=1" \
-  --no-intercept
+  --rules "example.com reqHeaders://X-Debug=1" 
 ```
 
 然后用 `curl` 或目标客户端走 `127.0.0.1:9900`，再执行：
