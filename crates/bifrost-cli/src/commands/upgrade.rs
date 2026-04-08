@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::update_check::{
@@ -143,15 +143,10 @@ fn detect_glibc_version() -> Option<(u32, u32)> {
     }
 
     let first_line = text.lines().next()?;
-    let version_str = first_line
-        .split_whitespace()
-        .filter(|word| {
-            let parts: Vec<&str> = word.split('.').collect();
-            parts.len() == 2
-                && parts[0].parse::<u32>().is_ok()
-                && parts[1].parse::<u32>().is_ok()
-        })
-        .next_back()?;
+    let version_str = first_line.split_whitespace().rfind(|word| {
+        let parts: Vec<&str> = word.split('.').collect();
+        parts.len() == 2 && parts[0].parse::<u32>().is_ok() && parts[1].parse::<u32>().is_ok()
+    })?;
 
     let parts: Vec<&str> = version_str.split('.').collect();
     let major = parts[0].parse::<u32>().ok()?;
@@ -167,10 +162,10 @@ fn get_musl_fallback_triple(target: &str) -> Option<String> {
     }
 }
 
-fn verify_binary(path: &PathBuf) -> bool {
+fn verify_binary(_path: &Path) -> bool {
     #[cfg(target_os = "linux")]
     {
-        Command::new(path)
+        Command::new(_path)
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -179,7 +174,6 @@ fn verify_binary(path: &PathBuf) -> bool {
 
     #[cfg(not(target_os = "linux"))]
     {
-        // Skip verification on non-Linux (e.g., macOS Gatekeeper may block unsigned binaries)
         true
     }
 }
