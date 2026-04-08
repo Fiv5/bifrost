@@ -233,7 +233,7 @@ pub struct AccessConfig {
 impl Default for AccessConfig {
     fn default() -> Self {
         Self {
-            mode: AccessMode::LocalOnly,
+            mode: AccessMode::Interactive,
             whitelist: Vec::new(),
             allow_lan: false,
             userpass: None,
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(config.server.timeout_secs, 30);
         assert!(!config.tls.enable_interception);
         assert!(config.tls.intercept_exclude.is_empty());
-        assert_eq!(config.access.mode, AccessMode::LocalOnly);
+        assert_eq!(config.access.mode, AccessMode::Interactive);
         assert!(!config.system_proxy.enabled);
     }
 

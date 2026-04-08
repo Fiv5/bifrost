@@ -336,7 +336,7 @@ export default function AccessControlTab() {
               {accessModeOptions.find((o) => o.value === status.mode)?.label ||
                 status.mode}
             </Tag>
-            {status.allow_lan && <Tag color="cyan">LAN Allowed</Tag>}
+            {status.allow_lan && (status.mode === "whitelist" || status.mode === "interactive") && <Tag color="cyan">LAN Allowed</Tag>}
           </Space>
         </Col>
         <Col>
@@ -382,6 +382,7 @@ export default function AccessControlTab() {
                   </Text>
                 </Space>
               </Col>
+              {(status.mode === "whitelist" || status.mode === "interactive") && (
               <Col span={24}>
                 <Divider style={{ margin: "8px 0" }} />
                 <Space>
@@ -398,6 +399,7 @@ export default function AccessControlTab() {
                   172.16-31.x.x) are allowed
                 </Text>
               </Col>
+              )}
               <Col span={24}>
                 <Divider style={{ margin: "8px 0" }} />
                 <Space direction="vertical" style={{ width: "100%" }}>

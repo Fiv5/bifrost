@@ -133,7 +133,7 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
             println!();
             println!("Access mode options:");
             println!(
-                "  {} - Only allow connections from localhost (default)",
+                "  {} - Only allow connections from localhost",
                 AccessMode::LocalOnly
             );
             println!(
@@ -141,7 +141,7 @@ pub fn handle_whitelist_command(action: WhitelistCommands) -> bifrost_core::Resu
                 AccessMode::Whitelist
             );
             println!(
-                "  {} - Prompt for confirmation on unknown IPs",
+                "  {} - Prompt for confirmation on unknown IPs (default)",
                 AccessMode::Interactive
             );
             println!(

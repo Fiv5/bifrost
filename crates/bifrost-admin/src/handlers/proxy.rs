@@ -1,4 +1,3 @@
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -398,25 +397,35 @@ async fn get_proxy_address_info(state: SharedAdminState) -> Response<BoxBody> {
 fn get_local_ips() -> Vec<String> {
     let mut ips = Vec::new();
 
-    if let Ok(interfaces) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        if interfaces.connect("8.8.8.8:80").is_ok() {
-            if let Ok(addr) = interfaces.local_addr() {
-                ips.push(addr.ip().to_string());
+    #[cfg(unix)]
+    {
+        if let Ok(ifaddrs) = nix::ifaddrs::getifaddrs() {
+            for ifaddr in ifaddrs {
+                let Some(addr) = ifaddr.address else {
+                    continue;
+                };
+                let ip = if let Some(sockaddr) = addr.as_sockaddr_in() {
+                    IpAddr::V4(sockaddr.ip())
+                } else if let Some(sockaddr) = addr.as_sockaddr_in6() {
+                    IpAddr::V6(sockaddr.ip())
+                } else {
+                    continue;
+                };
+                if is_private_ip(&ip) && !ips.contains(&ip.to_string()) {
+                    ips.push(ip.to_string());
+                }
             }
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(windows)]
     {
-        use std::process::Command;
-        if let Ok(output) = Command::new("hostname").arg("-I").output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for ip_str in stdout.split_whitespace() {
-                    if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                        if is_private_ip(&ip) && !ips.contains(&ip.to_string()) {
-                            ips.push(ip.to_string());
-                        }
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect("8.8.8.8:80").is_ok() {
+                if let Ok(addr) = socket.local_addr() {
+                    let ip = addr.ip();
+                    if is_private_ip(&ip) {
+                        ips.push(ip.to_string());
                     }
                 }
             }
@@ -430,10 +439,9 @@ fn get_local_ips() -> Vec<String> {
     ips
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
-        IpAddr::V6(ipv6) => ipv6.is_loopback(),
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_link_local(),
+        IpAddr::V6(_) => false,
     }
 }
