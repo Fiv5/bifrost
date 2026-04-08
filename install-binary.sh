@@ -14,17 +14,17 @@ NC='\033[0m'
 
 print_banner() {
     printf "%b" "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║                                                           ║"
-    echo "║   ____  _  __                _                            ║"
-    echo "║  |  _ \(_)/ _|_ __ ___  ___| |_                           ║"
-    echo "║  | |_) | | |_| '__/ _ \/ __| __|                          ║"
-    echo "║  |  _ <| |  _| | | (_) \__ \ |_                           ║"
-    echo "║  |_| \_\_|_| |_|  \___/|___/\__|                          ║"
-    echo "║                                                           ║"
-    echo "║   High-performance HTTP/HTTPS/SOCKS5 Proxy Server         ║"
-    echo "║                                                           ║"
-    echo "╚═══════════════════════════════════════════════════════════╝"
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║                                                               ║"
+    echo "║    ____  _  __               _                                ║"
+    echo "║   | __ )(_)/ _|_ __ ___  ___| |_                              ║"
+    echo "║   |  _ \| | |_| '__/ _ \/ __| __|                             ║"
+    echo "║   | |_) | |  _| | | (_) \__ \ |_                              ║"
+    echo "║   |____/|_|_| |_|  \___/|___/\__|                             ║"
+    echo "║                                                               ║"
+    echo "║    High-performance HTTP/HTTPS/SOCKS5 Proxy Server            ║"
+    echo "║                                                               ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
     printf "%b\n" "${NC}"
 }
 
@@ -314,7 +314,11 @@ download_file() {
 
     print_step "Downloading from: $url"
 
-    if command -v curl &> /dev/null; then
+    if command -v aria2c &> /dev/null; then
+        aria2c -x 16 -s 16 --max-connection-per-server=16 --min-split-size=1M -o "$output" "$url"
+    elif command -v axel &> /dev/null; then
+        axel -n 16 -o "$output" "$url"
+    elif command -v curl &> /dev/null; then
         curl -fsSL "$url" -o "$output"
     elif command -v wget &> /dev/null; then
         wget -q "$url" -O "$output"
@@ -370,7 +374,13 @@ extract_archive() {
             fi
             ;;
         *)
-            tar --no-same-owner -xzf "$archive" -C "$dest"
+            if [[ "$os" == "linux" ]]; then
+                if ! tar --no-same-owner -xzf "$archive" -C "$dest" 2>/dev/null; then
+                    tar -xzf "$archive" -C "$dest"
+                fi
+            else
+                tar -xzf "$archive" -C "$dest"
+            fi
             ;;
     esac
 }
@@ -459,15 +469,14 @@ install_binary_for_target() {
     local cli_url="https://github.com/${REPO}/releases/download/${version}/${cli_archive}"
     local checksums_url="https://github.com/${REPO}/releases/download/${version}/bifrost-${version}-checksums.txt"
 
-    download_file "$cli_url" "$tmpdir/$cli_archive"
+    download_file "$cli_url" "$tmpdir/$cli_archive" || return 1
 
     if [[ ! -f "$tmpdir/checksums.txt" ]]; then
-        print_step "Downloading checksums..."
-        download_file "$checksums_url" "$tmpdir/checksums.txt"
+        download_file "$checksums_url" "$tmpdir/checksums.txt" || return 1
     fi
 
     local expected_checksum
-    expected_checksum=$(grep "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
+    expected_checksum=$(grep -F "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
     if [[ -n "$expected_checksum" ]]; then
         verify_checksum "$tmpdir/$cli_archive" "$expected_checksum"
     else
@@ -533,9 +542,8 @@ main() {
         print_step "Using user-specified target: $target"
     elif [[ -n "$FORCE_LIBC" && "$os" == "linux" ]]; then
         case "$arch" in
-            x86_64)  target="${arch}-unknown-linux-${FORCE_LIBC}" ;;
-            aarch64) target="${arch}-unknown-linux-${FORCE_LIBC}" ;;
-            armv7)   target="armv7-unknown-linux-gnueabihf" ;;
+            x86_64|aarch64) target="${arch}-unknown-linux-${FORCE_LIBC}" ;;
+            armv7)          target="armv7-unknown-linux-gnueabihf" ;;
             *)
                 print_error "No pre-built binary available for $os-$arch"
                 exit 1
@@ -543,6 +551,9 @@ main() {
         esac
         print_step "Using user-specified libc: $FORCE_LIBC -> $target"
     else
+        if [[ -n "$FORCE_LIBC" && "$os" != "linux" ]]; then
+            print_warning "--libc is only applicable on Linux (detected: $os), ignoring"
+        fi
         target=$(get_target "$os" "$arch")
     fi
 
@@ -572,15 +583,21 @@ main() {
     [[ "$os" == "windows" ]] && binary_name="bifrost.exe"
 
     print_step "Installing CLI..."
-    install_binary_for_target "$target" "$VERSION" "$os" "$INSTALL_DIR" "$tmpdir"
+    local install_ok=0
+    install_binary_for_target "$target" "$VERSION" "$os" "$INSTALL_DIR" "$tmpdir" && install_ok=1
 
-    if ! verify_binary_runs "$INSTALL_DIR/$binary_name"; then
+    local verify_ok=1
+    if [[ "$os" == "linux" ]]; then
+        verify_binary_runs "$INSTALL_DIR/$binary_name" && verify_ok=1 || verify_ok=0
+    fi
+
+    if [[ "$install_ok" != "1" || "$verify_ok" != "1" ]]; then
+
         local musl_target
         musl_target=$(get_musl_fallback_target "$target")
 
         if [[ -n "$musl_target" ]]; then
-            print_warning "Installed binary (${target}) failed to run — likely a glibc version mismatch"
-            print_step "Retrying with musl build: $musl_target"
+            print_warning "Binary (${target}) not usable, retrying with musl build: $musl_target"
             target="$musl_target"
             install_binary_for_target "$target" "$VERSION" "$os" "$INSTALL_DIR" "$tmpdir"
 
