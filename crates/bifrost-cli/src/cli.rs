@@ -363,7 +363,7 @@ pub enum Commands {
         #[arg(
             long,
             value_parser = ["local_only", "whitelist", "interactive", "allow_all"],
-            help = "Access control mode: local_only (default), whitelist, interactive, allow_all"
+            help = "Access control mode: local_only, whitelist, interactive (default), allow_all"
         )]
         access_mode: Option<String>,
         #[arg(

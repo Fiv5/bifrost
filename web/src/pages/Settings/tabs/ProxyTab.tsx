@@ -489,8 +489,6 @@ export interface ProxyTabProps {
   copyProxyConfig: () => void;
   overview: SystemOverview | null;
   proxyAddressInfo: ProxyAddressInfo | null;
-  selectedProxyIp: string;
-  setSelectedProxyIp: (value: string) => void;
   tlsConfig: TlsConfig | null;
   tlsLoading: boolean;
   onToggleTlsInterception: (enabled: boolean) => void;
@@ -532,8 +530,6 @@ export default function ProxyTab({
   copyProxyConfig,
   overview,
   proxyAddressInfo,
-  selectedProxyIp,
-  setSelectedProxyIp,
   tlsConfig,
   tlsLoading,
   onToggleTlsInterception,
@@ -779,91 +775,58 @@ export default function ProxyTab({
               </Button>
             }
           >
-            <Row gutter={16}>
-              <Col flex="auto">
-                <Descriptions column={1} size="small">
-                  <Descriptions.Item label="Port">
-                    <Text code>{overview?.server.port || 9900}</Text>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="Admin URL">
-                    <a
-                      href={overview?.server.admin_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {overview?.server.admin_url}
-                    </a>
-                  </Descriptions.Item>
-                </Descriptions>
-                {proxyAddressInfo && proxyAddressInfo.addresses.length > 0 && (
-                  <>
-                    <Divider style={{ margin: "12px 0" }} />
-                    <Text
-                      type="secondary"
-                      style={{
-                        fontSize: 12,
-                        display: "block",
-                        marginBottom: 8,
-                      }}
-                    >
-                      Available Network Addresses (select for QR code)
-                    </Text>
-                    <Space wrap size={[8, 8]}>
-                      {proxyAddressInfo.addresses.map((addr) => (
-                        <Tag
-                          key={addr.ip}
-                          color={
-                            selectedProxyIp === addr.ip ? "blue" : "default"
-                          }
-                          style={{ cursor: "pointer" }}
-                          onClick={() => setSelectedProxyIp(addr.ip)}
-                        >
-                          <Text
-                            code
-                            style={{
-                              color:
-                                selectedProxyIp === addr.ip
-                                  ? "#1890ff"
-                                  : undefined,
-                            }}
-                          >
+            <Descriptions column={1} size="small">
+              <Descriptions.Item label="Port">
+                <Text code>{overview?.server.port || 9900}</Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Admin URL">
+                <a
+                  href={overview?.server.admin_url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {overview?.server.admin_url}
+                </a>
+              </Descriptions.Item>
+            </Descriptions>
+            {proxyAddressInfo && proxyAddressInfo.addresses.length > 0 && (
+              <>
+                <Divider style={{ margin: "12px 0" }} />
+                <Text
+                  type="secondary"
+                  style={{
+                    fontSize: 12,
+                    display: "block",
+                    marginBottom: 12,
+                  }}
+                >
+                  Available Network Addresses — scan QR code with your device
+                </Text>
+                <Row gutter={[16, 16]} justify="start">
+                  {proxyAddressInfo.addresses.map((addr) => (
+                    <Col key={addr.ip}>
+                      <div style={{ textAlign: "center" }}>
+                        <Image
+                          src={getProxyQRCodeUrl(addr.ip)}
+                          alt={`QR ${addr.address}`}
+                          width={120}
+                          height={120}
+                          preview={{
+                            mask: <QrcodeOutlined style={{ fontSize: 20 }} />,
+                          }}
+                          fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
+                        />
+                        <div style={{ marginTop: 4 }}>
+                          <Text code style={{ fontSize: 12 }}>
                             {addr.address}
                           </Text>
-                        </Tag>
-                      ))}
-                    </Space>
-                  </>
-                )}
-              </Col>
-              <Col>
-                <Tooltip
-                  title={
-                    selectedProxyIp
-                      ? `Scan to connect: ${selectedProxyIp}:${overview?.server.port || 9900}`
-                      : "Scan with mobile device to configure proxy"
-                  }
-                >
-                  <div style={{ textAlign: "center" }}>
-                    <Image
-                      src={getProxyQRCodeUrl(selectedProxyIp || undefined)}
-                      alt="Proxy QR Code"
-                      width={100}
-                      height={100}
-                      preview={{
-                        mask: <QrcodeOutlined style={{ fontSize: 20 }} />,
-                      }}
-                      fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8/+F9PQAJpAN4pokyXwAAAABJRU5ErkJggg=="
-                      data-testid="settings-proxy-qrcode"
-                    />
-                    <div style={{ marginTop: 4 }}>
-                      <Text type="secondary" style={{ fontSize: 11 }}>
-                        <QrcodeOutlined /> Scan to connect
-                      </Text>
-                    </div>
-                  </div>
-                </Tooltip>
-              </Col>
-            </Row>
+                        </div>
+                      </div>
+                    </Col>
+                  ))}
+                </Row>
+              </>
+            )}
           </Card>
         </Col>
 

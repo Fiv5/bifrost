@@ -78,6 +78,9 @@ image = { version = "0.25", default-features = false, features = [
   "png",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.28", features = ["net"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile.workspace = true

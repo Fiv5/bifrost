@@ -12,9 +12,9 @@ use tracing::{debug, info, warn};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AccessMode {
     AllowAll,
-    #[default]
     LocalOnly,
     Whitelist,
+    #[default]
     Interactive,
 }
 
@@ -94,7 +94,7 @@ pub struct AccessControlConfig {
 impl Default for AccessControlConfig {
     fn default() -> Self {
         Self {
-            mode: AccessMode::LocalOnly,
+            mode: AccessMode::Interactive,
             whitelist: Vec::new(),
             allow_lan: false,
             userpass: None,

@@ -193,7 +193,7 @@ impl Default for ProxyConfig {
             socks5_username: None,
             socks5_password: None,
             verbose_logging: false,
-            access_mode: AccessMode::LocalOnly,
+            access_mode: AccessMode::Interactive,
             client_whitelist: Vec::new(),
             allow_lan: false,
             userpass_auth: None,
