@@ -14,17 +14,17 @@ NC='\033[0m'
 
 print_banner() {
     printf "%b" "${CYAN}"
-    echo "╔═══════════════════════════════════════════════════════════╗"
-    echo "║                                                           ║"
-    echo "║   ____  _  __                _                            ║"
-    echo "║  |  _ \(_)/ _|_ __ ___  ___| |_                           ║"
-    echo "║  | |_) | | |_| '__/ _ \/ __| __|                          ║"
-    echo "║  |  _ <| |  _| | | (_) \__ \ |_                           ║"
-    echo "║  |_| \_\_|_| |_|  \___/|___/\__|                          ║"
-    echo "║                                                           ║"
-    echo "║   High-performance HTTP/HTTPS/SOCKS5 Proxy Server         ║"
-    echo "║                                                           ║"
-    echo "╚═══════════════════════════════════════════════════════════╝"
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║                                                               ║"
+    echo "║    ____  _  __               _                                ║"
+    echo "║   | __ )(_)/ _|_ __ ___  ___| |_                              ║"
+    echo "║   |  _ \| | |_| '__/ _ \/ __| __|                             ║"
+    echo "║   | |_) | |  _| | | (_) \__ \ |_                              ║"
+    echo "║   |____/|_|_| |_|  \___/|___/\__|                             ║"
+    echo "║                                                               ║"
+    echo "║    High-performance HTTP/HTTPS/SOCKS5 Proxy Server            ║"
+    echo "║                                                               ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
     printf "%b\n" "${NC}"
 }
 
@@ -95,32 +95,95 @@ detect_libc() {
     echo "gnu"
 }
 
+MIN_GLIBC_VERSION="2.29"
+
+get_glibc_version() {
+    if [ "$(detect_os)" != "linux" ]; then
+        return 1
+    fi
+
+    if ! command -v ldd >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local out version
+    out=$(ldd --version 2>&1 || true)
+
+    if ! echo "$out" | grep -qiE "GLIBC|GNU libc"; then
+        return 1
+    fi
+
+    version=$(echo "$out" | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$version" ]; then
+        echo "$version"
+        return 0
+    fi
+
+    return 1
+}
+
+version_lt() {
+    [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$2" ]
+}
+
+verify_binary_runs() {
+    local bin="$1"
+    "$bin" --version >/dev/null 2>&1
+}
+
+get_linux_target() {
+    local arch="$1"
+    local libc="$2"
+    local gnu_target musl_target
+
+    case "$arch" in
+        x86_64)
+            gnu_target="x86_64-unknown-linux-gnu"
+            musl_target="x86_64-unknown-linux-musl"
+            ;;
+        aarch64)
+            gnu_target="aarch64-unknown-linux-gnu"
+            musl_target="aarch64-unknown-linux-musl"
+            ;;
+        armv7)
+            echo "armv7-unknown-linux-gnueabihf"
+            return
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    if [ "$libc" = "musl" ]; then
+        echo "$musl_target"
+        return
+    fi
+
+    local glibc_ver
+    glibc_ver=$(get_glibc_version || true)
+
+    if [ -n "$glibc_ver" ]; then
+        if version_lt "$glibc_ver" "$MIN_GLIBC_VERSION"; then
+            print_warning "Detected glibc $glibc_ver (< $MIN_GLIBC_VERSION), falling back to musl build for compatibility"
+            echo "$musl_target"
+            return
+        fi
+        echo "$gnu_target"
+    else
+        print_warning "Could not detect glibc version, using musl build for maximum compatibility"
+        echo "$musl_target"
+    fi
+}
+
 get_target() {
     local os="$1"
     local arch="$2"
-    local libc
-    libc=$(detect_libc)
 
     case "$os" in
         linux)
-            case "$arch" in
-                x86_64)
-                    if [ "$libc" = "musl" ]; then
-                        echo "x86_64-unknown-linux-musl"
-                    else
-                        echo "x86_64-unknown-linux-gnu"
-                    fi
-                    ;;
-                aarch64)
-                    if [ "$libc" = "musl" ]; then
-                        echo "aarch64-unknown-linux-musl"
-                    else
-                        echo "aarch64-unknown-linux-gnu"
-                    fi
-                    ;;
-                armv7)   echo "armv7-unknown-linux-gnueabihf" ;;
-                *)       return 1 ;;
-            esac
+            local libc
+            libc=$(detect_libc)
+            get_linux_target "$arch" "$libc"
             ;;
         darwin)
             case "$arch" in
@@ -251,7 +314,11 @@ download_file() {
 
     print_step "Downloading from: $url"
 
-    if command -v curl &> /dev/null; then
+    if command -v aria2c &> /dev/null; then
+        aria2c -x 16 -s 16 --max-connection-per-server=16 --min-split-size=1M -o "$output" "$url"
+    elif command -v axel &> /dev/null; then
+        axel -n 16 -o "$output" "$url"
+    elif command -v curl &> /dev/null; then
         curl -fsSL "$url" -o "$output"
     elif command -v wget &> /dev/null; then
         wget -q "$url" -O "$output"
@@ -307,7 +374,13 @@ extract_archive() {
             fi
             ;;
         *)
-            tar --no-same-owner -xzf "$archive" -C "$dest"
+            if [[ "$os" == "linux" ]]; then
+                if ! tar --no-same-owner -xzf "$archive" -C "$dest" 2>/dev/null; then
+                    tar -xzf "$archive" -C "$dest"
+                fi
+            else
+                tar -xzf "$archive" -C "$dest"
+            fi
             ;;
     esac
 }
@@ -329,6 +402,8 @@ show_help() {
     echo "Options:"
     echo "  --version <VERSION>   Install a specific version (e.g., v0.1.0)"
     echo "  --dir <PATH>          Installation directory (default: ~/.local/bin)"
+    echo "  --target <TRIPLE>     Override target triple (e.g., x86_64-unknown-linux-musl)"
+    echo "  --libc <gnu|musl>     Override libc variant on Linux (auto-detected by default)"
     echo "  --help                Show this help message"
     echo ""
     echo "Environment variables:"
@@ -338,9 +413,13 @@ show_help() {
     echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install-binary.sh | bash"
     echo "  curl -fsSL ... | bash -s -- --version v0.0.9-alpha"
     echo "  curl -fsSL ... | bash -s -- --dir /usr/local/bin"
+    echo "  curl -fsSL ... | bash -s -- --libc musl"
+    echo "  curl -fsSL ... | bash -s -- --target x86_64-unknown-linux-musl"
 }
 
 VERSION=""
+FORCE_TARGET=""
+FORCE_LIBC=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -350,6 +429,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dir)
             INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --target)
+            FORCE_TARGET="$2"
+            shift 2
+            ;;
+        --libc)
+            FORCE_LIBC="$2"
+            if [[ "$FORCE_LIBC" != "gnu" && "$FORCE_LIBC" != "musl" ]]; then
+                print_error "Invalid --libc value: $FORCE_LIBC (must be 'gnu' or 'musl')"
+                exit 1
+            fi
             shift 2
             ;;
         --help)
@@ -363,6 +454,66 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+install_binary_for_target() {
+    local target="$1"
+    local version="$2"
+    local os="$3"
+    local install_dir="$4"
+    local tmpdir="$5"
+
+    local ext
+    ext=$(get_archive_ext "$os")
+
+    local cli_archive="bifrost-${version}-${target}.${ext}"
+    local cli_url="https://github.com/${REPO}/releases/download/${version}/${cli_archive}"
+    local checksums_url="https://github.com/${REPO}/releases/download/${version}/bifrost-${version}-checksums.txt"
+
+    download_file "$cli_url" "$tmpdir/$cli_archive" || return 1
+
+    if [[ ! -f "$tmpdir/checksums.txt" ]]; then
+        download_file "$checksums_url" "$tmpdir/checksums.txt" || return 1
+    fi
+
+    local expected_checksum
+    expected_checksum=$(grep -F "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
+    if [[ -n "$expected_checksum" ]]; then
+        verify_checksum "$tmpdir/$cli_archive" "$expected_checksum"
+    else
+        print_warning "Checksum not found for $cli_archive, skipping verification"
+    fi
+
+    print_step "Extracting..."
+    local extract_subdir="$tmpdir/extract_${target}"
+    mkdir -p "$extract_subdir"
+    extract_archive "$tmpdir/$cli_archive" "$extract_subdir" "$os"
+
+    local extracted_dir="bifrost-${version}-${target}"
+    local binary_name="bifrost"
+    [[ "$os" == "windows" ]] && binary_name="bifrost.exe"
+
+    if [[ -f "$extract_subdir/$extracted_dir/$binary_name" ]]; then
+        cp "$extract_subdir/$extracted_dir/$binary_name" "$install_dir/$binary_name"
+    elif [[ -f "$extract_subdir/$binary_name" ]]; then
+        cp "$extract_subdir/$binary_name" "$install_dir/$binary_name"
+    else
+        print_error "Binary not found in archive"
+        return 1
+    fi
+
+    chmod +x "$install_dir/$binary_name"
+    clear_xattr "$install_dir/$binary_name"
+    return 0
+}
+
+get_musl_fallback_target() {
+    local target="$1"
+    case "$target" in
+        x86_64-unknown-linux-gnu)  echo "x86_64-unknown-linux-musl" ;;
+        aarch64-unknown-linux-gnu) echo "aarch64-unknown-linux-musl" ;;
+        *) echo "" ;;
+    esac
+}
 
 main() {
     print_banner
@@ -386,7 +537,26 @@ main() {
         exit 1
     fi
 
-    target=$(get_target "$os" "$arch")
+    if [[ -n "$FORCE_TARGET" ]]; then
+        target="$FORCE_TARGET"
+        print_step "Using user-specified target: $target"
+    elif [[ -n "$FORCE_LIBC" && "$os" == "linux" ]]; then
+        case "$arch" in
+            x86_64|aarch64) target="${arch}-unknown-linux-${FORCE_LIBC}" ;;
+            armv7)          target="armv7-unknown-linux-gnueabihf" ;;
+            *)
+                print_error "No pre-built binary available for $os-$arch"
+                exit 1
+                ;;
+        esac
+        print_step "Using user-specified libc: $FORCE_LIBC -> $target"
+    else
+        if [[ -n "$FORCE_LIBC" && "$os" != "linux" ]]; then
+            print_warning "--libc is only applicable on Linux (detected: $os), ignoring"
+        fi
+        target=$(get_target "$os" "$arch")
+    fi
+
     if [[ -z "$target" ]]; then
         print_error "No pre-built binary available for $os-$arch"
         print_warning "You can build from source instead:"
@@ -394,8 +564,6 @@ main() {
         echo "  cd bifrost && ./install.sh"
         exit 1
     fi
-
-    ext=$(get_archive_ext "$os")
 
     if [[ -z "$VERSION" ]]; then
         print_step "Fetching latest version..."
@@ -411,45 +579,41 @@ main() {
     tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" EXIT
 
-    print_step "Installing CLI..."
-
-    local cli_archive="bifrost-${VERSION}-${target}.${ext}"
-    local cli_url="https://github.com/${REPO}/releases/download/${VERSION}/${cli_archive}"
-    local checksums_url="https://github.com/${REPO}/releases/download/${VERSION}/bifrost-${VERSION}-checksums.txt"
-
-    download_file "$cli_url" "$tmpdir/$cli_archive"
-
-    print_step "Downloading checksums..."
-    download_file "$checksums_url" "$tmpdir/checksums.txt"
-
-    local expected_checksum
-    expected_checksum=$(grep "$cli_archive" "$tmpdir/checksums.txt" | awk '{print $1}')
-    if [[ -n "$expected_checksum" ]]; then
-        verify_checksum "$tmpdir/$cli_archive" "$expected_checksum"
-    else
-        print_warning "Checksum not found for $cli_archive, skipping verification"
-    fi
-
-    print_step "Extracting..."
-    extract_archive "$tmpdir/$cli_archive" "$tmpdir" "$os"
-
-    local extracted_dir="bifrost-${VERSION}-${target}"
     local binary_name="bifrost"
     [[ "$os" == "windows" ]] && binary_name="bifrost.exe"
 
-    if [[ -f "$tmpdir/$extracted_dir/$binary_name" ]]; then
-        cp "$tmpdir/$extracted_dir/$binary_name" "$INSTALL_DIR/$binary_name"
-    elif [[ -f "$tmpdir/$binary_name" ]]; then
-        cp "$tmpdir/$binary_name" "$INSTALL_DIR/$binary_name"
-    else
-        print_error "Binary not found in archive"
-        exit 1
+    print_step "Installing CLI..."
+    local install_ok=0
+    install_binary_for_target "$target" "$VERSION" "$os" "$INSTALL_DIR" "$tmpdir" && install_ok=1
+
+    local verify_ok=1
+    if [[ "$os" == "linux" ]]; then
+        verify_binary_runs "$INSTALL_DIR/$binary_name" && verify_ok=1 || verify_ok=0
     fi
 
-    chmod +x "$INSTALL_DIR/$binary_name"
-    clear_xattr "$INSTALL_DIR/$binary_name"
+    if [[ "$install_ok" != "1" || "$verify_ok" != "1" ]]; then
 
-    print_success "CLI installed: $INSTALL_DIR/$binary_name"
+        local musl_target
+        musl_target=$(get_musl_fallback_target "$target")
+
+        if [[ -n "$musl_target" ]]; then
+            print_warning "Binary (${target}) not usable, retrying with musl build: $musl_target"
+            target="$musl_target"
+            install_binary_for_target "$target" "$VERSION" "$os" "$INSTALL_DIR" "$tmpdir"
+
+            if ! verify_binary_runs "$INSTALL_DIR/$binary_name"; then
+                print_error "Fallback musl binary also failed to run"
+                exit 1
+            fi
+            print_success "musl fallback succeeded"
+        else
+            print_error "Installed binary failed to run"
+            print_warning "Try reinstalling with: --libc musl  or  --target <triple>"
+            exit 1
+        fi
+    fi
+
+    print_success "CLI installed: $INSTALL_DIR/$binary_name ($target)"
 
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

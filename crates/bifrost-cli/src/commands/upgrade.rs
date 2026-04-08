@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::update_check::{
@@ -69,7 +69,11 @@ fn get_target_triple() -> Option<&'static str> {
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64", not(target_env = "musl")))]
     {
-        Some("x86_64-unknown-linux-gnu")
+        if should_use_musl_fallback() {
+            Some("x86_64-unknown-linux-musl")
+        } else {
+            Some("x86_64-unknown-linux-gnu")
+        }
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
     {
@@ -77,7 +81,11 @@ fn get_target_triple() -> Option<&'static str> {
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64", not(target_env = "musl")))]
     {
-        Some("aarch64-unknown-linux-gnu")
+        if should_use_musl_fallback() {
+            Some("aarch64-unknown-linux-musl")
+        } else {
+            Some("aarch64-unknown-linux-gnu")
+        }
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
@@ -97,6 +105,76 @@ fn get_target_triple() -> Option<&'static str> {
     )))]
     {
         None
+    }
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(target_env = "musl")
+))]
+const MIN_GLIBC_VERSION: (u32, u32) = (2, 29);
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(target_env = "musl")
+))]
+fn should_use_musl_fallback() -> bool {
+    if let Some((major, minor)) = detect_glibc_version() {
+        return (major, minor) < MIN_GLIBC_VERSION;
+    }
+    true
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(target_env = "musl")
+))]
+fn detect_glibc_version() -> Option<(u32, u32)> {
+    let output = Command::new("ldd").arg("--version").output().ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout).to_string()
+        + &String::from_utf8_lossy(&output.stderr);
+
+    if !text.to_lowercase().contains("glibc") && !text.to_lowercase().contains("gnu libc") {
+        return None;
+    }
+
+    let first_line = text.lines().next()?;
+    let version_str = first_line.split_whitespace().rfind(|word| {
+        let parts: Vec<&str> = word.split('.').collect();
+        parts.len() == 2 && parts[0].parse::<u32>().is_ok() && parts[1].parse::<u32>().is_ok()
+    })?;
+
+    let parts: Vec<&str> = version_str.split('.').collect();
+    let major = parts[0].parse::<u32>().ok()?;
+    let minor = parts[1].parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+fn get_musl_fallback_triple(target: &str) -> Option<String> {
+    match target {
+        "x86_64-unknown-linux-gnu" => Some("x86_64-unknown-linux-musl".to_string()),
+        "aarch64-unknown-linux-gnu" => Some("aarch64-unknown-linux-musl".to_string()),
+        _ => None,
+    }
+}
+
+fn verify_binary(_path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        Command::new(_path)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
     }
 }
 
@@ -274,18 +352,18 @@ fn upgrade_via_script() -> Result<(), BifrostError> {
     }
 }
 
-fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostError> {
-    let target = get_target_triple().ok_or_else(|| {
-        BifrostError::Config("Unsupported platform for automatic upgrade".to_string())
-    })?;
-
+fn download_and_install(
+    target: &str,
+    version: &str,
+    target_path: &PathBuf,
+    temp_dir: &tempfile::TempDir,
+) -> Result<(), BifrostError> {
     let archive_ext = if cfg!(windows) { "zip" } else { "tar.gz" };
     let archive_name = format!("bifrost-v{}-{}.{}", version, target, archive_ext);
     let download_url = format!("{}/v{}/{}", GITHUB_DOWNLOAD_URL, version, archive_name);
 
     println!("{} {}", "Downloading:".bright_cyan(), download_url.dimmed());
 
-    let temp_dir = tempfile::tempdir().map_err(|e| BifrostError::Io(std::io::Error::other(e)))?;
     let archive_path = temp_dir.path().join(&archive_name);
 
     let status = Command::new("curl")
@@ -302,7 +380,7 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
 
     println!("{}", "Extracting archive...".bright_cyan());
 
-    let extract_dir = temp_dir.path().join("extract");
+    let extract_dir = temp_dir.path().join(format!("extract_{}", target));
     fs::create_dir_all(&extract_dir)?;
 
     if cfg!(windows) {
@@ -377,10 +455,6 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
                 fs::set_permissions(target_path, perms)?;
             }
 
-            println!(
-                "{}",
-                "✓ Upgrade completed successfully!".bright_green().bold()
-            );
             Ok(())
         }
         Err(e) => {
@@ -390,6 +464,66 @@ fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostErr
             Err(BifrostError::Io(e))
         }
     }
+}
+
+fn upgrade_manual(target_path: &PathBuf, version: &str) -> Result<(), BifrostError> {
+    let target = get_target_triple().ok_or_else(|| {
+        BifrostError::Config("Unsupported platform for automatic upgrade".to_string())
+    })?;
+
+    let temp_dir = tempfile::tempdir().map_err(|e| BifrostError::Io(std::io::Error::other(e)))?;
+
+    let mut effective_target = target.to_string();
+
+    let install_result = download_and_install(target, version, target_path, &temp_dir);
+
+    let needs_musl_fallback = match &install_result {
+        Ok(()) => !verify_binary(target_path),
+        Err(_) => true,
+    };
+
+    if needs_musl_fallback {
+        if let Some(musl_target) = get_musl_fallback_triple(target) {
+            let reason = if install_result.is_err() {
+                "download/install failed"
+            } else {
+                "binary failed to run — likely a glibc version mismatch"
+            };
+            println!(
+                "{}",
+                format!("⚠ {} binary {}", target, reason).bright_yellow()
+            );
+            println!(
+                "{}",
+                format!("  Retrying with musl build: {}", musl_target).bright_cyan()
+            );
+
+            download_and_install(&musl_target, version, target_path, &temp_dir)?;
+
+            if !verify_binary(target_path) {
+                return Err(BifrostError::Config(
+                    "Fallback musl binary also failed to run".to_string(),
+                ));
+            }
+
+            effective_target = musl_target;
+            println!("{}", "✓ musl fallback succeeded".bright_green());
+        } else if let Err(e) = install_result {
+            return Err(e);
+        } else {
+            return Err(BifrostError::Config(
+                "Installed binary failed to run. Try installing manually with: curl -fsSL https://raw.githubusercontent.com/bifrost-proxy/bifrost/main/install-binary.sh | bash -s -- --libc musl".to_string(),
+            ));
+        }
+    }
+
+    println!(
+        "{}",
+        format!("✓ Upgrade completed successfully! ({})", effective_target)
+            .bright_green()
+            .bold()
+    );
+    Ok(())
 }
 
 pub fn handle_upgrade(force: bool) -> Result<(), BifrostError> {
