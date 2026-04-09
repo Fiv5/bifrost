@@ -43,11 +43,26 @@ pub fn get_local_ips() -> Vec<LocalIpInfo> {
 
     #[cfg(windows)]
     {
-        if let Some(ip) = preferred_ip.as_deref() {
-            results.push(LocalIpInfo {
-                ip: ip.to_string(),
-                is_preferred: true,
-            });
+        if let Ok(netifas) = local_ip_address::list_afinet_netifas() {
+            for (name, ip) in netifas {
+                if !ip.is_ipv4() {
+                    continue;
+                }
+                if is_virtual_interface_name(&name) {
+                    continue;
+                }
+                if !is_routable_private_ip(&ip) {
+                    continue;
+                }
+                let ip_str = ip.to_string();
+                if seen.insert(ip_str.clone()) {
+                    let is_preferred = preferred_ip.as_deref() == Some(ip_str.as_str());
+                    results.push(LocalIpInfo {
+                        ip: ip_str,
+                        is_preferred,
+                    });
+                }
+            }
         }
     }
 
