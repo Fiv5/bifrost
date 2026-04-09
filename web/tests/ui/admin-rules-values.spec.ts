@@ -328,6 +328,47 @@ test("Rules 页面支持持久化排序，且解析顺序符合列表顺序", as
   }
 });
 
+test("Rules 列表支持按 / 分组的树状展开/折叠", async ({
+  page,
+  request,
+}) => {
+  const folderName = uniqueName("tree-folder");
+  const firstRuleName = `${folderName}/a-child`;
+  const secondRuleName = `${folderName}/b-child`;
+  const topRuleName = uniqueName("tree-top");
+
+  for (const name of [firstRuleName, secondRuleName, topRuleName]) {
+    const createRes = await request.post(`${apiBase}/rules`, {
+      data: {
+        name,
+        content: "127.0.0.1 reqHeaders://X-Tree-Rule=ok",
+      },
+    });
+    if (!createRes.ok()) {
+      throw new Error(await createRes.text());
+    }
+  }
+
+  await openPage(page, "rules");
+  await expect(page.getByTestId("rules-list")).toBeVisible();
+
+  const folderRow = page.getByTestId("rule-folder-item").filter({ hasText: folderName }).first();
+  await expect(folderRow).toBeVisible();
+
+  const firstLeaf = page.locator(`[data-rule-name="${firstRuleName}"]`);
+  const secondLeaf = page.locator(`[data-rule-name="${secondRuleName}"]`);
+  await expect(firstLeaf).toBeVisible();
+  await expect(secondLeaf).toBeVisible();
+
+  await folderRow.click();
+  await expect(firstLeaf).toHaveCount(0);
+  await expect(secondLeaf).toHaveCount(0);
+
+  await folderRow.click();
+  await expect(firstLeaf).toBeVisible();
+  await expect(secondLeaf).toBeVisible();
+});
+
 test("Rules 列表在获得焦点后支持上下键切换选中项", async ({
   page,
   request,

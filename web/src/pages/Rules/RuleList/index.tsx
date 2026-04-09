@@ -23,6 +23,10 @@ import {
   ExportOutlined,
   HolderOutlined,
   SwapOutlined,
+  CaretDownOutlined,
+  CaretRightOutlined,
+  FolderOutlined,
+  FolderOpenOutlined,
 } from '@ant-design/icons';
 import { useRulesStore } from '../../../stores/useRulesStore';
 import { ImportBifrostButton } from '../../../components/ImportBifrostButton';
@@ -30,6 +34,13 @@ import { useExportBifrost } from '../../../hooks/useExportBifrost';
 import { useSyncStore } from '../../../stores/useSyncStore';
 import { searchGroups, type Group } from '../../../api/group';
 import styles from './index.module.css';
+import {
+  buildRuleTree,
+  collectFolderPaths,
+  flattenVisibleRuleNames,
+  getRuleParentPaths,
+  type RuleTreeFolderNode,
+} from './ruleTree';
 
 type RuleSortMode = 'manual' | 'updated_desc' | 'name_asc';
 
@@ -81,6 +92,8 @@ export default function RuleList() {
     name: string;
     position: 'before' | 'after';
   } | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<string[]>([]);
+  const collapsedFolderSet = useMemo(() => new Set(collapsedFolders), [collapsedFolders]);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
   const autoScrollVelocityRef = useRef(0);
@@ -129,7 +142,12 @@ export default function RuleList() {
     fetchRules();
   }, [activeGroupId, fetchRules]);
 
+
   const handleGroupChange = useCallback((value: string) => {
+    setCollapsedFolders([]);
+    setSelectedRules([]);
+    lastClickedIndexRef.current = null;
+
     const groupId = value === '__my__' ? null : value;
     setActiveGroupId(groupId);
   }, [setActiveGroupId]);
@@ -262,6 +280,34 @@ export default function RuleList() {
     return sortedRules.filter((rule) => rule.name.toLowerCase().includes(keyword));
   }, [rules, searchKeyword, sortMode]);
 
+  const ruleTree = useMemo(() => buildRuleTree(filteredRules), [filteredRules]);
+  const allFolderPaths = useMemo(() => collectFolderPaths(ruleTree), [ruleTree]);
+
+  const forcedExpandedFolderSet = useMemo(() => {
+    if (!selectedRuleName) return new Set<string>();
+    return new Set(getRuleParentPaths(selectedRuleName));
+  }, [selectedRuleName]);
+
+  const expandedFolderSet = useMemo(() => {
+    if (searchKeyword) {
+      return new Set(allFolderPaths);
+    }
+
+    const next = new Set(allFolderPaths);
+    for (const path of collapsedFolderSet) {
+      next.delete(path);
+    }
+    for (const path of forcedExpandedFolderSet) {
+      next.add(path);
+    }
+    return next;
+  }, [searchKeyword, allFolderPaths, collapsedFolderSet, forcedExpandedFolderSet]);
+
+  const visibleRuleNames = useMemo(
+    () => flattenVisibleRuleNames(ruleTree, expandedFolderSet),
+    [ruleTree, expandedFolderSet]
+  );
+
   const handleCreate = async () => {
     if (!newRuleName.trim()) {
       message.error('Rule name is required');
@@ -359,12 +405,16 @@ export default function RuleList() {
     (name: string, e: React.MouseEvent) => {
       const isCtrl = e.ctrlKey || e.metaKey;
       const isShift = e.shiftKey;
-      const currentIndex = filteredRules.findIndex((r) => r.name === name);
+      const currentIndex = visibleRuleNames.findIndex((ruleName) => ruleName === name);
+
+      if (currentIndex === -1) {
+        return;
+      }
 
       if (isShift && lastClickedIndexRef.current !== null) {
         const start = Math.min(lastClickedIndexRef.current, currentIndex);
         const end = Math.max(lastClickedIndexRef.current, currentIndex);
-        const rangeNames = filteredRules.slice(start, end + 1).map((r) => r.name);
+        const rangeNames = visibleRuleNames.slice(start, end + 1);
         setSelectedRules((prev) => {
           const combined = new Set([...prev, ...rangeNames]);
           return Array.from(combined);
@@ -380,7 +430,7 @@ export default function RuleList() {
         selectRule(name);
       }
     },
-    [selectRule, filteredRules]
+    [selectRule, visibleRuleNames]
   );
 
   const getContextMenuItems = (name: string, enabled: boolean): MenuProps['items'] => {
@@ -520,7 +570,7 @@ export default function RuleList() {
         return;
       }
 
-      if (filteredRules.length === 0) {
+      if (visibleRuleNames.length === 0) {
         return;
       }
 
@@ -530,29 +580,27 @@ export default function RuleList() {
 
       event.preventDefault();
 
-      const currentIndex = selectedRuleName
-        ? filteredRules.findIndex((rule) => rule.name === selectedRuleName)
-        : -1;
+      const currentIndex = selectedRuleName ? visibleRuleNames.indexOf(selectedRuleName) : -1;
 
-      const fallbackIndex = event.key === 'ArrowDown' ? 0 : filteredRules.length - 1;
+      const fallbackIndex = event.key === 'ArrowDown' ? 0 : visibleRuleNames.length - 1;
       const nextIndex =
         currentIndex === -1
           ? fallbackIndex
           : Math.min(
-              filteredRules.length - 1,
+              visibleRuleNames.length - 1,
               Math.max(0, currentIndex + (event.key === 'ArrowDown' ? 1 : -1))
             );
 
-      const nextRule = filteredRules[nextIndex];
-      if (!nextRule || nextRule.name === selectedRuleName) {
+      const nextName = visibleRuleNames[nextIndex];
+      if (!nextName || nextName === selectedRuleName) {
         return;
       }
 
       setSelectedRules([]);
       lastClickedIndexRef.current = nextIndex;
-      void selectRule(nextRule.name);
+      void selectRule(nextName);
     },
-    [filteredRules, selectedRuleName, selectRule]
+    [visibleRuleNames, selectedRuleName, selectRule]
   );
 
   const prevSelectedRef = useRef<string | null>(null);
@@ -568,6 +616,163 @@ export default function RuleList() {
     );
     selectedItem?.scrollIntoView({ block: 'nearest' });
   }, [selectedRuleName, filteredRules]);
+
+  const handleToggleFolder = useCallback((path: string) => {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return Array.from(next);
+    });
+  }, []);
+
+  const renderTreeNodes = (folder: RuleTreeFolderNode, depth: number): ReactNode[] => {
+    const nodes: ReactNode[] = [];
+
+    for (const child of folder.children) {
+      if (child.type === 'folder') {
+        const expanded = expandedFolderSet.has(child.path);
+        nodes.push(
+          <div key={`folder-wrapper-${child.path}`}>
+            <div
+              className={`${styles.item} ${styles.folderItem}`}
+              style={{ paddingLeft: 12 + depth * 16 }}
+              onClick={() => {
+                listContainerRef.current?.focus();
+                handleToggleFolder(child.path);
+              }}
+              onDoubleClick={(e) => {
+                e.preventDefault();
+                handleToggleFolder(child.path);
+              }}
+              data-testid="rule-folder-item"
+              data-folder-path={child.path}
+              data-folder-expanded={expanded ? 'true' : 'false'}
+            >
+              <div className={styles.itemContent}>
+                <span className={styles.folderCaret} aria-hidden="true">
+                  {expanded ? <CaretDownOutlined /> : <CaretRightOutlined />}
+                </span>
+                {expanded ? (
+                  <FolderOpenOutlined className={styles.folderIcon} />
+                ) : (
+                  <FolderOutlined className={styles.folderIcon} />
+                )}
+                <span className={styles.itemName} title={child.path}>
+                  {child.name}
+                </span>
+              </div>
+            </div>
+            {expanded && renderTreeNodes(child, depth + 1)}
+          </div>
+        );
+        continue;
+      }
+
+      const rule = child.rule;
+      const isSelected = selectedRuleName === rule.name;
+      const hasChanges = hasUnsavedChanges(rule.name) || editingContent[rule.name] !== undefined;
+
+      nodes.push(
+        <Dropdown
+          key={rule.name}
+          menu={{ items: getContextMenuItems(rule.name, rule.enabled) }}
+          trigger={['contextMenu']}
+        >
+          <div
+            id={getRuleItemId(rule.name)}
+            className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
+            role="option"
+            aria-selected={isSelected}
+            draggable={!isGroupMode && sortMode === 'manual'}
+            onClick={(e) => {
+              listContainerRef.current?.focus();
+              handleSelect(rule.name, e);
+            }}
+            onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
+            onDragStart={() => {
+              if (isGroupMode || sortMode !== 'manual') return;
+              setDraggedRuleName(rule.name);
+            }}
+            onDragEnd={() => {
+              setDraggedRuleName(null);
+              setDropTarget(null);
+              stopAutoScroll();
+            }}
+            onDragOver={(e) => {
+              if (sortMode !== 'manual' || !draggedRuleName || draggedRuleName === rule.name) {
+                return;
+              }
+              e.preventDefault();
+              updateAutoScroll(e.clientY);
+              const rect = e.currentTarget.getBoundingClientRect();
+              const position = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+              if (dropTarget?.name !== rule.name || dropTarget.position !== position) {
+                setDropTarget({ name: rule.name, position });
+              }
+            }}
+            onDrop={(e) => {
+              if (sortMode !== 'manual') return;
+              e.preventDefault();
+              stopAutoScroll();
+              const rect = e.currentTarget.getBoundingClientRect();
+              const position = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+              void handleRuleDrop(rule.name, position);
+            }}
+            style={{ paddingLeft: 12 + depth * 16 }}
+            data-testid="rule-item"
+            data-rule-name={rule.name}
+            data-rule-enabled={rule.enabled ? 'true' : 'false'}
+            data-dragging={draggedRuleName === rule.name ? 'true' : 'false'}
+            data-drop-position={dropTarget?.name === rule.name ? dropTarget.position : undefined}
+          >
+            <div className={styles.itemContent}>
+              {!isGroupMode && sortMode === 'manual' && (
+                <Tooltip title="Drag to reorder">
+                  <HolderOutlined className={styles.dragHandle} />
+                </Tooltip>
+              )}
+              <span className={styles.itemName} title={rule.name}>
+                {child.label}
+              </span>
+              <div className={styles.itemMeta}>
+                {hasChanges && (
+                  <Tooltip title="Unsaved changes">
+                    <span className={styles.unsavedDot} />
+                  </Tooltip>
+                )}
+                {rule.enabled && (
+                  <Tooltip title="Enabled">
+                    <CheckOutlined className={styles.enabledIcon} />
+                  </Tooltip>
+                )}
+              </div>
+            </div>
+            <div
+              className={styles.itemExtra}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <Switch
+                size="small"
+                checked={rule.enabled}
+                onChange={(checked, e) => {
+                  e.stopPropagation();
+                  handleToggle(rule.name, checked);
+                }}
+              />
+            </div>
+          </div>
+        </Dropdown>
+      );
+    }
+
+    return nodes;
+  };
 
   return (
     <div className={styles.container} data-testid="rules-list">
@@ -686,110 +891,7 @@ export default function RuleList() {
           </div>
         ) : (
           <div className={styles.list}>
-            {filteredRules.map((rule) => {
-              const isSelected = selectedRuleName === rule.name;
-              const hasChanges = hasUnsavedChanges(rule.name) || editingContent[rule.name] !== undefined;
-
-              return (
-                <Dropdown
-                  key={rule.name}
-                  menu={{ items: getContextMenuItems(rule.name, rule.enabled) }}
-                  trigger={['contextMenu']}
-                >
-                  <div
-                    id={getRuleItemId(rule.name)}
-                    className={`${styles.item} ${isSelected ? styles.selected : ''} ${selectedRules.includes(rule.name) ? styles.multiSelected : ''}`}
-                    role="option"
-                    aria-selected={isSelected}
-                    draggable={!isGroupMode && sortMode === 'manual'}
-                    onClick={(e) => {
-                      listContainerRef.current?.focus();
-                      handleSelect(rule.name, e);
-                    }}
-                    onDoubleClick={() => handleToggle(rule.name, !rule.enabled)}
-                    onDragStart={() => {
-                      if (isGroupMode || sortMode !== 'manual') return;
-                      setDraggedRuleName(rule.name);
-                    }}
-                    onDragEnd={() => {
-                      setDraggedRuleName(null);
-                      setDropTarget(null);
-                      stopAutoScroll();
-                    }}
-                    onDragOver={(e) => {
-                      if (sortMode !== 'manual' || !draggedRuleName || draggedRuleName === rule.name) {
-                        return;
-                      }
-                      e.preventDefault();
-                      updateAutoScroll(e.clientY);
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const position =
-                        e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
-                      if (
-                        dropTarget?.name !== rule.name ||
-                        dropTarget.position !== position
-                      ) {
-                        setDropTarget({ name: rule.name, position });
-                      }
-                    }}
-                    onDrop={(e) => {
-                      if (sortMode !== 'manual') return;
-                      e.preventDefault();
-                      stopAutoScroll();
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const position =
-                        e.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
-                      void handleRuleDrop(rule.name, position);
-                    }}
-                    data-testid="rule-item"
-                    data-rule-name={rule.name}
-                    data-rule-enabled={rule.enabled ? 'true' : 'false'}
-                    data-dragging={draggedRuleName === rule.name ? 'true' : 'false'}
-                    data-drop-position={
-                      dropTarget?.name === rule.name ? dropTarget.position : undefined
-                    }
-                  >
-                    <div className={styles.itemContent}>
-                      {!isGroupMode && sortMode === 'manual' && (
-                        <Tooltip title="Drag to reorder">
-                          <HolderOutlined className={styles.dragHandle} />
-                        </Tooltip>
-                      )}
-                      <span className={styles.itemName} title={rule.name}>
-                        {rule.name}
-                      </span>
-                      <div className={styles.itemMeta}>
-                        {hasChanges && (
-                          <Tooltip title="Unsaved changes">
-                            <span className={styles.unsavedDot} />
-                          </Tooltip>
-                        )}
-                        {rule.enabled && (
-                          <Tooltip title="Enabled">
-                            <CheckOutlined className={styles.enabledIcon} />
-                          </Tooltip>
-                        )}
-                      </div>
-                    </div>
-                    <div
-                      className={styles.itemExtra}
-                      onClick={(e) => e.stopPropagation()}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <Switch
-                        size="small"
-                        checked={rule.enabled}
-                        onChange={(checked, e) => {
-                          e.stopPropagation();
-                          handleToggle(rule.name, checked);
-                        }}
-                      />
-                    </div>
-                  </div>
-                </Dropdown>
-              );
-            })}
+            {renderTreeNodes(ruleTree, 0)}
             {filteredRules.length === 0 && !loading && (
               <div className={styles.empty}>
                 {searchKeyword ? 'No matching rules' : 'No rules yet'}
