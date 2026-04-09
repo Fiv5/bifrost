@@ -108,6 +108,144 @@ pub fn get_all_tests() -> Vec<TestCase> {
                 Ok(())
             },
         ),
+        TestCase::standalone(
+            "admin_api_config_connections",
+            "Validate GET /api/config/connections returns valid JSON with connections array",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, _admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .get(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/config/connections",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET connections failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse connections JSON: {}", e))?;
+
+                if json.get("total").is_none() && json.get("connections").is_none() {
+                    return Err(format!(
+                        "Expected 'total' or 'connections' field in response, got: {}",
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    ));
+                }
+
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
+            "admin_api_system_memory",
+            "Validate GET /api/system/memory returns memory diagnostics with process info",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, _admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .get(format!(
+                        "http://127.0.0.1:{}/_bifrost/api/system/memory",
+                        port
+                    ))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET system/memory failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse memory JSON: {}", e))?;
+
+                if json.get("process").is_none() {
+                    return Err(format!(
+                        "Expected 'process' field in memory response, got: {}",
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    ));
+                }
+
+                let process = &json["process"];
+                if process.get("pid").is_none() {
+                    return Err("Expected 'pid' in process info".to_string());
+                }
+                if process.get("rss_kib").is_none() {
+                    return Err("Expected 'rss_kib' in process info".to_string());
+                }
+
+                if json.get("stores").is_none() {
+                    return Err("Expected 'stores' field in memory response".to_string());
+                }
+
+                Ok(())
+            },
+        ),
+        TestCase::standalone(
+            "admin_api_config_show_server_section",
+            "Validate GET /api/config returns server configuration section",
+            "admin",
+            || async move {
+                let port = pick_unused_port()?;
+                let (_proxy, _admin_state) =
+                    ProxyInstance::start_with_admin(port, vec![], false, true)
+                        .await
+                        .map_err(|e| format!("Failed to start proxy with admin: {}", e))?;
+
+                let client = reqwest::Client::builder()
+                    .danger_accept_invalid_certs(true)
+                    .no_proxy()
+                    .build()
+                    .map_err(|e| format!("Failed to create client: {}", e))?;
+
+                let response = client
+                    .get(format!("http://127.0.0.1:{}/_bifrost/api/config", port))
+                    .send()
+                    .await
+                    .map_err(|e| format!("GET config failed: {}", e))?;
+
+                assert_status(&response, 200)?;
+
+                let json: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
+
+                if json.get("port").is_none() && json.get("server").is_none() {
+                    return Err(format!(
+                        "Expected server config fields (port or server), got: {}",
+                        serde_json::to_string_pretty(&json).unwrap_or_default()
+                    ));
+                }
+
+                Ok(())
+            },
+        ),
     ]
 }
 
