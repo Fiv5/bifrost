@@ -266,6 +266,11 @@ async function publishLocal() {
   }
   console.log(`  ✅ ${localPlatform.npmPkg}: ${localPlatform.binary} ready`);
 
+  for (const p of PLATFORMS) {
+    copyFileSync(join(ROOT, "README.md"), join(NPM_DIR, p.npmPkg, "README.md"));
+  }
+  console.log("  ✅ Copied root README.md into all platform packages");
+
   console.log("\n3️⃣  Publishing current platform package...\n");
   console.log(`  📦 Publishing @bifrost-proxy/${localPlatform.npmPkg}...`);
   await npmPublish(join(NPM_DIR, localPlatform.npmPkg));
@@ -349,6 +354,11 @@ async function publishCI() {
     console.error("\n❌ Some platform binaries are missing. Aborting publish.");
     process.exit(1);
   }
+
+  for (const p of PLATFORMS) {
+    copyFileSync(join(ROOT, "README.md"), join(NPM_DIR, p.npmPkg, "README.md"));
+  }
+  console.log("  ✅ Copied root README.md into all platform packages");
 
   console.log("\n3️⃣  Publishing platform packages...\n");
   const failedPlatforms = [];

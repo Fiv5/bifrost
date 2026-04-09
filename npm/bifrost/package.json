@@ -10,13 +10,20 @@
   "homepage": "https://github.com/bifrost-proxy/bifrost",
   "keywords": [
     "proxy",
-    "http",
-    "https",
-    "socks5",
     "bifrost",
+    "whistle",
+    "charles",
+    "fiddler",
+    "mitmproxy",
+    "postman",
+    "http",
+    "socks5",
+    "websocket",
     "mitm",
+    "capture",
+    "mock",
     "network",
-    "debugging"
+    "devtools"
   ],
   "bin": {
     "bifrost": "bin/bifrost"
