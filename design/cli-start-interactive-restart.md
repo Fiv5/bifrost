@@ -1,0 +1,61 @@
+# CLI start：进程冲突时交互式重启
+
+## 背景与目标
+
+当用户执行 `bifrost start` 时，如果本机已经存在一个正在运行的 Bifrost 进程（由 `runtime.json`/`bifrost.pid` 记录且进程存活），此前行为是直接报错退出。该方案将其改为“交互式重启”：提示用户是否停止旧进程并重新启动，以降低误操作成本。
+
+## 预期行为
+
+当 `bifrost start` 检测到已有进程在运行：
+
+- 终端提示：检测到已有进程（PID=xxx），是否重启（y/n）。
+- 读取 stdin：
+  - 输入 `y` / `yes`（忽略大小写）：执行重启（停止旧进程后继续启动）。
+  - 输入 `n` / `no` 或空输入：取消本次启动并优雅退出（exit code 0）。
+  - stdin EOF：视为取消启动。
+  - 连续 3 次非法输入：视为取消启动。
+
+## 实现逻辑
+
+- `crates/bifrost-cli/src/commands/start.rs`：在 `run_start` 的最前置阶段读取 `read_pid()` 并判断 `is_process_running(pid)`。
+- 若进程存活，则调用 `prompt_restart_if_running(pid)` 读取 stdin。
+- 若用户确认重启，则复用 `stop` 的收尾逻辑：直接调用 `commands::stop::run_stop()`（包含：发送 SIGTERM/TerminateProcess、等待退出、必要时强杀、恢复/关闭 system proxy、清理 CLI proxy、删除 pid/runtime 文件）。
+- stop 成功后继续执行原本的启动流程。
+
+## 依赖与影响面
+
+- 复用现有 `stop` 子命令逻辑；不新增 CLI 参数，不改变非冲突场景的启动行为。
+- 为保证 Windows 下 `stop`/进程检测语义正确，补齐 `is_process_running` 的 Windows 实现。
+
+## 测试方案
+
+### 单元/集成测试
+
+- 目前该能力主要是终端交互与进程级行为，优先使用 E2E shell 测试覆盖。
+
+### E2E 测试
+
+新增脚本：`e2e-tests/tests/test_cli_start_interactive_restart_e2e.sh`
+
+覆盖点：
+
+- 场景 1：检测冲突 -> stdin 输入 `y` -> 旧进程退出 -> 新进程启动成功
+- 场景 2：检测冲突 -> stdin 输入 `n` -> 不终止旧进程 -> 本次 start 退出
+
+### 真实场景测试（手动）
+
+```bash
+# 第一次启动（前台/后台均可）
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 18890 --skip-cert-check --unsafe-ssl
+
+# 另一个终端再次执行 start，观察交互提示并选择 y/n
+BIFROST_DATA_DIR=./.bifrost-test cargo run --bin bifrost -- start -p 18890 --skip-cert-check --unsafe-ssl
+```
+
+## 校验要求
+
+- 本次改动提交前必须执行：`cargo fmt --all -- --check`、`cargo clippy --all-targets --all-features -- -D warnings`、以及至少一次 `cargo test --workspace --all-features`。
+
+## 文档更新
+
+- 更新 `docs/cli.md` 的 `start` 章节，补充“已有进程时会提示是否重启”的说明。

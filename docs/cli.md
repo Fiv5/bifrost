@@ -38,6 +38,8 @@ bifrost start --system-proxy
 bifrost start --unsafe-ssl
 ```
 
+当检测到已有 Bifrost 进程在运行时，`bifrost start` 会在终端提示是否重启：输入 `y/yes` 将停止旧进程并重新启动；输入 `n/no` 将取消本次启动。
+
 参数摘要：
 
 | 参数 | 说明 |
