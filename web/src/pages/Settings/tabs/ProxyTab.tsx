@@ -494,6 +494,9 @@ export interface ProxyTabProps {
   onToggleTlsInterception: (enabled: boolean) => void;
   onToggleUnsafeSsl: (enabled: boolean) => void;
   onToggleDisconnectOnConfigChange: (enabled: boolean) => void;
+  injectBifrostBadge: boolean | null;
+  injectBifrostBadgeLoading: boolean;
+  onToggleInjectBifrostBadge: (enabled: boolean) => void;
   newIncludePattern: string;
   newExcludePattern: string;
   newAppIncludePattern: string;
@@ -535,6 +538,9 @@ export default function ProxyTab({
   onToggleTlsInterception,
   onToggleUnsafeSsl,
   onToggleDisconnectOnConfigChange,
+  injectBifrostBadge,
+  injectBifrostBadgeLoading,
+  onToggleInjectBifrostBadge,
   newIncludePattern,
   newExcludePattern,
   newAppIncludePattern,
@@ -711,6 +717,29 @@ export default function ProxyTab({
               </Row>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 Route all system traffic through this proxy
+              </Text>
+
+              <Divider style={{ margin: "12px 0" }} />
+
+              <Row justify="space-between" align="middle">
+                <Col>
+                  <Text>注入 Bifrost 小圆点</Text>
+                </Col>
+                <Col>
+                  {injectBifrostBadge === null ? (
+                    <Text type="secondary">Loading...</Text>
+                  ) : (
+                    <Switch
+                      checked={injectBifrostBadge}
+                      loading={injectBifrostBadgeLoading}
+                      onChange={onToggleInjectBifrostBadge}
+                      data-testid="settings-badge-injection-switch"
+                    />
+                  )}
+                </Col>
+              </Row>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                仅对 HTML 页面生效，用于提示页面已被 Bifrost 接管
               </Text>
 
               <Divider style={{ margin: "12px 0" }} />

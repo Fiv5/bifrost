@@ -252,6 +252,9 @@ impl ConfigManager {
         if let Some(binary_traffic_performance_mode) = update.binary_traffic_performance_mode {
             config.traffic.binary_traffic_performance_mode = binary_traffic_performance_mode;
         }
+        if let Some(inject_bifrost_badge) = update.inject_bifrost_badge {
+            config.traffic.inject_bifrost_badge = inject_bifrost_badge;
+        }
         if let Some(file_retention_days) = update.file_retention_days {
             config.traffic.file_retention_days = file_retention_days;
         }
@@ -661,6 +664,7 @@ impl ConfigManager {
                 ws_payload_flush_bytes: legacy.traffic.ws_payload_flush_bytes,
                 ws_payload_flush_interval_ms: legacy.traffic.ws_payload_flush_interval_ms,
                 ws_payload_max_open_files: legacy.traffic.ws_payload_max_open_files,
+                inject_bifrost_badge: true,
             },
             sandbox: SandboxConfig::default(),
             paths: PathsConfig::for_data_dir(data_dir),

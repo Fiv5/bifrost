@@ -7,7 +7,7 @@ license.workspace = true
 description = "JavaScript scripting engine for Bifrost proxy"
 
 [dependencies]
-rquickjs = { version = "0.9", features = ["bindgen", "futures", "macro"] }
+rquickjs = { version = "0.9", features = ["futures", "macro"] }
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

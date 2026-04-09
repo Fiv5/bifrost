@@ -36,6 +36,8 @@ bifrost start --access-mode whitelist --whitelist "192.168.1.100,10.0.0.0/8"
 bifrost start --allow-lan
 bifrost start --system-proxy
 bifrost start --unsafe-ssl
+bifrost start --disable-badge-injection
+bifrost start --enable-badge-injection
 ```
 
 当检测到已有 Bifrost 进程在运行时，`bifrost start` 会在终端提示是否重启：输入 `y/yes` 将停止旧进程并重新启动；输入 `n/no` 将取消本次启动。
@@ -55,6 +57,8 @@ bifrost start --unsafe-ssl
 | `--no-intercept` | 禁用 TLS 拦截 |
 | `--intercept-exclude <DOMAINS>` | TLS 拦截排除域名 |
 | `--unsafe-ssl` | 跳过上游证书校验，仅建议测试环境使用 |
+| `--enable-badge-injection` | 强制启用 HTML 页面注入 Bifrost 小圆点（会持久化到配置） |
+| `--disable-badge-injection` | 禁用 HTML 页面注入 Bifrost 小圆点（会持久化到配置） |
 | `--rules <RULE>` | 直接传入规则，可多次指定 |
 | `--rules-file <PATH>` | 从文件加载规则 |
 | `--system-proxy` | 启动后自动设置系统代理 |

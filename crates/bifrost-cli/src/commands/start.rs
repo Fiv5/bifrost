@@ -18,7 +18,7 @@ use bifrost_admin::{
 };
 use bifrost_core::{Rule, UserPassAccountConfig, UserPassAuthConfig};
 use bifrost_proxy::{AccessMode, ProxyConfig, ProxyServer};
-use bifrost_storage::{set_data_dir, ConfigChangeEvent, ConfigManager};
+use bifrost_storage::{set_data_dir, ConfigChangeEvent, ConfigManager, TrafficConfigUpdate};
 use bifrost_sync::SyncManager;
 use bifrost_tls::{get_platform_name, CertInstaller, CertStatus};
 use parking_lot::RwLock as ParkingRwLock;
@@ -323,6 +323,8 @@ pub fn run_start(
     app_intercept_exclude: Option<String>,
     app_intercept_include: Option<String>,
     unsafe_ssl: bool,
+    enable_badge_injection: bool,
+    disable_badge_injection: bool,
     no_disconnect_on_config_change: bool,
     rules: Vec<String>,
     rules_file: Option<PathBuf>,
@@ -445,6 +447,21 @@ pub fn run_start(
         stored_config.tls.unsafe_ssl
     };
 
+    let inject_bifrost_badge = if enable_badge_injection {
+        true
+    } else if disable_badge_injection {
+        false
+    } else {
+        stored_config.traffic.inject_bifrost_badge
+    };
+
+    if enable_badge_injection || disable_badge_injection {
+        futures::executor::block_on(config_manager.update_traffic_config(TrafficConfigUpdate {
+            inject_bifrost_badge: Some(inject_bifrost_badge),
+            ..Default::default()
+        }))?;
+    }
+
     let verbose_logging = matches!(log_level, "debug" | "trace");
     let proxy_config = ProxyConfig {
         port,
@@ -465,6 +482,7 @@ pub fn run_start(
         max_body_buffer_size: stored_config.traffic.max_body_buffer_size,
         max_body_probe_size: stored_config.traffic.max_body_probe_size,
         binary_traffic_performance_mode: stored_config.traffic.binary_traffic_performance_mode,
+        inject_bifrost_badge,
         timeout_secs: stored_config.server.timeout_secs,
         http1_max_header_size: stored_config.server.http1_max_header_size,
         http2_max_header_list_size: stored_config.server.http2_max_header_list_size,

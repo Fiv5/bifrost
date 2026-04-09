@@ -162,6 +162,7 @@ pub struct ProxyConfig {
     pub max_body_buffer_size: usize,
     pub max_body_probe_size: usize,
     pub binary_traffic_performance_mode: bool,
+    pub inject_bifrost_badge: bool,
     pub enable_socks: bool,
 }
 
@@ -202,6 +203,7 @@ impl Default for ProxyConfig {
             max_body_buffer_size: 10 * 1024 * 1024, // 10MB
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
+            inject_bifrost_badge: true,
             enable_socks: true,
         }
     }
@@ -717,6 +719,7 @@ impl ProxyServer {
                 .with_access_control(Arc::clone(&self.access_control))
                 .with_verbose_logging(self.config.verbose_logging)
                 .with_unsafe_ssl(self.config.unsafe_ssl)
+                .with_inject_bifrost_badge(self.config.inject_bifrost_badge)
                 .with_dns_resolver(Arc::clone(&self.dns_resolver))
                 .with_tls_intercept(
                     Arc::clone(&self.tls_config),
@@ -1464,14 +1467,28 @@ async fn handle_request(
             }
         }
     } else {
-        let (unsafe_ssl, max_body_buffer_size) = if let Some(ref state) = admin_state {
-            (
-                state.runtime_config.read().await.unsafe_ssl,
-                state.get_max_body_buffer_size(),
-            )
-        } else {
-            (proxy_config.unsafe_ssl, proxy_config.max_body_buffer_size)
-        };
+        let (unsafe_ssl, max_body_buffer_size, inject_bifrost_badge) =
+            if let Some(ref state) = admin_state {
+                let unsafe_ssl = state.runtime_config.read().await.unsafe_ssl;
+                let inject_bifrost_badge = state
+                    .config_manager
+                    .as_ref()
+                    .and_then(|cm| cm.try_config())
+                    .map(|config| config.traffic.inject_bifrost_badge)
+                    .unwrap_or(proxy_config.inject_bifrost_badge);
+
+                (
+                    unsafe_ssl,
+                    state.get_max_body_buffer_size(),
+                    inject_bifrost_badge,
+                )
+            } else {
+                (
+                    proxy_config.unsafe_ssl,
+                    proxy_config.max_body_buffer_size,
+                    proxy_config.inject_bifrost_badge,
+                )
+            };
         let max_body_probe_size = if let Some(ref state) = admin_state {
             state.get_max_body_probe_size()
         } else {
@@ -1485,6 +1502,7 @@ async fn handle_request(
             unsafe_ssl,
             max_body_buffer_size,
             max_body_probe_size,
+            inject_bifrost_badge,
             &ctx,
             admin_state.clone(),
             Some(dns_resolver),
@@ -1857,6 +1875,7 @@ mod tests {
             max_body_buffer_size: 10 * 1024 * 1024,
             max_body_probe_size: 64 * 1024,
             binary_traffic_performance_mode: true,
+            inject_bifrost_badge: true,
             enable_socks: true,
             userpass_auth: None,
             userpass_last_connected_at: HashMap::new(),

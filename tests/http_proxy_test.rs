@@ -311,6 +311,7 @@ fn test_proxy_config_custom() {
         max_body_buffer_size: 10 * 1024 * 1024,
         max_body_probe_size: 64 * 1024,
         binary_traffic_performance_mode: true,
+        inject_bifrost_badge: true,
         enable_socks: true,
         userpass_auth: None,
         userpass_last_connected_at: std::collections::HashMap::new(),

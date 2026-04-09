@@ -48,6 +48,35 @@ pub fn decompress_body_with_limit(
     }
 }
 
+pub fn try_decompress_body_with_limit(
+    data: &[u8],
+    content_encoding: &str,
+    max_output_bytes: usize,
+) -> Result<Vec<u8>, std::io::Error> {
+    if max_output_bytes == 0 {
+        return Ok(data.to_vec());
+    }
+
+    let encoding = content_encoding
+        .split(',')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+
+    match encoding.as_str() {
+        "" | "identity" => Ok(data.to_vec()),
+        "gzip" => decompress_gzip_limited(data, max_output_bytes),
+        "deflate" => decompress_deflate_limited(data, max_output_bytes),
+        "br" => decompress_brotli_limited(data, max_output_bytes),
+        "zstd" => decompress_zstd_limited(data, max_output_bytes),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unsupported content-encoding: {}", content_encoding),
+        )),
+    }
+}
+
 fn decompress_gzip_limited(
     data: &[u8],
     max_output_bytes: usize,

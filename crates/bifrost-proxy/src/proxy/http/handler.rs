@@ -37,7 +37,10 @@ use crate::transform::apply_req_rules;
 use crate::transform::apply_res_rules;
 use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress_body_with_limit;
-use crate::transform::{apply_body_rules, apply_content_injection, Phase};
+use crate::transform::{
+    apply_body_rules, apply_content_injection, compress_body, maybe_inject_bifrost_badge_html,
+    try_decompress_body_with_limit, Phase,
+};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
     calculate_request_size, calculate_response_headers_size, calculate_response_size,
@@ -564,6 +567,7 @@ pub async fn handle_http_request(
     unsafe_ssl: bool,
     max_body_buffer_size: usize,
     max_body_probe_size: usize,
+    inject_bifrost_badge: bool,
     ctx: &RequestContext,
     admin_state: Option<Arc<AdminState>>,
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -1424,7 +1428,11 @@ pub async fn handle_http_request(
 
     apply_res_rules(&mut res_parts, &resolved_rules, verbose_logging, ctx);
 
-    let needs_processing = needs_body_processing(&resolved_rules);
+    let res_content_type = get_content_type(&res_parts);
+    let force_body_processing_for_badge =
+        inject_bifrost_badge && res_content_type.starts_with("text/html");
+    let needs_processing =
+        needs_body_processing(&resolved_rules) || force_body_processing_for_badge;
     let has_res_body_override = resolved_rules.res_body.is_some();
     let needs_res_body_read = needs_processing && !has_res_body_override;
 
@@ -1442,7 +1450,6 @@ pub async fn handle_http_request(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<usize>().ok());
 
-    let res_content_type = get_content_type(&res_parts);
     let is_sse = is_sse_response(&res_parts);
     let binary_traffic_performance_mode = admin_state
         .as_ref()
@@ -1451,7 +1458,8 @@ pub async fn handle_http_request(
     let skip_binary_recording =
         should_use_binary_performance_mode(&res_parts, binary_traffic_performance_mode)
             && !is_websocket
-            && !is_sse;
+            && !is_sse
+            && !needs_processing;
     let metrics_only_forwarding = should_use_metrics_only_forwarding_mode(
         skip_binary_recording,
         has_rules,
@@ -1533,10 +1541,11 @@ pub async fn handle_http_request(
         }
     }
 
-    let skip_body_processing = skip_binary_recording
+    let skip_body_processing = (skip_binary_recording
         || is_sse
         || !needs_processing
-        || (res_body_too_large && needs_res_body_read);
+        || (res_body_too_large && needs_res_body_read))
+        && !force_body_processing_for_badge;
 
     if needs_res_body_read && res_body_too_large {
         let size_display = res_content_length
@@ -1842,6 +1851,54 @@ pub async fn handle_http_request(
     } else {
         Vec::new()
     };
+
+    if inject_bifrost_badge {
+        let final_res_content_type = get_content_type(&res_parts);
+        if final_res_content_type.starts_with("text/html") {
+            if let Some(content_encoding) = response_content_encoding(&res_parts) {
+                match try_decompress_body_with_limit(
+                    final_res_body.as_ref(),
+                    &content_encoding,
+                    max_decompress_output_bytes,
+                ) {
+                    Ok(decompressed) => {
+                        let (injected_body, injected) =
+                            maybe_inject_bifrost_badge_html(Bytes::from(decompressed));
+                        if injected {
+                            match compress_body(injected_body.as_ref(), &content_encoding) {
+                                Ok(compressed) => {
+                                    final_res_body = Bytes::from(compressed);
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        "[{}] [BADGE] Failed to recompress response body ({}), fallback to identity",
+                                        ctx.id_str(),
+                                        e
+                                    );
+                                    res_parts.headers.remove(hyper::header::CONTENT_ENCODING);
+                                    final_res_body = injected_body;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            "[{}] [BADGE] Skip badge injection: failed to decompress response body ({}).",
+                            ctx.id_str(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                let (injected_body, injected) =
+                    maybe_inject_bifrost_badge_html(final_res_body.clone());
+                if injected {
+                    final_res_body = injected_body;
+                }
+            }
+        }
+    }
+
     normalize_res_headers(
         &mut res_parts,
         BodyMode::Known(final_res_body.len()),

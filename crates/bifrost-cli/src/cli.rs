@@ -417,6 +417,18 @@ pub enum Commands {
         unsafe_ssl: bool,
         #[arg(
             long,
+            conflicts_with = "disable_badge_injection",
+            help = "Enable injecting Bifrost badge into HTML pages"
+        )]
+        enable_badge_injection: bool,
+        #[arg(
+            long,
+            conflicts_with = "enable_badge_injection",
+            help = "Disable injecting Bifrost badge into HTML pages"
+        )]
+        disable_badge_injection: bool,
+        #[arg(
+            long,
             help = "Disable automatic disconnect of affected connections when TLS config changes"
         )]
         no_disconnect_on_config_change: bool,
