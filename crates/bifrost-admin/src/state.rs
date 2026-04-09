@@ -105,6 +105,7 @@ pub struct AdminState {
     pub port_rebind_manager: Option<SharedPortRebindManager>,
     pub sync_manager: Option<SharedSyncManager>,
     group_name_cache: parking_lot::Mutex<HashMap<String, String>>,
+    group_cache_resolved: AtomicBool,
 }
 
 const DEFAULT_MAX_BODY_BUFFER_SIZE: usize = 10 * 1024 * 1024;
@@ -143,6 +144,7 @@ impl AdminState {
             port_rebind_manager: None,
             sync_manager: None,
             group_name_cache: parking_lot::Mutex::new(HashMap::new()),
+            group_cache_resolved: AtomicBool::new(false),
         }
     }
 
@@ -790,6 +792,80 @@ impl AdminState {
             guard: self.group_name_cache.lock(),
         }
     }
+
+    pub fn is_group_cache_resolved(&self) -> bool {
+        self.group_cache_resolved.load(Ordering::Relaxed)
+    }
+
+    pub fn set_group_cache_resolved(&self) {
+        self.group_cache_resolved.store(true, Ordering::Relaxed);
+    }
+
+    fn group_cache_path(&self) -> PathBuf {
+        self.rules_storage.base_dir().join(".group_cache.json")
+    }
+
+    pub fn load_group_name_cache(&self) {
+        let path = self.group_cache_path();
+        if !path.exists() {
+            return;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(data) => match serde_json::from_str::<HashMap<String, String>>(&data) {
+                Ok(map) => {
+                    let mut cache = self.group_name_cache.lock();
+                    for (k, v) in map {
+                        cache.entry(k).or_insert(v);
+                    }
+                    tracing::info!(
+                        target: "bifrost_admin::state",
+                        count = cache.len(),
+                        "loaded group name cache from disk"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "bifrost_admin::state",
+                        error = %e,
+                        "failed to parse group name cache file, ignoring"
+                    );
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::state",
+                    error = %e,
+                    "failed to read group name cache file"
+                );
+            }
+        }
+    }
+
+    pub fn persist_group_name_cache(&self) {
+        let cache = self.group_name_cache.lock();
+        if cache.is_empty() {
+            return;
+        }
+        let path = self.group_cache_path();
+        match serde_json::to_string(&*cache) {
+            Ok(data) => {
+                if let Err(e) = std::fs::write(&path, data) {
+                    tracing::warn!(
+                        target: "bifrost_admin::state",
+                        error = %e,
+                        "failed to persist group name cache"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "bifrost_admin::state",
+                    error = %e,
+                    "failed to serialize group name cache"
+                );
+            }
+        }
+    }
 }
 
 pub struct GroupNameCacheGuard<'a> {
@@ -1047,6 +1123,95 @@ mod tests {
         assert!(persisted_status.is_open);
         assert_eq!(persisted_status.receive_count, 0);
         assert_eq!(persisted_status.receive_bytes, 0);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn group_name_cache_persist_and_load_round_trip() {
+        let dir = create_test_dir();
+        let rules_dir = dir.join("rules");
+        let _ = fs::create_dir_all(&rules_dir);
+        let storage = RulesStorage::with_dir(rules_dir.clone()).unwrap();
+
+        let mut state = AdminState::new(19900);
+        state.rules_storage = storage;
+
+        {
+            let mut cache = state.group_name_cache();
+            cache.insert("g1".to_string(), "GroupAlpha".to_string());
+            cache.insert("g2".to_string(), "GroupBeta".to_string());
+        }
+        state.persist_group_name_cache();
+
+        let cache_file = rules_dir.join(".group_cache.json");
+        assert!(cache_file.exists(), "cache file should be written to disk");
+
+        let mut state2 = AdminState::new(19901);
+        state2.rules_storage = RulesStorage::with_dir(rules_dir).unwrap();
+        state2.load_group_name_cache();
+
+        {
+            let cache = state2.group_name_cache();
+            assert_eq!(cache.get("g1"), Some("GroupAlpha".to_string()));
+            assert_eq!(cache.get("g2"), Some("GroupBeta".to_string()));
+            assert_eq!(cache.reverse_lookup("GroupAlpha"), Some("g1".to_string()));
+        }
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn group_name_cache_load_missing_file_is_noop() {
+        let dir = create_test_dir();
+        let rules_dir = dir.join("rules");
+        let _ = fs::create_dir_all(&rules_dir);
+        let storage = RulesStorage::with_dir(rules_dir).unwrap();
+
+        let mut state = AdminState::new(19902);
+        state.rules_storage = storage;
+
+        state.load_group_name_cache();
+        let cache = state.group_name_cache();
+        assert_eq!(cache.get("any"), None);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn group_name_cache_load_corrupt_file_is_ignored() {
+        let dir = create_test_dir();
+        let rules_dir = dir.join("rules");
+        let _ = fs::create_dir_all(&rules_dir);
+
+        fs::write(rules_dir.join(".group_cache.json"), "not json!!!").unwrap();
+
+        let storage = RulesStorage::with_dir(rules_dir).unwrap();
+        let mut state = AdminState::new(19903);
+        state.rules_storage = storage;
+
+        state.load_group_name_cache();
+        let cache = state.group_name_cache();
+        assert_eq!(cache.get("any"), None);
+
+        cleanup_test_dir(&dir);
+    }
+
+    #[test]
+    fn group_name_cache_persist_empty_is_noop() {
+        let dir = create_test_dir();
+        let rules_dir = dir.join("rules");
+        let _ = fs::create_dir_all(&rules_dir);
+        let storage = RulesStorage::with_dir(rules_dir.clone()).unwrap();
+
+        let mut state = AdminState::new(19904);
+        state.rules_storage = storage;
+
+        state.persist_group_name_cache();
+        assert!(
+            !rules_dir.join(".group_cache.json").exists(),
+            "empty cache should not create file"
+        );
 
         cleanup_test_dir(&dir);
     }

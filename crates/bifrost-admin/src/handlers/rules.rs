@@ -268,6 +268,29 @@ async fn active_summary(state: SharedAdminState) -> Response<BoxBody> {
         map
     };
 
+    let uncached_dirs: Vec<String> = group_dirs
+        .iter()
+        .filter(|(d, _)| !reverse_cache.contains_key(d))
+        .map(|(d, _)| d.clone())
+        .collect();
+
+    let reverse_cache = if !uncached_dirs.is_empty() && !state.is_group_cache_resolved() {
+        if let Some(sm) = &state.sync_manager {
+            super::group_rules::resolve_missing_group_caches(sm, &state, &uncached_dirs).await;
+        }
+        state.set_group_cache_resolved();
+        let cache = state.group_name_cache();
+        let mut map = reverse_cache;
+        for dir_name in &uncached_dirs {
+            if let Some(gid) = cache.reverse_lookup(dir_name) {
+                map.insert(dir_name.clone(), gid);
+            }
+        }
+        map
+    } else {
+        reverse_cache
+    };
+
     for (dir_name, dir_path) in &group_dirs {
         let group_storage = match RulesStorage::with_dir(dir_path.clone()) {
             Ok(s) => s,

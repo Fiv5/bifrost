@@ -55,7 +55,9 @@ use crate::server::{
     TlsConfig, TlsInterceptConfig,
 };
 use crate::transform::apply_res_rules;
+use crate::transform::collect_all_cookies_from_headers;
 use crate::transform::decompress::get_content_encoding;
+use crate::transform::merge_cookie_header_values;
 use crate::transform::{apply_body_rules, Phase};
 use crate::utils::bounded::{read_body_bounded, BoundedBody};
 use crate::utils::http_size::{
@@ -1559,22 +1561,8 @@ async fn handle_intercepted_request_with_protocol(
         })
         .collect();
 
-    let incoming_cookies: std::collections::HashMap<String, String> = req
-        .headers()
-        .get(hyper::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| {
-            s.split(';')
-                .filter_map(|part| {
-                    let mut iter = part.trim().splitn(2, '=');
-                    match (iter.next(), iter.next()) {
-                        (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
-                        _ => None,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let incoming_cookies: std::collections::HashMap<String, String> =
+        collect_all_cookies_from_headers(req.headers());
 
     let query_params: std::collections::HashMap<String, String> = uri
         .query()
@@ -1951,11 +1939,37 @@ async fn handle_intercepted_request_with_protocol(
             skip_ua = true;
             continue;
         }
-        if name == hyper::header::COOKIE && !resolved_rules.req_cookies.is_empty() {
+        if name == hyper::header::COOKIE {
             continue;
         }
         new_req = new_req.header(name, value);
     }
+
+    if !resolved_rules.req_cookies.is_empty() {
+        let mut cookie_map: std::collections::HashMap<String, String> =
+            collect_all_cookies_from_headers(&parts.headers);
+
+        for (name, value) in &resolved_rules.req_cookies {
+            if verbose_logging {
+                info!("[{}] [REQ_COOKIE] {} = {}", req_id, name, value);
+            }
+            cookie_map.insert(name.clone(), value.clone());
+        }
+
+        let cookie_str: String = cookie_map
+            .into_iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        new_req = new_req.header(hyper::header::COOKIE, cookie_str);
+    } else {
+        let merged = merge_cookie_header_values(&parts.headers);
+        if !merged.is_empty() {
+            new_req = new_req.header(hyper::header::COOKIE, merged);
+        }
+    }
+
     let host_header_value = if actual_use_http {
         if actual_target_port == 80 {
             actual_target_host.clone()
@@ -2001,43 +2015,6 @@ async fn handle_intercepted_request_with_protocol(
             info!("[{}] [REQ_HEADER] {} = {}", req_id, name, value);
         }
         new_req = new_req.header(name.as_str(), value.as_str());
-    }
-
-    if !resolved_rules.req_cookies.is_empty() {
-        let existing_cookies: Vec<(String, String)> = parts
-            .headers
-            .get(hyper::header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| {
-                s.split(';')
-                    .filter_map(|part| {
-                        let mut iter = part.trim().splitn(2, '=');
-                        match (iter.next(), iter.next()) {
-                            (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
-                            _ => None,
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let mut cookie_map: std::collections::HashMap<String, String> =
-            existing_cookies.into_iter().collect();
-
-        for (name, value) in &resolved_rules.req_cookies {
-            if verbose_logging {
-                info!("[{}] [REQ_COOKIE] {} = {}", req_id, name, value);
-            }
-            cookie_map.insert(name.clone(), value.clone());
-        }
-
-        let cookie_str: String = cookie_map
-            .into_iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("; ");
-
-        new_req = new_req.header(hyper::header::COOKIE, cookie_str);
     }
 
     let request_body_is_streaming = streaming_body.is_some();
@@ -2971,22 +2948,8 @@ async fn handle_intercepted_websocket(
         })
         .collect();
 
-    let incoming_cookies: std::collections::HashMap<String, String> = req
-        .headers()
-        .get(hyper::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| {
-            s.split(';')
-                .filter_map(|part| {
-                    let mut iter = part.trim().splitn(2, '=');
-                    match (iter.next(), iter.next()) {
-                        (Some(k), Some(v)) => Some((k.to_string(), v.to_string())),
-                        _ => None,
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let incoming_cookies: std::collections::HashMap<String, String> =
+        collect_all_cookies_from_headers(req.headers());
 
     let resolved_rules = rules.resolve_with_context(
         &original_uri,

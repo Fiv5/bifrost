@@ -22,7 +22,10 @@ pub use protocol::{
 };
 pub use proxy::*;
 pub use server::*;
-pub use transform::{apply_req_rules, format_cookie_header, parse_cookie_string};
+pub use transform::{
+    apply_req_rules, collect_all_cookies_from_headers, format_cookie_header,
+    merge_cookie_header_values, parse_cookie_string,
+};
 pub use transform::{apply_res_rules, format_set_cookie, parse_set_cookie, SetCookieOptions};
 pub use unified::*;
 pub use utils::logging::*;

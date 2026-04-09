@@ -198,12 +198,7 @@ fn apply_req_cookies(
         return;
     }
 
-    let existing_cookies = parts
-        .headers
-        .get(hyper::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
+    let existing_cookies = merge_cookie_header_values(&parts.headers);
 
     let mut cookies: Vec<String> = if existing_cookies.is_empty() {
         Vec::new()
@@ -211,6 +206,7 @@ fn apply_req_cookies(
         existing_cookies
             .split(';')
             .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
             .collect()
     };
 
@@ -463,6 +459,39 @@ pub fn format_cookie_header(cookies: &[(String, String)]) -> String {
         .join("; ")
 }
 
+pub fn collect_all_cookies_from_headers(
+    headers: &hyper::HeaderMap,
+) -> std::collections::HashMap<String, String> {
+    let mut cookies = std::collections::HashMap::new();
+    for value in headers.get_all(hyper::header::COOKIE).iter() {
+        if let Ok(s) = value.to_str() {
+            for pair in s.split(';') {
+                let mut iter = pair.trim().splitn(2, '=');
+                if let (Some(k), Some(v)) = (iter.next(), iter.next()) {
+                    let k = k.trim();
+                    if !k.is_empty() {
+                        cookies.insert(k.to_string(), v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    cookies
+}
+
+pub fn merge_cookie_header_values(headers: &hyper::HeaderMap) -> String {
+    let mut parts = Vec::new();
+    for value in headers.get_all(hyper::header::COOKIE).iter() {
+        if let Ok(s) = value.to_str() {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+    }
+    parts.join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +687,146 @@ mod tests {
         let cookies: Vec<(String, String)> = vec![];
         let header = format_cookie_header(&cookies);
         assert_eq!(header, "");
+    }
+
+    #[test]
+    fn test_collect_all_cookies_single_header() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("session=abc; user=test"),
+        );
+        let cookies = collect_all_cookies_from_headers(&headers);
+        assert_eq!(cookies.get("session").unwrap(), "abc");
+        assert_eq!(cookies.get("user").unwrap(), "test");
+    }
+
+    #[test]
+    fn test_collect_all_cookies_multiple_headers() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("monitor_web_id=123456"),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("session_flag=1"),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("x-token=abc-def-ghi"),
+        );
+        let cookies = collect_all_cookies_from_headers(&headers);
+        assert_eq!(cookies.len(), 3);
+        assert_eq!(cookies.get("monitor_web_id").unwrap(), "123456");
+        assert_eq!(cookies.get("session_flag").unwrap(), "1");
+        assert_eq!(cookies.get("x-token").unwrap(), "abc-def-ghi");
+    }
+
+    #[test]
+    fn test_collect_all_cookies_empty() {
+        let headers = hyper::HeaderMap::new();
+        let cookies = collect_all_cookies_from_headers(&headers);
+        assert!(cookies.is_empty());
+    }
+
+    #[test]
+    fn test_merge_cookie_header_values_single() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("session=abc; user=test"),
+        );
+        let merged = merge_cookie_header_values(&headers);
+        assert_eq!(merged, "session=abc; user=test");
+    }
+
+    #[test]
+    fn test_merge_cookie_header_values_multiple() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("monitor_web_id=123456"),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("session_flag=1"),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("x-token=abc-def-ghi"),
+        );
+        let merged = merge_cookie_header_values(&headers);
+        assert!(merged.contains("monitor_web_id=123456"));
+        assert!(merged.contains("session_flag=1"));
+        assert!(merged.contains("x-token=abc-def-ghi"));
+        assert_eq!(merged.matches("; ").count(), 2);
+    }
+
+    #[test]
+    fn test_merge_cookie_header_values_empty() {
+        let headers = hyper::HeaderMap::new();
+        let merged = merge_cookie_header_values(&headers);
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn test_collect_all_cookies_with_jwt() {
+        let jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NzYzMjk0NjksImlhdCI6MTc3NTcyNDY2OX0.JT4aDh4cRQnz0sEccvclUk1nXm2na3ZJarI3UJlN_FPg";
+        let mut headers = hyper::HeaderMap::new();
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("people-lang=zh"),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_str(&format!("bd_sso_3b6da9={}", jwt)).unwrap(),
+        );
+        headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("x-token=16289f27-f342-4f5b-b95a-e5291cfe1577"),
+        );
+        let cookies = collect_all_cookies_from_headers(&headers);
+        assert_eq!(cookies.len(), 3);
+        assert_eq!(cookies.get("people-lang").unwrap(), "zh");
+        assert_eq!(cookies.get("bd_sso_3b6da9").unwrap(), jwt);
+        assert_eq!(
+            cookies.get("x-token").unwrap(),
+            "16289f27-f342-4f5b-b95a-e5291cfe1577"
+        );
+    }
+
+    #[test]
+    fn test_apply_req_cookies_merge_multiple_cookie_headers() {
+        let mut parts = create_test_parts();
+        let ctx = RequestContext::new();
+        parts.headers.append(
+            hyper::header::COOKIE,
+            HeaderValue::from_static("session=abc"),
+        );
+        parts
+            .headers
+            .append(hyper::header::COOKIE, HeaderValue::from_static("token=xyz"));
+
+        let mut rules = ResolvedRules::default();
+        rules
+            .req_cookies
+            .push(("added".to_string(), "new".to_string()));
+
+        apply_req_rules(&mut parts, &rules, false, &ctx);
+
+        let cookie = parts
+            .headers
+            .get(hyper::header::COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(cookie.contains("session=abc"));
+        assert!(cookie.contains("token=xyz"));
+        assert!(cookie.contains("added=new"));
+        assert_eq!(
+            parts.headers.get_all(hyper::header::COOKIE).iter().count(),
+            1
+        );
     }
 }

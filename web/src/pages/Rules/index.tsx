@@ -149,6 +149,7 @@ export default function Rules() {
       const targetGroupId = groupId ?? null;
       if (targetGroupId !== activeGroupId) {
         setActiveGroupId(targetGroupId);
+        useRulesStore.setState({ selectedRuleName: name });
         await fetchRules();
       }
       selectRule(name);
