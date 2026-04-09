@@ -119,7 +119,7 @@ pub fn is_process_running(pid: u32) -> bool {
         CloseHandle(handle);
     }
 
-    ok != 0 && exit_code == STILL_ACTIVE
+    ok != 0 && exit_code == STILL_ACTIVE as u32
 }
 
 #[cfg(all(not(unix), not(windows)))]
