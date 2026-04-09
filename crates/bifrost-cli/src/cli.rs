@@ -53,6 +53,7 @@ start [OPTIONS]                   Start the proxy server (default)
   --access-mode <MODE>                Access mode: local_only|whitelist|interactive|allow_all
   --whitelist <IPS>                   Client IP whitelist (comma-separated, supports CIDR)
   --allow-lan                         Allow LAN (private network) clients
+  --proxy-user <USER:PASS>            Proxy user credentials (can be repeated)
   --intercept                         Enable TLS/HTTPS interception
   --no-intercept                      Disable TLS/HTTPS interception
   --intercept-exclude <DOMAINS>       Exclude domains from interception (supports wildcards)
@@ -160,6 +161,8 @@ config [ACTION] (alias: cfg)      Manage runtime configuration
   export [-o path] [--format json|toml] Export configuration to file
   performance                          Show performance overview
   websocket                            Show active WebSocket connections
+  connections                          List active proxy connections
+  memory                               Show memory diagnostics
 
 traffic <ACTION>                  Inspect and query traffic records
   list [OPTIONS]                     List traffic records
@@ -1100,7 +1103,7 @@ pub enum ConfigCommands {
     Show {
         #[arg(long, help = "Output in JSON format")]
         json: bool,
-        #[arg(long, value_parser = ["tls", "traffic", "access"], help = "Show specific section: tls, traffic, access")]
+        #[arg(long, value_parser = ["server", "tls", "traffic", "access"], help = "Show specific section: server, tls, traffic, access")]
         section: Option<String>,
     },
     #[command(about = "Get a configuration value")]
@@ -1164,6 +1167,10 @@ pub enum ConfigCommands {
     Performance,
     #[command(about = "Show active WebSocket connections")]
     Websocket,
+    #[command(about = "List active proxy connections")]
+    Connections,
+    #[command(about = "Show memory diagnostics (process RSS, caches, connection stats)")]
+    Memory,
 }
 
 #[derive(Subcommand, Clone)]

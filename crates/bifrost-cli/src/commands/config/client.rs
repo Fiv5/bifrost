@@ -210,6 +210,14 @@ impl ConfigApiClient {
         )
     }
 
+    pub fn list_connections(&self) -> Result<serde_json::Value, String> {
+        self.get("/config/connections")
+    }
+
+    pub fn get_memory_diagnostics(&self) -> Result<serde_json::Value, String> {
+        self.get("/system/memory")
+    }
+
     pub fn bifrost_file_detect(&self, content: &str) -> Result<serde_json::Value, String> {
         self.post_text("/bifrost-file/detect", content)
     }

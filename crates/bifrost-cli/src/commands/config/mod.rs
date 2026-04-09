@@ -122,6 +122,191 @@ pub fn handle_config_command(action: Option<ConfigCommands>, host: &str, port: u
             }
             Ok(())
         }
+        Some(ConfigCommands::Connections) => {
+            let client = client::ConfigApiClient::new(host, port);
+            let result = client.list_connections().map_err(BifrostError::Config)?;
+
+            if let Some(obj) = result.as_object() {
+                let total = obj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                let connections = obj.get("connections").and_then(|v| v.as_array());
+
+                println!("Active Connections ({}):", total);
+                println!();
+
+                if let Some(conns) = connections {
+                    if conns.is_empty() {
+                        println!("  No active connections.");
+                    } else {
+                        let header = format!(
+                            "  {:<36}  {:<40}  {:<6}  {:<10}  {}",
+                            "REQ ID", "HOST", "PORT", "INTERCEPT", "APP"
+                        );
+                        println!("{header}");
+                        println!("  {}", "-".repeat(110));
+                        for conn in conns {
+                            let req_id = conn.get("req_id").and_then(|v| v.as_str()).unwrap_or("-");
+                            let conn_host =
+                                conn.get("host").and_then(|v| v.as_str()).unwrap_or("-");
+                            let conn_port = conn.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let intercept = conn
+                                .get("intercept_mode")
+                                .and_then(|v| v.as_bool())
+                                .map(|b| if b { "yes" } else { "no" })
+                                .unwrap_or("-");
+                            let app = conn
+                                .get("client_app")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("-");
+                            println!(
+                                "  {:<36}  {:<40}  {:<6}  {:<10}  {}",
+                                req_id, conn_host, conn_port, intercept, app
+                            );
+                        }
+                    }
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+        Some(ConfigCommands::Memory) => {
+            let client = client::ConfigApiClient::new(host, port);
+            let result = client
+                .get_memory_diagnostics()
+                .map_err(BifrostError::Config)?;
+
+            if let Some(obj) = result.as_object() {
+                println!("Memory Diagnostics");
+                println!("==================");
+                println!();
+
+                if let Some(process) = obj.get("process") {
+                    println!("Process:");
+                    if let Some(pid) = process.get("pid").and_then(|v| v.as_u64()) {
+                        println!("  PID:         {}", pid);
+                    }
+                    if let Some(rss) = process.get("rss_kib").and_then(|v| v.as_u64()) {
+                        println!(
+                            "  RSS:         {:.1} MiB ({:.2} GiB)",
+                            rss as f64 / 1024.0 / 1024.0,
+                            rss as f64 / 1024.0 / 1024.0 / 1024.0
+                        );
+                    }
+                    if let Some(vms) = process.get("vms_kib").and_then(|v| v.as_u64()) {
+                        println!(
+                            "  Virtual:     {:.1} MiB ({:.2} GiB)",
+                            vms as f64 / 1024.0 / 1024.0,
+                            vms as f64 / 1024.0 / 1024.0 / 1024.0
+                        );
+                    }
+                    if let Some(cpu) = process.get("cpu_usage_percent").and_then(|v| v.as_f64()) {
+                        println!("  CPU:         {:.1}%", cpu);
+                    }
+                    if let Some(total) = process.get("system_total_kib").and_then(|v| v.as_u64()) {
+                        println!(
+                            "  System RAM:  {:.1} GiB",
+                            total as f64 / 1024.0 / 1024.0 / 1024.0
+                        );
+                    }
+                    println!();
+                }
+
+                if let Some(connections) = obj.get("connections") {
+                    println!("Connections:");
+                    if let Some(tunnel) = connections
+                        .get("tunnel_registry_active")
+                        .and_then(|v| v.as_u64())
+                    {
+                        println!("  Tunnel active:  {}", tunnel);
+                    }
+                    if let Some(sse) = connections.get("sse") {
+                        if let Some(total) = sse.get("connections").and_then(|v| v.as_u64()) {
+                            println!("  SSE total:      {}", total);
+                        }
+                        if let Some(open) = sse.get("open").and_then(|v| v.as_u64()) {
+                            println!("  SSE open:       {}", open);
+                        }
+                    }
+                    println!();
+                }
+
+                if let Some(stores) = obj.get("stores") {
+                    println!("Stores:");
+                    if let Some(body) = stores.get("body_store") {
+                        if let Some(count) = body.get("file_count").and_then(|v| v.as_u64()) {
+                            let size = body.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!(
+                                "  Body store:     {} files, {} bytes ({:.1} MiB)",
+                                count,
+                                size,
+                                size as f64 / 1024.0 / 1024.0
+                            );
+                        }
+                    }
+                    if let Some(frame) = stores.get("frame_store") {
+                        if let Some(disk) = frame.get("disk") {
+                            if let Some(count) =
+                                disk.get("connection_count").and_then(|v| v.as_u64())
+                            {
+                                let size =
+                                    disk.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                                println!(
+                                    "  Frame store:    {} connections, {} bytes ({:.1} MiB)",
+                                    count,
+                                    size,
+                                    size as f64 / 1024.0 / 1024.0
+                                );
+                            }
+                        }
+                    }
+                    if let Some(ws) = stores.get("ws_payload_store") {
+                        if let Some(disk) = ws.get("disk") {
+                            if let Some(count) = disk.get("file_count").and_then(|v| v.as_u64()) {
+                                let size =
+                                    disk.get("total_size").and_then(|v| v.as_u64()).unwrap_or(0);
+                                println!(
+                                    "  WS payload:     {} files, {} bytes ({:.1} MiB)",
+                                    count,
+                                    size,
+                                    size as f64 / 1024.0 / 1024.0
+                                );
+                            }
+                        }
+                    }
+                    println!();
+                }
+
+                if let Some(traffic_db) = obj.get("traffic_db") {
+                    println!("Traffic DB:");
+                    if let Some(db) = traffic_db.get("db") {
+                        if let Some(count) = db.get("record_count").and_then(|v| v.as_u64()) {
+                            println!("  Records:     {}", count);
+                        }
+                        if let Some(size) = db.get("db_size_bytes").and_then(|v| v.as_u64()) {
+                            println!(
+                                "  DB size:     {} bytes ({:.1} MiB)",
+                                size,
+                                size as f64 / 1024.0 / 1024.0
+                            );
+                        }
+                    }
+                    if let Some(cache) = traffic_db.get("recent_cache") {
+                        if let Some(size) = cache.get("entries").and_then(|v| v.as_u64()) {
+                            println!("  Cache entries: {}", size);
+                        }
+                    }
+                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
     }
 }
 

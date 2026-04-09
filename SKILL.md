@@ -1,6 +1,6 @@
 ---
 name: "bifrost"
-description: "使用 bifrost 命令行工具管理代理生命周期、规则、Group 规则、证书、脚本、系统代理、运行时配置与流量查询；当需要通过命令行启动/停止代理、配置 TLS 拦截、调试规则、管理 Group 规则、管理脚本、查看 traffic/search、修改 values/config 时使用。"
+description: "使用 bifrost 命令行工具管理代理生命周期、规则、Group 规则、证书、脚本、系统代理、运行时配置与流量查询。当用户提到以下任意场景时触发：1) 启动/停止/检查 bifrost 代理；2) 配置 TLS 拦截（域名白名单、应用白名单）；3) 调试或管理规则/Group 规则/脚本；4) 查看流量记录、搜索请求；5) 通过一个少于 6 位的数字 ID 获取请求详情（如「获取 57544 的详情」「获取 47544 请求的内容」「查看 12345」等）；6) 修改 values/config/CA 证书/系统代理。常见触发表述：'使用 bifrost 获取 xxxxx 的详情''获取 xxxxx 的请求内容''查看 xxxxx 的内容''bifrost traffic get xxxxx' 等。"
 ---
 
 # Bifrost
@@ -12,10 +12,11 @@ description: "使用 bifrost 命令行工具管理代理生命周期、规则、
 - 需要启动、停止、检查 Bifrost 代理
 - 需要通过命令行添加或调试规则
 - 需要管理 Group（查询 group、管理 group 规则）
-- 需要启用或排查 TLS 拦截
+- 需要启用或排查 TLS 拦截（推荐使用域名/应用白名单而非全局开启）
 - 需要管理 CA、系统代理、访问白名单、变量值
 - 需要管理脚本（request/response/decode）
 - 需要查询运行中的代理配置、流量记录或搜索请求
+- 用户提及一个少于 6 位的数字并希望获取其请求详情（如「获取 57544 的详情」「查看 12345 的内容」），应识别为 `bifrost traffic get <ID>` 操作
 
 ## 启动时必须执行的自检流程
 
@@ -105,6 +106,7 @@ bifrost --version
 - `config`、`traffic`、`search`、`group`、多数 `status` 相关能力依赖"已有运行中的代理"
 - `rule`、`value`、`script`、`ca` 主要操作本地数据目录，不一定要求代理正在运行
 - `system-proxy` 会修改操作系统代理设置；除非用户明确要求，不要主动启用
+- **TLS 拦截默认关闭**（`--no-intercept`），不要主动全局开启；优先通过 `--intercept-include` / `--app-intercept-include` 配置域名或应用白名单
 
 ## 命令能力映射
 
@@ -154,9 +156,9 @@ bifrost start [OPTIONS]
 TLS 拦截优先级（从高到低）：
 
 1. 规则级别（`tlsIntercept://`、`tlsPassthrough://`）
-2. `--intercept-include` / `--app-intercept-include`：强制拦截
+2. `--intercept-include` / `--app-intercept-include`：**域名/应用白名单强制拦截（推荐方式）**
 3. `--intercept-exclude` / `--app-intercept-exclude`：强制不拦截
-4. `--intercept` / `--no-intercept`：全局开关（默认关闭）
+4. `--intercept` / `--no-intercept`：全局开关（**默认关闭，不推荐全局开启**）
 
 ### 3. TLS / CA
 
@@ -166,19 +168,28 @@ bifrost ca generate -f          # 强制重新生成
 bifrost ca install
 bifrost ca info
 bifrost ca export -o ./bifrost-ca.pem
-
-bifrost start --intercept
-bifrost start --no-intercept
-bifrost start --intercept-exclude '*.apple.com,*.microsoft.com'
-bifrost start --intercept-include '*.api.local'
-bifrost start --app-intercept-exclude '*Safari'
-bifrost start --app-intercept-include '*Chrome'
 ```
 
-- 需要解密 HTTPS 时，先处理 `ca`，再启用 `--intercept`
-- 精确控制优先用 `--intercept-include` / `--intercept-exclude`
-- 应用级别控制用 `--app-intercept-include` / `--app-intercept-exclude`
-- 若只是转发 HTTPS 而非查看明文，可保持 `--no-intercept`
+**⚠️ TLS 拦截默认关闭，不建议全局开启 `--intercept`。推荐使用域名/应用白名单按需解包：**
+
+```bash
+# ✅ 推荐：仅对指定域名启用 TLS 解包（无需全局 --intercept）
+bifrost start --intercept-include 'api.example.com,*.target.local'
+
+# ✅ 推荐：仅对指定应用启用 TLS 解包
+bifrost start --app-intercept-include '*Chrome,*curl'
+
+# ✅ 域名 + 应用组合白名单
+bifrost start --intercept-include '*.api.local' --app-intercept-include '*Chrome'
+
+# ⚠️ 不推荐：全局开启后排除（拦截范围过大，影响系统稳定性）
+bifrost start --intercept --intercept-exclude '*.apple.com,*.microsoft.com'
+```
+
+- `--intercept-include` / `--app-intercept-include` 为最高优先级，即使全局 TLS 关闭也会对匹配的域名/应用生效
+- 需要解密 HTTPS 时，先处理 `ca`（生成 + 安装），再配置白名单
+- 若只是转发 HTTPS 而非查看明文，保持默认即可（`--no-intercept`）
+- 应用级别白名单支持通配符匹配进程名
 
 ### 4. 规则管理
 
@@ -192,6 +203,8 @@ bifrost rule show demo                     # 别名：get
 bifrost rule enable demo
 bifrost rule disable demo
 bifrost rule delete demo
+bifrost rule rename demo new-demo              # 重命名规则
+bifrost rule reorder                           # 重新排序规则优先级
 bifrost rule sync                          # 与远端服务器同步规则
 ```
 
@@ -226,7 +239,7 @@ bifrost group rule disable <group_id> <name>
 - **需要代理运行中**：`group` 命令通过 admin API 通信，需先 `bifrost start`
 - Group 规则新增/更新时，`--content` 和 `--file` 至少提供一个（add 可以不带，默认空内容）
 - `group rule show` 别名：`get`
-- `group list` 支持 `-k/--keyword` 模糊搜索和 `-l/--limit` 限制最大结果数（默认 50）
+- `group list` 支持 `-k/--keyword` 模糊搜索、`-l/--limit` 限制最大结果数（默认 50）和 `-o/--offset` 分页偏移
 
 ### 6. 脚本管理
 
@@ -241,6 +254,7 @@ bifrost script show demo                   # 模糊匹配，跨类型查找
 bifrost script show request demo           # 精确指定类型
 bifrost script run demo                    # 使用内置 mock 数据测试脚本
 bifrost script run request demo            # 精确指定类型运行
+bifrost script rename request demo new-name  # 重命名脚本
 bifrost script delete request demo
 ```
 
@@ -253,8 +267,8 @@ bifrost script delete request demo
 
 ```bash
 bifrost value list
-bifrost value set LOCAL_SERVER 127.0.0.1:3000    # 别名：add
-bifrost value get LOCAL_SERVER                    # 别名：show
+bifrost value add LOCAL_SERVER 127.0.0.1:3000    # 别名：set
+bifrost value show LOCAL_SERVER                  # 别名：get
 bifrost value update LOCAL_SERVER 127.0.0.1:4000
 bifrost value import ./values.json               # 支持 .txt/.kv/.json
 bifrost value delete LOCAL_SERVER
@@ -271,6 +285,14 @@ bifrost whitelist list
 bifrost whitelist add 192.168.1.0/24
 bifrost whitelist remove 192.168.1.0/24
 bifrost whitelist allow-lan true
+bifrost whitelist mode                         # 查看当前访问模式
+bifrost whitelist mode interactive             # 设置访问模式
+bifrost whitelist pending                      # 查看待处理的访问请求
+bifrost whitelist approve <request_id>         # 批准访问请求
+bifrost whitelist reject <request_id>          # 拒绝访问请求
+bifrost whitelist clear-pending                # 清空待处理请求
+bifrost whitelist add-temporary <IP> [--ttl]   # 添加临时白名单
+bifrost whitelist remove-temporary <IP>        # 移除临时白名单
 ```
 
 - 默认应偏向最小暴露面
@@ -307,7 +329,7 @@ bifrost system-proxy disable
 ```bash
 bifrost config show
 bifrost config show --json
-bifrost config show --section tls            # 按 section 过滤：tls, traffic, access, server
+bifrost config show --section tls            # 按 section 过滤：tls, traffic, access
 bifrost config get tls.enabled
 bifrost config get tls.enabled --json
 bifrost config set tls.enabled true
@@ -317,6 +339,9 @@ bifrost config reset tls.enabled -y
 bifrost config reset all -y                  # 重置所有配置
 bifrost config clear-cache -y
 bifrost config disconnect example.com
+bifrost config disconnect-by-app Chrome       # 按应用断开连接
+bifrost config performance                    # 查看性能概览
+bifrost config websocket                      # 查看活跃 WebSocket 连接
 bifrost config export -o ./config.toml --format toml
 bifrost config export --format json
 ```
@@ -374,13 +399,15 @@ bifrost traffic list --is-sse true
 bifrost traffic list --is-tunnel true
 bifrost traffic list --cursor 100 --direction forward  # 分页
 
-# 查看单条详情
-bifrost traffic get 123
-bifrost traffic get 123 --request-body --response-body
+# 查看单条详情（ID 为少于 6 位的数字序号）
+bifrost traffic get 57544
+bifrost traffic get 57544 --request-body --response-body
 
 # 搜索（等同于 bifrost search）
 bifrost traffic search openai --domain api.openai.com --method POST
 ```
+
+> **快捷用法**：当用户说「获取 57544 的详情」「查看 12345 的内容」等包含纯数字 ID 的请求时，直接执行 `bifrost traffic get <ID> --request-body --response-body`。
 
 `traffic list` 完整过滤参数：
 
@@ -438,6 +465,8 @@ bifrost search '{"error"' --res-body --content-type json
     --protocol <PROTO>        协议过滤：HTTP|HTTPS|WS|WSS
     --content-type <TYPE>     Content-Type 过滤（json/xml/html/form 等）
     --domain <PATTERN>        域名 pattern 过滤
+    --max-scan <N>            最大扫描记录数（默认 10000，增大可扩大搜索范围）
+    --max-results <N>         最大返回匹配结果数（默认 100）
     --no-color                禁用彩色输出
 ```
 
@@ -446,6 +475,51 @@ bifrost search '{"error"' --res-body --content-type json
 ```bash
 bifrost upgrade
 bifrost upgrade -y            # 跳过确认
+bifrost version-check         # 仅检查新版本，不升级
+```
+
+### 15. 导入 / 导出
+
+```bash
+bifrost import ./backup.bifrost                # 从 .bifrost 文件导入（规则、脚本、变量）
+bifrost import --detect-only ./backup.bifrost  # 仅检测文件类型不导入
+
+bifrost export rules -o ./rules.bifrost        # 导出规则
+bifrost export values -o ./values.bifrost      # 导出变量
+bifrost export scripts -o ./scripts.bifrost    # 导出脚本
+```
+
+### 16. 远程同步
+
+```bash
+bifrost sync status                            # 查看同步状态
+bifrost sync login                             # 登录同步服务
+bifrost sync logout                            # 登出同步服务
+bifrost sync run                               # 手动触发同步
+bifrost sync config                            # 查看/更新同步配置
+```
+
+### 17. 流量清理
+
+```bash
+bifrost traffic clear                          # 清除流量记录
+```
+
+### 18. 实时指标
+
+```bash
+bifrost metrics summary                        # 查看指标摘要（默认）
+bifrost metrics apps                           # 按应用查看流量指标
+bifrost metrics hosts                          # 按域名查看流量指标
+bifrost metrics history                        # 查看指标历史
+```
+
+### 19. Shell 补全
+
+```bash
+bifrost completions bash                       # 生成 bash 补全脚本
+bifrost completions zsh                        # 生成 zsh 补全脚本
+bifrost completions fish                       # 生成 fish 补全脚本
 ```
 
 ## 环境变量
@@ -476,14 +550,17 @@ bifrost traffic get 1
 ```bash
 bifrost ca generate
 bifrost ca install
-bifrost start -p 9900 --intercept
-```
-
-若只想抓特定域名，优先改成：
-
-```bash
+# 推荐：仅对目标域名启用 TLS 解包
 bifrost start -p 9900 --intercept-include '*.target.local'
 ```
+
+若需要对特定应用启用：
+
+```bash
+bifrost start -p 9900 --app-intercept-include '*Chrome'
+```
+
+仅在确实需要全局解包时才用 `--intercept`（不推荐）。
 
 ### 调试长期规则文件
 
@@ -520,7 +597,7 @@ bifrost script update request add-header -f ./scripts/add-header-v2.js
 ```bash
 bifrost search example --domain example.com --format json-pretty
 bifrost traffic list --host example.com --limit 20
-bifrost traffic get <id> --request-body --response-body
+bifrost traffic get <id> --request-body --response-body  # <id> 为少于 6 位的数字序号
 ```
 
 ### 管理 Group 规则
@@ -570,7 +647,9 @@ bifrost <command> <action> -h # 子动作帮助（如 bifrost rule add -h、bifr
 - 优先通过 CLI 完成任务，不要直接手改 `~/.bifrost` 下的数据
 - 禁止使用临时 `BIFROST_DATA_DIR`，始终使用默认数据目录，确保证书和配置正确
 - 如果用户没有要求修改系统环境，不要开启 `--system-proxy`、`--cli-proxy`
-- 如果用户只想验证规则，不必先启用 TLS 拦截
+- **TLS 拦截默认关闭，不要主动全局开启 `--intercept`**。当用户需要查看 HTTPS 明文时，优先使用 `--intercept-include` 指定目标域名或 `--app-intercept-include` 指定目标应用，仅对必要的流量解包
+- 如果用户只想验证规则，不必启用 TLS 拦截
+- 当用户提供一个少于 6 位的纯数字（如 57544、12345），且上下文含有「详情」「内容」「请求」「查看」等关键词时，应识别为 `bifrost traffic get <ID> --request-body --response-body` 操作
 - 遇到不确定的参数或用法，**先执行** **`bifrost <command> -h`** **获取完整手册**，不要猜测
 
 ## 参考

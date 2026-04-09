@@ -841,6 +841,8 @@ fn config_subcommands_complete_list() {
         "disconnect-by-app",
         "performance",
         "websocket",
+        "connections",
+        "memory",
     ] {
         assert!(
             help.contains(sub),
@@ -848,6 +850,51 @@ fn config_subcommands_complete_list() {
             sub
         );
     }
+}
+
+#[test]
+fn config_connections_command_parse() {
+    let help = run_help(&["config", "connections"]);
+    assert!(
+        help.contains("active") || help.contains("connection") || help.contains("proxy"),
+        "config connections help should describe active connections"
+    );
+}
+
+#[test]
+fn config_memory_command_parse() {
+    let help = run_help(&["config", "memory"]);
+    assert!(
+        help.contains("memory") || help.contains("Memory") || help.contains("diagnostic"),
+        "config memory help should describe memory diagnostics"
+    );
+}
+
+#[test]
+fn config_show_section_accepts_server() {
+    let output = bifrost_cmd()
+        .arg("config")
+        .arg("show")
+        .arg("--section")
+        .arg("server")
+        .arg("--help")
+        .output()
+        .expect("failed to run bifrost config show --section server --help");
+    let combined = String::from_utf8_lossy(&output.stdout).to_string()
+        + String::from_utf8_lossy(&output.stderr).as_ref();
+    assert!(
+        !combined.contains("error") || combined.contains("Show"),
+        "config show --section server should be accepted by clap parser"
+    );
+}
+
+#[test]
+fn config_show_section_value_parser_includes_all() {
+    let completions = get_zsh_completions();
+    assert!(
+        completions.contains("server"),
+        "completions should include config section value 'server'"
+    );
 }
 
 #[test]
