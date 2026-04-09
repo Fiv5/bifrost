@@ -60,6 +60,8 @@ bifrost start -d
 http://127.0.0.1:9900/_bifrost/
 ```
 
+## 用不习惯 CLI？想要使用桌面端 APP？
+请直接到[releases](https://github.com/bifrost-proxy/bifrost/releases)中下载对应平台的桌面端程序
 
 ## 基本用法摘要
 
