@@ -134,6 +134,66 @@ test_restart_yes() {
     PROXY_PID=""
 }
 
+test_restart_auto_yes() {
+    _log_info "case: conflict -> -y -> restart"
+
+    local old_pid
+    old_pid="$(start_proxy_bg "${TEST_DATA_DIR}/proxy-old-auto.log")"
+    PROXY_PID="$old_pid"
+
+    sleep 1
+    if ! kill -0 "$old_pid" 2>/dev/null; then
+        _log_fail "proxy started" "running process" "not running"
+        cat "${TEST_DATA_DIR}/proxy-old-auto.log" || true
+        return 1
+    fi
+
+    if ! wait_proxy_ready "$PROXY_PORT"; then
+        _log_fail "admin api ready" "reachable" "unreachable"
+        cat "${TEST_DATA_DIR}/proxy-old-auto.log" || true
+        return 1
+    fi
+
+    export BIFROST_DATA_DIR="${TEST_DATA_DIR}"
+    "$BIFROST_BIN" -p "${PROXY_PORT}" start -y \
+        --skip-cert-check --unsafe-ssl \
+        >"${TEST_DATA_DIR}/proxy-restart-auto.log" 2>&1 &
+    local new_pid=$!
+    RESTART_PID="$new_pid"
+
+    assert_not_equals "$old_pid" "$new_pid" "auto yes restart should spawn a new process" || return 1
+
+    if ! wait_proxy_ready "$PROXY_PORT"; then
+        _log_fail "admin api ready after auto restart" "reachable" "unreachable"
+        cat "${TEST_DATA_DIR}/proxy-restart-auto.log" || true
+        return 1
+    fi
+
+    if wait_pid_exit "$old_pid"; then
+        _log_pass "old process exited"
+    else
+        _log_fail "old process exited" "not running" "still running"
+        return 1
+    fi
+
+    if kill -0 "$new_pid" 2>/dev/null; then
+        _log_pass "new process running"
+    else
+        _log_fail "new process running" "running" "not running"
+        cat "${TEST_DATA_DIR}/proxy-restart-auto.log" || true
+        return 1
+    fi
+
+    local log_content
+    log_content="$(cat "${TEST_DATA_DIR}/proxy-restart-auto.log" 2>/dev/null || true)"
+    assert_body_not_contains "Restart? (y/n)" "$log_content" "-y should skip interactive prompt" || return 1
+
+    stop_proxy
+    safe_cleanup_proxy "$new_pid"
+    RESTART_PID=""
+    PROXY_PID=""
+}
+
 test_restart_no() {
     _log_info "case: conflict -> input n -> exit without killing"
 
@@ -181,6 +241,7 @@ main() {
     TEST_DATA_DIR="$(mktemp -d)"
 
     test_restart_yes || { print_test_summary || exit 1; return 1; }
+    test_restart_auto_yes || { print_test_summary || exit 1; return 1; }
     test_restart_no || { print_test_summary || exit 1; return 1; }
 
     print_test_summary || exit 1

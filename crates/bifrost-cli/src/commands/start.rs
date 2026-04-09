@@ -330,10 +330,16 @@ pub fn run_start(
     proxy_bypass: Option<String>,
     cli_proxy: bool,
     cli_proxy_no_proxy: Option<String>,
+    yes: bool,
 ) -> bifrost_core::Result<()> {
     if let Some(pid) = read_pid() {
         if is_process_running(pid) {
-            let should_restart = prompt_restart_if_running(pid)?;
+            let should_restart = if yes {
+                true
+            } else {
+                prompt_restart_if_running(pid)?
+            };
+
             if should_restart {
                 super::stop::run_stop()?;
             } else {

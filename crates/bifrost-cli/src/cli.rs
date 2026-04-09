@@ -443,6 +443,9 @@ pub enum Commands {
             help = "CLI proxy no-proxy list (comma-separated, e.g., 'localhost,127.0.0.1,*.local')"
         )]
         cli_proxy_no_proxy: Option<String>,
+
+        #[arg(short = 'y', long, help = "Automatically answer yes to prompts")]
+        yes: bool,
     },
     #[command(about = "Stop the proxy server")]
     Stop,
