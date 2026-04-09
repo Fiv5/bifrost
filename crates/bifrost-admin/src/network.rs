@@ -8,7 +8,7 @@ pub struct LocalIpInfo {
 
 pub fn get_local_ips() -> Vec<LocalIpInfo> {
     let preferred_ip = detect_preferred_ip();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::<String>::new();
     let mut results = Vec::new();
 
     #[cfg(unix)]
