@@ -7,6 +7,23 @@
     "type": "git",
     "url": "https://github.com/bifrost-proxy/bifrost"
   },
+  "keywords": [
+    "proxy",
+    "bifrost",
+    "whistle",
+    "charles",
+    "fiddler",
+    "mitmproxy",
+    "postman",
+    "http",
+    "socks5",
+    "websocket",
+    "mitm",
+    "capture",
+    "mock",
+    "network",
+    "devtools"
+  ],
   "os": [
     "win32"
   ],
@@ -14,6 +31,7 @@
     "x64"
   ],
   "files": [
-    "bin/bifrost.exe"
+    "bin/bifrost.exe",
+    "README.md"
   ]
 }
